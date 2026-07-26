@@ -164,11 +164,15 @@ impl StateStack {
     }
 
     pub fn current(&self) -> &GraphicsState {
-        self.stack.last().expect("ngăn xếp luôn có ít nhất 1 phần tử")
+        self.stack
+            .last()
+            .expect("ngăn xếp luôn có ít nhất 1 phần tử")
     }
 
     pub fn current_mut(&mut self) -> &mut GraphicsState {
-        self.stack.last_mut().expect("ngăn xếp luôn có ít nhất 1 phần tử")
+        self.stack
+            .last_mut()
+            .expect("ngăn xếp luôn có ít nhất 1 phần tử")
     }
 
     pub fn depth(&self) -> usize {

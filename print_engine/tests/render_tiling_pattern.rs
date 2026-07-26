@@ -220,6 +220,83 @@ fn pattern_matrix_scales_the_cell() {
 }
 
 #[test]
+fn tiling_pattern_uses_the_enclosing_stream_initial_matrix() {
+    let mut doc = Document::with_version("1.7");
+    let pattern_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "Pattern",
+            "PatternType" => 1,
+            "PaintType" => 1,
+            "TilingType" => 1,
+            "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+            "XStep" => 10,
+            "YStep" => 10,
+            "Resources" => dictionary! {},
+        },
+        b"0 0 0 1 k 0 0 5 10 re f".to_vec(),
+    ));
+    let form_resources = dictionary! {
+        "Pattern" => dictionary! { "P0" => Object::Reference(pattern_id) },
+        "ColorSpace" => dictionary! { "CS0" => plain_pattern_cs() },
+    };
+    let form_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), PAGE.into(), PAGE.into()],
+            "Resources" => Object::Dictionary(form_resources),
+        },
+        b"2 0 0 2 0 0 cm /CS0 cs /P0 scn 0 0 20 20 re f".to_vec(),
+    ));
+    let resources_id = doc.add_object(dictionary! {
+        "XObject" => dictionary! { "Fm0" => Object::Reference(form_id) },
+    });
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        b"q .5 0 0 .5 10 10 cm /Fm0 Do Q".to_vec(),
+    ));
+    let pages_id = (doc.new_object_id().0, 0);
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => Object::Reference(pages_id),
+        "Contents" => Object::Reference(content_id),
+        "Resources" => Object::Reference(resources_id),
+        "MediaBox" => vec![0.into(), 0.into(), PAGE.into(), PAGE.into()],
+    });
+    doc.set_object(
+        pages_id,
+        dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => 1,
+        },
+    );
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => Object::Reference(pages_id),
+    });
+    doc.trailer.set("Root", Object::Reference(catalog_id));
+
+    let r = render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate()).unwrap();
+    let w = r.buffer.width() as usize;
+    let row = (r.buffer.height() as usize / 2) * w;
+    let k = r.buffer.plate_u8(3);
+    let mut bands = 0;
+    let mut prev = 0u8;
+    for x in 10..30 {
+        let v = k[row + x];
+        if v > 128 && prev <= 128 {
+            bands += 1;
+        }
+        prev = v;
+    }
+    assert_eq!(
+        bands, 4,
+        "pattern phải dùng CTM đầu form; `cm` nội bộ không được phóng bước lặp lần nữa"
+    );
+}
+
+#[test]
 fn content_outside_the_cell_bbox_is_clipped() {
     // Ô vẽ tràn ra ngoài `/BBox`; `/BBox` là clip bắt buộc (§8.7.3.1). Không cắt thì
     // các ô đè lên nhau và lượng mực đo được cao hơn thực tế.
@@ -300,7 +377,13 @@ fn spot_colour_inside_a_cell_gets_its_own_plate() {
     doc.trailer.set("Root", Object::Reference(catalog));
 
     let r = render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate()).unwrap();
-    let names: Vec<&str> = r.buffer.space().colorants().iter().map(|c| c.name()).collect();
+    let names: Vec<&str> = r
+        .buffer
+        .space()
+        .colorants()
+        .iter()
+        .map(|c| c.name())
+        .collect();
     assert!(names.contains(&"CutContour"), "{names:?}");
 }
 

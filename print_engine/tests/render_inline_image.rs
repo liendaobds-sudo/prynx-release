@@ -86,13 +86,17 @@ fn content_after_an_inline_image_is_still_executed() {
 fn binary_data_containing_ei_does_not_truncate_the_stream() {
     // Dữ liệu 8 byte có chứa đúng " EI " ở giữa. Nếu dò `EI` bằng heuristic thì khối
     // bị cắt sớm và phần sau bị đọc thành rác; đường tính-trước độ dài phải thắng.
-    let mut content = format!("q {PAGE} 0 0 {PAGE} 0 0 cm BI /W 8 /H 1 /BPC 8 /CS /G ID ")
-        .into_bytes();
+    let mut content =
+        format!("q {PAGE} 0 0 {PAGE} 0 0 cm BI /W 8 /H 1 /BPC 8 /CS /G ID ").into_bytes();
     content.extend_from_slice(&[0x00, 0x20, b'E', b'I', 0x20, 0x00, 0x00, 0x00]);
     content.extend_from_slice(b" EI Q\n");
     content.extend_from_slice(format!("1 0 0 0 k 0 0 {PAGE} 1 re f").as_bytes());
     let r = render_bytes(content);
-    assert_eq!(r.warnings.dropped_objects, 0, "{:?}", r.warnings.skipped_ops);
+    assert_eq!(
+        r.warnings.dropped_objects, 0,
+        "{:?}",
+        r.warnings.skipped_ops
+    );
     // Hình Cyan sau khối ảnh vẫn phải được vẽ ⇒ stream không bị cắt.
     let h = r.buffer.height() as usize;
     assert_eq!(px(&r, 0, 2, h - 1), 255, "Cyan sau ảnh phải có");
@@ -125,8 +129,8 @@ fn asciihex_compressed_inline_image_is_decoded() {
 fn inline_image_mask_uses_the_current_fill_colour() {
     // Stencil lấy màu từ trạng thái tô, không từ ảnh. 1 bit, `/Decode [1 0]` để bit 0
     // là "vẽ".
-    let mut content = format!("1 0 0 0 k q {PAGE} 0 0 {PAGE} 0 0 cm BI /W 1 /H 1 /IM true ID ")
-        .into_bytes();
+    let mut content =
+        format!("1 0 0 0 k q {PAGE} 0 0 {PAGE} 0 0 cm BI /W 1 /H 1 /IM true ID ").into_bytes();
     content.extend_from_slice(&[0x00]);
     content.extend_from_slice(b" EI Q\n");
     let r = render_bytes(content);
@@ -145,8 +149,8 @@ fn decode_array_inverts_inline_image_samples() {
 #[test]
 fn two_inline_images_land_in_their_own_places() {
     let half = PAGE / 2;
-    let mut content = format!("q {half} 0 0 {PAGE} 0 0 cm BI /W 1 /H 1 /BPC 8 /CS /G ID ")
-        .into_bytes();
+    let mut content =
+        format!("q {half} 0 0 {PAGE} 0 0 cm BI /W 1 /H 1 /BPC 8 /CS /G ID ").into_bytes();
     content.extend_from_slice(&[0x00]); // đen, nửa trái
     content.extend_from_slice(b" EI Q\n");
     content.extend_from_slice(
@@ -176,8 +180,8 @@ fn inline_image_inside_a_form_xobject_works() {
     // Form có content stream riêng ⇒ đường bóc ảnh phải chạy cho **mọi** stream,
     // không chỉ stream của trang.
     let mut doc = Document::with_version("1.7");
-    let mut form_content = format!("q {PAGE} 0 0 {PAGE} 0 0 cm BI /W 1 /H 1 /BPC 8 /CS /G ID ")
-        .into_bytes();
+    let mut form_content =
+        format!("q {PAGE} 0 0 {PAGE} 0 0 cm BI /W 1 /H 1 /BPC 8 /CS /G ID ").into_bytes();
     form_content.extend_from_slice(&[0x00]);
     form_content.extend_from_slice(b" EI Q");
     let form = doc.add_object(Stream::new(

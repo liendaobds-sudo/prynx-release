@@ -89,7 +89,11 @@ pub fn dict_get<'a>(doc: &'a Document, dict: &'a Dictionary, key: &str) -> Optio
 }
 
 /// Lấy dictionary con — chấp nhận cả `Dictionary` và `Stream` (stream có dict).
-pub fn dict_get_dict<'a>(doc: &'a Document, dict: &'a Dictionary, key: &str) -> Option<&'a Dictionary> {
+pub fn dict_get_dict<'a>(
+    doc: &'a Document,
+    dict: &'a Dictionary,
+    key: &str,
+) -> Option<&'a Dictionary> {
     match dict_get(doc, dict, key)? {
         Object::Dictionary(d) => Some(d),
         Object::Stream(s) => Some(&s.dict),

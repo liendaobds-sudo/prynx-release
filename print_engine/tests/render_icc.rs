@@ -27,7 +27,11 @@ fn manager() -> Option<ColorManager> {
     let srgb = icc_dir().join("sRGB.icc");
     ColorManager::from_profiles(
         &cmyk,
-        if srgb.is_file() { Some(srgb.as_path()) } else { None },
+        if srgb.is_file() {
+            Some(srgb.as_path())
+        } else {
+            None
+        },
         RenderIntent::default(),
     )
     .ok()
@@ -176,8 +180,15 @@ fn spot_channel_is_untouched_by_icc() {
     });
     doc.trailer.set("Root", Object::Reference(catalog_id));
 
-    let r = render_page_managed(&doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate(), Some(&cm))
-        .unwrap();
+    let r = render_page_managed(
+        &doc,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::ink_accurate(),
+        Some(&cm),
+    )
+    .unwrap();
     let spot = r
         .buffer
         .space()
@@ -188,7 +199,11 @@ fn spot_channel_is_untouched_by_icc() {
     let i = center(&r);
     assert_eq!(r.buffer.plate_u8(spot)[i], 255);
     for ch in 0..4 {
-        assert_eq!(r.buffer.plate_u8(ch)[i], 0, "spot không được rơi sang process");
+        assert_eq!(
+            r.buffer.plate_u8(ch)[i],
+            0,
+            "spot không được rơi sang process"
+        );
     }
     assert!((r.buffer.max_tac_percent() - 100.0).abs() < 0.5);
 }
@@ -252,7 +267,11 @@ fn rgb_black_via_icc_generates_rich_black_not_k_only() {
 fn rgb_white_via_icc_leaves_paper_clean() {
     let cm = cm_or_skip!();
     let r = render("1 1 1 rg 0 0 10 10 re f", Some(&cm));
-    assert!(r.buffer.max_tac_percent() < 2.0, "{}", r.buffer.max_tac_percent());
+    assert!(
+        r.buffer.max_tac_percent() < 2.0,
+        "{}",
+        r.buffer.max_tac_percent()
+    );
 }
 
 #[test]
@@ -273,7 +292,10 @@ fn rgb_image_uses_icc_too() {
     let resources_id = doc.add_object(dictionary! {
         "XObject" => dictionary! { "Im0" => Object::Reference(img_id) },
     });
-    let content_id = doc.add_object(Stream::new(dictionary! {}, b"q 10 0 0 10 0 0 cm /Im0 Do Q".to_vec()));
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        b"q 10 0 0 10 0 0 cm /Im0 Do Q".to_vec(),
+    ));
     let pages_object_id = (doc.new_object_id().0, 0);
     let page_id = doc.add_object(dictionary! {
         "Type" => "Page",
@@ -291,9 +313,15 @@ fn rgb_image_uses_icc_too() {
     });
     doc.trailer.set("Root", Object::Reference(catalog_id));
 
-    let via_image =
-        render_page_managed(&doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate(), Some(&cm))
-            .unwrap();
+    let via_image = render_page_managed(
+        &doc,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::ink_accurate(),
+        Some(&cm),
+    )
+    .unwrap();
     let via_vector = render("0 0 0 rg 0 0 10 10 re f", Some(&cm));
 
     for ch in 0..4 {
@@ -312,8 +340,14 @@ fn colorspaces_used_is_reported() {
     // Lớp trên cần biết trang đã dùng họ colorspace nào để giải thích accuracy.
     let cm = cm_or_skip!();
     let r = render("0 0 0 rg 0 0 5 5 re f 0 0 0 1 k 5 5 5 5 re f", Some(&cm));
-    assert!(r.warnings.colorspaces_used.contains(&"DeviceRGB".to_string()));
-    assert!(r.warnings.colorspaces_used.contains(&"DeviceCMYK".to_string()));
+    assert!(r
+        .warnings
+        .colorspaces_used
+        .contains(&"DeviceRGB".to_string()));
+    assert!(r
+        .warnings
+        .colorspaces_used
+        .contains(&"DeviceCMYK".to_string()));
 }
 
 #[test]

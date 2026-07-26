@@ -72,7 +72,11 @@ fn px(r: &PageRender, channel: usize, x: usize, y: usize) -> u8 {
 #[test]
 fn group4_image_lands_ink_exactly_where_the_bitmap_is_black() {
     let r = render_ccitt(dictionary! {}, g4_parms());
-    assert_eq!(r.warnings.dropped_objects, 0, "{:?}", r.warnings.skipped_ops);
+    assert_eq!(
+        r.warnings.dropped_objects, 0,
+        "{:?}",
+        r.warnings.skipped_ops
+    );
     // Ảnh chiếm hình vuông đơn vị và hàng 0 của ảnh nằm ở **đỉnh**, nên y của raster
     // trùng y của bitmap.
     assert_eq!(px(&r, 3, 10, 5), 255, "trong hình chữ nhật phải đặc mực");
@@ -241,6 +245,9 @@ fn corrupt_ccitt_data_is_reported_not_silently_blank() {
     doc.trailer.set("Root", Object::Reference(catalog));
 
     let r = render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate()).unwrap();
-    assert!(r.warnings.dropped_objects > 0, "dữ liệu hỏng phải được ghi nhận");
+    assert!(
+        r.warnings.dropped_objects > 0,
+        "dữ liệu hỏng phải được ghi nhận"
+    );
     assert!(r.warnings.ink_unsound());
 }

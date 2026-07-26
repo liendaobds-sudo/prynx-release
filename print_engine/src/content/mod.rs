@@ -4,4 +4,4 @@ pub mod gstate;
 pub mod inline_image;
 pub mod interp;
 
-pub use interp::{RenderOptions, Renderer};
+pub use interp::{BlendSpace, RenderOptions, Renderer};

@@ -18,8 +18,8 @@ use lopdf::{Dictionary, Document, Object};
 
 use crate::color::convert;
 use crate::color::function::PdfFunction;
-use crate::error::{PpeError, PpeResult, RenderWarnings};
 use crate::color::icc::ColorManager;
+use crate::error::{PpeError, PpeResult, RenderWarnings};
 use crate::ink::{ChannelMask, Colorant, InkSpace};
 use crate::pdf;
 
@@ -60,7 +60,9 @@ pub enum ColorSpace {
         tint: Arc<PdfFunction>,
     },
     /// Pattern (tiling / shading). Interpreter xử lý riêng.
-    Pattern { base: Option<Box<ColorSpace>> },
+    Pattern {
+        base: Option<Box<ColorSpace>>,
+    },
 }
 
 impl ColorSpace {
@@ -91,6 +93,49 @@ impl ColorSpace {
             ColorSpace::Separation { .. } => vec![1.0],
             ColorSpace::DeviceN { colorants, .. } => vec![1.0; colorants.len()],
             ColorSpace::Pattern { .. } => vec![0.0],
+        }
+    }
+
+    /// Có thể biểu diễn chính xác màu nguồn trong blending-space DeviceRGB.
+    ///
+    /// Chỉ nhận các device space có ánh xạ xác định và Indexed dựa trên chúng.
+    /// ICCBased/Lab/Separation/DeviceN cần transform hoặc semantics spot riêng nên
+    /// không được đoán ở đây.
+    pub fn supports_device_rgb_blending(&self) -> bool {
+        match self {
+            ColorSpace::DeviceGray | ColorSpace::DeviceRGB => true,
+            ColorSpace::Indexed { base, .. } => base.supports_device_rgb_blending(),
+            _ => false,
+        }
+    }
+
+    /// Đổi màu nguồn sang DeviceRGB để composite trước ICC.
+    pub fn to_device_rgb_for_blending(&self, comps: &[f32]) -> Option<[f32; 3]> {
+        match self {
+            ColorSpace::DeviceGray => {
+                let gray = comp(comps, 0).clamp(0.0, 1.0);
+                Some([gray, gray, gray])
+            }
+            ColorSpace::DeviceRGB => Some([
+                comp(comps, 0).clamp(0.0, 1.0),
+                comp(comps, 1).clamp(0.0, 1.0),
+                comp(comps, 2).clamp(0.0, 1.0),
+            ]),
+            ColorSpace::Indexed {
+                base,
+                hival,
+                lookup,
+            } if base.supports_device_rgb_blending() => {
+                let index = (comp(comps, 0).round().max(0.0) as usize).min(*hival);
+                let n = base.n_components();
+                let mut base_comps = Vec::with_capacity(n);
+                for component in 0..n {
+                    let value = lookup.get(index * n + component).copied().unwrap_or(0);
+                    base_comps.push(value as f32 / 255.0);
+                }
+                base.to_device_rgb_for_blending(&base_comps)
+            }
+            _ => None,
         }
     }
 
@@ -128,7 +173,10 @@ impl ColorSpace {
                 let m = comp(comps, 1);
                 let y = comp(comps, 2);
                 let k = comp(comps, 3);
-                Ok(Some((spread_cmyk([c, m, y, k], space), ChannelMask::PROCESS)))
+                Ok(Some((
+                    spread_cmyk([c, m, y, k], space),
+                    ChannelMask::PROCESS,
+                )))
             }
 
             ColorSpace::DeviceGray => {
@@ -144,9 +192,9 @@ impl ColorSpace {
                 // Lượng mực của một vùng RGB phụ thuộc hoàn toàn vào black
                 // generation và gamut mapping của profile đích. Có ICC thì đây là
                 // con số dùng được; không có thì chỉ là phỏng đoán.
-                let cmyk = match cm.and_then(|cm| {
-                    cm.rgb_to_cmyk(comp(comps, 0), comp(comps, 1), comp(comps, 2))
-                }) {
+                let cmyk = match cm
+                    .and_then(|cm| cm.rgb_to_cmyk(comp(comps, 0), comp(comps, 1), comp(comps, 2)))
+                {
                     Some(c) => c,
                     None => {
                         warn.note_approximated_colorspace("DeviceRGB→CMYK không ICC");
@@ -158,9 +206,9 @@ impl ColorSpace {
 
             ColorSpace::Lab => {
                 warn.note_colorspace_used("Lab");
-                let cmyk = match cm.and_then(|cm| {
-                    cm.lab_to_cmyk(comp(comps, 0), comp(comps, 1), comp(comps, 2))
-                }) {
+                let cmyk = match cm
+                    .and_then(|cm| cm.lab_to_cmyk(comp(comps, 0), comp(comps, 1), comp(comps, 2)))
+                {
                     Some(c) => c,
                     None => {
                         warn.note_approximated_colorspace("Lab→CMYK không ICC");
@@ -210,7 +258,11 @@ impl ColorSpace {
                 alternate.to_ink_depth(comps, space, warn, cm, depth + 1)
             }
 
-            ColorSpace::Indexed { base, hival, lookup } => {
+            ColorSpace::Indexed {
+                base,
+                hival,
+                lookup,
+            } => {
                 warn.note_colorspace_used("Indexed");
                 let idx = (comp(comps, 0).round().max(0.0) as usize).min(*hival);
                 let n = base.n_components();
@@ -222,7 +274,12 @@ impl ColorSpace {
                 base.to_ink_depth(&base_comps, space, warn, cm, depth + 1)
             }
 
-            ColorSpace::Separation { colorant, all, alternate, tint } => {
+            ColorSpace::Separation {
+                colorant,
+                all,
+                alternate,
+                tint,
+            } => {
                 warn.note_colorspace_used("Separation");
                 let t = comp(comps, 0).clamp(0.0, 1.0);
                 if *all {
@@ -248,7 +305,11 @@ impl ColorSpace {
                 Ok(Some((ink, ChannelMask::single(ch))))
             }
 
-            ColorSpace::DeviceN { colorants, alternate, tint } => {
+            ColorSpace::DeviceN {
+                colorants,
+                alternate,
+                tint,
+            } => {
                 warn.note_colorspace_used("DeviceN");
                 if space.is_process_only() {
                     let comps: Vec<f32> = (0..colorants.len())
@@ -295,8 +356,12 @@ impl ColorSpace {
     /// Dùng cho soft-proof composite và action Spot→CMYK.
     pub fn tint_transform(&self) -> Option<(&PdfFunction, &ColorSpace)> {
         match self {
-            ColorSpace::Separation { tint, alternate, .. } => Some((tint, alternate)),
-            ColorSpace::DeviceN { tint, alternate, .. } => Some((tint, alternate)),
+            ColorSpace::Separation {
+                tint, alternate, ..
+            } => Some((tint, alternate)),
+            ColorSpace::DeviceN {
+                tint, alternate, ..
+            } => Some((tint, alternate)),
             _ => None,
         }
     }
@@ -567,7 +632,11 @@ pub fn resolve_function(doc: &Document, obj: &Object) -> PpeResult<PdfFunction> 
     let dict = match resolved {
         Object::Dictionary(d) => d,
         Object::Stream(s) => &s.dict,
-        _ => return Err(PpeError::MalformedPdf("function không phải dict/stream".into())),
+        _ => {
+            return Err(PpeError::MalformedPdf(
+                "function không phải dict/stream".into(),
+            ))
+        }
     };
 
     let ftype = pdf::dict_get(doc, dict, "FunctionType")
@@ -597,7 +666,13 @@ pub fn resolve_function(doc: &Document, obj: &Object) -> PpeResult<PdfFunction> 
             let mut c1 = c1;
             c0.resize(len, 0.0);
             c1.resize(len, 0.0);
-            Ok(PdfFunction::Exponential { domain, c0, c1, n, range })
+            Ok(PdfFunction::Exponential {
+                domain,
+                c0,
+                c1,
+                n,
+                range,
+            })
         }
 
         3 => {
@@ -609,44 +684,56 @@ pub fn resolve_function(doc: &Document, obj: &Object) -> PpeResult<PdfFunction> 
                     }
                     out
                 }
-                _ => return Err(PpeError::MalformedPdf("function kiểu 3 thiếu Functions".into())),
+                _ => {
+                    return Err(PpeError::MalformedPdf(
+                        "function kiểu 3 thiếu Functions".into(),
+                    ))
+                }
             };
             if functions.is_empty() {
-                return Err(PpeError::MalformedPdf("function kiểu 3 có Functions rỗng".into()));
+                return Err(PpeError::MalformedPdf(
+                    "function kiểu 3 có Functions rỗng".into(),
+                ));
             }
             let bounds = pdf::dict_get(doc, dict, "Bounds")
                 .and_then(|o| pdf::num_array(doc, o))
                 .unwrap_or_default();
             let encode = pdf::dict_get(doc, dict, "Encode")
                 .and_then(|o| pdf::num_array(doc, o))
-                .unwrap_or_else(|| {
-                    (0..functions.len()).flat_map(|_| [0.0, 1.0]).collect()
-                });
-            Ok(PdfFunction::Stitching { domain, functions, bounds, encode, range })
+                .unwrap_or_else(|| (0..functions.len()).flat_map(|_| [0.0, 1.0]).collect());
+            Ok(PdfFunction::Stitching {
+                domain,
+                functions,
+                bounds,
+                encode,
+                range,
+            })
         }
 
         0 => {
-            let data = pdf::stream_data(doc, obj)
-                .ok_or_else(|| PpeError::MalformedPdf("function kiểu 0 không đọc được stream".into()))?;
+            let data = pdf::stream_data(doc, obj).ok_or_else(|| {
+                PpeError::MalformedPdf("function kiểu 0 không đọc được stream".into())
+            })?;
             let size: Vec<usize> = pdf::dict_get(doc, dict, "Size")
                 .and_then(|o| pdf::num_array(doc, o))
                 .map(|v| v.iter().map(|s| (*s).max(1.0) as usize).collect())
                 .ok_or_else(|| PpeError::MalformedPdf("function kiểu 0 thiếu Size".into()))?;
             let bps = pdf::dict_get(doc, dict, "BitsPerSample")
                 .and_then(pdf::as_num)
-                .ok_or_else(|| PpeError::MalformedPdf("function kiểu 0 thiếu BitsPerSample".into()))?
-                as u32;
+                .ok_or_else(|| {
+                    PpeError::MalformedPdf("function kiểu 0 thiếu BitsPerSample".into())
+                })? as u32;
             let range = range
                 .ok_or_else(|| PpeError::MalformedPdf("function kiểu 0 thiếu Range".into()))?;
             let n_out = range.len() / 2;
             if n_out == 0 {
-                return Err(PpeError::MalformedPdf("function kiểu 0 có Range rỗng".into()));
+                return Err(PpeError::MalformedPdf(
+                    "function kiểu 0 có Range rỗng".into(),
+                ));
             }
             let encode = pdf::dict_get(doc, dict, "Encode")
                 .and_then(|o| pdf::num_array(doc, o))
-                .unwrap_or_else(|| {
-                    size.iter().flat_map(|s| [0.0, (*s - 1) as f32]).collect()
-                });
+                .unwrap_or_else(|| size.iter().flat_map(|s| [0.0, (*s - 1) as f32]).collect());
             let decode = pdf::dict_get(doc, dict, "Decode")
                 .and_then(|o| pdf::num_array(doc, o))
                 .unwrap_or_else(|| range.clone());
@@ -664,12 +751,17 @@ pub fn resolve_function(doc: &Document, obj: &Object) -> PpeResult<PdfFunction> 
         }
 
         4 => {
-            let data = pdf::stream_data(doc, obj)
-                .ok_or_else(|| PpeError::MalformedPdf("function kiểu 4 không đọc được stream".into()))?;
+            let data = pdf::stream_data(doc, obj).ok_or_else(|| {
+                PpeError::MalformedPdf("function kiểu 4 không đọc được stream".into())
+            })?;
             let range = range
                 .ok_or_else(|| PpeError::MalformedPdf("function kiểu 4 thiếu Range".into()))?;
             let program = crate::color::function::parse_ps_program(&data)?;
-            Ok(PdfFunction::PostScript { domain, range, program })
+            Ok(PdfFunction::PostScript {
+                domain,
+                range,
+                program,
+            })
         }
 
         other => Err(PpeError::Unsupported(format!("FunctionType {other}"))),
@@ -807,7 +899,10 @@ mod tests {
         };
         let mut space = ink4();
         let mut warn = RenderWarnings::default();
-        let (ink, _) = cs.to_ink(&[0.0, 0.0, 0.0, 1.0], &mut space, &mut warn, None).unwrap().unwrap();
+        let (ink, _) = cs
+            .to_ink(&[0.0, 0.0, 0.0, 1.0], &mut space, &mut warn, None)
+            .unwrap()
+            .unwrap();
         assert_eq!(ink[3], 1.0);
         assert!(!warn.degrades_accuracy());
     }
@@ -817,10 +912,17 @@ mod tests {
         let cs = sep("PANTONE 485 C");
         let mut space = ink4();
         let mut warn = RenderWarnings::default();
-        let (ink, mask) = cs.to_ink(&[1.0], &mut space, &mut warn, None).unwrap().unwrap();
+        let (ink, mask) = cs
+            .to_ink(&[1.0], &mut space, &mut warn, None)
+            .unwrap()
+            .unwrap();
         assert_eq!(space.len(), 5);
         assert_eq!(ink[4], 1.0);
-        assert_eq!(&ink[..4], &[0.0, 0.0, 0.0, 0.0], "spot KHÔNG được rơi vào process");
+        assert_eq!(
+            &ink[..4],
+            &[0.0, 0.0, 0.0, 0.0],
+            "spot KHÔNG được rơi vào process"
+        );
         assert_eq!(mask, ChannelMask::single(4));
     }
 
@@ -829,7 +931,10 @@ mod tests {
         let cs = sep("Cyan");
         let mut space = ink4();
         let mut warn = RenderWarnings::default();
-        let (ink, mask) = cs.to_ink(&[0.5], &mut space, &mut warn, None).unwrap().unwrap();
+        let (ink, mask) = cs
+            .to_ink(&[0.5], &mut space, &mut warn, None)
+            .unwrap()
+            .unwrap();
         assert_eq!(space.len(), 4, "không được sinh kẽm spot thứ năm");
         assert_eq!(ink[0], 0.5);
         assert_eq!(mask, ChannelMask::single(0));
@@ -840,7 +945,10 @@ mod tests {
         let cs = sep("None");
         let mut space = ink4();
         let mut warn = RenderWarnings::default();
-        assert!(cs.to_ink(&[1.0], &mut space, &mut warn, None).unwrap().is_none());
+        assert!(cs
+            .to_ink(&[1.0], &mut space, &mut warn, None)
+            .unwrap()
+            .is_none());
         assert_eq!(space.len(), 4, "/None không được tạo kênh");
     }
 
@@ -850,7 +958,10 @@ mod tests {
         let mut space = ink4();
         space.register(Colorant::Spot("Varnish".into())).unwrap();
         let mut warn = RenderWarnings::default();
-        let (ink, mask) = cs.to_ink(&[1.0], &mut space, &mut warn, None).unwrap().unwrap();
+        let (ink, mask) = cs
+            .to_ink(&[1.0], &mut space, &mut warn, None)
+            .unwrap()
+            .unwrap();
         assert_eq!(ink.len(), 5);
         assert!(ink.iter().all(|v| *v == 1.0));
         for i in 0..5 {
@@ -871,12 +982,19 @@ mod tests {
         };
         let mut space = ink4();
         let mut warn = RenderWarnings::default();
-        let (ink, mask) = cs.to_ink(&[0.3, 0.7, 1.0], &mut space, &mut warn, None).unwrap().unwrap();
+        let (ink, mask) = cs
+            .to_ink(&[0.3, 0.7, 1.0], &mut space, &mut warn, None)
+            .unwrap()
+            .unwrap();
         assert_eq!(space.len(), 5);
         assert_eq!(ink[0], 0.3);
         assert_eq!(ink[4], 0.7);
         assert!(mask.contains(0) && mask.contains(4));
-        assert_eq!(mask, ChannelMask::single(0).with(4), "/None không được khai báo");
+        assert_eq!(
+            mask,
+            ChannelMask::single(0).with(4),
+            "/None không được khai báo"
+        );
     }
 
     #[test]
@@ -888,7 +1006,10 @@ mod tests {
         };
         let mut space = ink4();
         let mut warn = RenderWarnings::default();
-        assert!(cs.to_ink(&[1.0, 1.0], &mut space, &mut warn, None).unwrap().is_none());
+        assert!(cs
+            .to_ink(&[1.0, 1.0], &mut space, &mut warn, None)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -901,8 +1022,14 @@ mod tests {
         };
         let mut space = ink4();
         let mut warn = RenderWarnings::default();
-        let (white, _) = cs.to_ink(&[0.0], &mut space, &mut warn, None).unwrap().unwrap();
-        let (black, _) = cs.to_ink(&[1.0], &mut space, &mut warn, None).unwrap().unwrap();
+        let (white, _) = cs
+            .to_ink(&[0.0], &mut space, &mut warn, None)
+            .unwrap()
+            .unwrap();
+        let (black, _) = cs
+            .to_ink(&[1.0], &mut space, &mut warn, None)
+            .unwrap()
+            .unwrap();
         assert_eq!(white[3], 0.0);
         assert_eq!(black[3], 1.0);
     }
@@ -916,15 +1043,46 @@ mod tests {
         };
         let mut space = ink4();
         let mut warn = RenderWarnings::default();
-        let (v, _) = cs.to_ink(&[99.0], &mut space, &mut warn, None).unwrap().unwrap();
+        let (v, _) = cs
+            .to_ink(&[99.0], &mut space, &mut warn, None)
+            .unwrap()
+            .unwrap();
         assert_eq!(v[3], 1.0, "index vượt hival phải kẹp về hival");
     }
 
     #[test]
+    fn device_gray_maps_exactly_to_rgb_blending_space() {
+        let rgb = ColorSpace::DeviceGray
+            .to_device_rgb_for_blending(&[0.25])
+            .unwrap();
+        assert_eq!(rgb, [0.25, 0.25, 0.25]);
+    }
+
+    #[test]
+    fn indexed_device_gray_maps_palette_to_rgb_blending_space() {
+        let cs = ColorSpace::Indexed {
+            base: Box::new(ColorSpace::DeviceGray),
+            hival: 1,
+            lookup: Arc::new(vec![255, 64]),
+        };
+        assert!(cs.supports_device_rgb_blending());
+        let rgb = cs.to_device_rgb_for_blending(&[1.0]).unwrap();
+        let expected = 64.0 / 255.0;
+        assert!((rgb[0] - expected).abs() < 1e-6);
+        assert_eq!(rgb, [rgb[0], rgb[0], rgb[0]]);
+    }
+
+    #[test]
     fn initial_color_is_black_per_spec() {
-        assert_eq!(ColorSpace::DeviceCMYK.initial_components(), vec![0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(
+            ColorSpace::DeviceCMYK.initial_components(),
+            vec![0.0, 0.0, 0.0, 1.0]
+        );
         assert_eq!(ColorSpace::DeviceGray.initial_components(), vec![0.0]);
-        assert_eq!(ColorSpace::DeviceRGB.initial_components(), vec![0.0, 0.0, 0.0]);
+        assert_eq!(
+            ColorSpace::DeviceRGB.initial_components(),
+            vec![0.0, 0.0, 0.0]
+        );
     }
 
     #[test]

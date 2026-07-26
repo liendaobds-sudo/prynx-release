@@ -109,7 +109,11 @@ fn free_form_triangle_paints_only_inside_itself() {
     let r = render_mesh(4, dictionary! {}, data);
     let w = r.buffer.width() as usize;
     let h = r.buffer.height() as usize;
-    assert_eq!(r.warnings.dropped_objects, 0, "{:?}", r.warnings.skipped_ops);
+    assert_eq!(
+        r.warnings.dropped_objects, 0,
+        "{:?}",
+        r.warnings.skipped_ops
+    );
     // PDF (0,0) là góc dưới-trái ⇒ hàng cuối của raster.
     assert_eq!(px(&r, 3, 2, h - 3), 255, "trong tam giác phải có mực");
     assert_eq!(px(&r, 3, w - 3, 2), 0, "ngoài tam giác phải trắng");
@@ -148,7 +152,11 @@ fn flag_one_continues_the_strip() {
     let w = r.buffer.width() as usize;
     let h = r.buffer.height() as usize;
     assert_eq!(px(&r, 3, 2, h - 3), 255);
-    assert_eq!(px(&r, 3, w - 3, 2), 255, "tam giác thứ hai phải phủ góc kia");
+    assert_eq!(
+        px(&r, 3, w - 3, 2),
+        255,
+        "tam giác thứ hai phải phủ góc kia"
+    );
     let cov = r.buffer.plate_coverage_pct(3);
     assert!(cov > 95.0, "phải phủ gần kín trang: {cov}");
 }
@@ -163,9 +171,8 @@ fn cmyk_mesh_reaches_full_ink_on_every_channel() {
             0.into(), 1.into(), 0.into(), 1.into(), 0.into(), 1.into(), 0.into(), 1.into(),
         ],
     };
-    let vertex = |flag: u8, x: f32, y: f32| -> Vec<u8> {
-        vec![flag, q(x), q(y), 255, 255, 255, 255]
-    };
+    let vertex =
+        |flag: u8, x: f32, y: f32| -> Vec<u8> { vec![flag, q(x), q(y), 255, 255, 255, 255] };
     let mut data = Vec::new();
     data.extend(vertex(0, 0.0, 0.0));
     data.extend(vertex(0, PAGE, 0.0));
@@ -226,7 +233,11 @@ fn lattice_mesh_covers_the_page() {
     data.extend(vertex(0.0, PAGE));
     data.extend(vertex(PAGE, PAGE));
     let r = render_mesh(5, dictionary! { "VerticesPerRow" => 2 }, data);
-    assert_eq!(r.warnings.dropped_objects, 0, "{:?}", r.warnings.skipped_ops);
+    assert_eq!(
+        r.warnings.dropped_objects, 0,
+        "{:?}",
+        r.warnings.skipped_ops
+    );
     let cov = r.buffer.plate_coverage_pct(3);
     assert!(cov > 95.0, "phải phủ gần kín trang: {cov}");
     assert_eq!(r.buffer.max_tac_percent(), 100.0);
@@ -259,7 +270,11 @@ fn coons_patch_covers_its_rectangle() {
     data.extend(coons_rect(0.0, 0.0, PAGE, PAGE));
     data.extend_from_slice(&[0, 0, 0, 0]); // bốn góc đen
     let r = render_mesh(6, dictionary! {}, data);
-    assert_eq!(r.warnings.dropped_objects, 0, "{:?}", r.warnings.skipped_ops);
+    assert_eq!(
+        r.warnings.dropped_objects, 0,
+        "{:?}",
+        r.warnings.skipped_ops
+    );
     let cov = r.buffer.plate_coverage_pct(3);
     assert!(cov > 90.0, "patch phải phủ gần kín trang: {cov}");
     assert_eq!(r.buffer.max_tac_percent(), 100.0);
@@ -295,7 +310,11 @@ fn tensor_patch_covers_its_rectangle() {
     }
     data.extend_from_slice(&[0, 0, 0, 0]);
     let r = render_mesh(7, dictionary! {}, data);
-    assert_eq!(r.warnings.dropped_objects, 0, "{:?}", r.warnings.skipped_ops);
+    assert_eq!(
+        r.warnings.dropped_objects, 0,
+        "{:?}",
+        r.warnings.skipped_ops
+    );
     let cov = r.buffer.plate_coverage_pct(3);
     assert!(cov > 90.0, "tensor patch phải phủ gần kín trang: {cov}");
 }
@@ -370,7 +389,13 @@ fn spot_colour_mesh_gets_its_own_plate() {
     data.extend(v4(0, 0.0, PAGE, 255));
     data.extend(v4(1, PAGE, PAGE, 255));
     let r = render_mesh(4, dictionary! { "ColorSpace" => sep }, data);
-    let names: Vec<&str> = r.buffer.space().colorants().iter().map(|c| c.name()).collect();
+    let names: Vec<&str> = r
+        .buffer
+        .space()
+        .colorants()
+        .iter()
+        .map(|c| c.name())
+        .collect();
     assert!(names.contains(&"PANTONE 485 C"), "{names:?}");
     let idx = r
         .buffer
@@ -440,7 +465,11 @@ fn mesh_without_decode_is_reported_not_silently_blank() {
     data.extend(v4(0, PAGE, 0.0, 0));
     data.extend(v4(0, 0.0, PAGE, 0));
     // Ghi đè `/Decode` bằng mảng quá ngắn.
-    let r = render_mesh(4, dictionary! { "Decode" => vec![0.into(), 40.into()] }, data);
+    let r = render_mesh(
+        4,
+        dictionary! { "Decode" => vec![0.into(), 40.into()] },
+        data,
+    );
     assert_eq!(r.buffer.max_tac_percent(), 0.0);
     assert!(r.warnings.dropped_objects > 0, "phải báo lỗi cấu trúc");
     assert!(r.warnings.ink_unsound());

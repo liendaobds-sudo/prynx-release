@@ -371,7 +371,10 @@ mod tests {
             for cs in [0.0, 0.25, 0.5, 0.75, 1.0] {
                 for mode in [BlendMode::ColorDodge, BlendMode::ColorBurn] {
                     let r = mode.blend_ink(cb, cs);
-                    assert!((0.0..=1.0).contains(&r) && r.is_finite(), "{mode:?} {cb} {cs} → {r}");
+                    assert!(
+                        (0.0..=1.0).contains(&r) && r.is_finite(),
+                        "{mode:?} {cb} {cs} → {r}"
+                    );
                 }
             }
         }
@@ -381,7 +384,10 @@ mod tests {
     fn softlight_stays_in_range_and_is_continuous_at_half() {
         let below = BlendMode::SoftLight.blend_ink(0.4, 1.0 - 0.4999);
         let above = BlendMode::SoftLight.blend_ink(0.4, 1.0 - 0.5001);
-        assert!((below - above).abs() < 0.01, "phải liên tục: {below} vs {above}");
+        assert!(
+            (below - above).abs() < 0.01,
+            "phải liên tục: {below} vs {above}"
+        );
         for cb in [0.0, 0.3, 1.0] {
             for cs in [0.0, 0.5, 1.0] {
                 let r = BlendMode::SoftLight.blend_ink(cb, cs);
@@ -432,11 +438,8 @@ mod tests {
     #[test]
     fn color_keeps_backdrop_lightness() {
         // Nền xám 50% K, nguồn đỏ đặc: `Color` giữ độ sáng nền.
-        let out = blend_nonseparable_cmyk(
-            BlendMode::Color,
-            [0.0, 0.0, 0.0, 0.5],
-            [0.0, 1.0, 1.0, 0.0],
-        );
+        let out =
+            blend_nonseparable_cmyk(BlendMode::Color, [0.0, 0.0, 0.0, 0.5], [0.0, 1.0, 1.0, 0.0]);
         assert!(out.iter().all(|v| (0.0..=1.0).contains(v)), "{out:?}");
     }
 

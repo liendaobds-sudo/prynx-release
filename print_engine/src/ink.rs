@@ -147,6 +147,18 @@ const RGB_VALID_CLEAN: u8 = 1;
 const RGB_VALID_DIRTY: u8 = 2;
 const RGB_LOSSY: u8 = 3;
 
+fn rgb_state_is_valid(state: u8) -> bool {
+    matches!(state, RGB_VALID_CLEAN | RGB_VALID_DIRTY)
+}
+
+fn rgb_state_after_unrepresentable_merge(state: u8) -> u8 {
+    match state {
+        RGB_VALID_CLEAN | RGB_INVALID => RGB_INVALID,
+        RGB_VALID_DIRTY | RGB_LOSSY => RGB_LOSSY,
+        _ => RGB_LOSSY,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RgbSurfaceMode {
     OpaqueBackdrop,
@@ -451,6 +463,8 @@ pub struct InkBuffer {
     rgb_sidecar_allowed: bool,
     /// Kiểu surface RGB của buffer: nền opaque trang hay alpha premultiplied cho group.
     rgb_surface_mode: RgbSurfaceMode,
+    /// Scratch cho `composite_region_tac_guard` — tránh cấp phát mỗi vành.
+    ring_filter_scratch: Vec<f32>,
 }
 
 impl InkBuffer {
@@ -510,6 +524,7 @@ impl InkBuffer {
             reserved_bytes,
             rgb_sidecar: None,
             rgb_sidecar_allowed: true,
+            ring_filter_scratch: Vec::new(),
         })
     }
 
@@ -535,14 +550,6 @@ impl InkBuffer {
     /// dung trước khi sidecar xuất hiện được giữ ở trạng thái CMYK đúng nhưng
     /// không thể suy ngược RGB.
     pub(crate) fn ensure_rgb_sidecar(&mut self) -> PpeResult<bool> {
-        self.ensure_rgb_sidecar_with_color(None)
-    }
-
-    pub(crate) fn ensure_rgb_sidecar_with_color(
-        &mut self,
-        cm: Option<&ColorManager>,
-    ) -> PpeResult<bool> {
-
         if !self.rgb_sidecar_allowed {
             return Ok(false);
         }
@@ -573,9 +580,6 @@ impl InkBuffer {
             Ok(sidecar) => {
                 self.rgb_sidecar = Some(sidecar);
                 self.reserved_bytes += bytes;
-                if let Some(cm) = cm {
-                    self.hydrate_rgb_backdrop(cm);
-                }
                 Ok(true)
             }
             Err(err) => {
@@ -586,59 +590,12 @@ impl InkBuffer {
     }
 
     pub(crate) fn set_rgb_sidecar_allowed(&mut self, allowed: bool) {
-
         if !allowed {
             self.rgb_sidecar_allowed = false;
         }
     }
 
     pub(crate) fn has_rgb_sidecar(&self) -> bool {
-    fn hydrate_rgb_backdrop(&mut self, cm: &ColorManager) {
-        if self.rgb_surface_mode != RgbSurfaceMode::OpaqueBackdrop {
-            return;
-        }
-        let px = self.alpha.len();
-        const CHUNK: usize = 4096;
-        for start in (0..px).step_by(CHUNK) {
-            let end = (start + CHUNK).min(px);
-            let mut src = Vec::with_capacity(end - start);
-            let mut eligible = Vec::with_capacity(end - start);
-            for i in start..end {
-                if self.alpha[i] <= 0.0 {
-                    src.push([0.0; 4]);
-                    eligible.push(false);
-                    continue;
-                }
-                let has_spot = self
-                    .planes
-                    .iter()
-                    .skip(4)
-                    .any(|plane| plane[i] > 1e-6);
-                eligible.push(!has_spot);
-                src.push([
-                    self.planes[0][i],
-                    self.planes[1][i],
-                    self.planes[2][i],
-                    self.planes[3][i],
-                ]);
-            }
-            let Some(rgb) = cm.cmyk_to_rgb_blend_batch(&src) else {
-                return;
-            };
-            let Some(sidecar) = self.rgb_sidecar.as_mut() else {
-                return;
-            };
-            for (offset, color) in rgb.into_iter().enumerate() {
-                let i = start + offset;
-                if eligible[offset] && sidecar.state[i] == RGB_INVALID {
-                    sidecar.pixels[i] = color.map(|v| v.clamp(0.0, 1.0));
-                    sidecar.state[i] = RGB_VALID_CLEAN;
-                }
-            }
-        }
-    }
-
-
         self.rgb_sidecar.is_some()
     }
 
@@ -735,6 +692,75 @@ impl InkBuffer {
     ///
     /// `coverage` vẫn đánh chỉ số theo cả trang; ngoài `region` nó phải bằng 0. Xem
     /// [`Region`] về việc vì sao mọi thao tác vẽ mang theo vùng bao.
+    /// Composite một vùng như `composite_region`, nhưng **bỏ qua** pixel mà kết
+    /// quả sẽ có tổng mực (TAC) thấp hơn hiện trạng.
+    ///
+    /// Dùng RIÊNG cho vành fill-adjust: vành là dải bất định do khác biệt
+    /// scan-convert với RIP tham chiếu. Nếu để nó composite thường, một vành
+    /// của hình nhạt vẽ SAU có thể quét đúng vào pixel đỉnh TAC do các hình
+    /// trước tạo ra và hạ đỉnh (đo được −8.9 điểm TAC trên corpus) — chiều sai
+    /// nguy hiểm. Chặn theo hướng: vành chỉ được phép GIỮ hoặc TĂNG tổng mực
+    /// của pixel; phần giảm là việc của chính hình gốc (ruột fill), không phải
+    /// của dải bất định.
+    pub fn composite_region_tac_guard(
+        &mut self,
+        coverage: &[f32],
+        region: Region,
+        paint: &InkPaint,
+    ) -> PpeResult<()> {
+        debug_assert_eq!(
+            coverage.len(),
+            (self.width as usize) * (self.height as usize)
+        );
+        self.sync_channels()?;
+        let region = region.clamped(self.width, self.height);
+        if region.is_empty() {
+            return Ok(());
+        }
+        // TAC của paint (alpha 1, phủ kín): cận trên của phần mực vành thêm vào.
+        let paint_tac: f32 = paint.ink.iter().map(|v| v.clamp(0.0, 1.0)).sum();
+        // Vành được phép hạ TAC một khoảng NHỎ (khớp hành vi nở fill của RIP
+        // tham chiếu ở các đường ghép màu sát nhau), nhưng không được quét sập
+        // một đỉnh: hạ quá ngưỡng này là việc của ruột fill, không phải của dải
+        // bất định 0.16 px. 0.10 = 10 điểm TAC.
+        const RING_MAX_TAC_DROP: f32 = 0.25;
+        let w = self.width as usize;
+        let n = self.planes.len();
+        // Tái dùng buffer giữa các lần gọi: vành chạy cho TỪNG fill của trang,
+        // cấp phát cả trang mỗi lần sẽ thành chi phí chính của trang nhiều chữ.
+        let mut filtered = std::mem::take(&mut self.ring_filter_scratch);
+        filtered.clear();
+        filtered.resize(coverage.len(), 0.0);
+        let mut any = false;
+        for y in region.y0..region.y1 {
+            let row = y as usize * w;
+            for x in region.x0..region.x1 {
+                let i = row + x as usize;
+                let c = coverage[i];
+                if c <= 0.0 {
+                    continue;
+                }
+                let mut current = 0.0f32;
+                for ch in 0..n {
+                    current += self.planes[ch][i];
+                }
+                // `>=` với sai số: bằng nhau vẫn cho qua để vành trên nền cùng
+                // màu hoạt động như fill thường.
+                if paint_tac + RING_MAX_TAC_DROP + 1e-4 >= current {
+                    filtered[i] = c;
+                    any = true;
+                }
+            }
+        }
+        if !any {
+            self.ring_filter_scratch = filtered;
+            return Ok(());
+        }
+        let result = self.composite_region(&filtered, region, paint);
+        self.ring_filter_scratch = filtered;
+        result
+    }
+
     pub fn composite_region(
         &mut self,
         coverage: &[f32],
@@ -869,8 +895,7 @@ impl InkBuffer {
         }
 
         // Spot overprint không chạm bốn kênh process nên không phá sidecar RGB.
-        let affects_process =
-            !paint.overprint || (0..4).any(|ch| paint.declared.contains(ch));
+        let affects_process = !paint.overprint || (0..4).any(|ch| paint.declared.contains(ch));
         if !affects_process {
             return;
         }
@@ -903,8 +928,7 @@ impl InkBuffer {
         }
 
         let Some(source) = paint.blend_rgb else {
-            let affects_process =
-                !paint.overprint || (0..4).any(|ch| paint.declared.contains(ch));
+            let affects_process = !paint.overprint || (0..4).any(|ch| paint.declared.contains(ch));
             if affects_process {
                 sidecar.state[index] = RGB_LOSSY;
             }
@@ -948,7 +972,6 @@ impl InkBuffer {
         }
     }
 
-
     fn note_group_merge_for_rgb(&mut self, index: usize) {
         let Some(sidecar) = self.rgb_sidecar.as_mut() else {
             return;
@@ -956,11 +979,7 @@ impl InkBuffer {
         if index >= sidecar.state.len() {
             return;
         }
-        sidecar.state[index] = match sidecar.state[index] {
-            RGB_VALID_CLEAN | RGB_INVALID => RGB_INVALID,
-            RGB_VALID_DIRTY | RGB_LOSSY => RGB_LOSSY,
-            _ => RGB_LOSSY,
-        };
+        sidecar.state[index] = rgb_state_after_unrepresentable_merge(sidecar.state[index]);
     }
 
     /// Bốn kênh process dưới mode **không** tách kênh (Hue/Saturation/Color/
@@ -1075,6 +1094,45 @@ impl InkBuffer {
     pub fn child_non_isolated(&self) -> PpeResult<InkBuffer> {
         self.child_buffer(true, None)
     }
+    /// Surface RGB cho group không cách ly: sao chép cả backdrop mực lẫn RGB.
+    /// Chỉ hợp lệ khi parent là surface opaque (trang hoặc group non-isolated).
+    pub(crate) fn child_non_isolated_rgb(&self) -> PpeResult<InkBuffer> {
+        let mut child = self.child_buffer(true, Some(RgbSurfaceMode::OpaqueBackdrop))?;
+        let Some(parent) = self.rgb_sidecar.as_ref() else {
+            child.rgb_sidecar_allowed = false;
+            return Ok(child);
+        };
+        if parent.mode != RgbSurfaceMode::OpaqueBackdrop {
+            child.rgb_sidecar_allowed = false;
+            return Ok(child);
+        }
+
+        let px = self.alpha.len();
+        let bytes = rgb_sidecar_bytes(px)?;
+        self.budget.reserve(bytes)?;
+        let allocation = (|| -> PpeResult<RgbSidecar> {
+            let mut pixels = zeroed_rgb_pixels(px, self.budget.limit)?;
+            pixels.copy_from_slice(&parent.pixels);
+            let mut state = zeroed_rgb_state(px, self.budget.limit)?;
+            state.copy_from_slice(&parent.state);
+            Ok(RgbSidecar {
+                pixels,
+                state,
+                mode: RgbSurfaceMode::OpaqueBackdrop,
+            })
+        })();
+        match allocation {
+            Ok(sidecar) => {
+                child.rgb_sidecar = Some(sidecar);
+                child.reserved_bytes += bytes;
+                Ok(child)
+            }
+            Err(err) => {
+                self.budget.release(bytes);
+                Err(err)
+            }
+        }
+    }
 
     /// Buffer con cho **transparency group cách ly** (isolated): nền trắng, alpha 0.
     pub fn child_isolated(&self) -> PpeResult<InkBuffer> {
@@ -1125,6 +1183,7 @@ impl InkBuffer {
             reserved_bytes,
             rgb_sidecar: None,
             rgb_sidecar_allowed: rgb_surface_mode.is_some(),
+            ring_filter_scratch: Vec::new(),
         })
     }
 
@@ -1173,6 +1232,75 @@ impl InkBuffer {
     /// rồi mới áp blend mode của **cả group** lên backdrop. Đây là bước "backdrop
     /// removal" của mô hình transparency; bỏ nó là lý do trước đây PPE phải hạ
     /// `ink_unsound` cho tổ hợp này.
+    fn merge_non_isolated_rgb_at(
+        &mut self,
+        child: &InkBuffer,
+        index: usize,
+        group_alpha: f32,
+        factor: f32,
+        blend: BlendMode,
+    ) -> bool {
+        let Some(parent) = self.rgb_sidecar.as_mut() else {
+            return false;
+        };
+        if index >= parent.state.len() {
+            return false;
+        }
+
+        let parent_state = parent.state[index];
+        let Some(child_rgb) = child.rgb_sidecar.as_ref() else {
+            parent.state[index] = rgb_state_after_unrepresentable_merge(parent_state);
+            return true;
+        };
+        if index >= child_rgb.state.len() || child_rgb.mode != RgbSurfaceMode::OpaqueBackdrop {
+            parent.state[index] = rgb_state_after_unrepresentable_merge(parent_state);
+            return true;
+        }
+
+        let child_state = child_rgb.state[index];
+        if !rgb_state_is_valid(child_state) {
+            parent.state[index] = rgb_state_after_unrepresentable_merge(parent_state);
+            return true;
+        }
+        let child_color = child_rgb.pixels[index];
+
+        if !rgb_state_is_valid(parent_state) {
+            if blend.is_normal() && factor >= 1.0 - 1e-6 {
+                parent.pixels[index] = child_color;
+                parent.state[index] = RGB_VALID_DIRTY;
+            } else {
+                parent.state[index] = rgb_state_after_unrepresentable_merge(parent_state);
+            }
+            return true;
+        }
+
+        let backdrop = parent.pixels[index];
+        let output = if blend.is_normal() {
+            [
+                backdrop[0] * (1.0 - factor) + child_color[0] * factor,
+                backdrop[1] * (1.0 - factor) + child_color[1] * factor,
+                backdrop[2] * (1.0 - factor) + child_color[2] * factor,
+            ]
+        } else {
+            let ga = group_alpha.clamp(1e-6, 1.0);
+            let alpha = (ga * factor).clamp(0.0, 1.0);
+            let source = [
+                non_isolated_group_source(backdrop[0], child_color[0], ga),
+                non_isolated_group_source(backdrop[1], child_color[1], ga),
+                non_isolated_group_source(backdrop[2], child_color[2], ga),
+            ];
+            let blended = blend.blend_rgb(backdrop, source);
+            [
+                backdrop[0] * (1.0 - alpha) + blended[0] * alpha,
+                backdrop[1] * (1.0 - alpha) + blended[1] * alpha,
+                backdrop[2] * (1.0 - alpha) + blended[2] * alpha,
+            ]
+        };
+        parent.pixels[index] = output.map(|value| value.clamp(0.0, 1.0));
+        parent.state[index] = RGB_VALID_DIRTY;
+        true
+    }
+
     pub fn merge_non_isolated(
         &mut self,
         child: &InkBuffer,
@@ -1231,7 +1359,9 @@ impl InkBuffer {
             let a = (ga * f).clamp(0.0, 1.0);
             let dst = &mut self.alpha[i];
             *dst = *dst * (1.0 - a) + a;
-            self.note_group_merge_for_rgb(i);
+            if !self.merge_non_isolated_rgb_at(child, i, ga, f, blend) {
+                self.note_group_merge_for_rgb(i);
+            }
         }
     }
 
@@ -1299,6 +1429,22 @@ impl InkBuffer {
     /// Quy CMYK về RGB xấp xỉ rồi lấy `0.3R + 0.59G + 0.11B` (§11.5.2). Kênh spot
     /// **không** tham gia: soft mask luminosity của một group chỉ định nghĩa trên
     /// không gian màu của group, và group không bao giờ khai spot làm nền mask.
+    /// Độ sáng trực tiếp từ RGB sidecar, trước khi RGB được đổi qua ICC sang CMYK.
+    ///
+    /// Chỉ trả kết quả khi mọi pixel còn biểu diễn chính xác trong RGB. Nếu một paint
+    /// CMYK/spot đã làm surface mất tính đảo ngược, caller phải quay về đường CMYK.
+    pub(crate) fn rgb_luminosity_plane(&self) -> Option<Vec<f32>> {
+        let sidecar = self.rgb_sidecar.as_ref()?;
+        let mut out = Vec::with_capacity(sidecar.pixels.len());
+        for (rgb, state) in sidecar.pixels.iter().zip(sidecar.state.iter()) {
+            if !rgb_state_is_valid(*state) {
+                return None;
+            }
+            out.push((0.3 * rgb[0] + 0.59 * rgb[1] + 0.11 * rgb[2]).clamp(0.0, 1.0));
+        }
+        Some(out)
+    }
+
     pub fn luminosity_plane(&self) -> Vec<f32> {
         let px = self.alpha.len();
         let mut out = vec![0.0f32; px];
@@ -1681,17 +1827,40 @@ mod tests {
     }
 
     #[test]
+    fn non_isolated_rgb_child_copies_and_merges_backdrop() {
+        let mut parent = InkBuffer::new(1, 1, InkSpace::new()).unwrap();
+        assert!(parent.ensure_rgb_sidecar().unwrap());
+
+        let mut backdrop = InkPaint::opaque(cmyk(0.9, 0.8, 0.7, 0.0), ChannelMask::PROCESS);
+        backdrop.blend_rgb = Some([0.1, 0.2, 0.3]);
+        parent.composite(&[1.0], &backdrop).unwrap();
+
+        let mut child = parent.child_non_isolated_rgb().unwrap();
+        let mut source = InkPaint::opaque(cmyk(1.0, 1.0, 0.0, 0.0), ChannelMask::PROCESS);
+        source.alpha = 0.5;
+        source.blend_rgb = Some([0.0, 0.0, 1.0]);
+        child.composite(&[1.0], &source).unwrap();
+
+        parent.merge_non_isolated(&child, &[0.4], BlendMode::Normal, false);
+        let sidecar = parent.rgb_sidecar.as_ref().unwrap();
+        let rgb = sidecar.pixels[0];
+        // Group coverage 0.5 × group alpha 0.4 = 0.2.
+        assert!((rgb[0] - 0.08).abs() < 1e-6, "{rgb:?}");
+        assert!((rgb[1] - 0.16).abs() < 1e-6, "{rgb:?}");
+        assert!((rgb[2] - 0.44).abs() < 1e-6, "{rgb:?}");
+        assert_eq!(sidecar.state[0], RGB_VALID_DIRTY);
+    }
+
+    #[test]
     fn rgb_sidecar_blends_alpha_in_additive_space() {
         let mut buf = InkBuffer::new(1, 1, InkSpace::new()).unwrap();
         assert!(buf.ensure_rgb_sidecar().unwrap());
 
-        let mut backdrop =
-            InkPaint::opaque(cmyk(0.9, 1.0, 1.0, 0.0), ChannelMask::PROCESS);
+        let mut backdrop = InkPaint::opaque(cmyk(0.9, 1.0, 1.0, 0.0), ChannelMask::PROCESS);
         backdrop.blend_rgb = Some([0.1, 0.0, 0.0]);
         buf.composite(&[1.0], &backdrop).unwrap();
 
-        let mut source =
-            InkPaint::opaque(cmyk(0.8, 0.5, 0.7, 0.0), ChannelMask::PROCESS);
+        let mut source = InkPaint::opaque(cmyk(0.8, 0.5, 0.7, 0.0), ChannelMask::PROCESS);
         source.alpha = 0.4;
         source.blend_rgb = Some([0.2, 0.5, 0.3]);
         buf.composite(&[1.0], &source).unwrap();
@@ -1712,14 +1881,10 @@ mod tests {
         rgb.blend_rgb = Some([1.0, 0.0, 0.0]);
         buf.composite(&[1.0], &rgb).unwrap();
 
-        let mut cmyk_paint =
-            InkPaint::opaque(cmyk(1.0, 0.0, 0.0, 0.0), ChannelMask::PROCESS);
+        let mut cmyk_paint = InkPaint::opaque(cmyk(1.0, 0.0, 0.0, 0.0), ChannelMask::PROCESS);
         cmyk_paint.alpha = 0.5;
         buf.composite(&[1.0], &cmyk_paint).unwrap();
-        assert_eq!(
-            buf.rgb_sidecar.as_ref().unwrap().state[0],
-            RGB_LOSSY
-        );
+        assert_eq!(buf.rgb_sidecar.as_ref().unwrap().state[0], RGB_LOSSY);
     }
 
     #[test]

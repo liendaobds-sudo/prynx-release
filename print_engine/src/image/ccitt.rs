@@ -450,7 +450,10 @@ mod tests {
 
     impl BitWriter {
         fn new() -> Self {
-            BitWriter { data: Vec::new(), bit: 0 }
+            BitWriter {
+                data: Vec::new(),
+                bit: 0,
+            }
         }
 
         fn push(&mut self, value: u32, bits: u32) {
@@ -480,7 +483,12 @@ mod tests {
     }
 
     fn params(cols: usize, rows: usize, k: i32) -> CcittParams {
-        CcittParams { k, columns: cols, rows, ..Default::default() }
+        CcittParams {
+            k,
+            columns: cols,
+            rows,
+            ..Default::default()
+        }
     }
 
     /// Đọc bit `x` của hàng `y` từ dữ liệu đã đóng gói. `true` = ĐEN.
@@ -531,7 +539,10 @@ mod tests {
         let mut w = BitWriter::new();
         w.run(0, 0);
         w.run(8, 1);
-        let p = CcittParams { black_is_1: true, ..params(8, 1, 0) };
+        let p = CcittParams {
+            black_is_1: true,
+            ..params(8, 1, 0)
+        };
         let out = decode(&w.data, &p).unwrap();
         assert_eq!(out[0], 0xFF);
     }
@@ -675,7 +686,10 @@ mod tests {
         }
         w.run(5, 0);
         w.run(3, 1);
-        let p = CcittParams { encoded_byte_align: true, ..params(8, 2, 0) };
+        let p = CcittParams {
+            encoded_byte_align: true,
+            ..params(8, 2, 0)
+        };
         let out = decode(&w.data, &p).unwrap();
         assert!(black_at(&out, 8, 3, 0));
         assert!(!black_at(&out, 8, 3, 1), "hàng 2 phải bắt đầu ở biên byte");
@@ -710,18 +724,17 @@ mod tests {
         for y in 0..12 {
             for x in 0..24 {
                 let expected_black = (8..16).contains(&x) && (3..9).contains(&y);
-                assert_eq!(
-                    black_at(&out, 24, x, y),
-                    expected_black,
-                    "pixel ({x},{y})"
-                );
+                assert_eq!(black_at(&out, 24, x, y), expected_black, "pixel ({x},{y})");
             }
         }
     }
 
     #[test]
     fn real_group4_stream_respects_black_is_1() {
-        let p = CcittParams { black_is_1: true, ..params(24, 12, -1) };
+        let p = CcittParams {
+            black_is_1: true,
+            ..params(24, 12, -1)
+        };
         let out = decode(REAL_G4, &p).unwrap();
         let row_bytes = 3;
         // `BlackIs1 true` ⇒ pixel đen mang bit 1.

@@ -82,14 +82,8 @@ fn main() {
         }
     };
 
-    let rendered = match render_page_managed(
-        &doc,
-        page,
-        dpi,
-        PageBox::Crop,
-        opts,
-        manager.as_ref(),
-    ) {
+    let rendered = match render_page_managed(&doc, page, dpi, PageBox::Crop, opts, manager.as_ref())
+    {
         Ok(r) => r,
         Err(e) => {
             println!("{{\"error\":\"{}\"}}", escape(&format!("{e}")));
@@ -102,10 +96,14 @@ fn main() {
     for (ch, colorant) in buf.space().colorants().iter().enumerate() {
         let plane = buf.plane(ch);
         let max = plane.iter().cloned().fold(0.0f32, f32::max);
+        // Mean PHẢI cộng dồn bằng f64: một trang A1 @100 DPI là 3.6 triệu pixel,
+        // cộng f32 tuần tự mất dần bit thấp và thổi phồng mean tới ~1.4 điểm %
+        // (kaptone: 58.9995% theo f32 so với 57.5569% thật) — đủ biến một kẽm
+        // khớp tham chiếu (lệch thật 0.4/255) thành "FAIL mean 3.2/255".
         let mean = if plane.is_empty() {
             0.0
         } else {
-            plane.iter().sum::<f32>() / plane.len() as f32
+            (plane.iter().map(|v| *v as f64).sum::<f64>() / plane.len() as f64) as f32
         };
         plates.push(format!(
             "{{\"name\":\"{}\",\"is_spot\":{},\"max_pct\":{:.3},\"mean_pct\":{:.4},\"coverage_pct\":{:.3}}}",
@@ -161,5 +159,7 @@ fn main() {
 }
 
 fn escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ")
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', " ")
 }

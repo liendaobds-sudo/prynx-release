@@ -1,7 +1,7 @@
 # Kế hoạch: Engine thay thế Ghostscript (riêng cho PrynX)
 
 **Mã tài liệu:** `PRYNX-GS-REPL-ENGINE`  
-**Phiên bản:** 2.0
+**Phiên bản:** 2.9
 **Ngày:** 2026-07-26
 **Phạm vi:** Desktop PrynX (Tauri + Python FastAPI sidecar + Rust native)  
 **Mục tiêu:** Giảm / loại phụ thuộc Ghostscript (AGPL bundle) bằng **engine prepress nội bộ**, clean-room, không fork source GS.
@@ -20,7 +20,7 @@
 | **Ngôn ngữ** | **Rust** (lõi) + **Python** (API/orchestration) + **TS** (UI). |
 | **Thời gian ước lượng** | 12–24 tháng tới mức “gỡ bundle GS” an toàn; 3–6 tháng có MVP separations/soft-proof/TAC. |
 | **Song song** | Ship vẫn dùng GS (bundle hoặc commercial) cho đến khi PPE đạt gate chất lượng. |
-| **Trạng thái 2026-07-26** | Đã có RGB sidecar cho DeviceRGB trực tiếp: facade chạy 129/129, 105/129 đủ tin cậy cho TAC (81,4%); 24 trang còn fail-loud; **chưa đạt gate unbundle**. |
+| **Trạng thái 2026-07-26 (v2.9, sau audit độc lập)** | Audit độc lập trên môi trường thứ hai (Linux, GS 10.04.0 build source) **tái hiện đúng từng số** của v2.8, sau đó đóng cả hai residual mean-only: raw golden 100 DPI **31/31 PASS** (Steam Iron 5,18→1,28 nhờ vành fill-adjust; kaptone 3,15→0,46 — hoá ra bug đo f32). 72 DPI đo đủ 31 file lần đầu: 13/31 → **25/31 PASS, 0 hồi quy**. Facade **129/129 trusted**. Gate unbundle **vẫn đóng** (residual 72 DPI còn 6, xem §16.8). |
 
 ---
 
@@ -1056,11 +1056,14 @@ cách nào kiểm chứng đúng/sai. Làm thêm tính năng khi chưa có thư�
    `softproof.py` (Milestone E/H).
 5. ~~Shading kiểu 1/2/3 + shading pattern~~ — **xong** (Milestone F). Còn lại: lưới
    4–7 và tiling pattern, cả hai đang báo lỗi rõ và nhường Ghostscript.
-6. **Transparency group + soft mask + blend mode — còn P0 kiến trúc.** Milestone G
-   đã hoàn tất phép trộn trong `InkBuffer` và đường CMYK phổ biến, nhưng corpus xưởng
-   chứng minh RGB/Lab transparency phải được composite trong blending color space
-   **trước ICC**. Guard hiện bật `ink_unsound` cho tổ hợp này. Knockout group
-   (`/K true`) vẫn vẽ nhưng cũng bật `ink_unsound`.
+6. **Transparency group + soft mask + blend mode — P0 còn lại đã thu hẹp.**
+   Milestone G đã hoàn tất phép trộn trong `InkBuffer`; RGB sidecar xử lý DeviceRGB
+   trực tiếp, ảnh Indexed trên nền DeviceRGB, và group DeviceRGB cả isolated lẫn
+   non-isolated. Trang không khai `/Group` dùng color space của target device CMYK;
+   page group `/CS /DeviceCMYK` cũng không còn bị hạ tin cậy oan. P0 còn lại là nội
+   dung CMYK/spot chen vào blending-space RGB và group Lab; không thể đảo ngược ICC
+   để khôi phục màu nguồn cùng spot/overprint. Knockout group (`/K true`) vẫn vẽ
+   nhưng bật `ink_unsound`.
 7. ~~Optional content (`/OC`)~~ — **xong** (Milestone H), đọc theo cấu hình **in**.
 8. ~~Ảnh nội tuyến, tiling pattern, shading lưới 4–7~~ — **xong** (Milestone H).
 9. ~~CCITTFaxDecode~~ — **xong** (Milestone H), tự viết theo T.4/T.6, không thêm crate.
@@ -1103,16 +1106,25 @@ native release mới. Hai thay đổi P0 ban đầu vẫn giữ nguyên:
 1. group non-isolated có outer blend khác Normal không còn bị ép sang isolated;
 2. hai PDF hỏng xref/trailer được rewrite trong tệp tạm, file gốc không thay đổi.
 
-P0 blending color space đã được triển khai theo phạm vi trực tiếp:
+P0 blending color space đã được triển khai theo các lớp sau:
 
 1. `InkBuffer` cấp phát lười một RGB sidecar cho buffer trang gốc khi có ICC và gặp
    DeviceRGB; giấy trắng là backdrop RGB hợp lệ.
 2. Alpha, coverage, `/BM` (kể cả mode không tách kênh) của vector, ảnh, shading và
    mesh DeviceRGB được tính trên sidecar; sau khi hoàn tất trang, pixel hợp lệ mới
    được đổi một lần qua ICC sang CMYK.
-3. Paint CMYK/Gray/spot, transparency group con và RGB/Lab chưa có blending surface
-   tương ứng vẫn bị đánh dấu fail-loud. Nếu RGB chạm một backdrop chỉ còn CMYK, pixel
-   được đánh dấu `lossy` thay vì phát TAC nghe có vẻ hợp lệ.
+3. Ảnh Indexed có base `/DeviceRGB` giữ màu RGB của palette khi alpha hoặc soft mask
+   được áp, thay vì đổi từng lớp qua ICC trước khi trộn.
+4. Transparency group isolated `/CS /DeviceRGB` có surface RGB + alpha riêng; group
+   DeviceRGB non-isolated sao chép RGB backdrop và merge trở lại trong RGB. Group
+   non-isolated bỏ `/CS` kế thừa blending-space thực tế của backdrop.
+5. Trang khai `/Group /CS /DeviceCMYK` tắt RGB sidecar; trang không khai `/Group`
+   mặc định dùng target device CMYK. Cả hai không còn bị guard pre-ICC hạ tin cậy oan.
+6. `DeviceGray` và Indexed trên base DeviceGray được ánh xạ chính xác thành `[g,g,g]`
+   khi blending-space hiện hành là DeviceRGB; vector, text, ảnh, shading và mesh dùng
+   cùng một đường object-level. Overprint không đủ semantics vẫn giữ fail-loud.
+7. Các chuỗi mixed RGB/CMYK/spot hoặc Lab không thể biểu diễn chính xác vẫn đánh dấu `lossy` và
+   fail-loud, không phát TAC nghe có vẻ hợp lệ.
 
 ### Kết quả kiểm chứng
 
@@ -1121,25 +1133,215 @@ P0 blending color space đã được triển khai theo phạm vi trực tiếp:
 | Facade render | 129/129 |
 | Parser error qua facade | 0 |
 | Phục hồi tệp tạm | 2 trang |
-| Đủ tin cậy TAC | **105/129 (81,4%)** |
-| Bị chặn fail-loud | 24 trang |
-| Raw golden trang 1 | 14 PASS / 11 FAIL / 6 chưa đủ tính năng |
-| Rust test | 328 unit + 190 integration = **518 pass** |
-| Python facade/golden tests | **55 pass** |
+| Đủ tin cậy TAC | **129/129 (100%)** |
+| Bị chặn fail-loud | 0 trang |
+| Thời gian trung bình / trung vị (bundle ICC xác định) | 0,798 / 0,258 giây |
+| p95 / lớn nhất (bundle ICC xác định) | 1,502 / 18,967 giây |
+| Raw golden trang 1 @100 DPI | **29 PASS / 2 FAIL / 0 chưa đủ tính năng** |
+| False-clean TAC @100 DPI | **0** |
+| Rust test | 341 unit + 199 integration = **540 pass** |
+| Python backend full suite | **1305 pass** |
 
-Ba regression managed mới khóa đúng thứ tự compositing: vector RGB alpha, ảnh RGB
-alpha và shading RGB alpha đều khớp với fixture phẳng “trộn RGB trước rồi ICC”.
-Case `Hộp 1.1` không còn dùng phép nội suy CMYK sai để kết luận TAC.
+Mười regression managed khóa đúng thứ tự compositing cho vector/ảnh/shading RGB,
+Indexed RGB + soft mask, group RGB isolated/non-isolated, page group DeviceCMYK và
+trang không khai group; regression mới khóa cả “DeviceGray backdrop → RGB alpha”
+lẫn luminosity của soft mask DeviceRGB trước ICC. Hai regression pattern riêng
+khóa CTM khởi đầu của Form XObject cho shading và tiling pattern.
+Các fixture đều đối chiếu với kết quả “trộn đúng trong blending-space rồi mới ICC”.
 
-24 trang còn bị chặn tập trung ở hai nhóm: RGB/Lab hoặc transparency group chưa có
-blending surface tương ứng, và các chuỗi mixed RGB/CMYK khiến sidecar đánh dấu
-`lossy`. `banner.pdf` vẫn là blocker sampler: TAC thay đổi theo DPI và soft mask
-200 DPI vượt memory budget. 11 raw file còn FAIL fidelity/geometry/ảnh; sidecar
-không biến các lệch đó thành PASS giả.
+`ASIA PLASTIC FINAL.pdf` trang 1 đã chuyển từ untrusted sang raw golden **PASS**:
+GS TAC 327,1%, PPE 326,6% (−0,5 điểm), mean plate 1,02/255. Hai PDF trailer hỏng
+không mở được ở raw harness nhưng được facade phục hồi trong tệp tạm.
+
+`trusted` ở đây chỉ nói engine không gặp capability gap đã biết; nó không đồng nghĩa
+với parity RIP. Sampler mới giữ nearest cho vùng thường, nhưng khi ảnh thu nhỏ có
+TAC tâm ≥300% thì xét footprint và chọn texel nguy hiểm nhất; soft mask ảnh dùng cực
+đại lân cận 7×7 để không hạ một đỉnh hẹp giữa hai tâm pixel. Với path vector, edge raster bảo thủ coi mọi pixel bị tiny-skia chạm là coverage đầy đủ và chỉ bật từ 100 DPI. Stroke luôn giữ conservative vì bbox có thể lớn dù nét rất mảnh; fill trên raster nhỏ chỉ dùng conservative khi cạnh ngắn ≤16 px, còn raster có cạnh nhỏ nhất ≥512 px giữ toàn bộ edge vì sai số một pixel chiếm tỷ lệ nhỏ. Glyph sống vẫn dùng pixel-center. Coverage được tính trước clip/soft-mask/compositing nên alpha, overprint, blend mode và RGB sidecar vẫn theo đúng thứ tự cũ.
+
+Raw golden 100 DPI hiện **không còn false-clean**; `banner.pdf` và
+`Thiep moi Seminar KV MIEN TRUNG 2025 print.pdf` đều đã về vùng TAC chấp nhận được.
+Kết quả cuối là **29/31 PASS**. `NGUYỄN THỊ VÂN ANH Business Card
+(2).pdf` giảm mean 7,92→1,62 và chuyển sang PASS. Nguyên nhân là `/Matrix`
+của shading/tiling pattern lồng trong Form XObject và soft mask đã nối nhầm
+vào CTM đầu trang. Renderer giờ push/restore CTM khởi đầu riêng cho
+mỗi page, form, group, soft mask và pattern cell, trong khi vẫn bỏ qua các `cm`
+nội bộ theo §8.7.2. Hai residual mean-only còn lại là `kaptone.pdf` (3,15)
+và `Note for Steam Iron 14x20cm.pdf` (5,18).
+Ở 72 DPI vẫn còn `banner` −2,10 điểm TAC, `Seminar` −2,35 điểm TAC
+và Business Card mean 3,23/255, nên chưa tuyên bố parity đa DPI. Lần quét
+facade 129 trang với bundle ICC xác định cho mean/median 0,798/0,258 giây,
+p95 1,502 giây và lớn nhất 18,967 giây. Conservative vector edge bị tắt ở 72 DPI,
+vì vậy số đo này chưa chứng minh hồi quy do guard mới; performance vẫn là gate cần
+benchmark riêng ở 100 DPI.
+
+Cấu hình mặc định trước đây dựng `ICC_PROFILE_DIR` theo working directory, nên khi chạy
+từ repo root facade bỏ lỡ `backend/app/assets/icc` và âm thầm lấy sRGB của Windows,
+trong khi golden dùng sRGB bundle. Đường dẫn giờ neo theo vị trí `config.py`, resolver
+fallback về bundle khi đường cấu hình không tồn tại; facade và golden vì vậy dùng cùng
+profile trên mọi máy.
 
 **Quyết định:** tiếp tục PPE-first với fallback; **chưa gỡ Ghostscript**. P0 kế tiếp
-là blending surface đầy đủ cho group RGB/Lab và sampler TAC bảo thủ theo footprint,
-khóa bằng corpus nhiều DPI và regression mixed RGB/CMYK.
+là đóng residual 72 DPI, xử lý 2 case mean-only và benchmark chi phí conservative
+vector edge ở 100 DPI; sau đó mới mở object-level CMYK/spot trong blending-space RGB
+và group Lab. Gate chỉ mở khi corpus lớn hơn đạt ngưỡng §8.
+
+
+### 16.8 Audit độc lập 2026-07-26 và hai residual mean-only đã đóng (v2.9)
+
+Một audit độc lập dựng lại toàn bộ môi trường đo trên máy thứ hai (Linux,
+Ghostscript 10.04.0 build từ source — cùng phiên bản với máy dev Windows) và
+tái chạy mọi thứ trước khi sửa bất cứ gì. Kết quả tái hiện **khớp từng chữ số
+thập phân** với v2.8: 540 Rust test, raw golden 100 DPI 29/31 với kaptone
+3,15 / Steam Iron 5,18 / Business Card 1,62, facade corpus 129/129 trusted.
+Con số của v2.8 là thật và tái lập được giữa hai hệ điều hành.
+
+#### kaptone (P0.2): lỗi nằm ở bộ đo, không nằm ở engine
+
+So pixel-từng-kẽm (dump kẽm PPE ra PGM rồi trừ kẽm GS) cho thấy kaptone lệch
+Cyan **0,46/255** — không phải 3,15. Truy ngược: `plate_stats` cộng dồn mean
+kẽm bằng `f32`; một trang A1 @100 DPI là 3,6 triệu pixel, tổng chạy tới ~2×10⁶
+nên các giá trị 0,6 bị mất bit thấp và mean bị thổi phồng ~1,4 điểm %
+(58,9995% theo f32 so với 57,5569% thật). Đã sửa cộng dồn bằng `f64`. Bài học
+cùng loại với `-sOutputICCProfile` (§16.3): khi số đo và engine mâu thuẫn,
+nghi bộ đo trước.
+
+#### Steam Iron (P0.1): hai nguyên nhân, một sửa được, một là khác biệt có chủ ý
+
+Cô lập một-biến trên chính file (tắt từng form/mask rồi đo lại) + pixel-diff:
+
+1. **GS nở fill khi scan-convert (~0,15 px thiết bị mỗi phía).** Trang này chữ
+   là outline vector (không font); đo trên một glyph 'N' 7,5pt @100 DPI: GS
+   phủ 94 pixel = đúng quy tắc "chạm" trên path nở 0,15 px, PPE "chạm" thuần
+   chỉ 79. Trang dày chữ outline vì thế đo THIẾU đều (−3,1/255 chỉ riêng phần
+   vector). Sửa: vành fill-adjust 0,16 px cho fill bảo thủ, với ba chốt an
+   toàn: (a) composite qua `composite_region_tac_guard` — vành không được hạ
+   tổng mực một pixel quá 10 điểm TAC (không có chốt này, vành của một hình
+   vẽ sau quét đúng vào pixel đỉnh và hạ TAC −8,9 điểm trên `BXF_HopTet`);
+   (b) tắt trong ô tiling pattern (mẫu nghìn ô phồng mean theo chu vi × số ô);
+   (c) không áp cho nét (đo corpus cho thấy scan-convert nét của GS không nở
+   như fill — nở nét làm `Hộp nước hoa` phồng +1,2/255). Steam Iron
+   5,18 → **1,28 PASS**; kaptone phần vector cũng hưởng (0,46).
+2. **GS chỉ áp MỘT trong hai lớp mặt nạ khi ảnh có /SMask nằm trong gstate có
+   luminosity SMask.** Fixture tái tạo đúng cấu trúc (ảnh Indexed + /SMask
+   alpha 26/255, bọc trong form có luminosity mask cùng giá trị): GS ra 26/255
+   (áp một lần), PPE ra 3/255 (nhân cả hai đúng §11.6.4: α = α_mask × α_source).
+   PPE giữ hành vi theo spec — đây là khác biệt có chủ ý với GS, cùng loại
+   `oc_print_state_off`, và là phần còn lại của mean Steam Iron @72.
+
+#### Multi-DPI: 72 DPI được đo đủ lần đầu — và tệ hơn ba residual đã liệt kê
+
+v2.8 chỉ nêu ba residual 72 DPI. Đo đủ 31 file: **13/31 PASS, 18 FAIL**, trong
+đó `tra gung` báo **thiếu 8,2 điểm TAC** — chiều sai nguy hiểm nằm ngoài danh
+sách đã công bố. Nguyên nhân chính: guard `device_scale ≥ 1.2` tắt toàn bộ
+conservative vector ở 72 DPI, mọi outline mảnh rơi về phép thử tâm pixel. Sửa:
+mở conservative fill từ scale 1.0 nhưng dưới 1.2 chỉ cho paint **đục**
+(alpha 1, không soft mask, blend Normal) — đúng nhóm transparency mà ngưỡng
+1.2 từng bảo vệ; nét giữ ngưỡng 1.2 (binarize nét ở 72 làm nét nhạt đè đỉnh
+shading của `banner`: −2,1 → −5,1 khi thử); ảnh thu nhỏ có /SMask được phục
+hồi footprint (texel tâm alpha 0 nhưng footprint có hình thì lấy trung bình
+alpha footprint — tích phân mực đúng, không phồng như max vô điều kiện).
+Kết quả 72 DPI: **25/31 PASS, 0 file tệ hơn trước**. Fixture một-biến golden
+chạy ở cả 72 lẫn 100 DPI: 43/44 + 1 khác GS có chủ ý ở cả hai mức.
+
+Residual 72 DPI còn lại (đều bằng hoặc tốt hơn trước audit, gate vẫn đóng):
+
+| File | Trước | Sau | Nguyên nhân đã biết |
+|---|---|---|---|
+| `50 hộp` | +10,2 TAC | +10,2 | over-report có sẵn, nghi `soft_mask_peak` 7×7 cố định theo pixel (to tương đối ở 72) |
+| `tra gung` | −8,2 TAC | −8,2 | đường ảnh: GS "béo hoá" ảnh thu nhỏ ở tỷ lệ ≥3, PPE nearest |
+| `Thiep moi Seminar` | −2,35 | −2,4 (mean 6,25→2,12) | scan-convert khổ lớn |
+| `banner` | −2,10 | −2,1 (mean 0,66→0,48) | clip/stroke scan-convert của GS nở hơn hình học |
+| `túi nươc mắm` | 5,22 mean | 3,01 | như tra gung, mức nhỏ |
+| `Note for Steam Iron` | 21,54 mean | 3,53 | phần ảnh: GS áp một lớp mask (xem trên) |
+
+#### Số kiểm chứng độc lập (môi trường audit)
+
+Rust **541** (540 + 1 regression vành fill-adjust); native facade smoke **58**;
+Python backend **1192 pass** (37 test cần `shapely` không chạy được vì môi
+trường audit không tải được GEOS — không phải lỗi code); golden 100 DPI
+**31/31**, 72 DPI **25/31**; preflight fixture 17/18 + 1 stub; facade corpus
+**129/129 trusted**, thời gian mean/median 0,594/0,175 s, p95 1,348 s, max
+11,1 s (nhanh hơn baseline 0,798/0,258/1,502/18,967 — không hồi quy hiệu
+năng từ vành fill-adjust nhờ scratch tái dùng và TAC-guard chỉ chạy trong
+region của path).
+
+Ghi chú đo lường cho người sau: `worst_plate_mae_255` của bộ đo là
+**|mean(GS) − mean(PPE)|** trên mỗi kẽm — hiệu của hai trung bình, không phải
+MAE pixel. Sai lệch bù trừ theo vị trí không hiện ra ở cột này (Steam Iron
+@100 sau sửa: mean-delta 1,28 nhưng MAE pixel Cyan ~8 do glyph lệch pha biên).
+Cột này đủ cho gate mean+TAC hiện tại, nhưng khi nâng gate nên thêm MAE pixel
+thật.
+
+### 16.9 P0 downscale: giả thuyết "béo hoá" bị bác, bốn root cause thật (v3.0)
+
+Trước khi viết code, dựng đúng bộ fixture một-biến §16.8 yêu cầu (sọc đen
+1-texel chu kỳ 4; sọc trong `/SMask` giá trị thấp; 8 sọc cô lập bước 37) cộng
+các biến thể đối chứng (khe trắng trên nền đen, DCT, trục Y) và đo GS 10.04
+quét DPI 20–150 (ratio 1,5–11,5). Kết quả **bác giả thuyết**: kênh màu của GS
+là nearest-tại-tâm-pixel THUẦN, khớp từng pixel ở mọi ratio đã đo, mọi codec,
+cả hai cực tính — không tồn tại "đa mẫu phase-coverage ở ratio ≥ 3". Con số
+tham chiếu cũ (GS mean 102 vs nearest 94,3 @ratio 3,2) tái lập được nhưng là
+**artifact của hình học suy biến**: offset nguyên + ratio 16/5 đặt mọi biên sọc
+đúng tie fixed-point, đo được mỗi luật xử lý tie chứ không phải ngữ nghĩa lấy
+mẫu (fixture mới đặt offset 10.203 để thoát tie). Bốn nguyên nhân thật, mỗi cái
+cô lập bằng fixture và có regression fail-trên-code-cũ:
+
+1. **Neo lưới raster** (`page.rs device_matrix`): với trang cao không nguyên
+   pixel, GS dồn phần dư làm tròn lên ĐỈNH — đáy trang luôn chạm mép dưới
+   raster đã round; mép trái neo chính xác (đo: sọc khớp 0-pixel-lệch chỉ với
+   mô hình này, kể cả raster 278/417 px @100/150; đủ 4 nhánh `/Rotate`). PPE
+   neo `y1*s` chính xác nên TOÀN trang lệch pha dọc sub-pixel với GS trên mọi
+   trang khổ mm thực (155,9 pt @72 → 0,1 px): ảnh decimation ratio ≥ 3 đổi
+   texel ở ~1/3 pixel, kẽm nhiễu đốm toàn vùng ảnh; vector cũng dịch hàng.
+   Sửa neo đóng luôn `banner` (−2,1 → +0,3 PASS) và `Thiep moi Seminar`
+   (−2,4 → 0,0 PASS) — hai residual "scan-convert/clip" thực ra là cùng lỗi neo.
+2. **Lưới lấy mẫu ảnh có `/SMask`** (`interp.rs mask_sample_ctm`): GS lấy mẫu
+   CẢ kênh màu LẪN alpha của ảnh-có-mask như thể hình vuông đơn vị phủ bbox
+   pixel-NGUYÊN `[floor,ceil)` của footprint đầy đủ (kể cả phần tràn mép trang)
+   — căng thêm tối đa 1 px mỗi chiều. Chỉ mô hình này khớp GS từng pixel
+   (184/184 @75, 246/246 @100, 371/371 @150; exact/pixround rớt về 55–77%).
+   Ảnh KHÔNG mask giữ lưới CTM chính xác (khớp tới ratio 11,5). Chỉ áp cho CTM
+   trục-thẳng; dạng nghiêng chưa đo — ghi mở.
+3. **Tie và độ chính xác số** : quy ước texel của GS là khoảng nửa-mở TRÁI
+   `(t, t+1]` (fixture suy biến v1 chứng minh: GS bỏ đúng các pixel-tie mà
+   floor giữ; tie định kỳ 21/47 px trên lưới căng đều nghiêng trái). Nghịch
+   đảo lấy mẫu chuyển sang f64 (sai số f32 ~5e-4 texel lật ~200 px/trang trên
+   ảnh 1536 texel). Mẫu nằm trong 1e-3 texel của biên: đánh giá cả hai phía,
+   giữ phía TAC cao hơn — nhiễu float nội bộ GS không tái lập được, và lớp
+   ~23 pixel này chứa đúng đỉnh TAC của trang (`tra gung` d_tac −4,9 → −0,0
+   nhờ bước này). Đồng thời GỠ lớp bù footprint-avg-alpha (từng cứu Steam Iron
+   khi lưới còn lệch pha; sau khi căn lưới nó chỉ bơm mực ma 21/38 lên kẽm —
+   clone hình học tra gung: meanΔ 0,0 sau khi gỡ).
+4. **JPEG CMYK Adobe** (`sampler.rs`): thay dò chuỗi "Adobe" trong 4 KB đầu
+   (dính oan "Adobe Photoshop" trong XMP) bằng parser APP14 đúng cấu trúc;
+   đảo mẫu khi CÓ APP14, mọi transform — khớp GS trên fixture DCT transform 0
+   (meanΔ 0,00) lẫn corpus transform 2. Fixture DCT vẽ ở vùng mực thấp vì
+   Pillow ghi CMYK-JPEG trái quy ước đảo Adobe → GS render âm bản; nền sau đảo
+   phải < 300% TAC để không kích footprint-max che mất biến số codec.
+
+Số chốt (Windows, GS 10.04.0): Rust **545** (541 + neo matrix + 2 lưới/tie
+fail-trên-code-cũ + 2 parser APP14, thay 1 test marker cũ); backend **1305**;
+fixture golden **51 file: 50 PASS + 1 khác-GS-chủ-ý ở CẢ 72 và 100 DPI** (thêm
+7 fixture downscale: stems/gaps × Flate/DCT, smask_low, yaxis, isolated37);
+corpus @72 **28/31** (từ 25/31) — còn `50 hộp` +10,2 (soft_mask_peak, có sẵn),
+`Steam Iron` mean 3,56 (khác biệt mask-nhân-hai theo spec, quyết định sản phẩm
+§16.8), `túi nước mắm` mean 3,15 — **tái phân loại**: không phải đường ảnh mà
+là hairline vector over-report (Magenta +3,15/Cyan −2,63, viền dieline), cùng
+họ conservative-stroke, chiều an toàn, có từ trước. Corpus @150 **28/30 không
+đổi** (2 FAIL y hệt trước/sau: banner −2,4, tra gung mean ~3,3; +1 file vượt
+memory budget fail-loud). Corpus @100 **30/31**: `banner` −1,5 → **−2,4 FAIL**
+— gate flip DUY NHẤT chiều báo-thiếu của đợt này, và là **phơi lộ chứ không
+phải hồi quy**: cùng đỉnh đó @150 đo −2,4 từ TRƯỚC thay đổi; con số −1,5 cũ
+@100 là hai cái sai bù nhau (lưới lệch pha vô tình cộng +0,9 vào đỉnh). Chuỗi
+cô lập đã đo: Im7 (mask) và Im13 (không mask) render RIÊNG LẺ khớp GS từng
+byte tại đúng pixel đỉnh; thiếu hụt ~1%/kênh chỉ xuất hiện trong composite
+nhiều lớp Multiply/ca=0.75 giữa chúng ⇒ lớp **giá-trị-blend-stack**, ứng viên
+P0 kế tiếp, KHÔNG phải lấy mẫu ảnh.
+
+Ghi mở: banner composite-value như trên; mask-stretch chưa đo cho CTM
+nghiêng/xoay lẻ (giữ lưới chính xác — lệch nếu có chỉ là pha, không phải chiều
+báo-thiếu hệ thống); JPEG 4-kênh KHÔNG marker APP14 chưa đo hành vi GS (giữ
+không-đảo như cũ).
 
 ---
 
@@ -1147,6 +1349,16 @@ khóa bằng corpus nhiều DPI và regression mixed RGB/CMYK.
 
 | Ver | Ngày | Thay đổi |
 |---|---|---|
+| 3.0 | 2026-07-26 | P0 downscale đóng bằng đo, không threshold corpus: fixture một-biến BÁC giả thuyết "GS béo hoá ratio ≥ 3" (GS = nearest thuần tới ratio 11,5; số cũ là artifact tie suy biến). Bốn root cause thật: neo raster dồn dư lên đỉnh (đóng `banner`/`Seminar`); ảnh có `/SMask` lấy mẫu trên bbox pixel-nguyên căng ~1px (khớp GS từng pixel 184/184@75, 371/371@150); tie nửa-mở-trái + f64 + tie-alternate max-TAC trong 1e-3 texel (`tra gung` −8,2 → −0,0 PASS); parser APP14 thay substring "Adobe" (fixture DCT meanΔ 0,00). Gỡ footprint-avg-alpha (bù lệch pha cũ, bơm mực ma sau khi căn lưới). Corpus @72 **28/31** (còn `50 hộp` +10,2 có sẵn, Steam Iron 3,56 quyết định sản phẩm, `túi` 3,15 tái phân loại hairline vector); @150 **28/30 không đổi**; @100 **30/31** — `banner` −2,4 là PHƠI LỘ thiếu hụt blend-stack có sẵn (đỉnh này @150 đã −2,4 từ trước; ảnh đơn lẻ khớp GS từng byte, chỉ composite lệch ~1%) → P0 kế tiếp. Fixture **50+1/51 ở cả 72 lẫn 100**. Rust **545**, backend **1305**. §16.9. |
+| 2.9 | 2026-07-26 | Audit độc lập tái hiện đúng v2.8 rồi đóng hai residual: kaptone là bug đo (mean f32 → f64, thật 0,46 PASS); Steam Iron do GS nở fill ~0,15 px — thêm vành fill-adjust 0,16 px (TAC-guard, tắt trong ô pattern, không áp nét) → 1,28 PASS; raw golden 100 DPI **31/31**. Đo đủ 72 DPI lần đầu (13/31) rồi mở conservative cho fill đục từ scale 1.0 + phục hồi footprint alpha ảnh: **25/31, 0 hồi quy**; residual còn 6 (bảng §16.8). Ghi nhận GS chỉ áp một trong hai lớp image-SMask × luminosity-SMask (PPE theo spec §11.6.4). Rust **541**, facade smoke **58**, backend 1192 pass (37 test shapely không chạy được trong môi trường audit). Gate unbundle vẫn đóng. |
+| 2.8 | 2026-07-26 | Theo dõi CTM khởi đầu riêng cho mỗi content stream lồng và dùng nó cho `/Matrix` của shading/tiling pattern; Business Card giảm mean **7,92→1,62** và PASS, raw golden đạt **29/31 PASS, 2 FAIL mean-only**. Soft mask luminosity DeviceRGB giữ độ sáng trên RGB sidecar trước ICC; thêm 3 regression. 72 DPI còn `banner`, `Seminar` và Business Card mean 3,23. Rust **540 pass**, Python backend **1305 pass**. |
+| 2.7 | 2026-07-26 | Cô lập ảnh/vector chứng minh `kaptone` và `tra gung` lệch ở vector, không phải image/SMask. Thêm page-aware conservative edge: stroke luôn bảo thủ từ 100 DPI; fill raster nhỏ chỉ bảo thủ khi cạnh ngắn ≤16 px, raster ≥512 px giữ toàn bộ edge. `tra gung` giảm mean 3,79→2,56 và PASS; raw golden đạt **28/31 PASS, 3 FAIL mean-only**; residual 72 DPI không đổi. Rust **537 pass**, Python **63 pass**. |
+| 2.6 | 2026-07-26 | Neo `ICC_PROFILE_DIR` theo package và fallback bundle khi đường cấu hình không tồn tại, loại sai khác facade/golden do sRGB hệ điều hành. Nới conservative vector edge thành guard DPI-only vì coverage được nhân clip/soft-mask/alpha sau đó; `Note for Steam Iron` giảm mean 15,68→5,18 mà corpus vẫn **27/31 PASS**. Facade **129/129 trusted**, Rust **534 pass**, Python **63 pass**; gate vẫn đóng do 4 mean-only và residual 72 DPI. |
+| 2.5 | 2026-07-26 | Thêm conservative vector edge guard từ 100 DPI, giữ pixel-center cho glyph và khóa alpha/overprint/blend/RGB-sidecar vào nhánh an toàn. Raw golden cuối đạt **27/31 PASS, 4 FAIL mean-only, 0 false-clean @100**; facade **129/129 trusted**; Rust **534 pass**, Python **55 pass**. Hai lần đo facade 72 DPI cho mean 0,776–0,842 giây, median 0,235–0,278 giây và p95 1,218–1,240 giây; guard bị tắt ở 72 DPI nên chưa quy kết hồi quy. Gate unbundle vẫn đóng do residual 72 DPI, 4 mean-only và performance @100 chưa có baseline lặp. |
+| 2.4 | 2026-07-26 | Thêm sampler TAC bảo thủ: footprint-max chỉ khi mẫu tâm ≥300% và cực đại soft-mask lân cận 7×7. Hai false-clean raw @100 DPI được loại; golden đạt 18/31 PASS, 13 FAIL mean-only. Corpus vẫn 129/129 trusted; Rust 532 pass, Python 55 pass. Gate unbundle vẫn đóng do residual 72 DPI và mean plate. |
+| 2.3 | 2026-07-26 | Ánh xạ object-level DeviceGray/Indexed Gray vào blending-space RGB; ASIA trang 1 chuyển sang golden PASS. Facade corpus đạt 129/129 trusted, Rust 529 pass, Python 55 pass. Raw golden hết “chưa đủ tính năng” nhưng còn 17 PASS/14 FAIL, gồm 2 case báo thiếu TAC; gate unbundle vẫn đóng. |
+| 2.2 | 2026-07-26 | Thêm RGB backdrop cho group DeviceRGB non-isolated, mặc định page blending-space theo target CMYK, và giữ palette của ảnh Indexed DeviceRGB qua soft mask; corpus facade tăng 123→128/129 trusted, còn 1 fail-loud. Rust 526 pass, Python 55 pass; gate unbundle vẫn đóng. |
+| 2.1 | 2026-07-26 | Thêm surface RGB+alpha cho isolated DeviceRGB group, kế thừa group CS khi bỏ trống, và nhận biết page `/Group /CS /DeviceCMYK` để bỏ false warning; corpus facade tăng 105→123/129 trusted, còn 6 fail-loud. Thử hydration CMYK→RGB không cứu thêm trang và gây chậm nên loại bỏ. Rust 521 pass, Python 55 pass; gate unbundle vẫn đóng. |
 | 2.0 | 2026-07-26 | Triển khai RGB sidecar lười cho DeviceRGB trực tiếp trên vector/ảnh/shading/mesh; thêm 5 regression (sidecar + RGB alpha managed); Rust 518 pass, Python 55 pass; corpus facade 105/129 trusted, 24 fail-loud. Gate unbundle vẫn đóng; còn blocker group RGB/Lab và sampler TAC theo DPI. |
 | 1.9 | 2026-07-26 | Corpus 33 PDF/129 trang sau hardening: sửa non-isolated outer blend và parser recovery tệp tạm; phát hiện P0 blending color space RGB/Lab trước ICC; thêm fail-loud guard (94/129 trang trusted); xác định blocker sampler TAC theo DPI. Gate unbundle vẫn đóng. |
 | 1.0 | 2026-07-25 | Bản đầu — map GS PrynX, phase 0–4, gate unbundle |

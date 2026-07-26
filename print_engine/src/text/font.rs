@@ -87,7 +87,11 @@ impl Widths {
     /// Bề rộng theo mã (font đơn byte) hoặc theo CID (Type0), đơn vị 1/1000.
     pub fn get(&self, code_or_cid: u32) -> Option<f32> {
         match self {
-            Widths::Simple { first_char, widths, missing } => {
+            Widths::Simple {
+                first_char,
+                widths,
+                missing,
+            } => {
                 let idx = code_or_cid.checked_sub(*first_char)? as usize;
                 match widths.get(idx) {
                     Some(w) => Some(*w),
@@ -145,7 +149,11 @@ pub struct CMap {
 
 impl CMap {
     pub fn identity_two_byte() -> Self {
-        CMap { identity: true, ranges: Vec::new(), codespace: vec![(2, 0, 0xFFFF)] }
+        CMap {
+            identity: true,
+            ranges: Vec::new(),
+            codespace: vec![(2, 0, 0xFFFF)],
+        }
     }
 
     /// Đọc mã kế tiếp: trả (CID, số byte đã dùng).
@@ -343,7 +351,11 @@ impl LoadedFont {
         Some(code as u16)
     }
 
-    fn cff_gid(&self, table: &hayro_font::cff::Table, code_or_cid: u32) -> Option<hayro_font::GlyphId> {
+    fn cff_gid(
+        &self,
+        table: &hayro_font::cff::Table,
+        code_or_cid: u32,
+    ) -> Option<hayro_font::GlyphId> {
         if self.is_type0 {
             return if table.is_cid() {
                 table.glyph_index_by_cid(code_or_cid as u16)
@@ -364,7 +376,11 @@ impl LoadedFont {
         table.glyph_index(code)
     }
 
-    fn type1_glyph_name(&self, table: &hayro_font::type1::Table, code_or_cid: u32) -> Option<String> {
+    fn type1_glyph_name(
+        &self,
+        table: &hayro_font::type1::Table,
+        code_or_cid: u32,
+    ) -> Option<String> {
         let code = code_or_cid as u8;
         // `/Differences` và bảng mã cơ sở thắng bảng dựng sẵn của font: đó là ý
         // định của người tạo file.
@@ -572,7 +588,11 @@ fn load_simple_widths(
         .and_then(pdf::as_num)
         .unwrap_or(0.0);
     match widths {
-        Some(w) if !w.is_empty() => Widths::Simple { first_char, widths: w, missing },
+        Some(w) if !w.is_empty() => Widths::Simple {
+            first_char,
+            widths: w,
+            missing,
+        },
         // Không có /Widths: font chuẩn 14 hoặc file lệch spec. Lấy từ chương trình
         // font thay vì đoán, vì bề rộng sai làm lệch vị trí toàn bộ dòng chữ.
         _ => Widths::FromProgram,
@@ -629,7 +649,11 @@ fn load_type0(doc: &Document, font_dict: &Dictionary, base_font: String) -> Load
             };
             (program, Widths::Cid { default, ranges }, c2g)
         }
-        None => (FontProgram::Missing, Widths::FromProgram, CidToGid::Identity),
+        None => (
+            FontProgram::Missing,
+            Widths::FromProgram,
+            CidToGid::Identity,
+        ),
     };
 
     LoadedFont {
@@ -745,7 +769,8 @@ fn parse_cmap_stream(doc: &Document, obj: &Object) -> CMap {
                     Some("cidchar") => {
                         for pair in buf.chunks(2) {
                             if let [code, cid] = pair {
-                                if let (Some((n, c)), Ok(id)) = (hex_token(code), cid.parse::<u32>())
+                                if let (Some((n, c)), Ok(id)) =
+                                    (hex_token(code), cid.parse::<u32>())
                                 {
                                     ranges.push((n, c, c, id));
                                 }
@@ -768,7 +793,11 @@ fn parse_cmap_stream(doc: &Document, obj: &Object) -> CMap {
     if codespace.is_empty() {
         codespace.push((2, 0, 0xFFFF));
     }
-    CMap { identity: false, ranges, codespace }
+    CMap {
+        identity: false,
+        ranges,
+        codespace,
+    }
 }
 
 /// `<0041>` → (số byte, giá trị).
@@ -804,7 +833,11 @@ fn load_type3(doc: &Document, font_dict: &Dictionary, base_font: String) -> Load
         cmap: None,
         cid_to_gid: CidToGid::Identity,
         widths: load_simple_widths(doc, font_dict, None),
-        type3: Some(Type3Data { char_procs, resources, font_matrix }),
+        type3: Some(Type3Data {
+            char_procs,
+            resources,
+            font_matrix,
+        }),
         is_type0: false,
         base_font,
         substituted: false,

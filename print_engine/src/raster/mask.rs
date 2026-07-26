@@ -48,6 +48,26 @@ fn to_ts(m: &Matrix) -> Transform {
     Transform::from_row(m.a, m.b, m.c, m.d, m.e, m.f)
 }
 
+/// Biên độ "nở" hình học của fill bảo thủ, tính bằng pixel thiết bị mỗi phía.
+///
+/// Vì sao tồn tại: quy tắc "chạm là phủ" đã bảo đảm không pixel nào path đi qua
+/// bị bỏ, nhưng Ghostscript còn đi xa hơn thế — bộ scan-convert không AA của nó
+/// **nở path ra ngoài** một khoảng cố định theo pixel thiết bị (fill adjust) để
+/// hai fill kề nhau không hở khe. Đo black-box trên glyph outline thật
+/// (một chữ 'N' 7.5pt @100 DPI): GS phủ 94 pixel; "chạm" trên path nở
+/// 0.15 px cho đúng 94, nở 0.25 px dư thành 96, không nở chỉ 79. Chọn
+/// 0.16 px: sát mức 0.15 đo được, cộng một lề nhỏ để pha biên nằm sát ranh
+/// giới pixel vẫn ló đủ rộng cho bộ raster AA giữ lại (ngưỡng bỏ sliver
+/// ~0.1 px); 0.25 px đã thử và loại vì dư ~2% pixel biên so với GS.
+/// Không bù khoảng nở này thì mọi trang chữ outline dày đặc đo **thiếu** mực so
+/// với tham chiếu (Steam Iron: mean Cyan −3.1/255 chỉ riêng phần vector), đúng
+/// chiều sai nguy hiểm của prepress.
+///
+/// Giá trị theo pixel THIẾT BỊ (không theo pt): fill adjust của RIP tham chiếu
+/// cũng là hằng số thiết bị, nên sai số tuyệt đối không đổi theo DPI và tự nhỏ
+/// dần theo tỷ lệ khi DPI tăng.
+const CONSERVATIVE_FILL_ADJUST_PX: f32 = 0.16;
+
 /// Bộ rasterize dùng lại buffer giữa các thao tác vẽ.
 ///
 /// Một trang A4 @300 DPI là ~8.7 triệu pixel. Cấp phát mặt nạ mới cho từng
@@ -65,6 +85,12 @@ pub struct Rasterizer {
     /// Chỉ xoá đúng vùng này thay vì cả buffer: với tiling pattern, số lần xoá bằng
     /// số ô × số operator, nên xoá cả trang mỗi lần là chi phí chính của cả trang.
     dirty: Region,
+    /// Mặt nạ phụ cho vành fill-adjust: giữ hình gốc để loại phần vành trùng ruột.
+    ///
+    /// Cấp phát lười — chỉ trang nào thật sự dùng vành mới trả chi phí bộ nhớ.
+    ring_scratch: Option<Mask>,
+    /// Vùng bẩn của `ring_scratch`.
+    ring_dirty: Region,
 }
 
 impl Rasterizer {
@@ -76,6 +102,8 @@ impl Rasterizer {
             scratch_mask,
             coverage: vec![0.0; (width as usize) * (height as usize)],
             dirty: Region::EMPTY,
+            ring_scratch: None,
+            ring_dirty: Region::EMPTY,
         })
     }
 
@@ -106,6 +134,123 @@ impl Rasterizer {
         clip: Option<&Mask>,
         soft_mask: Option<&[f32]>,
     ) -> Option<Coverage<'_>> {
+        self.fill_path_impl(path, rule, anti_alias, clip, soft_mask, false)
+    }
+
+    /// Nhị phân hoá mọi pixel mà path chạm tới — chỉ dùng cho nét/vector đặc đục.
+    pub fn fill_path_conservative(
+        &mut self,
+        path: &Path,
+        rule: FillRule,
+        anti_alias: bool,
+        clip: Option<&Mask>,
+        soft_mask: Option<&[f32]>,
+    ) -> Option<Coverage<'_>> {
+        self.fill_path_impl(path, rule, anti_alias, clip, soft_mask, true)
+    }
+
+    /// Vành fill-adjust của một path: dải rộng `2×CONSERVATIVE_FILL_ADJUST_PX`
+    /// ôm quanh biên, nhị phân hoá "chạm là phủ".
+    ///
+    /// Trả về độ phủ của RIÊNG vành (không gồm ruột path). Caller composite nó
+    /// bằng ngữ nghĩa **chỉ-thêm-mực** (blend Darken trong không gian mực):
+    /// vành là dải bất định do khác biệt scan-convert với RIP tham chiếu, nên
+    /// nó chỉ được phép THÊM mực — để nó knock out kênh khác sẽ có ngày ăn
+    /// đúng vào pixel đỉnh TAC (đo được −8.9 điểm trên corpus khi vành dùng
+    /// ngữ nghĩa composite thường).
+    pub fn fill_adjust_ring(
+        &mut self,
+        path: &Path,
+        rule: FillRule,
+        clip: Option<&Mask>,
+        soft_mask: Option<&[f32]>,
+    ) -> Option<Coverage<'_>> {
+        let stroke = Stroke {
+            width: 2.0 * CONSERVATIVE_FILL_ADJUST_PX,
+            line_cap: tiny_skia::LineCap::Round,
+            line_join: tiny_skia::LineJoin::Round,
+            ..Stroke::default()
+        };
+        let ring = path.stroke(&stroke, 1.0)?;
+
+        // Hình gốc vào mặt nạ phụ: pixel đã thuộc ruột fill thì KHÔNG thuộc
+        // vành. Thiếu bước loại trừ này, dải biên bị composite hai lần — vô hại
+        // với alpha 1 nhưng với alpha < 1 sẽ đậm gấp đôi so với một lần tô.
+        let interior = self
+            .ring_scratch
+            .get_or_insert_with(|| Mask::new(self.width, self.height).expect("kích thước đã kiểm"));
+        if !self.ring_dirty.is_empty() {
+            let w = self.width as usize;
+            let data = interior.data_mut();
+            for y in self.ring_dirty.y0..self.ring_dirty.y1 {
+                let row = y as usize * w;
+                data[row + self.ring_dirty.x0 as usize..row + self.ring_dirty.x1 as usize].fill(0);
+            }
+        }
+        interior.fill_path(path, rule.into(), true, Transform::identity());
+        let ib = path.bounds();
+        self.ring_dirty = Region::from_bounds(
+            ib.left(),
+            ib.top(),
+            ib.right(),
+            ib.bottom(),
+            self.width,
+            self.height,
+        );
+
+        let cov = self.fill_path_impl(&ring, FillRule::NonZero, false, clip, soft_mask, true)?;
+        let region = cov.region;
+        // Loại phần trùng ruột (mượn lại các buffer qua self để né borrow kép).
+        let w = self.width as usize;
+        let interior = self.ring_scratch.as_ref().expect("vừa cấp phát ở trên");
+        let idata = interior.data();
+        let mut any = false;
+        for y in region.y0..region.y1 {
+            let row = y as usize * w;
+            for x in region.x0..region.x1 {
+                let i = row + x as usize;
+                if idata[i] > 0 {
+                    self.coverage[i] = 0.0;
+                } else {
+                    any |= self.coverage[i] > 0.0;
+                }
+            }
+        }
+        if any {
+            Some(Coverage {
+                data: &self.coverage,
+                region,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Raster theo phép thử tâm pixel cũ — dùng riêng cho glyph chữ sống.
+    ///
+    /// Font renderer của RIP có grid-fitting riêng; áp quy tắc "có chạm" của
+    /// outline vector lên glyph đã hint có thể làm chữ dày hơn tham chiếu.
+    pub fn fill_path_centered(
+        &mut self,
+        path: &Path,
+        rule: FillRule,
+        anti_alias: bool,
+        clip: Option<&Mask>,
+        soft_mask: Option<&[f32]>,
+    ) -> Option<Coverage<'_>> {
+        self.fill_path_impl(path, rule, anti_alias, clip, soft_mask, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fill_path_impl(
+        &mut self,
+        path: &Path,
+        rule: FillRule,
+        anti_alias: bool,
+        clip: Option<&Mask>,
+        soft_mask: Option<&[f32]>,
+        binary_geometry: bool,
+    ) -> Option<Coverage<'_>> {
         // Xoá vết của lần vẽ trước — chỉ trong vùng nó đã chạm.
         self.clear_dirty();
 
@@ -123,9 +268,17 @@ impl Rasterizer {
         }
         self.dirty = region;
 
-        self.scratch_mask
-            .fill_path(path, rule.into(), anti_alias, Transform::identity());
-        self.apply_clip(region, clip, soft_mask)
+        // Đường đo mực vẫn cần hình học nhị phân, nhưng raster trực tiếp với
+        // `anti_alias=false` dùng đúng một phép thử tại tâm pixel và có thể làm
+        // biến mất outline rất mảnh. Raster coverage trước rồi nhị phân hoá mọi
+        // pixel có chạm hình giữ được nét theo chiều bảo thủ của prepress.
+        self.scratch_mask.fill_path(
+            path,
+            rule.into(),
+            anti_alias || binary_geometry,
+            Transform::identity(),
+        );
+        self.apply_clip(region, clip, soft_mask, binary_geometry)
     }
 
     /// Xoá `coverage` và `scratch_mask` trong vùng bẩn của lần vẽ trước.
@@ -157,6 +310,7 @@ impl Rasterizer {
         region: Region,
         clip: Option<&Mask>,
         soft_mask: Option<&[f32]>,
+        binary_geometry: bool,
     ) -> Option<Coverage<'_>> {
         let src = self.scratch_mask.data();
         let w = self.width as usize;
@@ -165,7 +319,15 @@ impl Rasterizer {
             let row = y as usize * w;
             for x in region.x0..region.x1 {
                 let i = row + x as usize;
-                let mut v = src[i] as f32 / 255.0;
+                let mut v = if binary_geometry {
+                    if src[i] > 0 {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                } else {
+                    src[i] as f32 / 255.0
+                };
                 if v > 0.0 {
                     if let Some(c) = clip {
                         v *= c.data()[i] as f32 / 255.0;
@@ -179,7 +341,10 @@ impl Rasterizer {
             }
         }
         if any {
-            Some(Coverage { data: &self.coverage, region })
+            Some(Coverage {
+                data: &self.coverage,
+                region,
+            })
         } else {
             None
         }
@@ -195,11 +360,7 @@ impl Rasterizer {
 /// Cách đúng: dựng outline của nét trong toạ độ người dùng **rồi** mới biến đổi.
 /// Rasterize nét trực tiếp trong toạ độ thiết bị sẽ sai bề rộng ở mọi file có
 /// scale không đều — lỗi này rất hay gặp và rất khó thấy bằng mắt.
-pub fn stroke_to_path(
-    path: &Path,
-    stroke: &Stroke,
-    ctm: &Matrix,
-) -> Option<Path> {
+pub fn stroke_to_path(path: &Path, stroke: &Stroke, ctm: &Matrix) -> Option<Path> {
     let outline = path.stroke(stroke, 1.0)?;
     outline.transform(to_ts(ctm))
 }
@@ -247,7 +408,9 @@ mod tests {
     fn fill_covers_expected_pixels() {
         let mut r = Rasterizer::new(4, 4).unwrap();
         let path = unit_square_at(0.0, 0.0, 2.0);
-        let cov = r.fill_path(&path, FillRule::NonZero, false, None, None).unwrap();
+        let cov = r
+            .fill_path(&path, FillRule::NonZero, false, None, None)
+            .unwrap();
         // 2x2 pixel góc trên-trái phủ hết, phần còn lại trống.
         assert_eq!(cov[0], 1.0);
         assert_eq!(cov[1], 1.0);
@@ -259,7 +422,9 @@ mod tests {
     fn empty_path_returns_none_so_caller_can_skip() {
         let mut r = Rasterizer::new(4, 4).unwrap();
         let path = unit_square_at(100.0, 100.0, 2.0); // ngoài trang
-        assert!(r.fill_path(&path, FillRule::NonZero, false, None, None).is_none());
+        assert!(r
+            .fill_path(&path, FillRule::NonZero, false, None, None)
+            .is_none());
     }
 
     #[test]
@@ -352,15 +517,77 @@ mod tests {
         // Chế độ ink_accurate: cạnh phải là 0 hoặc 1 để solid đọc đúng 100% mực.
         let mut r = Rasterizer::new(8, 8).unwrap();
         let path = rect_path(0.0, 0.0, 3.5, 8.0).unwrap();
-        let cov = r.fill_path(&path, FillRule::NonZero, false, None, None).unwrap();
-        assert!(cov.iter().all(|v| *v == 0.0 || *v == 1.0), "AA tắt phải nhị phân");
+        let cov = r
+            .fill_path(&path, FillRule::NonZero, false, None, None)
+            .unwrap();
+        assert!(
+            cov.iter().all(|v| *v == 0.0 || *v == 1.0),
+            "AA tắt phải nhị phân"
+        );
+    }
+
+    #[test]
+    fn conservative_fill_adjust_reaches_next_pixel_like_reference_rip() {
+        // Hình chữ nhật dừng ở x = 3.9: hàng pixel 4 KHÔNG bị hình chạm
+        // (quy tắc "chạm là phủ" cho 0), nhưng RIP tham chiếu nở fill một
+        // khoảng cố định theo pixel thiết bị nên 3.9 + 0.15 = 4.05 vẫn phủ
+        // pixel 4. Thiếu vành nở này, trang chữ outline đo thiếu mực.
+        let mut r = Rasterizer::new(8, 8).unwrap();
+        // Tới (3.99, 3.99): vành 0.16 px ló sang pixel 4 một dải 0.15 px — đủ
+        // rộng để bộ raster AA không bỏ (ngưỡng bỏ sliver ~0.1 px).
+        let path = rect_path(1.0, 1.0, 2.99, 2.99).unwrap();
+        let ring = r
+            .fill_adjust_ring(&path, FillRule::NonZero, None, None)
+            .unwrap();
+        assert_eq!(ring[1 * 8 + 4], 1.0, "vành nở phải với sang pixel 4 theo x (3.99+0.16=4.15)");
+        assert_eq!(ring[4 * 8 + 1], 1.0, "vành nở phải với sang pixel 4 theo y");
+        // Góc chéo (4,4) KHÔNG bị ràng buộc: phần vành ló sang đường chéo chỉ
+        // ~0.16/√2 ≈ 0.11 px mỗi trục và bộ raster có thể bỏ mảnh tam giác đó;
+        // biên theo trục mới là phần quyết định lượng mực.
+        assert_eq!(ring[1 * 8 + 5], 0.0, "vành nở không được với quá một pixel");
+        // Fill bảo thủ thường không tự nở.
+        let cov = r
+            .fill_path_conservative(&path, FillRule::NonZero, false, None, None)
+            .unwrap();
+        assert_eq!(cov[1 * 8 + 4], 0.0, "fill bảo thủ không tự nở khi thiếu vành");
+        assert_eq!(cov[2 * 8 + 2], 1.0, "ruột fill giữ nguyên");
+    }
+
+    #[test]
+    fn ink_mode_keeps_a_subpixel_sliver() {
+        let mut r = Rasterizer::new(8, 8).unwrap();
+        let path = rect_path(3.1, 0.0, 0.1, 8.0).unwrap();
+        let cov = r
+            .fill_path_conservative(&path, FillRule::NonZero, false, None, None)
+            .unwrap();
+        assert!(
+            cov.iter().any(|v| *v == 1.0),
+            "outline có chạm pixel không được biến mất ở đường đo mực"
+        );
+        assert!(
+            cov.iter().all(|v| *v == 0.0 || *v == 1.0),
+            "hình học đường đo vẫn phải nhị phân"
+        );
+    }
+
+    #[test]
+    fn centered_glyph_mode_keeps_the_old_pixel_center_rule() {
+        let mut r = Rasterizer::new(8, 8).unwrap();
+        let path = rect_path(3.1, 0.0, 0.1, 8.0).unwrap();
+        assert!(
+            r.fill_path_centered(&path, FillRule::NonZero, false, None, None)
+                .is_none(),
+            "glyph không dùng quy tắc có-chạm của outline vector"
+        );
     }
 
     #[test]
     fn anti_alias_on_produces_partial_edge() {
         let mut r = Rasterizer::new(8, 8).unwrap();
         let path = rect_path(0.0, 0.0, 3.5, 8.0).unwrap();
-        let cov = r.fill_path(&path, FillRule::NonZero, true, None, None).unwrap();
+        let cov = r
+            .fill_path(&path, FillRule::NonZero, true, None, None)
+            .unwrap();
         assert!(
             cov.iter().any(|v| *v > 0.0 && *v < 1.0),
             "AA bật phải có pixel phủ một phần"
@@ -397,7 +624,10 @@ mod tests {
         pb.line_to(10.0, 5.0);
         let horizontal = pb.finish().unwrap();
 
-        let stroke = Stroke { width: 1.0, ..Stroke::default() };
+        let stroke = Stroke {
+            width: 1.0,
+            ..Stroke::default()
+        };
         let ctm = Matrix::new(1.0, 0.0, 0.0, 4.0, 0.0, 0.0); // y phóng 4x
         let outlined = stroke_to_path(&horizontal, &stroke, &ctm).unwrap();
         let b = outlined.bounds();

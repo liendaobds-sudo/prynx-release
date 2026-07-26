@@ -39,6 +39,53 @@ fn render(content: &str, resources: Dictionary) -> PageRender {
         .expect("render phải thành công")
 }
 
+fn render_form_with_pattern(
+    page_content: &str,
+    form_content: &str,
+    form_resources: Dictionary,
+) -> PageRender {
+    let mut doc = Document::with_version("1.7");
+    let form_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), PAGE.into(), PAGE.into()],
+            "Resources" => Object::Dictionary(form_resources),
+        },
+        form_content.as_bytes().to_vec(),
+    ));
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        page_content.as_bytes().to_vec(),
+    ));
+    let resources_id = doc.add_object(dictionary! {
+        "XObject" => dictionary! { "Fm0" => Object::Reference(form_id) },
+    });
+    let pages_id = (doc.new_object_id().0, 0);
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => Object::Reference(pages_id),
+        "Contents" => Object::Reference(content_id),
+        "Resources" => Object::Reference(resources_id),
+        "MediaBox" => vec![0.into(), 0.into(), PAGE.into(), PAGE.into()],
+    });
+    doc.set_object(
+        pages_id,
+        dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => 1,
+        },
+    );
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => Object::Reference(pages_id),
+    });
+    doc.trailer.set("Root", Object::Reference(catalog_id));
+    render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate())
+        .expect("render form phải thành công")
+}
+
 /// Hàm màu: K từ 0% tới 100%.
 fn k_ramp() -> Dictionary {
     dictionary! {
@@ -127,7 +174,10 @@ fn shading_without_extend_leaves_outside_untouched() {
     let r = render("/Sh0 sh", shading_res(d));
     let w = r.buffer.width() as usize;
     let h = r.buffer.height() as usize / 2;
-    assert!(px(&r, 3, w - 2, h) == 0, "ngoài trục không extend phải trắng");
+    assert!(
+        px(&r, 3, w - 2, h) == 0,
+        "ngoài trục không extend phải trắng"
+    );
 }
 
 #[test]
@@ -141,7 +191,10 @@ fn shading_with_extend_fills_beyond_the_axis() {
     let r = render("/Sh0 sh", shading_res(d));
     let w = r.buffer.width() as usize;
     let h = r.buffer.height() as usize / 2;
-    assert!(px(&r, 3, w - 2, h) > 235, "extend phải phủ tiếp tới hết trang");
+    assert!(
+        px(&r, 3, w - 2, h) > 235,
+        "extend phải phủ tiếp tới hết trang"
+    );
 }
 
 #[test]
@@ -250,7 +303,30 @@ fn shading_pattern_produces_a_gradient_not_a_flat_fill() {
     let h = r.buffer.height() as usize / 2;
     let left = px(&r, 3, 2, h);
     let right = px(&r, 3, w - 2, h);
-    assert!(right as i32 - left as i32 > 200, "left={left} right={right}");
+    assert!(
+        right as i32 - left as i32 > 200,
+        "left={left} right={right}"
+    );
+}
+
+#[test]
+fn shading_pattern_uses_the_enclosing_stream_initial_matrix() {
+    // Form được thu 0.5× và dịch sang giữa trang. `cm 2×` bên trong form
+    // chỉ phóng đường dẫn; nó không được phóng pattern lần nữa. Pattern
+    // `/Matrix` phải ghép với CTM khởi đầu của form, không phải CTM đầu
+    // trang và cũng không phải CTM sau `cm` của form.
+    let r = render_form_with_pattern(
+        "q .5 0 0 .5 25 25 cm /Fm0 Do Q",
+        "2 0 0 2 0 0 cm /Pattern cs /P0 scn 0 0 50 50 re f",
+        pattern_res(axial(None)),
+    );
+    let y = r.buffer.height() as usize / 2;
+    let left = px(&r, 3, 27, y);
+    let mid = px(&r, 3, 50, y);
+    let right = px(&r, 3, 73, y);
+    assert!(left < 20, "gradient phải bắt đầu gần 0% K: {left}");
+    assert!((mid as i32 - 128).abs() < 20, "giữa phải ~50% K: {mid}");
+    assert!(right > 235, "gradient phải kết thúc gần 100% K: {right}");
 }
 
 #[test]
@@ -332,5 +408,8 @@ fn shading_pattern_respects_overprint() {
     let w = r.buffer.width() as usize;
     let h = r.buffer.height() as usize / 2;
     assert_eq!(px(&r, 0, w - 2, h), 255, "overprint phải giữ Cyan nền");
-    assert!(px(&r, 3, w - 2, h) > 200, "và vẫn thêm mực đen của gradient");
+    assert!(
+        px(&r, 3, w - 2, h) > 200,
+        "và vẫn thêm mực đen của gradient"
+    );
 }

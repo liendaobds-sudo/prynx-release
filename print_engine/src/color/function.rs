@@ -63,7 +63,9 @@ impl PdfFunction {
         match self {
             PdfFunction::Sampled { n_out, .. } => *n_out,
             PdfFunction::Exponential { c0, .. } => c0.len(),
-            PdfFunction::Stitching { functions, range, .. } => range
+            PdfFunction::Stitching {
+                functions, range, ..
+            } => range
                 .as_ref()
                 .map(|r| r.len() / 2)
                 .unwrap_or_else(|| functions.first().map(|f| f.n_out()).unwrap_or(1)),
@@ -83,7 +85,13 @@ impl PdfFunction {
                 }
                 out
             }
-            PdfFunction::Exponential { domain, c0, c1, n, range } => {
+            PdfFunction::Exponential {
+                domain,
+                c0,
+                c1,
+                n,
+                range,
+            } => {
                 let x = clamp_to(input.first().copied().unwrap_or(0.0), domain, 0);
                 let t = if *n == 1.0 { x } else { safe_pow(x, *n) };
                 let mut out: Vec<f32> = c0
@@ -96,10 +104,19 @@ impl PdfFunction {
                 }
                 out
             }
-            PdfFunction::Stitching { domain, functions, bounds, encode, range } => {
+            PdfFunction::Stitching {
+                domain,
+                functions,
+                bounds,
+                encode,
+                range,
+            } => {
                 let x = clamp_to(input.first().copied().unwrap_or(0.0), domain, 0);
                 let (d0, d1) = (domain[0], domain[1]);
-                let k = bounds.iter().position(|b| x < *b).unwrap_or(functions.len() - 1);
+                let k = bounds
+                    .iter()
+                    .position(|b| x < *b)
+                    .unwrap_or(functions.len() - 1);
                 let low = if k == 0 { d0 } else { bounds[k - 1] };
                 let high = if k == bounds.len() { d1 } else { bounds[k] };
                 let (e0, e1) = (
@@ -113,10 +130,22 @@ impl PdfFunction {
                 }
                 out
             }
-            PdfFunction::Sampled { domain, range, size, encode, decode, samples, n_out } => {
+            PdfFunction::Sampled {
+                domain,
+                range,
+                size,
+                encode,
+                decode,
+                samples,
+                n_out,
+            } => {
                 let mut out = eval_sampled(input, domain, size, encode, samples, *n_out);
                 // Decode đưa mẫu 0..1 về khoảng thực; mặc định Decode = Range.
-                let dec = if decode.len() >= n_out * 2 { decode } else { range };
+                let dec = if decode.len() >= n_out * 2 {
+                    decode
+                } else {
+                    range
+                };
                 for (j, v) in out.iter_mut().enumerate() {
                     let (d0, d1) = (dec[2 * j], dec[2 * j + 1]);
                     *v = d0 + *v * (d1 - d0);
@@ -124,7 +153,11 @@ impl PdfFunction {
                 clamp_range(&mut out, range);
                 out
             }
-            PdfFunction::PostScript { domain, range, program } => {
+            PdfFunction::PostScript {
+                domain,
+                range,
+                program,
+            } => {
                 let mut stack: Vec<f32> = Vec::with_capacity(32);
                 for (i, v) in input.iter().enumerate() {
                     stack.push(clamp_to(*v, domain, i));
@@ -198,7 +231,10 @@ fn eval_sampled(
         let (d0, d1) = (domain[2 * i], domain[2 * i + 1]);
         let (e0, e1) = (
             encode.get(2 * i).copied().unwrap_or(0.0),
-            encode.get(2 * i + 1).copied().unwrap_or((size[i] - 1) as f32),
+            encode
+                .get(2 * i + 1)
+                .copied()
+                .unwrap_or((size[i] - 1) as f32),
         );
         let e = interpolate(x, d0, d1, e0, e1).clamp(0.0, (size[i] - 1) as f32);
         let i0 = e.floor() as usize;
@@ -358,7 +394,9 @@ fn tokenize_ps(text: &str) -> Vec<String> {
 
 fn parse_ps_block(tokens: &[String], pos: &mut usize, depth: u32) -> PpeResult<Vec<PsOp>> {
     if depth > PS_MAX_DEPTH {
-        return Err(PpeError::ContentStream("function kiểu 4 lồng quá sâu".into()));
+        return Err(PpeError::ContentStream(
+            "function kiểu 4 lồng quá sâu".into(),
+        ));
     }
     let mut ops = Vec::new();
     // Khối `{…}` đã đọc nhưng chưa biết thuộc `if` hay `ifelse`.
@@ -486,8 +524,16 @@ fn exec_ps(program: &[PsOp], stack: &mut Vec<f32>, depth: u32) {
             Sub => bin!(|a, b| a - b),
             Mul => bin!(|a, b| a * b),
             Div => bin!(|a, b| if b == 0.0 { 0.0 } else { a / b }),
-            Idiv => bin!(|a, b| if b as i32 == 0 { 0.0 } else { ((a as i32) / (b as i32)) as f32 }),
-            Mod => bin!(|a, b| if b as i32 == 0 { 0.0 } else { ((a as i32) % (b as i32)) as f32 }),
+            Idiv => bin!(|a, b| if b as i32 == 0 {
+                0.0
+            } else {
+                ((a as i32) / (b as i32)) as f32
+            }),
+            Mod => bin!(|a, b| if b as i32 == 0 {
+                0.0
+            } else {
+                ((a as i32) % (b as i32)) as f32
+            }),
             Exp => bin!(|a, b| safe_pow(a, b)),
 
             Neg => {
@@ -825,8 +871,9 @@ mod tests {
     #[test]
     fn ps_spot_to_cmyk_transform_shape() {
         // Dạng tint transform Illustrator hay xuất cho Separation 1-in 4-out.
-        let prog = parse_ps_program(b"{ dup 0.0 mul exch dup 0.91 mul exch dup 0.76 mul exch 0.0 mul }")
-            .unwrap();
+        let prog =
+            parse_ps_program(b"{ dup 0.0 mul exch dup 0.91 mul exch dup 0.76 mul exch 0.0 mul }")
+                .unwrap();
         let f = PdfFunction::PostScript {
             domain: vec![0.0, 1.0],
             range: vec![0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0],

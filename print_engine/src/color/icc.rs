@@ -91,7 +91,11 @@ impl Lut3 {
         let fa = a.clamp(0.0, 1.0) * g as f32;
         let fb = b.clamp(0.0, 1.0) * g as f32;
         let fc = c.clamp(0.0, 1.0) * g as f32;
-        let (ia, ib, ic) = (fa.floor() as usize, fb.floor() as usize, fc.floor() as usize);
+        let (ia, ib, ic) = (
+            fa.floor() as usize,
+            fb.floor() as usize,
+            fc.floor() as usize,
+        );
         let (ia, ib, ic) = (ia.min(g - 1), ib.min(g - 1), ic.min(g - 1));
         let (ta, tb, tc) = (fa - ia as f32, fb - ib as f32, fc - ic as f32);
 
@@ -237,7 +241,11 @@ impl ColorManager {
             // Điểm trắng D50 — PCS của ICC dùng D50, không phải D65.
             let lab = Profile::new_lab4_context(
                 lcms2::GlobalContext::new(),
-                &lcms2::CIExyY { x: 0.3457, y: 0.3585, Y: 1.0 },
+                &lcms2::CIExyY {
+                    x: 0.3457,
+                    y: 0.3585,
+                    Y: 1.0,
+                },
             )
             .ok()?;
             // Lưới LUT chạy 0..1, cần trải về khoảng thật của Lab.
@@ -261,7 +269,11 @@ impl ColorManager {
         let mut slot = self.gray_lut.borrow_mut();
         if slot.is_none() {
             let gray_profile = Profile::new_gray(
-                &lcms2::CIExyY { x: 0.3457, y: 0.3585, Y: 1.0 },
+                &lcms2::CIExyY {
+                    x: 0.3457,
+                    y: 0.3585,
+                    Y: 1.0,
+                },
                 &lcms2::ToneCurve::new(2.2),
             )
             .ok()?;
@@ -327,31 +339,6 @@ impl ColorManager {
     }
 
     /// Dựng LUT 33³ từ một profile nguồn 3 kênh.
-    /// CMYK → blending RGB theo đúng profile RGB nguồn của `DeviceRGB`.
-    ///
-    /// Khác `cmyk_to_srgb_batch`: hàm này giữ float để dùng làm backdrop blending,
-    /// không lượng tử hoá qua RGB 8-bit.
-    pub fn cmyk_to_rgb_blend_batch(&self, cmyk: &[[f32; 4]]) -> Option<Vec<[f32; 3]>> {
-        let fallback = Profile::new_srgb();
-        let rgb = self.rgb.as_ref().unwrap_or(&fallback);
-        let t: Transform<[f32; 4], [f32; 3]> = Transform::new_flags(
-            &self.cmyk,
-            PixelFormat::CMYK_FLT,
-            rgb,
-            PixelFormat::RGB_FLT,
-            self.intent.to_lcms(),
-            self.cms_flags(),
-        )
-        .ok()?;
-        let src: Vec<[f32; 4]> = cmyk
-            .iter()
-            .map(|c| [c[0] * 100.0, c[1] * 100.0, c[2] * 100.0, c[3] * 100.0])
-            .collect();
-        let mut dst = vec![[0.0f32; 3]; src.len()];
-        t.transform_pixels(&src, &mut dst);
-        Some(dst)
-    }
-
     fn build_lut(
         &self,
         src_profile: &Profile,
@@ -430,11 +417,20 @@ mod tests {
     #[test]
     fn intent_maps_from_pdf_values() {
         assert_eq!(RenderIntent::from_pdf(0), RenderIntent::Perceptual);
-        assert_eq!(RenderIntent::from_pdf(1), RenderIntent::RelativeColorimetric);
+        assert_eq!(
+            RenderIntent::from_pdf(1),
+            RenderIntent::RelativeColorimetric
+        );
         assert_eq!(RenderIntent::from_pdf(2), RenderIntent::Saturation);
-        assert_eq!(RenderIntent::from_pdf(3), RenderIntent::AbsoluteColorimetric);
+        assert_eq!(
+            RenderIntent::from_pdf(3),
+            RenderIntent::AbsoluteColorimetric
+        );
         // Giá trị lạ phải về mặc định an toàn, không panic.
-        assert_eq!(RenderIntent::from_pdf(99), RenderIntent::RelativeColorimetric);
+        assert_eq!(
+            RenderIntent::from_pdf(99),
+            RenderIntent::RelativeColorimetric
+        );
     }
 
     #[test]
@@ -489,7 +485,10 @@ mod tests {
         for step in 0..=10 {
             let v = 1.0 - step as f32 / 10.0;
             let tac: f32 = cm.rgb_to_cmyk(v, v, v).unwrap().iter().sum();
-            assert!(tac >= prev - 0.02, "không đơn điệu tại v={v}: {tac} < {prev}");
+            assert!(
+                tac >= prev - 0.02,
+                "không đơn điệu tại v={v}: {tac} < {prev}"
+            );
             prev = tac;
         }
     }
@@ -555,7 +554,11 @@ mod tests {
         let b = cm.embedded_to_cmyk(&srgb_bytes, 0.2, 0.4, 0.6);
         assert_eq!(a, b);
         assert!(a.is_some());
-        assert_eq!(cm.embedded_luts.borrow().len(), 1, "phải cache, không dựng lại");
+        assert_eq!(
+            cm.embedded_luts.borrow().len(),
+            1,
+            "phải cache, không dựng lại"
+        );
     }
 
     #[test]

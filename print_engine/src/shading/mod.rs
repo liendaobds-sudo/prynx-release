@@ -86,7 +86,11 @@ pub fn resolve_shading(
     let dict = match resolved {
         Object::Dictionary(d) => d,
         Object::Stream(s) => &s.dict,
-        _ => return Err(PpeError::MalformedPdf("shading không phải dict/stream".into())),
+        _ => {
+            return Err(PpeError::MalformedPdf(
+                "shading không phải dict/stream".into(),
+            ))
+        }
     };
 
     let shading_type = pdf::dict_get(doc, dict, "ShadingType")
@@ -193,7 +197,13 @@ pub fn resolve_shading(
         }
     };
 
-    Ok(Shading { kind, colorspace, function, bbox, background })
+    Ok(Shading {
+        kind,
+        colorspace,
+        function,
+        bbox,
+        background,
+    })
 }
 
 #[cfg(test)]

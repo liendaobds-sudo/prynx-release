@@ -77,7 +77,11 @@ pub fn extract_inline_images(src: &[u8]) -> ExtractResult {
         i += 1;
     }
 
-    ExtractResult { data: out, images, failed }
+    ExtractResult {
+        data: out,
+        images,
+        failed,
+    }
 }
 
 /// `true` nếu tại `pos` là token `tok` đứng độc lập (có ranh giới hai bên).
@@ -94,7 +98,21 @@ fn is_token_at(src: &[u8], pos: usize, tok: &[u8]) -> bool {
 fn is_delimiter(b: u8) -> bool {
     matches!(
         b,
-        b' ' | b'\t' | b'\r' | b'\n' | b'\x0c' | b'\0' | b'/' | b'[' | b']' | b'<' | b'>' | b'(' | b')' | b'{' | b'}' | b'%'
+        b' ' | b'\t'
+            | b'\r'
+            | b'\n'
+            | b'\x0c'
+            | b'\0'
+            | b'/'
+            | b'['
+            | b']'
+            | b'<'
+            | b'>'
+            | b'('
+            | b')'
+            | b'{'
+            | b'}'
+            | b'%'
     )
 }
 
@@ -592,7 +610,12 @@ mod tests {
     fn filter_alias_inside_array_is_expanded() {
         let src = b"BI /W 1 /H 1 /CS /G /F [/A85 /Fl] ID zzz EI";
         let (_, r) = extract(src);
-        let arr = stream_of(&r, 0).dict.get(b"Filter").unwrap().as_array().unwrap();
+        let arr = stream_of(&r, 0)
+            .dict
+            .get(b"Filter")
+            .unwrap()
+            .as_array()
+            .unwrap();
         assert_eq!(arr[0].as_name().unwrap(), b"ASCII85Decode");
         assert_eq!(arr[1].as_name().unwrap(), b"FlateDecode");
     }
@@ -710,7 +733,12 @@ mod tests {
         let src = b"BI /W 1 /H 1 /BPC 8 /CS /PANTONE#20485 ID \x01 EI";
         let (_, r) = extract(src);
         assert_eq!(
-            stream_of(&r, 0).dict.get(b"ColorSpace").unwrap().as_name().unwrap(),
+            stream_of(&r, 0)
+                .dict
+                .get(b"ColorSpace")
+                .unwrap()
+                .as_name()
+                .unwrap(),
             "PANTONE 485".as_bytes()
         );
     }
@@ -720,6 +748,14 @@ mod tests {
         let src = b"BI /W 1 % chu thich\n /H 1 /BPC 8 /CS /G ID \x01 EI";
         let (_, r) = extract(src);
         assert_eq!(r.failed, 0);
-        assert_eq!(stream_of(&r, 0).dict.get(b"Height").unwrap().as_i64().unwrap(), 1);
+        assert_eq!(
+            stream_of(&r, 0)
+                .dict
+                .get(b"Height")
+                .unwrap()
+                .as_i64()
+                .unwrap(),
+            1
+        );
     }
 }

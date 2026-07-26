@@ -550,6 +550,175 @@ def write_image_fixture(path: Path, colorspace: str, n_comps: int, sample: list[
     path.write_bytes(bytes(out))
 
 
+def _flate_image_obj(
+    colorspace: str,
+    w: int,
+    h: int,
+    data: bytes,
+    smask_ref: str = "",
+) -> bytes:
+    """Image XObject 8-bit nén Flate, tuỳ chọn tham chiếu `/SMask`."""
+    compressed = zlib.compress(data)
+    smask = f" /SMask {smask_ref}" if smask_ref else ""
+    head = (
+        f"<< /Type /XObject /Subtype /Image /Width {w} /Height {h} "
+        f"/BitsPerComponent 8 /ColorSpace {colorspace}{smask} "
+        f"/Filter /FlateDecode /Length {len(compressed)} >>"
+    ).encode("latin-1")
+    return head + b"\nstream\n" + compressed + b"\nendstream"
+
+
+def write_downscale_fixtures() -> int:
+    """Fixture một-biến cho hành vi downscale ảnh (decimation).
+
+    Vì sao tồn tại: residual 72 DPI (`tra gung`, `banner`, `túi nước mắm`) đều là
+    ảnh đặt thu nhỏ với tỷ lệ texel/pixel ≥ 3, nơi Ghostscript cho ra nội dung
+    "béo" hơn phép lấy mẫu tâm pixel. File thật trộn quá nhiều biến; các fixture
+    này cô lập đúng MỘT biến — vị trí sọc 1-texel so với lưới pixel thiết bị —
+    để đo được ngữ nghĩa lấy mẫu của GS bằng số.
+
+    Hình học chung: ảnh 576 texel ngang × 8 hàng (mọi hàng giống nhau — biến số
+    chỉ nằm theo X), đặt vào khung 180 pt. Tỷ lệ texel/pixel theo DPI:
+    72 → 3.2 (vùng "béo hoá"), 100 → 2.304 (GS trùng nearest từng pixel),
+    150 → 1.536. Cùng một fixture đo được cả ba chế độ; muốn quét ratio khác
+    chỉ cần đổi DPI khi đo, không cần thêm file.
+
+    Offset đặt 10.203 pt chứ KHÔNG phải 10: với offset nguyên + ratio 16/5,
+    mọi biên sọc rơi đúng nửa-pixel (tie của phép làm tròn fixed-point) — đo
+    được mỗi luật xử lý tie chứ không đo được ngữ nghĩa lấy mẫu. 0.203 đẩy
+    các pha ra khỏi tie ở cả ba DPI gate.
+    """
+    w, h = 576, 8
+    span = 180  # pt, trong trang 200×200
+    off = 10.203
+    place = f"q {span} 0 0 {span} {off} {off} cm /Im0 Do Q\n"
+
+    def stems_cmyk(stripe_cols: set[int]) -> bytes:
+        row = bytearray()
+        for x in range(w):
+            row += b"\x00\x00\x00\xff" if x in stripe_cols else b"\x00\x00\x00\x00"
+        return bytes(row) * h
+
+    def stems_gray(stripe_cols: set[int], value: int) -> bytes:
+        row = bytes(value if x in stripe_cols else 0 for x in range(w))
+        return row * h
+
+    period4 = set(range(0, w, 4))
+    # 8 sọc cô lập, bước 37 texel: 37/3.2 = 11.5625 px thiết bị ⇒ mỗi sọc rơi ở
+    # một pha khác nhau so với lưới pixel — đo được sọc nào GS giữ, sọc nào rơi.
+    isolated = set(range(37, 37 + 8 * 37, 37))
+
+    # 1. Sọc đen K 1-texel chu kỳ 4: nội dung "dày" mà GS béo hoá khi ratio ≥ 3.
+    (OUT_DIR / "image_stems_p4.pdf").write_bytes(
+        build_pdf(
+            place,
+            "/XObject << /Im0 5 0 R >>",
+            (_flate_image_obj("/DeviceCMYK", w, h, stems_cmyk(period4)),),
+        )
+    )
+
+    # 2. Cùng sọc chu kỳ 4 nhưng nằm trong /SMask giá trị THẤP (64/255) trên nền
+    # K đặc: cô lập đường downscale của mặt nạ khỏi đường downscale của mẫu màu.
+    (OUT_DIR / "image_stems_p4_smask_low.pdf").write_bytes(
+        build_pdf(
+            place,
+            "/XObject << /Im0 5 0 R >>",
+            (
+                _flate_image_obj(
+                    "/DeviceCMYK", w, h, b"\x00\x00\x00\xff" * (w * h), smask_ref="6 0 R"
+                ),
+                _flate_image_obj("/DeviceGray", w, h, stems_gray(period4, 64)),
+            ),
+        )
+    )
+
+    # 3. Sọc cô lập: kiểm chiều NGƯỢC — GS không union toàn footprint, sọc lẻ
+    # phần lớn bị rơi. Mô hình nào giữ hết sọc lẻ là phồng mực so với GS.
+    (OUT_DIR / "image_stems_isolated37.pdf").write_bytes(
+        build_pdf(
+            place,
+            "/XObject << /Im0 5 0 R >>",
+            (_flate_image_obj("/DeviceCMYK", w, h, stems_cmyk(isolated)),),
+        )
+    )
+    written = 3
+
+    # 4. Đảo cực: nền K đặc, KHE TRẮNG 1-texel chu kỳ 4 — chiều nguy hiểm thật
+    # của tra gung/banner (nội dung dày, PPE giữ khe trắng mà GS làm rơi thì PPE
+    # báo THIẾU mực). Cùng hình học với (1), chỉ đổi cực tính.
+    gaps = set(x for x in range(w) if x % 4 != 0)
+    (OUT_DIR / "image_gaps_p4.pdf").write_bytes(
+        build_pdf(
+            place,
+            "/XObject << /Im0 5 0 R >>",
+            (_flate_image_obj("/DeviceCMYK", w, h, stems_cmyk(gaps)),),
+        )
+    )
+    written += 1
+
+    # 5+6. Cùng sọc/khe nhưng mã hoá DCT (JPEG): tra gung/banner đều là ảnh JPEG
+    # — nếu hành vi "béo hoá" của GS nằm ở đường decode DCT (decode thu nhỏ theo
+    # block) thì fixture Flate không bao giờ kích hoạt được nó. Biến số duy nhất
+    # so với (1)/(4) là codec.
+    #
+    # LƯU Ý CỰC TÍNH: Pillow ghi JPEG CMYK với APP14 nhưng KHÔNG theo quy ước
+    # đảo của Adobe, nên GS (và PPE khớp GS) render các file này thành ÂM BẢN
+    # của pattern đã vẽ. Vì thế fixture vẽ ở vùng mực THẤP quanh nền xám: sau
+    # khi đảo, nền thành ~120% TAC — dưới ngưỡng 300% của footprint-max, để
+    # fixture đo ĐÚNG một biến (codec + lưới nearest) chứ không đo cơ chế
+    # bảo thủ TAC (nền 400% sau đảo từng nuốt sạch khe K của pattern).
+    try:
+        from PIL import Image
+        import io
+
+        def dct_bytes(stripe_cols: set[int]) -> bytes:
+            img = Image.new("CMYK", (w, h))
+            px = img.load()
+            for y in range(h):
+                for x in range(w):
+                    px[x, y] = (180, 180, 180, 230) if x in stripe_cols else (180, 180, 180, 180)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=95)
+            return buf.getvalue()
+
+        def dct_image_obj(data: bytes) -> bytes:
+            head = (
+                f"<< /Type /XObject /Subtype /Image /Width {w} /Height {h} "
+                f"/BitsPerComponent 8 /ColorSpace /DeviceCMYK "
+                f"/Filter /DCTDecode /Length {len(data)} >>"
+            ).encode("latin-1")
+            return head + b"\nstream\n" + data + b"\nendstream"
+
+        for name, cols in (
+            ("image_stems_p4_dct.pdf", period4),
+            ("image_gaps_p4_dct.pdf", gaps),
+        ):
+            (OUT_DIR / name).write_bytes(
+                build_pdf(place, "/XObject << /Im0 5 0 R >>", (dct_image_obj(dct_bytes(cols)),))
+            )
+            written += 1
+    except ImportError:
+        print("  bỏ qua fixture DCT downscale: thiếu Pillow")
+
+    # 7. Trục Y: ảnh chuyển vị (8×576), sọc NGANG — đường xử lý hàng của
+    # rasterizer khác đường xử lý run trong hàng; nếu hai trục cùng ngữ nghĩa
+    # thì fixture này khớp (1), lệch là bằng chứng phải mô phỏng riêng từng trục.
+    row_black = b"\x00\x00\x00\xff" * 8
+    row_white = b"\x00\x00\x00\x00" * 8
+    y_data = b"".join(
+        row_black if y % 4 == 0 else row_white for y in range(w)
+    )
+    (OUT_DIR / "image_stems_p4_yaxis.pdf").write_bytes(
+        build_pdf(
+            place,
+            "/XObject << /Im0 5 0 R >>",
+            (_flate_image_obj("/DeviceCMYK", 8, w, y_data),),
+        )
+    )
+    written += 1
+    return written
+
+
 def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     written = 0
@@ -566,6 +735,7 @@ def main() -> int:
 
     written += write_mesh_fixtures()
     written += write_ccitt_fixture()
+    written += write_downscale_fixtures()
 
     # Ảnh: cùng màu với các fixture vector tương ứng để so chéo được hai đường.
     write_image_fixture(OUT_DIR / "image_rgb_black.pdf", "/DeviceRGB", 3, [0, 0, 0])

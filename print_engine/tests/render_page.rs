@@ -9,7 +9,12 @@ use print_engine::content::RenderOptions;
 use print_engine::page::{render_page, PageBox, PageRender};
 
 /// Dựng PDF một trang từ content stream + resources.
-fn build_pdf(content: &str, resources: Dictionary, media: [f32; 4], rotate: Option<i32>) -> Document {
+fn build_pdf(
+    content: &str,
+    resources: Dictionary,
+    media: [f32; 4],
+    rotate: Option<i32>,
+) -> Document {
     let mut doc = Document::with_version("1.7");
 
     let content_id = doc.add_object(Stream::new(dictionary! {}, content.as_bytes().to_vec()));
@@ -221,7 +226,8 @@ fn spot_color_produces_its_own_plate() {
     assert_eq!(r.buffer.plate_u8(spot)[i], 255);
     for ch in 0..4 {
         assert_eq!(
-            r.buffer.plate_u8(ch)[i], 0,
+            r.buffer.plate_u8(ch)[i],
+            0,
             "spot KHÔNG được rơi sang kẽm process {ch}"
         );
     }
@@ -291,7 +297,10 @@ fn devicen_splits_components_to_separate_plates() {
     let i = center(&r);
     let varnish = plate_named(&r, "Varnish").expect("phải có kẽm Varnish");
     assert!((r.buffer.plate_u8(0)[i] as i32 - 64).abs() <= 2, "Cyan sai");
-    assert!((r.buffer.plate_u8(varnish)[i] as i32 - 191).abs() <= 2, "Varnish sai");
+    assert!(
+        (r.buffer.plate_u8(varnish)[i] as i32 - 191).abs() <= 2,
+        "Varnish sai"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -310,14 +319,15 @@ fn fill_respects_rectangle_bounds() {
 
 #[test]
 fn clip_limits_subsequent_fill() {
-    let r = render(
-        "0 0 5 10 re W n  0 0 0 1 k 0 0 10 10 re f",
-        dictionary! {},
-    );
+    let r = render("0 0 5 10 re W n  0 0 0 1 k 0 0 10 10 re f", dictionary! {});
     let w = r.buffer.width() as usize;
     let row = (r.buffer.height() as usize / 2) * w;
     assert_eq!(r.buffer.plate_u8(3)[row + 1], 255, "trong clip");
-    assert_eq!(r.buffer.plate_u8(3)[row + w - 1], 0, "ngoài clip phải trắng");
+    assert_eq!(
+        r.buffer.plate_u8(3)[row + w - 1],
+        0,
+        "ngoài clip phải trắng"
+    );
 }
 
 #[test]
@@ -330,21 +340,23 @@ fn clip_is_restored_by_q_and_uppercase_q() {
     let w = r.buffer.width() as usize;
     let row = (r.buffer.height() as usize / 2) * w;
     assert_eq!(
-        r.buffer.plate_u8(3)[row + w - 1], 255,
+        r.buffer.plate_u8(3)[row + w - 1],
+        255,
         "clip đã phục hồi nên toàn trang phải được tô"
     );
 }
 
 #[test]
 fn cm_translation_moves_the_shape() {
-    let r = render(
-        "1 0 0 1 5 0 cm 0 0 0 1 k 0 0 5 10 re f",
-        dictionary! {},
-    );
+    let r = render("1 0 0 1 5 0 cm 0 0 0 1 k 0 0 5 10 re f", dictionary! {});
     let w = r.buffer.width() as usize;
     let row = (r.buffer.height() as usize / 2) * w;
     assert_eq!(r.buffer.plate_u8(3)[row + 1], 0, "bên trái phải trắng");
-    assert_eq!(r.buffer.plate_u8(3)[row + w - 1], 255, "hình đã dịch sang phải");
+    assert_eq!(
+        r.buffer.plate_u8(3)[row + w - 1],
+        255,
+        "hình đã dịch sang phải"
+    );
 }
 
 #[test]
@@ -357,16 +369,20 @@ fn stroke_paints_ink() {
 fn hairline_stroke_survives_rasterization() {
     // Đường bế cực mảnh: mất nét trên kẽm là lỗi chết người ở khâu bế.
     let r = render("0 0 0 1 K 0.01 w 0 5 m 10 5 l S", dictionary! {});
-    assert!(r.buffer.max_tac_percent() > 0.0, "hairline không được biến mất");
+    assert!(
+        r.buffer.max_tac_percent() > 0.0,
+        "hairline không được biến mất"
+    );
 }
 
 #[test]
 fn even_odd_fill_creates_hole() {
-    let r = render(
-        "0 0 0 1 k 0 0 10 10 re 3 3 4 4 re f*",
-        dictionary! {},
+    let r = render("0 0 0 1 k 0 0 10 10 re 3 3 4 4 re f*", dictionary! {});
+    assert_eq!(
+        r.buffer.plate_u8(3)[center(&r)],
+        0,
+        "even-odd phải để lỗ ở giữa"
     );
-    assert_eq!(r.buffer.plate_u8(3)[center(&r)], 0, "even-odd phải để lỗ ở giữa");
 }
 
 #[test]
@@ -474,7 +490,10 @@ fn image_xobject_now_paints_ink() {
     let r = render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate()).unwrap();
     assert_eq!(r.warnings.dropped_objects, 0, "ảnh gray 8-bit phải vẽ được");
     // Ảnh 1x1 DeviceGray giá trị 0 = đen ⇒ K đặc trên vùng ảnh chiếm.
-    assert!(r.buffer.max_tac_percent() > 0.0, "trang chỉ có ảnh không được ra trắng");
+    assert!(
+        r.buffer.max_tac_percent() > 0.0,
+        "trang chỉ có ảnh không được ra trắng"
+    );
 }
 
 #[test]
@@ -532,9 +551,7 @@ fn anti_alias_mode_softens_edges_while_ink_mode_does_not() {
     let aa = render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::default()).unwrap();
     let ink = render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate()).unwrap();
 
-    let has_partial = |r: &PageRender| {
-        r.buffer.plane(3).iter().any(|v| *v > 0.001 && *v < 0.999)
-    };
+    let has_partial = |r: &PageRender| r.buffer.plane(3).iter().any(|v| *v > 0.001 && *v < 0.999);
     assert!(has_partial(&aa), "chế độ xem trước phải có AA");
     assert!(!has_partial(&ink), "chế độ đo mực phải nhị phân");
 }

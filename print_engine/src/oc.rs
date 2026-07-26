@@ -106,9 +106,15 @@ impl OptionalContent {
                 continue;
             }
             for id in ref_ids(doc, dict.get(b"OCGs").ok()) {
-                let Ok(ocg) = doc.get_dictionary(id) else { continue };
-                let Some(usage) = pdf::dict_get_dict(doc, ocg, "Usage") else { continue };
-                let Some(print) = pdf::dict_get_dict(doc, usage, "Print") else { continue };
+                let Ok(ocg) = doc.get_dictionary(id) else {
+                    continue;
+                };
+                let Some(usage) = pdf::dict_get_dict(doc, ocg, "Usage") else {
+                    continue;
+                };
+                let Some(print) = pdf::dict_get_dict(doc, usage, "Print") else {
+                    continue;
+                };
                 match pdf::dict_get(doc, print, "PrintState")
                     .and_then(pdf::name_str)
                     .as_deref()
@@ -174,7 +180,9 @@ impl OptionalContent {
         // OCG phải so theo danh tính object.
         match pdf::deref(doc, raw) {
             Object::Dictionary(d) => {
-                if pdf::dict_get(doc, d, "Type").and_then(pdf::name_str).as_deref()
+                if pdf::dict_get(doc, d, "Type")
+                    .and_then(pdf::name_str)
+                    .as_deref()
                     == Some("OCMD")
                 {
                     self.ocmd_hidden(doc, d, 0)
@@ -400,7 +408,10 @@ mod tests {
             },
         );
         let oc = OptionalContent::load(&doc);
-        assert!(!oc.ocg_hidden(ocg), "/PrintState /ON phải thắng danh sách /OFF");
+        assert!(
+            !oc.ocg_hidden(ocg),
+            "/PrintState /ON phải thắng danh sách /OFF"
+        );
     }
 
     #[test]

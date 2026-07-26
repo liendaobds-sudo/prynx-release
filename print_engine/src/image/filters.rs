@@ -113,7 +113,10 @@ pub fn decode_chain(
                     codec.name()
                 )));
             }
-            return Ok(DecodedStream { data, remaining_codec: Some(codec) });
+            return Ok(DecodedStream {
+                data,
+                remaining_codec: Some(codec),
+            });
         }
 
         data = match filter.as_str() {
@@ -139,7 +142,10 @@ pub fn decode_chain(
         }
     }
 
-    Ok(DecodedStream { data, remaining_codec: None })
+    Ok(DecodedStream {
+        data,
+        remaining_codec: None,
+    })
 }
 
 fn inflate(input: &[u8]) -> PpeResult<Vec<u8>> {
@@ -161,9 +167,13 @@ fn inflate_with(input: &[u8], zlib: bool) -> PpeResult<Vec<u8>> {
     let mut out = Vec::new();
     let taken = Read::take(std::io::Cursor::new(input), input.len() as u64);
     let result = if zlib {
-        flate2::read::ZlibDecoder::new(taken).take(MAX_DECODED as u64).read_to_end(&mut out)
+        flate2::read::ZlibDecoder::new(taken)
+            .take(MAX_DECODED as u64)
+            .read_to_end(&mut out)
     } else {
-        flate2::read::DeflateDecoder::new(taken).take(MAX_DECODED as u64).read_to_end(&mut out)
+        flate2::read::DeflateDecoder::new(taken)
+            .take(MAX_DECODED as u64)
+            .read_to_end(&mut out)
     };
     match result {
         // Dữ liệu bị cắt vẫn dùng được phần đã giải: ảnh thiếu đuôi còn hơn mất
@@ -227,7 +237,9 @@ pub fn ascii85_decode(input: &[u8]) -> PpeResult<Vec<u8>> {
     }
     if count > 0 {
         if count == 1 {
-            return Err(PpeError::MalformedPdf("ASCII85Decode nhóm cuối chỉ 1 ký tự".into()));
+            return Err(PpeError::MalformedPdf(
+                "ASCII85Decode nhóm cuối chỉ 1 ký tự".into(),
+            ));
         }
         for slot in tuple.iter_mut().skip(count) {
             *slot = 84; // đệm bằng 'u'
@@ -307,7 +319,9 @@ pub fn runlength_decode(input: &[u8]) -> PpeResult<Vec<u8>> {
             }
         }
         if out.len() > MAX_DECODED {
-            return Err(PpeError::MalformedPdf("RunLengthDecode vượt trần bộ nhớ".into()));
+            return Err(PpeError::MalformedPdf(
+                "RunLengthDecode vượt trần bộ nhớ".into(),
+            ));
         }
     }
     Ok(out)
@@ -360,7 +374,11 @@ pub fn apply_predictor(data: &[u8], p: PredictorParams) -> PpeResult<Vec<u8>> {
                 for i in 0..row_len {
                     let a = if i >= bpp { row[i - bpp] as i16 } else { 0 };
                     let b = prev_row[i] as i16;
-                    let c = if i >= bpp { prev_row[i - bpp] as i16 } else { 0 };
+                    let c = if i >= bpp {
+                        prev_row[i - bpp] as i16
+                    } else {
+                        0
+                    };
                     row[i] = row[i].wrapping_add(paeth(a, b, c));
                 }
             }
@@ -403,7 +421,11 @@ fn tiff_predictor(
         return data.to_vec();
     }
     let mut out = data.to_vec();
-    let rows = if row_len == 0 { 0 } else { data.len() / row_len };
+    let rows = if row_len == 0 {
+        0
+    } else {
+        data.len() / row_len
+    };
     for r in 0..rows {
         let base = r * row_len;
         for col in 1..columns {
@@ -443,12 +465,17 @@ mod tests {
     fn truncated_flate_keeps_partial_data_instead_of_failing() {
         // Ảnh thiếu đuôi còn dùng được; mất cả trang thì không.
         // Dữ liệu khó nén (không phải chuỗi lặp) để nửa stream đã đủ sinh output.
-        let original: Vec<u8> = (0..65536u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
+        let original: Vec<u8> = (0..65536u32)
+            .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
+            .collect();
         let full = zlib(&original);
         let cut = &full[..full.len() / 2];
         let out = decode_chain(cut, &["FlateDecode".into()], &[None]).unwrap();
         assert!(!out.data.is_empty(), "phải giữ được phần đã giải nén");
-        assert!(out.data.len() < original.len(), "và phải là một phần, không phải toàn bộ");
+        assert!(
+            out.data.len() < original.len(),
+            "và phải là một phần, không phải toàn bộ"
+        );
         assert_eq!(&out.data[..64], &original[..64], "phần giải được phải đúng");
     }
 
@@ -527,7 +554,13 @@ mod tests {
     fn png_predictor_up_reconstructs_rows() {
         // 2 hàng, 3 byte/hàng. Hàng 1 filter 0 (none), hàng 2 filter 2 (up).
         let raw = vec![0, 10, 20, 30, 2, 1, 1, 1];
-        let p = PredictorParams { predictor: 15, colors: 3, bits_per_component: 8, columns: 1, ..Default::default() };
+        let p = PredictorParams {
+            predictor: 15,
+            colors: 3,
+            bits_per_component: 8,
+            columns: 1,
+            ..Default::default()
+        };
         let out = apply_predictor(&raw, p).unwrap();
         assert_eq!(out, vec![10, 20, 30, 11, 21, 31]);
     }
@@ -536,7 +569,13 @@ mod tests {
     fn png_predictor_sub_uses_left_pixel() {
         // 1 hàng, 2 pixel RGB, filter 1 (sub).
         let raw = vec![1, 10, 20, 30, 5, 5, 5];
-        let p = PredictorParams { predictor: 15, colors: 3, bits_per_component: 8, columns: 2, ..Default::default() };
+        let p = PredictorParams {
+            predictor: 15,
+            colors: 3,
+            bits_per_component: 8,
+            columns: 2,
+            ..Default::default()
+        };
         let out = apply_predictor(&raw, p).unwrap();
         assert_eq!(out, vec![10, 20, 30, 15, 25, 35]);
     }
@@ -547,18 +586,31 @@ mod tests {
         // Hàng 2 toàn 0 ⇒ Paeth dự đoán đúng bằng hàng trên (a=left, b=up, c=up-left)
         // nên kết quả phải lặp lại hàng 1.
         let raw = vec![0, 10, 20, 30, 40, 4, 0, 0, 0, 0];
-        let p = PredictorParams { predictor: 15, colors: 1, bits_per_component: 8, columns: 4, ..Default::default() };
+        let p = PredictorParams {
+            predictor: 15,
+            colors: 1,
+            bits_per_component: 8,
+            columns: 4,
+            ..Default::default()
+        };
         let out = apply_predictor(&raw, p).unwrap();
         assert_eq!(out.len(), 8);
         assert_eq!(&out[..4], &[10, 20, 30, 40], "hàng 1 không filter");
-        assert_eq!(&out[4..], &[10, 20, 30, 40], "Paeth với delta 0 phải lặp hàng trên");
+        assert_eq!(
+            &out[4..],
+            &[10, 20, 30, 40],
+            "Paeth với delta 0 phải lặp hàng trên"
+        );
     }
 
     #[test]
     fn lzw_early_change_flag_is_honoured() {
         // Không đọc /EarlyChange thì LZW lệch dần từ giữa stream: nửa trên ảnh
         // đúng, nửa dưới nhiễu. Ở đây chỉ chốt rằng cờ được truyền xuống.
-        let p = PredictorParams { early_change: false, ..Default::default() };
+        let p = PredictorParams {
+            early_change: false,
+            ..Default::default()
+        };
         // Dữ liệu LZW hỏng ⇒ cả hai chế độ đều lỗi, nhưng không được panic.
         let r = decode_chain(b"\x80\x0B\x60", &["LZWDecode".into()], &[Some(p)]);
         assert!(r.is_ok() || r.is_err());
@@ -567,14 +619,26 @@ mod tests {
     #[test]
     fn png_predictor_rejects_unknown_filter_type() {
         let raw = vec![9, 1, 2, 3];
-        let p = PredictorParams { predictor: 15, colors: 3, bits_per_component: 8, columns: 1, ..Default::default() };
+        let p = PredictorParams {
+            predictor: 15,
+            colors: 3,
+            bits_per_component: 8,
+            columns: 1,
+            ..Default::default()
+        };
         assert!(apply_predictor(&raw, p).is_err());
     }
 
     #[test]
     fn tiff_predictor_accumulates_horizontally() {
         let raw = vec![10, 1, 1, 1];
-        let p = PredictorParams { predictor: 2, colors: 1, bits_per_component: 8, columns: 4, ..Default::default() };
+        let p = PredictorParams {
+            predictor: 2,
+            colors: 1,
+            bits_per_component: 8,
+            columns: 4,
+            ..Default::default()
+        };
         let out = apply_predictor(&raw, p).unwrap();
         assert_eq!(out, vec![10, 11, 12, 13]);
     }
@@ -583,7 +647,13 @@ mod tests {
     fn predictor_is_applied_inside_chain() {
         // Đây là bug mà lopdf không lo: inflate xong PHẢI áp predictor.
         let rows = vec![0u8, 10, 20, 30, 2, 1, 1, 1];
-        let p = PredictorParams { predictor: 15, colors: 3, bits_per_component: 8, columns: 1, ..Default::default() };
+        let p = PredictorParams {
+            predictor: 15,
+            colors: 3,
+            bits_per_component: 8,
+            columns: 1,
+            ..Default::default()
+        };
         let out = decode_chain(&zlib(&rows), &["FlateDecode".into()], &[Some(p)]).unwrap();
         assert_eq!(out.data, vec![10, 20, 30, 11, 21, 31]);
     }
@@ -627,7 +697,10 @@ mod tests {
     #[test]
     fn codec_names_map_including_abbreviations() {
         assert_eq!(ImageCodec::from_filter_name("DCT"), Some(ImageCodec::Dct));
-        assert_eq!(ImageCodec::from_filter_name("CCF"), Some(ImageCodec::CcittFax));
+        assert_eq!(
+            ImageCodec::from_filter_name("CCF"),
+            Some(ImageCodec::CcittFax)
+        );
         assert_eq!(ImageCodec::from_filter_name("FlateDecode"), None);
     }
 }

@@ -110,7 +110,11 @@ fn render(doc: &Document) -> PageRender {
 }
 
 fn inked_pixels(r: &PageRender, channel: usize) -> usize {
-    r.buffer.plate_u8(channel).iter().filter(|v| **v > 10).count()
+    r.buffer
+        .plate_u8(channel)
+        .iter()
+        .filter(|v| **v > 10)
+        .count()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -120,24 +124,24 @@ fn inked_pixels(r: &PageRender, channel: usize) -> usize {
 #[test]
 fn truetype_text_paints_ink() {
     let ttf = font_or_skip!();
-    let doc = build_with_truetype(
-        "BT /F1 48 Tf 0 0 0 1 k 10 40 Td (Hi) Tj ET",
-        ttf,
-        true,
-    );
+    let doc = build_with_truetype("BT /F1 48 Tf 0 0 0 1 k 10 40 Td (Hi) Tj ET", ttf, true);
     let r = render(&doc);
-    assert!(inked_pixels(&r, 3) > 50, "chữ phải lên mực: {}", inked_pixels(&r, 3));
-    assert_eq!(r.warnings.dropped_objects, 0, "{:?}", r.warnings.skipped_ops);
+    assert!(
+        inked_pixels(&r, 3) > 50,
+        "chữ phải lên mực: {}",
+        inked_pixels(&r, 3)
+    );
+    assert_eq!(
+        r.warnings.dropped_objects, 0,
+        "{:?}",
+        r.warnings.skipped_ops
+    );
 }
 
 #[test]
 fn text_uses_fill_colour() {
     let ttf = font_or_skip!();
-    let doc = build_with_truetype(
-        "BT /F1 48 Tf 0 1 0 0 k 10 40 Td (Hi) Tj ET",
-        ttf,
-        true,
-    );
+    let doc = build_with_truetype("BT /F1 48 Tf 0 1 0 0 k 10 40 Td (Hi) Tj ET", ttf, true);
     let r = render(&doc);
     assert!(inked_pixels(&r, 1) > 50, "phải lên kẽm Magenta");
     assert_eq!(inked_pixels(&r, 3), 0, "và không lên kẽm Black");
@@ -148,11 +152,7 @@ fn text_without_widths_still_advances() {
     // Không khai /Widths: bề rộng phải lấy từ `hmtx` của font. Nếu trả 0, mọi
     // glyph chồng lên nhau tại một điểm và diện tích phủ mực sai hẳn.
     let ttf = font_or_skip!();
-    let doc = build_with_truetype(
-        "BT /F1 36 Tf 0 0 0 1 k 5 40 Td (MMMM) Tj ET",
-        ttf,
-        false,
-    );
+    let doc = build_with_truetype("BT /F1 36 Tf 0 0 0 1 k 5 40 Td (MMMM) Tj ET", ttf, false);
     let r = render(&doc);
     let w = r.buffer.width() as usize;
     let plate = r.buffer.plate_u8(3);
@@ -168,7 +168,10 @@ fn text_without_widths_still_advances() {
         }
     }
     let first = first.expect("phải có mực");
-    assert!(last - first > 40, "4 chữ M phải trải ngang: {first}..{last}");
+    assert!(
+        last - first > 40,
+        "4 chữ M phải trải ngang: {first}..{last}"
+    );
 }
 
 #[test]
@@ -267,7 +270,11 @@ fn render_mode_3_paints_absolutely_nothing() {
         true,
     );
     let r = render(&doc);
-    assert_eq!(r.buffer.max_tac_percent(), 0.0, "chữ vô hình không được lên mực");
+    assert_eq!(
+        r.buffer.max_tac_percent(),
+        0.0,
+        "chữ vô hình không được lên mực"
+    );
 }
 
 #[test]
@@ -353,7 +360,11 @@ fn missing_embedded_font_is_reported_and_not_substituted() {
     doc.trailer.set("Root", Object::Reference(catalog_id));
 
     let r = render(&doc);
-    assert_eq!(r.buffer.max_tac_percent(), 0.0, "không được vẽ glyph thay thế");
+    assert_eq!(
+        r.buffer.max_tac_percent(),
+        0.0,
+        "không được vẽ glyph thay thế"
+    );
     assert!(r.warnings.degrades_accuracy());
     assert!(
         r.warnings
@@ -396,11 +407,7 @@ fn clean_text_page_is_not_flagged_degraded() {
     // Ngược lại: trang chữ CMYK vẽ đủ thì không được hạ accuracy oan, nếu không
     // mọi báo cáo đều mang cảnh báo và người dùng học cách bỏ qua cảnh báo.
     let ttf = font_or_skip!();
-    let doc = build_with_truetype(
-        "BT /F1 24 Tf 0 0 0 1 k 10 40 Td (Test) Tj ET",
-        ttf,
-        true,
-    );
+    let doc = build_with_truetype("BT /F1 24 Tf 0 0 0 1 k 10 40 Td (Test) Tj ET", ttf, true);
     let r = render(&doc);
     assert!(!r.warnings.degrades_accuracy(), "{:?}", r.warnings);
 }

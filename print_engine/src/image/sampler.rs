@@ -15,8 +15,8 @@
 
 use lopdf::{Dictionary, Document, Object};
 
-use crate::color::space::resolve_colorspace;
 use crate::color::icc::ColorManager;
+use crate::color::space::resolve_colorspace;
 use crate::color::ColorSpace;
 use crate::error::{PpeError, PpeResult, RenderWarnings};
 use crate::image::filters::{decode_chain, ImageCodec, PredictorParams};
@@ -64,17 +64,18 @@ impl SampledImage {
         out
     }
 
-    /// Mẫu DeviceRGB gốc sau `/Decode`, dùng để alpha/blend trước ICC.
+    /// Ảnh có thể cung cấp mẫu RGB gốc để alpha/blend trước ICC.
+    pub fn supports_device_rgb(&self) -> bool {
+        self.colorspace
+            .as_ref()
+            .is_some_and(ColorSpace::supports_device_rgb_blending)
+    }
+
+    /// Mẫu nguồn đã biểu diễn trong DeviceRGB, kể cả Gray và Indexed của Gray/RGB.
     pub fn device_rgb_at(&self, x: u32, y: u32) -> Option<[f32; 3]> {
-        if !matches!(self.colorspace, Some(ColorSpace::DeviceRGB)) {
-            return None;
-        }
-        let comps = self.components_at(x, y);
-        Some([
-            comps.first().copied().unwrap_or(0.0).clamp(0.0, 1.0),
-            comps.get(1).copied().unwrap_or(0.0).clamp(0.0, 1.0),
-            comps.get(2).copied().unwrap_or(0.0).clamp(0.0, 1.0),
-        ])
+        self.colorspace
+            .as_ref()?
+            .to_device_rgb_for_blending(&self.components_at(x, y))
     }
 
     fn decode_component(&self, c: usize, raw: u8, indexed: bool) -> f32 {
@@ -422,9 +423,13 @@ fn decode_jpeg(data: &[u8]) -> PpeResult<(Vec<u8>, usize)> {
     }
 
     if n == 4 {
-        // JPEG CMYK do Adobe ghi bị **đảo** (APP14). Không đảo lại thì mọi vùng
-        // đặc thành trắng và ngược lại — TAC sẽ sai hoàn toàn theo cả hai chiều.
-        if has_adobe_marker(data) {
+        // JPEG CMYK mang APP14 "Adobe" cần đảo mẫu sau giải mã để khớp RIP
+        // tham chiếu — đo golden GS 10.04 trên fixture sọc DCT: chỉ phép đảo
+        // này cho cả bốn kẽm trùng GS (transform 0 lẫn 2; corpus transform 2
+        // cũng khớp). Đọc byte transform từ đúng segment APP14 thay vì dò chuỗi
+        // "Adobe" trong 4 KB đầu: XMP của ảnh thường chứa "Adobe Photoshop" và
+        // substring sẽ đảo oan file không có APP14.
+        if adobe_app14_transform(data).is_some() {
             let out = pixels.iter().map(|v| 255 - *v).collect();
             return Ok((out, 4));
         }
@@ -432,10 +437,45 @@ fn decode_jpeg(data: &[u8]) -> PpeResult<(Vec<u8>, usize)> {
     Ok((pixels, n))
 }
 
-/// Dò marker APP14 "Adobe" — dấu hiệu CMYK bị đảo.
-fn has_adobe_marker(data: &[u8]) -> bool {
-    let needle = b"Adobe";
-    data.windows(needle.len()).take(4096).any(|w| w == needle)
+/// Byte `transform` của segment APP14 "Adobe", duyệt marker JPEG đúng cấu trúc.
+///
+/// Payload APP14: "Adobe" + version(2) + flags0(2) + flags1(2) + transform(1).
+/// Trả `None` khi không có APP14 Adobe trước SOS.
+fn adobe_app14_transform(data: &[u8]) -> Option<u8> {
+    if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+        return None;
+    }
+    let mut i = 2usize;
+    while i + 4 <= data.len() {
+        if data[i] != 0xFF {
+            return None; // lệch nhịp marker: dừng, coi như không có APP14
+        }
+        let marker = data[i + 1];
+        match marker {
+            0xFF => {
+                i += 1; // byte đệm
+                continue;
+            }
+            0x01 | 0xD0..=0xD8 => {
+                i += 2; // marker không payload
+                continue;
+            }
+            0xDA | 0xD9 => return None, // tới SOS/EOI mà chưa gặp APP14
+            _ => {}
+        }
+        let len = ((data[i + 2] as usize) << 8) | data[i + 3] as usize;
+        if len < 2 || i + 2 + len > data.len() {
+            return None;
+        }
+        if marker == 0xEE {
+            let seg = &data[i + 4..i + 2 + len];
+            if seg.starts_with(b"Adobe") {
+                return seg.get(11).copied();
+            }
+        }
+        i += 2 + len;
+    }
+    None
 }
 
 /// Trải mẫu `bpc` bit về u8, cắt/đệm cho đủ `w*h*n`.
@@ -549,7 +589,9 @@ fn ccitt_params(
         };
     };
 
-    let k = pdf::dict_get(doc, d, "K").and_then(pdf::as_num).unwrap_or(0.0) as i32;
+    let k = pdf::dict_get(doc, d, "K")
+        .and_then(pdf::as_num)
+        .unwrap_or(0.0) as i32;
     let columns = pdf::dict_get(doc, d, "Columns")
         .and_then(pdf::as_num)
         .map(|v| v as usize)
@@ -568,7 +610,13 @@ fn ccitt_params(
         Some(Object::Boolean(true))
     );
 
-    CcittParams { k, columns, rows, black_is_1, encoded_byte_align }
+    CcittParams {
+        k,
+        columns,
+        rows,
+        black_is_1,
+        encoded_byte_align,
+    }
 }
 
 fn filter_names(doc: &Document, dict: &Dictionary) -> Vec<String> {
@@ -715,9 +763,32 @@ mod tests {
     }
 
     #[test]
-    fn adobe_marker_detection() {
-        assert!(has_adobe_marker(b"\xFF\xD8\xFF\xEE\x00\x0EAdobe\x00d"));
-        assert!(!has_adobe_marker(b"\xFF\xD8\xFF\xE0\x00\x10JFIF\x00"));
+    fn adobe_app14_transform_reads_the_transform_byte() {
+        // APP14: "Adobe" + ver 100 + flags 0,0 + transform.
+        let mk = |tr: u8| {
+            let mut v = vec![0xFF, 0xD8, 0xFF, 0xEE, 0x00, 0x0E];
+            v.extend_from_slice(b"Adobe");
+            v.extend_from_slice(&[0x00, 0x64, 0, 0, 0, 0, tr]);
+            v
+        };
+        assert_eq!(adobe_app14_transform(&mk(0)), Some(0));
+        assert_eq!(adobe_app14_transform(&mk(2)), Some(2));
+        assert_eq!(
+            adobe_app14_transform(b"\xFF\xD8\xFF\xE0\x00\x10JFIF\x00"),
+            None
+        );
+    }
+
+    #[test]
+    fn adobe_in_xmp_metadata_is_not_an_app14_marker() {
+        // "Adobe Photoshop" trong APP1/XMP từng kích hoạt oan phép đảo CMYK
+        // khi còn dò bằng substring. Parser marker phải bỏ qua nó.
+        let mut v = vec![0xFF, 0xD8];
+        let payload = b"http://ns.adobe.com/xap/1.0/\x00... Adobe Photoshop ...";
+        v.extend_from_slice(&[0xFF, 0xE1]);
+        v.extend_from_slice(&((payload.len() as u16 + 2).to_be_bytes()));
+        v.extend_from_slice(payload);
+        assert_eq!(adobe_app14_transform(&v), None);
     }
 
     fn gray_image(samples: Vec<u8>, w: u32, h: u32, decode: Vec<f32>) -> SampledImage {
@@ -770,6 +841,29 @@ mod tests {
         assert_eq!(img.components_at(0, 0)[0], 0.0);
         assert_eq!(img.components_at(1, 0)[0], 3.0);
     }
+    #[test]
+    fn indexed_device_rgb_exposes_palette_color_for_pre_icc_blending() {
+        let img = SampledImage {
+            width: 2,
+            height: 1,
+            n_comps: 1,
+            samples: vec![0, 1],
+            colorspace: Some(ColorSpace::Indexed {
+                base: Box::new(ColorSpace::DeviceRGB),
+                hival: 1,
+                lookup: std::sync::Arc::new(vec![0, 0, 0, 17, 83, 55]),
+            }),
+            decode: vec![],
+            bpc: 8,
+            stencil: None,
+            alpha: None,
+        };
+        assert!(img.supports_device_rgb());
+        let rgb = img.device_rgb_at(1, 0).unwrap();
+        assert!((rgb[0] - 17.0 / 255.0).abs() < 1e-6);
+        assert!((rgb[1] - 83.0 / 255.0).abs() < 1e-6);
+        assert!((rgb[2] - 55.0 / 255.0).abs() < 1e-6);
+    }
 
     #[test]
     fn indexed_lut_maps_palette_to_ink() {
@@ -791,8 +885,14 @@ mod tests {
         let mut space = InkSpace::new();
         let mut warn = RenderWarnings::default();
         let sampler = ImageSampler::new(&img, &mut space, &mut warn, None).unwrap();
-        let (white, _) = sampler.ink_at(0, 0, &mut space, &mut warn, None).unwrap().unwrap();
-        let (black, _) = sampler.ink_at(1, 0, &mut space, &mut warn, None).unwrap().unwrap();
+        let (white, _) = sampler
+            .ink_at(0, 0, &mut space, &mut warn, None)
+            .unwrap()
+            .unwrap();
+        let (black, _) = sampler
+            .ink_at(1, 0, &mut space, &mut warn, None)
+            .unwrap()
+            .unwrap();
         assert_eq!(white[3], 0.0, "palette 0 là trắng");
         assert_eq!(black[3], 1.0, "palette 1 là đen K");
     }
@@ -813,7 +913,10 @@ mod tests {
         let mut space = InkSpace::new();
         let mut warn = RenderWarnings::default();
         let sampler = ImageSampler::new(&img, &mut space, &mut warn, None).unwrap();
-        let (ink, mask) = sampler.ink_at(0, 0, &mut space, &mut warn, None).unwrap().unwrap();
+        let (ink, mask) = sampler
+            .ink_at(0, 0, &mut space, &mut warn, None)
+            .unwrap()
+            .unwrap();
         assert_eq!(ink[0], 1.0);
         assert_eq!(ink[3], 1.0);
         assert_eq!(mask, ChannelMask::PROCESS);

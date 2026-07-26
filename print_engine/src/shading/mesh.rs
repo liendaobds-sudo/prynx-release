@@ -110,9 +110,7 @@ pub fn parse_mesh(
                 PpeError::MalformedPdf("shading kiểu 5 thiếu VerticesPerRow".into())
             })?;
             if per_row < 2 {
-                return Err(PpeError::MalformedPdf(
-                    "VerticesPerRow phải >= 2".into(),
-                ));
+                return Err(PpeError::MalformedPdf("VerticesPerRow phải >= 2".into()));
             }
             parse_lattice(&mut reader, &ctx, per_row as usize)
         }
@@ -199,9 +197,9 @@ fn parse_free_triangles(
     ctx: &MeshCtx,
     bits_flag: Option<i64>,
 ) -> PpeResult<Vec<MeshTriangle>> {
-    let bits_flag = bits_flag.ok_or_else(|| {
-        PpeError::MalformedPdf("shading kiểu 4 thiếu BitsPerFlag".into())
-    })? as u32;
+    let bits_flag = bits_flag
+        .ok_or_else(|| PpeError::MalformedPdf("shading kiểu 4 thiếu BitsPerFlag".into()))?
+        as u32;
     if !matches!(bits_flag, 2 | 4 | 8) {
         return Err(PpeError::MalformedPdf(format!(
             "BitsPerFlag không hợp lệ: {bits_flag}"
@@ -216,7 +214,9 @@ fn parse_free_triangles(
 
     loop {
         let Some(flag) = r.read(bits_flag) else { break };
-        let Some(vertex) = ctx.read_vertex(r) else { break };
+        let Some(vertex) = ctx.read_vertex(r) else {
+            break;
+        };
         // Mỗi **đỉnh** của kiểu 4 chiếm số byte nguyên (§8.7.4.5.5).
         r.align();
 
@@ -266,11 +266,7 @@ fn parse_free_triangles(
 }
 
 /// Kiểu 5 — lưới hình chữ nhật, không có cờ.
-fn parse_lattice(
-    r: &mut BitReader,
-    ctx: &MeshCtx,
-    per_row: usize,
-) -> PpeResult<Vec<MeshTriangle>> {
+fn parse_lattice(r: &mut BitReader, ctx: &MeshCtx, per_row: usize) -> PpeResult<Vec<MeshTriangle>> {
     let mut rows: Vec<Vec<([f32; 2], Vec<f32>)>> = Vec::new();
     'outer: loop {
         let mut row = Vec::with_capacity(per_row);
@@ -307,9 +303,9 @@ fn parse_patches(
     bits_flag: Option<i64>,
     tensor: bool,
 ) -> PpeResult<Vec<MeshTriangle>> {
-    let bits_flag = bits_flag.ok_or_else(|| {
-        PpeError::MalformedPdf("shading kiểu 6/7 thiếu BitsPerFlag".into())
-    })? as u32;
+    let bits_flag = bits_flag
+        .ok_or_else(|| PpeError::MalformedPdf("shading kiểu 6/7 thiếu BitsPerFlag".into()))?
+        as u32;
     if !matches!(bits_flag, 2 | 4 | 8) {
         return Err(PpeError::MalformedPdf(format!(
             "BitsPerFlag không hợp lệ: {bits_flag}"
@@ -580,7 +576,9 @@ fn finish(out: Vec<MeshTriangle>) -> PpeResult<Vec<MeshTriangle>> {
 }
 
 fn int_key(doc: &Document, dict: &Dictionary, key: &str) -> Option<i64> {
-    pdf::dict_get(doc, dict, key).and_then(pdf::as_num).map(|v| v as i64)
+    pdf::dict_get(doc, dict, key)
+        .and_then(pdf::as_num)
+        .map(|v| v as i64)
 }
 
 /// Bộ đọc bit, tối đa 32 bit một lần.
@@ -779,7 +777,7 @@ mod tests {
         let doc = Document::new();
         let dict = base_dict(6, 1);
         let mut data = vec![0u8]; // cờ 0
-        // 12 điểm biên của một ô vuông.
+                                  // 12 điểm biên của một ô vuông.
         let pts: [(u8, u8); 12] = [
             (0, 0),
             (85, 0),

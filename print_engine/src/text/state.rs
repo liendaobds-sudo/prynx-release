@@ -169,11 +169,7 @@ pub fn glyph_matrix(state: &TextState, text_matrix: &Matrix) -> Matrix {
 /// `word_spacing` chỉ được truyền `true` cho **mã byte 32 của font đơn byte**:
 /// với font 2 byte, mã 32 không phải dấu cách và cộng `Tw` vào đó sẽ giãn chữ
 /// CJK ra sai chỗ (§9.3.3).
-pub fn glyph_advance(
-    state: &TextState,
-    glyph_width: f32,
-    apply_word_spacing: bool,
-) -> f32 {
+pub fn glyph_advance(state: &TextState, glyph_width: f32, apply_word_spacing: bool) -> f32 {
     let mut tx = glyph_width * state.size + state.char_spacing;
     if apply_word_spacing {
         tx += state.word_spacing;
@@ -190,7 +186,11 @@ mod tests {
         assert_eq!(TextRenderMode::from_code(0), TextRenderMode::Fill);
         assert_eq!(TextRenderMode::from_code(3), TextRenderMode::Invisible);
         assert_eq!(TextRenderMode::from_code(7), TextRenderMode::Clip);
-        assert_eq!(TextRenderMode::from_code(42), TextRenderMode::Fill, "mã lạ → Fill");
+        assert_eq!(
+            TextRenderMode::from_code(42),
+            TextRenderMode::Fill,
+            "mã lạ → Fill"
+        );
     }
 
     #[test]

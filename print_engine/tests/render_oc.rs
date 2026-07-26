@@ -27,7 +27,10 @@ struct Builder {
 
 impl Builder {
     fn new() -> Self {
-        Builder { doc: Document::with_version("1.7"), ocgs: Vec::new() }
+        Builder {
+            doc: Document::with_version("1.7"),
+            ocgs: Vec::new(),
+        }
     }
 
     /// Thêm một OCG, trả chỉ số của nó.
@@ -206,11 +209,7 @@ fn nested_marked_content_keeps_balance() {
     let mut b = Builder::new();
     let l = b.ocg("Lop 1", None);
     let id = b.id(l);
-    let content = format!(
-        "/OC /L0 BDC /Tag BMC {} EMC EMC\n{}",
-        solid_k(),
-        solid_k()
-    );
+    let content = format!("/OC /L0 BDC /Tag BMC {} EMC EMC\n{}", solid_k(), solid_k());
     let config = dictionary! { "OFF" => Object::Array(vec![Object::Reference(id)]) };
     let doc = b.finish(&content, properties("L0", id), config, no_extra);
     // Khối tắt không in; hình sau `EMC` ngoài cùng thì in ⇒ đúng 100%.
@@ -399,22 +398,17 @@ fn ocmd_with_unknown_policy_is_flagged() {
     let l = b.ocg("Lop 1", None);
     let id = b.id(l);
     let content = format!("/OC /M0 BDC {} EMC", solid_k());
-    let doc = b.finish(
-        &content,
-        dictionary! {},
-        dictionary! {},
-        move |doc| {
-            let ocmd = doc.add_object(dictionary! {
-                "Type" => "OCMD",
-                "OCGs" => Object::Array(vec![Object::Reference(id)]),
-                "P" => "KhongBiet",
-            });
-            Some((
-                "Properties".to_string(),
-                Object::Dictionary(dictionary! { "M0" => Object::Reference(ocmd) }),
-            ))
-        },
-    );
+    let doc = b.finish(&content, dictionary! {}, dictionary! {}, move |doc| {
+        let ocmd = doc.add_object(dictionary! {
+            "Type" => "OCMD",
+            "OCGs" => Object::Array(vec![Object::Reference(id)]),
+            "P" => "KhongBiet",
+        });
+        Some((
+            "Properties".to_string(),
+            Object::Dictionary(dictionary! { "M0" => Object::Reference(ocmd) }),
+        ))
+    });
     let r = render(&doc);
     assert!(r.warnings.hidden_content_risk);
 }
@@ -482,7 +476,8 @@ fn document_without_ocproperties_paints_everything() {
         pages_id,
         dictionary! { "Type" => "Pages", "Kids" => vec![Object::Reference(page_id)], "Count" => 1 },
     );
-    let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => Object::Reference(pages_id) });
+    let catalog =
+        doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => Object::Reference(pages_id) });
     doc.trailer.set("Root", Object::Reference(catalog));
     let r = render(&doc);
     assert_eq!(r.buffer.max_tac_percent(), 100.0);

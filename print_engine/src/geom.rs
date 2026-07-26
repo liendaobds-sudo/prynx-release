@@ -26,7 +26,14 @@ impl Default for Matrix {
 }
 
 impl Matrix {
-    pub const IDENTITY: Matrix = Matrix { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: 0.0, f: 0.0 };
+    pub const IDENTITY: Matrix = Matrix {
+        a: 1.0,
+        b: 0.0,
+        c: 0.0,
+        d: 1.0,
+        e: 0.0,
+        f: 0.0,
+    };
 
     pub fn new(a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) -> Self {
         Matrix { a, b, c, d, e, f }
@@ -55,7 +62,10 @@ impl Matrix {
     }
 
     pub fn apply(&self, x: f32, y: f32) -> (f32, f32) {
-        (self.a * x + self.c * y + self.e, self.b * x + self.d * y + self.f)
+        (
+            self.a * x + self.c * y + self.e,
+            self.b * x + self.d * y + self.f,
+        )
     }
 
     /// Chỉ biến đổi vector (bỏ phần dịch chuyển) — dùng cho bề rộng nét.
@@ -188,7 +198,10 @@ mod tests {
         let crop = Rect::new(20.0, 30.0, 20.0 + 595.0, 30.0 + 842.0);
         let m = Matrix::device_from_page(&crop, 72.0);
         let top_left = m.apply(crop.x0, crop.y1);
-        assert!(top_left.0.abs() < 1e-3 && top_left.1.abs() < 1e-3, "{top_left:?}");
+        assert!(
+            top_left.0.abs() < 1e-3 && top_left.1.abs() < 1e-3,
+            "{top_left:?}"
+        );
         let bottom_right = m.apply(crop.x1, crop.y0);
         assert!((bottom_right.0 - 595.0).abs() < 1e-3, "{bottom_right:?}");
         assert!((bottom_right.1 - 842.0).abs() < 1e-3, "{bottom_right:?}");
@@ -233,10 +246,20 @@ pub struct Region {
 }
 
 impl Region {
-    pub const EMPTY: Region = Region { x0: 0, y0: 0, x1: 0, y1: 0 };
+    pub const EMPTY: Region = Region {
+        x0: 0,
+        y0: 0,
+        x1: 0,
+        y1: 0,
+    };
 
     pub fn full(width: u32, height: u32) -> Region {
-        Region { x0: 0, y0: 0, x1: width, y1: height }
+        Region {
+            x0: 0,
+            y0: 0,
+            x1: width,
+            y1: height,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -276,7 +299,14 @@ impl Region {
     ///
     /// Nới một pixel vì bộ rasterize khử răng cưa có thể chạm pixel ngay ngoài hộp
     /// bao hình học. Thiếu lề đó sẽ cắt mất viền mờ của nét — trên kẽm là mất nét.
-    pub fn from_bounds(left: f32, top: f32, right: f32, bottom: f32, width: u32, height: u32) -> Region {
+    pub fn from_bounds(
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+        width: u32,
+        height: u32,
+    ) -> Region {
         if !left.is_finite() || !top.is_finite() || !right.is_finite() || !bottom.is_finite() {
             return Region::full(width, height);
         }
@@ -302,32 +332,65 @@ mod region_tests {
     #[test]
     fn empty_is_detected() {
         assert!(Region::EMPTY.is_empty());
-        assert!(Region { x0: 5, y0: 0, x1: 5, y1: 10 }.is_empty());
+        assert!(Region {
+            x0: 5,
+            y0: 0,
+            x1: 5,
+            y1: 10
+        }
+        .is_empty());
     }
 
     #[test]
     fn clamped_drops_region_outside_frame() {
-        let r = Region { x0: 20, y0: 20, x1: 30, y1: 30 }.clamped(10, 10);
+        let r = Region {
+            x0: 20,
+            y0: 20,
+            x1: 30,
+            y1: 30,
+        }
+        .clamped(10, 10);
         assert!(r.is_empty());
     }
 
     #[test]
     fn clamped_trims_partial_overlap() {
-        let r = Region { x0: 5, y0: 5, x1: 30, y1: 30 }.clamped(10, 10);
+        let r = Region {
+            x0: 5,
+            y0: 5,
+            x1: 30,
+            y1: 30,
+        }
+        .clamped(10, 10);
         assert_eq!((r.x0, r.y0, r.x1, r.y1), (5, 5, 10, 10));
     }
 
     #[test]
     fn union_ignores_empty() {
-        let a = Region { x0: 1, y0: 1, x1: 2, y1: 2 };
+        let a = Region {
+            x0: 1,
+            y0: 1,
+            x1: 2,
+            y1: 2,
+        };
         assert_eq!(a.union(Region::EMPTY), a);
         assert_eq!(Region::EMPTY.union(a), a);
     }
 
     #[test]
     fn union_takes_outer_hull() {
-        let a = Region { x0: 1, y0: 1, x1: 3, y1: 3 };
-        let b = Region { x0: 5, y0: 0, x1: 6, y1: 9 };
+        let a = Region {
+            x0: 1,
+            y0: 1,
+            x1: 3,
+            y1: 3,
+        };
+        let b = Region {
+            x0: 5,
+            y0: 0,
+            x1: 6,
+            y1: 9,
+        };
         let u = a.union(b);
         assert_eq!((u.x0, u.y0, u.x1, u.y1), (1, 0, 6, 9));
     }

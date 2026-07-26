@@ -47,6 +47,24 @@ where
     doc
 }
 
+fn set_page_blend_space(doc: &mut Document, color_space: &str) {
+    let page_id = *doc
+        .get_pages()
+        .values()
+        .next()
+        .expect("fixture phải có một trang");
+    let page = doc
+        .get_object_mut(page_id)
+        .and_then(Object::as_dict_mut)
+        .expect("page fixture phải là dictionary");
+    page.set(
+        "Group",
+        Object::Dictionary(dictionary! {
+            "S" => "Transparency", "CS" => Object::Name(color_space.as_bytes().to_vec())
+        }),
+    );
+}
+
 fn render_doc(doc: &Document) -> PageRender {
     render_page(doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate())
         .expect("render phải thành công")
@@ -85,7 +103,10 @@ fn px(r: &PageRender, channel: usize, x: usize, y: usize) -> u8 {
 
 /// Toạ độ pixel giữa trang.
 fn mid(r: &PageRender) -> (usize, usize) {
-    (r.buffer.width() as usize / 2, r.buffer.height() as usize / 2)
+    (
+        r.buffer.width() as usize / 2,
+        r.buffer.height() as usize / 2,
+    )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -248,9 +269,7 @@ fn group_alpha_is_not_applied_twice_to_overlapping_elements() {
     //
     // Đây chính là lý do phải render group ra buffer riêng thay vì chỉ nhân alpha
     // vào từng thao tác vẽ.
-    let two = format!(
-        "0 0 0 1 k 0 0 {PAGE} {PAGE} re f 0 0 0 1 k 0 0 {PAGE} {PAGE} re f"
-    );
+    let two = format!("0 0 0 1 k 0 0 {PAGE} {PAGE} re f 0 0 0 1 k 0 0 {PAGE} {PAGE} re f");
     let doc = group_doc(Some(transparency_group(false, false)), Some(0.5), &two);
     let r = render_doc(&doc);
     let (x, y) = mid(&r);
@@ -296,9 +315,17 @@ fn non_isolated_group_with_outer_blend_keeps_backdrop_dependent_inner_blend() {
     let r = render_doc(&doc);
     let (x, y) = mid(&r);
     assert_eq!(px(&r, 0, x, y), 0);
-    assert_eq!(px(&r, 1, x, y), 255, "nền M phải sống qua cả hai tầng blend");
+    assert_eq!(
+        px(&r, 1, x, y),
+        255,
+        "nền M phải sống qua cả hai tầng blend"
+    );
     assert_eq!(px(&r, 2, x, y), 0);
-    assert_eq!(px(&r, 3, x, y), 0, "Screen ở mức group loại K trong ví dụ này");
+    assert_eq!(
+        px(&r, 3, x, y),
+        0,
+        "Screen ở mức group loại K trong ví dụ này"
+    );
     assert!(
         !r.warnings.unsupported_transparency,
         "tổ hợp đã dựng đúng không được hạ tin cậy: {:?}",
@@ -323,7 +350,11 @@ fn isolated_group_with_alpha_scales_ink_once() {
     let doc = group_doc(Some(transparency_group(true, false)), Some(0.25), &solid_k);
     let r = render_doc(&doc);
     let (x, y) = mid(&r);
-    assert!((px(&r, 3, x, y) as i32 - 64).abs() <= 1, "{}", px(&r, 3, x, y));
+    assert!(
+        (px(&r, 3, x, y) as i32 - 64).abs() <= 1,
+        "{}",
+        px(&r, 3, x, y)
+    );
 }
 
 #[test]
@@ -331,7 +362,10 @@ fn knockout_group_is_flagged_loudly() {
     let solid_k = format!("0 0 0 1 k 0 0 {PAGE} {PAGE} re f");
     let doc = group_doc(Some(transparency_group(false, true)), Some(0.5), &solid_k);
     let r = render_doc(&doc);
-    assert!(r.warnings.unsupported_transparency, "knockout phải hạ tin cậy");
+    assert!(
+        r.warnings.unsupported_transparency,
+        "knockout phải hạ tin cậy"
+    );
     assert!(r.warnings.ink_unsound());
 }
 
@@ -372,10 +406,7 @@ fn spot_used_only_inside_a_group_still_gets_a_plate() {
         "XObject" => dictionary! { "Fm0" => form },
         "ExtGState" => dictionary! { "GS0" => dictionary! { "ca" => 1.0 } },
     });
-    let content_id = doc.add_object(Stream::new(
-        dictionary! {},
-        b"/GS0 gs /Fm0 Do".to_vec(),
-    ));
+    let content_id = doc.add_object(Stream::new(dictionary! {}, b"/GS0 gs /Fm0 Do".to_vec()));
     let pages_object_id = (doc.new_object_id().0, 0);
     let page_id = doc.add_object(dictionary! {
         "Type" => "Page",
@@ -394,7 +425,13 @@ fn spot_used_only_inside_a_group_still_gets_a_plate() {
     doc.trailer.set("Root", Object::Reference(catalog_id));
 
     let r = render_doc(&doc);
-    let names: Vec<&str> = r.buffer.space().colorants().iter().map(|c| c.name()).collect();
+    let names: Vec<&str> = r
+        .buffer
+        .space()
+        .colorants()
+        .iter()
+        .map(|c| c.name())
+        .collect();
     assert!(
         names.contains(&"PANTONE 485 C"),
         "spot trong group phải có kẽm: {names:?}"
@@ -425,7 +462,8 @@ fn soft_mask_doc(
     build_with(&content, |doc| {
         let group = dictionary! { "S" => "Transparency", "CS" => "DeviceGray" };
         let form = add_form(doc, mask_content, mask_bbox, Some(group));
-        let mut smask = dictionary! { "S" => Object::Name(subtype.as_bytes().to_vec()), "G" => form };
+        let mut smask =
+            dictionary! { "S" => Object::Name(subtype.as_bytes().to_vec()), "G" => form };
         if let Some(f) = tr {
             smask.set("TR", f);
         }
@@ -451,6 +489,42 @@ fn luminosity_soft_mask_scales_ink_by_lightness() {
         "soft mask đã dựng: {:?}",
         r.warnings.skipped_ops
     );
+}
+
+#[test]
+fn managed_rgb_luminosity_soft_mask_uses_rgb_lightness_before_icc() {
+    let content = format!("/GS0 gs 0 0 0 1 k 0 0 {PAGE} {PAGE} re f");
+    let doc = build_with(&content, |doc| {
+        let group = dictionary! { "S" => "Transparency", "CS" => "DeviceRGB" };
+        let form = add_form(
+            doc,
+            &format!("1 0 0 rg 0 0 {PAGE} {PAGE} re f"),
+            [0, 0, PAGE, PAGE],
+            Some(group),
+        );
+        dictionary! {
+            "ExtGState" => dictionary! {
+                "GS0" => dictionary! {
+                    "SMask" => Object::Dictionary(dictionary! {
+                        "S" => "Luminosity",
+                        "G" => form,
+                    })
+                }
+            }
+        }
+    });
+    let Some(rendered) = managed_render(&doc) else {
+        eprintln!("bỏ qua: không có profile ICC kiểm thử");
+        return;
+    };
+    let (x, y) = mid(&rendered);
+    let actual = px(&rendered, 3, x, y) as i16;
+    let expected = (0.3 * 255.0_f32).round() as i16;
+    assert!(
+        (actual - expected).abs() <= 1,
+        "mặt nạ đỏ RGB phải có luminosity 0,30: actual={actual}, expected={expected}"
+    );
+    assert!(!rendered.warnings.ink_unsound(), "{:?}", rendered.warnings);
 }
 
 #[test]
@@ -520,9 +594,7 @@ fn transfer_function_inverts_the_mask() {
 fn smask_none_clears_a_previous_mask() {
     // `/SMask /None` phải **xoá** mặt nạ. Coi `/None` như "có mặt nạ" sẽ giữ mặt nạ
     // cũ và che mất nội dung lẽ ra phải in.
-    let content = format!(
-        "/GS0 gs /GS1 gs 0 0 0 1 k 0 0 {PAGE} {PAGE} re f"
-    );
+    let content = format!("/GS0 gs /GS1 gs 0 0 0 1 k 0 0 {PAGE} {PAGE} re f");
     let doc = build_with(&content, |doc| {
         let group = dictionary! { "S" => "Transparency", "CS" => "DeviceGray" };
         let form = add_form(doc, "0 g 0 0 40 40 re f", [0, 0, PAGE, PAGE], Some(group));
@@ -583,7 +655,6 @@ fn unsupported_soft_mask_subtype_is_flagged() {
     );
 }
 
-
 fn managed_render(doc: &Document) -> Option<PageRender> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let cmyk = root.join("backend/app/assets/icc/FOGRA39.icc");
@@ -591,12 +662,8 @@ fn managed_render(doc: &Document) -> Option<PageRender> {
     if !cmyk.is_file() || !rgb.is_file() {
         return None;
     }
-    let cm = ColorManager::from_profiles(
-        &cmyk,
-        Some(&rgb),
-        RenderIntent::RelativeColorimetric,
-    )
-    .ok()?;
+    let cm =
+        ColorManager::from_profiles(&cmyk, Some(&rgb), RenderIntent::RelativeColorimetric).ok()?;
     render_page_managed(
         doc,
         1,
@@ -626,20 +693,19 @@ fn managed_rgb_alpha_blends_before_icc() {
         "0.01 0 0 rg 0 0 {PAGE} {PAGE} re f\n\
          /GS0 gs 0.0667 0.325 0.216 rg 0 0 {PAGE} {PAGE} re f"
     );
-    let layered_doc = build_with(&layered_content, |_doc| {
+    let mut layered_doc = build_with(&layered_content, |_doc| {
         dictionary! {
             "ExtGState" => dictionary! {
                 "GS0" => dictionary! { "BM" => "Normal", "ca" => 0.4 }
             }
         }
     });
+    set_page_blend_space(&mut layered_doc, "DeviceRGB");
     // RGB đúng trước ICC: 0.6 × backdrop + 0.4 × source.
-    let flat_content = format!(
-        "0.03268 0.13 0.0864 rg 0 0 {PAGE} {PAGE} re f"
-    );
-    let flat_doc = build_with(&flat_content, |_doc| Dictionary::new());
-    let (Some(layered), Some(flat)) =
-        (managed_render(&layered_doc), managed_render(&flat_doc))
+    let flat_content = format!("0.03268 0.13 0.0864 rg 0 0 {PAGE} {PAGE} re f");
+    let mut flat_doc = build_with(&flat_content, |_doc| Dictionary::new());
+    set_page_blend_space(&mut flat_doc, "DeviceRGB");
+    let (Some(layered), Some(flat)) = (managed_render(&layered_doc), managed_render(&flat_doc))
     else {
         eprintln!("bỏ qua: không có profile ICC kiểm thử");
         return;
@@ -675,7 +741,7 @@ fn managed_rgb_image_alpha_blends_before_icc() {
         "0.01 0 0 rg 0 0 {PAGE} {PAGE} re f\n\
          /GS0 gs q {PAGE} 0 0 {PAGE} 0 0 cm /Im0 Do Q"
     );
-    let layered_doc = build_with(&layered_content, |doc| {
+    let mut layered_doc = build_with(&layered_content, |doc| {
         let image = Object::Reference(doc.add_object(Stream::new(
             dictionary! {
                 "Type" => "XObject",
@@ -694,13 +760,86 @@ fn managed_rgb_image_alpha_blends_before_icc() {
             },
         }
     });
+    set_page_blend_space(&mut layered_doc, "DeviceRGB");
     let flat_content = format!(
         "{} {} {} rg 0 0 {PAGE} {PAGE} re f",
         mixed[0], mixed[1], mixed[2]
     );
-    let flat_doc = build_with(&flat_content, |_doc| Dictionary::new());
-    let (Some(layered), Some(flat)) =
-        (managed_render(&layered_doc), managed_render(&flat_doc))
+    let mut flat_doc = build_with(&flat_content, |_doc| Dictionary::new());
+    set_page_blend_space(&mut flat_doc, "DeviceRGB");
+    let (Some(layered), Some(flat)) = (managed_render(&layered_doc), managed_render(&flat_doc))
+    else {
+        eprintln!("bỏ qua: không có profile ICC kiểm thử");
+        return;
+    };
+    let (x, y) = mid(&layered);
+    for ch in 0..4 {
+        let actual = px(&layered, ch, x, y);
+        let expected = px(&flat, ch, x, y);
+        assert!(
+            (actual as i16 - expected as i16).abs() <= 1,
+            "channel {ch}: layered={actual}, flat={expected}"
+        );
+    }
+    assert!(!layered.warnings.ink_unsound(), "{:?}", layered.warnings);
+}
+
+#[test]
+fn managed_indexed_rgb_image_smask_blends_before_icc() {
+    let background = [0.01f32, 0.0, 0.0];
+    let source = [17.0f32 / 255.0, 83.0 / 255.0, 55.0 / 255.0];
+    let alpha = 128.0f32 / 255.0;
+    let mixed = [
+        background[0] * (1.0 - alpha) + source[0] * alpha,
+        background[1] * (1.0 - alpha) + source[1] * alpha,
+        background[2] * (1.0 - alpha) + source[2] * alpha,
+    ];
+    let layered_content = format!(
+        "0.01 0 0 rg 0 0 {PAGE} {PAGE} re f\n\
+         q {PAGE} 0 0 {PAGE} 0 0 cm /Im0 Do Q"
+    );
+    let mut layered_doc = build_with(&layered_content, |doc| {
+        let smask = Object::Reference(doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 1,
+                "Height" => 1,
+                "ColorSpace" => "DeviceGray",
+                "BitsPerComponent" => 8,
+            },
+            vec![128],
+        )));
+        let palette = Object::String(vec![0, 0, 0, 17, 83, 55], lopdf::StringFormat::Hexadecimal);
+        let image = Object::Reference(doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 1,
+                "Height" => 1,
+                "ColorSpace" => Object::Array(vec![
+                    "Indexed".into(),
+                    "DeviceRGB".into(),
+                    1.into(),
+                    palette,
+                ]),
+                "BitsPerComponent" => 8,
+                "SMask" => smask,
+            },
+            vec![1],
+        )));
+        dictionary! {
+            "XObject" => dictionary! { "Im0" => image },
+        }
+    });
+    set_page_blend_space(&mut layered_doc, "DeviceRGB");
+    let flat_content = format!(
+        "{} {} {} rg 0 0 {PAGE} {PAGE} re f",
+        mixed[0], mixed[1], mixed[2]
+    );
+    let mut flat_doc = build_with(&flat_content, |_doc| Dictionary::new());
+    set_page_blend_space(&mut flat_doc, "DeviceRGB");
+    let (Some(layered), Some(flat)) = (managed_render(&layered_doc), managed_render(&flat_doc))
     else {
         eprintln!("bỏ qua: không có profile ICC kiểm thử");
         return;
@@ -728,10 +867,8 @@ fn managed_rgb_shading_alpha_blends_before_icc() {
         background[1] * 0.6 + source[1] * 0.4,
         background[2] * 0.6 + source[2] * 0.4,
     ];
-    let layered_content = format!(
-        "0.1 0.2 0.3 rg 0 0 {PAGE} {PAGE} re f\n/GS0 gs /Sh0 sh"
-    );
-    let layered_doc = build_with(&layered_content, |_doc| {
+    let layered_content = format!("0.1 0.2 0.3 rg 0 0 {PAGE} {PAGE} re f\n/GS0 gs /Sh0 sh");
+    let mut layered_doc = build_with(&layered_content, |_doc| {
         dictionary! {
             "Shading" => dictionary! {
                 "Sh0" => dictionary! {
@@ -753,13 +890,14 @@ fn managed_rgb_shading_alpha_blends_before_icc() {
             },
         }
     });
+    set_page_blend_space(&mut layered_doc, "DeviceRGB");
     let flat_content = format!(
         "{} {} {} rg 0 0 {PAGE} {PAGE} re f",
         mixed[0], mixed[1], mixed[2]
     );
-    let flat_doc = build_with(&flat_content, |_doc| Dictionary::new());
-    let (Some(layered), Some(flat)) =
-        (managed_render(&layered_doc), managed_render(&flat_doc))
+    let mut flat_doc = build_with(&flat_content, |_doc| Dictionary::new());
+    set_page_blend_space(&mut flat_doc, "DeviceRGB");
+    let (Some(layered), Some(flat)) = (managed_render(&layered_doc), managed_render(&flat_doc))
     else {
         eprintln!("bỏ qua: không có profile ICC kiểm thử");
         return;
@@ -774,6 +912,163 @@ fn managed_rgb_shading_alpha_blends_before_icc() {
         );
     }
     assert!(!layered.warnings.ink_unsound(), "{:?}", layered.warnings);
+}
+
+#[test]
+fn managed_device_gray_backdrop_on_rgb_page_stays_in_rgb_space() {
+    let gray = 0.25f32;
+    let source = [0.6f32, 0.2, 0.4];
+    let mixed = [
+        gray * 0.6 + source[0] * 0.4,
+        gray * 0.6 + source[1] * 0.4,
+        gray * 0.6 + source[2] * 0.4,
+    ];
+    let layered_content = format!(
+        "{gray} g 0 0 {PAGE} {PAGE} re f\n\
+         /GS0 gs {} {} {} rg 0 0 {PAGE} {PAGE} re f",
+        source[0], source[1], source[2]
+    );
+    let mut layered_doc = build_with(&layered_content, |_doc| {
+        dictionary! {
+            "ExtGState" => dictionary! {
+                "GS0" => dictionary! { "BM" => "Normal", "ca" => 0.4 }
+            }
+        }
+    });
+    set_page_blend_space(&mut layered_doc, "DeviceRGB");
+
+    let flat_content = format!(
+        "{} {} {} rg 0 0 {PAGE} {PAGE} re f",
+        mixed[0], mixed[1], mixed[2]
+    );
+    let mut flat_doc = build_with(&flat_content, |_doc| Dictionary::new());
+    set_page_blend_space(&mut flat_doc, "DeviceRGB");
+    let (Some(layered), Some(flat)) = (managed_render(&layered_doc), managed_render(&flat_doc))
+    else {
+        eprintln!("bỏ qua: không có profile ICC kiểm thử");
+        return;
+    };
+
+    let (x, y) = mid(&layered);
+    for ch in 0..4 {
+        let actual = px(&layered, ch, x, y);
+        let expected = px(&flat, ch, x, y);
+        assert!(
+            (actual as i16 - expected as i16).abs() <= 1,
+            "channel {ch}: layered={actual}, flat={expected}"
+        );
+    }
+    assert!(!layered.warnings.ink_unsound(), "{:?}", layered.warnings);
+}
+#[test]
+fn managed_non_isolated_rgb_group_keeps_rgb_backdrop() {
+    let background = [0.1f32, 0.2, 0.3];
+    let source = [0.0f32, 0.0, 1.0];
+    let mixed = [
+        background[0] * 0.8 + source[0] * 0.2,
+        background[1] * 0.8 + source[1] * 0.2,
+        background[2] * 0.8 + source[2] * 0.2,
+    ];
+    let page_content = format!(
+        "{} {} {} rg 0 0 {PAGE} {PAGE} re f\n/GSOuter gs /Fm0 Do",
+        background[0], background[1], background[2]
+    );
+    let mut layered_doc = build_with(&page_content, |doc| {
+        let form_resources = doc.add_object(dictionary! {
+            "ExtGState" => dictionary! {
+                "GSInner" => dictionary! { "BM" => "Normal", "ca" => 0.5 }
+            }
+        });
+        let form_content = format!("/GSInner gs 0 0 1 rg 0 0 {PAGE} {PAGE} re f");
+        let form = Object::Reference(doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Form",
+                "BBox" => vec![0.into(), 0.into(), PAGE.into(), PAGE.into()],
+                "Group" => Object::Dictionary(dictionary! {
+                    "S" => "Transparency",
+                    "I" => Object::Boolean(false),
+                    "K" => Object::Boolean(false),
+                }),
+                "Resources" => Object::Reference(form_resources),
+            },
+            form_content.as_bytes().to_vec(),
+        )));
+        dictionary! {
+            "XObject" => dictionary! { "Fm0" => form },
+            "ExtGState" => dictionary! {
+                "GSOuter" => dictionary! { "BM" => "Normal", "ca" => 0.4 }
+            },
+        }
+    });
+    set_page_blend_space(&mut layered_doc, "DeviceRGB");
+
+    let flat_content = format!(
+        "{} {} {} rg 0 0 {PAGE} {PAGE} re f",
+        mixed[0], mixed[1], mixed[2]
+    );
+    let mut flat_doc = build_with(&flat_content, |_doc| Dictionary::new());
+    set_page_blend_space(&mut flat_doc, "DeviceRGB");
+    let (Some(layered), Some(flat)) = (managed_render(&layered_doc), managed_render(&flat_doc))
+    else {
+        eprintln!("bỏ qua: không có profile ICC kiểm thử");
+        return;
+    };
+
+    let (x, y) = mid(&layered);
+    for ch in 0..4 {
+        let actual = px(&layered, ch, x, y);
+        let expected = px(&flat, ch, x, y);
+        assert!(
+            (actual as i16 - expected as i16).abs() <= 1,
+            "channel {ch}: layered={actual}, flat={expected}"
+        );
+    }
+    assert!(!layered.warnings.ink_unsound(), "{:?}", layered.warnings);
+}
+
+#[test]
+fn managed_page_without_group_uses_cmyk_target_blending() {
+    let background = [0.1f32, 0.2, 0.3];
+    let source = [0.6f32, 0.2, 0.4];
+    let content = format!(
+        "{} {} {} rg 0 0 {PAGE} {PAGE} re f\n\
+         /GS0 gs {} {} {} rg 0 0 {PAGE} {PAGE} re f",
+        background[0], background[1], background[2], source[0], source[1], source[2],
+    );
+    let doc = build_with(&content, |_doc| {
+        dictionary! {
+            "ExtGState" => dictionary! {
+                "GS0" => dictionary! { "BM" => "Normal", "ca" => 0.4 }
+            }
+        }
+    });
+    let Some(rendered) = managed_render(&doc) else {
+        eprintln!("bỏ qua: không có profile ICC kiểm thử");
+        return;
+    };
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let cm = ColorManager::from_profiles(
+        &root.join("backend/app/assets/icc/FOGRA39.icc"),
+        Some(&root.join("backend/app/assets/icc/sRGB.icc")),
+        RenderIntent::RelativeColorimetric,
+    )
+    .expect("profile kiểm thử phải đọc được");
+    let background_ink = cm
+        .rgb_to_cmyk(background[0], background[1], background[2])
+        .unwrap();
+    let source_ink = cm.rgb_to_cmyk(source[0], source[1], source[2]).unwrap();
+    let (x, y) = mid(&rendered);
+    for ch in 0..4 {
+        let expected = ((background_ink[ch] * 0.6 + source_ink[ch] * 0.4) * 255.0).round() as i16;
+        let actual = px(&rendered, ch, x, y) as i16;
+        assert!(
+            (actual - expected).abs() <= 1,
+            "channel {ch}: {actual} vs {expected}"
+        );
+    }
+    assert!(!rendered.warnings.ink_unsound(), "{:?}", rendered.warnings);
 }
 
 #[test]
@@ -814,12 +1109,8 @@ fn managed_isolated_rgb_group_blends_with_group_alpha_before_icc() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let cmyk = root.join("backend/app/assets/icc/FOGRA39.icc");
     let rgb = root.join("backend/app/assets/icc/sRGB.icc");
-    let cm = ColorManager::from_profiles(
-        &cmyk,
-        Some(&rgb),
-        RenderIntent::RelativeColorimetric,
-    )
-    .expect("profile kiểm thử phải đọc được");
+    let cm = ColorManager::from_profiles(&cmyk, Some(&rgb), RenderIntent::RelativeColorimetric)
+        .expect("profile kiểm thử phải đọc được");
     let group_color = cm
         .rgb_to_cmyk(0.2, 0.0, 0.8)
         .expect("RGB group phải đổi được sang CMYK");
@@ -865,8 +1156,10 @@ fn isolated_rgb_group_with_non_rgb_content_stays_fail_loud() {
         return;
     };
     assert!(rendered.warnings.unsupported_transparency);
-    assert!(rendered.warnings.skipped_ops.iter().any(|(op, _)| {
-        op.contains("Group DeviceRGB isolated")
-    }));
+    assert!(rendered
+        .warnings
+        .skipped_ops
+        .iter()
+        .any(|(op, _)| { op.contains("Group DeviceRGB isolated") }));
     assert!(rendered.warnings.ink_unsound());
 }

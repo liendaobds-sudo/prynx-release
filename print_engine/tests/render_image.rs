@@ -81,7 +81,10 @@ fn px(r: &PageRender, channel: usize, x: usize, y: usize) -> u8 {
 }
 
 fn center(r: &PageRender) -> (usize, usize) {
-    (r.buffer.width() as usize / 2, r.buffer.height() as usize / 2)
+    (
+        r.buffer.width() as usize / 2,
+        r.buffer.height() as usize / 2,
+    )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -119,7 +122,10 @@ fn cmyk_image_is_not_flagged_as_approximate() {
 #[test]
 fn rgb_image_is_flagged_as_approximate() {
     let r = render_image(base_image(1, 1, 8, "DeviceRGB"), vec![255, 0, 0]);
-    assert!(r.warnings.degrades_accuracy(), "RGB không ICC phải hạ accuracy");
+    assert!(
+        r.warnings.degrades_accuracy(),
+        "RGB không ICC phải hạ accuracy"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -191,7 +197,10 @@ fn degenerate_ctm_draws_nothing_without_panicking() {
         "XObject" => dictionary! { "Im0" => Object::Reference(img_id) },
     });
     // Ma trận scale 0 — suy biến, không khả nghịch.
-    let content_id = doc.add_object(Stream::new(dictionary! {}, b"q 0 0 0 0 0 0 cm /Im0 Do Q".to_vec()));
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        b"q 0 0 0 0 0 0 cm /Im0 Do Q".to_vec(),
+    ));
     let pages_object_id = (doc.new_object_id().0, 0);
     let page_id = doc.add_object(dictionary! {
         "Type" => "Page",
@@ -277,7 +286,10 @@ fn indexed_palette_is_looked_up_not_treated_as_intensity() {
     let resources_id = doc.add_object(dictionary! {
         "XObject" => dictionary! { "Im0" => Object::Reference(img_id) },
     });
-    let content_id = doc.add_object(Stream::new(dictionary! {}, b"q 10 0 0 10 0 0 cm /Im0 Do Q".to_vec()));
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        b"q 10 0 0 10 0 0 cm /Im0 Do Q".to_vec(),
+    ));
     let pages_object_id = (doc.new_object_id().0, 0);
     let page_id = doc.add_object(dictionary! {
         "Type" => "Page",
@@ -332,9 +344,17 @@ fn indexed_image_below_8bpc_keeps_palette_indices() {
 
     let w = r.buffer.width() as usize;
     let h = r.buffer.height() as usize;
-    assert_eq!(px(&r, 1, 0, h / 2), 255, "pixel chỉ số 1 phải là Magenta 100%");
+    assert_eq!(
+        px(&r, 1, 0, h / 2),
+        255,
+        "pixel chỉ số 1 phải là Magenta 100%"
+    );
     assert_eq!(px(&r, 0, 0, h / 2), 0, "và không có Cyan");
-    assert_eq!(px(&r, 0, w - 1, h / 2), 255, "pixel chỉ số 15 phải là Cyan 100%");
+    assert_eq!(
+        px(&r, 0, w - 1, h / 2),
+        255,
+        "pixel chỉ số 15 phải là Cyan 100%"
+    );
     assert_eq!(px(&r, 1, w - 1, h / 2), 0);
 }
 
@@ -427,7 +447,10 @@ fn soft_mask_scales_ink() {
     let resources_id = doc.add_object(dictionary! {
         "XObject" => dictionary! { "Im0" => Object::Reference(img_id) },
     });
-    let content_id = doc.add_object(Stream::new(dictionary! {}, b"q 10 0 0 10 0 0 cm /Im0 Do Q".to_vec()));
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        b"q 10 0 0 10 0 0 cm /Im0 Do Q".to_vec(),
+    ));
     let pages_object_id = (doc.new_object_id().0, 0);
     let page_id = doc.add_object(dictionary! {
         "Type" => "Page",
@@ -575,7 +598,10 @@ fn unsupported_codec_is_reported_not_silently_skipped() {
     assert!(r.warnings.dropped_objects > 0);
     assert!(r.warnings.degrades_accuracy());
     assert!(
-        r.warnings.skipped_ops.iter().any(|(op, _)| op.contains("JPX")),
+        r.warnings
+            .skipped_ops
+            .iter()
+            .any(|(op, _)| op.contains("JPX")),
         "{:?}",
         r.warnings.skipped_ops
     );
@@ -600,7 +626,10 @@ fn absurd_image_dimensions_are_rejected_before_allocating() {
     dict.set("Width", Object::Integer(1_000_000));
     dict.set("Height", Object::Integer(1_000_000));
     let r = render_image(dict, vec![0]);
-    assert!(r.warnings.dropped_objects > 0, "phải từ chối, không được OOM");
+    assert!(
+        r.warnings.dropped_objects > 0,
+        "phải từ chối, không được OOM"
+    );
 }
 
 #[test]
@@ -609,4 +638,108 @@ fn content_without_images_still_renders() {
     let doc = build("0 0 0 1 k 0 0 10 10 re f", dictionary! {});
     let r = render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate()).unwrap();
     assert!((r.buffer.max_tac_percent() - 100.0).abs() < 0.5);
+}
+
+/// Dựng PDF đặt một ảnh (tuỳ chọn kèm `/SMask`) bằng `cm` tuỳ ý rồi render @72.
+fn render_placed_image(
+    cm: &str,
+    image_dict: Dictionary,
+    data: Vec<u8>,
+    smask: Option<(Dictionary, Vec<u8>)>,
+) -> PageRender {
+    let mut doc = Document::with_version("1.7");
+    let mut image_dict = image_dict;
+    if let Some((sd, sdata)) = smask {
+        let sid = doc.add_object(Stream::new(sd, sdata));
+        image_dict.set("SMask", Object::Reference(sid));
+    }
+    let img_id = doc.add_object(Stream::new(image_dict, data));
+    let resources = dictionary! {
+        "XObject" => dictionary! { "Im0" => Object::Reference(img_id) },
+    };
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        format!("q {cm} cm /Im0 Do Q").into_bytes(),
+    ));
+    let resources_id = doc.add_object(resources);
+    let pages_object_id = (doc.new_object_id().0, 0);
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => Object::Reference(pages_object_id),
+        "Contents" => Object::Reference(content_id),
+        "Resources" => Object::Reference(resources_id),
+        "MediaBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+    });
+    doc.set_object(
+        pages_object_id,
+        dictionary! { "Type" => "Pages", "Kids" => vec![Object::Reference(page_id)], "Count" => 1 },
+    );
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog", "Pages" => Object::Reference(pages_object_id),
+    });
+    doc.trailer.set("Root", Object::Reference(catalog_id));
+    render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate())
+        .expect("render phải thành công")
+}
+
+/// Sọc K tại các texel chia hết cho 4, dữ liệu CMYK thô.
+fn stripe_cmyk(n: usize) -> Vec<u8> {
+    (0..n)
+        .flat_map(|x| {
+            if x % 4 == 0 {
+                [0u8, 0, 0, 255]
+            } else {
+                [0u8, 0, 0, 0]
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn texel_boundary_tie_picks_left_texel_like_gs() {
+    // Ảnh 8 texel đặt `4 0 0 4 0 3 cm`: tâm pixel i rơi đúng biên texel
+    // (u*8 = 2i+1, nguyên). Quy ước GS là khoảng nửa-mở TRÁI: tie lấy texel
+    // 2i (sọc BẬT tại texel chẵn). Quy ước floor lấy texel lẻ → cả hàng tắt —
+    // đo black-box GS 10.04: sọc chu kỳ 4 với offset nguyên cho pattern 1-in-5
+    // chỉ giải thích được bằng tie-trái.
+    let mut samples = Vec::new();
+    for x in 0..8 {
+        samples.extend_from_slice(if x % 2 == 0 {
+            &[0u8, 0, 0, 255]
+        } else {
+            &[0u8, 0, 0, 0]
+        });
+    }
+    let r = render_placed_image("4 0 0 4 0 3", base_image(8, 1, 8, "DeviceCMYK"), samples, None);
+    for x in 0..4 {
+        assert_eq!(
+            px(&r, 3, x, 5),
+            255,
+            "tie tại pixel {x} phải lấy texel trái (chẵn, có mực)"
+        );
+    }
+}
+
+#[test]
+fn smask_image_samples_on_integer_bbox_grid_like_gs() {
+    // Ảnh 30 texel + /SMask, đặt `7.4 0 0 7.4 0.3 1 cm` → footprint x [0.3,7.7],
+    // bbox pixel-nguyên [0,8). Đo black-box GS 10.04: ảnh có mask lấy mẫu như
+    // thể hình vuông đơn vị phủ bbox đó (căng ~1px). Trên lưới căng:
+    // t = (i+0.5)*30/8 → texel 1,5,9,13,16,20,24,28 → sọc (mod 4) BẬT ở pixel
+    // 4..7. Lưới chính xác (code cũ) cho 0,4,8,12,17,... → BẬT ở 0..3 — pattern
+    // đảo ngược hoàn toàn, không thể pass nhầm.
+    let smask = (base_image(30, 1, 8, "DeviceGray"), vec![255u8; 30]);
+    let r = render_placed_image(
+        "7.4 0 0 7.4 0.3 1",
+        base_image(30, 1, 8, "DeviceCMYK"),
+        stripe_cmyk(30),
+        Some(smask),
+    );
+    let row = 5;
+    for x in 0..4 {
+        assert_eq!(px(&r, 3, x, row), 0, "pixel {x} phải TẮT trên lưới bbox");
+    }
+    for x in 4..8 {
+        assert_eq!(px(&r, 3, x, row), 255, "pixel {x} phải BẬT trên lưới bbox");
+    }
 }

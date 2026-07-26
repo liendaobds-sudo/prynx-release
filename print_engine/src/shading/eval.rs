@@ -70,15 +70,7 @@ impl SampledShading {
                 // dữ liệu lưới), mà những kiểu đó đã bị loại từ trước.
                 None => vec![0.0],
             };
-            let rgb = if matches!(shading.colorspace, crate::color::ColorSpace::DeviceRGB) {
-                Some([
-                    comps.first().copied().unwrap_or(0.0).clamp(0.0, 1.0),
-                    comps.get(1).copied().unwrap_or(0.0).clamp(0.0, 1.0),
-                    comps.get(2).copied().unwrap_or(0.0).clamp(0.0, 1.0),
-                ])
-            } else {
-                None
-            };
+            let rgb = shading.colorspace.to_device_rgb_for_blending(&comps);
             match shading.colorspace.to_ink(&comps, space, warn, cm)? {
                 Some((ink, mask)) => lut.push((ink, mask, rgb)),
                 None => lut.push((Vec::new(), ChannelMask::EMPTY, rgb)),
@@ -137,8 +129,8 @@ impl SampledShading {
             }
             ShadingKind::Mesh { .. } => return None,
         };
-        let idx = ((frac.clamp(0.0, 1.0) * (LUT_SIZE - 1) as f32).round() as usize)
-            .min(LUT_SIZE - 1);
+        let idx =
+            ((frac.clamp(0.0, 1.0) * (LUT_SIZE - 1) as f32).round() as usize).min(LUT_SIZE - 1);
         let (ink, mask, rgb) = &self.lut[idx];
         if ink.is_empty() {
             None
@@ -160,7 +152,11 @@ fn axial_param(coords: &[f32; 4], extend: &[bool; 2], x: f32, y: f32) -> Option<
     if denom <= f32::EPSILON {
         // Trục suy biến (hai đầu trùng nhau): chỉ vẽ nếu có extend, và khi đó
         // toàn vùng lấy màu đầu trục.
-        return if extend[0] || extend[1] { Some(0.0) } else { None };
+        return if extend[0] || extend[1] {
+            Some(0.0)
+        } else {
+            None
+        };
     }
     let s = ((x - x0) * dx + (y - y0) * dy) / denom;
     clamp_with_extend(s, extend)

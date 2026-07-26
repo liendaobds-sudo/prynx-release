@@ -5,7 +5,7 @@ use lopdf::{Dictionary, Document, Object};
 use crate::color::icc::ColorManager;
 use crate::color::space::resolve_colorspace;
 use crate::color::ColorSpace;
-use crate::content::{RenderOptions, Renderer};
+use crate::content::{BlendSpace, RenderOptions, Renderer};
 use crate::error::{PpeError, PpeResult, RenderWarnings};
 use crate::geom::{Matrix, Rect};
 use crate::ink::{InkBuffer, InkSpace};
@@ -101,7 +101,7 @@ pub fn render_page_managed(
     let rotate = normalize_rotate(inherited_num(doc, page_dict, "Rotate").unwrap_or(0.0) as i32);
 
     let resources = collect_resources(doc, page_dict);
-    let blend_space_cmyk = page_group_is_device_cmyk(doc, page_dict, resources.as_ref());
+    let blend_space = page_blend_space(doc, page_dict, resources.as_ref());
     let (width_px, height_px) = raster_size(&target, dpi, rotate)?;
     let device = device_matrix(&target, dpi, rotate);
 
@@ -112,7 +112,8 @@ pub fn render_page_managed(
     };
     let buffer =
         InkBuffer::new_with_memory_budget(width_px, height_px, space, opts.memory_budget_bytes)?;
-    let mut renderer = Renderer::new(doc, buffer, opts, color, blend_space_cmyk)?;
+    let opts = opts.with_device_scale(dpi);
+    let mut renderer = Renderer::new(doc, buffer, opts, color, blend_space)?;
 
     let content = doc.get_page_content(page_id);
     if content.is_empty() {
@@ -189,14 +190,32 @@ pub fn raster_size(page_box: &Rect, dpi: f32, rotate: i32) -> PpeResult<(u32, u3
 ///
 /// Xoay theo chiều **kim đồng hồ** khi hiển thị (§7.7.3.3): `/Rotate 90` đưa góc
 /// trên-trái của trang chưa xoay về góc trên-**phải** của ảnh.
+///
+/// # Neo lưới raster
+///
+/// Khi chiều cao trang không tròn pixel, phần dư làm tròn phải dồn lên **đỉnh**:
+/// đáy trang luôn chạm mép dưới raster đã round, còn mép trái neo theo toạ độ
+/// chính xác. Đây là hành vi đo black-box của RIP tham chiếu (GS 10.04, trang
+/// 155.9 pt @72/100/150 DPI — sọc 1-texel khớp 0-pixel-lệch chỉ với mô hình
+/// này). Neo đáy theo `y1*s` chính xác nghe hợp lý hơn nhưng làm TOÀN BỘ trang
+/// lệch pha dọc một hằng số sub-pixel so với tham chiếu; với ảnh thu nhỏ
+/// ratio ≥ 3 texel/pixel, lệch 0.1 px đổi texel được chọn ở ~1/3 số pixel —
+/// đủ đổi đỉnh TAC của trang (tra gung @72: −8.2 điểm chỉ vì neo).
 pub fn device_matrix(page_box: &Rect, dpi: f32, rotate: i32) -> Matrix {
     let s = dpi / 72.0;
     let Rect { x0, y0, x1, y1 } = *page_box;
+    // Cùng công thức làm tròn với `raster_size` — lệch nhau một ulp là lệch neo.
+    let extent_y = if rotate == 90 || rotate == 270 {
+        (x1 - x0) * s
+    } else {
+        (y1 - y0) * s
+    };
+    let snap = extent_y.round().max(1.0) - extent_y;
     match rotate {
-        90 => Matrix::new(0.0, s, s, 0.0, -y0 * s, -x0 * s),
-        180 => Matrix::new(-s, 0.0, 0.0, s, x1 * s, -y0 * s),
-        270 => Matrix::new(0.0, -s, -s, 0.0, y1 * s, x1 * s),
-        _ => Matrix::new(s, 0.0, 0.0, -s, -x0 * s, y1 * s),
+        90 => Matrix::new(0.0, s, s, 0.0, -y0 * s, -x0 * s + snap),
+        180 => Matrix::new(-s, 0.0, 0.0, s, x1 * s, -y0 * s + snap),
+        270 => Matrix::new(0.0, -s, -s, 0.0, y1 * s, x1 * s + snap),
+        _ => Matrix::new(s, 0.0, 0.0, -s, -x0 * s, y1 * s + snap),
     }
 }
 
@@ -215,27 +234,30 @@ fn inherited_rect(doc: &Document, page: &Dictionary, which: PageBox) -> Option<R
 }
 
 fn inherited_num(doc: &Document, page: &Dictionary, key: &str) -> Option<f32> {
-
     inherited(doc, page, key).and_then(pdf::as_num)
 }
-fn page_group_is_device_cmyk(
+fn page_blend_space(
     doc: &Document,
     page: &Dictionary,
     resources: Option<&Dictionary>,
-) -> bool {
+) -> BlendSpace {
     let Some(group) = pdf::dict_get_dict(doc, page, "Group") else {
-        return false;
+        // ISO 32000: không khai thì dùng color space của target device.
+        return BlendSpace::DeviceCmyk;
     };
     let Some(cs) = pdf::dict_get(doc, group, "CS") else {
-        return false;
+        return BlendSpace::DeviceCmyk;
     };
     let mut warnings = RenderWarnings::default();
-    matches!(
-        resolve_colorspace(doc, cs, resources, &mut warnings),
-        Ok(ColorSpace::DeviceCMYK)
-    )
+    match resolve_colorspace(doc, cs, resources, &mut warnings) {
+        Ok(ColorSpace::DeviceCMYK) => BlendSpace::DeviceCmyk,
+        Ok(ColorSpace::DeviceRGB) => BlendSpace::DeviceRgb,
+        Ok(ColorSpace::IccBased { alternate, .. }) if alternate.n_components() == 4 => {
+            BlendSpace::DeviceCmyk
+        }
+        _ => BlendSpace::Other,
+    }
 }
-
 
 /// Trần độ cao cây trang khi truy ngược `/Parent`, chống vòng lặp cha-con.
 const MAX_PAGE_TREE_DEPTH: u32 = 64;
@@ -333,6 +355,32 @@ mod tests {
         let m = device_matrix(&a4(), 72.0, 0);
         let p = m.apply(0.0, 842.0);
         assert!(p.0.abs() < 1e-3 && p.1.abs() < 1e-3, "{p:?}");
+    }
+
+    #[test]
+    fn device_matrix_anchors_page_bottom_at_rounded_raster_height() {
+        // Đo black-box GS 10.04 trên trang cao không nguyên pixel (155.9 pt
+        // @72): GS dồn phần dư làm tròn lên ĐỈNH raster — đáy trang luôn chạm
+        // mép dưới raster đã round; mép trái vẫn neo chính xác. Sọc 1-texel
+        // chỉ khớp GS 0-pixel-lệch với mô hình neo này (kể cả 278/417 px ở
+        // 100/150 DPI). Neo đáy theo toạ độ chính xác làm cả trang lệch pha
+        // sub-pixel so với GS: ảnh thu nhỏ ratio ≥ 3 đổi texel ở ~1/3 pixel
+        // (tra gung @72: d_tac −8.2 chỉ vì lệch này).
+        let page = Rect::new(0.0, 0.0, 311.8, 155.9);
+        let m = device_matrix(&page, 72.0, 0);
+        assert!(
+            (m.apply(0.0, 0.0).1 - 156.0).abs() < 1e-3,
+            "đáy trang phải chạm raster 156, được {}",
+            m.apply(0.0, 0.0).1
+        );
+        assert!(m.apply(0.0, 155.9).0.abs() < 1e-3, "mép trái neo chính xác");
+        // Ba góc xoay còn lại: trục y thiết bị lần lượt đến từ x1/y1/x0.
+        let m = device_matrix(&page, 72.0, 90);
+        assert!((m.apply(311.8, 0.0).1 - 312.0).abs() < 1e-3);
+        let m = device_matrix(&page, 72.0, 180);
+        assert!((m.apply(0.0, 155.9).1 - 156.0).abs() < 1e-3);
+        let m = device_matrix(&page, 72.0, 270);
+        assert!((m.apply(0.0, 0.0).1 - 312.0).abs() < 1e-3);
     }
 
     #[test]

@@ -38,11 +38,11 @@ fn main() {
             .expect("không mở được profile");
         cm.set_black_point_compensation(bpc);
 
+        println!("\n=== bù điểm đen: {} ===", if bpc { "BẬT" } else { "TẮT" });
         println!(
-            "\n=== bù điểm đen: {} ===",
-            if bpc { "BẬT" } else { "TẮT" }
+            "{:<12} {:>7} {:>7} {:>7} {:>7} {:>8}",
+            "màu", "C%", "M%", "Y%", "K%", "TAC%"
         );
-        println!("{:<12} {:>7} {:>7} {:>7} {:>7} {:>8}", "màu", "C%", "M%", "Y%", "K%", "TAC%");
         for (name, rgb_in) in PATCHES {
             match cm.rgb_to_cmyk(rgb_in[0], rgb_in[1], rgb_in[2]) {
                 Some(c) => println!(
