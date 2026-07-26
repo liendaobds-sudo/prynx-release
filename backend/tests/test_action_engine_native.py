@@ -564,3 +564,73 @@ def test_action_log_records_engine_pikepdf_for_convert_cmyk(tmp_path):
     assert result.success
     assert result.log[0].engine == "pikepdf"
     assert result.log[0].report["color_ops_converted"] == 1
+
+
+# ── Bảo vệ thành quả: chạy được khi KHÔNG có Ghostscript ────────────────────
+
+def test_four_actions_still_work_without_ghostscript(tmp_path, monkeypatch):
+    """Gate Phase 2 chỉ có nghĩa nếu action thật sự chạy khi GS vắng mặt.
+
+    Không có test này, một thay đổi vô ý (bỏ nhánh native, đổi thứ tự fallback)
+    sẽ đưa cả bốn action về Ghostscript mà mọi test khác vẫn xanh — vì máy dev
+    nào cũng có sẵn GS. Chỉ trỏ `GHOSTSCRIPT_PATH` vào chỗ không tồn tại mới
+    phơi ra được.
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "GHOSTSCRIPT_PATH", str(tmp_path / "khong-co-gs.exe"))
+
+    # Ảnh 1200 DPI + màu RGB + font base-14 + nét đen: đủ đầu vào cho cả 4.
+    pdf = pikepdf.Pdf.new()
+    img = _image_stream(pdf, 1200, 1200)
+    font = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Font"), Subtype=pikepdf.Name("/Type1"),
+        BaseFont=pikepdf.Name("/Helvetica"),
+    )
+    content = (
+        b"q 72 0 0 72 10 10 cm /Im0 Do Q\n"
+        b"1 0 0 rg 0 0 20 20 re f\n"
+        b"0 0 0 1 k 5 5 8 8 re f\n"
+        b"BT /F1 12 Tf 20 20 Td (x) Tj ET\n"
+    )
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"), MediaBox=[0, 0, 200, 200],
+        Resources=pikepdf.Dictionary(
+            XObject=pikepdf.Dictionary(Im0=pdf.make_indirect(img)),
+            Font=pikepdf.Dictionary(F1=pdf.make_indirect(font)),
+        ),
+        Contents=pdf.make_indirect(pikepdf.Stream(pdf, content)),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    src = tmp_path / "no_gs.pdf"
+    pdf.save(str(src))
+    pdf.close()
+
+    engine = ActionEngine()
+    engine.gs_path = str(tmp_path / "khong-co-gs.exe")
+    for action in (
+        "DOWNSCALE_IMAGES",
+        "EMBED_FONTS",
+        "CONVERT_TO_CMYK",
+        "SET_BLACK_OVERPRINT",
+    ):
+        result = asyncio.run(engine.execute(str(src), action))
+        assert result.success, f"{action} thất bại khi không có Ghostscript"
+        assert result.log[0].engine == "pikepdf", (
+            f"{action} đã rơi về engine {result.log[0].engine!r}"
+        )
+
+
+def test_resize_downsample_does_not_need_ghostscript(tmp_path, monkeypatch):
+    """Đường resize dùng chung `downscale_images` nên cũng phải sống thiếu GS."""
+    from app.config import settings
+    from app.workers import pdf_tools_engine
+
+    monkeypatch.setattr(settings, "GHOSTSCRIPT_PATH", str(tmp_path / "khong-co-gs.exe"))
+
+    src = tmp_path / "big.pdf"
+    out = tmp_path / "small.pdf"
+    _one_page_pdf(src, img_w=1200, img_h=1200, placed_pt=72.0)
+
+    assert pdf_tools_engine._native_downsample(str(src), str(out), 300) is True
+    assert out.is_file() and out.stat().st_size > 0

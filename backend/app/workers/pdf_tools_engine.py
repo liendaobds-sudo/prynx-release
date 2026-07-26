@@ -350,6 +350,39 @@ def _doc_has_non_rgb_images(path: str) -> bool:
     return False
 
 
+def _native_downsample(input_path: str, output_path: str, target_dpi: int) -> bool:
+    """Hạ độ phân giải ảnh bằng pikepdf/Pillow. `False` ⇒ caller thử Ghostscript.
+
+    Dùng chung `pdf_actions_native.downscale_images` với action DOWNSCALE_IMAGES
+    — cùng cách tính DPI hiệu dụng (CTM, đệ quy Form XObject) và cùng danh sách
+    ảnh bỏ qua vì không an toàn.
+
+    Ngưỡng giữ **1.5×** cho khớp mặc định của pdfwrite: đây là đường thay thế
+    cho GS ở giữa một tính năng đang chạy, nên hành vi người dùng thấy không
+    được đổi. Hạ mọi ảnh chỉ hơn ngưỡng một chút chỉ làm mờ mà gần như không
+    giảm dung lượng.
+    """
+    try:
+        from app.core import pdf_actions_native
+    except Exception as exc:  # noqa: BLE001
+        _pt_logger.debug("resize downsample: không nạp được pdf_actions_native (%s)", exc)
+        return False
+    try:
+        result = pdf_actions_native.downscale_images(
+            input_path, output_path, float(target_dpi), float(target_dpi) * 1.5
+        )
+    except Exception as exc:  # noqa: BLE001
+        _pt_logger.warning("resize downsample object-level lỗi (%s) → thử Ghostscript.", exc)
+        return False
+    if result.get("changed", 0) > 0:
+        _pt_logger.info(
+            "resize downsample: hạ %d ảnh bằng pikepdf (không cần Ghostscript).",
+            result["changed"],
+        )
+        return True
+    return False
+
+
 def _gs_downsample(input_path: str, output_path: str, target_dpi: int) -> bool:
     """Ghostscript downsample ảnh về target_dpi, GIỮ vector/text/CMYK. Trả True
     nếu thành công. Mọi lỗi (thiếu GS, GS fail) → False (caller fallback).
@@ -511,10 +544,19 @@ def resize_pages_smart(source_path: str, output_path: str,
             _pt_logger.warning("raster resize lỗi (%s) → fallback sang vector.", e)
             chosen = "vector"
 
-    # ── Vector: đổi hình học (XObject) rồi Ghostscript downsample ảnh ──
+    # ── Vector: đổi hình học (XObject) rồi hạ độ phân giải ảnh ──
     tmp_geom = output_path + ".geom.pdf"
     resize_pages(source_path, tmp_geom, target_w_mm, target_h_mm, scale_mode, apply_to)
     try:
+        # Ưu tiên đường object-level: nó chỉ ghi đè đúng ảnh vượt ngưỡng, còn
+        # pdfwrite dựng lại cả tài liệu (subset lại font, quy đổi colorspace,
+        # có khi nuốt cả spot). Chỉ rơi về GS khi native không hạ được gì.
+        if _native_downsample(tmp_geom, output_path, int(target_dpi)):
+            try:
+                if os.path.getsize(output_path) < os.path.getsize(tmp_geom):
+                    return output_path
+            except OSError:
+                return output_path
         if _gs_downsample(tmp_geom, output_path, int(target_dpi)):
             # Chỉ giữ kết quả downsample nếu THỰC SỰ nhỏ hơn; GS đôi khi phình file.
             try:

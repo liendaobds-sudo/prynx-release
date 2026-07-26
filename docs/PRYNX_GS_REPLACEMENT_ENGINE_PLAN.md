@@ -60,34 +60,46 @@
 
 ### 2.1 Module backend
 
-| Module / khu vực | Vai trò GS | Mức độ thay thế |
+Kiểm kê lại theo code ngày **2026-07-27** (bảng cũ đã lệch thực tế).
+
+| Module / khu vực | Vai trò GS | Trạng thái |
 |---|---|---|
-| `app/core/separations.py` | `tiffsep` plates + ICC | **P0** PPE |
-| `app/core/softproof.py` | Render soft-proof ICC | **P0** PPE |
-| `app/core/preflight_rules/ink.py` | TAC qua separations ink_accurate | **P0** PPE |
-| `app/core/pdfx_export.py` | Xuất PDF/X | **P2** |
-| `app/core/action_engine.py` | CONVERT_TO_CMYK, FLATTEN, OUTLINE, EMBED, DOWNSCALE, SET_BLACK_OVERPRINT | **P1–P2** |
-| `app/core/ink_manager.py` | Spot → CMYK | **P2** |
-| `app/core/layer_engine.py` | Một số convert/render GS | **P2** |
-| `app/core/viewer_preview.py` | Preview path GS | **P1** |
-| `app/api/routes/preflight.py` | Separations/soft-proof/convert API | Wire PPE |
-| `app/api/routes/pdf_tools.py` | GS tools | **P1–P2** |
-| `app/workers/pdf_tools_engine.py` | Downsample GS (skip nếu thiếu) | **P1** |
-| `app/workers/sticker_engine.py` | Render RGB fallback GS | **P1** |
-| `app/api/routes/imposition.py` | raster fallback `use_ghostscript=True` | **P1** |
+| `app/core/separations.py` | `tiffsep` plates + ICC | **PPE-first**, GS fallback |
+| `app/core/softproof.py` | Render soft-proof ICC | **PPE-first**, GS fallback |
+| `app/core/preflight_rules/ink.py` | TAC qua separations ink_accurate | **PPE-first**, GS fallback |
+| `app/core/action_engine.py` | 6 action | **4/6 non-GS** (§17); còn FLATTEN, OUTLINE |
+| `app/workers/pdf_tools_engine.py` | Downsample sau resize | **non-GS** — dùng chung `downscale_images`, GS chỉ khi native không hạ được ảnh nào |
+| `app/core/viewer_preview.py` | Preview + thumbnail GS | **CODE CHẾT** — `desktop/src/lib/viewerPreview.ts` không được import ở đâu; thumbnail đã chuyển sang pdfium từ đợt tối ưu 2026-07-22. Gỡ được cả chuỗi (module + route + lib FE) sau khi sản phẩm xác nhận |
+| `app/workers/sticker_engine.py` | Render RGB cho lấy mẫu bleed | **Có lý do kỹ thuật**: pdfium lộ màu CHƯA composite của transparency group (file Canva) ở mép trim → seam. PPE có group/blend đầy đủ nên thay được, nhưng phải đo golden mép trim trước — không thay mù |
+| `app/core/ink_manager.py` | Spot → CMYK | **Còn GS.** Object-level khả thi: `Separation` có `alternate` + tint transform; `FunctionType 2` đủ cho phần lớn file. Fallback GS cho type 0/4 |
+| `app/core/layer_engine.py` | `-dFlattenOCGs` | **Còn GS** (đã có fallback pypdfium2). Flatten OCG là thao tác cấu trúc — pikepdf làm được |
+| `app/core/pdfx_export.py` | Xuất PDF/X | **Còn GS** — Phase 3 |
+| `app/api/routes/preflight.py`, `pdf_tools.py`, `imposition.py` | Wire/route | Theo module bên dưới |
 | `app/config.py` | `_find_ghostscript()` | Giữ đến sunset |
-| `build_production.ps1` | Copy `binaries/gs` | Gỡ khi PPE gate pass |
+| `build_production.ps1` | Copy `binaries/gs` | Gỡ khi §8 pass |
 
-### 2.2 Action registry (`engine: ghostscript`)
+**Bài học kiểm kê:** ba mục trong bảng cũ sai lệch so với code — `SET_BLACK_OVERPRINT`
+đã rời GS mà vẫn bị tính là GS, `viewer_preview` là code chết, `pdf_tools_engine`
+mô tả "skip nếu thiếu" trong khi nó quyết định chất lượng file resize. Bản đồ
+phụ thuộc phải được kiểm lại bằng grep trước mỗi lần lập kế hoạch, không đọc
+lại bảng cũ.
 
-| Action ID | UI | Ưu tiên PPE |
+### 2.2 Action registry — trạng thái engine (2026-07-27)
+
+| Action ID | UI | Engine thực tế |
 |---|---|---|
-| `CONVERT_TO_CMYK` | Chuyển CMYK + ICC | P1 |
-| `FLATTEN_TRANSPARENCY` | Flatten trong suốt | P2 (khó) |
-| `OUTLINE_FONTS` | Khóa font | P2 |
-| `EMBED_FONTS` | Nhúng font | P1 (có thể pikepdf-first) |
-| `DOWNSCALE_IMAGES` | Giảm DPI ảnh | P1 (pikepdf/Pillow) |
-| `SET_BLACK_OVERPRINT` | Overprint đen | P2 |
+| `CONVERT_TO_CMYK` | Chuyển CMYK + ICC | **pikepdf**, GS khi shading RGB |
+| `DOWNSCALE_IMAGES` | Giảm DPI ảnh | **pikepdf**, GS khi không hạ được ảnh nào |
+| `EMBED_FONTS` | Nhúng font | **pikepdf** khi đủ font, GS khi thiếu thật |
+| `SET_BLACK_OVERPRINT` | Overprint đen | **pikepdf** (từ `overprint_black`) |
+| `FLATTEN_TRANSPARENCY` | Flatten trong suốt | ghostscript |
+| `OUTLINE_FONTS` | Khóa font | ghostscript |
+
+`ActionLogEntry.engine` ghi engine **đã chạy thật** của từng lần, vì bốn action
+đầu có hai nhánh. Test `test_four_actions_still_work_without_ghostscript` trỏ
+`GHOSTSCRIPT_PATH` vào đường dẫn không tồn tại rồi chạy cả bốn — không có nó,
+một thay đổi vô ý đưa tất cả về GS vẫn để mọi test khác xanh, vì máy dev nào
+cũng có sẵn Ghostscript.
 
 **Không qua GS (giữ nguyên):** `FIX_METADATA`, `FIX_HAIRLINES`, `REMOVE_CHANNELS` (channel_remover/pikepdf).
 
