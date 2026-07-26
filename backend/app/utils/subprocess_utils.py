@@ -19,13 +19,51 @@ import sys
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 
+def _caller_reason() -> str:
+    """Module + hàm gọi `run_hidden`, dùng làm nhãn cho bộ đếm Ghostscript.
+
+    Dò ngược ngăn xếp thay vì bắt caller tự khai: chỗ gọi GS mới thêm sau này
+    sẽ được đếm mà không ai phải nhớ thêm tham số — và đó đúng là những chỗ số
+    liệu quan trọng nhất. Bỏ qua khung của asyncio/threading vì phần lớn lệnh
+    GS chạy qua `asyncio.to_thread`, nếu không nhãn nào cũng ra "thread.run".
+    """
+    try:
+        frame = sys._getframe(2)
+        for _ in range(12):
+            if frame is None:
+                break
+            name = frame.f_globals.get("__name__", "")
+            if name.startswith("app.") and not name.endswith("subprocess_utils"):
+                return f"{name}.{frame.f_code.co_name}"
+            frame = frame.f_back
+    except Exception:  # noqa: BLE001
+        pass
+    return "unknown"
+
+
 def run_hidden(cmd, **kwargs) -> subprocess.CompletedProcess:
     """subprocess.run + CREATE_NO_WINDOW (Windows) để KHÔNG pop cửa sổ console.
 
     Truyền thẳng mọi kwargs (capture_output, timeout, stdout, stderr, cwd, env…)
     xuống subprocess.run. Nếu caller tự đặt creationflags thì OR thêm cờ ẩn cửa sổ
     (giữ nguyên cờ của caller, chỉ bổ sung).
+
+    Cũng là chỗ **đếm mọi lần Ghostscript được gọi** (gate §8.1 — xem
+    `app.core.gs_usage`). Đặt bộ đếm ở đây vì mọi lệnh GS của sản phẩm đều đi
+    qua hàm này; rải nó ra từng call site sẽ bỏ sót đúng các đường thêm mới.
+
+    `gs_reason=` (tuỳ chọn) để caller tự đặt nhãn khi nó biết rõ hơn ngăn xếp —
+    ví dụ `action_engine` biết tên action, còn dò ngăn xếp chỉ ra được tên hàm
+    nội bộ. Tham số này được lấy ra trước khi gọi `subprocess.run`.
     """
+    reason = kwargs.pop("gs_reason", None)
+    try:
+        from app.core import gs_usage
+
+        if gs_usage.is_ghostscript_command(cmd):
+            gs_usage.record_gs_call(reason or _caller_reason())
+    except Exception:  # noqa: BLE001 — đo đạc không được làm hỏng job
+        pass
     if sys.platform == "win32":
         kwargs["creationflags"] = kwargs.get("creationflags", 0) | _CREATE_NO_WINDOW
     return subprocess.run(cmd, **kwargs)

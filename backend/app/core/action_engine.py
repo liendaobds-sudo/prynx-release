@@ -1084,6 +1084,9 @@ class ActionEngine:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=300,  # 5 min max
+                # Khai tên action cho bộ đếm §8.1: dò ngăn xếp chỉ ra được
+                # `_run_sync`, còn thứ cần biết là action nào chưa rời GS.
+                gs_reason=f"action:{action_name}",
             )
 
         try:

@@ -1502,7 +1502,7 @@ Số chốt: backend **1327 pass** (1305 + 22 test mới), gồm cả smoke corp
 
 | # | Điều kiện | Trạng thái |
 |---|---|---|
-| 1 | ≥95% job prepress 30 ngày không cần GS fallback | **CHƯA ĐO ĐƯỢC.** Cần telemetry từ máy khách thật; không có cách nào rút ngắn bằng test nội bộ |
+| 1 | ≥95% job prepress 30 ngày không cần GS fallback | **THIẾT BỊ ĐO ĐÃ CÓ** (§18.4), còn chờ dữ liệu 30 ngày từ máy khách thật |
 | 2 | Separations + Soft-proof + TAC: PPE default, badge không "approximate" trên DeviceCMYK | **ĐẠT về code** (PPE-first + badge). Vẫn nên xác nhận trên bản ship |
 | 3 | PDF/X: ≥1 standard pass compliance suite nội bộ | **CHƯA** — xem §18.2 |
 | 4 | Actions P1 (Convert CMYK, Downscale, Embed) non-GS | **ĐẠT** — cả ba, cộng `SET_BLACK_OVERPRINT`, có test chạy khi `GHOSTSCRIPT_PATH` trỏ vào chỗ không tồn tại |
@@ -1536,8 +1536,8 @@ in **khác** điều kiện đã được đo. Đã chuyển sang `icc_profiles
 
 ### 18.3 Việc còn lại, theo thứ tự đòn bẩy
 
-1. **Telemetry GS fallback** (§8.1) — không có nó thì không bao giờ đóng được
-   gate, và nó rẻ hơn mọi việc còn lại.
+1. ~~Telemetry GS fallback~~ — **XONG** (§18.4). Việc còn lại là **để nó chạy**:
+   ship một bản có endpoint này rồi thu số sau 30 ngày.
 2. **Compliance suite PDF/X** rồi mới tới `export_pdfx` non-GS (§8.3).
 3. **Quyết định sản phẩm** về Flatten/Outline (§8.5): raster có cảnh báo, hay
    GS optional do người dùng tự cài.
@@ -1545,12 +1545,43 @@ in **khác** điều kiện đã được đo. Đã chuyển sang `icc_profiles
 5. `sticker_engine` sang PPE sau khi đo golden mép trim; `layer_engine`
    flatten OCG bằng pikepdf; gỡ chuỗi `viewer_preview` chết.
 
+### 18.4 Thiết bị đo GS fallback (`app/core/gs_usage.py`)
+
+Không đo được 30 ngày log khách từ trong một phiên, nhưng **dựng được thiết bị
+đo** — và đó mới là phần thuộc về code.
+
+Đặt bộ đếm ở **một chỗ duy nhất**: `subprocess_utils.run_hidden`, nơi mọi lệnh
+Ghostscript của sản phẩm đi qua (đã kiểm: `action_engine`, `separations`,
+`softproof`, `ink_manager`, `pdfx_export`, `pdf_tools_engine`,
+`sticker_engine`, `layer_engine`, `viewer_preview`, route `preflight` — tất cả).
+Rải bộ đếm ra từng call site sẽ bỏ sót đúng những đường thêm mới sau này, tức
+đúng lúc số liệu đáng giá nhất.
+
+Nhãn: tự dò ngăn xếp tìm khung `app.*` đầu tiên (bỏ qua asyncio/threading vì
+phần lớn lệnh GS chạy qua `asyncio.to_thread` — không bỏ thì nhãn nào cũng ra
+`thread.run`); caller biết rõ hơn thì tự khai qua `gs_reason=`. `action_engine`
+khai `action:<TÊN>` vì thứ cần biết là *action nào* chưa rời GS, không phải hàm
+nội bộ nào.
+
+Không ghi tên file, chỉ ghi module/action: đây là bộ đếm kỹ thuật, kèm đường
+dẫn vào là biến nó thành dữ liệu cá nhân phải bảo vệ. Log JSONL có trần 200k
+dòng; mọi lỗi ghi đều nuốt — một lệnh in thất bại vì bộ đếm là điều lố bịch,
+và có test khoá riêng tính chất đó.
+
+Đọc số: `GET /system/gs-usage` (`since_process_start` + `persisted`).
+
+**Đo thử ngay khi dựng xong** — chạy cả 8 action trên một trang có ảnh 1200 DPI
++ RGB + font base-14: **2 lệnh GS trên 8 action**, đúng
+`action:OUTLINE_FONTS` và `action:FLATTEN_TRANSPARENCY`. Sáu action còn lại
+không chạm tới Ghostscript.
+
 ---
 
 ## 15. Lịch sử tài liệu
 
 | Ver | Ngày | Thay đổi |
 |---|---|---|
+| 3.3 | 2026-07-27 | Thiết bị đo GS fallback (`gs_usage.py` + hook duy nhất ở `run_hidden` + `GET /system/gs-usage`) — mở khoá đường đóng §8.1, giờ chỉ còn chờ 30 ngày dữ liệu khách. Nhãn tự dò module gọi nên bắt cả call site thêm sau; `action_engine` khai `action:<TÊN>`. Đo thử: **2 lệnh GS trên 8 action**, đúng OUTLINE_FONTS và FLATTEN_TRANSPARENCY. Backend **1341 pass**. §18.4. |
 | 3.2 | 2026-07-27 | **Gate Phase 1 ĐẠT** (4/4, kèm số đo) và **gate Phase 2 ĐẠT** (4/6 action non-GS): thêm `CONVERT_TO_CMYK` object-level (spot sống, gray giữ K thuần, Indexed đổi bảng màu; 12/13 file corpus có RGB xử lý được) và sửa nhãn `SET_BLACK_OVERPRINT` (đã rời GS từ lâu nhưng registry còn khai ghostscript nên gate đếm thiếu). Ngoài action: resize downsample dùng chung `downscale_images`; spot→CMYK object-level trong `ink_manager` (chuyển ĐÚNG kênh được yêu cầu, khác GS nuốt sạch mọi Separation). Kiểm kê lại §2 theo code — phát hiện `viewer_preview` là code chết. Sửa bug PDF/X: OutputIntent luôn khai ICC generic của Ghostscript thay vì FOGRA39 vì `except: pass` nuốt ImportError sau refactor. Thêm test chạy-khi-không-có-GS cho cả 4 action. §17, §18. Backend **1335 pass**. |
 | 3.1 | 2026-07-27 | Phase 2 mở màn: `DOWNSCALE_IMAGES` và `EMBED_FONTS` có đường non-GS (`pdf_actions_native.py`). Downscale tự duyệt content stream lấy CTM (đệ quy Form + `/Matrix`, khoá theo objgen, lấy placement lớn nhất) thay vì ghép heuristic của PDFium; giữ nguyên content stream từng byte, hạ `/SMask` cùng tỉ lệ, bỏ qua 1-bit/Indexed/spot/JPX. Embed-fonts chỉ phân tích rồi copy khi đã đủ font, cố ý KHÔNG tự thay font thiếu (rủi ro chạy chữ). Bug đã đóng: `/SMask` bị đếm là ảnh-không-xử-lý-được → fallback GS oan (6/16/3 mặt nạ mỗi file trên corpus thật); `hasattr(o,"resolve")` luôn đúng nên nuốt nhánh colorspace hợp lệ → dùng `is_indirect`. `ActionLogEntry.engine` ghi engine THỰC TẾ. Gate Phase 2: 2/6 action, log engine ✔, regression ✔. Backend **1320 pass**. §17. |
 | 3.0 | 2026-07-26 | P0 downscale đóng bằng đo, không threshold corpus: fixture một-biến BÁC giả thuyết "GS béo hoá ratio ≥ 3" (GS = nearest thuần tới ratio 11,5; số cũ là artifact tie suy biến). Bốn root cause thật: neo raster dồn dư lên đỉnh (đóng `banner`/`Seminar`); ảnh có `/SMask` lấy mẫu trên bbox pixel-nguyên căng ~1px (khớp GS từng pixel 184/184@75, 371/371@150); tie nửa-mở-trái + f64 + tie-alternate max-TAC trong 1e-3 texel (`tra gung` −8,2 → −0,0 PASS); parser APP14 thay substring "Adobe" (fixture DCT meanΔ 0,00). Gỡ footprint-avg-alpha (bù lệch pha cũ, bơm mực ma sau khi căn lưới). Corpus @72 **28/31** (còn `50 hộp` +10,2 có sẵn, Steam Iron 3,56 quyết định sản phẩm, `túi` 3,15 tái phân loại hairline vector); @150 **28/30 không đổi**; @100 **30/31** — `banner` −2,4 là PHƠI LỘ thiếu hụt blend-stack có sẵn (đỉnh này @150 đã −2,4 từ trước; ảnh đơn lẻ khớp GS từng byte, chỉ composite lệch ~1%) → P0 kế tiếp. Fixture **50+1/51 ở cả 72 lẫn 100**. Rust **545**, backend **1305**. §16.9. |
