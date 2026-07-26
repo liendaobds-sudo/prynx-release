@@ -1239,7 +1239,15 @@ async def export_pdfx(req: ExportPdfxRequest):
     engine = PdfxExportEngine()
     try:
         output = await engine.export_pdfx(file_path, req.standard)
-        return {"success": True, "output_filename": Path(output).name}
+        # Cảnh báo phải đi cùng file: đường object-level có thể đã ĐẶT TrimBox
+        # thay người dùng để đạt chuẩn, và nếu file có bleed thì TrimBox đó sai.
+        # Im lặng ở đây là để họ gửi nhà in một file bị xén nhầm.
+        return {
+            "success": True,
+            "output_filename": Path(output).name,
+            "warnings": list(getattr(engine, "last_warnings", None) or []),
+            "engine": getattr(engine, "last_engine", None),
+        }
     except GhostscriptNotFoundError as e:
         # Ghostscript thiếu → báo rõ để user cài / kiểm bản cài, không nuốt thành lỗi mơ hồ.
         raise HTTPException(status_code=500, detail=str(e))

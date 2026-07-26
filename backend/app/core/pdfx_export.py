@@ -26,6 +26,64 @@ class GhostscriptNotFoundError(RuntimeError):
 _PDFX_ID_NS = "http://www.npes.org/pdfx/ns/id/"
 
 
+def _ensure_trimbox(pdf_path: str) -> int:
+    """Đặt `/TrimBox = /CropBox` (hoặc `/MediaBox`) cho trang chưa khai. Trả số trang đã sửa.
+
+    Ưu tiên CropBox: nếu file đã cắt hiển thị thì vùng cắt thành phẩm nằm trong
+    đó, lấy MediaBox sẽ rộng hơn thực tế.
+    """
+    fixed = 0
+    with pikepdf.open(pdf_path, allow_overwriting_input=True) as pdf:
+        for page in pdf.pages:
+            if page.get("/TrimBox") is not None or page.get("/ArtBox") is not None:
+                continue
+            box = page.get("/CropBox") or page.get("/MediaBox")
+            if box is None:
+                continue
+            page["/TrimBox"] = pikepdf.Array([*box])
+            fixed += 1
+        if fixed:
+            pdf.save(pdf_path)
+    return fixed
+
+
+def _attach_output_intent(
+    pdf_path: str, icc_path: str, cond_id: str, cond_name: str
+) -> None:
+    """Gắn `/OutputIntents` với ICC nhúng — bản pikepdf của pdfmark GS dùng.
+
+    OutputIntent phải mang **profile nhúng thật** (`/DestOutputProfile`), không
+    chỉ tên điều kiện: nhà in cần chính bảng màu đó để soft-proof lại, và một
+    OutputIntent trỏ vào profile họ không có là lời khai rỗng.
+    """
+    with open(icc_path, "rb") as fh:
+        icc_bytes = fh.read()
+
+    with pikepdf.open(pdf_path, allow_overwriting_input=True) as pdf:
+        icc_stream = pdf.make_stream(icc_bytes)
+        icc_stream["/N"] = 4  # CMYK
+        intent = pdf.make_indirect(
+            pikepdf.Dictionary(
+                Type=pikepdf.Name("/OutputIntent"),
+                S=pikepdf.Name("/GTS_PDFX"),
+                OutputCondition=pikepdf.String(cond_name),
+                OutputConditionIdentifier=pikepdf.String(cond_id),
+                RegistryName=pikepdf.String("http://www.color.org"),
+                Info=pikepdf.String(cond_name),
+                DestOutputProfile=icc_stream,
+            )
+        )
+        pdf.Root["/OutputIntents"] = pikepdf.Array([intent])
+        # PDF/X đòi khai tình trạng bẫy chồng màu; không khai là thiếu mục bắt
+        # buộc. `False` là mặc định trung thực — file chưa qua bước trapping.
+        if pdf.docinfo is None:
+            pdf.docinfo = pikepdf.Dictionary()
+        if "/Trapped" not in pdf.docinfo:
+            pdf.docinfo["/Trapped"] = pikepdf.Name("/False")
+        pdf.docinfo["/GTS_PDFXVersion"] = pikepdf.String("PDF/X-4")
+        pdf.save(pdf_path)
+
+
 def _finalize_pdfx4_identification(pdf_path: str) -> None:
     """Bổ sung phần định danh PDF/X-4 mà Ghostscript không ghi được.
 
@@ -68,6 +126,11 @@ class PdfxExportEngine:
         self.gs_path = settings.GHOSTSCRIPT_PATH
         self.output_dir = Path(settings.RESULTS_DIR) / "preflight_output"
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        # Cảnh báo + engine của lần xuất gần nhất, để route trả kèm file.
+        # Bước object-level có thể ĐẶT TrimBox thay người dùng; im lặng ở đây
+        # là để họ gửi nhà in một file bị xén nhầm.
+        self.last_warnings: list[str] = []
+        self.last_engine: str | None = None
 
     def check_compliance(self, file_path: str, standard: str = "x4") -> dict:
         """
@@ -329,16 +392,107 @@ class PdfxExportEngine:
         """
         Xuất file PDF chuẩn PDF/X.
         standard: 'x1a' | 'x4'
+
+        PDF/X-4 đi đường **object-level** (pikepdf) khi làm được: X-4 cho phép
+        giữ nguyên trong suốt và ICC, nên việc cần làm chỉ là quy đổi màu về
+        CMYK, bảo đảm font nhúng, rồi gắn OutputIntent + định danh — cả ba đã có
+        sẵn. Đổi lại, file giữ nguyên vector/layer/spot thay vì bị `pdfwrite`
+        dựng lại.
+
+        PDF/X-1a vẫn cần Ghostscript: chuẩn này đòi **flatten trong suốt** và hạ
+        về PDF 1.3, mà flatten đúng nghĩa thì chưa có đường non-GS.
         """
         output_name = f"{Path(file_path).stem}_PDF-X_{standard}_{uuid.uuid4().hex[:6]}.pdf"
         output_path = str(self.output_dir / output_name)
+        self.last_warnings = []
+        self.last_engine = None
 
+        if standard != "x1a":
+            try:
+                if await asyncio.to_thread(
+                    self._export_x4_native, file_path, output_path
+                ):
+                    self.last_engine = "pikepdf"
+                    logger.info(f"Exported PDF/X-4 (pikepdf) → {output_path}")
+                    return output_path
+            except Exception as e:  # noqa: BLE001
+                logger.warning("PDF/X-4 object-level lỗi, fallback Ghostscript: %s", e)
+
+        self.last_engine = "ghostscript"
         _ensure_gs(self.gs_path)
 
         if standard == "x1a":
             return await self._export_x1a(file_path, output_path)
         else:
             return await self._export_x4(file_path, output_path)
+
+    def _export_x4_native(self, input_path: str, output_path: str) -> bool:
+        """PDF/X-4 bằng pikepdf. `False` ⇒ caller fallback Ghostscript.
+
+        Từ chối (chứ không cố sửa) khi file thiếu điều kiện mà bước này không
+        đảm bảo nổi: font chưa nhúng, hoặc trang thiếu TrimBox/ArtBox. PDF/X đòi
+        cả hai, và khai đạt chuẩn khi chưa đạt là kiểu sai tệ nhất ở đây.
+        """
+        from app.core import pdf_actions_native
+
+        icc_path, cond_id, cond_name = self._resolve_output_intent_icc()
+        if not icc_path:
+            logger.info("PDF/X-4 native: không có ICC cho OutputIntent")
+            return False
+
+        fonts = pdf_actions_native.analyze_font_embedding(input_path)
+        if fonts.get("missing"):
+            logger.info(
+                "PDF/X-4 native: còn font chưa nhúng (%s) → Ghostscript",
+                ", ".join(fonts["missing"][:4]),
+            )
+            return False
+
+        # TrimBox/ArtBox: PDF/X bắt buộc phải có ít nhất một trong hai. Ghostscript
+        # KHÔNG tự thêm — nó vẫn báo xuất thành công rồi trả về file không đạt
+        # chuẩn, nên đẩy sang GS ở đây chỉ đổi "gãy" lấy "sai âm thầm".
+        # Đặt TrimBox = MediaBox là cách mọi công cụ prepress làm khi file không
+        # khai, nhưng nó ngầm tuyên bố "trang này KHÔNG có bleed" — sai với file
+        # thật sự có bleed. Vì vậy luôn kèm cảnh báo.
+        pages_without_trim = 0
+        with pikepdf.open(input_path) as probe:
+            for page in probe.pages:
+                if page.get("/TrimBox") is None and page.get("/ArtBox") is None:
+                    pages_without_trim += 1
+        if pages_without_trim:
+            self.last_warnings.append(
+                f"{pages_without_trim} trang không khai TrimBox — đã đặt TrimBox = khổ "
+                "trang để đạt PDF/X. NẾU file có bleed thì TrimBox này SAI (sẽ xén vào "
+                "phần bleed); hãy đặt TrimBox đúng rồi xuất lại."
+            )
+
+        # Quy đổi màu về CMYK. `supported=False` nghĩa là có shading RGB —
+        # object-level không xử lý được, để Ghostscript làm.
+        srgb = None
+        try:
+            from app.core import icc_profiles
+
+            srgb = icc_profiles.resolve_srgb_profile_path()
+        except Exception:  # noqa: BLE001
+            srgb = None
+        if not srgb:
+            return False
+
+        conv = pdf_actions_native.convert_to_cmyk(
+            input_path, output_path, icc_path, srgb
+        )
+        if not conv.get("supported"):
+            logger.info(
+                "PDF/X-4 native: không quy đổi được màu (%s) → Ghostscript",
+                "; ".join(conv.get("blockers", [])),
+            )
+            return False
+
+        if pages_without_trim:
+            _ensure_trimbox(output_path)
+        _attach_output_intent(output_path, icc_path, cond_id, cond_name)
+        _finalize_pdfx4_identification(output_path)
+        return True
 
     async def _export_x1a(self, input_path: str, output_path: str) -> str:
         """PDF/X-1a: CMYK only + flatten + embed fonts + output intent."""

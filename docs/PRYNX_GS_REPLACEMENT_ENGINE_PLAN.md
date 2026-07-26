@@ -1629,10 +1629,74 @@ không chạm tới Ghostscript.
 
 ---
 
+## 19. Phép thử quyết định: tắt hẳn Ghostscript (2026-07-27)
+
+Mọi số liệu khác chỉ là ước lượng. Câu hỏi thật là **gỡ Ghostscript ra thì còn
+gì gãy**, và cách trả lời là trỏ `GHOSTSCRIPT_PATH` vào đường dẫn không tồn tại
+rồi chạy các đường sản xuất trên PDF thật.
+`backend/tests/test_no_ghostscript_survival.py` giữ phép thử đó ở lại repo để
+những gì đã gỡ không lặng lẽ quay về.
+
+### 19.1 Kết quả
+
+| Đường | Không có Ghostscript |
+|---|---|
+| Separations ink-accurate (đường TAC sản xuất) | **chạy** |
+| Soft-proof | **chạy** |
+| Preflight đầy đủ | **chạy** |
+| `DOWNSCALE_IMAGES`, `EMBED_FONTS`, `CONVERT_TO_CMYK`, `SET_BLACK_OVERPRINT`, `FIX_METADATA`, `FIX_HAIRLINES` | **chạy** |
+| Spot → CMYK (`ink_manager`) | **chạy** |
+| Flatten OCG (`layer_engine`) | **chạy** (fallback pypdfium2 có sẵn) |
+| Resize + downsample | **chạy** |
+| **PDF/X-4** | **chạy** — 31/33 file corpus đạt chuẩn (xem 19.2) |
+| `OUTLINE_FONTS` | **GÃY** |
+| `FLATTEN_TRANSPARENCY` | **GÃY** |
+| `PDF/X-1a` | **GÃY** (chuẩn đòi flatten + PDF 1.3) |
+
+### 19.2 PDF/X-4 object-level
+
+Chỉ là **lắp ráp những mảnh đã có**: `analyze_font_embedding` kiểm font,
+`convert_to_cmyk` quy đổi màu, rồi gắn OutputIntent (ICC nhúng thật, không chỉ
+tên điều kiện) + định danh XMP. Đổi lại so với `pdfwrite`: file giữ nguyên
+vector/layer/spot thay vì bị dựng lại.
+
+Đo trên 33 PDF corpus **khi không có Ghostscript**: **31 đạt chuẩn, 0 sai
+chuẩn, 2 rơi về GS** (`Keycard` — colorspace `/Lab`; `Business Card` — shading
+RGB; cả hai là giới hạn có chủ ý của `convert_to_cmyk`).
+
+Chỗ đáng nói là **TrimBox**. Ban đầu 10/11 file rơi về GS chỉ vì thiếu
+TrimBox — nhưng Ghostscript **cũng không thêm TrimBox**: nó báo xuất thành công
+rồi trả về file không đạt chuẩn (đo được: `ASIA PLASTIC FINAL` fail
+`TRIMBOX_EXISTS` ngay cả sau khi qua GS). Nên đẩy sang GS ở đây chỉ đổi "gãy"
+lấy "sai âm thầm". Đường native tự đặt `TrimBox = CropBox` (hoặc MediaBox) —
+đúng việc mọi công cụ prepress làm — **kèm cảnh báo bắt buộc**, vì TrimBox =
+khổ trang ngầm tuyên bố "trang này không có bleed", và với file thật sự có
+bleed thì đó là lời khai sai dẫn tới xén hỏng. Cảnh báo được trả kèm trong
+response của route, không chỉ nằm trong log.
+
+### 19.3 Ba đường còn lại — vì sao khó
+
+* `FLATTEN_TRANSPARENCY`: flatten đúng nghĩa là bài toán hình học (chia vùng
+  chồng lấp, tính màu tổng hợp, dựng lại vector). MVP raster hoá cả trang thì
+  làm được nhưng **mất vector** — với tem bế và đường CutContour là không dùng
+  được. PPE đã có đủ blend/group để làm nền cho bản raster có cảnh báo; bản
+  vector thì còn xa.
+* `OUTLINE_FONTS`: cần lấy outline glyph (fontTools đọc `glyf`/CFF) rồi dựng
+  lại path theo đúng ma trận text — làm được nhưng là một engine nhỏ, và sai
+  một phép biến đổi là chữ lệch mà chỉ lộ lúc in.
+* `PDF/X-1a`: đòi flatten, nên nó chờ mục đầu tiên.
+
+Cả ba đều KHÔNG chặn việc dùng Prynx hằng ngày: chúng là action người dùng
+chủ động bấm, còn toàn bộ đường xem/đo/kiểm và PDF/X-4 đã chạy không cần
+Ghostscript.
+
+---
+
 ## 15. Lịch sử tài liệu
 
 | Ver | Ngày | Thay đổi |
 |---|---|---|
+| 3.6 | 2026-07-27 | **Phép thử quyết định**: tắt hẳn Ghostscript rồi chạy mọi đường sản xuất (§19, `test_no_ghostscript_survival.py`). Chạy được: separations ink-accurate, soft-proof, preflight đầy đủ, 6 action, spot→CMYK, flatten OCG, resize, **và PDF/X-4** (31/33 file corpus đạt chuẩn). Còn GÃY đúng 3: `OUTLINE_FONTS`, `FLATTEN_TRANSPARENCY`, `PDF/X-1a` — đều là action người dùng chủ động bấm, không chặn dùng hằng ngày. PDF/X-4 object-level lắp từ các mảnh đã có; tự đặt TrimBox khi file thiếu (GS **không** thêm — nó báo thành công rồi trả file không đạt chuẩn) kèm cảnh báo bắt buộc về bleed, trả kèm trong response. Backend **1357 pass**. |
 | 3.5 | 2026-07-27 | Đo tỉ lệ GS trên corpus bằng bộ đếm vừa dựng: **66/66 thao tác (33 PDF × separations ink-accurate + soft-proof) KHÔNG cần GS = 100%**, 0 lỗi — §8.1 giờ chỉ còn chờ dữ liệu khách. PDF/X-4: dùng output GS làm golden thì lộ bug — `-dPDFX=true` ép version về 1.3 và ghi định danh vào Info, trong khi ISO 15930-7 đòi PDF 1.6 + XMP `pdfxid:GTS_PDFXVersion`; file KHAI X-4 mà cấu trúc là X-3. Sửa bằng hậu xử lý pikepdf, thêm kiểm `PDFX_IDENTIFICATION` (trước đó `check_compliance` không kiểm định danh nên file khai sai vẫn PASS). Corpus 7/8 PASS, 1 FAIL đúng lý do (thiếu TrimBox trong file gốc). Backend **1345 pass**. §18.2b, §18.4. |
 | 3.4 | 2026-07-27 | Spot alternate **Lab** → CMYK (Pantone hiện đại) — đo đối chứng `gs -dMaxSpots=0`: mặc định `ImageCms` lệch 13–14/255, `+BLACKPOINTCOMPENSATION` còn 1, `+NOOPTIMIZE` khớp **0/255**. Áp cùng hai cờ cho đường RGB→CMYK của `CONVERT_TO_CMYK` (vốn lệch tới 19/255 so với cấu hình mà separations/soft-proof/TAC dùng — cùng file ra màu khác nhau tuỳ đi qua action nào). Corpus: **6/6 file có spot chuyển được, 0 fallback**. Backend **1343 pass**. §17.4. |
 | 3.3 | 2026-07-27 | Thiết bị đo GS fallback (`gs_usage.py` + hook duy nhất ở `run_hidden` + `GET /system/gs-usage`) — mở khoá đường đóng §8.1, giờ chỉ còn chờ 30 ngày dữ liệu khách. Nhãn tự dò module gọi nên bắt cả call site thêm sau; `action_engine` khai `action:<TÊN>`. Đo thử: **2 lệnh GS trên 8 action**, đúng OUTLINE_FONTS và FLATTEN_TRANSPARENCY. Backend **1341 pass**. §18.4. |
