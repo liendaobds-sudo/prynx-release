@@ -28,6 +28,7 @@ fn pdfcompare_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // PrynX Print Engine (PPE) — tách kẽm / TAC trong không gian mực, không GS.
     m.add_function(wrap_pyfunction!(print_engine_py::ppe_separations, m)?)?;
     m.add_function(wrap_pyfunction!(print_engine_py::ppe_softproof, m)?)?;
+    m.add_function(wrap_pyfunction!(print_engine_py::ppe_text_outlines, m)?)?;
     m.add_function(wrap_pyfunction!(print_engine_py::ppe_capabilities, m)?)?;
 
     // Imposition grid solver

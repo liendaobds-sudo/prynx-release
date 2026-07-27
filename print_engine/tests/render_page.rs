@@ -161,6 +161,108 @@ fn overprint_preserves_background_ink() {
 }
 
 #[test]
+fn overprint_preview_can_force_knockout_without_changing_pdf() {
+    let content =
+        "1 0 0 0 k 0 0 10 10 re f  /GSop gs 0 0 0 1 k 0 0 10 10 re f";
+    let doc = build_pdf(content, overprint_resources(), [0.0, 0.0, 10.0, 10.0], None);
+    let simulated = render_page(
+        &doc,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::ink_accurate(),
+    )
+    .expect("render overprint phải thành công");
+    let knockout = render_page(
+        &doc,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::ink_accurate().with_overprint_simulation(false),
+    )
+    .expect("render knockout phải thành công");
+    assert_eq!(simulated.buffer.plate_u8(0)[center(&simulated)], 255);
+    assert_eq!(knockout.buffer.plate_u8(0)[center(&knockout)], 0);
+    assert_eq!(knockout.buffer.plate_u8(3)[center(&knockout)], 255);
+}
+
+/// Resource có cả kẽm mực pha lẫn ExtGState bật overprint.
+fn spot_overprint_resources(name: &str) -> Dictionary {
+    let mut res = spot_resources(name);
+    res.set(
+        "ExtGState",
+        dictionary! {
+            "GSop" => dictionary! { "op" => true, "OP" => true, "OPM" => 0 },
+        },
+    );
+    res
+}
+
+#[test]
+fn preview_space_keeps_spot_channel_so_overprint_is_visible() {
+    // Hồi quy §A.1 (audit 2026-07-27): đường XEM từng quy mực pha về CMYK ngay lúc
+    // dựng mực, nên object Pantone overprint và knockout cho kết quả GIỐNG NHAU và
+    // Overprint Preview báo "không có vùng thay đổi" trên file có overprint thật.
+    let content = "0 0 1 0 k 0 0 10 10 re f  /GSop gs /CS0 cs 1 scn 0 0 10 10 re f";
+    let doc = build_pdf(
+        content,
+        spot_overprint_resources("PANTONE 877 C"),
+        [0.0, 0.0, 10.0, 10.0],
+        None,
+    );
+
+    let simulated = render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::softproof())
+        .expect("render overprint phải thành công");
+    let knockout = render_page(
+        &doc,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::softproof().with_overprint_simulation(false),
+    )
+    .expect("render knockout phải thành công");
+
+    let spot = plate_named(&simulated, "PANTONE 877 C")
+        .expect("đường xem vẫn phải cấp kênh riêng cho mực pha khi TRỘN");
+    let i = center(&simulated);
+    assert_eq!(simulated.buffer.plate_u8(spot)[i], 255);
+    assert_eq!(
+        simulated.buffer.plate_u8(2)[i],
+        255,
+        "overprint phải giữ Yellow nền"
+    );
+    assert_eq!(
+        knockout.buffer.plate_u8(2)[i],
+        0,
+        "knockout phải khoét Yellow nền — đây là khác biệt mà preview phải thấy"
+    );
+
+    // Bảng CMYK tương đương phải được lấy mẫu, nếu không bước xuất ảnh sẽ hiện mực
+    // pha thành đen thay vì màu của nó.
+    let alt = simulated
+        .buffer
+        .space()
+        .spot_alternate(spot)
+        .expect("phải lấy mẫu tint transform của kẽm spot");
+    let full = alt.cmyk_at(1.0);
+    assert!((full[1] - 0.91).abs() < 0.01, "M ở tint 100%: {full:?}");
+    assert!((full[2] - 0.76).abs() < 0.01, "Y ở tint 100%: {full:?}");
+    let half = alt.cmyk_at(0.5);
+    assert!((half[1] - 0.455).abs() < 0.02, "M ở tint 50%: {half:?}");
+}
+
+#[test]
+fn measurement_space_does_not_sample_spot_alternates() {
+    // Đường ĐO không cần bảng tra và không được trả thêm chi phí/cảnh báo vì nó.
+    let r = render(
+        "/CS0 cs 1 scn 0 0 10 10 re f",
+        spot_resources("PANTONE 485 C"),
+    );
+    let spot = plate_named(&r, "PANTONE 485 C").expect("phải có kẽm spot");
+    assert!(r.buffer.space().spot_alternate(spot).is_none());
+}
+
+#[test]
 fn extgstate_op_alone_applies_to_both_fill_and_stroke() {
     // `/OP true` không kèm `/op` phải áp cho cả tô lẫn nét (§11.7.4.3).
     let res = dictionary! {

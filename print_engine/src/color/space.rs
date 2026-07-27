@@ -20,7 +20,7 @@ use crate::color::convert;
 use crate::color::function::PdfFunction;
 use crate::color::icc::ColorManager;
 use crate::error::{PpeError, PpeResult, RenderWarnings};
-use crate::ink::{ChannelMask, Colorant, InkSpace};
+use crate::ink::{ChannelMask, Colorant, InkSpace, SpotAlternate};
 use crate::pdf;
 
 /// Trần độ sâu lồng colorspace (Indexed của Separation của ICCBased…).
@@ -299,9 +299,13 @@ impl ColorSpace {
                     return alternate.to_ink_depth(&alt_comps, space, warn, cm, depth + 1);
                 }
                 let ch = space.register(colorant.clone())?;
+                if space.wants_spot_alternates() && space.spot_alternate(ch).is_none() {
+                    if let Some(alt) = sample_spot_alternate(tint, alternate, 0, 1, cm, depth) {
+                        space.set_spot_alternate(ch, alt);
+                    }
+                }
                 let mut ink = vec![0.0; space.len()];
                 ink[ch] = t;
-                let _ = (alternate, tint); // dành cho soft-proof / spot→CMYK
                 Ok(Some((ink, ChannelMask::single(ch))))
             }
 
@@ -326,6 +330,17 @@ impl ColorSpace {
                         continue; // thành phần `/None`
                     };
                     let ch = space.register(colorant.clone())?;
+                    if space.wants_spot_alternates() && space.spot_alternate(ch).is_none() {
+                        // Lấy mẫu với DUY NHẤT thành phần này khác 0: tint transform
+                        // của DeviceN là hàm nhiều biến, không tách được thành tổng
+                        // các kênh. Đây là xấp xỉ chuẩn cho đường xem, và chỉ được
+                        // dùng ở bước xuất ảnh — đường đo vẫn giữ kẽm riêng.
+                        if let Some(alt) =
+                            sample_spot_alternate(tint, alternate, i, colorants.len(), cm, depth)
+                        {
+                            space.set_spot_alternate(ch, alt);
+                        }
+                    }
                     if ink.len() < space.len() {
                         ink.resize(space.len(), 0.0);
                     }
@@ -339,7 +354,6 @@ impl ColorSpace {
                 if !any {
                     return Ok(None);
                 }
-                let _ = (alternate, tint);
                 Ok(Some((ink, mask)))
             }
 
@@ -369,6 +383,63 @@ impl ColorSpace {
 
 fn comp(comps: &[f32], i: usize) -> f32 {
     comps.get(i).copied().unwrap_or(0.0)
+}
+
+/// Lấy mẫu tint transform của một kẽm mực pha thành bảng CMYK cho đường **xem**.
+///
+/// `comp_index` là thành phần được quét (0 với `Separation`; với `DeviceN` là
+/// kênh đang đăng ký, các thành phần khác giữ 0).
+///
+/// # Vì sao dùng cảnh báo nháp
+///
+/// Việc lấy mẫu đi qua alternate space, nên nó sẽ ghi các note kiểu
+/// `note_colorspace_used("ICCBased")` và có thể bật cờ hạ độ tin cậy. Những cờ đó
+/// nói về *nội dung trang*, không phải về một phép quy đổi nội bộ. Ghi chúng vào
+/// `RenderWarnings` thật sẽ làm đường ĐO bị hạ tin cậy oan chỉ vì đường XEM cần
+/// một bảng tra — nên cảnh báo ở đây bị bỏ đi có chủ đích.
+///
+/// `None` khi alternate space không quy đổi được: caller để kênh không có bảng và
+/// bước xuất ảnh tự xử lý (xem [`crate::ink::InkBuffer::to_srgb`]).
+fn sample_spot_alternate(
+    tint: &PdfFunction,
+    alternate: &ColorSpace,
+    comp_index: usize,
+    n_comps: usize,
+    cm: Option<&ColorManager>,
+    depth: u32,
+) -> Option<SpotAlternate> {
+    let steps = SpotAlternate::lut_steps();
+    let mut lut = Vec::with_capacity(steps);
+    let mut scratch_space = InkSpace::process_only();
+    let mut scratch_warn = RenderWarnings::default();
+    for step in 0..steps {
+        let t = step as f32 / (steps - 1) as f32;
+        let mut comps = vec![0.0f32; n_comps.max(1)];
+        if comp_index < comps.len() {
+            comps[comp_index] = t;
+        }
+        let alt_comps = tint.eval(&comps);
+        let ink = alternate
+            .to_ink_depth(
+                &alt_comps,
+                &mut scratch_space,
+                &mut scratch_warn,
+                cm,
+                depth + 1,
+            )
+            .ok()??
+            .0;
+        if ink.len() < 4 {
+            return None;
+        }
+        lut.push([
+            ink[0].clamp(0.0, 1.0),
+            ink[1].clamp(0.0, 1.0),
+            ink[2].clamp(0.0, 1.0),
+            ink[3].clamp(0.0, 1.0),
+        ]);
+    }
+    SpotAlternate::from_lut(lut)
 }
 
 /// Đặt CMYK vào vector mực đủ độ dài của [`InkSpace`].

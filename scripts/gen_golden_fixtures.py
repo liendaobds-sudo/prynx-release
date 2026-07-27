@@ -211,6 +211,29 @@ FIXTURES: dict[str, tuple[str, str]] = {
         f"0 0 0 1 k 0 0 {PAGE_W} {PAGE_H} re f\n",
         "",
     ),
+    # Overprint trên MỰC PHA — audit 2026-07-27 §A.1.
+    #
+    # Cặp fixture này tồn tại vì overprint của mực pha đi một đường code khác với
+    # overprint của mực process: colorant `Separation` khai đúng MỘT kênh, nên nền
+    # process phải còn nguyên kể cả với `OPM 0`. Bản `flatten` sớm của đường xem
+    # từng quy Pantone về CMYK trước khi tính overprint, làm hai file dưới đây cho
+    # kết quả giống nhau — và Overprint Preview báo "không có vùng thay đổi" trên
+    # file có overprint thật. Tổng mực: overprint 200%, knockout 100%.
+    "overprint_spot_on_yellow.pdf": (
+        f"0 0 1 0 k 0 0 {PAGE_W} {PAGE_H} re f\n"
+        f"/GSop gs /CS0 cs 1 scn 0 0 {PAGE_W} {PAGE_H} re f\n",
+        "/ColorSpace << /CS0 [/Separation /PANTONE#20877#20C /DeviceCMYK "
+        "<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 0.9 0.9 0] "
+        "/N 1 /Range [0 1 0 1 0 1 0 1] >>] >> "
+        "/ExtGState << /GSop << /op true /OP true /OPM 0 >> >>",
+    ),
+    "knockout_spot_on_yellow.pdf": (
+        f"0 0 1 0 k 0 0 {PAGE_W} {PAGE_H} re f\n"
+        f"/CS0 cs 1 scn 0 0 {PAGE_W} {PAGE_H} re f\n",
+        "/ColorSpace << /CS0 [/Separation /PANTONE#20877#20C /DeviceCMYK "
+        "<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 0.9 0.9 0] "
+        "/N 1 /Range [0 1 0 1 0 1 0 1] >>] >>",
+    ),
     # Gradient. Đây là lớp file mà đỉnh TAC dễ vượt ngưỡng nhất mà mắt không thấy:
     # vùng tối của một dải chuyển sang đen có thể lên rất cao trong khi phần còn
     # lại của trang rất nhẹ.

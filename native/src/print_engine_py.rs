@@ -18,6 +18,7 @@ use pyo3::types::{PyBytes, PyDict, PyList};
 use print_engine::color::{ColorManager, RenderIntent};
 use print_engine::content::RenderOptions;
 use print_engine::page::{open as ppe_open, render_page_managed, PageBox};
+use print_engine::text::outlines::StreamKey;
 
 /// Tách kẽm một trang bằng PPE.
 ///
@@ -226,6 +227,7 @@ pub fn ppe_separations(
     render_intent = 1,
     page_box = "crop",
     fallback_font = None,
+    simulate_overprint = true,
     memory_budget_mb = 512,
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -239,6 +241,7 @@ pub fn ppe_softproof(
     render_intent: i32,
     page_box: &str,
     fallback_font: Option<&str>,
+    simulate_overprint: bool,
     memory_budget_mb: usize,
 ) -> PyResult<Py<PyDict>> {
     if page == 0 {
@@ -267,7 +270,9 @@ pub fn ppe_softproof(
         .checked_mul(1024 * 1024)
         .filter(|bytes| *bytes > 0)
         .ok_or_else(|| PyValueError::new_err("memory_budget_mb must be greater than zero"))?;
-    let base_opts = RenderOptions::softproof().with_memory_budget_bytes(memory_budget_bytes);
+    let base_opts = RenderOptions::softproof()
+        .with_overprint_simulation(simulate_overprint)
+        .with_memory_budget_bytes(memory_budget_bytes);
     let opts = match fallback_font {
         Some(path) => {
             let data = std::fs::read(path).map_err(|e| {
@@ -316,15 +321,133 @@ pub fn ppe_softproof(
 
 /// Để ở Rust (cạnh code thật) thay vì hardcode trong Python: khi một tính năng
 /// được hoàn thiện, cờ đổi cùng lúc với code, không thể quên cập nhật.
+/// Lấy đường viền chữ của một trang để Python ghi lại thành PDF (`OUTLINE_FONTS`).
+///
+/// # Phân chia trách nhiệm
+///
+/// Rust lo **font / encoding / ma trận chữ** — ba thứ đã được đo song song với
+/// Ghostscript qua bộ golden. Python lo **ghi PDF** bằng pikepdf, thứ Rust không
+/// có. Bản Python trước đây viết lại phần của Rust bằng fontTools và vấp đúng ở đó
+/// (tra glyph thất bại, Type3 chưa đụng tới) — xem kế hoạch §19.7.
+///
+/// # Không gian toạ độ
+///
+/// `coords` nằm trong **không gian người dùng của content stream chứa chữ**: chỉ
+/// ma trận chữ, KHÔNG có CTM của các lệnh `cm`. Python thay khối `BT … ET` tại chỗ
+/// nên `cm` vẫn còn hiệu lực; nhân CTM vào đây là nhân hai lần.
+///
+/// # Contract trả về
+///
+/// ```text
+/// {
+///   "glyphs": [
+///     { "stream": "page" | [obj, gen], "text_object_index": int,
+///       "glyph_index": int, "fill": bool, "stroke": bool, "clip": bool,
+///       "line_width": float, "verbs": bytes, "coords": [float, ...] }, ...
+///   ],
+///   "has_type3": bool,              # glyph là content stream ⇒ không outline được
+///   "has_unsupported_context": bool # chữ trong soft mask / tiling pattern / form vô danh
+///   "missing_glyphs": int,          # tra không ra đường viền ⇒ chữ sẽ MẤT
+///   "complete": bool,               # ba cờ trên đều sạch
+///   "substituted_fonts": [str],     # font không nhúng đã phải thay
+/// }
+/// ```
+///
+/// `verbs`: 0 = `m` (2 số), 1 = `l` (2 số), 2 = `c` (6 số), 3 = `h` (0 số).
+/// Caller **phải** kiểm `complete` trước khi giao file ra: `False` nghĩa là có chữ
+/// engine không chuyển được, và ghi tiếp sẽ tạo bản in thiếu chữ.
+#[pyfunction]
+#[pyo3(signature = (pdf_path, page = 1, fallback_font = None, memory_budget_mb = 512))]
+pub fn ppe_text_outlines(
+    py: Python<'_>,
+    pdf_path: &str,
+    page: usize,
+    fallback_font: Option<&str>,
+    memory_budget_mb: usize,
+) -> PyResult<Py<PyDict>> {
+    if page == 0 {
+        return Err(PyValueError::new_err(
+            "page là chỉ số 1-based, không nhận 0",
+        ));
+    }
+    let memory_budget_bytes = memory_budget_mb
+        .checked_mul(1024 * 1024)
+        .filter(|bytes| *bytes > 0)
+        .ok_or_else(|| PyValueError::new_err("memory_budget_mb must be greater than zero"))?;
+    let base_opts =
+        RenderOptions::collecting_text_outlines().with_memory_budget_bytes(memory_budget_bytes);
+    let opts = match fallback_font {
+        Some(path) => {
+            let data = std::fs::read(path).map_err(|e| {
+                PyRuntimeError::new_err(format!("không đọc được fallback_font {path}: {e}"))
+            })?;
+            base_opts.with_fallback_font(std::sync::Arc::new(data))
+        }
+        None => base_opts,
+    };
+
+    // 72 DPI: hình học trả về nằm trong không gian người dùng nên KHÔNG phụ thuộc
+    // DPI. Dùng mức thấp nhất hợp lệ để buffer raster (thứ không ai đọc ở đường này)
+    // không tốn bộ nhớ vô ích.
+    let rendered = py
+        .detach(|| {
+            let doc = ppe_open(pdf_path)?;
+            render_page_managed(&doc, page, 72.0, PageBox::Crop, opts, None)
+        })
+        .map_err(|e| PyRuntimeError::new_err(format!("PPE: {e}")))?;
+
+    let report = &rendered.text_outlines;
+    let glyphs = PyList::empty(py);
+    for g in &report.glyphs {
+        let item = PyDict::new(py);
+        match g.stream {
+            StreamKey::Page => item.set_item("stream", "page")?,
+            StreamKey::Form(id, gen) => item.set_item("stream", (id, gen))?,
+            // Đã bị chặn ở tầng engine, nhưng nếu lọt ra thì phải nói rõ chứ không
+            // được gán nhầm cho stream của trang.
+            StreamKey::Unaddressable => item.set_item("stream", "unaddressable")?,
+        }
+        item.set_item("text_object_index", g.text_object_index)?;
+        item.set_item("glyph_index", g.glyph_index)?;
+        item.set_item("fill", g.fill)?;
+        item.set_item("stroke", g.stroke)?;
+        item.set_item("clip", g.clip)?;
+        item.set_item("line_width", g.line_width)?;
+        item.set_item("verbs", PyBytes::new(py, &g.verbs))?;
+        item.set_item("coords", g.coords.clone())?;
+        glyphs.append(item)?;
+    }
+
+    let out = PyDict::new(py);
+    out.set_item("engine", "ppe")?;
+    out.set_item("glyphs", glyphs)?;
+    out.set_item("has_type3", report.has_type3)?;
+    out.set_item("has_unsupported_context", report.has_unsupported_context)?;
+    out.set_item("missing_glyphs", report.missing_glyphs)?;
+    out.set_item("complete", report.is_complete())?;
+    out.set_item(
+        "substituted_fonts",
+        rendered.warnings.substituted_fonts.clone(),
+    )?;
+    Ok(out.into())
+}
+
 #[pyfunction]
 pub fn ppe_capabilities(py: Python<'_>) -> PyResult<Py<PyDict>> {
     let caps = PyDict::new(py);
     caps.set_item("version", env!("CARGO_PKG_VERSION"))?;
+    // Đây là mặc định của *binding* khi caller không truyền gì — KHÔNG phải chính
+    // sách của sản phẩm. Backend chọn ngân sách theo RAM máy và số slot việc nặng
+    // (`app/core/print_engine/facade.py::_auto_memory_budget_mb`); đọc con số này
+    // như "PrynX chạy với 512 MiB" là hiểu sai, nên nói rõ chính sách ở khoá dưới.
     caps.set_item("memory_budget_default_mb", 512)?;
+    caps.set_item("memory_budget_policy", "caller-provided; backend: host-ram-aware")?;
     caps.set_item("process_separations", true)?;
     caps.set_item("spot_separations", true)?;
     caps.set_item("overprint", true)?;
     caps.set_item("overprint_mode_1", true)?;
+    caps.set_item("overprint_preview_toggle", true)?;
+    caps.set_item("text_outlines", true)?;
     caps.set_item("tac", true)?;
     caps.set_item("vector_fill_stroke", true)?;
     caps.set_item("clipping", true)?;

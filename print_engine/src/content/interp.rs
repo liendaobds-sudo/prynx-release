@@ -25,6 +25,7 @@ use crate::shading::eval::SampledShading;
 use crate::shading::mesh::MeshTriangle;
 use crate::shading::{resolve_shading, Shading, ShadingKind};
 use crate::text::font::{load_font, FontProgram, LoadedFont, Type3Data};
+use crate::text::outlines::{encode_path, GlyphOutline, StreamKey, TextOutlineReport};
 use crate::text::state::{TextObject, TextRenderMode};
 
 /// Ngưỡng scale thiết bị để bật raster bảo thủ cho vector.
@@ -86,8 +87,25 @@ pub struct RenderOptions {
     pub fallback_font: Option<Arc<Vec<u8>>>,
     /// Quy mực pha về CMYK thay vì cấp kênh riêng — chỉ dùng cho soft-proof.
     ///
-    /// **Không bao giờ** bật ở đường đo: nó xoá kẽm spot.
+    /// **Không bao giờ** bật ở đường đo: kết quả chỉ còn bốn kẽm process.
+    ///
+    /// Việc gộp xảy ra ở bước **xuất ảnh** (`InkBuffer::to_srgb`), không phải lúc
+    /// dựng mực: overprint/knockout của object mực pha phải được tính khi kẽm còn
+    /// danh tính riêng. Xem `InkSpace::fold_spots_at_output`.
     pub flatten_spots: bool,
+    /// Có tôn trọng cờ `/OP`/`/op` trong PDF hay ép toàn bộ object về knockout.
+    ///
+    /// Chỉ tắt khi dựng cặp ảnh Overprint Preview. Mọi đường separations/TAC và
+    /// soft-proof thông thường phải giữ `true` để phản ánh đúng bản in.
+    pub simulate_overprint: bool,
+
+    /// Thu thập đường viền glyph thay vì rasterize chữ (action `OUTLINE_FONTS`).
+    ///
+    /// **Raster của lần render này KHÔNG dùng để đo được**: chữ không lên mực, nên
+    /// mọi con số kẽm/TAC sẽ thiếu. Chế độ này chỉ để lấy hình học chữ đem đi ghi
+    /// lại thành PDF; phần kiểm chứng kết quả vẫn là một lần render bình thường rồi
+    /// so kẽm. Xem `crate::text::outlines`.
+    pub collect_text_outlines: bool,
 }
 
 impl Default for RenderOptions {
@@ -99,6 +117,8 @@ impl Default for RenderOptions {
             memory_budget_bytes: DEFAULT_RENDER_MEMORY_BUDGET_BYTES,
             fallback_font: None,
             flatten_spots: false,
+            simulate_overprint: true,
+            collect_text_outlines: false,
         }
     }
 }
@@ -135,6 +155,20 @@ impl RenderOptions {
     pub fn with_memory_budget_bytes(mut self, bytes: usize) -> Self {
         self.memory_budget_bytes = bytes;
         self
+    }
+
+    /// Bật/tắt mô phỏng overprint khi dựng bản xem trước.
+    pub fn with_overprint_simulation(mut self, enabled: bool) -> Self {
+        self.simulate_overprint = enabled;
+        self
+    }
+
+    /// Chế độ lấy hình học chữ cho `OUTLINE_FONTS`. Xem [`RenderOptions::collect_text_outlines`].
+    pub fn collecting_text_outlines() -> Self {
+        RenderOptions {
+            collect_text_outlines: true,
+            ..RenderOptions::ink_accurate()
+        }
     }
 
     /// Đặt font thay thế cho font không nhúng.
@@ -210,6 +244,16 @@ pub struct Renderer<'a> {
     /// `Do` bên trong lớp tắt cũng không vẽ gì — lớp tắt phải tắt xuyên qua ranh
     /// giới stream.
     oc_hidden: u32,
+    /// Ngăn xếp `(content stream đang chạy, số khối `BT` đã gặp trong stream đó)`.
+    ///
+    /// Là ngăn xếp chứ không phải một biến: Form XObject có content stream riêng và
+    /// Python thay khối `BT … ET` **theo từng stream**, nên khi ra khỏi form thì bộ
+    /// đếm của stream ngoài phải trở lại đúng giá trị cũ.
+    stream_ctx: Vec<(StreamKey, u32)>,
+    /// Báo cáo thu thập đường viền chữ; chỉ được ghi khi `opts.collect_text_outlines`.
+    text_outlines: TextOutlineReport,
+    /// Thứ tự glyph trong khối `BT` hiện hành.
+    glyph_seq: u32,
 }
 
 /// Trạng thái dựng đường dẫn trong một chuỗi operator.
@@ -259,6 +303,9 @@ impl<'a> Renderer<'a> {
             suppress_color_ops: 0,
             oc: OptionalContent::load(doc),
             oc_hidden: 0,
+            stream_ctx: vec![(StreamKey::Page, 0)],
+            text_outlines: TextOutlineReport::default(),
+            glyph_seq: 0,
         })
     }
 
@@ -266,8 +313,18 @@ impl<'a> Renderer<'a> {
         &self.warnings
     }
 
+    /// Báo cáo đường viền chữ đã thu thập. Rỗng nếu không bật chế độ thu thập.
+    pub fn text_outlines(&self) -> &TextOutlineReport {
+        &self.text_outlines
+    }
+
     pub fn into_parts(self) -> (InkBuffer, RenderWarnings) {
         (self.buffer, self.warnings)
+    }
+
+    /// Như [`Renderer::into_parts`] nhưng lấy kèm báo cáo đường viền chữ.
+    pub fn into_parts_with_outlines(self) -> (InkBuffer, RenderWarnings, TextOutlineReport) {
+        (self.buffer, self.warnings, self.text_outlines)
     }
 
     /// Chạy một content stream với CTM và resources cho trước.
@@ -665,6 +722,12 @@ impl<'a> Renderer<'a> {
                 "BT" => {
                     self.text_obj = TextObject::default();
                     self.text_clip = None;
+                    // Mốc để Python biết ghi path vào khối `BT … ET` nào. Đếm cả khi
+                    // không thu thập: rẻ, và tránh hai đường code lệch nhau.
+                    self.glyph_seq = 0;
+                    if let Some(top) = self.stream_ctx.last_mut() {
+                        top.1 += 1;
+                    }
                 }
                 "ET" => self.finish_text_clip(stack)?,
                 "Tf" => {
@@ -1281,18 +1344,26 @@ impl<'a> Renderer<'a> {
         if let Some(v) = ml {
             gs.miter_limit = v;
         }
-        // `OP` áp cho cả hai nếu `op` không có mặt (§11.7.4.3).
-        if let Some(v) = op_stroke {
-            gs.stroke_overprint = v;
-            if op_fill.is_none() {
+        if self.opts.simulate_overprint {
+            // `OP` áp cho cả hai nếu `op` không có mặt (§11.7.4.3).
+            if let Some(v) = op_stroke {
+                gs.stroke_overprint = v;
+                if op_fill.is_none() {
+                    gs.fill_overprint = v;
+                }
+            }
+            if let Some(v) = op_fill {
                 gs.fill_overprint = v;
             }
-        }
-        if let Some(v) = op_fill {
-            gs.fill_overprint = v;
-        }
-        if let Some(v) = opm {
-            gs.overprint_mode = v as i32;
+            if let Some(v) = opm {
+                gs.overprint_mode = v as i32;
+            }
+        } else {
+            // GS-SUNSET (audit 2026-07-27 §4.1): bản knockout phải vô hiệu hóa
+            // cờ overprint ở mọi ExtGState, không thay đổi nội dung PDF nguồn.
+            gs.stroke_overprint = false;
+            gs.fill_overprint = false;
+            gs.overprint_mode = 0;
         }
         Ok(())
     }
@@ -1530,6 +1601,12 @@ impl<'a> Renderer<'a> {
         let Ok(entry_ref) = xobjects.get(name.as_bytes()) else {
             return Ok(());
         };
+        // Lấy khoá stream NGAY, dạng dữ liệu thuần: nó phải sống qua các lệnh `&mut
+        // self` phía dưới, còn `entry_ref` thì mượn từ `self.doc`.
+        let form_key = match entry_ref {
+            Object::Reference((id, gen)) => StreamKey::Form(*id, *gen),
+            _ => StreamKey::Unaddressable,
+        };
         let entry = pdf::deref(self.doc, entry_ref);
         let Object::Stream(stream) = entry else {
             return Ok(());
@@ -1587,6 +1664,9 @@ impl<'a> Renderer<'a> {
                     None => (false, false),
                 };
 
+                // Chữ bên trong form thuộc content stream CỦA FORM, không phải của
+                // trang — Python thay khối `BT … ET` theo từng stream.
+                self.stream_ctx.push((form_key, 0));
                 if let Some(group_dict) = group {
                     // Group non-isolated luôn kế thừa blending space từ backdrop;
                     // `/CS` chỉ chọn space riêng cho group isolated.
@@ -1616,7 +1696,7 @@ impl<'a> Renderer<'a> {
                     } else {
                         self.blend_space
                     };
-                    return self.do_transparency_group(
+                    let result = self.do_transparency_group(
                         &data,
                         form_res.as_ref(),
                         form_matrix,
@@ -1627,6 +1707,8 @@ impl<'a> Renderer<'a> {
                         stack,
                         depth,
                     );
+                    self.stream_ctx.pop();
+                    return result;
                 }
 
                 stack.save();
@@ -1640,11 +1722,15 @@ impl<'a> Renderer<'a> {
                 let clip = stack.current().clip.clone();
                 stack.current_mut().clip = self.intersect_bbox(clip, bbox, &ctm);
                 let saved_depth = stack.depth();
-                self.execute_with_ctm(&data, form_res.as_ref(), stack, depth + 1, ctm)?;
+                let result = self.execute_with_ctm(&data, form_res.as_ref(), stack, depth + 1, ctm);
                 while stack.depth() > saved_depth {
                     stack.restore();
                 }
                 stack.restore();
+                // Pop trước khi bung lỗi: một lỗi giữa form không được để lại khoá
+                // stream của form trên ngăn xếp và gán chữ của trang cho nó.
+                self.stream_ctx.pop();
+                result?;
             }
             "Image" => self.draw_image(entry, Some(resources), stack)?,
             other => {
@@ -2890,14 +2976,37 @@ impl<'a> Renderer<'a> {
         mode: TextRenderMode,
     ) -> PpeResult<()> {
         if self.oc_hidden_now() {
+            if self.opts.collect_text_outlines {
+                // Chữ trong lớp optional content đang TẮT. Lớp Python ghi PDF không
+                // theo dõi optional content, nên nếu bỏ im lặng thì chỉ số glyph hai
+                // bên lệch nhau và path sẽ bị gán cho glyph khác. Từ chối cả trang.
+                self.text_outlines.has_unsupported_context = true;
+            }
             return Ok(());
+        }
+        if self.opts.collect_text_outlines {
+            // Đếm cho MỌI mã ký tự, kể cả dấu cách, `Tr 3` và Type3 — chỉ số này là
+            // hợp đồng đồng bộ với vòng lặp mã ký tự bên Python. Đếm chỉ những glyph
+            // ghi được sẽ làm hai bên lệch ngay ở dấu cách đầu tiên.
+            self.glyph_seq += 1;
         }
         let gs_ctm = stack.current().ctm;
         let trm = crate::text::state::glyph_matrix(&stack.current().text, &self.text_obj.matrix);
 
         // Type3: glyph là một content stream, không phải đường viền.
         if let Some(t3) = font.type3.clone() {
+            if self.opts.collect_text_outlines {
+                // Không có "outline" nào đúng cho Type3: glyph của nó có thể vẽ ảnh
+                // hoặc đặt màu riêng. Khai ra để caller từ chối trang, thay vì giao
+                // ra bản in thiếu chữ.
+                self.text_outlines.has_type3 = true;
+                return Ok(());
+            }
             return self.draw_type3_glyph(font, &t3, code, resources, stack, depth);
+        }
+
+        if self.opts.collect_text_outlines {
+            return self.collect_glyph_outline(font, code, &trm, stack, mode);
         }
 
         let Some(outline) = font.glyph_outline(code) else {
@@ -2961,6 +3070,72 @@ impl<'a> Renderer<'a> {
     }
 
     /// Glyph Type3: chạy content stream trong `/CharProcs`.
+    /// Ghi lại đường viền một glyph trong **không gian người dùng của stream**.
+    ///
+    /// Chỉ áp ma trận chữ, KHÔNG áp CTM: xem tài liệu `crate::text::outlines` về vì
+    /// sao nhân CTM ở đây là nhân hai lần.
+    fn collect_glyph_outline(
+        &mut self,
+        font: &Arc<LoadedFont>,
+        code: u32,
+        trm: &Matrix,
+        stack: &mut StateStack,
+        mode: TextRenderMode,
+    ) -> PpeResult<()> {
+        let stream = self
+            .stream_ctx
+            .last()
+            .map(|(k, _)| *k)
+            .unwrap_or(StreamKey::Page);
+        if self.smask_depth > 0
+            || self.pattern_cell_depth > 0
+            || stream == StreamKey::Unaddressable
+        {
+            // Soft mask và ô tiling pattern được dựng lại mỗi lần dùng và nằm trong
+            // dictionary tài nguyên; chỉ số khối text ở đó không ánh xạ về chỗ ghi.
+            // Form là object trực tiếp thì Python cũng không trỏ tới được.
+            self.text_outlines.has_unsupported_context = true;
+            return Ok(());
+        }
+        if !(mode.fills() || mode.strokes() || mode.adds_to_clip()) {
+            return Ok(()); // `Tr 3` — chữ vô hình, không phải chữ bị mất
+        }
+        let Some(outline) = font.glyph_outline(code) else {
+            if font.program.is_missing() {
+                // Font không nhúng ⇒ glyph lấy từ font thay thế; nếu cả nó cũng không
+                // có thì chữ sẽ MẤT khi ghi lại. Phải khai, không được im lặng.
+                self.text_outlines.missing_glyphs += 1;
+            }
+            return Ok(());
+        };
+        let Some(glyph_user) = outline.as_ref().clone().transform(to_ts(trm)) else {
+            self.text_outlines.missing_glyphs += 1;
+            return Ok(());
+        };
+        let (verbs, coords) = encode_path(&glyph_user);
+        if verbs.is_empty() {
+            return Ok(()); // glyph rỗng (dấu cách)
+        }
+        let text_object_index = self
+            .stream_ctx
+            .last()
+            .map(|(_, n)| n.saturating_sub(1))
+            .unwrap_or(0);
+        let glyph_index = self.glyph_seq - 1; // đã tăng ở đầu draw_glyph
+        self.text_outlines.glyphs.push(GlyphOutline {
+            stream,
+            text_object_index,
+            glyph_index,
+            fill: mode.fills(),
+            stroke: mode.strokes(),
+            clip: mode.adds_to_clip(),
+            line_width: stack.current().line_width,
+            verbs,
+            coords,
+        });
+        Ok(())
+    }
+
     fn draw_type3_glyph(
         &mut self,
         font: &Arc<LoadedFont>,

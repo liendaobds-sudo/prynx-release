@@ -10,6 +10,7 @@ use crate::error::{PpeError, PpeResult, RenderWarnings};
 use crate::geom::{Matrix, Rect};
 use crate::ink::{InkBuffer, InkSpace};
 use crate::pdf;
+use crate::text::outlines::TextOutlineReport;
 
 /// Trần cạnh raster (pixel) cho một trang.
 ///
@@ -30,6 +31,9 @@ pub struct PageRender {
     pub box_used: Rect,
     /// `/Rotate` đã áp (0/90/180/270).
     pub rotate: i32,
+    /// Đường viền chữ đã thu thập — rỗng trừ khi
+    /// [`RenderOptions::collect_text_outlines`] được bật.
+    pub text_outlines: TextOutlineReport,
 }
 
 /// Hộp trang nào dùng làm khung raster.
@@ -106,7 +110,10 @@ pub fn render_page_managed(
     let device = device_matrix(&target, dpi, rotate);
 
     let space = if opts.flatten_spots {
-        InkSpace::process_only()
+        // GS-SUNSET (audit 2026-07-27 §A.1): mực pha giữ kênh riêng khi TRỘN rồi mới
+        // gộp về CMYK lúc xuất ảnh. Quy sớm như trước làm overprint của Pantone
+        // biến mất khỏi Overprint Preview.
+        InkSpace::preview()
     } else {
         InkSpace::new()
     };
@@ -122,12 +129,13 @@ pub fn render_page_managed(
     }
     renderer.run(&content, resources.as_ref(), device)?;
 
-    let (buffer, warnings) = renderer.into_parts();
+    let (buffer, warnings, text_outlines) = renderer.into_parts_with_outlines();
     Ok(PageRender {
         buffer,
         warnings,
         box_used: target,
         rotate,
+        text_outlines,
     })
 }
 

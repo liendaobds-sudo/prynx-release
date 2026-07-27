@@ -219,6 +219,56 @@ impl Colorant {
     }
 }
 
+/// Số mẫu của bảng tra tint → CMYK cho một kẽm mực pha.
+///
+/// 33 mẫu + nội suy tuyến tính: tint transform trong PDF thực tế là hàm mũ hoặc
+/// sampled gần tuyến tính, nên sai số nội suy nằm dưới một bước lượng tử 8 bit.
+/// Lấy dày hơn chỉ tốn thêm phép quy đổi ICC mà không đổi pixel nào.
+const SPOT_ALT_LUT_STEPS: usize = 33;
+
+/// CMYK tương đương của một kẽm mực pha, lấy mẫu từ tint transform của nó.
+///
+/// # Vì sao phải giữ cả một bảng thay vì một giá trị ở tint 100%
+///
+/// Đường **xem** cần biết Pantone 50% ra màu gì. Tint transform không tuyến tính
+/// (hàm `FunctionType 2` với `N != 1`, hoặc sampled), nên nhân giá trị ở tint 1.0
+/// với 0.5 cho ra màu khác màu thật. Bảng này được lấy mẫu **một lần mỗi kẽm mỗi
+/// trang** lúc gặp colorspace, nên chi phí không đáng kể.
+#[derive(Debug, Clone)]
+pub struct SpotAlternate {
+    lut: Vec<[f32; 4]>,
+}
+
+impl SpotAlternate {
+    /// Dựng từ đúng [`SPOT_ALT_LUT_STEPS`] mẫu, mẫu `i` ứng với tint `i/(n-1)`.
+    pub fn from_lut(lut: Vec<[f32; 4]>) -> Option<SpotAlternate> {
+        if lut.len() != SPOT_ALT_LUT_STEPS {
+            return None;
+        }
+        Some(SpotAlternate { lut })
+    }
+
+    /// Số mẫu mà [`SpotAlternate::from_lut`] đòi hỏi.
+    pub const fn lut_steps() -> usize {
+        SPOT_ALT_LUT_STEPS
+    }
+
+    /// CMYK tương đương ở một mức tint, nội suy tuyến tính giữa hai mẫu.
+    pub fn cmyk_at(&self, tint: f32) -> [f32; 4] {
+        let t = tint.clamp(0.0, 1.0) * (self.lut.len() - 1) as f32;
+        let lo = t.floor() as usize;
+        let hi = (lo + 1).min(self.lut.len() - 1);
+        let f = t - lo as f32;
+        let a = self.lut[lo];
+        let b = self.lut[hi];
+        let mut out = [0.0f32; 4];
+        for ch in 0..4 {
+            out[ch] = (a[ch] + (b[ch] - a[ch]) * f).clamp(0.0, 1.0);
+        }
+        out
+    }
+}
+
 /// Tập kênh mà một nguồn màu **khai báo** (participation set).
 ///
 /// Bitmask theo chỉ số kênh trong [`InkSpace`].
@@ -276,6 +326,26 @@ pub struct InkSpace {
     /// (soft-proof) bắt buộc `true`: màn hình không có mực pha, và một trang chỉ dùng
     /// Pantone sẽ hiện ra trắng nếu spot giữ kênh riêng rồi chỉ đọc bốn kênh process.
     process_only: bool,
+
+    /// Mực pha giữ kênh riêng khi trộn, chỉ gộp về CMYK ở bước **xuất ảnh**.
+    ///
+    /// # Vì sao đường xem cần chế độ này thay vì `process_only`
+    ///
+    /// `process_only` quy mực pha về CMYK ngay lúc dựng mực, nên paint mất danh
+    /// tính kênh: participation set thành cả bốn kênh process. Hệ quả đo được
+    /// (audit 2026-07-27 §A.1): overprint và knockout của một object mực pha cho
+    /// kết quả **giống nhau từng pixel**, nên Overprint Preview trả "không có
+    /// vùng thay đổi" trên file overprint bằng Pantone — đúng lớp false-negative
+    /// mà tính năng này sinh ra để chặn.
+    ///
+    /// Ở chế độ này thứ tự vẽ và ngữ nghĩa overprint/knockout được tính trong
+    /// không gian mực đầy đủ trước, việc mất kênh chỉ xảy ra ở bước cuối khi
+    /// buộc phải nói ra ba byte RGB cho màn hình.
+    fold_spots_at_output: bool,
+
+    /// CMYK tương đương của từng kênh, song song `colorants`. `None` cho kênh
+    /// process và cho kẽm chưa lấy được mẫu.
+    alternates: Vec<Option<SpotAlternate>>,
 }
 
 impl Default for InkSpace {
@@ -294,10 +364,14 @@ impl InkSpace {
                 Colorant::Black,
             ],
             process_only: false,
+            fold_spots_at_output: false,
+            alternates: vec![None; 4],
         }
     }
 
-    /// Ink space chỉ có bốn kênh process — dùng cho soft-proof.
+    /// Ink space chỉ có bốn kênh process — mực pha bị quy về CMYK **ngay lúc dựng
+    /// mực**. Dùng cho việc quy đổi phụ trợ (lấy mẫu alternate space), KHÔNG dùng
+    /// cho đường xem: xem [`InkSpace::preview`].
     pub fn process_only() -> Self {
         InkSpace {
             process_only: true,
@@ -305,9 +379,43 @@ impl InkSpace {
         }
     }
 
+    /// Ink space của đường **xem**: mực pha giữ kênh riêng khi trộn, gộp về CMYK ở
+    /// bước xuất ảnh. Xem [`InkSpace::fold_spots_at_output`].
+    pub fn preview() -> Self {
+        InkSpace {
+            fold_spots_at_output: true,
+            ..InkSpace::new()
+        }
+    }
+
     /// `true` nếu mực pha phải được quy về CMYK thay vì cấp kênh riêng.
     pub fn is_process_only(&self) -> bool {
         self.process_only
+    }
+
+    /// `true` nếu cần lấy mẫu CMYK tương đương cho mỗi kẽm mực pha gặp phải.
+    pub fn wants_spot_alternates(&self) -> bool {
+        self.fold_spots_at_output
+    }
+
+    /// CMYK tương đương đã lấy mẫu của một kênh, nếu có.
+    pub fn spot_alternate(&self, channel: usize) -> Option<&SpotAlternate> {
+        self.alternates.get(channel).and_then(|a| a.as_ref())
+    }
+
+    /// Ghi CMYK tương đương cho một kênh. Lần ghi đầu tiên thắng: cùng một kẽm có
+    /// thể được khai lại bởi một colorspace khác trong cùng trang, và đổi bảng
+    /// giữa trang sẽ làm hai vùng cùng mực hiện ra hai màu.
+    pub fn set_spot_alternate(&mut self, channel: usize, alternate: SpotAlternate) {
+        if channel >= self.colorants.len() {
+            return;
+        }
+        if self.alternates.len() < self.colorants.len() {
+            self.alternates.resize(self.colorants.len(), None);
+        }
+        if self.alternates[channel].is_none() {
+            self.alternates[channel] = Some(alternate);
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -340,6 +448,7 @@ impl InkSpace {
             });
         }
         self.colorants.push(colorant);
+        self.alternates.push(None);
         Ok(self.colorants.len() - 1)
     }
 
@@ -1206,6 +1315,13 @@ impl InkBuffer {
         for colorant in child.space.colorants().iter().skip(self.space.len()) {
             self.space.register(colorant.clone())?;
         }
+        // Bảng CMYK tương đương phải đi cùng kẽm: một Pantone chỉ xuất hiện bên
+        // trong group mà không mang theo bảng sẽ hiện ra đen ở bước xuất ảnh.
+        for ch in 0..self.space.len() {
+            if let Some(alt) = child.space.spot_alternate(ch) {
+                self.space.set_spot_alternate(ch, alt.clone());
+            }
+        }
         self.sync_channels()?;
         Ok(())
     }
@@ -1500,9 +1616,9 @@ impl InkBuffer {
     /// soft-proof là hứa một thứ không có.
     pub fn to_srgb(&self, cm: &crate::color::icc::ColorManager) -> Option<Vec<u8>> {
         let px = self.alpha.len();
-        // Kênh spot (nếu có) không biểu diễn được trên màn hình. Ở chế độ soft-proof
-        // chúng đã được quy về CMYK ngay lúc dựng mực (xem `InkSpace::process_only`),
-        // nên ở đây chỉ còn bốn kênh process.
+        // Kênh spot không biểu diễn được trên màn hình, nên đây là chỗ chúng được
+        // gộp về CMYK — SAU khi overprint/knockout đã được tính trong không gian
+        // mực đầy đủ (xem `InkSpace::fold_spots_at_output`).
         let mut cmyk: Vec<[f32; 4]> = Vec::with_capacity(px);
         for i in 0..px {
             cmyk.push([
@@ -1511,6 +1627,38 @@ impl InkBuffer {
                 self.planes[2][i].clamp(0.0, 1.0),
                 self.planes[3][i].clamp(0.0, 1.0),
             ]);
+        }
+        for ch in 4..self.planes.len() {
+            if !self.space.colorants()[ch].is_spot() {
+                continue;
+            }
+            let plane = &self.planes[ch];
+            match self.space.spot_alternate(ch) {
+                Some(alt) => {
+                    for i in 0..px {
+                        let t = plane[i].clamp(0.0, 1.0);
+                        if t <= 0.0 {
+                            continue;
+                        }
+                        let add = alt.cmyk_at(t);
+                        for c in 0..4 {
+                            cmyk[i][c] = (cmyk[i][c] + add[c]).min(1.0);
+                        }
+                    }
+                }
+                None => {
+                    // Không lấy được tint transform (kẽm khai thiếu hoặc alternate
+                    // space không quy đổi được). Hiện nó ra như mực đen theo đúng
+                    // lượng phủ: sai sắc, nhưng thấy được. Bỏ hẳn kênh sẽ làm một
+                    // vùng có mực hiện ra giấy trắng — đó là im lặng nói sai.
+                    for i in 0..px {
+                        let t = plane[i].clamp(0.0, 1.0);
+                        if t > 0.0 {
+                            cmyk[i][3] = (cmyk[i][3] + t).min(1.0);
+                        }
+                    }
+                }
+            }
         }
         let rgb = cm.cmyk_to_srgb_batch(&cmyk)?;
         let mut out = Vec::with_capacity(px * 3);
