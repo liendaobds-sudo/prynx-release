@@ -1651,7 +1651,7 @@ những gì đã gỡ không lặng lẽ quay về.
 | **PDF/X-4** | **chạy** — 31/33 file corpus đạt chuẩn (xem 19.2) |
 | `FLATTEN_TRANSPARENCY` | **chạy** (§19.4) |
 | `PDF/X-1a` | **chạy** (§19.4) |
-| `OUTLINE_FONTS` | **chạy** — 17/33 file corpus (đã thêm CFF trần); còn lại: 9 file có toán tử chữ chưa mô hình hoá, **5 file bị verify chặn vì kết quả sai**, 2 font ngoài phạm vi (§19.5) |
+| `OUTLINE_FONTS` | **chạy** — 22/33 file corpus; còn 6 file tra glyph thất bại, 3 bị verify chặn, 2 font ngoài phạm vi (§19.5) |
 | `/preflight/convert-colors` | **chạy** — RGB→CMYK dùng `convert_to_cmyk`, nhánh đen trắng dùng `convert_to_grayscale` (§19.6) |
 | `/pdf-tools/optimize` | **chạy** — lắp từ `downscale_images` + `convert_to_grayscale` + nén cấu trúc qpdf (§19.6) |
 
@@ -1751,10 +1751,25 @@ corpus không có file `/FontFile` nào. `TTFont()` không mở được CFF tr�
 container OpenType) nên phải đi qua `CFFFontSet`. Thêm nhánh này đưa outline từ
 12 lên **17/33 file**.
 
-Nhưng nó cũng làm **số file bị verify chặn tăng từ 1 lên 5**: CFF outline ra
-được nhưng chưa đúng ở vài file (kẽm lệch 4–233/255). Ngưỡng verify **giữ
-nguyên** — nới nó để có con số đẹp hơn là phá chính cái lưới đã chặn 5 bản in
-sai. Đây là việc còn mở, và nó *đang được chặn an toàn* chứ không âm thầm lọt.
+**Bug lớn nhất của cả đường này** lộ ra khi truy vì sao 5 file bị verify chặn:
+content stream mới được ghép bằng **nối chuỗi thủ công**, nên operand không
+phải số — dictionary của `BDC`, ảnh nội tuyến — bị `str()` ra repr Python và
+**phá hỏng cả stream**. Một file corpus mất sạch nội dung (phủ Cyan 93% → 0%)
+mà nhìn log thì chỉ thấy "kẽm lệch 233/255". Nay toàn bộ đi qua
+`pikepdf.unparse_content_stream`. Riêng sửa này đưa 17 → 19 file và kéo verify
+chặn từ 5 xuống 2.
+
+**Encoding**: `/BaseEncoding /WinAnsiEncoding` phải dùng bảng WinAnsi chứ không
+phải StandardEncoding — hai bảng khác nhau đúng ở vùng mã cao, nơi mọi ký tự có
+dấu nằm. Dùng nhầm thì chữ tiếng Việt không tra được glyph và cả file bị từ
+chối (mã 225/236 trượt trên 3 file). Sửa xong: **22/33**.
+
+**Ngưỡng verify** được chỉnh MỘT lần, có cơ sở đo: hai tiêu chí có vai trò khác
+nhau. *Diện tích phủ* là lưới chính — sai vị trí hay mất chữ đổi nó ngay (file
+lỗi thật: −1,95 điểm %; file đúng: −0,03…−0,11), nên giữ chặt ở 1,5. *Sai lệch
+trung bình* chỉ là lưới phụ và tăng tự nhiên theo mật độ chữ (trang 5 glyph:
+0,47/255; trang đặc chữ đúng hoàn toàn: 3,02/255), nên 3,0 loại oan — nâng lên
+5,0, vẫn thấp hơn nhiều so với mọi ca sai thật đã đo (47–233/255).
 
 Bẫy tái phạm đáng ghi: `hasattr(obj, "resolve")` — đã tài liệu hoá ở §17.5 —
 **vẫn bị lặp lại khi viết module mới**, làm toàn bộ nhánh CFF im lặng thất bại.
@@ -1790,6 +1805,7 @@ corpus: giảm 0–24% tuỳ file.
 
 | Ver | Ngày | Thay đổi |
 |---|---|---|
+| 4.2 | 2026-07-27 | `OUTLINE_FONTS` **17 → 22/33 file**. Bug lớn nhất: content stream ghép bằng nối chuỗi thủ công nên operand không-phải-số (dict của `BDC`, ảnh nội tuyến) bị `str()` phá hỏng cả stream — một file mất sạch nội dung (phủ 93% → 0%) mà log chỉ hiện "kẽm lệch 233/255"; nay dùng `unparse_content_stream`. Encoding: `/BaseEncoding /WinAnsiEncoding` phải dùng bảng WinAnsi, không phải Standard (mã có dấu 225/236 trượt). Ngưỡng verify chỉnh có cơ sở đo: phủ giữ 1,5 (lưới chính bắt sai vị trí), mean 3,0 → 5,0 (lưới phụ, tăng theo mật độ chữ). Backend **1372 pass**. §19.5. |
 | 4.1 | 2026-07-27 | `OUTLINE_FONTS` đọc được **CFF trần** (`/FontFile3` `/Type1C`) — dạng font Type1 nhúng thực tế trong corpus (75/302 font; KHÔNG có `/FontFile` PFB nào). Outline 12 → **17/33 file**, đồng thời số file bị verify chặn tăng 1 → 5 vì CFF chưa đúng ở vài file: **ngưỡng verify giữ nguyên**, nới nó để có con số đẹp là phá lưới đã chặn 5 bản in sai. Sửa `_objkey` thiếu và bẫy `hasattr(o,"resolve")` **tái phạm** dù đã tài liệu hoá ở §17.5. Backend **1372 pass**. §19.5. |
 | 4.0 | 2026-07-27 | Đóng nốt `/pdf-tools/optimize` — điểm gọi GS thẳng thứ hai nằm trong file route (có người dùng thật: OptimizeTool + recipe runner). Lắp từ `downscale_images` + `convert_to_grayscale` + nén qpdf; giữ bản gốc nếu kết quả phình ra. **Mọi đường sản xuất nay đều có path non-GS**; Ghostscript chỉ còn là fallback, và chỗ duy nhất còn rơi về nó trên file thật là `OUTLINE_FONTS` với font Type1 `/FontFile`. Backend **1372 pass**. §19.6. |
 | 3.9 | 2026-07-27 | Đóng `/preflight/convert-colors` — điểm gọi GS thẳng KHÔNG fallback, bị bỏ sót vì kiểm kê §2 chỉ grep `app/core` chứ không grep file route. RGB→CMYK dùng lại `convert_to_cmyk`; thêm `convert_to_grayscale` (§10.4 cho CMYK, Rec.601 cho RGB, spot không bị đụng) — 10/10 file corpus, 0 fallback. `outline_text` đệ quy vào Form XObject (font kế thừa theo §8.10.1, mỗi form outline một lần). Backend **1369 pass**. §19.6. |

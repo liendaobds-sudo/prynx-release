@@ -85,30 +85,30 @@ class _Matrix:
 class _OutlinePen:
     """Gom lệnh vẽ glyph thành toán tử path PDF, đã biến đổi sang toạ độ trang."""
 
-    def __init__(self, matrix: _Matrix, out: list[str]):
+    def __init__(self, matrix: _Matrix, out: list):
         self._m = matrix
         self._out = out
         self._start: tuple[float, float] | None = None
 
-    def _pt(self, pt) -> str:
+    def _pt(self, pt) -> list[float]:
         x, y = self._m.apply(pt[0], pt[1])
-        return f"{x:.4f} {y:.4f}"
+        return [round(x, 4), round(y, 4)]
 
     def moveTo(self, pt):
-        self._out.append(f"{self._pt(pt)} m")
+        self._out.append((self._pt(pt), pikepdf.Operator("m")))
         self._start = pt
 
     def lineTo(self, pt):
-        self._out.append(f"{self._pt(pt)} l")
+        self._out.append((self._pt(pt), pikepdf.Operator("l")))
 
     def curveTo(self, *points):
         # BasePen đã quy mọi đường cong về bậc ba trước khi gọi tới đây.
         if len(points) == 3:
             a, b, c = points
-            self._out.append(f"{self._pt(a)} {self._pt(b)} {self._pt(c)} c")
+            self._out.append((self._pt(a) + self._pt(b) + self._pt(c), pikepdf.Operator("c")))
         elif len(points) == 2:  # quadratic còn sót
             a, b = points
-            self._out.append(f"{self._pt(a)} {self._pt(b)} {self._pt(b)} c")
+            self._out.append((self._pt(a) + self._pt(b) + self._pt(b), pikepdf.Operator("c")))
 
     def qCurveTo(self, *points):
         # Quadratic của TrueType: nâng lên bậc ba để PDF vẽ được.
@@ -124,12 +124,14 @@ class _OutlinePen:
                   current[1] + 2 / 3 * (ctrl[1] - current[1]))
             c2 = (nxt[0] + 2 / 3 * (ctrl[0] - nxt[0]),
                   nxt[1] + 2 / 3 * (ctrl[1] - nxt[1]))
-            self._out.append(f"{self._pt(c1)} {self._pt(c2)} {self._pt(nxt)} c")
+            self._out.append(
+                (self._pt(c1) + self._pt(c2) + self._pt(nxt), pikepdf.Operator("c"))
+            )
             current = nxt
         self._start = current
 
     def closePath(self):
-        self._out.append("h")
+        self._out.append(([], pikepdf.Operator("h")))
 
     def endPath(self):
         pass
@@ -330,6 +332,7 @@ class _EmbeddedFont:
             return False
 
     def _build_cff_encoding(self, font_dict, top, names) -> None:
+        from fontTools.agl import UV2AGL
         from fontTools.encodings.StandardEncoding import StandardEncoding
 
         base: dict[int, str] = {}
@@ -341,14 +344,37 @@ class _EmbeddedFont:
                         base[code] = gname
         except Exception:  # noqa: BLE001
             pass
+
+        encoding = font_dict.get("/Encoding")
+        enc_obj = None
+        base_name = ""
+        if encoding is not None:
+            enc_obj = _deref(encoding)
+            base_name = (
+                str(enc_obj.get("/BaseEncoding", ""))
+                if isinstance(enc_obj, pikepdf.Dictionary)
+                else str(enc_obj)
+            )
+
+        # `/BaseEncoding /WinAnsiEncoding` phải dùng bảng WinAnsi, KHÔNG phải
+        # StandardEncoding: hai bảng khác nhau đúng ở vùng mã cao — nơi mọi ký
+        # tự có dấu nằm. Dùng nhầm thì chữ tiếng Việt không tra được glyph và
+        # cả file bị từ chối (đo được: mã 225/236 trượt trên 3 file corpus).
+        if "WinAnsi" in base_name or not base:
+            for code in range(32, 256):
+                try:
+                    uv = ord(bytes([code]).decode("cp1252"))
+                except Exception:  # noqa: BLE001
+                    continue
+                gname = UV2AGL.get(uv)
+                if gname:
+                    base.setdefault(code, gname)
         if not base:
             for code, gname in enumerate(StandardEncoding):
                 if gname and gname != ".notdef":
                     base[code] = gname
 
-        encoding = font_dict.get("/Encoding")
-        if encoding is not None:
-            enc_obj = encoding if isinstance(encoding, (pikepdf.Dictionary, pikepdf.Name)) else encoding.resolve()
+        if enc_obj is not None:
             if isinstance(enc_obj, pikepdf.Dictionary):
                 differences = enc_obj.get("/Differences")
                 if differences is not None:
@@ -489,7 +515,7 @@ class _EmbeddedFont:
                 return 500.0
         return 500.0  # không tra được: `/Widths` của PDF thường đã phủ hết
 
-    def draw(self, code: int, matrix: _Matrix, out: list[str]) -> bool:
+    def draw(self, code: int, matrix: _Matrix, out: list) -> bool:
         name = self.code_to_glyph.get(code)
         if not name or self.glyph_set is None:
             return False
@@ -577,7 +603,7 @@ def outline_content_stream(
     except Exception:  # noqa: BLE001
         return (None, 0)
 
-    out: list[str] = []
+    out: list = []
     glyphs = 0
 
     ctm_stack: list[_Matrix] = []
@@ -593,10 +619,6 @@ def outline_content_stream(
     rise = 0.0
     render_mode = 0
     in_text = False
-
-    def emit(instr) -> None:
-        ops = " ".join(_fmt(o) for o in instr.operands)
-        out.append(f"{ops} {instr.operator}".strip())
 
     def show(raw: bytes) -> bool:
         nonlocal tm, glyphs
@@ -626,6 +648,10 @@ def outline_content_stream(
                     # Không tra được glyph nghĩa là chữ đó sẽ BIẾN MẤT. Bỏ qua
                     # âm thầm là kiểu hỏng tệ nhất ở đây — file trông vẫn có
                     # chữ, chỉ thiếu vài ký tự, và không ai thấy tới lúc in.
+                    logger.info(
+                        "outline dừng: không tra được glyph cho mã %d (font %d glyph đã map)",
+                        code, len(font.code_to_glyph),
+                    )
                     return False
             w0 = font.width(code) / 1000.0
             # `Tw` chỉ áp cho mã MỘT byte bằng 32 (§9.3.3) — với font 2 byte,
@@ -641,11 +667,11 @@ def outline_content_stream(
 
         if op == "q":
             ctm_stack.append(ctm)
-            emit(instr)
+            out.append(instr)
             continue
         if op == "Q":
             ctm = ctm_stack.pop() if ctm_stack else _Matrix()
-            emit(instr)
+            out.append(instr)
             continue
         if op == "cm":
             try:
@@ -654,11 +680,11 @@ def outline_content_stream(
                     ctm = _Matrix(*vals).then(ctm)
             except Exception:  # noqa: BLE001
                 return (None, 0)
-            emit(instr)
+            out.append(instr)
             continue
 
         if op not in _TEXT_OPS:
-            emit(instr)
+            out.append(instr)
             continue
 
         # ── Từ đây là toán tử chữ: KHÔNG phát lại, thay bằng path ──
@@ -673,6 +699,9 @@ def outline_content_stream(
                 size = float(operands[1])
                 font = fonts.get(name)
                 if font is None or not font.ok:
+                    # Nói rõ font nào: "chưa hỗ trợ" chung chung làm người sau
+                    # phải dò lại từ đầu.
+                    logger.info("outline dừng: không có font %s trong resources", name)
                     return (None, 0)
             elif op in ("Td", "TD"):
                 tx, ty = float(operands[0]), float(operands[1])
@@ -725,29 +754,35 @@ def outline_content_stream(
         # Glyph vừa vẽ được tô ngay: gom nhiều glyph vào một `f` sẽ sai quy tắc
         # even-odd giữa các chữ chồng nhau.
         if op in ("Tj", "TJ", "'", '"') and glyphs:
-            out.append("f")
+            out.append(([], pikepdf.Operator("f")))
 
     _ = in_text
-    return ("\n".join(out).encode("latin-1", "replace"), glyphs)
+    try:
+        # Để pikepdf serialise toàn bộ: tự nối chuỗi thì operand không phải số
+        # — dictionary của `BDC`, ảnh nội tuyến — bị `str()` ra repr Python và
+        # phá hỏng cả stream, làm trang trắng trơn (đo được trên một file
+        # corpus: phủ 93% → 0%).
+        return (pikepdf.unparse_content_stream(out), glyphs)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("không serialise được content stream: %s", exc)
+        return (None, 0)
 
 
-def _fmt(obj) -> str:
-    if isinstance(obj, pikepdf.Array):
-        return "[" + " ".join(_fmt(o) for o in obj) + "]"
-    if isinstance(obj, pikepdf.String):
-        return f"({bytes(obj).decode('latin-1')})"
-    if isinstance(obj, (int,)):
-        return str(obj)
-    if isinstance(obj, float):
-        return f"{obj:.6g}"
-    return str(obj)
 
 
-# Ngưỡng verify sau khi outline. Con số từ đo thật: một trang chữ TrueType
-# nhúng cho meanΔ 0.47/255 và phủ +0.19 điểm % (path outline được raster với
-# vành fill-adjust nên dày hơn glyph gốc chút ít ở biên). Chữ ĐẶT SAI CHỖ thì
-# hai vệt không chồng nhau và phủ gần như gấp đôi — ngưỡng dưới bắt được ngay.
-_VERIFY_MEAN_LIMIT = 3.0
+# Ngưỡng verify sau khi outline. Hai tiêu chí có VAI TRÒ KHÁC NHAU, và đó là lý
+# do chúng không cùng độ chặt:
+#
+# * **Diện tích phủ** là lưới chính. Chữ đặt sai chỗ hay mất chữ đều đổi phủ
+#   ngay; đo được: một trang mất 1.95 điểm % Cyan vì lỗi thật, trong khi trang
+#   outline đúng chỉ lệch 0.03–0.11 điểm %. Giữ chặt.
+# * **Sai lệch trung bình** chỉ là lưới phụ, và nó tăng tự nhiên theo mật độ
+#   chữ: path outline được raster với vành fill-adjust nên dày hơn glyph gốc
+#   một chút ở MỌI biên. Đo: trang 5 glyph cho 0.47/255, trang đặc chữ cho
+#   3.02/255 dù phủ chỉ lệch 0.1 điểm % — tức chữ hoàn toàn đúng chỗ. Ngưỡng
+#   3.0 vì thế loại oan trang dày chữ; 5.0 vẫn thấp hơn nhiều so với mọi ca sai
+#   thật đã đo (47–233/255).
+_VERIFY_MEAN_LIMIT = 5.0
 _VERIFY_COVERAGE_LIMIT = 1.5
 
 
