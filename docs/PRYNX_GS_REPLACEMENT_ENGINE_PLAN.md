@@ -1,10 +1,16 @@
 # Kế hoạch: Engine thay thế Ghostscript (riêng cho PrynX)
 
 **Mã tài liệu:** `PRYNX-GS-REPL-ENGINE`  
-**Phiên bản:** 2.9
-**Ngày:** 2026-07-26
+**Phiên bản:** 5.3
+**Ngày:** 2026-07-27
 **Phạm vi:** Desktop PrynX (Tauri + Python FastAPI sidecar + Rust native)  
 **Mục tiêu:** Giảm / loại phụ thuộc Ghostscript (AGPL bundle) bằng **engine prepress nội bộ**, clean-room, không fork source GS.
+
+> ⚠️ **File này là kế hoạch + changelog, KHÔNG phải hiện trạng.** Các mục theo
+> milestone bên dưới giữ nguyên số đo *ở thời điểm viết* và không được cập nhật khi
+> trạng thái đổi. Muốn biết PPE đang ở đâu, đọc **`docs/PPE_CURRENT_STATE.md`** — đó
+> là nguồn sự thật duy nhất cho quyết định phát hành. Hai file lệch nhau thì
+> `PPE_CURRENT_STATE.md` đúng.
 
 > Đây là kế hoạch kỹ thuật sản phẩm. Không phải tư vấn pháp lý.  
 > Không copy code Ghostscript (AGPL). Tham chiếu: ISO 32000, ICC, hành vi black-box (so output), lib permissive.
@@ -19,8 +25,8 @@
 | **Hướng** | Viết **PrynX Print Engine (PPE)** — mini-RIP/PDF prepress **đúng use-case PrynX**, không clone full GS. |
 | **Ngôn ngữ** | **Rust** (lõi) + **Python** (API/orchestration) + **TS** (UI). |
 | **Thời gian ước lượng** | 12–24 tháng tới mức “gỡ bundle GS” an toàn; 3–6 tháng có MVP separations/soft-proof/TAC. |
-| **Song song** | Ship vẫn dùng GS (bundle hoặc commercial) cho đến khi PPE đạt gate chất lượng. |
-| **Trạng thái 2026-07-26 (v2.9, sau audit độc lập)** | Audit độc lập trên môi trường thứ hai (Linux, GS 10.04.0 build source) **tái hiện đúng từng số** của v2.8, sau đó đóng cả hai residual mean-only: raw golden 100 DPI **31/31 PASS** (Steam Iron 5,18→1,28 nhờ vành fill-adjust; kaptone 3,15→0,46 — hoá ra bug đo f32). 72 DPI đo đủ 31 file lần đầu: 13/31 → **25/31 PASS, 0 hồi quy**. Facade **129/129 trusted**. Gate unbundle **vẫn đóng** (residual 72 DPI còn 6, xem §16.8). |
+| **Đóng gói** | Artifact `1.0.0-beta.14` đã build không bundle GS. Nhánh legacy chỉ còn để đối chiếu có chủ đích. |
+| **Trạng thái 2026-07-27 (v5.1)** | Gate kỹ thuật no-GS **ĐẠT**: survival/release QA xanh; Overprint Preview chạy PPE và nay thấy đúng cả overprint trên **mực pha** (§20.4); OUT FONT fail-closed; budget theo RAM; NOTICE và payload NSIS không còn GS. Installer/payload và sidecar health/HMAC sau cài đã đạt. **Chưa phát hành công khai** trước khi có Acrobat/validator PDF/X độc lập, kiểm tay UI trên máy sạch và artifact sạch có ký mã. Audit lần 2 còn mở: neo `EXE_SHA256`, hành vi no-GS khi máy khách có GS sẵn, ngân sách RAM theo slot. Xem §20, §20.4. |
 
 ---
 
@@ -349,12 +355,15 @@ Sản xuất chạy TAC ở 100 DPI — nơi đã 31/31.
 | Config | `PRYNX_ALLOW_GS_FALLBACK=0` default release |
 | Docs khách | “Không cần cài Ghostscript” |
 
-**Gate Phase 3 (gỡ bundle):**
+**Gate Phase 3A — gỡ bundle ở mức kỹ thuật:**
 
-- [ ] Metric §8 đạt  
-- [ ] 0 call GS trên smoke suite release  
-- [ ] QA `run_release_qa` + manual prepress checklist  
-- [ ] Legal: NOTICE không liệt kê Ghostscript như bundled component  
+- [x] Telemetry “95%/30 ngày” được loại khỏi gate vì thiết bị hiện tại không tính được mẫu số; thay bằng survival suite xác định.
+- [x] 0 call GS trên survival suite release; engine/accuracy không được phép lách qua `pdfium_approx`.
+- [x] `run_release_qa` xanh: backend 1.399; frontend 1.083; các crate Rust release đều đạt.
+- [x] Build production `-NoGhostscript` thành công; payload NSIS dưới `binaries\gs` chỉ có marker.
+- [x] Legal: NOTICE không liệt kê Ghostscript/Artifex/AGPL như bundled component.
+
+**Gate Phase 3B — phát hành công khai:** installer/payload và sidecar health sau cài đã đạt; còn chờ Acrobat/validator PDF/X độc lập, kiểm tay UI trên máy sạch và artifact `GIT_DIRTY=no` có ký mã.
 
 ---
 
@@ -421,14 +430,23 @@ Sản xuất chạy TAC ở 100 DPI — nơi đã 31/31.
 
 ## 8. Metric “đủ để gỡ GS”
 
-Gỡ bundle khi **tất cả** đúng (hoặc exception list có chủ đích):
+Quyết định sản phẩm ngày 2026-07-27: tiêu chí “≥95% job/30 ngày” **không còn
+là gate**, vì telemetry hiện tại chỉ đếm lần gọi GS và không có mẫu số tổng job.
+Nó có thể là tín hiệu quan sát sau này, nhưng không được dùng để chặn hoặc để
+tuyên bố đạt. Gate kỹ thuật dùng bằng chứng xác định sau:
 
-1. ≥ **95%** job prepress trong log 30 ngày khách chạy **không** cần GS fallback.  
-2. Separations + Soft-proof + TAC: PPE default, badge không “approximate” trên DeviceCMYK.  
-3. PDF/X: ≥ 1 standard PrynX ship (vd X-4) pass compliance suite nội bộ.  
-4. Actions P1 (Convert CMYK, Downscale, Embed) non-GS.  
-5. Flatten/Outline: hoặc PPE raster path có warning, hoặc vẫn optional GS **không bundle** (user cài) — quyết định sản phẩm.  
-6. `build_production` không copy GS; release QA green.  
+1. Survival suite chạy mọi đường sản xuất khi không có GS; đường ink-accurate phải
+   xác nhận `engine=ppe`, không được xanh bằng engine approximate.
+2. Separations + Soft-proof + TAC dùng PPE mặc định và fail-loud khi kết quả không
+   đủ tin cậy.
+3. Overprint Preview dùng PPE và có regression chứng minh hai chế độ khác nhau.
+4. Actions ghi PDF, flatten, OUT FONT và PDF/X đều có path non-GS; nhánh không
+   chứng minh được tương đương phải fail-closed.
+5. `run_release_qa` xanh và `build_production -NoGhostscript` tạo installer không
+   có GS/Artifex/AGPL trong payload hoặc NOTICE.
+6. Installer/payload và sidecar health/HMAC phải đạt sau cài; trước **phát hành
+   công khai**, PDF/X còn phải qua Acrobat Preflight/validator độc lập và toàn bộ
+   checklist UI phải được kiểm tay trên máy sạch không có GS.
 
 ---
 
@@ -1012,7 +1030,11 @@ thật vì đúng lý do đó.
 
 ### 16.4 Kiểm thử
 
-| Tầng | Số test | Lệnh |
+> **[SUPERSEDED]** Bảng dưới là ảnh chụp ở thời điểm Milestone H (v1.7) và **không**
+> được cập nhật. Số hiện hành: `docs/PPE_CURRENT_STATE.md` §2. Giữ lại vì nó cho thấy
+> *cấu trúc tầng test* đã thiết kế ra sao, không phải để lấy số.
+
+| Tầng | Số test (v1.7) | Lệnh |
 |---|---|---|
 | Unit Rust (mực, màu, ICC, function, hình học, raster, gstate, filter ảnh, font, blend, `/OC`, lưới, CCITT, memory budget) | 326 | `cargo test --manifest-path print_engine/Cargo.toml` |
 | Tích hợp Rust — vector (dựng PDF thật → so kẽm) | 32 | cùng lệnh trên |
@@ -1830,12 +1852,104 @@ Chốt verify so-kẽm hiện tại giữ nguyên và dùng lại được y ngu
 phiên dài là đánh đổi sai — bản Python hiện tại đã chạy 22/33 file và **có
 lưới verify chặn mọi kết quả sai**, nên không có gì cấp bách phải vội.
 
+> **[ĐÃ LÀM 2026-07-27]** Ba lớp đã nối xong theo đúng thiết kế trên, nhưng với một
+> khác biệt có chủ đích: nguồn PPE **cộng thêm** chứ không thay thế đường fontTools.
+> Glyph nào PPE có thì dùng hình học của PPE, glyph nào không có thì vẫn đi đường cũ.
+> Nhờ vậy bật nguồn này **không thể** làm mất chữ so với bản trước, và không phải
+> chờ đo lại toàn corpus mới dám bật.
+>
+> Thêm một chốt mà thiết kế gốc chưa nêu: **kiểm glyph nằm đúng vị trí bút**. Hai bên
+> đi qua cùng content stream bằng hai bộ code khác nhau, nên rủi ro thật không phải
+> "path sai" mà là **lệch chỉ số** — path của glyph này bị gán cho glyph khác, file
+> vẫn mở được và vẫn có chữ, chỉ sai chỗ. Mỗi path được so với `(trm.e, trm.f)`; lệch
+> quá 2× cỡ chữ theo x hoặc 3× theo y thì từ chối và lùi về fontTools. Có test ép
+> lệch 500pt để chứng minh chốt này bắt được.
+>
+> Chi tiết và số verify: `GS_SUNSET_FIXES_2026-07-27.md` §11.
+
+---
+
+## 20. Chốt Ghostscript sunset ở mức kỹ thuật (2026-07-27)
+
+Audit hiện trạng sau §19 tìm ra bốn blocker thật: Overprint Preview còn gọi cờ
+GS đã chết, survival test có thể lách qua `pdfium_approx`, PPE hard-cap 512 MiB
+mọi máy và Release QA còn đỏ. Telemetry “95%/30 ngày” cũng được chứng minh là
+không tính được, nhưng chủ dự án quyết định loại nó khỏi gate thay vì xây số liệu
+không đáng tin.
+
+### 20.1 Kết quả sửa
+
+- Overprint Preview có chế độ mô phỏng trong PPE Rust, đi xuyên binding/facade/
+  route live; endpoint không còn phụ thuộc GS.
+- Budget PPE theo RAM khả dụng: `<8 GB` giảm mạnh, `8–<16 GB` giảm nhẹ,
+  `>=16 GB` không có trần nhân tạo; override môi trường vẫn thắng.
+- CI Windows cài native wheel vừa build rồi chạy survival/action/PDF-X/outline;
+  test ink-accurate khóa đúng engine và độ tin cậy.
+- OUT FONT được audit riêng và chuyển sang fail-closed, hậu kiểm mọi trang; xem
+  `OUT_FONT_FIXES_2026-07-27.md`.
+- Blocker AutoBottom được soi hình học, cập nhật hai golden có chủ đích và tách
+  bất biến tai dán gập vào khỏi mặt kết cấu hướng ra ngoài.
+
+### 20.2 Bằng chứng Release QA
+
+Lần chạy `scripts/run_release_qa.ps1` đầy đủ đạt:
+
+- backend **1.399 pass**;
+- frontend clean install **126 file / 1.083 pass / 2 skip**, typecheck đạt;
+- golden preflight **46 pass**, E2E free-token **1 pass**;
+- `imposition_core` **36 pass**, `native` **10 pass**, Tauri **40 pass** và
+  release compile đều đạt.
+
+### 20.3 Artifact no-GS
+
+`build_production.ps1 -NoGhostscript` đã tạo
+`Ban_Phat_Hanh/PrynX_1.0.0-beta.14_x64-setup.exe`:
+
+- kích thước `255005482` byte;
+- SHA-256 `7dac9effeec032eceb467194d9d4a509db02fbf1e18e070707eacde787e3a6f0`;
+- NSIS chỉ đóng `binaries\gs\NO_GHOSTSCRIPT.txt`, không có `gswin*.exe`/GS DLL;
+- NOTICE không có Ghostscript/Artifex/AGPL;
+- `DIELINE_LOCKED=yes`.
+
+Cài silent trả mã 0; cây đã cài chỉ còn marker no-GS; sidecar trả health/HMAC
+hợp lệ. Smoke-test cũng sửa một lỗi manifest: hash app đã cài khác hash build
+target do Tauri vá metadata theo bundle, nên nay lưu riêng hai giá trị. Manifest
+trung thực ghi `GIT_DIRTY=YES` và `CODE_SIGNED=no`. Vì vậy kết luận là **GO gỡ
+bundle kỹ thuật**, nhưng **NO-GO phát hành công khai artifact này** cho đến khi
+có validator PDF/X độc lập, kiểm tay UI trên máy sạch và build lại từ cây sạch
+có ký mã. Nhật ký đầy đủ: `GS_SUNSET_FIXES_2026-07-27.md`.
+
+---
+
+### 20.4 Audit lần 2 và bản sửa mực pha (v5.1)
+
+Audit độc lập lần 2 (`docs/BAO_CAO_AUDIT_GS_REPLACEMENT_ENGINE_2026-07-27_LAN2.md`)
+tái hiện đúng số của v5.0 (Rust 546, backend 1399, golden 50+1) và xác nhận bốn
+blocker của lần 1 đã đóng thật. Nhưng nó đo ra **một lỗi mới do chính bản sửa
+Overprint Preview sinh ra**: đường xem quy mực pha về CMYK ngay lúc dựng mực, nên
+overprint của Pantone trở nên giống knockout từng pixel và endpoint trả “không có
+vùng thay đổi” — PPE 0 pixel so với Ghostscript 43.681 pixel trên cùng file.
+
+Đã sửa theo hướng (a): mực pha **giữ kênh riêng khi trộn**, chỉ gộp về CMYK ở bước
+xuất ảnh, qua bảng tra tint → CMYK lấy mẫu từ tint transform. Đường đo không đổi
+một pixel nào (golden 72/100 DPI giữ nguyên 50 PASS + 1 khác GS có chủ ý). Rust
+**548**, backend **1400**. Chi tiết và bảng số trước/sau: `GS_SUNSET_FIXES_2026-07-27.md` §9.
+
+Bài học lặp lại lần thứ hai trong cùng ngày: **một tính năng chỉ được coi là đóng
+khi chốt verify chạy đúng cấu hình sản phẩm.** Test Rust của v5.0 đúng nhưng chạy
+ở `ink_accurate`, hai test Python thì mock hẳn engine — cả ba xanh trong khi tính
+năng sai.
+
 ---
 
 ## 15. Lịch sử tài liệu
 
 | Ver | Ngày | Thay đổi |
 |---|---|---|
+| 5.3 | 2026-07-27 | Đóng §19.7 — `OUTLINE_FONTS` lấy hình học chữ từ PPE qua `ppe_text_outlines` (Rust: chế độ thu thập outline + khoá stream/khối `BT`; Python: `PpeGlyphSource` + pikepdf ghi PDF). Khác thiết kế gốc hai chỗ có chủ đích: nguồn PPE **cộng thêm** chứ không thay đường fontTools (nên không thể làm mất chữ so với bản trước), và thêm chốt **kiểm glyph nằm đúng vị trí bút** vì rủi ro thật là lệch chỉ số chứ không phải path sai. Rust **560**, backend **1422**; đo trên trang có `cm`: 10/10 glyph dùng PPE, 0 lùi về fontTools, so-kẽm đạt. Chưa đo lại corpus 33 PDF (không nằm trong repo). `GS_SUNSET_FIXES_2026-07-27.md` §11. |
+| 5.2 | 2026-07-27 | Đóng nốt bốn lô của audit lần 2. **B**: `scripts/verify_installed_artifact.ps1` điền `EXE_SHA256` từ payload đã cài (trước đó điền tay ⇒ mọi build sau mất neo). **C**: bản no-GS không mượn Ghostscript của máy khách — marker payload + `PRYNX_ALLOW_GS_FALLBACK=False`, bỏ đường dẫn GS gõ cứng, `run_hidden` trả thông điệp mức sản phẩm. **D**: ngân sách RAM chia theo slot việc nặng (giữ sàn tier), `ppe_capabilities` khai rõ chính sách, và tách `docs/PPE_CURRENT_STATE.md` làm SSOT — file kế hoạch này từ nay chỉ là kế hoạch + changelog. Golden thêm cặp spot-overprint: **53 file, 52 PASS**, cặp mới khớp GS 0,0 điểm TAC / MAE 0,00. Rust **548**, backend **1414**. §20.4, `GS_SUNSET_FIXES_2026-07-27.md` §9–10. |
+| 5.1 | 2026-07-27 | Audit lần 2 đóng false-negative overprint trên **mực pha**: `InkSpace::preview()` giữ kẽm spot khi trộn và gộp về CMYK ở bước xuất ảnh bằng bảng tra tint→CMYK (33 mẫu, lấy mẫu bằng cảnh báo nháp để không hạ tin cậy đường đo). Đo: PPE 0 → 43.678 pixel khác biệt, GS 43.681. Thêm regression **không mock** cho endpoint và test Rust chạy đúng cấu hình `softproof`. Đường đo không đổi: golden 72/100 DPI vẫn 50 PASS + 1 khác GS có chủ ý. Rust **548**, backend **1400**. §20.4. |
+| 5.0 | 2026-07-27 | Đóng Ghostscript sunset ở mức kỹ thuật: Overprint Preview PPE, memory budget theo RAM, no-GS survival/CI, OUT FONT fail-closed, Release QA xanh, installer no-GS và sidecar health/HMAC sau cài đã đạt. Tách đúng hash build-target với hash app đã cài. Loại telemetry 95%/30 ngày khỏi gate theo quyết định sản phẩm. Public release còn chờ validator PDF/X độc lập, kiểm tay UI trên máy sạch và artifact sạch có ký mã. §20. |
 | 4.2 | 2026-07-27 | `OUTLINE_FONTS` **17 → 22/33 file**. Bug lớn nhất: content stream ghép bằng nối chuỗi thủ công nên operand không-phải-số (dict của `BDC`, ảnh nội tuyến) bị `str()` phá hỏng cả stream — một file mất sạch nội dung (phủ 93% → 0%) mà log chỉ hiện "kẽm lệch 233/255"; nay dùng `unparse_content_stream`. Encoding: `/BaseEncoding /WinAnsiEncoding` phải dùng bảng WinAnsi, không phải Standard (mã có dấu 225/236 trượt). Ngưỡng verify chỉnh có cơ sở đo: phủ giữ 1,5 (lưới chính bắt sai vị trí), mean 3,0 → 5,0 (lưới phụ, tăng theo mật độ chữ). Backend **1372 pass**. §19.5. |
 | 4.1 | 2026-07-27 | `OUTLINE_FONTS` đọc được **CFF trần** (`/FontFile3` `/Type1C`) — dạng font Type1 nhúng thực tế trong corpus (75/302 font; KHÔNG có `/FontFile` PFB nào). Outline 12 → **17/33 file**, đồng thời số file bị verify chặn tăng 1 → 5 vì CFF chưa đúng ở vài file: **ngưỡng verify giữ nguyên**, nới nó để có con số đẹp là phá lưới đã chặn 5 bản in sai. Sửa `_objkey` thiếu và bẫy `hasattr(o,"resolve")` **tái phạm** dù đã tài liệu hoá ở §17.5. Backend **1372 pass**. §19.5. |
 | 4.0 | 2026-07-27 | Đóng nốt `/pdf-tools/optimize` — điểm gọi GS thẳng thứ hai nằm trong file route (có người dùng thật: OptimizeTool + recipe runner). Lắp từ `downscale_images` + `convert_to_grayscale` + nén qpdf; giữ bản gốc nếu kết quả phình ra. **Mọi đường sản xuất nay đều có path non-GS**; Ghostscript chỉ còn là fallback, và chỗ duy nhất còn rơi về nó trên file thật là `OUTLINE_FONTS` với font Type1 `/FontFile`. Backend **1372 pass**. §19.6. |
