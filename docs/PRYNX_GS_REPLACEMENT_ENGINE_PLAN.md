@@ -1799,6 +1799,37 @@ dùng bấm "tối ưu" để file nhẹ hơn, không phải để đổi màu. 
 ra** thì giữ nguyên bản gốc, vì trả về file nặng hơn là phản tác dụng. Đo 6 file
 corpus: giảm 0–24% tuỳ file.
 
+### 19.7 Hướng đúng cho `OUTLINE_FONTS`: dùng PPE thay vì fontTools
+
+Bản Python hiện tại **viết lại bằng tay** đúng những gì PPE đã có và đã kiểm
+chứng: `print_engine/src/text/font.rs` có `glyph_outline(code_or_cid) ->
+Option<Arc<Path>>` cho TrueType (ttf_parser), CFF và Type1, kèm font thay thế;
+`interp.rs::draw_glyph` đã tính `glyph_matrix(text_state) × CTM`, tách riêng
+Type3, và xử lý đủ `Tr` 0–7 gồm cả nhánh gom clip 4–7.
+
+Đó chính là toàn bộ phần khó mà bản Python đang vấp: 6 file corpus tra glyph
+thất bại, 2 file font ngoài phạm vi, Type3 chưa đụng tới. PPE không vấp những
+chỗ đó vì nó đã được đo song song với Ghostscript qua 545 test và bộ golden.
+
+**Thiết kế đề xuất** (chưa làm — xem ghi chú cuối mục):
+
+1. Thêm chế độ *thu thập* cho `Renderer`: `draw_glyph` thay vì rasterize thì
+   ghi lại `(path trong không gian NGƯỜI DÙNG, fill/stroke mode, chỉ số thứ tự
+   thao tác vẽ)`. Không gian người dùng chứ không phải thiết bị — đích đến là
+   content stream PDF, không phải pixel.
+2. Expose qua binding: `ppe_text_outlines(pdf_path, page) -> [glyph_run]`.
+3. Python dùng `pikepdf` thay từng khối `BT … ET` bằng path tương ứng, dựa vào
+   chỉ số thao tác để giữ đúng thứ tự vẽ với đồ hoạ xung quanh.
+
+Chia việc như vậy đặt mỗi phần đúng chỗ: **Rust lo font/encoding/ma trận chữ**
+(thứ đã đúng và đã đo), **Python lo ghi PDF** (pikepdf, thứ Rust không có).
+Chốt verify so-kẽm hiện tại giữ nguyên và dùng lại được y nguyên.
+
+**Vì sao chưa làm trong phiên này:** đây là thay đổi xuyên ba lớp (engine Rust
+→ binding → Python) và cần đo lại toàn bộ corpus sau đó. Bắt đầu nó ở cuối một
+phiên dài là đánh đổi sai — bản Python hiện tại đã chạy 22/33 file và **có
+lưới verify chặn mọi kết quả sai**, nên không có gì cấp bách phải vội.
+
 ---
 
 ## 15. Lịch sử tài liệu
