@@ -19,6 +19,16 @@ _MAX_ACTIVE_HEAVY_JOBS = max(
     int(os.environ.get("PRYNX_MAX_HEAVY_JOBS", "2") or "2"),
 )
 _HEAVY_JOB_SLOTS = threading.BoundedSemaphore(_MAX_ACTIVE_HEAVY_JOBS)
+
+
+def max_active_heavy_jobs() -> int:
+    """Số việc nặng được phép chạy cùng lúc.
+
+    Công khai để những nơi cấp **ngân sách bộ nhớ** chia theo đúng số việc song
+    song. Nếu mỗi việc tự lấy cả phần RAM còn trống thì N việc cùng cam kết N lần
+    lượng đó — trần bảo vệ mất tác dụng đúng lúc cần nhất.
+    """
+    return _MAX_ACTIVE_HEAVY_JOBS
 _STATE_LOCK = threading.Lock()
 _ACTIVE_BY_KIND: dict[str, int] = {}
 _WAITING_BY_KIND: dict[str, int] = {}

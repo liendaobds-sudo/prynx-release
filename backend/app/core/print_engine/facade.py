@@ -123,12 +123,57 @@ def _fallback_font_path() -> str | None:
     return None
 
 
-def _memory_budget_mb() -> int:
-    """Per-render PPE memory ceiling configured by the backend."""
-    from app.config import settings
+def _auto_memory_budget_mb(
+    total_ram_mb: float | None,
+    available_ram_mb: float | None,
+    concurrency: int = 1,
+) -> int:
+    """Chọn ngân sách PPE theo tier RAM, không hard-cap máy mạnh.
 
-    value = int(getattr(settings, "PRYNX_PPE_MEMORY_BUDGET_MB", 512))
-    if value <= 0:
+    Ngân sách chỉ là chốt chống cấp phát quá mức, không được cấp phát trước.
+    Máy >=16 GB lấy theo RAM *đang khả dụng* và không có ceiling nhân tạo.
+
+    `concurrency` là số việc nặng được phép chạy cùng lúc. Ngân sách là trần cho
+    **một** lần render, nên phải chia: PERF (audit 2026-07-27 §A.5) — trước đây mỗi
+    lần render tự lấy 75% RAM còn trống, N việc song song cùng cam kết N lần lượng
+    đó và trần mất tác dụng đúng lúc máy đang căng nhất. Sàn của từng tier vẫn được
+    giữ để máy nhiều slot không tụt xuống mức không render nổi trang nào.
+    """
+    slots = max(1, int(concurrency))
+    if total_ram_mb is None or total_ram_mb <= 0:
+        return 512
+    available = available_ram_mb if available_ram_mb and available_ram_mb > 0 else None
+    if total_ram_mb < 8 * 1024:
+        if available is None:
+            return 384
+        return max(256, min(384, int(available * 0.50 / slots)))
+    if total_ram_mb < 16 * 1024:
+        if available is None:
+            return 1024
+        return max(512, min(1024, int(available * 0.50 / slots)))
+    # PERF (audit 2026-07-27 §4.4): >=16 GB không bị trần 512 MiB. Dùng phần
+    # RAM khả dụng để vẫn tự hạ khi hệ thống đang chịu áp lực bộ nhớ.
+    basis = available if available is not None else total_ram_mb
+    ratio = 0.75 if available is not None else 0.50
+    return max(512, int(basis * ratio / slots))
+
+
+def _memory_budget_mb() -> int:
+    """Ngân sách mỗi lần render: env/config ghi đè, còn lại tự chọn theo RAM."""
+    from app.config import settings
+    from app.core.system_memory import read_memory_status_mb
+
+    override = getattr(settings, "PRYNX_PPE_MEMORY_BUDGET_MB", None)
+    if override is not None:
+        value = int(override)
+        if value <= 0:
+            raise ValueError("PRYNX_PPE_MEMORY_BUDGET_MB must be greater than zero")
+        return value
+    from app.core.heavy_job_scheduler import max_active_heavy_jobs
+
+    total_mb, available_mb = read_memory_status_mb()
+    value = _auto_memory_budget_mb(total_mb, available_mb, max_active_heavy_jobs())
+    if value <= 0:  # chốt phòng vệ cho mọi thay đổi chính sách về sau
         raise ValueError("PRYNX_PPE_MEMORY_BUDGET_MB must be greater than zero")
     return value
 
@@ -372,6 +417,7 @@ def softproof(
     *,
     cmyk_profile_id: str = "fogra39",
     render_intent: int = 1,
+    simulate_overprint: bool = True,
 ) -> dict[str, Any]:
     """Soft-proof một trang: render trong không gian mực rồi quy sang sRGB qua ICC.
 
@@ -421,6 +467,7 @@ def softproof(
             render_intent=int(render_intent),
             page_box="crop",
             fallback_font=_fallback_font_path(),
+            simulate_overprint=simulate_overprint,
             memory_budget_mb=_memory_budget_mb(),
         )
 

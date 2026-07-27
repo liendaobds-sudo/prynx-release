@@ -385,6 +385,21 @@ def _spot_pdf(tmp_path: Path) -> str:
     )
 
 
+def _overprint_pdf(tmp_path: Path) -> str:
+    """Nền Cyan, chữ nhật K overprint: bật/tắt mô phỏng phải khác ảnh."""
+    return _write(
+        tmp_path,
+        "sp_overprint.pdf",
+        _pdf(
+            "1 0 0 0 k 0 0 100 100 re f /GSop gs 0 0 0 1 k 0 0 100 100 re f",
+            resources="/ExtGState << /GSop 5 0 R >>",
+            extra_objects=[
+                b"<< /Type /ExtGState /op true /OP true /OPM 1 >>",
+            ],
+        ),
+    )
+
+
 def test_softproof_returns_an_rgb_image_of_the_expected_size(tmp_path):
     r = softproof(_solid_cmyk_pdf(tmp_path), 1, dpi=36)
     assert r["width"] == 50 and r["height"] == 50
@@ -420,6 +435,15 @@ def test_measurement_path_still_keeps_the_spot_plate(tmp_path):
     r = separations(_spot_pdf(tmp_path), 1, dpi=36, ink_accurate=True)
     names = [p["name"] for p in r["plates"]]
     assert "PANTONE 485 C" in names, names
+
+
+def test_softproof_can_render_overprint_and_knockout_from_same_pdf(tmp_path):
+    source = _overprint_pdf(tmp_path)
+    simulated = softproof(source, 1, dpi=36, simulate_overprint=True)
+    knockout = softproof(source, 1, dpi=36, simulate_overprint=False)
+    assert simulated["width"] == knockout["width"]
+    assert simulated["height"] == knockout["height"]
+    assert bytes(simulated["rgb"]) != bytes(knockout["rgb"])
 
 
 def test_softproof_without_a_usable_profile_raises(tmp_path):

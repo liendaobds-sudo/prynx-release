@@ -67,7 +67,7 @@ AVAILABLE_ACTIONS = {
     },
     "OUTLINE_FONTS": {
         "title": "Khóa Font (Outline Text)",
-        "description": "Convert toàn bộ chữ thành Vector (Curves) để chống lỗi font 100% khi in.",
+        "description": "Chuyển toàn bộ chữ thành vector, hậu kiểm từng trang và dừng nếu không thể bảo toàn bản in.",
         "engine": "pikepdf+ghostscript",
     },
     # Hai action dưới chạy pikepdf khi làm được và chỉ rơi về Ghostscript khi
@@ -746,6 +746,15 @@ class ActionEngine:
             temps.append(path)
             return path
 
+        def _cleanup_temps() -> None:
+            for path in temps:
+                if os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+
+
         current_input = input_path
 
         # ── (1) Embed font chưa nhúng TRƯỚC khi outline ──
@@ -757,8 +766,12 @@ class ActionEngine:
                 detect_unembedded_fonts, current_input
             )
         except Exception as e:
-            logger.debug("detect_unembedded_fonts (pre) failed: %s", e)
-            unembedded_before = []
+            warnings.append(f"Không kiểm tra được trạng thái nhúng font: {e}")
+            self._last_report = {"warnings": warnings}
+            # OUT-FONT (audit 2026-07-27 §4.3): không được fail-open ở bước
+            # quyết định có phải mượn font thay thế hay không.
+            _cleanup_temps()
+            return False
 
         if unembedded_before and not params.get("skip_embed"):
             tmp_embed = _mk_temp("_embed.pdf")
@@ -791,9 +804,14 @@ class ActionEngine:
                 more = f" (+{len(still) - 5})" if len(still) > 5 else ""
                 warnings.append(
                     f"Không nhúng được font: {shown}{more} (không có sẵn trong hệ "
-                    "thống). Outline các font này dùng font thay thế → có thể SAI mặt "
-                    "chữ hoặc RƠI ký tự có dấu. Cần bản có nhúng font gốc."
+                    "thống). Tác vụ đã dừng để tránh dùng font thay thế làm SAI mặt "
+                    "chữ hoặc RƠI ký tự có dấu; cần bản có nhúng font gốc."
                 )
+                self._last_report = {"warnings": warnings}
+                # Thiếu font gốc thì dừng; tạo path từ font thay thế vẫn là
+                # một file hợp lệ về kỹ thuật nhưng có thể sai mặt chữ khi in.
+                _cleanup_temps()
+                return False
         elif unembedded_before:
             # skip_embed: chỉ cảnh báo, không tự embed.
             shown = ", ".join(unembedded_before[:5])
@@ -802,6 +820,24 @@ class ActionEngine:
                 f"Font chưa nhúng: {shown}{more}. Khi outline, GS phải mượn font "
                 "thay thế → có thể SAI mặt chữ hoặc RƠI ký tự (đặc biệt chữ có dấu)."
             )
+
+            self._last_report = {"warnings": warnings}
+            _cleanup_temps()
+            return False
+        if unembedded_before and current_input != input_path:
+            # GS có thể nhúng một font thay thế rồi làm danh sách `still` rỗng;
+            # so kẽm ngay sau bước embed để không coi đó là thành công an toàn.
+            from app.core.outline_text import verify_outline
+
+            embed_ok, reason = await asyncio.to_thread(
+                verify_outline, input_path, current_input
+            )
+            if not embed_ok:
+                warnings.append(f"So kẽm sau khi nhúng font thất bại: {reason}")
+                self._last_report = {"warnings": warnings}
+                _cleanup_temps()
+                return False
+
 
         # ── (2) Flatten annotation / form field ──
         if not params.get("skip_flatten"):
@@ -817,6 +853,7 @@ class ActionEngine:
                 logger.warning("OUTLINE_FONTS flatten skipped: %s", e)
 
         # ── (3) GS outline ──
+        outline_source = current_input
         cmd = [
             self.gs_path,
             "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
@@ -825,43 +862,59 @@ class ActionEngine:
             "-dAutoRotatePages=/None",
             "-dNoOutputFonts",
             f"-sOutputFile={output_path}",
-            current_input,
+            outline_source,
         ]
+        accepted = False
         try:
             ok = await self._run_gs(cmd, "OUTLINE_FONTS")
-        finally:
-            for p in temps:
-                if os.path.exists(p):
-                    try:
-                        os.remove(p)
-                    except OSError:
-                        pass
+            if not ok:
+                return False
 
-        if not ok:
-            return False
+            # ── (4) Verify không còn text sống ──
+            try:
+                live = await asyncio.to_thread(count_live_text, output_path)
+            except Exception as e:
+                warnings.append(f"Không hậu kiểm được text sống: {e}")
+                self._last_report = {"warnings": warnings}
+                return False
 
-        # ── (4) Verify text còn sót ──
-        try:
-            live = await asyncio.to_thread(count_live_text, output_path)
             if live.get("content_chars", 0) > 0:
                 warnings.append(
-                    f"Còn {live['content_chars']} ký tự text SỐNG sau outline "
-                    "(có thể Type3 font hoặc text GS không outline được). "
-                    "Kiểm tra thủ công trước khi in."
+                    f"Còn {live['content_chars']} ký tự text sống sau outline. "
+                    "Tác vụ đã dừng để tránh giao bản in còn phụ thuộc font."
                 )
             if live.get("annot_text_pages"):
                 pages = ", ".join(str(p) for p in live["annot_text_pages"][:10])
                 warnings.append(
                     f"Còn annotation mang text ở trang: {pages}. "
-                    "Phần này không được outline."
+                    "Tác vụ đã dừng vì phần này chưa được outline."
                 )
-        except Exception as e:
-            logger.debug("count_live_text verify failed: %s", e)
+            if warnings:
+                self._last_report = {"warnings": warnings}
+                return False
 
-        if warnings:
-            self._last_report = {"warnings": warnings}
+            # OUT-FONT (audit 2026-07-27 §4.2): GS cũng phải qua cùng chốt
+            # so-kẽm mọi trang; text đã biến mất chưa đủ chứng minh hình in giữ nguyên.
+            from app.core.outline_text import verify_outline
 
-        return True
+            visual_ok, reason = await asyncio.to_thread(
+                verify_outline, outline_source, output_path
+            )
+            if not visual_ok:
+                warnings.append(f"So kẽm sau outline thất bại: {reason}")
+                self._last_report = {"warnings": warnings}
+                return False
+            accepted = True
+            return True
+        finally:
+            _cleanup_temps()
+            # Output đã bị hậu kiểm từ chối không được nằm lại trong thư mục
+            # tải kết quả như một file tưởng là dùng được.
+            if not accepted and os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except OSError:
+                    pass
 
     async def _action_downscale_images(
         self, input_path: str, output_path: str, params: dict

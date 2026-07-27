@@ -185,7 +185,12 @@ def test_render_fails_loudly_when_memory_budget_is_exceeded():
         pdfcompare_native.ppe_separations(
             str(BLANK), page=1, dpi=100.0, memory_budget_mb=1
         )
-    assert pdfcompare_native.ppe_capabilities()["memory_budget_default_mb"] == 512
+    caps = pdfcompare_native.ppe_capabilities()
+    assert caps["memory_budget_default_mb"] == 512
+    # PERF (audit 2026-07-27 §A.5): con số trên là mặc định của binding, không phải
+    # chính sách sản phẩm. Khoá này tồn tại để không ai đọc 512 thành "PrynX chạy
+    # với 512 MiB" khi backend đang cấp ngân sách theo RAM máy và số slot.
+    assert "host-ram-aware" in caps["memory_budget_policy"]
 
 
 

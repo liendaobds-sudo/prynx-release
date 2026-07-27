@@ -155,31 +155,36 @@ def detect_unembedded_fonts(pdf_path: str) -> list[str]:
     """
     import pikepdf
 
+    from app.core.preflight_rules.resource_walker import iter_fonts
+
+    base14 = {
+        "Courier", "Courier-Bold", "Courier-Oblique", "Courier-BoldOblique",
+        "Helvetica", "Helvetica-Bold", "Helvetica-Oblique",
+        "Helvetica-BoldOblique", "Times-Roman", "Times-Bold", "Times-Italic",
+        "Times-BoldItalic", "Symbol", "ZapfDingbats",
+    }
     unembedded: set[str] = set()
     try:
         pdf = pikepdf.Pdf.open(pdf_path)
     except Exception as e:
         logger.debug("detect_unembedded_fonts open failed: %s", e)
-        return []
+        raise RuntimeError(f"không mở được PDF để kiểm tra font: {e}") from e
 
     try:
+        # OUT-FONT (audit 2026-07-27 §4.3): font thường nằm trong Form XObject
+        # hoặc appearance stream của annotation, không chỉ /Resources trang.
         for page in pdf.pages:
-            try:
-                fonts = page.get("/Resources", {}).get("/Font", {})
-            except Exception:
-                continue
-            if not fonts:
-                continue
-            for font_name, font_ref in fonts.items():
-                try:
-                    font_obj = font_ref if isinstance(font_ref, pikepdf.Dictionary) else pdf.get_object(font_ref)
-                except Exception:
-                    continue
+            for font_name, font_obj in iter_fonts(page, pdf):
                 base_font = str(font_obj.get("/BaseFont", font_name))
+                subtype = str(font_obj.get("/Subtype", ""))
+
+                # Type3 tự chứa glyph trong CharProcs; không mượn font hệ thống.
+                if subtype == "/Type3":
+                    continue
 
                 # Type0 (composite): font THẬT nằm trong /DescendantFonts.
                 descendants = font_obj.get("/DescendantFonts")
-                targets = []
+                targets: list = []
                 if descendants is not None:
                     try:
                         for d in descendants:
@@ -205,8 +210,12 @@ def detect_unembedded_fonts(pdf_path: str) -> list[str]:
                         break
 
                 if not saw_descriptor:
-                    # Không FontDescriptor: base-14 Type1 chuẩn thì bỏ qua.
-                    if str(font_obj.get("/Subtype", "")) == "/Type1":
+                    # Chỉ đúng 14 font chuẩn mới được miễn nhúng. Type1 tuỳ ý
+                    # không FontDescriptor vẫn có thể bị RIP thay thế.
+                    normalized = base_font.lstrip("/")
+                    if "+" in normalized:
+                        normalized = normalized.split("+", 1)[1]
+                    if subtype == "/Type1" and normalized in base14:
                         continue
                     unembedded.add(base_font)
                 elif not embedded:

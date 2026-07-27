@@ -27,6 +27,7 @@ import pikepdf
 from app.core.preflight_engine import PreflightEngine, PreflightReport, PreflightIssue
 from app.core.separations import SeparationEngine
 from app.core.action_engine import ActionEngine, AVAILABLE_ACTIONS
+from app.core.print_engine import softproof as ppe_softproof
 from app.utils.file_handler import save_upload_file
 from app.utils.subprocess_utils import run_hidden
 from app.utils.errors import raise_http
@@ -1509,142 +1510,91 @@ class OverprintPreviewRequest(BaseModel):
     page: int = 1
     dpi: int = 150
 
+
+def _render_ppe_overprint_pair(pdf_path: str, page: int, dpi: int) -> tuple[dict, dict]:
+    """Dựng cùng một trang ở chế độ knockout và overprint bằng PPE.
+
+    Hai ảnh phải đi qua cùng engine/profile; trộn PDFium với PPE sẽ tạo diff màu
+    giả trên cả trang. Kết quả thiếu object bị từ chối thay vì báo false-negative.
+    """
+    knockout = ppe_softproof(
+        pdf_path, page, dpi=dpi, simulate_overprint=False,
+    )
+    simulated = ppe_softproof(
+        pdf_path, page, dpi=dpi, simulate_overprint=True,
+    )
+    for label, result in (("knockout", knockout), ("overprint", simulated)):
+        if result.get("ink_unsound"):
+            raise RuntimeError(f"PPE chưa dựng đủ nội dung ở ảnh {label}")
+        width = int(result.get("width") or 0)
+        height = int(result.get("height") or 0)
+        rgb = bytes(result.get("rgb") or b"")
+        if width <= 0 or height <= 0 or len(rgb) != width * height * 3:
+            raise RuntimeError(f"PPE trả ảnh {label} không hợp lệ")
+    if knockout["width"] != simulated["width"] or knockout["height"] != simulated["height"]:
+        raise RuntimeError("Hai trạng thái PPE không cùng kích thước")
+    return knockout, simulated
+
+
 @router.post("/preflight/overprint-preview")
 async def render_overprint_preview(req: OverprintPreviewRequest):
     """
     Render a page with Overprint Simulation ON, and produce a diff overlay
     highlighting areas that change when overprint is applied.
     """
-    import pikepdf
-    import base64
     from io import BytesIO
 
     pdf_path = _get_file_path(req.file_id)
 
     try:
-        doc = pikepdf.Pdf.open(pdf_path)
-        if req.page < 1 or req.page > len(doc.pages):
-            raise HTTPException(status_code=400, detail=f"Trang {req.page} không tồn tại")
-        doc.close()
-        # Try Ghostscript-based overprint simulation if available
-        import subprocess
-        import tempfile
+        with pikepdf.Pdf.open(pdf_path) as doc:
+            if req.page < 1 or req.page > len(doc.pages):
+                raise HTTPException(status_code=400, detail=f"Trang {req.page} không tồn tại")
 
-        gs_exe = settings.GHOSTSCRIPT_PATH
-        overprint_rendered = False
-
-        if gs_exe:
-            tmp_normal_name = None
-            tmp_overprint_name = None
-            try:
-                # Tạo file tạm và đóng ngay để giải phóng lock trên Windows
-                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tn:
-                    tmp_normal_name = tn.name
-                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as to:
-                    tmp_overprint_name = to.name
-
-                # Normal rendering (knockout)
-                cmd_normal = [
-                    gs_exe, '-q', '-dBATCH', '-dNOPAUSE', '-dSAFER',
-                    '-sDEVICE=png16m',
-                    f'-r{req.dpi}',
-                    f'-dFirstPage={req.page}', f'-dLastPage={req.page}',
-                    '-dSimulateOverprint=false',
-                    f'-sOutputFile={tmp_normal_name}',
-                    str(pdf_path)
-                ]
-                import asyncio
-                await asyncio.to_thread(run_hidden, cmd_normal, capture_output=True, timeout=30)
-
-                # Overprint simulation rendering
-                cmd_overprint = [
-                    gs_exe, '-q', '-dBATCH', '-dNOPAUSE', '-dSAFER',
-                    '-sDEVICE=png16m',
-                    f'-r{req.dpi}',
-                    f'-dFirstPage={req.page}', f'-dLastPage={req.page}',
-                    '-dSimulateOverprint=true',
-                    f'-sOutputFile={tmp_overprint_name}',
-                    str(pdf_path)
-                ]
-                await asyncio.to_thread(run_hidden, cmd_overprint, capture_output=True, timeout=30)
-
-                from PIL import Image
-                import numpy as np
-
-                img_normal = np.array(Image.open(tmp_normal_name).convert('RGB'))
-                img_overprint = np.array(Image.open(tmp_overprint_name).convert('RGB'))
-
-                # Resize to match if needed
-                if img_normal.shape != img_overprint.shape:
-                    h = min(img_normal.shape[0], img_overprint.shape[0])
-                    w = min(img_normal.shape[1], img_overprint.shape[1])
-                    img_normal = img_normal[:h, :w]
-                    img_overprint = img_overprint[:h, :w]
-
-                # Calculate difference
-                diff = np.abs(img_normal.astype(int) - img_overprint.astype(int))
-                diff_magnitude = np.max(diff, axis=2)  # Max channel difference
-
-                # Create overlay: red where different, transparent where same
-                h, w = diff_magnitude.shape
-                overlay = np.zeros((h, w, 4), dtype=np.uint8)
-                threshold = 10  # Ignore tiny rounding differences
-                mask = diff_magnitude > threshold
-                overlay[mask, 0] = 255  # Red channel
-                overlay[mask, 1] = 50   # Slight orange tint
-                overlay[mask, 2] = 0
-                overlay[mask, 3] = 180  # Semi-transparent alpha
-                diff_count = int(np.sum(mask))
-
-                # Encode diff overlay as base64 PNG
-                overlay_img = Image.fromarray(overlay)
-                buf_diff = BytesIO()
-                overlay_img.save(buf_diff, format='PNG')
-                overlay_b64 = base64.b64encode(buf_diff.getvalue()).decode()
-
-                # Encode overprint render as base64 JPEG
-                overprint_img = Image.fromarray(img_overprint)
-                buf_op = BytesIO()
-                overprint_img.save(buf_op, format='JPEG', quality=85)
-                overprint_b64 = base64.b64encode(buf_op.getvalue()).decode()
-
-                overprint_rendered = True
-
-                # doc đã đóng ngay sau validate (dòng ~1355) — KHÔNG close lại
-                # (double-close ném lỗi, rơi vào except → mất kết quả đã dựng xong).
-                return {
-                    "success": True,
-                    "has_differences": diff_count > 0,
-                    "diff_pixel_count": diff_count,
-                    "diff_overlay": f"data:image/png;base64,{overlay_b64}",
-                    "overprint_image": f"data:image/jpeg;base64,{overprint_b64}",
-                    "width": w,
-                    "height": h,
-                }
-
-            except Exception as e:
-                logger.warning(f"Ghostscript overprint simulation failed: {e}")
-            finally:
-                import os
-                if tmp_normal_name and os.path.exists(tmp_normal_name):
-                    try:
-                        os.unlink(tmp_normal_name)
-                    except OSError as _e:
-                        logger.debug("Không xoá được temp %s: %s", tmp_normal_name, _e)
-                if tmp_overprint_name and os.path.exists(tmp_overprint_name):
-                    try:
-                        os.unlink(tmp_overprint_name)
-                    except OSError as _e:
-                        logger.debug("Không xoá được temp %s: %s", tmp_overprint_name, _e)
-
-        if not overprint_rendered:
-            # doc đã đóng sau validate — không close lại (tránh double-close).
+        try:
+            knockout, simulated = await asyncio.to_thread(
+                _render_ppe_overprint_pair, pdf_path, req.page, req.dpi,
+            )
+        except Exception as exc:
+            # GS-SUNSET (audit 2026-07-27 §4.1): fail-loud thay vì trả hai ảnh
+            # giống nhau rồi kết luận sai rằng file không có vùng overprint.
+            logger.warning("PPE Overprint Preview không đủ tin cậy: %s", exc)
             return {
                 "success": False,
-                "error": "Ghostscript không khả dụng để mô phỏng Overprint. Kiểm tra cấu hình GS_PATH.",
+                "error": f"PPE chưa dựng được Overprint Preview tin cậy: {exc}",
                 "has_differences": False,
+                "engine": "ppe",
             }
 
+        from PIL import Image
+        import numpy as np
+
+        w = int(knockout["width"])
+        h = int(knockout["height"])
+        img_normal = np.frombuffer(bytes(knockout["rgb"]), dtype=np.uint8).reshape(h, w, 3)
+        img_overprint = np.frombuffer(bytes(simulated["rgb"]), dtype=np.uint8).reshape(h, w, 3)
+        diff = np.abs(img_normal.astype(np.int16) - img_overprint.astype(np.int16))
+        diff_magnitude = np.max(diff, axis=2)
+        mask = diff_magnitude > 10
+        diff_count = int(np.sum(mask))
+
+        overlay = np.zeros((h, w, 4), dtype=np.uint8)
+        overlay[mask] = [255, 50, 0, 180]
+        buf_diff = BytesIO()
+        Image.fromarray(overlay).save(buf_diff, format="PNG")
+        buf_op = BytesIO()
+        Image.fromarray(img_overprint).save(buf_op, format="JPEG", quality=85)
+
+        return {
+            "success": True,
+            "has_differences": diff_count > 0,
+            "diff_pixel_count": diff_count,
+            "diff_overlay": f"data:image/png;base64,{base64.b64encode(buf_diff.getvalue()).decode()}",
+            "overprint_image": f"data:image/jpeg;base64,{base64.b64encode(buf_op.getvalue()).decode()}",
+            "width": w,
+            "height": h,
+            "engine": "ppe",
+        }
     except HTTPException:
         raise
     except Exception as e:

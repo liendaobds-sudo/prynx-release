@@ -8,44 +8,59 @@ from pydantic_settings import BaseSettings
 
 
 def _find_ghostscript() -> str:
-    """Auto-discover Ghostscript executable.
-    
-    Priority:
-    1. GHOSTSCRIPT_PATH env var (explicit override)
-    2. shutil.which() — finds gswin64c on system PATH
-    3. Common install locations (sorted newest-first)
-    4. Hardcoded fallback
+    """Dò Ghostscript. Chuỗi rỗng nghĩa là **không có** — và đó là câu trả lời hợp lệ.
+
+    Thứ tự:
+    1. `GHOSTSCRIPT_PATH` — quyền ghi đè của người vận hành, luôn thắng.
+    2. Bản build no-GS: **dừng dò**. Xem `app.core.gs_availability`.
+    3. Ghostscript đóng kèm payload.
+    4. PATH hệ thống, rồi các thư mục cài phổ biến.
+
+    GS-SUNSET (audit 2026-07-27 §A.4): trước đây hàm này kết thúc bằng một đường dẫn
+    **gõ cứng** khi không tìm thấy gì, nên `GHOSTSCRIPT_PATH` không bao giờ rỗng. Mọi
+    chỗ kiểm `if gs_path:` vì thế luôn đúng và lỗi chỉ lộ ra ở tận `FileNotFoundError`
+    của subprocess — người dùng nhận `Ghostscript failed: ...` thay vì lời giải thích.
     """
-    # 1. Explicit env var
+    # 1. Người vận hành chỉ định tường minh.
     env_gs = os.environ.get("GHOSTSCRIPT_PATH", "")
     if env_gs and os.path.isfile(env_gs):
         return env_gs
-    
-    # 2. Bundled sidecar path (Tauri resource). Tauri bundles under "binaries/",
-    #    dev/standalone có thể nằm cạnh exe → thử cả hai.
-    import sys
-    _exe_dir = Path(sys.executable).parent
-    for _cand in (
-        _exe_dir / "binaries" / "gs" / "bin" / "gswin64c.exe",
-        _exe_dir / "gs" / "bin" / "gswin64c.exe",
-    ):
-        if _cand.is_file():
-            return str(_cand)
 
-    # 3. System PATH
+    from app.core.gs_availability import bundled_ghostscript, is_no_gs_build
+
+    # 2. Artifact tự khai là bản không có Ghostscript ⇒ không đi tìm GS của máy khách.
+    #    Một bản phát hành phải chạy MỘT đường engine xác định ở mọi máy.
+    if is_no_gs_build():
+        return ""
+
+    # 3. Ghostscript đóng kèm (Tauri resource).
+    bundled = bundled_ghostscript()
+    if bundled:
+        return bundled
+
+    # 4. PATH hệ thống, rồi thư mục cài phổ biến (bản mới nhất trước).
     found = shutil.which("gswin64c") or shutil.which("gswin32c") or shutil.which("gs")
     if found:
         return found
-    
-    # 3. Scan common install dirs (newest version first)
     gs_base = Path(r"C:\Program Files\gs")
     if gs_base.is_dir():
         candidates = sorted(gs_base.glob("gs*/bin/gswin64c.exe"), reverse=True)
         if candidates:
             return str(candidates[0])
-    
-    # 4. Hardcoded fallback (original default)
-    return r"C:\Program Files\gs\gs10.04.0\bin\gswin64c.exe"
+
+    return ""
+
+
+def _default_allow_gs_fallback() -> bool:
+    """Bản no-GS mặc định **không** rơi về Ghostscript.
+
+    Cờ này là chính sách sản phẩm, không phải tinh chỉnh hiệu năng: cho phép fallback
+    trên bản không đóng gói GS nghĩa là hành vi phụ thuộc việc máy khách có cài GS hay
+    không. `.env` / biến môi trường vẫn ghi đè được khi cần đối chiếu có chủ đích.
+    """
+    from app.core.gs_availability import is_no_gs_build
+
+    return not is_no_gs_build()
 
 
 class Settings(BaseSettings):
@@ -77,9 +92,11 @@ class Settings(BaseSettings):
     # Preflight & Auto-Fix Engine
     GHOSTSCRIPT_PATH: str = _find_ghostscript()
     PRYNX_PRINT_ENGINE: str = "auto"  # auto | ppe | gs
-    PRYNX_ALLOW_GS_FALLBACK: bool = True
+    PRYNX_ALLOW_GS_FALLBACK: bool = _default_allow_gs_fallback()
     PRYNX_FORCE_GS: bool = False
-    PRYNX_PPE_MEMORY_BUDGET_MB: int = 512
+    # None = tự chọn theo RAM máy; số dương = quyền ghi đè của người vận hành.
+    # PERF (audit 2026-07-27 §4.4): không hard-cap máy >=16 GB ở 512 MiB.
+    PRYNX_PPE_MEMORY_BUDGET_MB: int | None = None
     ICC_PROFILE_DIR: str = str((Path(__file__).resolve().parent / "assets" / "icc").resolve())
     DEFAULT_CMYK_PROFILE: str = "FOGRA39.icc"
 

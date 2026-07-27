@@ -31,15 +31,24 @@ def test_recognizes_ghostscript_by_executable_stem():
     assert not gs_usage.is_ghostscript_command([])
 
 
-def test_run_hidden_counts_ghostscript_but_not_other_tools(monkeypatch):
-    """Đếm ở `run_hidden` — chỗ MỌI lệnh GS của sản phẩm đi qua."""
+def test_run_hidden_counts_ghostscript_but_not_other_tools(monkeypatch, tmp_path):
+    """Đếm ở `run_hidden` — chỗ MỌI lệnh GS của sản phẩm đi qua.
+
+    Ghostscript phải là file có thật: từ audit 2026-07-27 §A.4, `run_hidden` dừng
+    sớm với thông điệp sản phẩm khi lệnh GS không chạy được, nên một đường dẫn không
+    tồn tại sẽ không bao giờ tới được bộ đếm — và đó là hành vi đúng.
+    """
+    fake_gs = tmp_path / "gswin64c.exe"
+    fake_gs.write_bytes(b"")
+    fake_qpdf = tmp_path / "qpdf.exe"
+    fake_qpdf.write_bytes(b"")
     calls = []
     monkeypatch.setattr(
         subprocess, "run", lambda cmd, **kw: calls.append(cmd) or "ok"
     )
 
-    subprocess_utils.run_hidden(["gswin64c.exe", "-dBATCH"])
-    subprocess_utils.run_hidden(["qpdf", "--version"])
+    subprocess_utils.run_hidden([str(fake_gs), "-dBATCH"])
+    subprocess_utils.run_hidden([str(fake_qpdf), "--version"])
 
     stats = gs_usage.summary()
     assert stats["total_gs_calls"] == 1, stats
@@ -73,15 +82,17 @@ def test_reason_points_at_the_real_module_that_asked_for_ghostscript(monkeypatch
     assert "pdf_tools_engine" in label, f"nhãn không chỉ đúng module: {label}"
 
 
-def test_counter_failure_never_breaks_the_job(monkeypatch):
+def test_counter_failure_never_breaks_the_job(monkeypatch, tmp_path):
     """Một lệnh in KHÔNG được thất bại vì bộ đếm — đó là điều lố bịch nhất có thể."""
+    fake_gs = tmp_path / "gswin64c.exe"
+    fake_gs.write_bytes(b"")
     monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: "ok")
 
     def explode(*_a, **_k):
         raise RuntimeError("đĩa đầy")
 
     monkeypatch.setattr(gs_usage, "record_gs_call", explode)
-    assert subprocess_utils.run_hidden(["gswin64c.exe"]) == "ok"
+    assert subprocess_utils.run_hidden([str(fake_gs)]) == "ok"
 
 
 def test_record_swallows_disk_errors(monkeypatch):

@@ -93,6 +93,8 @@ def test_separations_ink_accurate_without_gs(no_ghostscript, sample_pdf):
         SeparationEngine().extract_separations(sample_pdf, 1, 100, ink_accurate=True)
     )
     assert result.get("plates"), "không tách được kẽm nào"
+    assert result.get("engine") == "ppe", result.get("engine")
+    assert str(result.get("accuracy", "")).startswith("rip_separations")
     assert _gs_calls() == 0
 
 
@@ -103,6 +105,25 @@ def test_softproof_without_gs(no_ghostscript, sample_pdf):
     gs_usage.reset_for_tests()
     result = asyncio.run(SoftProofEngine().render_softproof(sample_pdf, 1, "fogra39"))
     assert result.get("success") and result.get("softproof_b64"), result.get("warning")
+    assert result.get("engine") == "ppe+lcms", result.get("engine")
+    assert result.get("accuracy") == "rip_softproof", result.get("accuracy")
+    assert _gs_calls() == 0
+
+
+def test_overprint_preview_without_gs(no_ghostscript, sample_pdf, monkeypatch):
+    """Endpoint live phải dùng PPE thật, không còn nhánh GS-only bị bỏ sót."""
+    from app.api.routes import preflight as preflight_routes
+    from app.core import gs_usage
+
+    monkeypatch.setattr(preflight_routes, "_get_file_path", lambda _file_id: sample_pdf)
+    gs_usage.reset_for_tests()
+    result = asyncio.run(
+        preflight_routes.render_overprint_preview(
+            preflight_routes.OverprintPreviewRequest(file_id="fixture", page=1, dpi=36)
+        )
+    )
+    assert result.get("success"), result.get("error")
+    assert result.get("engine") == "ppe"
     assert _gs_calls() == 0
 
 

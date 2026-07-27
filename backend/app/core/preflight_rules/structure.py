@@ -30,7 +30,7 @@ class StructureRulesMixin:
                             severity="warning",
                             page=page_idx + 1,
                             object_ref=f"Live Text ({len(chars)} chars)",
-                            description="Phát hiện trang có chứa Text sống (Chưa Outline). Dù đã nhúng font nhưng nên Khóa Font để an toàn 100%.",
+                            description="Phát hiện trang có chứa text sống (chưa outline). Khóa Font sẽ hậu kiểm từng trang và dừng nếu không thể bảo toàn hình in.",
                             auto_fixable=True,
                             bbox=page_bboxes[0] if page_bboxes else None,
                             bboxes=page_bboxes[:20]

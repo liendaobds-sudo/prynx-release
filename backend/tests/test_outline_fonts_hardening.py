@@ -112,6 +112,38 @@ def test_detect_unembedded_ignores_base14(tmp_path):
     assert not any("Helvetica" in f for f in fonts), f"base-14 không được flag, got {fonts}"
 
 
+def test_detect_unembedded_fonts_inside_form_xobject(tmp_path):
+    """OUT-FONT (audit 2026-07-27 §4.3): phải quét font trong Form lồng."""
+    page_level = str(tmp_path / "page_font.pdf")
+    nested = str(tmp_path / "form_font.pdf")
+    _make_unembedded_font_pdf(page_level)
+
+    with pikepdf.open(page_level) as pdf:
+        page = pdf.pages[0]
+        fonts = page.Resources.Font
+        content = bytes(page.Contents.read_bytes())
+        form = pdf.make_stream(content)
+        form["/Type"] = pikepdf.Name("/XObject")
+        form["/Subtype"] = pikepdf.Name("/Form")
+        form["/BBox"] = pikepdf.Array([0, 0, 612, 792])
+        form["/Resources"] = pikepdf.Dictionary(Font=fonts)
+        page["/Resources"] = pikepdf.Dictionary(
+            XObject=pikepdf.Dictionary(Fm=pdf.make_indirect(form))
+        )
+        page["/Contents"] = pdf.make_stream(b"q /Fm Do Q")
+        pdf.save(nested)
+
+    fonts = detect_unembedded_fonts(nested)
+    assert any("FakeFontQA" in name for name in fonts), fonts
+
+
+
+def test_detect_unembedded_fonts_invalid_pdf_fails_closed(tmp_path):
+    """Không đọc được file không được hiểu nhầm thành 'không thiếu font'."""
+    missing = str(tmp_path / "khong-ton-tai.pdf")
+    with pytest.raises(RuntimeError, match="không mở được PDF"):
+        detect_unembedded_fonts(missing)
+
 def test_count_live_text_empty_pdf(tmp_path):
     src = str(tmp_path / "blank.pdf")
     pdf = pikepdf.Pdf.new()
@@ -146,8 +178,7 @@ async def test_outline_pipeline_flattens_and_verifies(tmp_path):
 @pytest.mark.asyncio
 async def test_outline_pipeline_embeds_before_outline(tmp_path):
     """PDF có font chưa nhúng → pipeline chạy bước embed trước outline. Font giả
-    (không có sẵn trong hệ thống) không nhúng được → phải sinh cảnh báo, KHÔNG
-    im lặng bỏ qua (đây là rủi ro rơi ký tự lớn nhất)."""
+    không có trong hệ thống phải làm tác vụ dừng, không outline bằng font thay thế."""
     from app.core.action_engine import ActionEngine
 
     src = str(tmp_path / "unembedded.pdf")
@@ -156,18 +187,16 @@ async def test_outline_pipeline_embeds_before_outline(tmp_path):
     engine = ActionEngine()
     result = await engine.execute(src, "OUTLINE_FONTS")
 
-    if not result.success:
-        pytest.skip(f"Ghostscript không khả dụng: {result.error}")
-
-    # FakeFontQA không tồn tại trong hệ thống → embed thất bại → phải cảnh báo
-    # (cảnh báo được surface vào message của log entry).
+    # OUT-FONT (audit 2026-07-27 §4.3): không giao output dùng font thay thế.
+    assert result.success is False
+    assert result.output_path is None
     joined = " ".join(entry.message for entry in result.log)
     assert "font" in joined.lower(), f"phải cảnh báo về font, got: {joined}"
 
 
 @pytest.mark.asyncio
-async def test_outline_pipeline_skip_embed_only_warns(tmp_path):
-    """skip_embed=True → không chạy embed, chỉ cảnh báo font chưa nhúng."""
+async def test_outline_pipeline_skip_embed_fails_closed(tmp_path):
+    """skip_embed không được biến font chưa nhúng thành một success không an toàn."""
     from app.core.action_engine import ActionEngine
 
     src = str(tmp_path / "unembedded.pdf")
@@ -176,9 +205,8 @@ async def test_outline_pipeline_skip_embed_only_warns(tmp_path):
     engine = ActionEngine()
     result = await engine.execute(src, "OUTLINE_FONTS", {"skip_embed": True})
 
-    if not result.success:
-        pytest.skip(f"Ghostscript không khả dụng: {result.error}")
-
+    assert result.success is False
+    assert result.output_path is None
     joined = " ".join(entry.message for entry in result.log)
     assert "chưa nhúng" in joined.lower() or "font" in joined.lower(), (
         f"skip_embed phải cảnh báo font chưa nhúng, got: {joined}"
