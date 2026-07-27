@@ -8,6 +8,7 @@ $ErrorActionPreference = "Stop"
 $ROOT = Split-Path -Parent $PSScriptRoot
 $PYTHON = "$ROOT\backend\venv\Scripts\python.exe"
 $NPM_CACHE = Join-Path ([System.IO.Path]::GetTempPath()) "prynx-npm-cache"
+$FRONTEND_QA_DIR = Join-Path ([System.IO.Path]::GetTempPath()) ("prynx-frontend-qa-" + [guid]::NewGuid().ToString("N"))
 
 function Invoke-Checked {
     param(
@@ -37,12 +38,48 @@ try {
     Pop-Location
 }
 
-Push-Location "$ROOT\desktop"
+# RELEASE QA (audit 2026-07-27): Windows dev servers keep native npm DLLs locked,
+# so `npm ci` must not destructively replace the live desktop/node_modules tree.
+# Copy the current frontend source to an isolated temp directory, install exactly
+# from package-lock.json there, and run the suite against that clean install.
+$tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\')
+$frontendQaFull = [System.IO.Path]::GetFullPath($FRONTEND_QA_DIR)
+if (-not $frontendQaFull.StartsWith($tempRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Frontend QA staging path escaped the temp root: $frontendQaFull"
+}
+New-Item -ItemType Directory -Path $frontendQaFull | Out-Null
+$frontendQaDesktop = Join-Path $frontendQaFull "desktop"
+$frontendQaNativeFixtures = Join-Path $frontendQaFull "native\tests\fixtures"
 try {
-    Invoke-Checked "Locked frontend dependencies" { npm.cmd ci --no-audit --no-fund --cache $NPM_CACHE }
-    Invoke-Checked "Frontend test suite" { npm.cmd test }
+    Write-Host "  [QA] Staging frontend source outside the live node_modules tree..." -ForegroundColor DarkGray
+    & robocopy "$ROOT\desktop" $frontendQaDesktop /E /NFL /NDL /NJH /NJS /NP `
+        /XD node_modules dist target binaries `
+        /XF *.log
+    $copyExit = $LASTEXITCODE
+    if ($copyExit -gt 7) {
+        throw "Frontend QA source staging failed with robocopy exit code $copyExit"
+    }
+
+    # nativeFixtureParity.test.ts resolves the native fixture through the
+    # workspace sibling layout (`desktop/../native`), so preserve that contract.
+    New-Item -ItemType Directory -Path $frontendQaNativeFixtures | Out-Null
+    Copy-Item -LiteralPath "$ROOT\native\tests\fixtures\dieline_default_request.json" `
+        -Destination $frontendQaNativeFixtures
+
+    Push-Location $frontendQaDesktop
+    try {
+        Invoke-Checked "Locked frontend dependencies (isolated)" {
+            npm.cmd ci --no-audit --no-fund --cache $NPM_CACHE
+        }
+        Invoke-Checked "Frontend test suite (isolated)" { npm.cmd test }
+    } finally {
+        Pop-Location
+    }
 } finally {
-    Pop-Location
+    # Path was canonicalized and proven to be a direct descendant of Temp above.
+    if (Test-Path -LiteralPath $frontendQaFull) {
+        Remove-Item -LiteralPath $frontendQaFull -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 Push-Location "$ROOT\imposition_core"

@@ -28,8 +28,8 @@ param(
     [switch]$NoOpenExplorer,
     # Khong dong goi Ghostscript vao installer.
     # Ghostscript la AGPL-3.0: dong goi vao san pham closed-source la rui ro ban
-    # quyen. Co nay cho phep dung mot ban KHONG chua AGPL de kiem thu tien do cua
-    # PrynX Print Engine (docs/PRYNX_GS_REPLACEMENT_ENGINE_PLAN.md).
+    # quyen. Co nay tao artifact PPE/pikepdf/fontTools KHONG chua AGPL; cac gate
+    # no-GS trong release QA phai xanh truoc khi dong goi.
     # Cung co the dat bang bien moi truong: PRYNX_BUNDLE_GS=0
     [switch]$NoGhostscript,
     [ValidateRange(1, 8)]
@@ -213,9 +213,47 @@ if (-not $SkipNuitka) {
     # well-tested geometry implementation inside the native extension.
     Push-Location "$ROOT\desktop"
     if (-not (Test-Path "$ROOT\desktop\node_modules\.bin\vite.cmd")) {
-        npm.cmd ci --no-audit --no-fund
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "ERROR: Failed to install locked frontend dependencies" -ForegroundColor Red
+        # RELEASE BUILD (audit 2026-07-27): npm ci cannot replace a live
+        # node_modules tree while Vite holds native DLLs on Windows. Install the
+        # lockfile in Temp, then copy only MISSING files back; existing/locked
+        # files are never overwritten.
+        $toolStageRoot = Join-Path ([System.IO.Path]::GetTempPath()) `
+            ("prynx-build-node-repair-" + [guid]::NewGuid().ToString("N"))
+        $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\')
+        $toolStageFull = [System.IO.Path]::GetFullPath($toolStageRoot)
+        if (-not $toolStageFull.StartsWith($tempRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            Pop-Location
+            throw "Frontend dependency staging path escaped Temp: $toolStageFull"
+        }
+        $toolStageDesktop = Join-Path $toolStageFull "desktop"
+        New-Item -ItemType Directory -Path $toolStageDesktop | Out-Null
+        try {
+            Copy-Item -LiteralPath "$ROOT\desktop\package.json" -Destination $toolStageDesktop
+            Copy-Item -LiteralPath "$ROOT\desktop\package-lock.json" -Destination $toolStageDesktop
+            Push-Location $toolStageDesktop
+            npm.cmd ci --no-audit --no-fund
+            $npmRepairExit = $LASTEXITCODE
+            Pop-Location
+            if ($npmRepairExit -ne 0) {
+                Pop-Location
+                throw "Failed to install locked frontend dependencies in isolated staging."
+            }
+
+            & robocopy (Join-Path $toolStageDesktop "node_modules") `
+                "$ROOT\desktop\node_modules" /E /XC /XN /XO /R:1 /W:1 `
+                /NFL /NDL /NJH /NJS /NP
+            $repairCopyExit = $LASTEXITCODE
+            if ($repairCopyExit -gt 7) {
+                Pop-Location
+                throw "Failed to restore missing frontend dependencies (robocopy=$repairCopyExit)."
+            }
+        } finally {
+            if (Test-Path -LiteralPath $toolStageFull) {
+                Remove-Item -LiteralPath $toolStageFull -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+        if (-not (Test-Path "$ROOT\desktop\node_modules\.bin\vite.cmd")) {
+            Write-Host "ERROR: Vite is still missing after isolated dependency repair." -ForegroundColor Red
             Pop-Location
             exit 1
         }
@@ -258,7 +296,12 @@ if (-not $SkipNuitka) {
         $keyUri = "$restBase/rest/v1/release_resource_keys?select=resource_key&product_id=eq.prynx&app_version=eq.$encodedVersion&resource=eq.dieline_engine&limit=2"
 
         try {
-            $existingRows = @(Invoke-RestMethod -Method Get -Uri $keyUri -Headers $keyHeaders -ErrorAction Stop)
+            # RELEASE BUILD (audit 2026-07-27): Windows PowerShell treats the
+            # empty JSON array returned by Invoke-RestMethod as one non-enumerated
+            # pipeline object when the call sits directly inside @(...). Assign
+            # first, then normalize, otherwise "no row" looks like one blank row.
+            $existingResponse = Invoke-RestMethod -Method Get -Uri $keyUri -Headers $keyHeaders -ErrorAction Stop
+            $existingRows = @($existingResponse)
         } catch {
             throw "Cannot query the existing dieline resource key: $($_.Exception.Message)"
         }
@@ -315,9 +358,24 @@ if (-not $SkipNuitka) {
             exit 1
         }
     }
-    Write-Host "  Building pdfcompare_native for the active Python..." -ForegroundColor DarkGray
+    Write-Host "  Building pdfcompare_native wheel for the active Python..." -ForegroundColor DarkGray
     $previousVirtualEnv = $env:VIRTUAL_ENV
     $env:VIRTUAL_ENV = "$ROOT\backend\venv"
+    $previousPythonPath = $env:PYTHONPATH
+    # RELEASE BUILD (audit 2026-07-27): never `maturin develop` into the live
+    # venv. A running backend may hold the extension DLL open. Build/install to
+    # an isolated staging path and put it first on PYTHONPATH for Nuitka.
+    $nativeStageRoot = Join-Path ([System.IO.Path]::GetTempPath()) `
+        ("prynx-native-stage-" + [guid]::NewGuid().ToString("N"))
+    $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\')
+    $nativeStageFull = [System.IO.Path]::GetFullPath($nativeStageRoot)
+    if (-not $nativeStageFull.StartsWith($tempRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Native staging path escaped Temp: $nativeStageFull"
+    }
+    $nativeWheelDir = Join-Path $nativeStageFull "wheels"
+    $nativeSiteDir = Join-Path $nativeStageFull "site"
+    New-Item -ItemType Directory -Path $nativeWheelDir | Out-Null
+    New-Item -ItemType Directory -Path $nativeSiteDir | Out-Null
     # PERF (audit 2026-07 muc 5.7): bat SSE4.2+ baseline cho vong per-pixel Rust.
     # x86-64-v2 an toan cho CPU ~2009+ (Nehalem tro len) - may van phong cu van chay.
     $previousRustFlags = $env:RUSTFLAGS
@@ -330,8 +388,26 @@ if (-not $SkipNuitka) {
     $env:CARGO_PROFILE_RELEASE_LTO = "thin"
     $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1"
     $env:CARGO_PROFILE_RELEASE_STRIP = "symbols"
-    & $VENV_PYTHON -m maturin develop --release --manifest-path "$ROOT\native\Cargo.toml"
+    & $VENV_PYTHON -m maturin build --release --interpreter $VENV_PYTHON `
+        --manifest-path "$ROOT\native\Cargo.toml" --out $nativeWheelDir
     $nativeExit = $LASTEXITCODE
+    if ($nativeExit -eq 0) {
+        $nativeWheel = Get-ChildItem -LiteralPath $nativeWheelDir -Filter *.whl -File |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if (-not $nativeWheel) {
+            $nativeExit = 1
+        } else {
+            & $VENV_PYTHON -m pip install --no-deps --target $nativeSiteDir $nativeWheel.FullName
+            $nativeExit = $LASTEXITCODE
+        }
+    }
+    if ($nativeExit -eq 0) {
+        $env:PYTHONPATH = if ($previousPythonPath) {
+            "$nativeSiteDir;$previousPythonPath"
+        } else { $nativeSiteDir }
+        & $VENV_PYTHON -c "import pdfcompare_native as n; assert n.ppe_capabilities().get('overprint_preview_toggle') is True"
+        $nativeExit = $LASTEXITCODE
+    }
     if ($null -eq $previousRustFlags) { Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue }
     else { $env:RUSTFLAGS = $previousRustFlags }
     if ($null -eq $previousLto) { Remove-Item Env:CARGO_PROFILE_RELEASE_LTO -ErrorAction SilentlyContinue } else { $env:CARGO_PROFILE_RELEASE_LTO = $previousLto }
@@ -344,7 +420,12 @@ if (-not $SkipNuitka) {
     $script:DIELINE_LOCKED = if ($env:PRYNX_DIELINE_KEY_B64) { "yes" } else { "no" }
     Remove-Item Env:PRYNX_DIELINE_KEY_B64 -ErrorAction SilentlyContinue
     if ($nativeExit -ne 0) {
-        Write-Host "ERROR: Failed to build/install pdfcompare_native" -ForegroundColor Red
+        if ($null -eq $previousPythonPath) { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue }
+        else { $env:PYTHONPATH = $previousPythonPath }
+        if (Test-Path -LiteralPath $nativeStageFull) {
+            Remove-Item -LiteralPath $nativeStageFull -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Write-Host "ERROR: Failed to build/stage pdfcompare_native" -ForegroundColor Red
         exit 1
     }
 
@@ -517,6 +598,11 @@ if (-not $SkipNuitka) {
     $nuitkaExit = $LASTEXITCODE
     if ($null -eq $previousClAppend) { Remove-Item Env:_CL_ -ErrorAction SilentlyContinue }
     else { $env:_CL_ = $previousClAppend }
+    if ($null -eq $previousPythonPath) { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue }
+    else { $env:PYTHONPATH = $previousPythonPath }
+    if (Test-Path -LiteralPath $nativeStageFull) {
+        Remove-Item -LiteralPath $nativeStageFull -Recurse -Force -ErrorAction SilentlyContinue
+    }
     Pop-Location
 
     if ($nuitkaExit -ne 0) {
@@ -599,19 +685,17 @@ if (-not $BUNDLE_GS) {
         "closed-source installer creates licensing obligations, so this build was",
         "produced with -NoGhostscript.",
         "",
-        "Prepress features that still depend on Ghostscript will report a degraded",
-        "engine instead of silently returning wrong colour data. See",
+        "Prepress routes use PrynX PPE, pikepdf and fontTools. Unsupported input",
+        "must fail loudly; the application does not silently fall back to a bundled",
+        "Ghostscript executable. Independent PDF/X conformance remains a release",
+        "validation gate. See",
         "docs/PRYNX_GS_REPLACEMENT_ENGINE_PLAN.md for the replacement engine (PPE)."
     ) | Set-Content -Path (Join-Path $GS_DEST "NO_GHOSTSCRIPT.txt") -Encoding UTF8
 
     Write-Host "  Ghostscript NOT bundled (-NoGhostscript)." -ForegroundColor Yellow
-    Write-Host "  Cac tinh nang sau se KHONG chay tren may khong co Ghostscript:" -ForegroundColor Yellow
-    Write-Host "    - Tach kem (separations) chinh xac + kem spot" -ForegroundColor DarkYellow
-    Write-Host "    - Kiem tong muc TAC / ink-limit" -ForegroundColor DarkYellow
-    Write-Host "    - Soft-proof ICC giong RIP" -ForegroundColor DarkYellow
-    Write-Host "    - Xuat PDF/X, chuyen mau CMYK, spot->CMYK" -ForegroundColor DarkYellow
-    Write-Host "    - Flatten transparency, outline/embed font, downsample anh, nen PDF" -ForegroundColor DarkYellow
-    Write-Host "  Chi dung ban nay de KIEM THU. Khong phat hanh cho khach." -ForegroundColor Yellow
+    Write-Host "  Prepress engine: PPE + pikepdf + fontTools (khong fallback GS bundle)." -ForegroundColor Green
+    Write-Host "  No-GS regression gate da chay trong release QA." -ForegroundColor Green
+    Write-Host "  Luu y: PDF/X van can doi chieu bang validator doc lap truoc khi public release." -ForegroundColor Yellow
 } elseif ($GS_SRC -and (Test-Path $GS_SRC)) {
     Write-Host "  Ghostscript detected: $GS_SRC" -ForegroundColor DarkGray
     Write-Host "  Copying Ghostscript..." -ForegroundColor DarkGray
@@ -628,8 +712,9 @@ if (-not $BUNDLE_GS) {
     Write-Host "    Xem THIRD_PARTY_NOTICES.md muc 1 va docs/PRYNX_GS_REPLACEMENT_ENGINE_PLAN.md." -ForegroundColor DarkYellow
 } else {
     Write-Host "ERROR: Ghostscript not found at $GS_SRC." -ForegroundColor Red
-    Write-Host "  Ghostscript is REQUIRED for CMYK separations / PDF-X export." -ForegroundColor Red
-    Write-Host "  Install Ghostscript 10.04.0, or build without it: -NoGhostscript" -ForegroundColor Red
+    Write-Host "  Build nay dang yeu cau bundle Ghostscript cho muc dich legacy/doi chieu." -ForegroundColor Red
+    Write-Host "  Dung -NoGhostscript de tao artifact PPE khong AGPL, hoac cai Ghostscript" -ForegroundColor Yellow
+    Write-Host "  neu ban chu dich tao build legacy/so sanh." -ForegroundColor Yellow
     Write-Host "  Build aborted." -ForegroundColor Red
     exit 1
 }
@@ -795,12 +880,16 @@ if (-not $SkipTauri) {
         }
 
         # ---- Release manifest (audit 2026-07-25) ----
-        # App KHONG duoc code-sign nen runtime khong the tu verify exe (xem
-        # lib.rs::log_self_exe_hash). Manifest nay la neo DOI CHIEU: khi nghi may khach
-        # chay binary bi patch, so hash trong %APPDATA%\PrynX\logs (dong
-        # "[INTEGRITY][SELF] ... sha256=") voi gia tri EXE_SHA256 ben duoi.
-        $exePath = "$ROOT\desktop\src-tauri\target\release\PrynX.exe"
-        $exeHash = if (Test-Path $exePath) { (Get-FileHash $exePath -Algorithm SHA256).Hash.ToLower() } else { "NOT_FOUND" }
+        # Tauri patch metadata theo bundle NSIS; binary CAI RA co the khac binary
+        # target\release sau khi bundle xong. Khong gan nham hash build cho runtime.
+        # EXE_SHA256 duoc dien boi scripts\verify_installed_artifact.ps1 (cai silent
+        # vao Temp roi do hash payload that); BUILD_EXE_SHA256 la dau vet cua output
+        # build de chan truong hop file target bi thieu/thay ngoai y muon.
+        $exePath = "$ROOT\desktop\src-tauri\target\release\pdf-inspector.exe"
+        if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
+            throw "Built application executable not found: $exePath"
+        }
+        $buildExeHash = (Get-FileHash -LiteralPath $exePath -Algorithm SHA256).Hash.ToLower()
         $installerHash = (Get-FileHash $finalInstallerPath -Algorithm SHA256).Hash.ToLower()
         $manifestPath = "$publishDir\release-manifest.txt"
         $manifestLines = @(
@@ -810,11 +899,33 @@ if (-not $SkipTauri) {
             "GIT_DIRTY      = $(if ((git -C $ROOT status --porcelain 2>$null)) { 'YES (artifact khong tai lap duoc tu cay da commit)' } else { 'no' })",
             "INSTALLER      = $($installer.Name)",
             "INSTALLER_SHA256 = $installerHash",
-            "EXE_SHA256     = $exeHash",
+            "EXE_SHA256     = NOT_VERIFIED_INSTALL_PAYLOAD",
+            "BUILD_EXE_SHA256 = $buildExeHash",
             "SIDECAR_SHA256 = $HASH",
             "FRONTEND_SHA256 = $($env:PRYNX_FRONTEND_HASH)",
             "CODE_SIGNED    = no (Authenticode chua bat -> runtime khong the tu verify exe)",
             "DIELINE_LOCKED = $(if ($script:DIELINE_LOCKED) { $script:DIELINE_LOCKED } else { 'no' })"
         )
         Set-Content -Path $manifestPath -Value $manifestLines -Encoding ASCII
-        Write-Host "  Manife
+        Write-Host "  Manifest:  $manifestPath" -ForegroundColor Cyan
+        Write-Host "  Build EXE SHA-256: $buildExeHash (installed payload requires smoke verification)" -ForegroundColor DarkGray
+        $verifyArgs = if (-not $BUNDLE_GS) { " -ExpectNoGhostscript" } else { "" }
+        Write-Host "  Buoc ke tiep de dien EXE_SHA256 (neo doi chieu runtime):" -ForegroundColor Yellow
+        Write-Host "    powershell -ExecutionPolicy Bypass -File scripts\verify_installed_artifact.ps1$verifyArgs" -ForegroundColor Yellow
+        if (-not $Release -and -not $NoOpenExplorer) {
+            Write-Host ""
+            Write-Host "  >> Da copy file cai dat ra ngoai thu muc de de lay hon..." -ForegroundColor Cyan
+            Start-Process explorer.exe -ArgumentList "/select,`"$finalInstallerPath`""
+        }
+    } else {
+        Write-Host "  WARNING: Khong tim thay installer trong bundle\nsis\." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "`n[4/5] Skipped Tauri build." -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "  Build complete (Nuitka only)." -ForegroundColor Green
+    Write-Host "  Sidecar: $SIDECAR_FINAL"
+    Write-Host "  SHA-256: $HASH"
+}
+
+Write-Host ""

@@ -153,15 +153,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install native test tools
-        run: >-
-          python -m pip install
-          maturin==1.13.3
-          pytest==9.0.3
-          pytest-asyncio==1.4.0
-          pydantic-settings==2.5.0
-          numpy
-          pikepdf==9.5.0
-          Pillow==12.3.0
+        run: python -m pip install -r backend/requirements.txt
 
       - name: Build and install PPE native wheel
         shell: pwsh
@@ -170,12 +162,25 @@ jobs:
           $wheel = (Get-ChildItem -LiteralPath wheels -Filter *.whl | Select-Object -First 1).FullName
           python -m pip install $wheel
 
-      - name: Run PPE binding and facade tests
+      - name: Run PPE binding, facade and no-Ghostscript gates
         shell: pwsh
         run: |
           $env:PYTHONPATH = "$pwd\backend"
           $env:PATH = "$pwd\native\pdfium_lib\bin;$env:PATH"
-          python -m pytest -q backend/tests/test_ppe_native.py backend/tests/test_ppe_facade.py
+          python -m pytest -q `
+            backend/tests/test_ppe_native.py `
+            backend/tests/test_ppe_facade.py `
+            backend/tests/test_ppe_memory_budget.py `
+            backend/tests/test_gs_availability.py `
+            backend/tests/test_gs_usage_telemetry.py `
+            backend/tests/test_print_engine_routing.py `
+            backend/tests/test_no_ghostscript_survival.py `
+            backend/tests/test_overprint_preview_ppe.py `
+            backend/tests/test_action_engine_native.py `
+            backend/tests/test_pdfx_output_intent.py `
+            backend/tests/test_outline_text_native.py `
+            backend/tests/test_outline_text_ppe_source.py `
+            backend/tests/test_outline_fonts_hardening.py
 
   security-guards:
     name: Security Regression Guards
