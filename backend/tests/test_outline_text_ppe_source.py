@@ -156,11 +156,16 @@ def test_outline_uses_ppe_geometry_and_passes_ink_verify(tmp_path):
         assert "/Font" not in (pdf.pages[0].get("/Resources") or {})
 
 
-def test_misaligned_source_is_rejected_instead_of_placing_wrong_glyph(tmp_path, monkeypatch):
+def test_misaligned_source_never_reaches_the_delivered_file(tmp_path, monkeypatch):
     """Chốt chống lệch chỉ số — kiểu hỏng duy nhất nguồn PPE có thể tạo ra.
 
-    Ép nguồn trả path của một glyph nằm cách vị trí bút rất xa; bộ ghi phải TỪ CHỐI
-    nó và lùi về đường fontTools, chứ không dán path sai chỗ vào bản in.
+    Bất biến cần giữ là **bản in giao ra không bao giờ sai mực**, không phải "phải
+    lùi về fontTools". Từ audit lần 2, hình học PPE là chuẩn (đo được: chốt so vị trí
+    bút của bộ ghi Python loại oan 91 ô mực đúng trên `2 - rúp.pdf`), nên lưới chặn
+    lệch chỉ số là chốt so-kẽm: mực rời khỏi chỗ cũ thì tác vụ dừng và output bị xoá.
+
+    Test ép nguồn dịch path 500pt và chỉ đòi hai điều: không giao file, hoặc nếu có
+    giao thì mực phải khớp bản gốc.
     """
     src = _pdf_with_embedded_font(tmp_path, TEXT)
     real = PpeGlyphSource.for_page(src, 1)
@@ -185,10 +190,12 @@ def test_misaligned_source_is_rejected_instead_of_placing_wrong_glyph(tmp_path, 
         outline_text, "_ppe_source_for_page", lambda *_a, **_k: Shifted(real)
     )
     result = outline_text.outline_fonts(src, out)
-    # Vẫn thành công vì đã lùi về fontTools; và bản in vẫn khớp bản gốc.
-    assert result.get("supported"), result
-    ok, reason = outline_text.verify_outline(src, out)
-    assert ok, f"path lệch đã lọt vào bản in: {reason}"
+    if result.get("supported"):
+        ok, reason = outline_text.verify_outline(src, out)
+        assert ok, f"path lệch đã lọt vào bản in: {reason}"
+    else:
+        # Dừng an toàn: phải nói ra lý do, không im lặng.
+        assert result.get("warnings"), result
 
 
 def test_failure_of_ppe_source_never_breaks_the_action(tmp_path, monkeypatch):
@@ -206,3 +213,139 @@ def test_failure_of_ppe_source_never_breaks_the_action(tmp_path, monkeypatch):
     assert result.get("supported"), result
     ok, reason = outline_text.verify_outline(src, out)
     assert ok, reason
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Cổng đối chiếu SỐ MÃ KÝ TỰ (OUT-FONT, audit lần 3 §3.2)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Chốt cũ chống lệch chỉ số là hình học: so path với vị trí bút, rồi dựa vào so-kẽm
+# ở cuối. Đo được là nó phụ thuộc kích thước glyph — dấu `.` 12pt chỉ 9 px mực, chữ
+# dịch 30pt vẫn báo hậu kiểm thành công. Cổng mới so **số lượng** mã ký tự trong từng
+# khối `BT … ET`: khớp số nghĩa là hai bên duyệt cùng một dãy mã, nên chỉ số thứ `n`
+# ở hai bên chắc chắn là cùng một ký tự — không ngưỡng, không phụ thuộc glyph to nhỏ.
+
+def test_engine_declares_code_count_per_block(tmp_path):
+    src = _pdf_with_embedded_font(tmp_path, b"BT /F1 36 Tf 30 120 Td (A B) Tj ET")
+    source = PpeGlyphSource.for_page(src, 1)
+    # "A B" = 3 mã, kể cả dấu cách (dấu cách không có path nhưng vẫn phải đếm).
+    assert source.code_count("page", 0) == 3
+    assert source.code_count("page", 7) is None, "khối không có thì phải là None"
+
+
+def test_invisible_text_is_counted_so_the_gate_does_not_reject_the_block(tmp_path):
+    """`Tr 3` không sinh path nhưng bộ ghi vẫn duyệt qua các mã đó.
+
+    Nếu engine đếm sau cổng `Tr` thì khối kiểu này lệch số và bị loại oan — mà tệ hơn,
+    chỉ số glyph hiển thị phía sau cũng lệch theo.
+    """
+    src = _pdf_with_embedded_font(
+        tmp_path, b"BT /F1 36 Tf 30 120 Td 3 Tr (abc) Tj 0 Tr (XY) Tj ET"
+    )
+    source = PpeGlyphSource.for_page(src, 1)
+    assert source.code_count("page", 0) == 5
+    # Glyph hiển thị đầu tiên là mã thứ 3, không phải thứ 0.
+    assert source.path_for("page", 0, 0) is None
+    assert source.path_for("page", 0, 3) is not None
+
+
+def test_count_mismatch_falls_back_to_fonttools_instead_of_guessing(tmp_path, caplog):
+    """Khối lệch số mã ⇒ KHÔNG dùng path của PPE, và phải nói ra lý do.
+
+    Đây là hành vi cần khoá: nghi ngờ thì lùi về đường cũ, tuyệt đối không đoán chỉ số.
+    """
+    src = _pdf_with_embedded_font(tmp_path, TEXT)
+    real = PpeGlyphSource.for_page(src, 1)
+
+    class WrongCount:
+        """Nguồn khai sai số mã — mô phỏng hai bên duyệt lệch nhau."""
+
+        def __init__(self, inner):
+            self._inner = inner
+            self.used = 0
+
+        def code_count(self, stream, bt):
+            declared = self._inner.code_count(stream, bt)
+            return None if declared is None else declared + 1
+
+        def path_for(self, stream, bt, ordinal):
+            self.used += 1
+            return self._inner.path_for(stream, bt, ordinal)
+
+    source = WrongCount(real)
+    with pikepdf.open(src) as pdf:
+        page = pdf.pages[0]
+        fonts = outline_text._load_fonts(page.get("/Resources").get("/Font"), pdf, {"warnings": []})
+        data = bytes(page.obj["/Contents"].read_bytes())
+        with caplog.at_level("INFO", logger="app.core.outline_text"):
+            new_data, glyphs = outline_text.outline_content_stream(
+                pdf, data, page.get("/Resources"), fonts,
+                glyph_source=source, stream_key="page",
+            )
+    assert new_data is not None and glyphs > 0, "vẫn phải outline được bằng fontTools"
+    assert source.used == 0, "khối lệch số mã không được dùng path của PPE"
+    assert any("lệch số mã" in r.getMessage() for r in caplog.records), caplog.text
+
+
+def test_source_without_code_count_is_not_trusted(tmp_path):
+    """Native bản cũ (chưa có `blocks`) ⇒ không tin khối nào, không nổ.
+
+    An toàn hơn là tin rồi phó thác cho lưới so-kẽm — chính chỗ đã bỏ sót glyph nhỏ.
+    """
+    src = _pdf_with_embedded_font(tmp_path, TEXT)
+    real = PpeGlyphSource.for_page(src, 1)
+
+    class Legacy:
+        def __init__(self, inner):
+            self._inner = inner
+            self.used = 0
+
+        def path_for(self, stream, bt, ordinal):
+            self.used += 1
+            return self._inner.path_for(stream, bt, ordinal)
+
+    source = Legacy(real)
+    with pikepdf.open(src) as pdf:
+        page = pdf.pages[0]
+        fonts = outline_text._load_fonts(page.get("/Resources").get("/Font"), pdf, {"warnings": []})
+        data = bytes(page.obj["/Contents"].read_bytes())
+        new_data, glyphs = outline_text.outline_content_stream(
+            pdf, data, page.get("/Resources"), fonts,
+            glyph_source=source, stream_key="page",
+        )
+    assert new_data is not None and glyphs > 0
+    assert source.used == 0
+
+
+def test_matching_count_does_use_ppe_geometry(tmp_path):
+    """Mặt còn lại của cổng: khớp số thì PPE PHẢI được dùng.
+
+    Không có test này thì một cổng đóng chặt vĩnh viễn vẫn xanh — và cả §19.7 thành
+    code chết.
+    """
+    src = _pdf_with_embedded_font(tmp_path, TEXT)
+    real = PpeGlyphSource.for_page(src, 1)
+
+    class Counting:
+        def __init__(self, inner):
+            self._inner = inner
+            self.used = 0
+
+        def code_count(self, stream, bt):
+            return self._inner.code_count(stream, bt)
+
+        def path_for(self, stream, bt, ordinal):
+            self.used += 1
+            return self._inner.path_for(stream, bt, ordinal)
+
+    source = Counting(real)
+    with pikepdf.open(src) as pdf:
+        page = pdf.pages[0]
+        fonts = outline_text._load_fonts(page.get("/Resources").get("/Font"), pdf, {"warnings": []})
+        data = bytes(page.obj["/Contents"].read_bytes())
+        new_data, glyphs = outline_text.outline_content_stream(
+            pdf, data, page.get("/Resources"), fonts,
+            glyph_source=source, stream_key="page",
+        )
+    assert new_data is not None and glyphs > 0
+    assert source.used == len("Hop giay ABC"), source.used

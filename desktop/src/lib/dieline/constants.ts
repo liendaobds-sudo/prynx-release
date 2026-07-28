@@ -114,6 +114,71 @@ export const BOTTOM_OVERLAP = 10;
 /** Tỷ lệ vát mép top flap đáy */
 export const BOTTOM_FLAP_TAPER = 0.15;
 
+// --- Double Tray (Hộp âm dương — khay đáy + nắp chụp) ---
+// [DOUBLE-TRAY 2026-07-26]
+// Tỉ lệ đo từ mẫu: Custom Dimensions Tuck End Boxes Double Tray Dieline
+// 100010-01 (SVG) — thân đáy 361×261 thành 52, nắp 375×275 thành 55;
+// mọi số đo khớp tròn số tuyệt đối với T = 1.5, C = 1 (double_tray_dossier.md).
+/** Thành trong = D − (hệ số này × T) — mẫu 50.5 = 52 − 1.5 */
+export const DT_INNER_WALL_DROP_T = 1;
+/** Thân nắp = thân đáy + (hệ số này × T) + 2·lidGap — mẫu +14 = 8×1.5 + 2×1 */
+export const DT_LID_BODY_DELTA_T = 8;
+/** Thành nắp tự động = D + (hệ số này × T) — mẫu +3 = 2×1.5 */
+export const DT_LID_WALL_DELTA_T = 2;
+/** Rộng tai khóa = D − (hệ số này × T) — mẫu nắp 52 = 55 − 2×1.5 */
+export const DT_DUST_W_DROP_T = 2;
+/** Khoảng cách hai mảnh (đáy | nắp) trên bản vẽ (mm) — theo SLEEVE_DISPLAY_GAP */
+export const DT_DISPLAY_GAP = 60;
+/** (Chỉ 3D) Khe hở nắp lơ lửng trên miệng đáy ở cuối hoạt ảnh đậy nắp (mm) */
+export const DT_LID_HOVER_MM = 2;
+
+// --- Hanging Window Box (Hộp treo có cửa sổ) ---
+// [HANGING-WINDOW 2026-07-27] Số đo rút từ mẫu "Hanging electronic product
+// box with window dieline" (L=80, W=30, D=140): cửa sổ 40×71 căn giữa mặt
+// trước (≈0.5L × 0.5D), một lớp tai treo 35mm (0.25D), lỗ euro rộng 28mm
+// (0.35L) cao 6mm với gờ chống trượt giữa.
+/** Rộng cửa sổ tự động = hệ số này × L */
+export const HGB_WINDOW_W_RATIO = 0.5;
+/** Cao cửa sổ tự động = hệ số này × D */
+export const HGB_WINDOW_H_RATIO = 0.5;
+/** Lề tối thiểu từ cửa sổ tới nếp gấp/mép panel (mm) — chừa chỗ dán màng PVC */
+export const HGB_WINDOW_MARGIN_MM = 8;
+/** Bán kính bo góc cửa sổ tối đa (mm) */
+export const HGB_WINDOW_R_MAX = 8;
+/** Cao MỘT lớp tai treo tự động = hệ số này × D */
+export const HGB_TAB_H_RATIO = 0.25;
+/** Kẹp cao một lớp tai treo (mm) */
+export const HGB_TAB_H_MIN = 20;
+export const HGB_TAB_H_MAX = 40;
+/** Rộng lỗ treo euro = hệ số này × L (kẹp bởi HGB_SLOT_W_MIN/MAX) */
+export const HGB_SLOT_W_RATIO = 0.35;
+export const HGB_SLOT_W_MIN = 18;
+export const HGB_SLOT_W_MAX = 40;
+/** Cao khe lỗ treo euro (mm) — chuẩn treo thanh ngang */
+export const HGB_SLOT_H_MM = 6;
+/** Gờ chống trượt giữa lỗ euro (mm).
+ *  [HANGING-WINDOW 2026-07-27] Gờ là NỬA VÒNG TRÒN nên chiều sâu = bán kính =
+ *  `HGB_SLOT_NIB_W_MM / 2`; `HGB_SLOT_NIB_D_MM` giờ là TRẦN chiều sâu, dùng để
+ *  kẹp lại bề rộng gờ (nibW ≤ 2 × trần) chứ không còn là số đo độc lập. */
+export const HGB_SLOT_NIB_W_MM = 6;
+export const HGB_SLOT_NIB_D_MM = 3;
+
+/** [HANGING-WINDOW 2026-07-27] CỔ THU tại nếp gấp giữa hai lớp tai treo.
+ *  Đo trên mẫu "…Dieline 100010.svg": cạnh bên mỗi lớp lượn vào bằng cung tròn
+ *  bán kính 20,72pt trên tai treo rộng 163,7pt ⇒ 0,127 × bề rộng tai treo; cung
+ *  tiếp tuyến ĐỨNG ở phía thân lớp và tiếp tuyến NGANG tại cổ. Cổ thu giúp hai
+ *  lớp gập úp 180° không căng góc. */
+export const HGB_TAB_NECK_R_RATIO = 0.127;
+export const HGB_TAB_NECK_R_MIN = 3;
+export const HGB_TAB_NECK_R_MAX = 12;
+/** Nút bo nhỏ ở hai ĐẦU nét cấn = hệ số này × T (mẫu: 2,072pt với T = 1,036pt).
+ *  Nút này là điểm kết thúc đường cấn — chống nứt/xé mép khi gập úp. */
+export const HGB_TAB_NUB_R_T = 2;
+
+/** Tâm lỗ treo cách nếp gấp giữa hai lớp = hệ số này × cao một lớp.
+ *  Hai lớp dùng CÙNG hệ số nên sau khi gập úp 180° hai lỗ trùng khít. */
+export const HGB_SLOT_POS_RATIO = 0.45;
+
 // --- Pizza Box (FEFCO 0426) ---
 /** Slot offset: khe slot cách mép bottom thêm n mm ngoài D */
 export const PIZZA_SLOT_OFFSET_MM = 5;

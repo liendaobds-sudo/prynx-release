@@ -46,6 +46,9 @@ import { generateCupSleeve } from './CupSleeve';
 import { generatePizzaBox } from './PizzaBox';
 import { generateEnvelope } from './Envelope';
 import { generateMatchboxTray } from './MatchboxTray';
+import { generateDoubleTray } from './DoubleTray';
+// [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ
+import { generateHangingWindowBox } from './HangingWindowBox';
 
 // ─── Dispatch boxType → generator ───────────────────────────
 const GENERATORS: Record<GeneratorBoxType, (p: BoxParams) => DielineModel> = {
@@ -56,12 +59,17 @@ const GENERATORS: Record<GeneratorBoxType, (p: BoxParams) => DielineModel> = {
     paper_bag: generatePaperBag,
     cup_sleeve: generateCupSleeve,
     pizza: generatePizzaBox,
+    double_tray: generateDoubleTray,
     envelope: generateEnvelope,
     tray: generateMatchboxTray,
+    // [HANGING-WINDOW 2026-07-27] Đăng ký generator hộp treo có cửa sổ
+    hanging_window: generateHangingWindowBox,
 };
 
 const ALL_TYPES: GeneratorBoxType[] = [
-    'rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray',
+    'rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray', 'double_tray',
+    // [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ chịu chung mọi bất biến hình học
+    'hanging_window',
 ];
 
 // ─── Dung sai (tập trung, theo design Data Models) ──────────

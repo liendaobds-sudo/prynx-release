@@ -23,7 +23,10 @@ bắt buộc phải verify (so kẽm trước/sau) trước khi tin kết quả.
 
 from __future__ import annotations
 
+from decimal import Decimal
 import logging
+import math
+import os
 
 import pikepdf
 
@@ -52,6 +55,11 @@ def _deref(obj):
         return obj.resolve() if getattr(obj, "is_indirect", False) else obj
     except Exception:  # noqa: BLE001
         return obj
+
+
+def _is_pdf_number(value) -> bool:
+    """Số do pikepdf parse có thể là `Decimal`, không chỉ `int`/`float`."""
+    return isinstance(value, (int, float, Decimal))
 
 
 def _objkey(obj) -> tuple[int, int] | None:
@@ -278,7 +286,9 @@ class _EmbeddedFont:
         if w_array is None:
             return
         try:
-            items = [x if not hasattr(x, "resolve") else x.resolve() for x in w_array]
+            # [OUT-FONT FIX 2026-07-28] Object trực tiếp của pikepdf cũng có
+            # `resolve` nhưng gọi vào Array trực tiếp sẽ ném ValueError.
+            items = [_deref(x) for x in w_array]
             i = 0
             while i < len(items):
                 first = int(items[i])
@@ -313,6 +323,17 @@ class _EmbeddedFont:
             cff = CFFFontSet()
             cff.decompile(_io.BytesIO(data), None)
             top = cff[cff.fontNames[0]]
+            # [OUT-FONT FIX 2026-07-28] CFF name-keyed được phép bỏ toán tử
+            # `charset`; khi đó chuẩn CFF quy định dùng ISOAdobe (offset 0).
+            # fontTools khi đọc CFF trần không tự gắn mặc định này như lúc đọc
+            # qua container OpenType, làm `top.CharStrings` ném AttributeError.
+            if getattr(top, "charset", None) is None and not hasattr(top, "ROS"):
+                from fontTools.cffLib import cffISOAdobeStrings
+
+                glyph_count = int(getattr(top, "numGlyphs", 0))
+                if not 0 < glyph_count <= len(cffISOAdobeStrings):
+                    return False
+                top.charset = cffISOAdobeStrings[:glyph_count]
             charstrings = top.CharStrings
             self.glyph_set = _CffGlyphSet(charstrings)
 
@@ -382,7 +403,7 @@ class _EmbeddedFont:
                     current = 0
                     for item in differences:
                         item = _deref(item)
-                        if isinstance(item, (int, float)):
+                        if _is_pdf_number(item):
                             current = int(item)
                         else:
                             base[current] = str(item).lstrip("/")
@@ -458,8 +479,8 @@ class _EmbeddedFont:
         if differences is not None:
             current = 0
             for item in differences:
-                item = item if not hasattr(item, "resolve") else item.resolve()
-                if isinstance(item, (int, float)):
+                item = _deref(item)
+                if _is_pdf_number(item):
                     current = int(item)
                 else:
                     base_names[current] = str(item).lstrip("/")
@@ -591,6 +612,79 @@ def _font_is_outlineable(font_dict) -> bool:
         return False
 
 
+def _codes_of(raw: bytes, font) -> int | None:
+    """Số mã ký tự trong một chuỗi hiển thị, theo đúng luật của `show()`.
+
+    Phải khớp `show()` từng ca một, kể cả ca hỏng (chuỗi lẻ byte trong font 2 byte trả
+    `None` ở cả hai nơi) — nếu hai bên đếm khác nhau thì cổng đối chiếu bên dưới sẽ
+    loại oan cả khối chữ đúng.
+    """
+    if font is None or not getattr(font, "ok", False):
+        return None
+    if font.two_byte:
+        return None if len(raw) % 2 else len(raw) // 2
+    return len(raw)
+
+
+def _count_codes_per_block(instructions, fonts: dict) -> dict[int, int] | None:
+    """Số mã ký tự của từng khối `BT … ET` theo cách đếm của BỘ GHI này.
+
+    OUT-FONT (audit lần 3 §3.2). Đây là nửa Python của hợp đồng đồng bộ chỉ số: PPE
+    khai số mã mỗi khối, hàm này đếm lại độc lập, và chỉ khối nào **khớp số** mới được
+    dùng path của PPE. Khớp số nghĩa là hai bên duyệt cùng một dãy mã ký tự, nên chỉ số
+    thứ `n` ở hai bên chắc chắn là cùng một ký tự — không cần suy từ hình học, không
+    phụ thuộc glyph to hay nhỏ.
+
+    Vì sao phải là một lượt duyệt riêng, không đếm ngay trong lượt ghi: quyết định
+    "tin PPE hay không" phải có **trước** khi ghi glyph đầu tiên của khối, còn tổng số
+    mã chỉ biết được khi đã đi hết khối.
+
+    Trả `None` nếu gặp thứ không đếm chắc được — caller khi đó không tin khối nào.
+    """
+    counts: dict[int, int] = {}
+    font_stack: list = []
+    font = None
+    bt_index = -1
+    in_text = False
+    for instr in instructions:
+        op = str(instr.operator)
+        operands = list(instr.operands)
+        try:
+            if op == "q":
+                font_stack.append(font)
+            elif op == "Q":
+                if not font_stack:
+                    return None
+                font = font_stack.pop()
+            elif op == "BT":
+                if in_text:
+                    return None
+                in_text = True
+                bt_index += 1
+                counts[bt_index] = 0
+            elif op == "ET":
+                in_text = False
+            elif op == "Tf":
+                font = fonts.get(str(operands[0]))
+            elif op in ("Tj", "'", '"'):
+                n = _codes_of(bytes(operands[-1]), font)
+                if n is None or bt_index < 0:
+                    return None
+                counts[bt_index] += n
+            elif op == "TJ":
+                for item in operands[0]:
+                    if _is_pdf_number(item):
+                        continue
+                    n = _codes_of(bytes(item), font)
+                    if n is None or bt_index < 0:
+                        return None
+                    counts[bt_index] += n
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("đếm mã ký tự dừng ở toán tử %s: %s", op, exc)
+            return None
+    return counts
+
+
 def outline_content_stream(
     pdf: pikepdf.Pdf,
     data: bytes,
@@ -641,6 +735,36 @@ def outline_content_stream(
     ppe_used = 0
     ppe_rejected = 0
 
+    # OUT-FONT (audit lần 3 §3.2): cổng tin theo khối. Chỉ khối nào bộ ghi và PPE đếm
+    # ra CÙNG số mã ký tự mới được dùng path của PPE; khối lệch số (hoặc PPE không khai)
+    # đi đường fontTools như trước. Lệch chỉ số vì thế không còn là chuyện lưới so-kẽm
+    # phải bắt kịp — nó không thể xảy ra.
+    trusted_blocks: set[int] = set()
+    if glyph_source is not None:
+        local_counts = _count_codes_per_block(instructions, fonts)
+        if local_counts is None:
+            logger.info(
+                "outline: không đếm chắc được mã ký tự (stream %s) → không dùng PPE",
+                stream_key,
+            )
+        else:
+            for bt, n in local_counts.items():
+                declared = None
+                try:
+                    declared = glyph_source.code_count(stream_key, bt)
+                except AttributeError:
+                    # Nguồn cũ chưa có `code_count` (native chưa rebuild). Không tin
+                    # khối nào — an toàn hơn là tin rồi dựa vào lưới so-kẽm.
+                    declared = None
+                if declared == n:
+                    trusted_blocks.add(bt)
+                else:
+                    logger.info(
+                        "outline: khối BT %d lệch số mã (bộ ghi %d, PPE %s) "
+                        "→ dùng đường fontTools",
+                        bt, n, declared,
+                    )
+
     def finish_text_clip() -> None:
         """Áp text clipping một lần ở cuối BT…ET.
 
@@ -656,18 +780,43 @@ def outline_content_stream(
         out.append(([], pikepdf.Operator("n")))
         text_clip_paths = []
 
-    def ppe_path_for(ordinal: int, trm: _Matrix, glyph_size: float) -> list | None:
-        """Path của PPE cho một glyph, kèm kiểm tra glyph nằm đúng chỗ.
+    def ppe_path_for(ordinal: int, trm: _Matrix) -> list | None:
+        """Path của PPE cho một glyph, nếu khối chữ này đã qua cổng đối chiếu.
 
-        Kiểm vị trí là chốt chống **lệch chỉ số**: hai bên đi qua cùng content stream
+        Chốt chính chống lệch chỉ số là **so số mã ký tự của khối** (`trusted_blocks`,
+        xem `_count_codes_per_block`) — nó không phụ thuộc glyph to hay nhỏ. Phần kiểm
+        vị trí dưới đây là chốt cũ, giữ lại sau cờ `PRYNX_OUTLINE_TRUST_PPE=0` để đối
+        chiếu khi cần chứ không còn là lưới chặn mặc định.
+
+        Kiểm vị trí từng là chốt chống **lệch chỉ số**: hai bên đi qua cùng content stream
         bằng hai bộ code khác nhau, và nếu chỉ số lệch thì path của glyph này bị gán
         cho glyph khác — file vẫn mở được, vẫn có chữ, chỉ sai chỗ. Một glyph luôn
         phải nằm quanh vị trí bút của nó, nên khoảng cách tới `(trm.e, trm.f)` là dấu
         hiệu rẻ và chắc. Nghi ngờ thì trả `None` để lùi về đường fontTools.
+
+        Dung sai lấy theo **cỡ chữ hiệu dụng** — độ dài vector cơ sở của `trm` — chứ
+        KHÔNG theo toán tử `Tf`. File thật rất hay khai `Tf 1` rồi đặt cỡ trong `Tm`
+        (đo trên corpus: dung sai theo `Tf` làm chốt loại oan glyph lệch 2,5pt trên
+        chữ cỡ ~20pt, tức mất sạch phần cải thiện của PPE).
         """
         nonlocal ppe_used, ppe_rejected
         if glyph_source is None:
             return None
+        if bt_index not in trusted_blocks:
+            # Khối này không khớp số mã ký tự (lý do đã ghi nhật ký một lần ở trên).
+            return None
+        # OUT-FONT (audit 2026-07-27 lần 2): hình học của PPE là CHUẨN, không phải
+        # thứ phải xin phép bộ ghi Python.
+        #
+        # Chốt cũ so path của PPE với vị trí bút mà bộ ghi Python tự tính — hợp lý chỉ
+        # khi bộ ghi đúng. Đo trên `2 - rúp.pdf` bằng trọng tài so-kẽm cho thấy nó
+        # SAI: giữ chốt cũ thì 91 ô mực lệch (mean 2,51/255), tin PPE thì còn 1 ô và
+        # mean 0,53/255 — và ô đó chỉ là outline dày thêm, không mất pixel nào.
+        #
+        # Lưới chặn lệch chỉ số vì thế chuyển sang chốt so-kẽm từng trang: lệch chỉ số
+        # làm mực rời khỏi chỗ cũ, đúng thứ `_local_ink_mismatch` đo. Đặt
+        # `PRYNX_OUTLINE_TRUST_PPE=0` để quay lại chốt cũ khi cần đối chiếu.
+        trust_ppe = os.environ.get("PRYNX_OUTLINE_TRUST_PPE", "1") not in {"0", "false", "no"}
         try:
             path = glyph_source.path_for(stream_key, bt_index, ordinal)
         except Exception as exc:  # noqa: BLE001 — nguồn phụ không được làm hỏng job
@@ -683,10 +832,17 @@ def outline_content_stream(
                 ys.append(float(operands[i + 1]))
         if not xs:
             return None
-        tol_x = max(2.0, abs(glyph_size) * 2.0)
-        tol_y = max(2.0, abs(glyph_size) * 3.0)
+        # Cỡ chữ hiệu dụng theo hai trục của ma trận chữ.
+        eff_x = math.hypot(trm.a, trm.b)
+        eff_y = math.hypot(trm.c, trm.d)
+        eff = max(eff_x, eff_y)
+        tol_x = max(4.0, eff * 2.0)
+        tol_y = max(4.0, eff * 3.0)
         cx = (min(xs) + max(xs)) / 2.0
         cy = (min(ys) + max(ys)) / 2.0
+        if trust_ppe:
+            ppe_used += 1
+            return path
         if abs(cx - trm.e) > tol_x or abs(cy - trm.f) > tol_y:
             ppe_rejected += 1
             logger.info(
@@ -726,7 +882,7 @@ def outline_content_stream(
                 scale = 1.0 / font.upem
                 glyph_matrix = _Matrix(scale, 0.0, 0.0, scale, 0.0, 0.0).then(trm)
                 glyph_path: list = []
-                from_ppe = ppe_path_for(ordinal, trm, size)
+                from_ppe = ppe_path_for(ordinal, trm)
                 if from_ppe is not None:
                     # PPE đã lo font/encoding/ma trận chữ; ở đây chỉ ghi ra PDF.
                     glyph_path = list(from_ppe)
@@ -875,7 +1031,7 @@ def outline_content_stream(
                     return (None, 0)
             elif op == "TJ":
                 for item in operands[0]:
-                    if isinstance(item, (int, float)):
+                    if _is_pdf_number(item):
                         # Số trong TJ dịch chuyển NGƯỢC chiều, đơn vị 1/1000 em.
                         adv = -float(item) / 1000.0 * size * hscale
                         tm = _Matrix(1.0, 0.0, 0.0, 1.0, adv, 0.0).then(tm)
@@ -922,11 +1078,146 @@ _VERIFY_MEAN_LIMIT = 5.0
 _VERIFY_COVERAGE_LIMIT = 1.5
 
 # OUT-FONT (audit 2026-07-27 §4.2): mean/coverage toàn trang bị nền trắng
-# pha loãng. IoU theo tile chỉ xét vùng có đủ mực để bắt chữ nhỏ bị lệch mà
-# không phạt sai số vành raster tự nhiên của outline đúng.
+# pha loãng. Kiểm theo tile để bắt chữ nhỏ bị lệch mà không phạt sai số vành
+# raster tự nhiên của outline đúng.
 _VERIFY_TILE_SIZE = 64
-_VERIFY_TILE_MIN_INK_PIXELS = 64
-_VERIFY_TILE_IOU_MIN = 0.50
+
+# OUT-FONT (audit lần 3 §3.2): trần cũ 64 px làm chốt BỎ QUA HẲN mọi ô ít mực, tức
+# đúng những glyph nhỏ nhất. Đo được trên trang 612×792 @150 DPI, dịch nội dung 30pt:
+# dấu `.` 12pt (9 px mực), chữ `i` 12pt (34 px), chữ `A` 8pt (49 px) đều cho
+# `verify=True` — action báo thành công trên bản in đã sai chỗ. Chỉ `A` 10pt (75 px)
+# mới bị bắt.
+#
+# Hạ trần xuống 6 px: một dấu chấm 12pt ở 150 DPI đã là ~9 px, nên 6 px là mức dưới
+# đó mà vẫn loại được nhiễu một-hai pixel lẻ ở biên.
+_VERIFY_TILE_MIN_INK_PIXELS = 6
+
+# Vì sao hạ trần được mà không sinh báo động giả: `recall` được đo với mực sau khi
+# **nở 1 px**. Sai số thực tế của outline đúng là lệch dưới một pixel (vành
+# fill-adjust, làm tròn khi raster) — nở 1 px hấp thụ hết phần đó. Còn chữ đặt sai
+# chỗ thì lệch hàng chục pixel (30pt ở 150 DPI là 62 px), nở 1 px không cứu được.
+# Không có bước nở này thì một dấu chấm 9 px lệch đúng 1 px sẽ tụt recall xuống 0.
+_VERIFY_TILE_DILATE_PX = 1
+
+# Chiều "thêm mực" giữ trần 64 px: mực lạ xuất hiện ở vùng trước đó trắng thường là
+# cả một glyph (ô đo được: 0 px → 127 px), còn vài pixel lẻ thì đã có hai lưới
+# mean/coverage toàn trang lo. Hạ trần ở chiều này chỉ mua thêm báo động giả.
+_VERIFY_PRECISION_MIN_INK_PIXELS = 64
+
+# OUT-FONT (audit 2026-07-28 §3.1): chiều precision theo ô ở trên cố ý bỏ qua
+# dưới 64 px để không phạt vành raster dày thêm quanh glyph nhỏ. Nhưng vì thế một
+# dấu chấm 12 pt được VẼ THÊM (9 px) cũng lọt. Chốt mới chỉ xét mực sau nằm ngoài
+# vùng mực gốc đã nở 1 px theo cả 8 hướng; vành dày hợp lệ nằm trong vùng đó, còn
+# một contour/glyph mới tách rời thì thành một cụm không được giải thích.
+_VERIFY_UNEXPLAINED_COMPONENT_MIN_PIXELS = 6
+
+# OUT-FONT (audit 2026-07-27 lần 2): thước đo theo tile đổi từ IoU sang cặp
+# **recall / precision**, vì IoU đối xứng còn thứ cần chặn thì không.
+#
+# Điều cần chặn là **mất chữ** và **lệch chỗ**; điều phải bỏ qua là outline dày hơn
+# glyph gốc một chút — path outline đi qua vành fill-adjust của raster nên nở ra ở
+# MỌI biên, và với glyph nhỏ thì phần nở đó lớn so với diện tích chữ. IoU trộn hai
+# thứ đó vào một số: đo được trên `2 - rúp.pdf`, ô cuối cùng còn lại có 40 px mực
+# trước, 83 px sau, giao đúng 40 — tức KHÔNG mất một pixel nào, chỉ dày thêm — mà
+# IoU vẫn chỉ 0,48 và chặn cả file.
+#
+# * `recall = giao / mực_trước` — phần mực gốc còn được phủ. Chữ mất hoặc dịch chỗ
+#   làm nó sụp ngay: mọi ca sai thật đã đo đều cho 0,00, còn ca đúng cho 1,00.
+# * `precision = giao / mực_sau` — chặn chiều còn lại: vẽ THÊM mực vào chỗ trước
+#   đó trắng (ô đo được: trước 0 px, sau 127 px ⇒ precision 0,00). Ngưỡng để rộng
+#   vì phần nở hợp lệ hạ precision một cách vô hại (ô nói trên: 0,48).
+_VERIFY_TILE_RECALL_MIN = 0.80
+_VERIFY_TILE_PRECISION_MIN = 0.25
+
+
+# Các toán tử có thể đổi màu/tách kẽm. Nhánh object-level phải giữ nguyên chuỗi
+# này; outline chỉ được thay toán tử chữ bằng path.
+_COLOR_STATE_OPS = frozenset({
+    "q", "Q", "g", "G", "rg", "RG", "k", "K", "cs", "CS",
+    "sc", "SC", "scn", "SCN", "gs", "ri",
+})
+
+
+def _signature_operand(value):
+    """Dạng ổn định của operand màu, không phụ thuộc cách ghi số của pikepdf."""
+    value = _deref(value)
+    if _is_pdf_number(value):
+        return ("number", str(Decimal(str(value)).normalize()))
+    if isinstance(value, pikepdf.Array):
+        return ("array", tuple(_signature_operand(item) for item in value))
+    return ("token", str(value))
+
+
+def _combined_stream_bytes(contents) -> bytes:
+    if contents is None:
+        return b""
+    streams = list(contents) if isinstance(contents, pikepdf.Array) else [contents]
+    chunks = []
+    for stream in streams:
+        stream = _deref(stream)
+        if not isinstance(stream, pikepdf.Stream):
+            raise TypeError("Contents không phải stream")
+        chunks.append(bytes(stream.read_bytes()))
+    return b"\n".join(chunks)
+
+
+def _color_state_signature(pdf_path: str) -> tuple | None:
+    """Chuỗi trạng thái màu của trang và Form, dùng cho outline object-level.
+
+    [OUT-FONT FIX 2026-07-28] So-kẽm raster có thể thấy viền chữ đậm thêm 1 px
+    do text hinting biến mất sau outline. Chữ ký này chứng minh writer không đổi
+    toán tử màu trong khi lưới cục bộ chịu trách nhiệm bắt mất/thêm/lệch hình.
+    """
+    try:
+        records = []
+        with pikepdf.open(pdf_path) as pdf:
+            def scan(contents, resources, label: str, depth: int, seen: set) -> None:
+                if depth > _MAX_FORM_DEPTH:
+                    raise ValueError("Form XObject lồng quá sâu")
+                data = _combined_stream_bytes(contents)
+                instructions = pikepdf.parse_content_stream(pikepdf.Stream(pdf, data))
+                color_ops = tuple(
+                    (
+                        str(instruction.operator),
+                        tuple(_signature_operand(item) for item in instruction.operands),
+                    )
+                    for instruction in instructions
+                    if str(instruction.operator) in _COLOR_STATE_OPS
+                )
+                records.append((label, color_ops))
+
+                resources = _deref(resources) if resources is not None else None
+                if not isinstance(resources, pikepdf.Dictionary):
+                    return
+                xobjects = _deref(resources.get("/XObject"))
+                if not isinstance(xobjects, pikepdf.Dictionary):
+                    return
+                for name, ref in sorted(dict(xobjects).items(), key=lambda pair: str(pair[0])):
+                    form = _deref(ref)
+                    if not isinstance(form, pikepdf.Stream):
+                        continue
+                    if str(form.get("/Subtype", "")) != "/Form":
+                        continue
+                    key = _objkey(form)
+                    if key is not None:
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                    inner_resources = form.get("/Resources") or resources
+                    scan(form, inner_resources, f"{label}/{name}", depth + 1, seen)
+
+            for page_number, page in enumerate(pdf.pages, start=1):
+                scan(
+                    page.get("/Contents"),
+                    page.get("/Resources"),
+                    f"page:{page_number}",
+                    0,
+                    set(),
+                )
+        return tuple(records)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("không lập được chữ ký trạng thái màu: %s", exc)
+        return None
 
 
 def _plate_stats(
@@ -948,12 +1239,29 @@ def _plate_stats(
     return out
 
 
-def _local_ink_mismatch(before, after) -> tuple[int, int, float] | None:
-    """Trả tile có vùng mực trước/sau chồng lấp quá thấp, nếu có."""
+def _local_ink_mismatch(before, after) -> tuple[int, int, float, str] | None:
+    """Tile đầu tiên bị **mất mực** hoặc **thêm mực sai chỗ**, nếu có.
+
+    Trả `(x, y, tỉ lệ, loại)` với `loại` là `"mat_muc"` hoặc `"them_muc"`. Xem khối
+    hằng `_VERIFY_TILE_*` về vì sao thước đo không đối xứng.
+    """
     import numpy as np
 
     before_ink = before > 127
     after_ink = after > 127
+    # Nở 1 px cho mực SAU rồi mới đo recall — xem `_VERIFY_TILE_DILATE_PX`. Dùng phép
+    # dịch mảng thay vì scipy: không thêm phụ thuộc, và bán kính 1 px chỉ là 4 lần OR.
+    after_grown = after_ink.copy()
+    for _ in range(_VERIFY_TILE_DILATE_PX):
+        grown = after_grown.copy()
+        grown[1:, :] |= after_grown[:-1, :]
+        grown[:-1, :] |= after_grown[1:, :]
+        grown[:, 1:] |= after_grown[:, :-1]
+        grown[:, :-1] |= after_grown[:, 1:]
+        after_grown = grown
+
+    # Ưu tiên giữ chẩn đoán mất/dịch mực của chốt cũ. Cụm mực mới chỉ là lưới
+    # bổ sung cho những ca recall/precision theo ô không phát hiện.
     height, width = before_ink.shape
     tile = _VERIFY_TILE_SIZE
 
@@ -961,18 +1269,71 @@ def _local_ink_mismatch(before, after) -> tuple[int, int, float] | None:
         for x in range(0, width, tile):
             old = before_ink[y:y + tile, x:x + tile]
             new = after_ink[y:y + tile, x:x + tile]
-            union = int(np.count_nonzero(old | new))
-            if union < _VERIFY_TILE_MIN_INK_PIXELS:
-                continue
-            intersection = int(np.count_nonzero(old & new))
-            iou = intersection / union
-            if iou < _VERIFY_TILE_IOU_MIN:
-                return (x, y, iou)
+            n_old = int(np.count_nonzero(old))
+            n_new = int(np.count_nonzero(new))
+            if n_old >= _VERIFY_TILE_MIN_INK_PIXELS:
+                kept = int(np.count_nonzero(old & after_grown[y:y + tile, x:x + tile]))
+                recall = kept / n_old
+                if recall < _VERIFY_TILE_RECALL_MIN:
+                    return (x, y, recall, "mat_muc")
+            if n_new >= _VERIFY_PRECISION_MIN_INK_PIXELS:
+                intersection = int(np.count_nonzero(old & new))
+                precision = intersection / n_new
+                if precision < _VERIFY_TILE_PRECISION_MIN:
+                    return (x, y, precision, "them_muc")
+
+    # OUT-FONT (audit 2026-07-28 §3.1): bắt chiều THÊM mực nhỏ mà precision theo
+    # ô không xét tới. Nở mực gốc 1 px theo 8 hướng để hấp thụ vành fill-adjust
+    # hợp lệ (dấu chấm 3x3 thành tối đa 5x5), rồi chỉ tìm cụm mực thực sự mới.
+    before_allowed = before_ink.copy()
+    grown = before_allowed.copy()
+    grown[1:, :] |= before_allowed[:-1, :]
+    grown[:-1, :] |= before_allowed[1:, :]
+    grown[:, 1:] |= before_allowed[:, :-1]
+    grown[:, :-1] |= before_allowed[:, 1:]
+    grown[1:, 1:] |= before_allowed[:-1, :-1]
+    grown[1:, :-1] |= before_allowed[:-1, 1:]
+    grown[:-1, 1:] |= before_allowed[1:, :-1]
+    grown[:-1, :-1] |= before_allowed[1:, 1:]
+    unexplained = after_ink & ~grown
+
+    # Không kéo scipy/OpenCV chỉ để gắn nhãn component. Với output đúng,
+    # `unexplained` thường rỗng; set chỉ chứa các pixel nghi ngờ nên vòng lặp này
+    # nhỏ hơn rất nhiều so với duyệt toàn trang bằng Python.
+    points = {tuple(map(int, p)) for p in np.argwhere(unexplained)}
+    while points:
+        seed = points.pop()
+        stack = [seed]
+        size = 0
+        min_y, min_x = seed
+        while stack:
+            cy, cx = stack.pop()
+            size += 1
+            min_y = min(min_y, cy)
+            min_x = min(min_x, cx)
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    neighbour = (cy + dy, cx + dx)
+                    if neighbour in points:
+                        points.remove(neighbour)
+                        stack.append(neighbour)
+        if size >= _VERIFY_UNEXPLAINED_COMPONENT_MIN_PIXELS:
+            return (min_x, min_y, 0.0, "them_muc")
+
     return None
 
 
-def verify_outline(original: str, outlined: str, dpi: int = 150) -> tuple[bool, str]:
-    """So kẽm từng trang trước/sau khi outline; sai thì không dùng kết quả."""
+def verify_outline(
+    original: str, outlined: str, dpi: int = 150, *, native_object_level: bool = False
+) -> tuple[bool, str]:
+    """So kẽm từng trang; nhánh native cho phép riêng sai số viền 1 px.
+
+    ``native_object_level=True`` chỉ dùng sau writer object-level: màu phải giữ
+    nguyên theo chữ ký content stream và hình mực phải qua lưới cục bộ. Nhánh GS
+    vẫn giữ ngưỡng mean/coverage chặt vì nó dựng lại toàn bộ PDF.
+    """
     try:
         import numpy as np
 
@@ -985,6 +1346,14 @@ def verify_outline(original: str, outlined: str, dpi: int = 150) -> tuple[bool, 
 
     if before_pages != after_pages:
         return (False, f"số trang đổi: {before_pages} → {after_pages}")
+
+    if native_object_level:
+        before_color = _color_state_signature(original)
+        after_color = _color_state_signature(outlined)
+        if before_color is None or after_color is None:
+            return (False, "không chứng minh được trạng thái màu trước/sau outline")
+        if before_color != after_color:
+            return (False, "toán tử hoặc trạng thái màu đã thay đổi sau outline")
 
     for page_number in range(1, before_pages + 1):
         try:
@@ -1004,13 +1373,16 @@ def verify_outline(original: str, outlined: str, dpi: int = 150) -> tuple[bool, 
             if arr_before.shape != arr_after.shape:
                 return (False, f"trang {page_number} đổi khổ raster ở kẽm {name}")
             mean_delta = float(np.abs(arr_before - arr_after).mean())
-            if mean_delta > _VERIFY_MEAN_LIMIT:
+            if not native_object_level and mean_delta > _VERIFY_MEAN_LIMIT:
                 return (
                     False,
                     f"trang {page_number}, kẽm {name} lệch "
                     f"{mean_delta:.2f}/255 sau outline",
                 )
-            if abs(cov_after - cov_before) > _VERIFY_COVERAGE_LIMIT:
+            if (
+                not native_object_level
+                and abs(cov_after - cov_before) > _VERIFY_COVERAGE_LIMIT
+            ):
                 return (
                     False,
                     f"trang {page_number}, kẽm {name} đổi diện tích phủ "
@@ -1018,11 +1390,15 @@ def verify_outline(original: str, outlined: str, dpi: int = 150) -> tuple[bool, 
                 )
             local = _local_ink_mismatch(arr_before, arr_after)
             if local is not None:
-                x, y, iou = local
+                x, y, ratio, kind = local
+                what = (
+                    f"mất mực (chỉ còn {ratio:.0%} mực gốc)"
+                    if kind == "mat_muc"
+                    else f"thêm mực sai chỗ (chỉ {ratio:.0%} trùng mực gốc)"
+                )
                 return (
                     False,
-                    f"trang {page_number}, kẽm {name} lệch cục bộ tại "
-                    f"({x}, {y}), IoU={iou:.2f}",
+                    f"trang {page_number}, kẽm {name} {what} tại ô ({x}, {y})",
                 )
     return (True, "")
 
@@ -1301,7 +1677,9 @@ def _outline_document(
         )
         return result
 
-    ok, reason = verify_outline(verify_against, output_path)
+    ok, reason = verify_outline(
+        verify_against, output_path, native_object_level=True
+    )
     if not ok:
         result["supported"] = False
         result["warnings"].append(f"verify thất bại: {reason}")

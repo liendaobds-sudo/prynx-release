@@ -1,5 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { startVdpJobBackend, pollVdpJob, cancelVdpJobBackend } from '@/lib/api';
+import { startVdpJobBackend, pollVdpJob, cancelVdpJobBackend, type VdpProgressInfo } from '@/lib/api'; // UIUX (audit 2026-07-27 §D-07)
+import { ProgressBar } from '../ui/ProgressBar'; // UIUX (audit 2026-07-27 §D-07)
+import { formatError, isCanceled } from '@/lib/errorMessages'; // UIUX (audit 2026-07-27 §D-15)
 import { startVdpDrag } from '../../utils/vdpDrag';
 import { useVdpTool } from '@/hooks/useVdpTool';
 import {
@@ -54,6 +56,8 @@ export default function CoverNumberingTool({
 
     const [status, setStatus] = useState('');
     const [busy, setBusy] = useState(false);
+    // UIUX (audit 2026-07-27 §D-07): tiến độ job VDP ({processed,total}) cho ProgressBar
+    const [progressInfo, setProgressInfo] = useState<VdpProgressInfo | null>(null);
     const [spawnNewTab, setSpawnNewTab] = useState(true);
 
     // PA2: 1 file chứa cả bìa & ruột → người dùng GÁN dải trang bìa (không auto-detect).
@@ -200,17 +204,20 @@ export default function CoverNumberingTool({
             activeVdpJobRef.current = jobId;
             setActiveVdpJobId(jobId);
             pollAbortRef.current = new AbortController();
-            const result = await pollVdpJob(jobId, setStatus, true, pollAbortRef.current.signal);
+            // UIUX (audit 2026-07-27 §D-07): lưu thêm {processed,total} vào state cho ProgressBar
+            const result = await pollVdpJob(jobId, (m, info) => { setStatus(m); setProgressInfo(info ?? null); }, true, pollAbortRef.current.signal);
             if (!result.blob) throw new Error(t('preprocess.coverNumbering:khong_nhan_duoc_file_ket_qua'));
             const outName = `MecBia_${pdfFile.name}`;
             if (spawnNewTab && onSpawnTab) { onSpawnTab(result.blob, outName, result.path ?? undefined); setStatus(t('preprocess.coverNumbering:hoan_thanh_da_tao_tab_moi')); }
             else if (onApplyResult) { onApplyResult(result.blob, outName, result.path ?? undefined); setStatus(t('preprocess.coverNumbering:hoan_thanh')); }
         } catch (e: any) {
-            if (e?.name === 'AbortError') return;
-            setStatus(t('preprocess.coverNumbering:loi') + ' ' + (e?.message || String(e)));
+            // UIUX (audit 2026-07-27 §D-15): hủy → báo nhẹ; lỗi khác → câu Việt + hướng khắc phục
+            if (isCanceled(e)) { setStatus(t('preprocess.coverNumbering:da_huy', 'Đã hủy')); return; }
+            setStatus(formatError(e, t('preprocess.coverNumbering:khong_chay_duoc_vdp', 'Không chạy được VDP'))); // UIUX (audit 2026-07-27 §D-15)
         } finally {
             activeVdpJobRef.current = null;
             setActiveVdpJobId(null);
+            setProgressInfo(null); // UIUX (audit 2026-07-27 §D-07)
             setBusy(false);
         }
     };
@@ -334,7 +341,19 @@ export default function CoverNumberingTool({
                         {t('tabs.imposition:huy_bo_cancel')}
                     </button>
                 )}
-                {status && <p className="text-[11px] text-slate-500 text-center">{status}</p>}
+                {/* UIUX (audit 2026-07-27 §D-07): đang chạy job → ProgressBar % thật + nút Hủy */}
+                {status && (
+                    busy ? (
+                        <ProgressBar
+                            message={status}
+                            processed={progressInfo?.processed}
+                            total={progressInfo?.total}
+                            onCancel={activeVdpJobId ? () => void cancelActiveVdp().catch((err) => setStatus(formatError(err))) : undefined}
+                        />
+                    ) : (
+                        <p className="text-[11px] text-slate-500 text-center">{status}</p>
+                    )
+                )}
             </div>
         </div>
     );

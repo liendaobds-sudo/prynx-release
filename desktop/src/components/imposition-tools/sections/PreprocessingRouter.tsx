@@ -16,6 +16,7 @@ import TrimShiftTool from '../../preprocess-tools/TrimShiftTool';
 import SplitTool from '../../preprocess-tools/SplitTool';
 import MergeTool from '../../preprocess-tools/MergeTool';
 import PreflightTool from '../../preprocess-tools/PreflightTool';
+import FontToolsTool from '../../preprocess-tools/FontToolsTool';
 import HairlinesTool from '../../preprocess-tools/HairlinesTool';
 import ConvertColorsTool from '../../preprocess-tools/ConvertColorsTool';
 import TrapPresetsTool from '../../preprocess-tools/TrapPresetsTool';
@@ -47,6 +48,7 @@ const TOOL_HEADERS: Record<string, { icon: React.ReactNode; title: string; desc:
     split: { icon: '✂', title: 'Tách file (Split)', desc: 'Tách lẻ trang hoặc chia nhóm file đều đặn.' },
     merge: { icon: '🔗', title: 'Ghép file & Chèn trang (Merge/Insert)', desc: 'Gộp nhiều PDF, trộn xen kẽ lẻ chẵn, chèn trang đệm.' },
     preflight: { icon: '🩺', title: 'Preflight (Kiểm tra chuẩn in)', desc: 'Quét lỗi hệ màu, font, DPI và tự động sửa.' },
+    font_tools: { icon: '🔤', title: 'Chữ & Font', desc: 'Kiểm tra font nhúng, chữ sống và khóa chữ có hậu kiểm.' },
     hairlines: { icon: '✏️', title: 'Sửa nét mảnh (Fix Hairlines)', desc: 'Phát hiện & tăng độ dày nét quá mảnh.' },
     convertcolors: { icon: '🎨', title: 'Chuyển đổi màu (Convert Colors)', desc: 'RGB→CMYK, Spot→CMYK, ICC Profile, Rendering Intent.' },
     trapping: { icon: '🔲', title: 'Chồng tràn (Trapping)', desc: 'Overprint text đen, chống lỗi knockout.' },
@@ -82,6 +84,7 @@ interface PreprocessingRouterProps {
     onStartMerge?: (settings: any) => void;
     onIssueSelect: (issue: any) => void;
     onOpenOutputPreview: () => void;
+    onOpenTool?: (tool: string) => void;
     onFileFixed?: (blob: Blob, name: string, path?: string) => void;
     officeSourceFile?: File | null;
     officeSourceFiles?: File[];
@@ -93,7 +96,7 @@ interface PreprocessingRouterProps {
 export default function PreprocessingRouter({
     tabId, activeTool, pdfFile, isProcessing, ensureCropFileId, onCropApplied, onCropClose,
     onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge,
-    onIssueSelect, onOpenOutputPreview, onFileFixed, officeSourceFile, officeSourceFiles,
+    onIssueSelect, onOpenOutputPreview, onOpenTool, onFileFixed, officeSourceFile, officeSourceFiles,
 }: PreprocessingRouterProps) {
   const { t } = useTranslation();
     const s = useImposerSettingsStore(useShallow(state => ({
@@ -204,11 +207,19 @@ export default function PreprocessingRouter({
                     pdfFile={pdfFile}
                     onIssueSelect={onIssueSelect}
                     onOpenOutputPreview={onOpenOutputPreview}
+                    onOpenFontTools={() => onOpenTool?.('font_tools')}
                     onFileFixed={(blob, name) => {
                         (window as any).__preflightFixedBlob = blob;
                         (window as any).__preflightFixedName = name;
                         if (onFileFixed) onFileFixed(blob, name);
                     }}
+                />
+            )}
+
+            {activeTool === 'font_tools' && (
+                <FontToolsTool
+                    pdfFile={pdfFile}
+                    onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }}
                 />
             )}
 

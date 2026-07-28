@@ -7,8 +7,8 @@
  * Muốn thêm tool mới? Chỉ cần thêm 1 entry vào đây + tạo component.
  */
 
-import { createElement, lazy, type LazyExoticComponent, type ComponentType, type ReactNode } from 'react';
-import { CropIcon } from '../components/shared/ToolIcons';
+// UIUX (audit 2026-07-27 §A-04): bỏ createElement/CropIcon — icon Crop quy về emoji cùng hệ với dàn icon menu công cụ
+import { lazy, type LazyExoticComponent, type ComponentType, type ReactNode } from 'react';
 
 // ─── Tool Category IDs ───
 export type ToolCategoryId = 'file' | 'print' | 'vdp' | 'impo' | 'packaging' | 'util' | 'qc';
@@ -56,9 +56,14 @@ const CompareTab = lazy(() => import('../components/CompareTab'));
 const TextCompareTab = lazy(() => import('../components/TextCompareTab'));
 const AiQcTab = lazy(() => import('../components/AiQcTab')); // eslint-disable-line @typescript-eslint/no-unused-vars -- TẠM KHOÁ: entry ai_qc trong TOOL_REGISTRY đang bị comment (xem ghi chú). Giữ import để bật lại nhanh.
 const ImpositionTab = lazy(() => import('../components/ImpositionTab'));
-const PreflightTab = lazy(() => import('../components/PreflightTab'));
 const CombineTab = lazy(() => import('../components/CombineTab'));
 const DielineTool = lazy(() => import('../components/dieline-tool/DielineTool'));
+const IMPOSITION_FAMILY_TOOL_IDS = new Set<AppToolId>(['imposition', 'nup', 'diecut', 'cnc', 'preflight']);
+
+/** Các tab dùng chung workspace và menu công cụ của ImpositionTab. */
+export function isImpositionFamilyTool(toolId: string): boolean {
+  return IMPOSITION_FAMILY_TOOL_IDS.has(toolId as AppToolId);
+}
 
 export function getToolUniqueKey(tool: ToolDefinition): string {
   return tool.defaultPayload?.focusFeature || tool.defaultPayload?.lockedMode || tool.id;
@@ -121,7 +126,8 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     id: 'imposition',
     title: 'Cắt khổ trang (Crop)',
     tabTitle: 'Bình bài (Chưa có file)',
-    icon: createElement(CropIcon, { width: '1em', height: '1em' }),
+    // UIUX (audit 2026-07-27 §A-04): icon lucide lọt giữa dàn emoji → emoji ✂️ đồng bộ
+    icon: '✂️',
     description: 'Quét vùng và cắt theo kích thước, canh theo trang',
     longDescription: 'Quét một hoặc nhiều vùng trên trang PDF, nhập kích thước chính xác và canh vùng theo toàn bộ trang.',
     category: 'file',
@@ -195,14 +201,34 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     description: 'Kiểm tra & sửa lỗi PDF tự động',
     longDescription: 'Phân tích cấu trúc PDF: hệ màu RGB/CMYK, font nhúng, ảnh low-res, transparency, bleed. Tự động sửa lỗi giống PitStop.',
     category: 'print',
-    component: PreflightTab,
+    // UIUX (audit 2026-07-27 §WR.1): Preflight dùng cùng workspace/menu dù mở trước hay sau PDF.
+    component: ImpositionTab,
     isEnabled: true,
     maxInstances: 1,
+    defaultPayload: { focusFeature: 'preflight' },
     hoverColor: 'hover:border-teal-500 hover:text-teal-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-teal-500',
     hoverShadow: 'hover:shadow-[0_8px_30px_rgb(20,184,166,0.15)]',
     bgIcon: 'bg-teal-100 dark:bg-teal-500/10',
     textIcon: 'text-teal-600',
+  },
+  {
+    id: 'imposition',
+    title: 'Chữ & Font',
+    tabTitle: 'Bình bài (Chưa có file)',
+    icon: '🔤',
+    description: 'Kiểm tra font nhúng và khóa chữ an toàn',
+    longDescription: 'Kiểm tra font nhúng, phát hiện chữ sống và chuyển chữ thành vector với hậu kiểm từng trang.',
+    category: 'print',
+    component: ImpositionTab,
+    isEnabled: true,
+    // UIUX (audit 2026-07-28 §F.2): công cụ chuyên dụng dùng chung workspace và backend Preflight.
+    defaultPayload: { focusFeature: 'font_tools' },
+    hoverColor: 'hover:border-indigo-500 hover:text-indigo-600 text-slate-800 dark:text-white',
+    hoverBorder: 'hover:border-indigo-500',
+    hoverShadow: 'hover:shadow-[0_8px_30px_rgb(99,102,241,0.15)]',
+    bgIcon: 'bg-indigo-100 dark:bg-indigo-500/10',
+    textIcon: 'text-indigo-600',
   },
   {
     id: 'imposition',

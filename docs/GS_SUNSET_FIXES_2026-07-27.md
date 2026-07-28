@@ -16,7 +16,7 @@
 - Installer `1.0.0-beta.14` đã build thành công mà không bundle Ghostscript.
 - Payload NSIS dưới `binaries\gs` chỉ có `NO_GHOSTSCRIPT.txt`; NOTICE không còn Ghostscript/Artifex/AGPL.
 
-Đây **chưa phải GO phát hành công khai**. Installer/payload và sidecar đã qua smoke-test sau cài; trước khi phát hành cho khách vẫn còn ba chốt vận hành: kiểm PDF/X bằng Acrobat Preflight/validator độc lập, kiểm tay đầy đủ UI trên máy sạch và tạo artifact từ worktree sạch có ký mã. Bản hiện tại ghi đúng `GIT_DIRTY=YES` và `CODE_SIGNED=no`.
+Đây **chưa phải GO phát hành công khai**. Installer/payload và sidecar đã qua smoke-test sau cài; trước khi phát hành cho khách vẫn còn ba chốt vận hành: kiểm PDF/X bằng Acrobat Preflight/validator độc lập, kiểm tay đầy đủ UI trên máy sạch và tạo artifact no-GS mới bằng quy trình updater hiện có. Bản hiện tại ghi `GIT_DIRTY=YES`; `CODE_SIGNED=no` chỉ mô tả Authenticode và không phải gate loại bỏ GS.
 
 Telemetry “95% job/30 ngày” được chủ dự án loại khỏi tiêu chí chặn vì thiết bị hiện tại không tính được mẫu số. Không triển khai telemetry giả để làm đẹp gate.
 
@@ -134,7 +134,7 @@ không còn gán nhầm hai hash: nó ghi `EXE_SHA256=NOT_VERIFIED_INSTALL_PAYLO
 
 1. Chạy Acrobat Pro Preflight hoặc validator độc lập trên bộ output PDF/X-4 và PDF/X-1a đại diện; lưu report cùng artifact.
 2. Trên máy test sạch không chạy vòng dev, kiểm tay đầy đủ UI cho separations, soft-proof, TAC, Overprint Preview, OUT FONT, flatten và PDF/X. Installer/payload và sidecar health đã đạt; phần còn lại là checklist tương tác người dùng.
-3. Gom/duyệt worktree, tạo commit sạch, bật Authenticode/updater signing rồi build lại; manifest cuối phải là `GIT_DIRTY=no`, `CODE_SIGNED=yes`.
+3. Gom/duyệt thay đổi rồi build bản no-GS mới bằng `release_update.ps1`; Tauri tự sinh `.sig` theo từng phiên bản từ khóa updater hiện có. Chạy hậu kiểm artifact đã cài để neo `EXE_SHA256` và xác nhận payload không có GS.
 
 Ba chốt này không phủ định việc Ghostscript đã được rút khỏi artifact kỹ thuật; chúng quyết định artifact nào đủ điều kiện đưa cho khách.
 
@@ -348,3 +348,65 @@ Chưa đo lại corpus 33 PDF khách vì corpus không nằm trong repo — con 
 của bản fontTools vì thế **chưa** được cập nhật. Việc cần làm khi có corpus: chạy lại
 và đếm lại số file xong bằng pikepdf, cùng số glyph dùng PPE so với số lùi về
 fontTools (log đã in sẵn hai con số này cho từng stream).
+
+---
+
+## 12. Đóng audit sẵn sàng lần 4 — 2026-07-28
+
+### 12.1 Lô A — chặn false-negative OUT FONT
+
+`outline_text.py` bổ sung kiểm thành phần mực thừa rời khỏi vùng mực gốc đã nở 1 px.
+Thành phần liên thông từ 6 px bị từ chối; thay đổi độ dày hợp lệ và dịch 1 px vẫn
+được phép. Test PDF một chấm thành hai chấm chứng minh lỗi chữ nhỏ không còn lọt.
+
+Verify: **24 pass, 16 skip** cho các suite outline liên quan.
+
+### 12.2 Lô B/C — hành vi no-GS và nội dung sản phẩm
+
+- `InternalEngineUnsupported` là contract fail-closed dùng chung cho action và
+  PDF/X. Khi fallback bị tắt, hệ thống dừng trước subprocess, xoá output dở và
+  không ghi một lần gọi GS giả.
+- API PDF/X trả 422 có hướng xử lý; Embed Font không còn hứa tự sửa font thiếu;
+  Output Preview và Flatten không còn yêu cầu người dùng cài Ghostscript.
+- Tham số `use_gs` chỉ giữ nội bộ để tương thích API cũ; UI gọi đây là chế độ PPE.
+
+Verify: **39 backend pass**, TypeScript typecheck đạt, **1140 frontend pass,
+2 skip**.
+
+### 12.3 Lô D — release gate thật
+
+`scripts/gs_dependency_audit.py` nay:
+
+- tự cấu hình stdout/stderr UTF-8 trên Windows;
+- phân loại engine nội bộ từ chối là `REFUSED`;
+- `--gate` trả mã 1 nếu còn `GS` hoặc `ERROR`;
+- ghi artifact sau mỗi PDF để có thể tiếp tục khi đợt đo dài bị ngắt.
+
+`scripts/run_release_qa.ps1` chạy gate 18 PDF × 16 thao tác, typecheck trong
+frontend staging sạch, và cả test/release-check của `print_engine`.
+
+Kết quả đo ngày 2026-07-28: **276 OK, 12 REFUSED, 0 GS, 0 ERROR**.
+`OUTLINE_FONTS`: **13.985 glyph PPE, 0 fontTools fallback**.
+
+Verify tổng: `print_engine` **565 pass** + release check đạt; backend **1467 pass,
+1 skip**; policy release **24 pass**.
+
+### 12.4 Lô F — giữ đúng quy trình phát hành hiện có
+
+- `build_production.ps1 -Release` tiếp tục dùng `tauri.release.conf.json` với
+  `createUpdaterArtifacts=true`; Tauri sinh file `.sig` cho từng phiên bản từ
+  `TAURI_SIGNING_PRIVATE_KEY` hiện có.
+- `release_update.ps1` tiếp tục tự đồng bộ version trong cấu hình npm/Tauri/Cargo
+  trước khi build, đúng với quy trình phát hành của dự án.
+- Authenticode là cơ chế ký `.exe` riêng của Windows, chưa thuộc thiết kế phát
+  hành hiện tại và không phải tiêu chí loại bỏ GS. Chốt chứng thư Authenticode
+  được thêm trong lúc audit đã được gỡ bỏ.
+- Các gate liên quan trực tiếp đến GS vẫn giữ nguyên: Release không được bundle
+  GS, bộ đo 18×16 phải có `0 GS / 0 ERROR`, và artifact đã cài phải qua
+  `verify_installed_artifact.ps1 -ExpectNoGhostscript`.
+
+PowerShell parse đạt; policy test khóa lại đúng sự phân tách giữa `.sig` updater
+và Authenticode. Wrapper `scripts/run_release_qa.ps1` đã chạy end-to-end và
+**ĐẠT** ngày 2026-07-28: preflight golden, entitlement, backend 1467 pass/1 skip,
+no-GS 18×16, frontend staging sạch, `imposition_core`, `print_engine`, native và
+Tauri.

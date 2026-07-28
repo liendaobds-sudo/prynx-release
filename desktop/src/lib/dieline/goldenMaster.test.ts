@@ -26,6 +26,9 @@ import { generateCupSleeve } from './CupSleeve';
 import { generatePizzaBox } from './PizzaBox';
 import { generateEnvelope } from './Envelope';
 import { generateMatchboxTray } from './MatchboxTray';
+import { generateDoubleTray } from './DoubleTray';
+// [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ — khoá baseline hình học
+import { generateHangingWindowBox } from './HangingWindowBox';
 
 /** Dung sai kích thước theo Requirement 4.6 */
 const DIM_TOLERANCE = 0.001; // mm
@@ -86,6 +89,24 @@ const FIXTURES: { name: string; generate: (p: BoxParams) => DielineModel; params
         generate: generateMatchboxTray,
         params: make({ boxType: 'tray', L: 100, W: 60, D: 30 }),
     },
+    {
+        // [DOUBLE-TRAY 2026-07-26] params = mẫu chuẩn 100010-01
+        name: 'double_tray (Hộp âm dương)',
+        generate: generateDoubleTray,
+        params: make({ boxType: 'double_tray', L: 361, W: 261, D: 52, T: 1.5, C: 1, G: 5, TH: 15 }),
+    },
+    {
+        // [HANGING-WINDOW 2026-07-27] params = Preset_Dacdora (bản vẽ khuôn mẫu
+        // "hanging electronic product box with window", L=80 × W=30 × D=140).
+        // Cửa sổ BẬT + tai treo euro gập đôi ⇒ snapshot khoá cả hai cụm riêng.
+        name: 'hanging_window (Hộp treo có cửa sổ)',
+        generate: generateHangingWindowBox,
+        params: make({
+            boxType: 'hanging_window',
+            L: 80, W: 30, D: 140, T: 0.5, C: 0.5, G: 15, TH: 15,
+            hgbWindow: true, WNW: 0, WNH: 0, HTH: 0,
+        }),
+    },
 ];
 
 /** Dựng mảng chuỗi SVG `d` từ model qua module dùng chung. */
@@ -123,6 +144,10 @@ describe('golden-master: ổn định giá trị kích thước (computeEnvelope
         'pizza (Pizza Box FEFCO 0426)': { FH: 50, SF: 13 },
         'envelope (Bì thư DL)': { FH: 50, SF: 13 },
         'tray (Hộp diêm / Khay)': { FH: 50, SF: 13 },
+        'double_tray (Hộp âm dương)': { FH: 50, SF: 13 },
+        // [HANGING-WINDOW 2026-07-27] FH/SF do computeEnvelopeDims lấy từ params
+        // chung (không phụ thuộc loại hộp) nên baseline giống các mẫu còn lại.
+        'hanging_window (Hộp treo có cửa sổ)': { FH: 50, SF: 13 },
     };
 
     for (const fx of FIXTURES) {

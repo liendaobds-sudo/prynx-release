@@ -267,8 +267,8 @@ export default function EditLayersPanel({
     const handleFlatten = useCallback(async () => {
         setContextMenu(null);
         const confirmed = await confirmDialog({
-            title: 'Gộp toàn bộ layer?',
-            message: 'PrynX sẽ tạo một Working File mới từ trạng thái layer đang hiển thị. File hiện tại vẫn được giữ lại để bạn có thể Ctrl+Z quay về.\n\nNếu máy không có Ghostscript, bản dự phòng có thể raster hóa nội dung.',
+            title: 'Tạo Working File đã Flatten?',
+            message: 'PrynX sẽ tạo một Working File mới từ trạng thái layer đang hiển thị. File hiện tại vẫn được giữ lại để bạn có thể Ctrl+Z quay về.\n\nCác hiệu ứng layer phức tạp có thể được raster hóa; PrynX sẽ cảnh báo trong kết quả.',
             confirmText: 'Tạo file Flatten',
             cancelText: 'Hủy',
             danger: true,

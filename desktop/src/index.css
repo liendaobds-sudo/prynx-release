@@ -599,3 +599,42 @@ html.perf-low .glass-panel {
   -webkit-backdrop-filter: none !important;
   background: var(--app-bg-2);
 }
+
+/* UIUX (audit 2026-07-27 §M-3): animation cho ProgressBar vô định */
+@keyframes progress-indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+.animate-progress-indeterminate {
+  animation: progress-indeterminate 1.4s ease-in-out infinite;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * UIUX (audit 2026-07-27 §C-09): FOCUS RING TOÀN CỤC
+ * ~130 chỗ trong code tắt outline (outline-none/focus:outline-none) mà không có
+ * style thay thế → điều hướng bàn phím bị "mù". Thay vì sửa 130 chỗ, đặt một
+ * rule :focus-visible toàn cục: chỉ hiện khi focus ĐẾN TỪ BÀN PHÍM (click chuột
+ * không hiện — không làm bẩn UI chuột), và thắng outline-none của Tailwind nhờ
+ * độ ưu tiên khai báo sau + :focus-visible cụ thể hơn.
+ * ────────────────────────────────────────────────────────────────────────── */
+:where(button, [role="button"], [role="menuitem"], [role="option"], a, summary,
+       input, select, textarea, [tabindex]:not([tabindex="-1"])):focus-visible {
+  /* [tabindex="-1"] bị loại: đó là các container được .focus() bằng CODE (panel
+     ImposerDashboard, dialog) — ring bao nguyên cột panel là sai chủ đích. */
+  outline: 2px solid var(--app-accent) !important;
+  outline-offset: 1px;
+}
+
+/* Miễn trừ ProgressBar vô định khỏi lớp giảm-động (đặt SAU rule kill ở trên để
+ * thắng theo thứ tự khai báo): thanh tiến trình đứng im trông như app treo —
+ * chuyển động này là "essential" theo WCAG. Chạy chậm hơn (2.5s) cho nhẹ máy. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-progress-indeterminate {
+    animation-duration: 2.5s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+html.perf-low .animate-progress-indeterminate {
+  animation-duration: 2.5s !important;
+  animation-iteration-count: infinite !important;
+}

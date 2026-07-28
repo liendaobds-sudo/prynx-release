@@ -632,3 +632,357 @@ describe('generateAutoBottomBox', () => {
     });
 });
 
+// ─── Double Tray (Hộp âm dương — khay đáy + nắp chụp) ───────
+// [DOUBLE-TRAY 2026-07-26] Theo pattern describe của AutoBottom.
+import { generateDoubleTray } from './DoubleTray';
+
+describe('generateDoubleTray', () => {
+    // Params = mẫu chuẩn 100010-01: thân đáy 361×261, thành 52, T=1.5, C=1.
+    const P = {
+        boxType: 'double_tray' as const,
+        L: 361, W: 261, D: 52, T: 1.5, C: 1, G: 5, TH: 15, lidD: 0, lidGap: 1,
+    };
+
+    it('generates valid dieline with default params', () => {
+        const model = generateDoubleTray(make(P));
+        assertValidDieline(model);
+        expect(model.standardCode).toBe('FEFCO-0330');
+        expect(model.nesting).toBeDefined();
+    });
+
+    it('đủ 50 panel: 2 mảnh × (thân + 4 phía × 4 dải + 4 vạt góc + 4 tai khóa)', () => {
+        const model = generateDoubleTray(make(P));
+        expect(model.panels.length).toBe(50);
+        const names = model.panels.map(p => p.name);
+        for (const prefix of ['base', 'lid'] as const) {
+            for (const expected of [
+                `${prefix}_bottom`,
+                `${prefix}_front_wall`, `${prefix}_front_beam`, `${prefix}_front_inner`, `${prefix}_front_hem`,
+                `${prefix}_back_wall`, `${prefix}_left_wall`, `${prefix}_right_wall`,
+                `${prefix}_corner_fl`, `${prefix}_corner_fr`, `${prefix}_corner_bl`, `${prefix}_corner_br`,
+                `${prefix}_dust_fl`, `${prefix}_dust_fr`, `${prefix}_dust_bl`, `${prefix}_dust_br`,
+            ]) {
+                expect(names, `thiếu ${expected}`).toContain(expected);
+            }
+        }
+    });
+
+    it('hai root rời: base_bottom và lid_bottom (parent null, không pivot)', () => {
+        const model = generateDoubleTray(make(P));
+        const roots = model.panels.filter(p => p.parent === null);
+        expect(roots.map(p => p.name).sort()).toEqual(['base_bottom', 'lid_bottom']);
+        for (const r of roots) expect(r.pivotEdge).toBeNull();
+    });
+
+    it('cây động học: vạt góc gắn vách bên, tai khóa gắn thành trong trước/sau', () => {
+        const model = generateDoubleTray(make(P));
+        const by = (n: string) => model.panels.find(p => p.name === n)!;
+        expect(by('base_corner_fr').parent).toBe('base_right_wall');
+        expect(by('base_corner_bl').parent).toBe('base_left_wall');
+        expect(by('base_dust_fl').parent).toBe('base_front_inner');
+        expect(by('base_dust_br').parent).toBe('base_back_inner');
+        expect(by('lid_front_hem').parent).toBe('lid_front_inner');
+        expect(by('lid_front_inner').parent).toBe('lid_front_beam');
+        expect(by('lid_front_beam').parent).toBe('lid_front_wall');
+        expect(by('lid_front_wall').parent).toBe('lid_bottom');
+        // Vạt góc + tai khóa là CUT rời có bản lề CREASE riêng (không gusset)
+        expect(by('base_corner_fr').gusset).toBeUndefined();
+        expect(by('base_corner_fr').paths.some(s => s.tag === 'CREASE')).toBe(true);
+        expect(by('base_dust_fl').paths.some(s => s.tag === 'CREASE')).toBe(true);
+    });
+
+    it('thân nắp = thân đáy + 8T + 2·lidGap; thành nắp auto = D + 2T (mẫu đo +14/+3)', () => {
+        const model = generateDoubleTray(make(P));
+        const span = (n: string, axis: 'x' | 'y') => {
+            const o = model.panels.find(p => p.name === n)!.outline!;
+            const vals = o.map(q => q[axis]);
+            return Math.max(...vals) - Math.min(...vals);
+        };
+        expect(span('lid_bottom', 'x') - span('base_bottom', 'x')).toBeCloseTo(8 * 1.5 + 2 * 1, 3);
+        expect(span('lid_bottom', 'y') - span('base_bottom', 'y')).toBeCloseTo(8 * 1.5 + 2 * 1, 3);
+        expect(span('lid_front_wall', 'y')).toBeCloseTo(52 + 2 * 1.5, 3);
+        // lidD tùy chỉnh thay thế auto
+        const custom = generateDoubleTray(make({ ...P, lidD: 30 }));
+        const wall = custom.panels.find(p => p.name === 'lid_front_wall')!.outline!;
+        const ys = wall.map(q => q.y);
+        expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(30, 3);
+    });
+
+    it('mỗi mảnh đủ 24 nét cấn (kể cả 2 nét mẫu SVG gốc vẽ sót)', () => {
+        const model = generateDoubleTray(make(P));
+        for (const prefix of ['base_', 'lid_'] as const) {
+            const creases = model.panels
+                .filter(p => p.name.startsWith(prefix))
+                .flatMap(p => p.paths)
+                .filter(s => s.tag === 'CREASE');
+            expect(creases.length, prefix).toBe(24);
+        }
+    });
+
+    it('notch U chống rách: 16 bezier (2 × 4 góc × 2 mảnh), points ↔ controlPoints nhất quán', () => {
+        const model = generateDoubleTray(make(P));
+        const bez = model.allPaths.filter(s => s.type === 'bezier');
+        expect(bez.length).toBe(16);
+        for (const s of bez) {
+            expect(s.controlPoints).toBeDefined();
+            const first = s.points[0];
+            const last = s.points[s.points.length - 1];
+            expect(Math.hypot(first.x - s.controlPoints![0].x, first.y - s.controlPoints![0].y)).toBeLessThan(1e-6);
+            expect(Math.hypot(last.x - s.controlPoints![3].x, last.y - s.controlPoints![3].y)).toBeLessThan(1e-6);
+        }
+    });
+
+    it('bounding box scales with dimensions', () => {
+        const small = generateDoubleTray(make({ ...P, L: 100, W: 80, D: 20 }));
+        const large = generateDoubleTray(make({ ...P, L: 400, W: 300, D: 60 }));
+        expect(large.boundingBox.width).toBeGreaterThan(small.boundingBox.width);
+        expect(large.boundingBox.height).toBeGreaterThan(small.boundingBox.height);
+    });
+
+    it('handles L === W và W > L (khay ngang)', () => {
+        assertValidDieline(generateDoubleTray(make({ ...P, L: 150, W: 150, D: 30 })));
+        assertValidDieline(generateDoubleTray(make({ ...P, L: 100, W: 380, D: 40 })));
+    });
+
+    it('stores params in output model', () => {
+        const params = make({ ...P, L: 130, W: 70, D: 30 });
+        const model = generateDoubleTray(params);
+        expect(model.params.L).toBe(130);
+        expect(model.params.lidGap).toBe(1);
+    });
+});
+
+// ─── Hanging Window Box (Hộp treo có cửa sổ) ────────────────
+// [HANGING-WINDOW 2026-07-27] Tầng test CẤU TRÚC của loại hộp mới: đếm panel
+// theo từng nhánh công tắc cửa sổ / lỗ euro, chuỗi cha–con của cụm tai treo,
+// renderZShift tách lớp giấy và `holes` của mặt trước.
+import { generateHangingWindowBox, hangingWindowDims } from './HangingWindowBox';
+
+describe('generateHangingWindowBox', () => {
+    // Preset mẫu Dacdora — hộp treo hàng điện tử L80 × W30 × D140.
+    const P = {
+        boxType: 'hanging_window' as const,
+        L: 80, W: 30, D: 140, T: 0.5, C: 0.5, G: 15, TH: 15,
+        WNW: 0, WNH: 0, HTH: 0, hgbWindow: true,
+    };
+
+    it('generates valid dieline with default params', () => {
+        const model = generateHangingWindowBox(make(P));
+        assertValidDieline(model);
+        expect(model.standardCode).toBe('HANGING-WINDOW');
+        expect(model.warnings).toEqual([]);
+    });
+
+    it('đủ 16 panel: thân RTE (13) + tai treo 2 lớp + lưỡi khoá', () => {
+        const model = generateHangingWindowBox(make(P));
+        expect(model.panels.length).toBe(16);
+        const names = model.panels.map(p => p.name);
+        for (const expected of [
+            'glue_flap', 'front', 'back', 'left', 'right',
+            'dust_top_left', 'dust_top_right', 'dust_bot_left', 'dust_bot_right',
+            'closure_top', 'tuck_top', 'closure_bot', 'tuck_bot',
+            'hang_tab_1', 'hang_tab_2', 'hang_tab_lip',
+        ]) {
+            expect(names, `thiếu ${expected}`).toContain(expected);
+        }
+        // Đúng một gốc (mặt trước) — phần còn lại treo vào cây gập
+        expect(model.panels.filter(p => p.parent === null).map(p => p.name)).toEqual(['front']);
+    });
+
+    it('tắt công tắc cửa sổ: vẫn 16 panel, mặt trước không có holes, bớt đúng 8 đoạn CUT', () => {
+        const on = generateHangingWindowBox(make(P));
+        const off = generateHangingWindowBox(make({ ...P, hgbWindow: false }));
+
+        expect(off.panels.length).toBe(on.panels.length);
+        expect(on.panels.find(p => p.name === 'front')!.holes).toHaveLength(1);
+        expect(off.panels.find(p => p.name === 'front')!.holes ?? []).toHaveLength(0);
+
+        // Cửa sổ bo góc = 8 đoạn CUT (4 cạnh + 4 bo góc bezier)
+        expect(on.allPaths.length - off.allPaths.length).toBe(8);
+        expect(off.warnings).toEqual([]);
+    });
+
+    it('cửa sổ mặt trước: vòng holes khép kín, căn giữa mặt trước', () => {
+        const model = generateHangingWindowBox(make(P));
+        const dims = hangingWindowDims(make(P));
+        const front = model.panels.find(p => p.name === 'front')!;
+        const ring = front.holes![0];
+
+        // 4 cạnh (1 điểm/đoạn) + 4 cung bezier chia 12 đoạn = 52 điểm
+        expect(ring.length).toBe(52);
+        const xs = ring.map(q => q.x);
+        const ys = ring.map(q => q.y);
+        expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(dims.winW, 2);
+        expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(dims.winH, 2);
+
+        const fxs = front.outline!.map(q => q.x);
+        expect((Math.min(...xs) + Math.max(...xs)) / 2)
+            .toBeCloseTo((Math.min(...fxs) + Math.max(...fxs)) / 2, 2);
+        expect((Math.min(...ys) + Math.max(...ys)) / 2).toBeCloseTo(P.D / 2, 2);
+    });
+
+    it('chuỗi tai treo: parent/pivotEdge nối tiếp back → lớp 1 → lớp 2 → lưỡi khoá', () => {
+        const model = generateHangingWindowBox(make(P));
+        const dims = hangingWindowDims(make(P));
+        const by = (n: string) => model.panels.find(p => p.name === n)!;
+
+        const tab1 = by('hang_tab_1');
+        const tab2 = by('hang_tab_2');
+        const lip = by('hang_tab_lip');
+
+        expect(tab1.parent).toBe('back');
+        expect(tab2.parent).toBe('hang_tab_1');
+        expect(lip.parent).toBe('hang_tab_2');
+
+        // pivotEdge nằm đúng trên ba nếp gấp ngang: D, D + tabH, D + tabH + tab2H
+        const yTabMid = P.D + dims.tabH;
+        const yTabTop = yTabMid + dims.tab2H;
+        for (const [panel, y] of [[tab1, P.D], [tab2, yTabMid], [lip, yTabTop]] as const) {
+            expect(panel.pivotEdge).toHaveLength(2);
+            expect(panel.pivotEdge![0].y, panel.name).toBeCloseTo(y, 3);
+            expect(panel.pivotEdge![1].y, panel.name).toBeCloseTo(y, 3);
+        }
+        // pivotEdge lớp 2 chính là mép trên lớp 1 (biên chung THẬT với parent)
+        const tab1Top = Math.max(...tab1.outline!.map(q => q.y));
+        expect(tab2.pivotEdge![0].y).toBeCloseTo(tab1Top, 3);
+
+        // Lớp 1 đồng phẳng mặt sau, lớp 2 gập úp 180°.
+        // [HANGING-WINDOW 2026-07-27] Lưỡi khoá foldAngle = 0: nó KHÔNG gập mà nối
+        // thẳng, đồng phẳng lớp 2 ⇒ sau khi lớp 2 úp 180° thì lưỡi đâm thẳng xuống
+        // lòng hộp. Bản trước để 90° làm lưỡi bật ngược ra ngoài vỏ hộp trong 3D.
+        expect(tab1.foldAngle).toBe(0);
+        expect(tab2.foldAngle).toBe(180);
+        expect(lip.foldAngle).toBe(0);
+
+        // Gập tai treo TRƯỚC nắp gài (nắp/lưỡi gài lùi về 0,60–0,95)
+        expect(tab1.foldPhase![1]).toBeLessThanOrEqual(by('closure_top').foldPhase![0]);
+    });
+
+    it('renderZShift âm cho lớp 2 (tách lớp giấy chồng nhau), lưỡi khoá đi theo lớp 2', () => {
+        const model = generateHangingWindowBox(make(P));
+        const by = (n: string) => model.panels.find(p => p.name === n)!;
+        expect(by('hang_tab_2').renderZShift).toBeCloseTo(-(P.T + 0.1), 6);
+        expect(by('hang_tab_2').renderZShift!).toBeLessThan(0);
+        // [HANGING-WINDOW 2026-07-27] Lưỡi khoá đồng phẳng lớp 2 ⇒ KHÔNG dịch z
+        // thêm; nó đã nằm sẵn đúng lớp giấy của lớp 2 (đã dịch −(T+0,1)).
+        expect(by('hang_tab_lip').renderZShift).toBeUndefined();
+        // Lớp 1 đồng phẳng mặt sau ⇒ không dịch trục z
+        expect(by('hang_tab_1').renderZShift).toBeUndefined();
+    });
+
+    it('[HANGING-WINDOW 2026-07-27] cổ thu ở nếp gấp: cung lượn R + nút bo 2T', () => {
+        const model = generateHangingWindowBox(make(P));
+        const dims = hangingWindowDims(make(P));
+        const yTabMid = P.D + dims.tabH;
+        const h = P.T / 2;
+        const back = model.panels.find(p => p.name === 'back')!.outline!;
+        const xTabL = Math.min(...back.map(q => q.x)) + h;
+        const xTabR = Math.max(...back.map(q => q.x)) - h;
+
+        // Nút bo = 2·T như mẫu (kẹp theo chiều cao tai treo).
+        expect(dims.nubR).toBeCloseTo(2 * P.T, 3);
+        expect(dims.neckR).toBeGreaterThan(dims.nubR);
+
+        const tab1 = model.panels.find(p => p.name === 'hang_tab_1')!;
+        const tab2 = model.panels.find(p => p.name === 'hang_tab_2')!;
+        const crease = tab1.paths.filter(s => s.tag === 'CREASE'
+            && Math.abs(s.points[0].y - yTabMid) < 0.01);
+        expect(crease, 'đúng một nét cấn giữa hai lớp').toHaveLength(1);
+
+        // Nét cấn chạy giữa hai ĐỈNH nút bo: thụt vào (neckR + nubR) mỗi bên.
+        expect(crease[0].points[0].x).toBeCloseTo(xTabL + dims.neckR + dims.nubR, 2);
+        expect(crease[0].points[1].x).toBeCloseTo(xTabR - dims.neckR - dims.nubR, 2);
+        // pivotEdge lớp 2 trùng đúng nét cấn đã thu.
+        expect(tab2.pivotEdge![0].x).toBeCloseTo(crease[0].points[0].x, 3);
+        expect(tab2.pivotEdge![1].x).toBeCloseTo(crease[0].points[1].x, 3);
+
+        // Mỗi nửa cổ thu: 2 cung lượn R + 2 cung 1/4 nút bo = 4 bezier ngoài lỗ euro.
+        const necks = (panel: typeof tab1) => panel.paths.filter(s => s.type === 'bezier'
+            && s.points.every(q => Math.abs(q.y - yTabMid) <= dims.neckR + dims.nubR + 0.01));
+        expect(necks(tab1).length, 'lớp 1: 2 cung R + 2 nút bo').toBeGreaterThanOrEqual(4);
+        expect(necks(tab2).length, 'lớp 2: 2 cung R + 2 nút bo').toBeGreaterThanOrEqual(4);
+
+        // Cạnh bên thẳng chỉ chạy tới điểm tiếp tuyến, KHÔNG chạm nếp gấp nữa.
+        const yTan = yTabMid - dims.nubR - dims.neckR;
+        const sideCuts = tab1.paths.filter(s => s.tag === 'CUT' && s.type === 'line'
+            && Math.abs(s.points[0].x - s.points[1].x) < 0.01);
+        expect(sideCuts).toHaveLength(2);
+        for (const s of sideCuts) {
+            const ys = [s.points[0].y, s.points[1].y];
+            expect(Math.max(...ys)).toBeCloseTo(yTan, 2);
+        }
+    });
+
+    it('mỗi lớp tai treo đúng một lỗ euro: 4 cung bán nguyệt + gờ nửa vòng tròn', () => {
+        const model = generateHangingWindowBox(make(P));
+        const dims = hangingWindowDims(make(P));
+        expect(dims.hasSlot).toBe(true);
+
+        for (const name of ['hang_tab_1', 'hang_tab_2'] as const) {
+            const panel = model.panels.find(p => p.name === name)!;
+            expect(panel.holes, name).toHaveLength(1);
+            // 2 cạnh bên của lớp + các đoạn lỗ euro đều là nét CUT
+            const cuts = panel.paths.filter(s => s.tag === 'CUT');
+            // [HANGING-WINDOW 2026-07-27] Panel còn chứa các cung của CỔ THU ở nếp
+            // gấp — lọc theo dải y của lỗ euro để chỉ đếm cung của chính cái lỗ.
+            const yTabMid = P.D + dims.tabH;
+            const cySlot = name === 'hang_tab_1'
+                ? yTabMid - dims.slotPos : yTabMid + dims.slotPos;
+            const reach = dims.slotH / 2 + dims.nibD + 0.5;
+            const bez = panel.paths.filter(s => s.type === 'bezier'
+                && s.points.every(q => Math.abs(q.y - cySlot) <= reach));
+            // [HANGING-WINDOW 2026-07-27] 4 cung bo bán nguyệt hai đầu khe + 4 góc
+            // gờ chống trượt là NỬA VÒNG TRÒN = 2 cung 90° ⇒ 6 bezier. Trước đây gờ
+            // là chữ nhật góc vuông (4 bezier), rồi chữ nhật bo góc (8 bezier) —
+            // mẫu khuôn thật là nửa vòng tròn.
+            expect(bez.length, `${name}: 4 cung bán nguyệt + 2 cung gờ`).toBe(6);
+            // 2 cạnh bên lớp tai treo + 9 đoạn lỗ euro (1 cạnh phẳng + 4 cung bán
+            // nguyệt + 2 đoạn chân gờ + 2 cung nửa vòng tròn của gờ) = 11.
+            expect(cuts.length, name).toBeGreaterThanOrEqual(11);
+            // Bezier đồng bộ points ↔ controlPoints (bất biến 3)
+            for (const s of bez) {
+                const first = s.points[0];
+                const last = s.points[s.points.length - 1];
+                expect(Math.hypot(first.x - s.controlPoints![0].x, first.y - s.controlPoints![0].y)).toBeLessThan(1e-6);
+                expect(Math.hypot(last.x - s.controlPoints![3].x, last.y - s.controlPoints![3].y)).toBeLessThan(1e-6);
+            }
+        }
+    });
+
+    it('hộp quá nhỏ: bỏ cửa sổ + bỏ lỗ euro, vẫn 16 panel và có cảnh báo', () => {
+        // L = 18mm nằm dưới miền của validateParams — gọi generator trực tiếp để
+        // khoá hai guard suy biến (hasWindow = false, hasSlot = false).
+        const tiny = make({ ...P, L: 18, W: 20, D: 100 });
+        const dims = hangingWindowDims(tiny);
+        expect(dims.hasWindow).toBe(false);
+        expect(dims.hasSlot).toBe(false);
+
+        const model = generateHangingWindowBox(tiny);
+        expect(model.panels.length).toBe(16);
+        expect(model.panels.find(p => p.name === 'front')!.holes ?? []).toHaveLength(0);
+        for (const name of ['hang_tab_1', 'hang_tab_2'] as const) {
+            expect(model.panels.find(p => p.name === name)!.holes, name).toBeUndefined();
+        }
+        // [HANGING-WINDOW 2026-07-27] `warnings` là trường tuỳ chọn của DielineModel
+        // nên phải chốt tồn tại trước khi đọc độ dài (TS strict).
+        const warnings = model.warnings ?? [];
+        expect(warnings.length).toBe(2);
+        expect(warnings.join(' ')).toContain('cửa sổ');
+        expect(warnings.join(' ')).toContain('lỗ euro');
+    });
+
+    it('bounding box scales with dimensions', () => {
+        const small = generateHangingWindowBox(make({ ...P, L: 50, W: 20, D: 80 }));
+        const large = generateHangingWindowBox(make({ ...P, L: 160, W: 60, D: 260 }));
+        expect(large.boundingBox.width).toBeGreaterThan(small.boundingBox.width);
+        expect(large.boundingBox.height).toBeGreaterThan(small.boundingBox.height);
+    });
+
+    it('stores params in output model', () => {
+        const params = make({ ...P, L: 90, D: 150 });
+        const model = generateHangingWindowBox(params);
+        expect(model.params.L).toBe(90);
+        expect(model.params.D).toBe(150);
+        expect(model.params.hgbWindow).toBe(true);
+    });
+});

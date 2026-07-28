@@ -40,7 +40,14 @@ export default function NewDocumentModal({ isOpen, onClose, onCreate }: Props) {
         const onKey = (e: KeyboardEvent) => {
             if (!isOpen) return;
             if (e.key === 'Escape') onClose();
-            if (e.key === 'Enter') handleCreate();
+            // UIUX (audit 2026-07-27 §D-19) fix-verify: Enter=Tạo chỉ khi KHÔNG đứng trong
+            // select/textarea/BUTTON (đang mở dropdown chọn khổ giấy, hoặc Tab tới nút Hủy
+            // rồi Enter thì không được tạo nhầm); input text tên tài liệu vẫn giữ Enter=Tạo.
+            if (e.key === 'Enter') {
+                const tag = (e.target as HTMLElement | null)?.tagName;
+                if (tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'BUTTON') return;
+                handleCreate();
+            }
         };
         if (isOpen) window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
@@ -90,7 +97,8 @@ export default function NewDocumentModal({ isOpen, onClose, onCreate }: Props) {
                     onChange={(e) => setPresetId(e.target.value)}
                     className="w-full h-9 px-2 mb-4 text-[13px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500"
                 >
-                    {PRESETS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+                    {/* UIUX (audit 2026-07-27 §D-19): nhãn 'Tùy chỉnh...' đi qua i18n lúc render (PRESETS là const module-level) */}
+                    {PRESETS.map(p => <option key={p.id} value={p.id}>{p.id === 'custom' ? t('misc.newDocument:tuy_chinh', 'Tùy chỉnh...') : p.label}</option>)}
                 </select>
 
                 {isCustom && (
@@ -102,7 +110,8 @@ export default function NewDocumentModal({ isOpen, onClose, onCreate }: Props) {
                                 className="w-full h-9 px-2 text-[13px] bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500" />
                         </div>
                         <div>
-                            <label className="block text-[11px] font-semibold text-slate-500 dark:text-zinc-400 mb-1">Cao (mm)</label>
+                            {/* UIUX (audit 2026-07-27 §D-19): nhãn hardcode → i18n */}
+                            <label className="block text-[11px] font-semibold text-slate-500 dark:text-zinc-400 mb-1">{t('misc.newDocument:cao_mm', 'Cao (mm)')}</label>
                             <input type="number" min={1} value={customH}
                                 onChange={(e) => setCustomH(Number(e.target.value) || 0)}
                                 className="w-full h-9 px-2 text-[13px] bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500" />
@@ -121,7 +130,8 @@ export default function NewDocumentModal({ isOpen, onClose, onCreate }: Props) {
                             <button
                                 onClick={() => setOrientation('landscape')}
                                 className={`flex-1 h-9 rounded-md text-[12px] font-semibold border transition-colors ${orientation === 'landscape' ? 'bg-teal-500 text-white border-teal-500' : 'bg-white dark:bg-zinc-900 text-slate-600 dark:text-zinc-300 border-slate-300 dark:border-white/20'}`}
-                            >Ngang</button>
+                            >{/* UIUX (audit 2026-07-27 §D-19): nhãn hardcode → i18n */}
+                            {t('misc.newDocument:ngang', 'Ngang')}</button>
                         </div>
                     </div>
                     <div className="w-24">

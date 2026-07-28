@@ -156,7 +156,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         if (lockedMode === 'sticker_imposer') return 'sticker_imposer';
         if (lockedMode === 'cnc_imposer') return 'cnc_imposer';
         if (currentTool && currentTool !== 'none') return currentTool as any;
-        const allowedFeatures = ['shuffle', 'resize', 'trim_shift', 'split', 'merge', 'preflight', 'sticker', 'bgremover', 'optimize', 'numbering', 'datamerge', 'ocr', 'encrypt', 'metadata', 'office_convert', 'watermark', 'upscale', 'pages', 'pdfx', 'hairlines', 'convertcolors', 'trapping', 'crop'];
+        const allowedFeatures = ['shuffle', 'resize', 'trim_shift', 'split', 'merge', 'preflight', 'font_tools', 'sticker', 'bgremover', 'optimize', 'numbering', 'datamerge', 'ocr', 'encrypt', 'metadata', 'office_convert', 'watermark', 'upscale', 'pages', 'pdfx', 'hairlines', 'convertcolors', 'trapping', 'crop'];
         if (initialFeature && allowedFeatures.includes(initialFeature)) return initialFeature as any;
         return 'none';
     });
@@ -178,6 +178,32 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             setActiveTool(currentTool as any);
         }
     }, [currentTool]);
+
+    // UIUX (audit 2026-07-27 §B-11): store về 'none' (nút ‹ Quay lại ở header panel)
+    // → panel cũng quay về danh sách công cụ. CHỈ khi store ĐỔI thật sau mount —
+    // không đè lockedMode/initialFeature lúc khởi tạo (store 'none' ban đầu là giá
+    // trị mặc định, không phải lệnh Quay lại của người dùng).
+    const prevStoreToolRef = useRef<string>(currentTool);
+    useEffect(() => {
+        const prevStore = prevStoreToolRef.current;
+        prevStoreToolRef.current = currentTool;
+        if (currentTool === 'none' && prevStore && prevStore !== 'none' && activeTool !== 'none') {
+            setActiveTool('none');
+        }
+    }, [currentTool]);
+
+    // UIUX (audit 2026-07-27 §B-13/§B-21): chọn tool mới → focus vào panel cấu hình
+    // để Tab đi thẳng vào field đầu của form (không phải Tab xuyên qua toolbar).
+    // Guard: chỉ khi đổi thật, không cướp focus lúc mount đầu.
+    const panelFocusRef = useRef<HTMLDivElement>(null);
+    const prevFocusToolRef = useRef<string | null>(null);
+    useEffect(() => {
+        const prev = prevFocusToolRef.current;
+        prevFocusToolRef.current = activeTool;
+        if (prev !== null && prev !== activeTool && activeTool !== 'none') {
+            panelFocusRef.current?.focus();
+        }
+    }, [activeTool]);
 
     useEffect(() => {
         if (onActiveToolChange) onActiveToolChange(activeTool);
@@ -973,6 +999,9 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
 
     // ═══ Execute Handler ═══
     const handleExecute = async () => {
+        // UIUX (audit 2026-07-27 §B-21) fix-verify: Enter từ ô SL (onRequestExecute)
+        // từng bypass guard disabled của nút Bình — chặn cùng điều kiện với nút.
+        if (isProcessing || !pdfFile) return;
         if (s.taskMode === 'booklet') {
             const buildActiveBookReport = (sheetWidth: number, sheetHeight: number) => toBookReportRenderConfig(
                 s.bookReportDisplay,
@@ -1226,6 +1255,8 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     const showPaperSection = s.taskMode !== 'booklet' || (s.taskMode === 'booklet' && s.scaleMode !== '100');
     // ═══ RENDER ═══
     if (activeTool === 'none') {
+        // UIUX (audit 2026-07-27 §B-12) fix-verify: B-12 rút lại — menu chỉ render khi
+        // activeTool==='none' nên prop activeTool là dead code; mini-toolbar đã highlight.
         return <ToolMenuList setActiveTool={t => setActiveTool(t as ActiveToolType)} setTaskMode={m => {
             s.setTaskMode(m as TaskMode);
         }} onActiveToolChange={onActiveToolChange} />;
@@ -1276,7 +1307,8 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     );
 
     return (
-        <div className="flex flex-col gap-5 pb-4 transition-all">
+        // UIUX (audit 2026-07-27 §B-13/§B-21): tabIndex=-1 + ref → nhận focus khi đổi tool
+        <div className="flex flex-col gap-5 pb-4 transition-all outline-none" ref={panelFocusRef} tabIndex={-1}>
             {/* ═══ PREPROCESSING TOOLS ═══ */}
             {isPreprocessing && (
                 <PreprocessingRouter
@@ -1284,7 +1316,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                     onStartShuffle={onStartShuffle} onStartResize={onStartResize}
                     onStartTrimShift={onStartTrimShift}
                     onStartSplit={onStartSplit} onStartMerge={onStartMerge}
-                    onIssueSelect={onIssueSelect} onOpenOutputPreview={onOpenOutputPreview} onFileFixed={onFileFixed}
+                    onIssueSelect={onIssueSelect} onOpenOutputPreview={onOpenOutputPreview} onOpenTool={(tool) => setActiveTool(tool as ActiveToolType)} onFileFixed={onFileFixed}
                     officeSourceFile={officeSourceFile}
                     officeSourceFiles={officeSourceFiles} ensureCropFileId={ensureCropFileId} onCropApplied={onCropApplied} onCropClose={onCropClose}
                 />
@@ -1397,6 +1429,8 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 detectedShapesByPage={detectedShapesByPage} setDetectedShapesByPage={setDetectedShapesByPage}
                                 viewerActivePage={viewerActivePage} viewerPageOrder={viewerPageOrder || null}
                                 paperSectionJSX={paperSectionJSX}
+                                // UIUX (audit 2026-07-27 §B-09): Enter trong form số lượng → chạy Bình luôn
+                                onRequestExecute={handleExecute}
                             />
                         </>
                     )}
@@ -1601,7 +1635,9 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                     className="flex-1 h-11 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-slate-600">{t('imposition.imposerDashboard:xem_bai_in')}</button>
                             </div>
                         )}
-                        <button onClick={handleExecute} disabled={isProcessing}
+                        {/* UIUX (audit 2026-07-27 §B-22): chưa mở file → khóa nút Bình + title giải thích */}
+                        <button onClick={handleExecute} disabled={isProcessing || !pdfFile}
+                            title={!pdfFile ? t('imposition.imposerDashboard:mo_file_pdf_truoc_khi_binh', 'Mở file PDF trước khi bình') : undefined}
                             className="w-full h-11 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-1">
                             {t('preprocess.common:run')}{isProcessing ? '…' : ''}
                         </button>
@@ -1610,8 +1646,9 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             )}
 
             {/* Error */}
+            {/* UIUX (audit 2026-07-27 §B-23): lỗi đã được formatError hóa khi SET (ImpositionTab) — pre-line để dòng hướng khắc phục xuống hàng */}
             {globalError && (
-                <div className="p-3 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800/50 rounded text-sm">{globalError}</div>
+                <div className="p-3 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800/50 rounded text-sm whitespace-pre-line">{globalError}</div>
             )}
 
             {/* ═══ DIALOGS ═══ */}

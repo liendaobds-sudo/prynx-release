@@ -86,7 +86,7 @@ function scheduleGeneration(
                     ? state.clampVersion + 1
                     : state.clampVersion,
                 ...(forceRerender
-                    ? { isStanding: !['pizza', 'tray'].includes(result.params.boxType) }
+                    ? { isStanding: !['pizza', 'tray', 'double_tray'].includes(result.params.boxType) }
                     : {}),
             }));
         } catch (error) {
@@ -137,12 +137,36 @@ function applyBoxTypeDefaults(prev: BoxParams, value: BoxParams[keyof BoxParams]
     if (value === 'tray') {
         Object.assign(next, { L: 200, W: 150, D: 40, T: 1, G: 10, TH: 15, sleeveGlue: 15 });
     }
+    if (value === 'double_tray') {
+        // [DOUBLE-TRAY 2026-07-26] Mẫu chuẩn 100010-01: thân 361×261, thành 52,
+        // bìa 1.5mm, khe lỏng 1mm → nắp tự động 375×275, thành 55.
+        Object.assign(next, { L: 361, W: 261, D: 52, T: 1.5, C: 1, G: 5, TH: 15, lidD: 0, lidGap: 1 });
+    } else if (prev.boxType === 'double_tray') {
+        Object.assign(next, {
+            L: DEFAULT_PARAMS.L, W: DEFAULT_PARAMS.W, D: DEFAULT_PARAMS.D,
+            T: DEFAULT_PARAMS.T, C: DEFAULT_PARAMS.C, G: DEFAULT_PARAMS.G, TH: DEFAULT_PARAMS.TH,
+        });
+    }
+    // [HANGING-WINDOW 2026-07-27] Preset_Dacdora — mẫu khuôn "hanging electronic
+    // product box with window" (L80 × W30 × D140, giấy 0,5mm, mí keo 15, tai đút 15).
+    if (value === 'hanging_window') {
+        Object.assign(next, { L: 80, W: 30, D: 140, T: 0.5, C: 0.5, G: 15, TH: 15 });
+    } else if (prev.boxType === 'hanging_window') {
+        Object.assign(next, {
+            L: DEFAULT_PARAMS.L, W: DEFAULT_PARAMS.W, D: DEFAULT_PARAMS.D,
+            T: DEFAULT_PARAMS.T, C: DEFAULT_PARAMS.C, G: DEFAULT_PARAMS.G, TH: DEFAULT_PARAMS.TH,
+        });
+    }
     if (value === 'auto_bottom') {
         // Đáy dán cần L > W rõ rệt để 2 tai đáy không đè nhau khi hộp bẹp.
         Object.assign(next, { ABD: DEFAULT_PARAMS.ABD });
     } else if (prev.boxType === 'auto_bottom') {
         Object.assign(next, { ABD: DEFAULT_PARAMS.ABD });
     }
+    // [UIUX 2026-07-27] Đáy gài (SLB) & đáy dán: mặc định KHÔNG bật lưỡi khoá nắp.
+    // Đây là hai loại duy nhất hiện ô tích này (ParamPanel: isSLB || isAutoBottom);
+    // đa số đơn hàng không cần lưỡi khoá, ai cần thì tự tích.
+    if (value === 'slb' || value === 'auto_bottom') next.lockTab = false;
     return next;
 }
 
@@ -157,7 +181,7 @@ export const useBoxStore = create<BoxStore>((set, get) => ({
     nestingResult: null,
     sleeveNestingResult: null,
     mockupTextureUrl: null,
-    isStanding: !['pizza', 'tray'].includes(DEFAULT_PARAMS.boxType),
+    isStanding: !['pizza', 'tray', 'double_tray'].includes(DEFAULT_PARAMS.boxType),
     isGenerating: false,
     isModelCurrent: false,
     generationError: null,

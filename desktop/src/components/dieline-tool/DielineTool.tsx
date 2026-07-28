@@ -103,7 +103,7 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
             let numPages = 1;
             let blob: Blob | null;
             if (activeTab === 'nesting' && nestingResult) {
-                if (dieline.params.boxType === 'tray' && sleeveNestingResult) {
+                if ((dieline.params.boxType === 'tray' || dieline.params.boxType === 'double_tray') && sleeveNestingResult) {
                     blob = await buildTrayNestingPdfBlob(dieline, nestingResult, sleeveNestingResult, nestingConfig);
                     numPages = nestingConfig.trayNestingMode === 'split' ? 2 : 1;
                 } else {
@@ -357,7 +357,7 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
                             <button className="dt-export-tab" disabled={!canExport}
                                 onClick={() => {
                                     if (!canExport) return;
-                                    if (dieline.params.boxType === 'tray' && sleeveNestingResult)
+                                    if ((dieline.params.boxType === 'tray' || dieline.params.boxType === 'double_tray') && sleeveNestingResult)
                                         downloadTrayNestingPDF(dieline, nestingResult, sleeveNestingResult, nestingConfig);
                                     else downloadNestingPDF(dieline, nestingResult, nestingConfig);
                                 }}
@@ -367,7 +367,7 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
                             <button className="dt-export-tab" disabled={!canExport}
                                 onClick={() => {
                                     if (!canExport) return;
-                                    if (dieline.params.boxType === 'tray' && sleeveNestingResult)
+                                    if ((dieline.params.boxType === 'tray' || dieline.params.boxType === 'double_tray') && sleeveNestingResult)
                                         downloadProductionTrayNestingPDF(dieline, nestingResult, sleeveNestingResult, nestingConfig);
                                     else downloadProductionNestingPDF(dieline, nestingResult);
                                 }}

@@ -14,6 +14,58 @@ import * as THREE from 'three';
 import type { Panel, Point2D } from './types';
 
 /**
+ * Scratch dùng riêng cho một panel trong vòng render; không chia sẻ giữa các panel.
+ * [PERF (audit 2026-07-27 §DT3D-004)] Giảm cấp phát Matrix4 trong mỗi frame.
+ */
+export interface FoldCompensationScratch {
+    result: THREE.Matrix4;
+    step: THREE.Matrix4;
+    temp: THREE.Matrix4;
+}
+
+interface FoldLookup {
+    byName: Map<string, Panel>;
+    chainByPanel: WeakMap<Panel, Panel[]>;
+}
+
+// Model dieline bất biến trong suốt một lượt render; cache theo identity của mảng panel.
+// WeakMap tránh giữ model cũ sau khi đổi khuôn.
+const foldLookupCache = new WeakMap<Panel[], FoldLookup>();
+
+function getFoldLookup(allPanels: Panel[]): FoldLookup {
+    const cached = foldLookupCache.get(allPanels);
+    if (cached) return cached;
+
+    const byName = new Map<string, Panel>();
+    for (const candidate of allPanels) {
+        // Giữ đúng semantics của allPanels.find(): tên trùng lấy panel đầu tiên.
+        if (!byName.has(candidate.name)) byName.set(candidate.name, candidate);
+    }
+    const created: FoldLookup = {
+        byName,
+        chainByPanel: new WeakMap(),
+    };
+    foldLookupCache.set(allPanels, created);
+    return created;
+}
+
+function getParentChain(panel: Panel, lookup: FoldLookup): Panel[] {
+    const cached = lookup.chainByPanel.get(panel);
+    if (cached) return cached;
+
+    const chain: Panel[] = [];
+    const visited = new Set<string>();
+    let current: Panel | undefined = panel;
+    while (current && !visited.has(current.name)) {
+        visited.add(current.name);
+        chain.push(current);
+        current = current.parent ? lookup.byName.get(current.parent) : undefined;
+    }
+    lookup.chainByPanel.set(panel, chain);
+    return chain;
+}
+
+/**
  * Cận dưới của miền bù độ dày khi gập (mm).
  * _Requirements: 2.1_
  */
@@ -227,7 +279,9 @@ function buildFoldMatrix(
     pivotEdge: [Point2D, Point2D],
     foldAngleDeg: number,
     comp: number,
-    zShift = 0,
+    zShift: number,
+    out: THREE.Matrix4,
+    temp: THREE.Matrix4,
 ): THREE.Matrix4 {
     const [p1, p2] = pivotEdge;
     const midX = (p1.x + p2.x) / 2;
@@ -235,27 +289,22 @@ function buildFoldMatrix(
     const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
     const foldRad = deg2rad(foldAngleDeg);
 
-    const mat = new THREE.Matrix4();
-    // Dịch Z trong hệ quy chiếu CHA (áp NGOÀI CÙNG, bên trái): sau khi panel
-    // đã gập quanh bản lề của nó, đẩy cả panel theo z cục bộ của cha một lượng
-    // `zShift` mm. Dùng để giấu mí miệng gập 180° vào sau mặt tường (vào lòng
-    // túi) bằng hình học thật. = 0 → không ảnh hưởng (mọi panel/khuôn khác).
+    // [PERF (audit 2026-07-27 §DT3D-004)] Dùng một temp Matrix4 cho cả chuỗi phép nhân.
+    const mat = out.identity();
     if (zShift !== 0) {
-        mat.multiply(new THREE.Matrix4().makeTranslation(0, 0, zShift));
+        mat.multiply(temp.makeTranslation(0, 0, zShift));
     }
-    mat.multiply(new THREE.Matrix4().makeTranslation(midX, midY, 0));
-    mat.multiply(new THREE.Matrix4().makeRotationZ(angle));
-    mat.multiply(new THREE.Matrix4().makeRotationX(foldRad));
-    // Bù độ dày khi gập: BẢN THÂN mỗi panel đã được ép khối dày T (buildPanelSolid),
-    // nên KHÔNG dịch panel thêm cả T nữa — sẽ nhấc đáy panel ra khỏi đường gập, gây
-    // HỞ KHỚP (cạnh 2 mặt không liền nhau). Chỉ giữ một lượng tách rất nhỏ để tránh
-    // z-fighting giữa các mặt đồng phẳng chồng nhau.
+    mat.multiply(temp.makeTranslation(midX, midY, 0));
+    mat.multiply(temp.makeRotationZ(angle));
+    mat.multiply(temp.makeRotationX(foldRad));
+
+    // Panel solid đã có bề dày T; chỉ giữ bù thị giác rất nhỏ để tránh z-fighting.
     const visualComp = Math.sign(comp) * Math.min(Math.abs(comp), FOLD_COMP_VISUAL_MM);
     if (visualComp !== 0) {
-        mat.multiply(new THREE.Matrix4().makeTranslation(0, visualComp, 0));
+        mat.multiply(temp.makeTranslation(0, visualComp, 0));
     }
-    mat.multiply(new THREE.Matrix4().makeRotationZ(-angle));
-    mat.multiply(new THREE.Matrix4().makeTranslation(-midX, -midY, 0));
+    mat.multiply(temp.makeRotationZ(-angle));
+    mat.multiply(temp.makeTranslation(-midX, -midY, 0));
     return mat;
 }
 
@@ -287,14 +336,16 @@ export function applyFoldCompensation(
     depthMap: Map<string, number>,
     maxD: number,
     thickness: number,
+    scratch?: FoldCompensationScratch,
 ): FoldCompResult {
-    const matrix = new THREE.Matrix4(); // Identity
+    const matrix = (scratch?.result ?? new THREE.Matrix4()).identity();
+    const stepMatrix = scratch?.step ?? new THREE.Matrix4();
+    const tempMatrix = scratch?.temp ?? new THREE.Matrix4();
 
     let skipped = false;
     let warning: string | undefined;
 
-    // Đánh giá tính hợp lệ hình học của CHÍNH panel mục tiêu để quyết định
-    // skip/cảnh báo (Yêu cầu 2.6).
+    // Đánh giá tính hợp lệ hình học của panel mục tiêu để quyết định skip/cảnh báo.
     if (hasFoldRelation(panel)) {
         const targetDepth = getValidDepth(panel.name, depthMap);
         const targetGeometryValid =
@@ -305,20 +356,15 @@ export function applyFoldCompensation(
         }
     }
 
-    // Tích lũy biến đổi ngược lên chuỗi cha. Mỗi tầng áp ma trận gập của nó;
-    // chỉ áp lượng bù khi tầng đó có đủ hình học hợp lệ.
-    let current: Panel | null = panel;
-    const visited = new Set<string>(); // Bảo vệ chống chu trình cha.
-    while (current) {
-        if (visited.has(current.name)) break;
-        visited.add(current.name);
-
+    // [PERF (audit 2026-07-27 §DT3D-004)] Chuỗi cha được cache theo model,
+    // không tạo Set và không allPanels.find cho từng panel ở từng frame.
+    const chain = getParentChain(panel, getFoldLookup(allPanels));
+    for (const current of chain) {
         const pivot = current.pivotEdge;
         if (isValidPivotEdge(pivot) && current.parent !== null) {
             const depth = getValidDepth(current.name, depthMap);
             const foldAngleDeg = effectiveFoldAngle(current, foldProgress, depth ?? 0, maxD);
 
-            // Lượng bù chỉ áp khi tầng này có depth hợp lệ (đủ hình học).
             let comp = 0;
             if (depth !== null) {
                 const offset = computeFoldThicknessOffset({
@@ -330,13 +376,17 @@ export function applyFoldCompensation(
                 comp = offset * sign;
             }
 
-            const mat = buildFoldMatrix(pivot, foldAngleDeg, comp, zShiftFor(current, foldAngleDeg));
+            const mat = buildFoldMatrix(
+                pivot,
+                foldAngleDeg,
+                comp,
+                zShiftFor(current, foldAngleDeg),
+                stepMatrix,
+                tempMatrix,
+            );
             // Premultiply để biến đổi của cha áp sau biến đổi của con.
             matrix.premultiply(mat);
         }
-
-        const parentName: string | null = current.parent;
-        current = parentName ? allPanels.find((p) => p.name === parentName) ?? null : null;
     }
 
     return { matrix, skipped, warning };

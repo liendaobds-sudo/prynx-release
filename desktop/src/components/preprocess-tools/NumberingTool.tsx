@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { startVdpJobBackend, pollVdpJob, cancelVdpJobBackend } from '@/lib/api';
+import { startVdpJobBackend, pollVdpJob, cancelVdpJobBackend, type VdpProgressInfo } from '@/lib/api'; // UIUX (audit 2026-07-27 §D-07)
+import { ProgressBar } from '../ui/ProgressBar'; // UIUX (audit 2026-07-27 §D-07)
+import { formatError, isCanceled } from '@/lib/errorMessages'; // UIUX (audit 2026-07-27 §D-15)
 import { CmykColorPicker } from './DataMergeTool';
 import { ToolNumberInput } from './ToolUI';
 import { FontSelector } from './FontSelector';
@@ -39,6 +41,8 @@ export default function NumberingTool({
   const { t } = useTranslation();
     const [statusMessage, setStatusMessage] = useState("");
     const [isGenerating, setIsGenerating] = useState(false);
+    // UIUX (audit 2026-07-27 §D-07): tiến độ job VDP ({processed,total}) cho ProgressBar
+    const [progressInfo, setProgressInfo] = useState<VdpProgressInfo | null>(null);
     const [spawnNewTab, setSpawnNewTab] = useState(true);
     const [showHelp, setShowHelp] = useState(false);
 
@@ -116,11 +120,24 @@ export default function NumberingTool({
         if (!setVdpFields || vdpFields.length === 0) return;
         // Optional: Ensure fields are named logically for numbering
         let needsUpdate = false;
+        // UIUX (audit 2026-07-27 §D-20) fix-verify: tên field là KEY của data matrix
+        // (generateDataMatrix ghi row[field.name] = số nhảy) nên BẮT BUỘC unique —
+        // 2 field trùng tên sẽ ghi đè nhau, mất số nhảy trên bản in. Đặt lại về
+        // Slot{idx+1} khi: tên rỗng, tên auto từ palette (Truong_N — trùng được),
+        // hoặc tên đã bị field trước dùng; tên user gõ và không trùng thì giữ nguyên.
+        const seen = new Set<string>();
         const updated = vdpFields.map((f, idx) => {
-            if (!f.name || !f.name.startsWith('Slot')) {
+            const isAuto = !f.name || /^Truong_\d+$/.test(f.name);
+            if (isAuto || seen.has(f.name)) {
                 needsUpdate = true;
-                return { ...f, name: `Slot${idx + 1}`, textContent: `{Slot${idx + 1}}` };
+                // Tên sinh ra cũng không được đụng tên user đã giữ trước đó.
+                let n = idx + 1;
+                let newName = `Slot${n}`;
+                while (seen.has(newName)) { n++; newName = `Slot${n}`; }
+                seen.add(newName);
+                return { ...f, name: newName, textContent: `{${newName}}` };
             }
+            seen.add(f.name);
             return f;
         });
         if (needsUpdate) setVdpFields(updated);
@@ -308,7 +325,8 @@ export default function NumberingTool({
             setActiveVdpJobId(jobId);
             
             pollAbortRef.current = new AbortController();
-            const result = await pollVdpJob(jobId, setStatusMessage, true, pollAbortRef.current.signal);
+            // UIUX (audit 2026-07-27 §D-07): lưu thêm {processed,total} vào state cho ProgressBar
+            const result = await pollVdpJob(jobId, (m, info) => { setStatusMessage(m); setProgressInfo(info ?? null); }, true, pollAbortRef.current.signal);
             const blob = result.blob;
             const path = result.path;
             if (!blob) throw new Error(t('preprocess.numbering:khong_nhan_duoc_file_ket_qua_tu_may_chu'));
@@ -322,12 +340,14 @@ export default function NumberingTool({
                 setStatusMessage(t('preprocess.numbering:hoan_thanh_da_ghi_de_file_hien_tai'));
             }
         } catch (error: any) {
-            if (error?.name === 'AbortError') return;
+            // UIUX (audit 2026-07-27 §D-15): hủy → báo nhẹ; lỗi khác → câu Việt + hướng khắc phục
+            if (isCanceled(error)) { setStatusMessage(t('preprocess.numbering:da_huy', 'Đã hủy')); return; }
             console.error(error);
-            setStatusMessage(t('preprocess.numbering:loi_msg', { msg: error.message }));
+            setStatusMessage(formatError(error, t('preprocess.numbering:khong_chay_duoc_vdp', 'Không chạy được VDP'))); // UIUX (audit 2026-07-27 §D-15)
         } finally {
             activeVdpJobRef.current = null;
             setActiveVdpJobId(null);
+            setProgressInfo(null); // UIUX (audit 2026-07-27 §D-07)
             setIsGenerating(false);
         }
     };
@@ -758,10 +778,21 @@ export default function NumberingTool({
 
             {/* Run Button */}
             <div className="mt-auto pt-4 shrink-0 border-t border-slate-200 dark:border-zinc-700">
+                {/* UIUX (audit 2026-07-27 §D-07): đang chạy job → ProgressBar % thật + nút Hủy */}
                 {statusMessage && (
-                    <div className="mb-3 p-2 bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 text-[11px] rounded animate-pulse text-center font-medium">
-                        {statusMessage}
-                    </div>
+                    isGenerating ? (
+                        <ProgressBar
+                            message={statusMessage}
+                            processed={progressInfo?.processed}
+                            total={progressInfo?.total}
+                            onCancel={activeVdpJobId ? () => void cancelActiveVdp().catch((err) => setStatusMessage(formatError(err))) : undefined}
+                            className="mb-3"
+                        />
+                    ) : (
+                        <div className="mb-3 p-2 bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 text-[11px] rounded animate-pulse text-center font-medium">
+                            {statusMessage}
+                        </div>
+                    )
                 )}
                 
                 <div className="mb-3 flex items-center gap-2 px-1">

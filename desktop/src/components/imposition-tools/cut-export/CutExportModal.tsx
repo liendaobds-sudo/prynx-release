@@ -20,6 +20,8 @@ import {
 } from "./api";
 import { getMachineConn } from "./machineSettings";
 import { useTranslation } from 'react-i18next';
+// UIUX (audit 2026-07-27 §B-23): dịch lỗi kỹ thuật thành câu Việt + hướng khắc phục
+import { formatError } from "../../../lib/errorMessages";
 
 export interface CutExportModalProps {
   open: boolean;
@@ -121,7 +123,8 @@ export default function CutExportModal(props: CutExportModalProps) {
         setProfiles(ps);
         setProfileId((cur) => cur || saved.current.profileId || (ps[0]?.id ?? ""));
       })
-      .catch((e: unknown) => setError(String(e)));
+      // UIUX (audit 2026-07-27 §B-23): không đổ String(e) thô ra giao diện
+      .catch((e: unknown) => setError(formatError(e, t('imposition.cutExport:khong_tai_duoc_cau_hinh_may_cat', 'Không tải được cấu hình máy cắt'))));
     // Quét toàn file → chỉ giữ các trang khuôn (có đường cắt), bỏ trang in.
     if (sourcePdfPath) {
       listCutPages(sourcePdfPath)
@@ -252,7 +255,8 @@ export default function CutExportModal(props: CutExportModalProps) {
       setResult(r);
       if (!r.ok) setError(r.error || r.detail || t('imposition.cutExport:gui_that_bai'));
     } catch (e: unknown) {
-      setError(String(e));
+      // UIUX (audit 2026-07-27 §B-23): không đổ String(e) thô ra giao diện
+      setError(formatError(e, t('imposition.cutExport:khong_gui_duoc_lenh_cat', 'Không gửi được lệnh cắt')));
     } finally {
       setBusy(false);
     }
@@ -275,7 +279,8 @@ export default function CutExportModal(props: CutExportModalProps) {
         if (r.ok) okCount += 1;
         else if (!firstErr) firstErr = r.error || r.detail || t('imposition.cutExport:to_k_loi', { k: k + 1 });
       } catch (e: unknown) {
-        if (!firstErr) firstErr = String(e);
+        // UIUX (audit 2026-07-27 §B-23): không đổ String(e) thô ra giao diện
+        if (!firstErr) firstErr = formatError(e, t('imposition.cutExport:khong_gui_duoc_lenh_cat', 'Không gửi được lệnh cắt'));
       }
     }
     setBatchMsg(t('imposition.cutExport:xong_ok_total_to', { ok: okCount, total }));
@@ -426,7 +431,8 @@ export default function CutExportModal(props: CutExportModalProps) {
           )}
 
           {batchMsg && <p className="text-[13px] text-slate-500">{batchMsg}</p>}
-          {error && <p className="text-[13px] text-red-500 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 rounded p-2">{error}</p>}
+          {/* UIUX (audit 2026-07-27 §B-23): pre-line để dòng hướng khắc phục của formatError xuống hàng */}
+          {error && <p className="text-[13px] text-red-500 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 rounded p-2 whitespace-pre-line">{error}</p>}
           {result && result.ok && (
             <p className="text-[13px] text-emerald-600 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800/40 rounded p-2 break-all">
               {t('imposition.cutExport:da_gui_detail_bytes', { detail: result.detail, bytes: result.bytes_sent })}

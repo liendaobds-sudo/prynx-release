@@ -1,5 +1,7 @@
 import { degrees, type PDFDocument, type PDFPage } from 'pdf-lib';
 import type { BackendMergeManifestItem } from './api';
+// UIUX (audit 2026-07-27 §D-13): thông báo lỗi tiếng Việt qua i18n
+import i18n from '../i18n';
 
 export type CombineAssemblyNode = {
   type: 'single' | 'collapsed_group' | 'blank';
@@ -22,7 +24,8 @@ export function buildBackendCombineManifest(nodes: CombineAssemblyNode[]): {
       continue;
     }
     if (!node.file || !node.file.name.toLowerCase().endsWith('.pdf')) {
-      throw new Error('Backend manifest only supports PDF files');
+      // UIUX (audit 2026-07-27 §D-13): câu Việt qua i18n thay chuỗi tiếng Anh hardcode
+      throw new Error(i18n.t('lib.combineAssembly:chi_nhan_file_pdf', { defaultValue: 'Chức năng ghép qua backend chỉ nhận file PDF' }));
     }
 
     let fileIndex = indexes.get(node.file);

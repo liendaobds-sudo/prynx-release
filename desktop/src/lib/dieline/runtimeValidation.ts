@@ -8,7 +8,11 @@ const MAX_GAP_MM = 100;
 
 const ENUM_VALUES: Partial<Record<keyof BoxParams, readonly string[]>> = {
     glueSide: ['left', 'right'],
-    boxType: ['rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray'],
+    // [HANGING-WINDOW 2026-07-27] Mở enum cho hộp treo có cửa sổ.
+    // Công tắc `hgbWindow` không cần khai ở đây: vòng lặp assertBoxParams suy
+    // kiểu theo DEFAULT_PARAMS, nên mọi khoá có mặc định boolean (gồm
+    // `hgbWindow`) đều bị bắt buộc là boolean.
+    boxType: ['rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray', 'double_tray', 'hanging_window'],
     panelOrder: ['WLWL', 'LWLW'],
     handleShape: ['oval', 'roundRect'],
     handleY: ['bottom', 'center'],

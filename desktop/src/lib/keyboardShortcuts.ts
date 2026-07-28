@@ -79,7 +79,12 @@ export const KEYBOARD_SHORTCUTS = [
     },
     {
         id: 'viewer.dimension', group: 'tools', keys: ['D'],
-        descriptionKey: 'shortcut_dimension', bindings: [{ code: 'KeyD' }],
+        // UIUX (audit 2026-07-27) fix bug user báo: bộ gõ Telex (UniKey/EVKey) chạy
+        // toàn hệ thống biến "dd" thành "đ" — nhấn D lần 2 liên tiếp để TẮT DIM thì
+        // sự kiện thật bị nuốt, browser nhận phím tổng hợp key='đ' (code rỗng) nên
+        // binding KeyD không khớp → phải nhấn thêm mới tắt được. Nhận luôn 'đ' làm
+        // binding thứ hai (ignoreShift để 'Đ' khi kẹt Shift cũng khớp).
+        descriptionKey: 'shortcut_dimension', bindings: [{ code: 'KeyD' }, { key: 'đ', ignoreShift: true }],
     },
     {
         id: 'viewer.object_edit', group: 'tools', keys: ['F7'],
@@ -168,6 +173,39 @@ export const KEYBOARD_SHORTCUTS = [
     {
         id: 'pages.clear_selection', group: 'pages', keys: ['Ctrl', 'Shift', 'A'],
         descriptionKey: 'shortcut_clear_page_selection', bindings: [{ code: 'KeyA', primary: true, shift: true }],
+    },
+    // UIUX (audit 2026-07-27 §C-08): bổ sung các thao tác phím/chuột đã hoạt động nhưng
+    // chưa được liệt kê trong bảng phím tắt. Các mục này CHỈ để hiển thị (bindings rỗng
+    // → matchesShortcut luôn false, không đụng logic phím). SettingsModal render mô tả
+    // qua t(`settings:${descriptionKey}`); các slug dưới đây đã được thêm vào
+    // vi.json + en.json (UIUX audit 2026-07-27 §C-08 fix-verify).
+    {
+        id: 'pages.space_next', group: 'pages', keys: ['Space'],
+        descriptionKey: 'shortcut_space_tap_next', bindings: [],
+    },
+    {
+        id: 'pages.space_previous', group: 'pages', keys: ['Shift', 'Space'],
+        descriptionKey: 'shortcut_space_tap_prev', bindings: [],
+    },
+    {
+        id: 'view.wheel_zoom_cursor', group: 'view', keys: ['Ctrl', 'Lăn chuột'],
+        descriptionKey: 'shortcut_ctrl_wheel_zoom', bindings: [],
+    },
+    {
+        id: 'pages.thumb_wheel_resize', group: 'pages', keys: ['Ctrl', 'Lăn chuột'],
+        descriptionKey: 'shortcut_ctrl_wheel_thumb_size', bindings: [],
+    },
+    {
+        id: 'pages.thumb_alt_drag_duplicate', group: 'pages', keys: ['Alt', 'Kéo thumbnail'],
+        descriptionKey: 'shortcut_alt_drag_duplicate', bindings: [],
+    },
+    {
+        id: 'pages.thumb_double_click_fit', group: 'pages', keys: ['Double-click'],
+        descriptionKey: 'shortcut_dblclick_thumb_fit', bindings: [],
+    },
+    {
+        id: 'pages.thumb_marquee_select', group: 'pages', keys: ['Kéo khung'],
+        descriptionKey: 'shortcut_marquee_select', bindings: [],
     },
 ] as const satisfies ReadonlyArray<KeyboardShortcutDefinition>;
 

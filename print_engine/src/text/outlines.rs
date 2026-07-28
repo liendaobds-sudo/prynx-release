@@ -26,7 +26,9 @@ use tiny_skia::{Path, PathSegment};
 ///
 /// Python cần biết ghi path vào stream nào; chỉ số thứ tự không đủ vì cùng một
 /// Form XObject có thể được `Do` nhiều lần.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `Hash` + `Ord` để dùng làm khoá bảng đếm mã ký tự và để thứ tự báo cáo cố định
+/// (báo cáo phải tái lập được: cùng file phải cho cùng chuỗi `blocks`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum StreamKey {
     /// Content stream của trang.
     Page,
@@ -74,10 +76,37 @@ pub struct GlyphOutline {
     pub coords: Vec<f32>,
 }
 
+/// Số mã ký tự engine đã đi qua trong một khối `BT … ET`.
+///
+/// # Vì sao phải khai con số này ra
+///
+/// Lớp ghi PDF bên Python đi qua **cùng** content stream bằng một bộ code khác, nên
+/// rủi ro thật không phải "path sai" mà là **lệch chỉ số**: path của glyph này bị gán
+/// cho glyph khác. File vẫn mở được, vẫn có chữ, chỉ sai chỗ — và chỉ phát hiện khi
+/// đã in.
+///
+/// Trước đây chốt duy nhất là hình học: so path với vị trí bút mà Python tự tính. Đo
+/// được là chốt đó vừa loại oan (Python tính sai bước tiến trên file thật) vừa **bỏ
+/// sót glyph nhỏ**: dấu chấm 12pt chỉ có 9 pixel mực nên lưới so kẽm theo ô không xét
+/// tới, và chữ dịch 30pt vẫn báo hậu kiểm thành công.
+///
+/// So **số lượng** thì khác: nếu hai bên đếm ra cùng một số mã ký tự trong cùng một
+/// khối, chỉ số của chúng khớp nhau theo cấu trúc — không phụ thuộc glyph to hay nhỏ,
+/// không phụ thuộc ngưỡng nào.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextBlockCodes {
+    pub stream: StreamKey,
+    pub text_object_index: u32,
+    /// Đếm MỌI mã ký tự đi qua, kể cả dấu cách, `Tr 3` và Type3.
+    pub code_count: u32,
+}
+
 /// Kết quả thu thập của một trang.
 #[derive(Debug, Clone, Default)]
 pub struct TextOutlineReport {
     pub glyphs: Vec<GlyphOutline>,
+    /// Số mã ký tự của từng khối `BT … ET` — hợp đồng đồng bộ chỉ số với lớp ghi PDF.
+    pub blocks: Vec<TextBlockCodes>,
     /// Trang có font Type3.
     ///
     /// Glyph Type3 là **content stream**, không phải đường viền: nó có thể vẽ ảnh,

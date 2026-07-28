@@ -16,7 +16,6 @@ const I = {
   Droplet: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/></svg>,
   FileText: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>,
   Eraser: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>,
-  PenTool: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>,
   Link: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>,
   ZoomIn: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>,
   Film: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M20 7.5h-4"/><path d="M20 16.5h-4"/></svg>,
@@ -47,8 +46,6 @@ const RULES = [
 const ACTIONS = [
   { id: 'CONVERT_TO_CMYK',      icon: I.Palette, title: 'Convert CMYK',          desc: 'Tự động chuyển đổi toàn bộ đối tượng RGB/Lab sang hệ màu CMYK chuẩn in ấn. Sử dụng ICC Profile FOGRA39 (Coated) để đảm bảo độ chuẩn xác màu sắc cao nhất.' },
   { id: 'FLATTEN_TRANSPARENCY',  icon: I.Layers,  title: 'Flatten Transparency',  desc: 'Làm phẳng (Flatten) toàn bộ hiệu ứng trong suốt, bóng đổ thành dạng vector/bitmap tĩnh. Đảm bảo file an toàn tuyệt đối khi xuất kẽm CTP trên mọi hệ thống.' },
-  { id: 'OUTLINE_FONTS',        icon: I.PenTool, title: 'Khóa Font',             desc: 'Convert toàn bộ text thành đường path vector (Create Outlines). Giải quyết triệt để lỗi thiếu font, đảm bảo an toàn 100% nhưng sẽ không thể sửa chữ được nữa.' },
-  { id: 'EMBED_FONTS',          icon: I.Type,    title: 'Nhúng Font',            desc: 'Cố gắng nhúng các font chữ còn thiếu vào trong file PDF. Chỉ thành công nếu font gốc có sẵn trên hệ thống server. Ít thay đổi cấu trúc file hơn so với Khóa Font.' },
   { id: 'DOWNSCALE_IMAGES',     icon: I.Image,   title: 'Giảm DPI ảnh',          desc: 'Tối ưu hóa dung lượng bằng cách giảm độ phân giải (Downsample) của hình ảnh thừa chi tiết (>600 DPI) xuống chuẩn in ấn 300 DPI. Giúp file nhẹ và RIP nhanh hơn.' },
   { id: 'FIX_METADATA',         icon: I.Eraser,  title: 'Sửa Metadata',          desc: 'Xóa bỏ các dữ liệu ẩn, metadata thừa, comments, form, hoặc các thẻ XML không cần thiết trong cấu trúc PDF. Giúp làm sạch file và ngăn ngừa lỗi tương thích.' },
 ];
@@ -58,9 +55,10 @@ interface Props {
   onFileFixed: (blob: Blob, name: string) => void;
   onIssueSelect?: (issue: any) => void;
   onOpenOutputPreview?: () => void;
+  onOpenFontTools?: () => void;
 }
 
-export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onOpenOutputPreview }: Props) {
+export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onOpenOutputPreview, onOpenFontTools }: Props) {
   const { t } = useTranslation();
   const [fileId, setFileId] = useState('');
   const [selectedRules, setSelectedRules] = useState<Set<string>>(new Set());
@@ -305,6 +303,19 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
 
         {isFixOpen && (
           <div className="animate-in slide-in-from-top-2 fade-in duration-200">
+            {onOpenFontTools && (
+              <button
+                onClick={onOpenFontTools}
+                className="w-full mb-3 rounded-lg border border-indigo-200 dark:border-indigo-500/30 bg-indigo-50 dark:bg-indigo-500/10 p-3 text-left flex items-center gap-3 hover:border-indigo-400 transition-colors"
+              >
+                <span className="text-xl">🔤</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[12px] font-bold text-indigo-800 dark:text-indigo-200">{t('preprocess.fontTools:tool_title')}</span>
+                  <span className="block text-[10px] leading-relaxed text-indigo-600/80 dark:text-indigo-300/80 mt-0.5">{t('preprocess.fontTools:tool_desc')}</span>
+                </span>
+                <span className="text-indigo-500 text-sm">→</span>
+              </button>
+            )}
             <div className="grid grid-cols-2 gap-2 mt-2">
               {ACTIONS.map((a, i) => {
                 const sel = selectedActions.has(a.id);

@@ -9,6 +9,9 @@ export const RichSelect = ({ value, onChange, options, compact = false }: { valu
     useTranslation(); // subscribe → re-render khi đổi ngôn ngữ (tv() đọc i18n global)
     const [isOpen, setIsOpen] = useState(false);
     const wrapperRef = useRef<HTMLDivElement>(null);
+    // UIUX (audit 2026-07-27 §B-19): điều hướng bàn phím cho dropdown tự chế.
+    const triggerRef = useRef<HTMLButtonElement>(null);
+    const [highlightIdx, setHighlightIdx] = useState(-1);
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
@@ -22,11 +25,45 @@ export const RichSelect = ({ value, onChange, options, compact = false }: { valu
 
     const selected = options.find(o => o.value === value) || options[0];
 
+    // UIUX (audit 2026-07-27 §B-19): mở → highlight mục đang chọn; Esc đóng + trả
+    // focus nút; mũi tên di chuyển highlight; Enter chọn mục highlight.
+    const openWithHighlight = (open: boolean) => {
+        if (open) setHighlightIdx(Math.max(0, options.findIndex(o => o.value === value)));
+        setIsOpen(open);
+    };
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+        if (!isOpen) {
+            if (e.key === 'ArrowDown') { e.preventDefault(); openWithHighlight(true); }
+            return;
+        }
+        if (e.key === 'Escape') {
+            e.preventDefault(); e.stopPropagation();
+            setIsOpen(false); triggerRef.current?.focus();
+        } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            setHighlightIdx(i => Math.min(options.length - 1, i < 0 ? 0 : i + 1));
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            setHighlightIdx(i => Math.max(0, i < 0 ? 0 : i - 1));
+        } else if (e.key === 'Enter') {
+            // UIUX (audit 2026-07-27 §B-19) fix-verify: focus đang ở NÚT option (Tab
+            // tới) → để nút đó tự kích hoạt qua onClick, không cướp thành
+            // options[highlightIdx] (chọn sai mục).
+            const target = e.target as HTMLElement;
+            if (target.tagName === 'BUTTON' && target !== triggerRef.current) return;
+            e.preventDefault();
+            const opt = options[highlightIdx];
+            if (opt) onChange(opt.value);
+            setIsOpen(false); triggerRef.current?.focus();
+        }
+    };
+
     return (
-        <div className="relative" ref={wrapperRef}>
-            <button 
+        <div className="relative" ref={wrapperRef} onKeyDown={handleKeyDown}>
+            <button
                 type="button"
-                onClick={() => setIsOpen(!isOpen)}
+                ref={triggerRef}
+                onClick={() => openWithHighlight(!isOpen)}
                 className={`w-full text-left border transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/20 ${compact ? 'px-2.5 h-8 rounded-md flex items-center' : 'p-3 rounded-lg'} ${isOpen ? 'border-indigo-500 bg-indigo-50/50 dark:bg-indigo-500/10' : 'border-slate-300 dark:border-white/20 bg-white dark:bg-zinc-900 hover:border-slate-400 dark:hover:border-white/30'}`}
             >
                 <div className={`flex justify-between items-center gap-2 ${compact ? 'w-full' : ''}`}>
@@ -40,12 +77,14 @@ export const RichSelect = ({ value, onChange, options, compact = false }: { valu
             
             {isOpen && (
                 <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-white/10 rounded-lg shadow-[0_4px_20px_-4px_rgba(0,0,0,0.1)] dark:shadow-[0_4px_20px_-4px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col">
-                    {options.map(opt => (
+                    {options.map((opt, idx) => (
                         <button
                             key={opt.value}
                             type="button"
                             onClick={() => { onChange(opt.value); setIsOpen(false); }}
-                            className={`text-left p-3 transition-colors hover:bg-slate-50 dark:hover:bg-zinc-800 focus:outline-none border-b border-slate-100 dark:border-white/5 last:border-0 ${opt.value === value ? 'bg-indigo-50/50 dark:bg-indigo-500/10' : ''}`}
+                            // UIUX (audit 2026-07-27 §B-19): mục đang highlight bằng bàn phím
+                            data-highlight={idx === highlightIdx || undefined}
+                            className={`text-left p-3 transition-colors hover:bg-slate-50 dark:hover:bg-zinc-800 focus:outline-none border-b border-slate-100 dark:border-white/5 last:border-0 ${opt.value === value ? 'bg-indigo-50/50 dark:bg-indigo-500/10' : ''} ${idx === highlightIdx ? 'bg-app-accent-soft' : ''}`}
                         >
                             <div className="flex items-center gap-2">
                                 <div className={`shrink-0 flex items-center justify-center w-3 h-3 rounded-full border ${opt.value === value ? 'border-indigo-500 bg-indigo-500' : 'border-slate-300 dark:border-zinc-500 bg-white dark:bg-zinc-800'}`}>

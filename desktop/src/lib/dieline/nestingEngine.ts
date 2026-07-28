@@ -19,6 +19,11 @@ import { snap } from './utils';
 import { SNAP_TOLERANCE } from './sharedGeometry';
 import { extractOuterSilhouette, OuterSilhouette } from './contourValidator';
 import { validatePlacementPositions } from './nestingCollision';
+// [HANGING-WINDOW 2026-07-27] Biên dạng theo cột: dùng cho lồng biên dạng thật +
+// kiểm va chạm (thay cho outline bbox-rect — xem đầu file nestingProfile.ts).
+import {
+    computeCutProfile, minRowPitch, placementsTooClose, type DieProfile,
+} from './nestingProfile';
 
 interface BBox {
     width: number;
@@ -298,6 +303,41 @@ function isSilhouetteUsable(s: OuterSilhouette): boolean {
         && countDistinctVertices(s.vertices) >= 3;
 }
 
+/** Sai số cho phép khi đối chiếu bao của silhouette với bao của khuôn (mm). */
+const SILHOUETTE_COVER_TOL_MM = 1;
+
+/**
+ * [HANGING-WINDOW 2026-07-27] Silhouette có THẬT SỰ là biên NGOÀI của khuôn?
+ *
+ * VÌ SAO CẦN: `extractOuterSilhouette` trả về một vòng CUT khép kín bất kỳ, và
+ * `isSilhouetteUsable` chỉ đòi ≥3 đỉnh + diện tích > 0,001mm². Một khe/rãnh nội
+ * bộ khép kín cũng lọt. Đo thực tế: pizza 468×736mm nhận về vòng **2,5×45mm**
+ * (một khe nội bộ) → bước lưới tính ra ~11mm → engine báo xếp được 784 khuôn
+ * 468×736 trên tờ 790×1090 (vật lý tối đa 2), kèm vị trí toạ độ ÂM. Khay hộp
+ * diêm cũng nhận silhouette 418×364 lệch tâm trong khi khuôn 679×490,5.
+ *
+ * Điều kiện thêm: bao của silhouette phải TRÙNG bao của khuôn trong 1mm. Không
+ * trùng ⇒ đó không phải biên ngoài ⇒ fallback bbox-rect (đúng như khi không có
+ * silhouette). Thà dùng chữ nhật còn hơn dùng một cái khe làm biên khuôn.
+ */
+function silhouetteCoversDie(
+    s: OuterSilhouette, bbox: BBox, model: DielineModel,
+): boolean {
+    if (s.vertices.length === 0) return false;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of s.vertices) {
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+    }
+    const bb = model.boundingBox;
+    return Math.abs((maxX - minX) - bbox.width) <= SILHOUETTE_COVER_TOL_MM
+        && Math.abs((maxY - minY) - bbox.height) <= SILHOUETTE_COVER_TOL_MM
+        && Math.abs(minX - bb.minX) <= SILHOUETTE_COVER_TOL_MM
+        && Math.abs(minY - bb.minY) <= SILHOUETTE_COVER_TOL_MM;
+}
+
 /**
  * Tính Die_Outline — đường biên ngoài thực của một khuôn dùng làm đầu vào
  * lồng khuôn. Hàm thuần, chỉ đọc model (KHÔNG mutate).
@@ -326,7 +366,11 @@ export function computeDieOutline(model: DielineModel | undefined, bbox: BBox): 
         : model.allPaths.filter((p) => p.tag === 'BLEED');
 
     const silhouette = extractOuterSilhouette(cutBleedSegs);
-    if (silhouette && isSilhouetteUsable(silhouette)) {
+    // [HANGING-WINDOW 2026-07-27] Ngoài "sẵn có", vòng còn phải PHỦ đúng bao
+    // khuôn — nếu không đó chỉ là một khe/rãnh nội bộ khép kín (xem
+    // `silhouetteCoversDie`), dùng làm biên khuôn sẽ cho bước lưới bé xíu.
+    if (silhouette && isSilhouetteUsable(silhouette)
+        && silhouetteCoversDie(silhouette, bbox, model)) {
         return silhouette.vertices.map((p) => ({ x: snap(p.x), y: snap(p.y) }));
     }
 
@@ -568,6 +612,130 @@ function calcRTEInterlock(
         label: `Xen kẽ khoảng trống (−${Math.round(overlapY)}mm/hàng)`,
         superTile: positions.length > 0 ? superTile : null,
     };
+}
+
+// ============================================================
+// LỒNG KHUÔN THEO BIÊN DẠNG THẬT (profile interlock)
+// [HANGING-WINDOW 2026-07-27]
+//
+// VÌ SAO: các chiến lược lồng cũ (RTE/SLB/pizza/envelope) tính overlap bằng
+// CÔNG THỨC TAY từ tham số hộp (`closureH + tuckH − lockTabH`…). Công thức đó
+// chỉ đúng cho đúng loại hộp nó được viết cho; áp sang loại hộp có chi tiết mọc
+// thêm (hộp treo: cụm tai treo 2 lớp + lưỡi khoá cao ~85mm trên mặt sau) sẽ cho
+// overlap QUÁ LỚN ⇒ hai khuôn CHỒNG VẬT LÝ lên nhau, dao bế cắt sai. Mà
+// `chooseBest` chỉ so SỐ LƯỢNG, không kiểm chồng lấn, nên sai kiểu đó lọt hết
+// qua test.
+//
+// Cách làm ở đây: KHÔNG công thức tay. Lấy `outline` (Die_Outline thật, đã có
+// sẵn trong `calcSmart`), rời rạc hoá thành PROFILE theo cột x: mỗi cột lưu
+// [yMin, yMax] của vật liệu. Bước hàng tối thiểu suy trực tiếp từ profile nên
+// tự đúng với mọi L/W/D, mọi biến thể tham số (bật/tắt cửa sổ, HTH khác nhau).
+// ============================================================
+
+
+
+
+/**
+ * Lồng khuôn theo biên dạng thật. Thử hai phương án và lấy phương án nhiều
+ * khuôn hơn:
+ *   A. Mọi hàng CÙNG hướng 0° — bước hàng = minRowPitch(0°, 0°).
+ *   B. Hàng xen kẽ 0°/180° — hai bước xen kẽ minRowPitch(0°,180°) và (180°,0°).
+ *      Với hộp treo, cụm tai treo cao của khuôn xoay lồng vào vùng trống giữa
+ *      hai tai bụi của khuôn kia.
+ */
+function calcProfileInterlock(
+    dieW: number, dieH: number, gap: number,
+    areaW: number, areaH: number,
+    ox: number, oy: number,
+    profile: DieProfile,
+): LayoutResult {
+    const cellW = dieW + gap;
+    const cols = Math.max(0, Math.floor((areaW + gap) / cellW));
+    const empty: LayoutResult = { positions: [], cols, rows: 0, label: 'Grid 0°', superTile: null };
+    if (cols === 0 || dieH <= 0) return empty;
+    const fits = (y: number) => y + dieH <= oy + areaH + 0.1;
+
+    /** Dựng layout từ danh sách bước hàng lặp tuần hoàn + hướng xoay tương ứng. */
+    const build = (pitches: number[], rotations: number[]): PlacedDieline[] => {
+        const positions: PlacedDieline[] = [];
+        let y = oy;
+        let r = 0;
+        while (fits(y)) {
+            const rot = rotations[r % rotations.length];
+            for (let c = 0; c < cols; c++) {
+                positions.push({ x: ox + c * cellW, y: snap(y), rotation: rot });
+            }
+            y = snap(y + pitches[r % pitches.length]);
+            r++;
+            if (r > 512) break; // chặn vòng lặp vô hạn khi bước suy biến
+        }
+        return positions;
+    };
+
+    const pitchSame = minRowPitch(profile, 0, 0, gap);
+    const planSame = build([pitchSame], [0]);
+
+    // Hệ TỜ GIẤY (y hướng xuống): hàng r ở TRÊN hàng r+1. Chuỗi hướng [0°, 180°]
+    // nên bước thứ nhất là 0° (trên) → 180° (dưới), bước thứ hai là ngược lại.
+    const pitchUp = minRowPitch(profile, 0, 180, gap);
+    const pitchDown = minRowPitch(profile, 180, 0, gap);
+    const planAlt = build([pitchUp, pitchDown], [0, 180]);
+
+    const useAlt = planAlt.length > planSame.length;
+    const positions = useAlt ? planAlt : planSame;
+    const savedPerRow = snap(Math.max(
+        0,
+        dieH + gap - (useAlt ? (pitchUp + pitchDown) / 2 : pitchSame),
+    ));
+    const label = savedPerRow > 0.05
+        ? `Lồng biên dạng${useAlt ? ' 180°' : ''} (−${Math.round(savedPerRow)}mm/hàng)`
+        : 'Grid 0°';
+
+    const superTile: SuperTileInfo = {
+        tileWidth: dieW,
+        tileHeight: snap(useAlt ? pitchUp + pitchDown : pitchSame),
+        countPerTile: useAlt ? 2 : 1,
+        strategy: label,
+        savedMm: savedPerRow,
+    };
+
+    return {
+        positions, cols,
+        rows: Math.ceil(positions.length / Math.max(1, cols)),
+        label,
+        superTile: positions.length > 0 ? superTile : null,
+    };
+}
+
+/**
+ * GUARD chống chồng khuôn — [HANGING-WINDOW 2026-07-27].
+ *
+ * Mọi chiến lược lồng đều đi qua đây trước khi được chọn. Chỉ những cặp có
+ * BAO CHỮ NHẬT giao nhau mới phải kiểm bằng profile (grid không bao giờ giao
+ * bao nên guard gần như miễn phí). Cặp có khuôn xoay 90°/270° mà bao lại giao
+ * nhau ⇒ coi là chồng (profile theo cột x không mô tả được ca đó) — thà rơi về
+ * grid chứ không xuất khuôn chồng.
+ */
+function layoutHasCollision(
+    positions: PlacedDieline[],
+    profile: DieProfile,
+    dieW: number, dieH: number, gap: number,
+): boolean {
+    const EPS = 0.01;
+    for (let a = 0; a < positions.length; a++) {
+        for (let b = a + 1; b < positions.length; b++) {
+            const A = positions[a];
+            const B = positions[b];
+            // Bao chữ nhật rời nhau (đã trừ khoảng hở tối thiểu) → an toàn.
+            if (Math.abs(B.x - A.x) >= dieW + gap - EPS) continue;
+            if (Math.abs(B.y - A.y) >= dieH + gap - EPS) continue;
+            // `null` = có khuôn xoay 90°/270° mà bao lại giao nhau: profile theo
+            // cột không mô tả được ⇒ coi là chồng, thà rơi về grid.
+            const tooClose = placementsTooClose(A, B, profile, gap);
+            if (tooClose === null || tooClose) return true;
+        }
+    }
+    return false;
 }
 
 /**
@@ -1078,6 +1246,7 @@ function calcSmart(
     ox: number, oy: number,
     params: BoxParams,
     outline: Point2D[],
+    profile: DieProfile,
 ): LayoutResult {
     // Tính closureH + tuckH + dustH
     const closureH = snap(params.W + params.T);
@@ -1096,10 +1265,22 @@ function calcSmart(
     // Bất biến: smart KHÔNG ĐƯỢC kém grid. Nếu grid xếp được nhiều khuôn hơn
     // interlock (với hình học cụ thể này), dùng grid. Hòa → ưu tiên interlock
     // (giữ nhãn chiến lược lồng để người dùng thấy đã thử lồng).
+    //
+    // [HANGING-WINDOW 2026-07-27] Thêm GUARD chồng khuôn: chiến lược lồng nào
+    // sinh ra hai khuôn chồng vật liệu lên nhau thì BỊ LOẠI, rơi về grid. Trước
+    // đây `chooseBest` chỉ so số lượng nên một công thức overlap sai sẽ xuất ra
+    // khuôn chồng mà không test nào bắt được. Guard chạy trên biên dạng thật của
+    // khuôn, và với grid (bao chữ nhật rời nhau) thì gần như miễn phí.
     const chooseBest = (interlock: LayoutResult): LayoutResult => {
         const grid = gridFallback();
-        return interlock.positions.length >= grid.positions.length ? interlock : grid;
+        if (interlock.positions.length < grid.positions.length) return grid;
+        // Profile tổng hợp (không có model) KHÔNG mang thông tin biên dạng ⇒ bỏ
+        // qua guard, giữ nguyên hành vi cũ; nếu không sẽ loại oan mọi vị trí lồng.
+        if (!profile.synthetic
+            && layoutHasCollision(interlock.positions, profile, dieW, dieH, gap)) return grid;
+        return interlock;
     };
+
 
     if (params.boxType === 'rte') {
         // RTE: luôn dùng interlock (không xoay, overlap closureH + tuckH)
@@ -1132,6 +1313,14 @@ function calcSmart(
         return chooseBest(interlock);
     }
 
+    // [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ: cụm tai treo 2 lớp + lưỡi
+    // khoá mọc thêm trên mặt sau nên KHÔNG dùng được công thức overlap của
+    // RTE/SLB (sẽ cho khuôn chồng nhau). Dùng lồng theo BIÊN DẠNG THẬT.
+    if (params.boxType === 'hanging_window') {
+        const interlock = calcProfileInterlock(dieW, dieH, gap, areaW, areaH, ox, oy, profile);
+        return chooseBest(interlock);
+    }
+
     // Gable & Paper Bag: chỉ grid — không lồng được
     return gridFallback();
 }
@@ -1160,6 +1349,9 @@ export function calculateNesting(
 
     const rawOutline = computeDieOutline(model, { width: dieW, height: dieH });
     const outline = rawOutline.map((p) => ({ x: p.x - (model?.boundingBox.minX || 0), y: p.y - (model?.boundingBox.minY || 0) }));
+    // [HANGING-WINDOW 2026-07-27] Profile biên dạng thật lấy từ nét CUT — tính
+    // MỘT lần cho cả hai phương khổ giấy, dùng cho lồng biên dạng + guard chồng khuôn.
+    const cutProfile = computeCutProfile(model, dieW, dieH);
 
     const calcForSheet = (sw: number, sh: number) => {
         const { areaW, areaH, offsetX, offsetY } = calcPrintableArea(sw, sh, margin, gripperMargin);
@@ -1167,7 +1359,7 @@ export function calculateNesting(
         let best: LayoutResult;
 
         if (nestingMode === 'smart' && params) {
-            best = calcSmart(dieW, dieH, gap, areaW, areaH, offsetX, offsetY, params, outline);
+            best = calcSmart(dieW, dieH, gap, areaW, areaH, offsetX, offsetY, params, outline, cutProfile);
         } else {
             if (rotation === 'none') {
                 best = calcGridNone(dieW, dieH, gap, areaW, areaH, offsetX, offsetY, outline);
@@ -1184,7 +1376,7 @@ export function calculateNesting(
         if (!model) return { ...best, sheetW: sw, sheetH: sh, areaW, areaH };
         const printable = { left: offsetX, top: offsetY, right: offsetX + areaW, bottom: offsetY + areaH };
         const checkLayout = (layout: LayoutResult): LayoutResult => {
-            const checked = validatePlacementPositions(layout.positions, outline, gap, printable);
+            const checked = validatePlacementPositions(layout.positions, outline, gap, printable, cutProfile);
             return {
                 ...layout,
                 positions: checked.positions,

@@ -55,20 +55,40 @@ export function ConfirmDialogHost() {
 
   useEffect(() => {
     if (!open) return;
+    // UIUX (audit 2026-07-27 §D-06) fix-verify: dialog KHÔNG blocking như confirm()
+    // native nên phím global (vd Delete xóa field) vẫn chạy sau lưng dialog.
+    // Bắt keydown ở pha CAPTURE trên document và stopPropagation MỌI phím
+    // (trừ Tab để còn điều hướng focus) để nuốt trước các listener window/bubble.
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Tab') return; // cho phép Tab điều hướng focus trong dialog
       if (e.key === 'Escape') {
         e.preventDefault();
+        e.stopPropagation();
         close(false);
-      } else if (e.key === 'Enter') {
-        e.preventDefault();
-        close(true);
+        return;
       }
+      if (e.key === 'Enter') {
+        if ((e.target as HTMLElement | null)?.tagName === 'BUTTON') {
+          // Đang focus 1 nút (vd nút Hủy): chỉ chặn lọt ra ngoài, để hành vi
+          // native Enter=click của chính nút đó chạy (stopPropagation không
+          // hủy default action).
+          e.stopPropagation();
+        } else {
+          e.preventDefault();
+          e.stopPropagation();
+          close(true);
+        }
+        return;
+      }
+      // Mọi phím khác: chặn lọt xuống handler global; KHÔNG preventDefault
+      // (dialog hiện không có input, nhưng giữ an toàn nếu sau này có).
+      e.stopPropagation();
     };
-    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('keydown', handleKeyDown, true);
     // Focus nút xác nhận khi mở
     const t = setTimeout(() => confirmBtnRef.current?.focus(), 0);
     return () => {
-      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('keydown', handleKeyDown, true);
       clearTimeout(t);
     };
   }, [open, close]);

@@ -48,7 +48,7 @@ interface ThumbSidebarProps {
 const MemoThumbItem = React.memo((props: any) => {
     const {
         index, originalPageNum, logicalPageLabel,
-        isSelected, isActive, isDragged, showCopyBadge, hoverTargetState,
+        isSelected, isActive, isDragged, showCopyBadge, showCopyDropBadge, hoverTargetState,
         rot, localDim, thumbBaseWidth,
         pdfUrl, file, thumbRev, pageCount, isLoadable, registerRef,
         handleThumbClick, handlePointerDown, onContextMenu
@@ -149,6 +149,14 @@ const MemoThumbItem = React.memo((props: any) => {
                     <span className="text-[11px] leading-none">＋</span> {tv('Sao chép')}
                 </div>
             )}
+            {/* UIUX (audit 2026-07-27 §C-11): badge tại CHỖ THẢ khi copy-drag — phân biệt
+                sao chép/di chuyển không chỉ bằng màu viền drop (xanh lá vs xanh dương). */}
+            {showCopyDropBadge && (
+                <div className="absolute top-1 left-1 z-20 flex items-center gap-1 pointer-events-none">
+                    <span className="w-3.5 h-3.5 rounded-full bg-green-500 text-white text-[10px] leading-none font-bold flex items-center justify-center shadow">＋</span>
+                    <span className="text-[9px] font-bold text-green-700 dark:text-green-300 bg-white/85 dark:bg-zinc-900/85 px-1 py-0.5 rounded shadow">{tv('Sao chép')}</span>
+                </div>
+            )}
             {/* SLOT ngoài = footprint SAU xoay (đã hoán rộng↔cao khi 90/270). Outline chọn bao
                 quanh slot. Khung trắng + ảnh nằm trong 1 KHỐI xoay cùng nhau bên trong slot →
                 khung luôn khớp hướng ruột, không còn "khung 1 hướng ruột 1 hướng". */}
@@ -224,6 +232,7 @@ const MemoThumbItem = React.memo((props: any) => {
         prev.isActive === next.isActive &&
         prev.isDragged === next.isDragged &&
         prev.showCopyBadge === next.showCopyBadge &&
+        prev.showCopyDropBadge === next.showCopyDropBadge && // UIUX (audit 2026-07-27 §C-11)
         prev.hoverTargetState === next.hoverTargetState &&
         prev.rot === next.rot &&
         prev.thumbBaseWidth === next.thumbBaseWidth &&
@@ -320,6 +329,20 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
     // thumbRev: pdfUrl đổi sau mỗi edit-commit → force re-render IPC + revoke blob cũ.
     const thumbRev = pdfUrl || '';
 
+    // UIUX (audit 2026-07-27 §C-19): nút −/+ đổi cỡ thumbnail. Tái dùng ĐÚNG đường
+    // Ctrl+wheel trong useViewerZoom (setThumbBaseWidth + clamp 50–400 theo bề rộng
+    // panel) bằng cách phát WheelEvent tổng hợp trên sidebar — setter không được luồn
+    // qua props và AcrobatViewer nằm ngoài phạm vi sửa. deltaY×-0.1 = Δwidth → ∓250 = ±25px.
+    const nudgeThumbSize = useCallback((dir: 1 | -1) => {
+        sidebarRef.current?.dispatchEvent(new WheelEvent('wheel', {
+            bubbles: true, cancelable: true, ctrlKey: true, deltaY: dir * -250,
+        }));
+    }, [sidebarRef]);
+
+    // UIUX (audit 2026-07-27 §C-12): title động khi chưa chọn trang — nói rõ vì sao nút mờ.
+    const noSelectionTitle = t('misc.thumbSidebar:chon_trang_truoc_hint', 'Chọn trang trước (click / Shift+click / Ctrl+A)');
+    const hasSelection = selectedIndices.size > 0;
+
     // ═══ Lazy-load thumbnails ═══
     // Chỉ tải tile cho thumbnail đang nằm trong tầm nhìn (IntersectionObserver), kết hợp
     // cổng "trang chính hiển thị trước". Tránh việc mở file nhiều trang fire hàng loạt
@@ -390,28 +413,40 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                             <span className="text-[11px] font-bold text-slate-600 dark:text-zinc-400 pl-3 tracking-wider truncate">THUMBNAILS</span>
                         </div>
                         <div className="shrink-0 flex items-center justify-center gap-1 px-1">
+                            {/* UIUX (audit 2026-07-27 §C-19): nút −/+ đổi cỡ thumbnail (±25px, cùng clamp với Ctrl+wheel) */}
                             <button
-                                className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${selectedIndices.size > 0 ? 'hover:bg-black/10 dark:hover:bg-white/10 text-slate-700 dark:text-zinc-200' : 'text-slate-300 dark:text-zinc-600 cursor-not-allowed'}`}
-                                title={t('misc.thumbSidebar:xoay_trai_rotate_ccw')}
+                                className="w-6 h-7 flex items-center justify-center rounded hover:bg-black/10 dark:hover:bg-white/10 text-slate-700 dark:text-zinc-200 transition-colors text-[14px] font-bold leading-none"
+                                title={t('misc.thumbSidebar:thu_nho_thumbnail_hint', 'Thu nhỏ thumbnail (Ctrl+lăn chuột trên danh sách cũng đổi được)')}
+                                onClick={() => nudgeThumbSize(-1)}
+                            >−</button>
+                            <button
+                                className="w-6 h-7 flex items-center justify-center rounded hover:bg-black/10 dark:hover:bg-white/10 text-slate-700 dark:text-zinc-200 transition-colors text-[14px] font-bold leading-none"
+                                title={t('misc.thumbSidebar:phong_to_thumbnail_hint', 'Phóng to thumbnail (Ctrl+lăn chuột trên danh sách cũng đổi được)')}
+                                onClick={() => nudgeThumbSize(1)}
+                            >+</button>
+                            <div className="w-[1px] h-4 bg-slate-300 dark:bg-zinc-600 mx-0.5"></div>
+                            <button
+                                className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${hasSelection ? 'hover:bg-black/10 dark:hover:bg-white/10 text-slate-700 dark:text-zinc-200' : 'text-slate-300 dark:text-zinc-600 cursor-not-allowed'}`}
+                                title={hasSelection ? t('misc.thumbSidebar:xoay_trai_rotate_ccw') : noSelectionTitle} /* UIUX (audit 2026-07-27 §C-12) */
                                 onClick={() => handleQuickRotate(270)}
-                                disabled={selectedIndices.size === 0}
+                                disabled={!hasSelection}
                             >
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
                             </button>
                             <button
-                                className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${selectedIndices.size > 0 ? 'hover:bg-black/10 dark:hover:bg-white/10 text-slate-700 dark:text-zinc-200' : 'text-slate-300 dark:text-zinc-600 cursor-not-allowed'}`}
-                                title={t('misc.thumbSidebar:xoay_phai_rotate_cw')}
+                                className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${hasSelection ? 'hover:bg-black/10 dark:hover:bg-white/10 text-slate-700 dark:text-zinc-200' : 'text-slate-300 dark:text-zinc-600 cursor-not-allowed'}`}
+                                title={hasSelection ? t('misc.thumbSidebar:xoay_phai_rotate_cw') : noSelectionTitle} /* UIUX (audit 2026-07-27 §C-12) */
                                 onClick={() => handleQuickRotate(90)}
-                                disabled={selectedIndices.size === 0}
+                                disabled={!hasSelection}
                             >
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /></svg>
                             </button>
                             <div className="w-[1px] h-4 bg-slate-300 dark:bg-zinc-600 mx-0.5"></div>
                             <button
-                                className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${selectedIndices.size > 0 ? 'hover:bg-black/10 dark:hover:bg-white/10 text-red-600 dark:text-red-400' : 'text-slate-300 dark:text-zinc-600 cursor-not-allowed'}`}
-                                title={t('misc.thumbSidebar:xoa_trang_delete')}
+                                className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${hasSelection ? 'hover:bg-black/10 dark:hover:bg-white/10 text-red-600 dark:text-red-400' : 'text-slate-300 dark:text-zinc-600 cursor-not-allowed'}`}
+                                title={hasSelection ? t('misc.thumbSidebar:xoa_trang_delete') : noSelectionTitle} /* UIUX (audit 2026-07-27 §C-12) */
                                 onClick={() => setIsDeleteModalOpen(true)}
-                                disabled={selectedIndices.size === 0}
+                                disabled={!hasSelection}
                             >
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
                             </button>
@@ -430,6 +465,15 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                 )}
             </div>
 
+            {/* UIUX (audit 2026-07-27 §C-12) fix-verify: hàng hint LUÔN chiếm chỗ trong flow,
+                chỉ ẩn/hiện bằng visibility — chèn/gỡ theo hasSelection làm dải thumbnail nhảy
+                ~24px giữa thao tác (phá double-click). */}
+            {isThumbMenuOpen && pageOrder.length > 1 && (
+                <div className={`shrink-0 w-full px-3 py-1 text-[10px] text-app-text-3 border-b border-black/5 dark:border-white/5 truncate ${hasSelection ? 'invisible' : ''}`}>
+                    {t('misc.thumbSidebar:shift_ctrl_click_chon_nhieu', 'Shift/Ctrl+click để chọn nhiều')}
+                </div>
+            )}
+
             {/* Thumbnail List */}
             {isThumbMenuOpen ? (
                 <div
@@ -437,6 +481,15 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                     onClick={() => setContextMenu(null)}
                     onMouseDown={handleMarqueeMouseDown}
                 >
+                    {/* UIUX (audit 2026-07-27 §C-16): trong lúc cổng 700ms chưa mở (ưu tiên render
+                        trang chính trước), báo lý do thumbnail chưa hiện thay vì spinner trơ. */}
+                    {!thumbsGateOpen && (
+                        <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
+                            <span className="text-[10px] text-app-text-3 text-center px-2">
+                                {t('misc.thumbSidebar:dang_uu_tien_trang_chinh', 'Đang ưu tiên hiển thị trang chính...')}
+                            </span>
+                        </div>
+                    )}
                     <div
                         className="acro-thumb-scroll w-full h-full overflow-y-auto overflow-x-hidden"
                         data-pdf-url={pdfUrl || undefined}
@@ -462,6 +515,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                                         isActive={isActive}
                                         isDragged={isDragged}
                                         showCopyBadge={isDragged && isCopyDrag}
+                                        showCopyDropBadge={isHoverTarget && isCopyDrag} // UIUX (audit 2026-07-27 §C-11)
                                         hoverTargetState={hoverTargetState}
                                         rot={pageInstanceIds[index] ? (pageRotations[pageInstanceIds[index]] || 0) : 0}
                                         localDim={allPageDims[originalPageNum]}

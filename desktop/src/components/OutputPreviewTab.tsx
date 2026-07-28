@@ -78,8 +78,8 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
     const [pageNum, setPageNum] = useState(initialPageNum);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
-    // Default ON: precise RIP path (PPE first, Ghostscript fallback).
-    const [useGhostscript, setUseGhostscript] = useState(true);
+    // UIUX (audit 2026-07-28 §GS.3): PPE là engine chính; tên query cũ chỉ giữ để tương thích API.
+    const [useRipPreview, setUseRipPreview] = useState(true);
     const [convertingSpot, setConvertingSpot] = useState('');
 
     const [plateList, setPlateList] = useState<{ name: string; color: number[]; dataUrl: string; is_spot?: boolean }[]>([]);
@@ -103,7 +103,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
         || accuracyLabel === 'rip_separations_approx_geometry';
     const engineDisplayName = engineUsed === 'ppe'
         ? 'PrynX PPE'
-        : engineUsed === 'ghostscript' ? 'Ghostscript' : engineUsed;
+        : engineUsed === 'ghostscript' ? 'RIP legacy' : engineUsed;
 
     const setTacHeatmapUrl = useWorkspaceStore(s => s.setTacHeatmapUrl);
 
@@ -187,9 +187,9 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
             setSoloPlate(null);
             try {
                 // true → precise RIP path (PPE first); false → approximate RGB→CMYK.
-                const gsParam = useGhostscript ? '&use_gs=true' : '&use_gs=false';
+                const ripParam = useRipPreview ? '&use_gs=true' : '&use_gs=false';
                 const res = await authenticatedFetch(
-                    `${getApiUrl()}/preflight/separations/${fileId}/${pageNum}?dpi=150${gsParam}&profile_id=fogra39`
+                    `${getApiUrl()}/preflight/separations/${fileId}/${pageNum}?dpi=150${ripParam}&profile_id=fogra39`
                 );
                 if (!res.ok) throw new Error(t('tabs.outputPreview:khong_the_phan_tach_kem'));
                 const result: SeparationsData = await res.json();
@@ -218,7 +218,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
         };
         fetchSeparations();
         return () => { isMounted = false; };
-    }, [fileId, pageNum, useGhostscript]);
+    }, [fileId, pageNum, useRipPreview]);
 
     useEffect(() => {
         const handlePdfHover = (e: any) => {
@@ -554,20 +554,20 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                             <label className="flex items-center gap-2 cursor-pointer flex-1 min-w-0">
                                 <input 
                                     type="checkbox" 
-                                    checked={useGhostscript} 
-                                    onChange={(e) => setUseGhostscript(e.target.checked)} 
+                                    checked={useRipPreview}
+                                    onChange={(e) => setUseRipPreview(e.target.checked)}
                                     className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 cursor-pointer" 
                                 />
                                 <span className="text-[12px] text-slate-600 dark:text-zinc-300">
-                                    Chế độ RIP chính xác (PPE trước)
-                                    {!useGhostscript ? ' — đang xấp xỉ' : ''}
+                                    Chế độ PPE chính xác
+                                    {!useRipPreview ? ' — đang xấp xỉ' : ''}
                                 </span>
                             </label>
                             <div className="relative group/tooltip flex items-center justify-center w-4 h-4 rounded-full bg-slate-100 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-[10px] text-slate-500 hover:bg-slate-200 dark:hover:bg-zinc-700 transition-colors cursor-help shrink-0">
                                 ?
                                 <div className="absolute bottom-full right-0 mb-2 w-max max-w-[280px] px-3 py-2.5 bg-slate-800 dark:bg-zinc-700 text-white text-[12px] font-normal leading-relaxed rounded-lg shadow-xl opacity-0 invisible group-hover/tooltip:opacity-100 group-hover/tooltip:visible transition-all z-[100] pointer-events-none text-left whitespace-normal break-words">
-                                    <p className="mb-1 text-emerald-300">Mặc định dùng PrynX PPE; nếu PPE không thể dựng trang tin cậy, backend có thể chuyển sang Ghostscript.</p>
-                                    <p className="opacity-90">Tắt = PDF→RGB→CMYK giả (nhanh nhưng không đủ chính xác để chốt kẽm).</p>
+                                    <p className="mb-1 text-emerald-300">Mặc định dùng PrynX PPE để dựng bản tách màu chính xác.</p>
+                                    <p className="opacity-90">Nếu PPE không thể dựng trang tin cậy, PrynX sẽ cảnh báo. Tắt = PDF→RGB→CMYK giả, không đủ chính xác để chốt kẽm.</p>
                                 </div>
                             </div>
                         </div>
@@ -587,11 +587,10 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                                 )}
                             </div>
                         )}
-                        {/* C11: user chủ động chọn Ghostscript RIP nhưng backend rơi về xấp xỉ
-                            (thường do không tìm thấy Ghostscript) → cảnh báo nổi bật, không chỉ badge nhỏ. */}
-                        {useGhostscript && accuracyLabel && !isRipResult && (
+                        {/* C11: PPE không dựng được kết quả tin cậy → cảnh báo nổi bật. */}
+                        {useRipPreview && accuracyLabel && !isRipResult && (
                             <div className="mt-1.5 px-2.5 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-800 text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
-                                ⚠️ Bạn đã chọn <strong>chế độ RIP chính xác</strong> nhưng PPE và Ghostscript đều không trả được kết quả tin cậy. Kết quả hiện tại là <strong>XẤP XỈ</strong>, không dùng để chốt kẽm.
+                                ⚠️ PrynX PPE không trả được kết quả tin cậy. Kết quả hiện tại là <strong>XẤP XỈ</strong>, không dùng để chốt kẽm.
                             </div>
                         )}
                         {/* C4: composite nhiều plate = CSS multiply, KHÔNG mô phỏng chồng mực thật.

@@ -115,8 +115,9 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
                 </button>
 
                 {isOpen && canTransfer && (
+                    // UIUX (audit 2026-07-27 §A-03): hex nền/viền → bg-app-2/border-app-line; rounded-xl → rounded-app-lg (thang 12px)
                     <div
-                        className={`absolute top-0 z-[1] min-w-[200px] max-w-[280px] bg-white dark:bg-[#1e1e1e] border border-slate-200 dark:border-white/10 shadow-[0_10px_30px_rgb(0,0,0,0.12)] dark:shadow-xl p-1.5 rounded-xl flex flex-col gap-0.5 ${
+                        className={`absolute top-0 z-[1] min-w-[200px] max-w-[280px] bg-app-2 border border-app-line shadow-[0_10px_30px_rgb(0,0,0,0.12)] dark:shadow-xl p-1.5 rounded-app-lg flex flex-col gap-0.5 ${
                             openLeft ? 'right-full mr-1' : 'left-full ml-1'
                         }`}
                     >
@@ -147,8 +148,9 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
     };
 
     return (
+        // UIUX (audit 2026-07-27 §A-03): hex nền/viền → bg-app-2/border-app-line; rounded-xl → rounded-app-lg (thang 12px)
         <div
-            className="fixed z-context-menu min-w-[240px] bg-white dark:bg-[#1e1e1e] border border-slate-200 dark:border-white/10 shadow-[0_10px_30px_rgb(0,0,0,0.1)] dark:shadow-xl p-2 rounded-xl animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-0.5"
+            className="fixed z-context-menu min-w-[240px] bg-app-2 border border-app-line shadow-[0_10px_30px_rgb(0,0,0,0.1)] dark:shadow-xl p-2 rounded-app-lg animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-0.5"
             style={{ left: Math.min(contextMenu.x, window.innerWidth - 260), top: Math.min(contextMenu.y, window.innerHeight - 320) }}
             onClick={e => e.stopPropagation()}
             onContextMenu={e => e.preventDefault()}

@@ -14,6 +14,7 @@ import ExportImageModal from './workspace/ExportImageModal';
 import { uploadPDF, getApiUrl } from '../lib/api';
 import { toast } from './ui/Toast';
 import { QuickDeleteModal, ExtractPagesModal, InsertBlankPageModal, AcrobatToolbar, Ruler, GuideLayer, DimensionLayer, findDimensionCandidate, ThumbSidebar, ViewerContextMenu, type Guide, type DimensionMeasurement } from './acrobat';
+import { StatusBar } from './acrobat/StatusBar'; // UIUX (audit 2026-07-27 §M-1+C-05)
 import { CrossFileInsertModal, type CrossFileInsertPending } from './acrobat/CrossFileInsertModal';
 
 import { usePdfLoader, genPageId, genPageIds, flattenRotations } from '../hooks/viewer/usePdfLoader';
@@ -143,7 +144,16 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     })));
 
     const isVdpMode = activeDashboardTool === 'datamerge' || activeDashboardTool === 'numbering' || activeDashboardTool === 'cover_numbering' || activeDashboardTool === 'stick_text_number';
-    const { showRulers, toggleRulers, measurementUnit } = useAppSettingsStore();
+    const { showRulers, toggleRulers, measurementUnit, setMeasurementUnit } = useAppSettingsStore();
+
+    // UIUX (audit 2026-07-27 §C-04): xoay vòng đơn vị đo mm→cm→inch (chuột phải lên
+    // thước / click đơn vị ở StatusBar). Toast nhỏ để user thấy đơn vị vừa đổi.
+    const cycleMeasurementUnit = useCallback(() => {
+        const order: Array<'mm' | 'cm' | 'inch'> = ['mm', 'cm', 'inch'];
+        const next = order[(order.indexOf(measurementUnit) + 1) % order.length];
+        setMeasurementUnit(next);
+        toast.info(t('misc.acrobatViewer:thuoc_don_vi_doi', 'Thước: {{unit}}', { unit: next }));
+    }, [measurementUnit, setMeasurementUnit, t]);
 
     const highlightBoxes = highlightedIssue ? [highlightedIssue] : undefined;
 
@@ -1115,6 +1125,9 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         e.stopPropagation();
     }, [activePage, guides, activePagePhysical]);
     const handleRulerMouseDown = useCallback((e: React.MouseEvent, orientation: 'horizontal' | 'vertical') => {
+        // UIUX (audit 2026-07-27 §C-04) fix-verify: chỉ chuột trái kéo guide — chuột phải
+        // dành cho onCycleUnit (đổi đơn vị), nếu không lọc sẽ tạo guide "ma".
+        if (e.button !== 0) return;
         e.preventDefault(); e.stopPropagation();
         const scrollContainer = internalScrollRef.current;
         const viewerContainer = containerRef.current;
@@ -1165,6 +1178,46 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         window.addEventListener('mousemove', handleMouseMove);
         window.addEventListener('mouseup', handleMouseUp);
     }, [clientToGuidePos]);
+
+    // UIUX (audit 2026-07-27 §C-01): chuột GIỮA = pan tạm thời (giữ-kéo) bất kể tool
+    // đang chọn. Kéo scrollLeft/scrollTop của container cuộn qua listener window để
+    // không mất sự kiện khi con trỏ rời viewer; cursor 'grabbing' toàn cục trong lúc kéo.
+    // UIUX (audit 2026-07-27 §C-01) fix-verify: 1 hàm cleanup dùng chung, lưu vào ref —
+    // mouseup rơi ngoài cửa sổ (Alt+Tab), window blur hay unmount đều gỡ listener + cursor.
+    const middlePanCleanupRef = useRef<(() => void) | null>(null);
+    useEffect(() => () => { middlePanCleanupRef.current?.(); }, []);
+    const handleMiddlePanStart = useCallback((e: React.MouseEvent) => {
+        const scroller = internalScrollRef.current;
+        if (!scroller) return;
+        e.preventDefault(); // chặn autoscroll mặc định của Chromium khi bấm chuột giữa
+        middlePanCleanupRef.current?.(); // phòng phiên pan trước còn kẹt
+        const startX = e.clientX, startY = e.clientY;
+        const startLeft = scroller.scrollLeft, startTop = scroller.scrollTop;
+        const styleEl = document.createElement('style');
+        styleEl.textContent = '*{cursor:grabbing!important}';
+        document.head.appendChild(styleEl);
+        const cleanup = () => {
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+            window.removeEventListener('blur', cleanup);
+            styleEl.remove();
+            middlePanCleanupRef.current = null;
+        };
+        const onMove = (me: MouseEvent) => {
+            // Nhả chuột giữa NGOÀI cửa sổ → mousemove sau đó không còn bit 4 → dọn ngay.
+            if (!(me.buttons & 4)) { cleanup(); return; }
+            scroller.scrollLeft = startLeft - (me.clientX - startX);
+            scroller.scrollTop = startTop - (me.clientY - startY);
+        };
+        const onUp = (ue: MouseEvent) => {
+            if (ue.button !== 1) return; // chỉ kết thúc khi nhả đúng chuột giữa
+            cleanup();
+        };
+        middlePanCleanupRef.current = cleanup;
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+        window.addEventListener('blur', cleanup);
+    }, []);
 
     // ═══ Scroll Sync ═══
     const syncing = useRef(false);
@@ -1437,14 +1490,17 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                         <div className="flex-1 flex min-w-0 min-h-0 relative">
                             {showRulers && (
                                 <>
-                                    <Ruler orientation="vertical" scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} zoom={zoom} unit={measurementUnit} onMouseDown={handleRulerMouseDown} pageAnchorId={`pdf-page-container-${activePage}`} />
-                                    <Ruler orientation="horizontal" scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} zoom={zoom} unit={measurementUnit} onMouseDown={handleRulerMouseDown} pageAnchorId={`pdf-page-container-${activePage}`} />
+                                    {/* UIUX (audit 2026-07-27 §C-04): onCycleUnit — chuột phải lên thước đổi đơn vị mm→cm→inch */}
+                                    <Ruler orientation="vertical" scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} zoom={zoom} unit={measurementUnit} onMouseDown={handleRulerMouseDown} pageAnchorId={`pdf-page-container-${activePage}`} onCycleUnit={cycleMeasurementUnit} />
+                                    <Ruler orientation="horizontal" scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} zoom={zoom} unit={measurementUnit} onMouseDown={handleRulerMouseDown} pageAnchorId={`pdf-page-container-${activePage}`} onCycleUnit={cycleMeasurementUnit} />
                                 </>
                             )}
                             <div
                                 className={`absolute bottom-0 right-0 overflow-hidden bg-[#525659] flex justify-center select-text ${toolMode === 'hand' ? 'panning-mode cursor-grab active:cursor-grabbing' : toolMode === 'dimension' ? 'cursor-crosshair' : ''}`}
                                 ref={containerRef}
                                 onMouseDown={(e) => {
+                                    // UIUX (audit 2026-07-27 §C-01): chuột giữa → pan tạm thời.
+                                    if (e.button === 1) { handleMiddlePanStart(e); return; }
                                     // Chỉ clear selection / place DIM khi chuột trái.
                                     if (e.button !== 0) return;
                                     setSelectedGuideId(null);
@@ -1483,7 +1539,11 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                                                             const isActive = row.indices.includes(activePage - 1);
                                                             return (
                                                                 <div key={row.indices.join('_')} className={`flex min-w-full ${toolMode === 'hand' ? 'cursor-grab active:cursor-grabbing' : 'cursor-auto'}`}
-                                                                    style={{ display: 'flex', alignItems: 'safe center', justifyContent: 'safe center', position: isActive ? 'relative' : 'absolute', opacity: isActive ? 1 : 0, pointerEvents: isActive ? 'auto' : 'none', visibility: isActive ? 'visible' : 'hidden', zIndex: isActive ? 10 : 0, paddingTop: 32, paddingBottom: 32, paddingLeft: 24, paddingRight: 24, gap: 12, width: 'max-content' }}>
+                                                                    style={{ display: 'flex', alignItems: 'safe center', justifyContent: 'safe center', position: isActive ? 'relative' : 'absolute', opacity: isActive ? 1 : 0, pointerEvents: isActive ? 'auto' : 'none', visibility: isActive ? 'visible' : 'hidden', zIndex: isActive ? 10 : 0, paddingTop: 32, paddingBottom: 32, paddingLeft: 24, paddingRight: 24, gap: 12, width: 'max-content',
+                                                                        /* UIUX (audit 2026-07-27 §C-02) fix-verify: hàng ẨN kẹp 0×0 + overflow hidden —
+                                                                           vẫn mounted (giữ ảnh đã decode) nhưng KHÔNG phình scrollWidth/Height của
+                                                                           khung cuộn, hết cảnh trang active bị căn giữa lệch chui dưới thước. */
+                                                                        ...(isActive ? {} : { left: 0, top: 0, maxWidth: 0, maxHeight: 0, overflow: 'hidden' }) }}>
                                                                     <div className="flex items-center" style={{ gap: 12 }}>
                                                                         {row.pages.map((p: number, idx: number) => <div key={row.indices[idx]}>{renderPdfPage(p, row.indices[idx])}</div>)}
                                                                     </div>
@@ -1525,6 +1585,22 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 </div>
                 {rightPanel}
             </div>
+
+            {/* UIUX (audit 2026-07-27 §M-1+C-05): thanh trạng thái đáy viewer — Trang/Kích thước/Zoom/Đơn vị + toạ độ chuột */}
+            {numPages > 0 && (
+                <StatusBar
+                    activePage={activePage}
+                    totalPages={pageOrder.length || numPages}
+                    zoom={zoom}
+                    /* UIUX (audit 2026-07-27 §M-1) fix-verify: kích thước lấy từ activePagePhysical
+                       (đã map qua pageOrder + hoán w/h khi xoay 90/270) — allPageDims key theo SỐ
+                       TRANG GỐC nên tra bằng activePage sai khi đảo thứ tự trang. */
+                    widthPt={activePagePhysical.widthPt}
+                    heightPt={activePagePhysical.heightPt}
+                    pageDim={pageDim}
+                    allPageDims={allPageDims}
+                />
+            )}
 
             {/* Modals */}
             {isDeleteModalOpen && <QuickDeleteModal selectedCount={selectedIndices.size} onConfirm={handleQuickDeleteConfirm} onClose={() => setIsDeleteModalOpen(false)} />}

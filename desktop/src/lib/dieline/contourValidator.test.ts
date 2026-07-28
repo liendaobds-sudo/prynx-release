@@ -27,6 +27,9 @@ import { generateCupSleeve } from './CupSleeve';
 import { generatePizzaBox } from './PizzaBox';
 import { generateEnvelope } from './Envelope';
 import { generateMatchboxTray } from './MatchboxTray';
+import { generateDoubleTray } from './DoubleTray';
+// [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ
+import { generateHangingWindowBox } from './HangingWindowBox';
 
 // ─── Phase 2 additions ──────────────────────────────────────
 // `vi` + module mocks cho phép import `decideExportGate` từ
@@ -67,6 +70,9 @@ const GENERATORS: Record<GeneratorBoxType, (p: BoxParams) => DielineModel> = {
     pizza: generatePizzaBox,
     envelope: generateEnvelope,
     tray: generateMatchboxTray,
+    double_tray: generateDoubleTray,
+    // [HANGING-WINDOW 2026-07-27] Đăng ký generator hộp treo có cửa sổ
+    hanging_window: generateHangingWindowBox,
 };
 
 // ─── Phạm vi Property 1 ─────────────────────────────────────
@@ -83,7 +89,7 @@ const GENERATORS: Record<GeneratorBoxType, (p: BoxParams) => DielineModel> = {
 // ghi chú phạm vi trong contourValidator.ts). Sửa hình học của
 // chúng để khép kín đồ thị cắt sẽ vi phạm Requirement 7.3.
 const CLOSEABLE_TYPES: GeneratorBoxType[] = [
-    'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'tray',
+    'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'tray', 'double_tray',
 ];
 
 // ============================================================
@@ -516,7 +522,10 @@ const SEED_P4 = 0x4f00d4; // 5177556
 
 // ─── 8 generator (loại hộp) ─────────────────────────────────
 const ALL_GENERATOR_TYPES: GeneratorBoxType[] = [
-    'rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray',
+    'rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray', 'double_tray',
+    // [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ — biên ngoài phải khép kín như
+    // mọi loại hộp khác (khe gài của nắp là nét hở NỘI BỘ, không thuộc biên ngoài).
+    'hanging_window',
 ];
 
 // ─── Helpers dựng model tổng hợp (chỉ dùng nội bộ file test) ──

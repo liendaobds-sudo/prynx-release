@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import { tv } from '../../i18n';
 import { mapPointToPlacement } from './placementTransform';
 import { splitTrayDieline } from './trayParts';
+import { splitDoubleTrayDieline } from './DoubleTray';
 import { PDFDocument } from 'pdf-lib';
 import type { NestingConfig } from './nestingTypes';
 
@@ -132,7 +133,10 @@ export async function buildProductionTrayNestingPdf(
     sleeveResult: NestingResult,
     config: Pick<NestingConfig, 'trayNestingMode'>,
 ): Promise<Blob> {
-    const parts = splitTrayDieline(model);
+    // [DOUBLE-TRAY 2026-07-26] đáy+nắp dùng chung hạ tầng khay+vỏ
+    const parts = model.params.boxType === 'double_tray'
+        ? splitDoubleTrayDieline(model)
+        : splitTrayDieline(model);
     if (!parts) throw new Error('Không tìm thấy đủ khuôn khay và vỏ.');
     assertProductionReady(parts.tray);
     assertProductionReady(parts.sleeve);

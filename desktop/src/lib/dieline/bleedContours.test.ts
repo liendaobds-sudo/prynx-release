@@ -106,7 +106,9 @@ describe('computeBleedContours', () => {
         expect(Math.max(...contour.map((point) => point.y))).toBeGreaterThan(74);
     });
     it('tạo contour hữu hạn cho mọi loại khuôn hiện có', () => {
-        const boxTypes = ['rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray'] as const;
+        // [HANGING-WINDOW 2026-07-27] Thêm 'hanging_window' — tràn lề phải bao được
+        // cả cụm tai treo euro nhô lên trên mặt sau.
+        const boxTypes = ['rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray', 'double_tray', 'hanging_window'] as const;
         for (const boxType of boxTypes) {
             const generated = generateDieline({ ...DEFAULT_PARAMS, boxType });
             const contours = computeBleedContours(generated, 3);

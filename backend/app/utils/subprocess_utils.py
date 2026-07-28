@@ -50,39 +50,16 @@ def _executable_of(cmd) -> str:
 
 
 def _guard_ghostscript(cmd) -> None:
-    """Dừng sớm với lời giải thích khi lệnh Ghostscript không thể chạy.
-
-    Nhận diện theo HAI dấu hiệu chứ không chỉ theo tên tiến trình: đường dẫn GS
-    được cấu hình có thể rỗng (bản no-GS) hoặc trỏ tới một tên bất kỳ (máy khách
-    cấu hình sai, và cũng là cách `test_no_ghostscript_survival` mô phỏng). Cả hai
-    trường hợp đó `is_ghostscript_command()` đều trả `False`, nên chỉ dựa vào tên
-    là bỏ đúng những ca cần nói rõ nhất.
-
-    Bộ đếm telemetry được ghi SAU hàm này: một lần gọi không bao giờ xảy ra thì
-    không được tính vào số lần dùng Ghostscript.
-    """
-    import os
-    import shutil
-
+    """Cấm tuyệt đối Ghostscript trước khi tạo tiến trình con."""
     exe = _executable_of(cmd)
-    if exe:
-        if os.path.isfile(exe):
-            return
-        has_sep = os.sep in exe or (os.altsep is not None and os.altsep in exe)
-        # Tên trần (`gswin64c.exe`) được Windows phân giải qua PATH, `os.path.isfile`
-        # trả False cho nó. Không tra PATH ở đây thì guard sẽ chặn oan đúng cấu hình
-        # phổ biến nhất trên máy có Ghostscript cài sẵn.
-        if not has_sep and shutil.which(exe) is not None:
-            return
-
-    looks_like_gs = False
-    configured = ""
     try:
         from app.core import gs_usage
 
         looks_like_gs = bool(exe) and gs_usage.is_ghostscript_command(cmd)
     except Exception:  # noqa: BLE001
         looks_like_gs = False
+
+    # Bắt cả binary bị đổi tên nếu code legacy vẫn trỏ qua field cấu hình.
     try:
         from app.config import settings
 
@@ -90,14 +67,14 @@ def _guard_ghostscript(cmd) -> None:
     except Exception:  # noqa: BLE001
         configured = ""
 
-    if not (looks_like_gs or exe == configured):
-        # Công cụ ngoài khác (poppler…) — để nguyên lỗi gốc của subprocess.
+    if not (not exe or looks_like_gs or (configured and exe == configured)):
         return
 
+    # GS-SUNSET (audit 2026-07-28 §3.7): không kiểm tra file tồn tại, PATH hay
+    # marker build. Dev, test và release đều từ chối tại cùng một chốt toàn cục.
     from app.core.gs_availability import GhostscriptUnavailable, unavailable_message
 
     raise GhostscriptUnavailable(unavailable_message())
-
 
 def run_hidden(cmd, **kwargs) -> subprocess.CompletedProcess:
     """subprocess.run + CREATE_NO_WINDOW (Windows) để KHÔNG pop cửa sổ console.

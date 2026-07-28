@@ -25,7 +25,9 @@ use crate::shading::eval::SampledShading;
 use crate::shading::mesh::MeshTriangle;
 use crate::shading::{resolve_shading, Shading, ShadingKind};
 use crate::text::font::{load_font, FontProgram, LoadedFont, Type3Data};
-use crate::text::outlines::{encode_path, GlyphOutline, StreamKey, TextOutlineReport};
+use crate::text::outlines::{
+    encode_path, GlyphOutline, StreamKey, TextBlockCodes, TextOutlineReport,
+};
 use crate::text::state::{TextObject, TextRenderMode};
 
 /// Ngưỡng scale thiết bị để bật raster bảo thủ cho vector.
@@ -254,6 +256,13 @@ pub struct Renderer<'a> {
     text_outlines: TextOutlineReport,
     /// Thứ tự glyph trong khối `BT` hiện hành.
     glyph_seq: u32,
+    /// Số mã ký tự đã đi qua trong từng khối `BT … ET`, khoá `(stream, chỉ số khối)`.
+    ///
+    /// Hợp đồng đồng bộ chỉ số với lớp ghi PDF bên Python — xem
+    /// [`TextBlockCodes`]. Dùng `max` thay vì `+=` khi cập nhật: một Form XObject có
+    /// thể được `Do` nhiều lần, mỗi lần đi lại đúng các khối cũ, nên cộng dồn sẽ
+    /// khai số gấp đôi và Python sẽ tưởng hai bên lệch.
+    text_block_codes: HashMap<(StreamKey, u32), u32>,
 }
 
 /// Trạng thái dựng đường dẫn trong một chuỗi operator.
@@ -306,6 +315,7 @@ impl<'a> Renderer<'a> {
             stream_ctx: vec![(StreamKey::Page, 0)],
             text_outlines: TextOutlineReport::default(),
             glyph_seq: 0,
+            text_block_codes: HashMap::new(),
         })
     }
 
@@ -323,8 +333,31 @@ impl<'a> Renderer<'a> {
     }
 
     /// Như [`Renderer::into_parts`] nhưng lấy kèm báo cáo đường viền chữ.
-    pub fn into_parts_with_outlines(self) -> (InkBuffer, RenderWarnings, TextOutlineReport) {
+    pub fn into_parts_with_outlines(mut self) -> (InkBuffer, RenderWarnings, TextOutlineReport) {
+        self.flush_text_block_codes();
         (self.buffer, self.warnings, self.text_outlines)
+    }
+
+    /// Dồn bảng đếm mã ký tự vào báo cáo, sắp thứ tự cố định.
+    ///
+    /// Sắp xếp chứ không giao ra thứ tự của `HashMap`: báo cáo là dữ liệu đi ra khỏi
+    /// engine, và thứ tự ngẫu nhiên giữa hai lần chạy làm mọi phép so sánh (test,
+    /// nhật ký, artifact đo) mất giá trị.
+    fn flush_text_block_codes(&mut self) {
+        if self.text_block_codes.is_empty() {
+            return;
+        }
+        let mut blocks: Vec<TextBlockCodes> = self
+            .text_block_codes
+            .iter()
+            .map(|((stream, index), count)| TextBlockCodes {
+                stream: *stream,
+                text_object_index: *index,
+                code_count: *count,
+            })
+            .collect();
+        blocks.sort_by_key(|b| (b.stream, b.text_object_index));
+        self.text_outlines.blocks = blocks;
     }
 
     /// Chạy một content stream với CTM và resources cho trước.
@@ -2954,6 +2987,15 @@ impl<'a> Renderer<'a> {
 
             let width = font.advance(code);
 
+            if self.opts.collect_text_outlines {
+                // Đếm ở ĐÂY, trước cổng `paints_ink`, chứ không trong `draw_glyph`:
+                // lớp ghi PDF bên Python duyệt mọi mã ký tự bất kể `Tr`. Đếm sau cổng
+                // thì một khối kiểu `3 Tr (abc) Tj 0 Tr (XY) Tj` cho Python ordinal 3,4
+                // còn engine 0,1 — path bị gán cho glyph khác, file vẫn có chữ, chỉ sai
+                // chỗ. Đây là chỗ hai bên phải đếm y hệt nhau.
+                self.count_text_code();
+            }
+
             if mode.paints_ink() || mode.adds_to_clip() {
                 self.draw_glyph(&font, code, resources, stack, depth, mode)?;
             }
@@ -2963,6 +3005,26 @@ impl<'a> Renderer<'a> {
             self.text_obj.advance(tx, 0.0);
         }
         Ok(())
+    }
+
+    /// Ghi nhận đã đi qua MỘT mã ký tự trong khối `BT … ET` hiện hành.
+    ///
+    /// Đếm cả dấu cách, `Tr 3` và mã trong lớp optional content đang tắt — đúng như
+    /// vòng lặp mã ký tự bên Python. Hai con số đi ra từ đây:
+    ///
+    /// * `glyph_seq` — chỉ số của glyph tiếp theo trong khối;
+    /// * `text_block_codes` — tổng số mã của khối, tức hợp đồng để Python đối chiếu
+    ///   bằng số lượng (OUT-FONT, audit lần 3 §3.2). Chốt hình học trước đó phụ thuộc
+    ///   kích thước và bỏ sót glyph nhỏ (dấu chấm 12pt chỉ 9 px mực).
+    fn count_text_code(&mut self) {
+        self.glyph_seq += 1;
+        let block = self
+            .stream_ctx
+            .last()
+            .map(|(k, n)| (*k, n.saturating_sub(1)))
+            .unwrap_or((StreamKey::Page, 0));
+        let counted = self.text_block_codes.entry(block).or_insert(0);
+        *counted = (*counted).max(self.glyph_seq);
     }
 
     /// Vẽ một glyph.
@@ -2983,12 +3045,6 @@ impl<'a> Renderer<'a> {
                 self.text_outlines.has_unsupported_context = true;
             }
             return Ok(());
-        }
-        if self.opts.collect_text_outlines {
-            // Đếm cho MỌI mã ký tự, kể cả dấu cách, `Tr 3` và Type3 — chỉ số này là
-            // hợp đồng đồng bộ với vòng lặp mã ký tự bên Python. Đếm chỉ những glyph
-            // ghi được sẽ làm hai bên lệch ngay ở dấu cách đầu tiên.
-            self.glyph_seq += 1;
         }
         let gs_ctm = stack.current().ctm;
         let trm = crate::text::state::glyph_matrix(&stack.current().text, &self.text_obj.matrix);

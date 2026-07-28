@@ -46,6 +46,41 @@ describe('useBoxStore generation consistency', () => {
         vi.useRealTimers();
     });
 
+    // [UIUX 2026-07-27] Đáy gài & đáy dán là hai loại duy nhất hiện ô "Lưỡi khoá
+    // nắp"; mặc định phải KHÔNG tích. Khoá ở đây để lần sau đổi DEFAULT_PARAMS
+    // hay applyBoxTypeDefaults không âm thầm bật lại.
+    it('đáy gài & đáy dán: mặc định không bật lưỡi khoá nắp', () => {
+        for (const boxType of ['slb', 'auto_bottom'] as const) {
+            useBoxStore.setState({ params: { ...DEFAULT_PARAMS, lockTab: true } });
+            useBoxStore.getState().setParam('boxType', boxType);
+            expect(useBoxStore.getState().params.boxType).toBe(boxType);
+            expect(useBoxStore.getState().params.lockTab).toBe(false);
+        }
+        // Người dùng tự tích thì giữ nguyên lựa chọn của họ.
+        useBoxStore.getState().setParam('lockTab', true);
+        expect(useBoxStore.getState().params.lockTab).toBe(true);
+    });
+
+    // [HANGING-WINDOW 2026-07-27] Chọn "Hộp treo có cửa sổ" phải nạp Preset_Dacdora
+    // (mẫu khuôn L80 × W30 × D140, giấy 0,5mm, mí keo 15, tai đút 15); đổi sang loại
+    // hộp khác phải trả bộ số đo về mặc định chung, không giữ lại số đo hộp treo.
+    it('hộp treo có cửa sổ: nạp Preset_Dacdora rồi trả về mặc định khi đổi loại', () => {
+        useBoxStore.getState().setParam('boxType', 'hanging_window');
+        expect(useBoxStore.getState().params).toMatchObject({
+            boxType: 'hanging_window',
+            L: 80, W: 30, D: 140, T: 0.5, C: 0.5, G: 15, TH: 15,
+        });
+
+        // Đổi sang hộp nắp gài thường: L/W/D/T/C/G/TH quay về DEFAULT_PARAMS.
+        useBoxStore.getState().setParam('boxType', 'rte');
+        expect(useBoxStore.getState().params).toMatchObject({
+            boxType: 'rte',
+            L: DEFAULT_PARAMS.L, W: DEFAULT_PARAMS.W, D: DEFAULT_PARAMS.D,
+            T: DEFAULT_PARAMS.T, C: DEFAULT_PARAMS.C,
+            G: DEFAULT_PARAMS.G, TH: DEFAULT_PARAMS.TH,
+        });
+    });
+
     it('marks the existing model stale immediately while a new model is pending', () => {
         useBoxStore.setState({ dieline: { name: 'old' } as DielineModel, isModelCurrent: true });
         useBoxStore.getState().setParam('L', 123);

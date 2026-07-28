@@ -61,7 +61,11 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
     const isPizza = params.boxType === 'pizza';
     const isEnvelope = params.boxType === 'envelope';
     const isTray = params.boxType === 'tray';
-    const isBox = isRTE || isSLB || isAutoBottom || isGable || isPizza || isTray; // Traditional box types
+    const isDoubleTray = params.boxType === 'double_tray'; // [DOUBLE-TRAY 2026-07-26]
+    const isHangingWindow = params.boxType === 'hanging_window'; // [HANGING-WINDOW 2026-07-27]
+    // [HANGING-WINDOW 2026-07-27] Hộp treo dùng chung thân/mí keo/thứ tự mặt với RTE
+    // nên vào cùng nhóm "hộp truyền thống" để hiện toggle vị trí tai dán & thứ tự mặt.
+    const isBox = isRTE || isSLB || isAutoBottom || isGable || isPizza || isTray || isHangingWindow; // Traditional box types
 
 
     return (
@@ -100,6 +104,9 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                     <option value="pizza">{t('dieline.param:hop_pizza')}</option>
                     <option value="envelope">{t('dieline.param:bi_thu')}</option>
                     <option value="tray">{t('dieline.param:hop_diem_khay')}</option>
+                    <option value="double_tray">{t('dieline.param:hop_am_duong_khay_nap')}</option>
+                    {/* [HANGING-WINDOW 2026-07-27] */}
+                    <option value="hanging_window">{t('dieline.param:hop_treo_cua_so')}</option>
                 </select>
             </div>
 
@@ -507,8 +514,57 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                 </div>
             )}
 
+            {/* ─── Double Tray (Hộp âm dương) Params ─── [DOUBLE-TRAY 2026-07-26] */}
+            {isDoubleTray && (
+                <div className="dt-params-section">
+                    <label className="dt-section-label">{t('dieline.param:kich_thuoc_chinh')}</label>
+                    <p className="dt-param-desc" style={{ marginBottom: '0.5rem', opacity: 0.7 }}>
+                        {t('dieline.param:than_day_l_w_thanh_d_nap_tu_sinh_8t_2khe')}
+                    </p>
+                    <div className="dt-param-grid">
+                        {[
+                            { key: 'L' as const, label: t('dieline.param:dai_l'), min: 30, max: 500, step: 1 },
+                            { key: 'W' as const, label: t('dieline.param:rong_w'), min: 15, max: 400, step: 1 },
+                            { key: 'D' as const, label: t('dieline.param:cao_vach_d'), min: 10, max: 200, step: 1 },
+                            { key: 'T' as const, label: t('dieline.param:day_giay_t'), min: 0.2, max: 3, step: 0.05 },
+                            { key: 'C' as const, label: 'Dung sai (C)', min: 0.2, max: 3, step: 0.1 },
+                            { key: 'G' as const, label: t('dieline.param:dam_g'), min: 5, max: 30, step: 1 },
+                            { key: 'TH' as const, label: t('dieline.param:mi_gap_th'), min: 2, max: 40, step: 1 },
+                            { key: 'lidD' as const, label: t('dieline.param:cao_thanh_nap_lidd'), min: 0, max: 200, step: 1 },
+                            { key: 'lidGap' as const, label: t('dieline.param:khe_long_nap_lidgap'), min: 0, max: 5, step: 0.5 },
+                        ].map((cfg) => (
+                            <div key={cfg.key} className="dt-param-cell">
+                                <label className="dt-param-cell-label">{tv(cfg.label)}</label>
+                                <input
+                                    type="number"
+                                    defaultValue={params[cfg.key] as number}
+                                    key={`${cfg.key}-${clampVersion}`}
+                                    min={cfg.min}
+                                    max={cfg.max}
+                                    step={cfg.step}
+                                    className="dt-param-input"
+                                    style={{ textAlign: 'right' }}
+                                    onBlur={(e) => {
+                                        const v = parseFloat(e.target.value);
+                                        if (!isNaN(v)) setParam(cfg.key, v);
+                                    }}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                            const v = parseFloat((e.target as HTMLInputElement).value);
+                                            if (!isNaN(v)) setParam(cfg.key, v);
+                                            (e.target as HTMLInputElement).blur();
+                                        }
+                                    }}
+                                />
+                                <span className="dt-param-cell-unit">mm</span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
             {/* Main Params — 2×2 grid (box/bag types only) */}
-            {!isCupSleeve && !isEnvelope && !isTray && (
+            {!isCupSleeve && !isEnvelope && !isTray && !isDoubleTray && (
                 <div className="dt-params-section">
                     <label className="dt-section-label">{t('dieline.param:kich_thuoc_chinh')}</label>
                     <p className="dt-param-desc" style={{ marginBottom: '0.5rem', opacity: 0.7 }}>
@@ -636,8 +692,63 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                 </div>
             )}
 
+            {/* ─── Hộp treo có cửa sổ: cửa sổ mặt trước + tai treo euro ─── [HANGING-WINDOW 2026-07-27] */}
+            {isHangingWindow && (() => {
+                // 0 = tự động, đúng hằng HGB_* của generator: cửa sổ 0.5×L / 0.5×D,
+                // cao MỘT lớp tai treo 0.25×D kẹp trong 20–40mm.
+                const defWNW = Math.round(0.5 * params.L);
+                const defWNH = Math.round(0.5 * params.D);
+                const defHTH = Math.round(Math.min(40, Math.max(20, 0.25 * params.D)));
+                const hgbParams: { key: 'WNW' | 'WNH' | 'HTH'; label: string; defVal: number; min: number; max: number }[] = [
+                    ...(params.hgbWindow ? [
+                        { key: 'WNW' as const, label: t('dieline.param:rong_cua_so'), defVal: defWNW, min: 0, max: Math.max(10, Math.round(params.L)) },
+                        { key: 'WNH' as const, label: t('dieline.param:cao_cua_so'), defVal: defWNH, min: 0, max: Math.max(10, Math.round(params.D)) },
+                    ] : []),
+                    { key: 'HTH', label: t('dieline.param:cao_tai_treo'), defVal: defHTH, min: 0, max: 40 },
+                ];
+                return (
+                    <div className="dt-params-section">
+                        <label className="dt-section-label">{t('dieline.param:thong_so_hop_treo')}</label>
+                        <div className="dt-param-grid">
+                            {/* Công tắc cửa sổ — theo khuôn envWindow của bì thư */}
+                            <div className="dt-param-cell" style={{ cursor: 'pointer' }} onClick={() => setParam('hgbWindow', !params.hgbWindow)}>
+                                <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>{t('dieline.param:cua_so_mat_truoc')}</label>
+                                <input type="checkbox" checked={params.hgbWindow as boolean} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
+                            </div>
+                            {hgbParams.map((hp) => (
+                                <div key={hp.key} className="dt-param-cell">
+                                    <label className="dt-param-cell-label">{tv(hp.label)}</label>
+                                    <input
+                                        type="number"
+                                        defaultValue={params[hp.key] === 0 ? hp.defVal : params[hp.key] as number}
+                                        key={`${hp.key}-${params[hp.key]}-${clampVersion}`}
+                                        min={hp.min}
+                                        max={hp.max}
+                                        step={1}
+                                        className="dt-param-input"
+                                        style={{ textAlign: 'right' }}
+                                        onBlur={(e) => {
+                                            const v = parseFloat(e.target.value);
+                                            if (!isNaN(v)) setParam(hp.key, v === hp.defVal ? 0 : v);
+                                        }}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter') {
+                                                const v = parseFloat((e.target as HTMLInputElement).value);
+                                                if (!isNaN(v)) setParam(hp.key, v === hp.defVal ? 0 : v);
+                                                (e.target as HTMLInputElement).blur();
+                                            }
+                                        }}
+                                    />
+                                    <span className="dt-param-cell-unit">{params[hp.key] === 0 ? 'Auto' : 'mm'}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                );
+            })()}
+
             {/* Advanced Toggle — not for cup sleeve */}
-            {!isCupSleeve && !isEnvelope && !isTray && (
+            {!isCupSleeve && !isEnvelope && !isTray && !isDoubleTray && (
                 <button
                     className="dt-advanced-toggle"
                     onClick={() => setShowAdvanced(!showAdvanced)}

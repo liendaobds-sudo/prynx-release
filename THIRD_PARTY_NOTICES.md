@@ -3,7 +3,7 @@
 PrynX sử dụng các thành phần mã nguồn mở dưới đây. Bản quyền thuộc về các
 tác giả tương ứng; mỗi thành phần được phân phối theo giấy phép của nó.
 
-*Sinh tự động ngày 2026-07-26 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
+*Sinh tự động ngày 2026-07-27 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
 
 > Đây không phải tư vấn pháp lý. Tài liệu này liệt kê thành phần và giấy
 > phép để phục vụ nghĩa vụ ghi công; việc đánh giá tuân thủ là việc riêng.
@@ -16,10 +16,7 @@ vụ phân phối.
 
 ### Copyleft mạnh — CÓ trong bản phát hành
 
-Nghĩa vụ có thể lan sang sản phẩm khi phân phối. Cần xử lý dứt điểm,
-không để tồn tại trong bản phát hành mà chưa có quyết định.
-
-- **Ghostscript 10.04.0 — AGPL-3.0-or-later**
+Không có. Bản đóng gói này không chứa thành phần copyleft mạnh.
 
 ### Copyleft mạnh — CHỈ dùng lúc build/test (không phát sinh nghĩa vụ)
 
@@ -58,18 +55,10 @@ PrynX dùng nguyên bản, không sửa.
 
 | Thành phần | Phiên bản | Giấy phép | Cách dùng | Vị trí |
 |---|---|---|---|---|
-| [Ghostscript](https://www.ghostscript.com/) | 10.04.0 | AGPL-3.0-or-later | Tách kẽm CMYK/spot, soft-proof ICC, chuyển màu, PDF/X, flatten, outline font, downsample ảnh, nén PDF | `binaries/gs/` |
 | [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) | 5.x | Apache-2.0 | Nhận dạng chữ trong ảnh (OCR) | `binaries/tesseract/` |
 | [Leptonica](http://www.leptonica.org/) | 1.8x | BSD-2-Clause | Xử lý ảnh nền cho OCR | `binaries/tesseract/ (DLL)` |
 | [PDFium](https://pdfium.googlesource.com/pdfium/) | bundled build | BSD-3-Clause | Render trang, đọc hình học đối tượng PDF | `pdfium.dll (trong sidecar) + pypdfium2` |
 | [DirectML](https://github.com/microsoft/DirectML) | theo onnxruntime-directml | MIT | Tăng tốc GPU cho tách nền ảnh (DirectX 12) | `onnxruntime/capi/DirectML.dll` |
-
-### Ghostscript
-
-- Giấy phép: **AGPL-3.0-or-later**
-- Liên kết: Tiến trình riêng, gọi qua dòng lệnh (không liên kết thư viện)
-- Mã nguồn: https://github.com/ArtifexSoftware/ghostpdl-downloads
-- Ghi chú: AGPL-3.0. Đang được thay bằng PrynX Print Engine (xem docs/PRYNX_GS_REPLACEMENT_ENGINE_PLAN.md); đặt `bundled: false` khi gỡ khỏi installer.
 
 ### Tesseract OCR
 
@@ -252,7 +241,6 @@ là có trong bản phát hành.
 | [aes-gcm](https://github.com/RustCrypto/AEADs) | 0.10.3 | Apache-2.0 OR MIT |
 | [ahash](https://github.com/tkaitchuck/ahash) | 0.7.8 | MIT OR Apache-2.0 |
 | [aho-corasick](https://github.com/BurntSushi/aho-corasick) | 1.1.4 | Unlicense OR MIT |
-| [aligned](https://github.com/rust-embedded-community/aligned) | 0.4.3 | MIT OR Apache-2.0 |
 | [aligned-vec](https://github.com/sarah-ek/aligned-vec/) | 0.6.4 | MIT |
 | [alloc-no-stdlib](https://github.com/dropbox/rust-alloc-no-stdlib) | 2.0.4 | BSD-3-Clause |
 | [alloc-stdlib](https://github.com/dropbox/rust-alloc-no-stdlib) | 0.2.2 | BSD-3-Clause |
@@ -260,14 +248,12 @@ là có trong bản phát hành.
 | [android_log-sys](https://github.com/rust-mobile/android_log-sys-rs) | 0.3.2 | MIT OR Apache-2.0 |
 | [android_logger](https://github.com/rust-mobile/android_logger-rs) | 0.15.1 | MIT OR Apache-2.0 |
 | [android_system_properties](https://github.com/nical/android_system_properties) | 0.1.5 | MIT/Apache-2.0 |
-| [anyhow](https://github.com/dtolnay/anyhow) | 1.0.102 | MIT OR Apache-2.0 |
+| [anyhow](https://github.com/dtolnay/anyhow) | 1.0.103 | MIT OR Apache-2.0 |
 | [approx](https://github.com/brendanzab/approx) | 0.5.1 | Apache-2.0 |
 | [arbitrary](https://github.com/rust-fuzz/arbitrary/) | 1.4.2 | MIT OR Apache-2.0 |
-| [arg_enum_proc_macro](https://github.com/lu-zero/arg_enum_proc_macro) | 0.3.4 | MIT |
 | [arrayref](https://github.com/droundy/arrayref) | 0.3.9 | BSD-2-Clause |
 | [arrayvec](https://github.com/bluss/arrayvec) | 0.7.6 | MIT OR Apache-2.0 |
 | [arrayvec](https://github.com/bluss/arrayvec) | 0.7.8 | MIT OR Apache-2.0 |
-| [as-slice](https://github.com/japaric/as-slice) | 0.2.1 | MIT OR Apache-2.0 |
 | [async-broadcast](https://github.com/smol-rs/async-broadcast) | 0.7.2 | MIT OR Apache-2.0 |
 | [async-channel](https://github.com/smol-rs/async-channel) | 2.5.0 | Apache-2.0 OR MIT |
 | [async-executor](https://github.com/smol-rs/async-executor) | 1.14.0 | Apache-2.0 OR MIT |
@@ -282,19 +268,14 @@ là có trong bản phát hành.
 | [atk-sys](https://github.com/gtk-rs/gtk3-rs) | 0.18.2 | MIT |
 | [atomic-waker](https://github.com/smol-rs/atomic-waker) | 1.1.2 | Apache-2.0 OR MIT |
 | [autocfg](https://github.com/cuviper/autocfg) | 1.5.1 | Apache-2.0 OR MIT |
-| [av-scenechange](https://github.com/rust-av/av-scenechange) | 0.14.1 | MIT |
-| [av1-grain](https://github.com/rust-av/av1-grain) | 0.2.5 | BSD-2-Clause |
-| [avif-serialize](https://github.com/kornelski/avif-serialize) | 0.8.9 | BSD-3-Clause |
 | [base64](https://github.com/marshallpierce/rust-base64) | 0.21.7 | MIT OR Apache-2.0 |
 | [base64](https://github.com/marshallpierce/rust-base64) | 0.22.1 | MIT OR Apache-2.0 |
 | [base64ct](https://github.com/RustCrypto/formats) | 1.8.3 | Apache-2.0 OR MIT |
 | [bit-set](https://github.com/contain-rs/bit-set) | 0.8.0 | Apache-2.0 OR MIT |
 | [bit-vec](https://github.com/contain-rs/bit-vec) | 0.8.0 | Apache-2.0 OR MIT |
-| [bit_field](https://github.com/phil-opp/rust-bit-field) | 0.10.3 | Apache-2.0/MIT |
 | [bitflags](https://github.com/bitflags/bitflags) | 1.3.2 | MIT/Apache-2.0 |
 | [bitflags](https://github.com/bitflags/bitflags) | 2.11.1 | MIT OR Apache-2.0 |
 | [bitflags](https://github.com/bitflags/bitflags) | 2.13.1 | MIT OR Apache-2.0 |
-| [bitstream-io](https://github.com/tuffy/bitstream-io) | 4.10.0 | MIT/Apache-2.0 |
 | [bitvec](https://github.com/bitvecto-rs/bitvec) | 1.0.1 | MIT |
 | [block-buffer](https://github.com/RustCrypto/utils) | 0.10.4 | MIT OR Apache-2.0 |
 | [block-buffer](https://github.com/RustCrypto/utils) | 0.12.1 | MIT OR Apache-2.0 |
@@ -313,7 +294,6 @@ là có trong bản phát hành.
 | [brotli](https://github.com/dropbox/rust-brotli) | 8.0.3 | BSD-3-Clause AND MIT |
 | [brotli-decompressor](https://github.com/dropbox/rust-brotli-decompressor) | 5.0.1 | BSD-3-Clause/MIT |
 | [bs58](https://github.com/Nullus157/bs58-rs) | 0.5.1 | MIT/Apache-2.0 |
-| [built](https://github.com/lukaslueg/built) | 0.8.0 | MIT |
 | [bumpalo](https://github.com/fitzgen/bumpalo) | 3.20.3 | MIT OR Apache-2.0 |
 | [byte-unit](https://github.com/magiclen/byte-unit) | 5.2.0 | MIT |
 | [bytecheck](https://github.com/djkoloski/bytecheck) | 0.6.12 | MIT |
@@ -324,6 +304,7 @@ là có trong bản phát hành.
 | [byteorder](https://github.com/BurntSushi/byteorder) | 1.5.0 | Unlicense OR MIT |
 | [byteorder-lite](https://github.com/image-rs/byteorder-lite) | 0.1.0 | Unlicense OR MIT |
 | [bytes](https://github.com/tokio-rs/bytes) | 1.11.1 | MIT |
+| [bytes](https://github.com/tokio-rs/bytes) | 1.12.1 | MIT |
 | [cairo-rs](https://github.com/gtk-rs/gtk-rs-core) | 0.18.5 | MIT |
 | [cairo-sys-rs](https://github.com/gtk-rs/gtk-rs-core) | 0.18.2 | MIT |
 | [camino](https://github.com/camino-rs/camino) | 1.2.2 | MIT OR Apache-2.0 |
@@ -340,6 +321,7 @@ là có trong bản phát hành.
 | [cfg_aliases](https://github.com/katharostech/cfg_aliases) | 0.2.1 | MIT |
 | [chacha20](https://github.com/RustCrypto/stream-ciphers) | 0.10.1 | MIT OR Apache-2.0 |
 | [chrono](https://github.com/chronotope/chrono) | 0.4.44 | MIT OR Apache-2.0 |
+| [chrono](https://github.com/chronotope/chrono) | 0.4.45 | MIT OR Apache-2.0 |
 | [cipher](https://github.com/RustCrypto/traits) | 0.4.4 | MIT OR Apache-2.0 |
 | [cipher](https://github.com/RustCrypto/traits) | 0.5.2 | MIT OR Apache-2.0 |
 | [color_quant](https://github.com/image-rs/color_quant) | 1.1.0 | MIT |
@@ -347,6 +329,7 @@ là có trong bản phát hành.
 | [concurrent-queue](https://github.com/smol-rs/concurrent-queue) | 2.5.0 | Apache-2.0 OR MIT |
 | [console_error_panic_hook](https://github.com/rustwasm/console_error_panic_hook) | 0.1.7 | Apache-2.0/MIT |
 | [console_log](https://github.com/iamcodemaker/console_log) | 1.0.0 | MIT/Apache-2.0 |
+| [console_log](https://github.com/iamcodemaker/console_log) | 1.1.0 | MIT/Apache-2.0 |
 | [const-oid](https://github.com/RustCrypto/formats) | 0.10.2 | Apache-2.0 OR MIT |
 | [const-oid](https://github.com/RustCrypto/formats/tree/master/const-oid) | 0.9.6 | Apache-2.0 OR MIT |
 | [const-random](https://github.com/tkaitchuck/constrandom) | 0.1.18 | MIT OR Apache-2.0 |
@@ -362,7 +345,6 @@ là có trong bản phát hành.
 | [cpufeatures](https://github.com/RustCrypto/utils) | 0.3.0 | MIT OR Apache-2.0 |
 | [crc32fast](https://github.com/srijs/rust-crc32fast) | 1.5.0 | MIT OR Apache-2.0 |
 | [crossbeam-channel](https://github.com/crossbeam-rs/crossbeam) | 0.5.15 | MIT OR Apache-2.0 |
-| [crossbeam-deque](https://github.com/crossbeam-rs/crossbeam) | 0.8.6 | MIT OR Apache-2.0 |
 | [crossbeam-deque](https://github.com/crossbeam-rs/crossbeam) | 0.8.7 | MIT OR Apache-2.0 |
 | [crossbeam-epoch](https://github.com/crossbeam-rs/crossbeam) | 0.9.20 | MIT OR Apache-2.0 |
 | [crossbeam-utils](https://github.com/crossbeam-rs/crossbeam) | 0.8.21 | MIT OR Apache-2.0 |
@@ -426,7 +408,6 @@ là có trong bản phát hành.
 | [errno](https://github.com/lambda-fairy/rust-errno) | 0.3.14 | MIT OR Apache-2.0 |
 | [event-listener](https://github.com/smol-rs/event-listener) | 5.4.1 | Apache-2.0 OR MIT |
 | [event-listener-strategy](https://github.com/smol-rs/event-listener-strategy) | 0.5.4 | Apache-2.0 OR MIT |
-| [exr](https://github.com/johannesvollmer/exrs) | 1.74.0 | BSD-3-Clause |
 | [fast-float2](https://github.com/Alexhuszagh/fast-float-rust) | 0.2.3 | MIT OR Apache-2.0 |
 | [fastrand](https://github.com/smol-rs/fastrand) | 2.4.1 | Apache-2.0 OR MIT |
 | [fastrand](https://github.com/smol-rs/fastrand) | 2.5.0 | Apache-2.0 OR MIT |
@@ -461,7 +442,9 @@ là có trong bản phát hành.
 | [futures-macro](https://github.com/rust-lang/futures-rs) | 0.3.32 | MIT OR Apache-2.0 |
 | [futures-sink](https://github.com/rust-lang/futures-rs) | 0.3.32 | MIT OR Apache-2.0 |
 | [futures-task](https://github.com/rust-lang/futures-rs) | 0.3.32 | MIT OR Apache-2.0 |
+| [futures-task](https://github.com/rust-lang/futures-rs) | 0.3.33 | MIT OR Apache-2.0 |
 | [futures-util](https://github.com/rust-lang/futures-rs) | 0.3.32 | MIT OR Apache-2.0 |
+| [futures-util](https://github.com/rust-lang/futures-rs) | 0.3.33 | MIT OR Apache-2.0 |
 | [gdk](https://github.com/gtk-rs/gtk3-rs) | 0.18.2 | MIT |
 | [gdk-pixbuf](https://github.com/gtk-rs/gtk-rs-core) | 0.18.5 | MIT |
 | [gdk-pixbuf-sys](https://github.com/gtk-rs/gtk-rs-core) | 0.18.0 | MIT |
@@ -534,20 +517,18 @@ là có trong bản phát hành.
 | [idna_adapter](https://github.com/hsivonen/idna_adapter) | 1.2.2 | Apache-2.0 OR MIT |
 | [image](https://github.com/image-rs/image) | 0.25.10 | MIT OR Apache-2.0 |
 | [image-webp](https://github.com/image-rs/image-webp) | 0.2.4 | MIT OR Apache-2.0 |
-| [imgref](https://github.com/kornelski/imgref) | 1.12.1 | CC0-1.0 OR Apache-2.0 |
 | [indexmap](https://github.com/bluss/indexmap) | 1.9.3 | Apache-2.0 OR MIT |
 | [indexmap](https://github.com/indexmap-rs/indexmap) | 2.14.0 | Apache-2.0 OR MIT |
-| [indoc](https://github.com/dtolnay/indoc) | 2.0.7 | MIT OR Apache-2.0 |
 | [infer](https://github.com/bojand/infer) | 0.19.0 | MIT |
 | [inout](https://github.com/RustCrypto/utils) | 0.1.4 | MIT OR Apache-2.0 |
 | [inout](https://github.com/RustCrypto/utils) | 0.2.2 | MIT OR Apache-2.0 |
-| [interpolate_name](https://github.com/lu-zero/interpolate_name) | 0.2.4 | MIT |
 | [intrusive-collections](https://github.com/Amanieu/intrusive-rs) | 0.9.7 | Apache-2.0/MIT |
 | [ipnet](https://github.com/krisprice/ipnet) | 2.12.0 | MIT OR Apache-2.0 |
 | [is-docker](https://github.com/TheLarkInn/is-docker) | 0.2.0 | MIT |
 | [is-wsl](https://github.com/TheLarkInn/is-wsl) | 0.4.0 | MIT |
 | [itertools](https://github.com/rust-itertools/itertools) | 0.11.0 | MIT OR Apache-2.0 |
 | [itertools](https://github.com/rust-itertools/itertools) | 0.14.0 | MIT OR Apache-2.0 |
+| [itertools](https://github.com/rust-itertools/itertools) | 0.15.0 | MIT OR Apache-2.0 |
 | [itoa](https://github.com/dtolnay/itoa) | 1.0.18 | MIT OR Apache-2.0 |
 | [javascriptcore-rs](https://github.com/tauri-apps/javascriptcore-rs) | 1.1.2 | MIT |
 | [javascriptcore-rs-sys](https://github.com/tauri-apps/javascriptcore-rs) | 1.1.1 | MIT |
@@ -557,9 +538,9 @@ là có trong bản phát hành.
 | [jni-sys](https://github.com/jni-rs/jni-sys) | 0.3.1 | MIT OR Apache-2.0 |
 | [jni-sys](https://github.com/jni-rs/jni-sys) | 0.4.1 | MIT OR Apache-2.0 |
 | [jni-sys-macros](https://github.com/jni-rs/jni-sys) | 0.4.1 | MIT OR Apache-2.0 |
-| [jobserver](https://github.com/rust-lang/jobserver-rs) | 0.1.34 | MIT OR Apache-2.0 |
 | [jobserver](https://github.com/rust-lang/jobserver-rs) | 0.1.35 | MIT OR Apache-2.0 |
 | [jpeg-decoder](https://github.com/image-rs/jpeg-decoder) | 0.3.2 | MIT OR Apache-2.0 |
+| [js-sys](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys) | 0.3.103 | MIT OR Apache-2.0 |
 | [js-sys](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys) | 0.3.99 | MIT OR Apache-2.0 |
 | [json-patch](https://github.com/idubrov/json-patch) | 3.0.1 | MIT/Apache-2.0 |
 | [jsonptr](https://github.com/chanced/jsonptr) | 0.6.3 | MIT OR Apache-2.0 |
@@ -567,13 +548,11 @@ là có trong bản phát hành.
 | [lcms2](https://github.com/kornelski/rust-lcms2) | 6.1.1 | MIT |
 | [lcms2-sys](https://github.com/kornelski/rust-lcms2-sys) | 4.0.7 | MIT |
 | [leb128fmt](https://github.com/bluk/leb128fmt) | 0.1.0 | MIT OR Apache-2.0 |
-| [lebe](https://github.com/johannesvollmer/lebe) | 0.5.3 | BSD-3-Clause |
 | libappindicator | 0.9.0 | Apache-2.0 OR MIT |
 | libappindicator-sys | 0.9.0 | Apache-2.0 OR MIT |
 | [libc](https://github.com/rust-lang/libc) | 0.2.186 | MIT OR Apache-2.0 |
 | [libc](https://github.com/rust-lang/libc) | 0.2.189 | MIT OR Apache-2.0 |
 | [libdbus-sys](https://github.com/diwic/dbus-rs) | 0.2.7 | Apache-2.0/MIT |
-| [libfuzzer-sys](https://github.com/rust-fuzz/libfuzzer) | 0.4.12 | (MIT OR Apache-2.0) AND NCSA |
 | [libloading](https://github.com/nagisa/rust_libloading/) | 0.7.4 | ISC |
 | [libloading](https://github.com/nagisa/rust_libloading/) | 0.9.0 | ISC |
 | [libm](https://github.com/rust-lang/compiler-builtins) | 0.2.16 | MIT |
@@ -584,14 +563,11 @@ là có trong bản phát hành.
 | [log](https://github.com/rust-lang/log) | 0.4.30 | MIT OR Apache-2.0 |
 | [log](https://github.com/rust-lang/log) | 0.4.32 | MIT OR Apache-2.0 |
 | [log](https://github.com/rust-lang/log) | 0.4.33 | MIT OR Apache-2.0 |
-| [loop9](https://gitlab.com/kornelski/loop9) | 0.1.5 | MIT |
 | [lopdf](https://github.com/J-F-Liu/lopdf) | 0.44.0 | MIT |
 | [markup5ever](https://github.com/servo/html5ever) | 0.38.0 | MIT OR Apache-2.0 |
-| [matrixmultiply](https://github.com/bluss/matrixmultiply/) | 0.3.10 | MIT/Apache-2.0 |
+| [matrixmultiply](https://github.com/bluss/matrixmultiply/) | 0.3.11 | MIT/Apache-2.0 |
 | [maybe-owned](https://github.com/rustonaut/maybe-owned) | 0.3.4 | MIT OR Apache-2.0 |
-| [maybe-rayon](https://github.com/shssoichiro/maybe-rayon) | 0.1.1 | MIT |
 | [md-5](https://github.com/RustCrypto/hashes) | 0.11.0 | MIT OR Apache-2.0 |
-| [memchr](https://github.com/BurntSushi/memchr) | 2.8.0 | Unlicense OR MIT |
 | [memchr](https://github.com/BurntSushi/memchr) | 2.8.1 | Unlicense OR MIT |
 | [memchr](https://github.com/BurntSushi/memchr) | 2.8.3 | Unlicense OR MIT |
 | [memoffset](https://github.com/Gilnaa/memoffset) | 0.9.1 | MIT |
@@ -601,24 +577,20 @@ là có trong bản phát hành.
 | [mio](https://github.com/tokio-rs/mio) | 1.2.0 | MIT |
 | [moxcms](https://github.com/awxkee/moxcms) | 0.8.1 | BSD-3-Clause OR Apache-2.0 |
 | [muda](https://github.com/tauri-apps/muda) | 0.19.2 | Apache-2.0 OR MIT |
-| [ndarray](https://github.com/rust-ndarray/ndarray) | 0.16.1 | MIT OR Apache-2.0 |
+| [ndarray](https://github.com/rust-ndarray/ndarray) | 0.17.2 | MIT OR Apache-2.0 |
 | [ndk](https://github.com/rust-mobile/ndk) | 0.9.0 | MIT OR Apache-2.0 |
 | [ndk-sys](https://github.com/rust-mobile/ndk) | 0.6.0+11769913 | MIT OR Apache-2.0 |
 | [new_debug_unreachable](https://github.com/mbrubeck/rust-debug-unreachable) | 1.0.6 | MIT |
-| [no_std_io2](https://github.com/wcampbell0x2a/no-std-io2) | 0.9.4 | Apache-2.0 OR MIT |
 | [nom](https://github.com/rust-bakery/nom) | 8.0.0 | MIT |
-| [noop_proc_macro](https://github.com/lu-zero/noop_proc_macro) | 0.3.0 | MIT |
-| [num-bigint](https://github.com/rust-num/num-bigint) | 0.4.6 | MIT OR Apache-2.0 |
+| [num-bigint](https://github.com/rust-num/num-bigint) | 0.4.8 | MIT OR Apache-2.0 |
 | [num-complex](https://github.com/rust-num/num-complex) | 0.4.6 | MIT OR Apache-2.0 |
 | [num-conv](https://github.com/jhpratt/num-conv) | 0.2.2 | MIT OR Apache-2.0 |
-| [num-derive](https://github.com/rust-num/num-derive) | 0.4.2 | MIT OR Apache-2.0 |
 | [num-integer](https://github.com/rust-num/num-integer) | 0.1.46 | MIT OR Apache-2.0 |
-| [num-rational](https://github.com/rust-num/num-rational) | 0.4.2 | MIT OR Apache-2.0 |
 | [num-traits](https://github.com/rust-num/num-traits) | 0.2.19 | MIT OR Apache-2.0 |
 | [num_enum](https://github.com/illicitonion/num_enum) | 0.7.6 | BSD-3-Clause OR MIT OR Apache-2.0 |
 | [num_enum_derive](https://github.com/illicitonion/num_enum) | 0.7.6 | BSD-3-Clause OR MIT OR Apache-2.0 |
 | [num_threads](https://github.com/jhpratt/num_threads) | 0.1.7 | MIT OR Apache-2.0 |
-| [numpy](https://github.com/PyO3/rust-numpy) | 0.26.0 | BSD-2-Clause |
+| [numpy](https://github.com/PyO3/rust-numpy) | 0.29.0 | BSD-2-Clause |
 | [objc2](https://github.com/madsmtm/objc2) | 0.6.4 | MIT |
 | [objc2-app-kit](https://github.com/madsmtm/objc2) | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
 | [objc2-cloud-kit](https://github.com/madsmtm/objc2) | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
@@ -652,7 +624,6 @@ là có trong bản phát hành.
 | [parking_lot](https://github.com/Amanieu/parking_lot) | 0.12.5 | MIT OR Apache-2.0 |
 | [parking_lot_core](https://github.com/Amanieu/parking_lot) | 0.9.12 | MIT OR Apache-2.0 |
 | [paste](https://github.com/dtolnay/paste) | 1.0.15 | MIT OR Apache-2.0 |
-| [pastey](https://github.com/as1100k/pastey) | 0.1.1 | MIT OR Apache-2.0 |
 | [pathdiff](https://github.com/Manishearth/pathdiff) | 0.2.3 | MIT/Apache-2.0 |
 | [pdfium-render](https://github.com/ajrcarey/pdfium-render) | 0.8.37 | MIT OR Apache-2.0 |
 | [percent-encoding](https://github.com/servo/rust-url/) | 2.3.2 | MIT OR Apache-2.0 |
@@ -673,7 +644,7 @@ là có trong bản phát hành.
 | [png](https://github.com/image-rs/image-png) | 0.18.1 | MIT OR Apache-2.0 |
 | [polling](https://github.com/smol-rs/polling) | 3.11.0 | Apache-2.0 OR MIT |
 | [polyval](https://github.com/RustCrypto/universal-hashes) | 0.6.2 | Apache-2.0 OR MIT |
-| [portable-atomic](https://github.com/taiki-e/portable-atomic) | 1.13.1 | Apache-2.0 OR MIT |
+| [portable-atomic](https://github.com/taiki-e/portable-atomic) | 1.14.0 | Apache-2.0 OR MIT |
 | [portable-atomic-util](https://github.com/taiki-e/portable-atomic-util) | 0.2.7 | Apache-2.0 OR MIT |
 | [potential_utf](https://github.com/unicode-org/icu4x) | 0.1.5 | Unicode-3.0 |
 | [powerfmt](https://github.com/jhpratt/powerfmt) | 0.2.0 | MIT OR Apache-2.0 |
@@ -687,17 +658,15 @@ là có trong bản phát hành.
 | [proc-macro-error-attr](https://gitlab.com/CreepySkeleton/proc-macro-error) | 1.0.4 | MIT OR Apache-2.0 |
 | [proc-macro2](https://github.com/dtolnay/proc-macro2) | 1.0.106 | MIT OR Apache-2.0 |
 | [proc-macro2](https://github.com/dtolnay/proc-macro2) | 1.0.107 | MIT OR Apache-2.0 |
-| [profiling](https://github.com/aclysma/profiling) | 1.0.18 | MIT OR Apache-2.0 |
-| [profiling-procmacros](https://github.com/aclysma/profiling) | 1.0.18 | MIT OR Apache-2.0 |
 | [ptr_meta](https://github.com/djkoloski/ptr_meta) | 0.1.4 | MIT |
 | [ptr_meta_derive](https://github.com/djkoloski/ptr_meta) | 0.1.4 | MIT |
 | [pxfm](https://github.com/awxkee/pxfm) | 0.1.29 | BSD-3-Clause OR Apache-2.0 |
-| [pyo3](https://github.com/pyo3/pyo3) | 0.26.0 | MIT OR Apache-2.0 |
-| [pyo3-build-config](https://github.com/pyo3/pyo3) | 0.26.0 | MIT OR Apache-2.0 |
-| [pyo3-ffi](https://github.com/pyo3/pyo3) | 0.26.0 | MIT OR Apache-2.0 |
-| [pyo3-macros](https://github.com/pyo3/pyo3) | 0.26.0 | MIT OR Apache-2.0 |
-| [pyo3-macros-backend](https://github.com/pyo3/pyo3) | 0.26.0 | MIT OR Apache-2.0 |
-| [qoi](https://github.com/aldanor/qoi-rust) | 0.4.1 | MIT/Apache-2.0 |
+| [pxfm](https://github.com/awxkee/pxfm) | 0.1.30 | BSD-3-Clause OR Apache-2.0 |
+| [pyo3](https://github.com/pyo3/pyo3) | 0.29.0 | MIT OR Apache-2.0 |
+| [pyo3-build-config](https://github.com/pyo3/pyo3) | 0.29.0 | MIT OR Apache-2.0 |
+| [pyo3-ffi](https://github.com/pyo3/pyo3) | 0.29.0 | MIT OR Apache-2.0 |
+| [pyo3-macros](https://github.com/pyo3/pyo3) | 0.29.0 | MIT OR Apache-2.0 |
+| [pyo3-macros-backend](https://github.com/pyo3/pyo3) | 0.29.0 | MIT OR Apache-2.0 |
 | [quick-error](http://github.com/tailhook/quick-error) | 2.0.1 | MIT/Apache-2.0 |
 | [quick-xml](https://github.com/tafia/quick-xml) | 0.41.0 | MIT |
 | [quote](https://github.com/dtolnay/quote) | 1.0.45 | MIT OR Apache-2.0 |
@@ -707,15 +676,13 @@ là có trong bản phát hành.
 | [radium](https://github.com/bitvecto-rs/radium) | 0.7.0 | MIT |
 | [rand](https://github.com/rust-random/rand) | 0.10.2 | MIT OR Apache-2.0 |
 | [rand](https://github.com/rust-random/rand) | 0.8.6 | MIT OR Apache-2.0 |
-| [rand](https://github.com/rust-random/rand) | 0.9.4 | MIT OR Apache-2.0 |
+| [rand](https://github.com/rust-random/rand) | 0.9.5 | MIT OR Apache-2.0 |
 | [rand_chacha](https://github.com/rust-random/rand) | 0.3.1 | MIT OR Apache-2.0 |
 | [rand_chacha](https://github.com/rust-random/rand) | 0.9.0 | MIT OR Apache-2.0 |
 | [rand_core](https://github.com/rust-random/rand_core) | 0.10.1 | MIT OR Apache-2.0 |
 | [rand_core](https://github.com/rust-random/rand) | 0.6.4 | MIT OR Apache-2.0 |
 | [rand_core](https://github.com/rust-random/rand) | 0.9.5 | MIT OR Apache-2.0 |
 | [rangemap](https://github.com/jeffparsons/rangemap) | 1.7.1 | MIT/Apache-2.0 |
-| [rav1e](https://github.com/xiph/rav1e/) | 0.8.1 | BSD-2-Clause |
-| [ravif](https://github.com/kornelski/cavif-rs) | 0.13.0 | BSD-3-Clause |
 | [raw-window-handle](https://github.com/rust-windowing/raw-window-handle) | 0.6.2 | MIT OR Apache-2.0 OR Zlib |
 | [rawpointer](https://github.com/bluss/rawpointer/) | 0.2.1 | MIT/Apache-2.0 |
 | [rayon](https://github.com/rayon-rs/rayon) | 1.12.0 | MIT OR Apache-2.0 |
@@ -731,7 +698,6 @@ là có trong bản phát hành.
 | [rend](https://github.com/djkoloski/rend) | 0.4.2 | MIT |
 | [reqwest](https://github.com/seanmonstar/reqwest) | 0.13.4 | MIT OR Apache-2.0 |
 | [rfd](https://github.com/PolyMeilex/rfd) | 0.16.0 | MIT |
-| [rgb](https://github.com/kornelski/rust-rgb) | 0.8.53 | MIT |
 | [ring](https://github.com/briansmith/ring) | 0.17.14 | Apache-2.0 AND ISC |
 | [rkyv](https://github.com/rkyv/rkyv) | 0.7.46 | MIT |
 | [rkyv_derive](https://github.com/rkyv/rkyv) | 0.7.46 | MIT |
@@ -740,6 +706,7 @@ là có trong bản phát hành.
 | [rust-ini](https://github.com/zonyitoo/rust-ini) | 0.21.3 | MIT |
 | [rust_decimal](https://github.com/paupino/rust-decimal) | 1.42.0 | MIT |
 | [rustc-hash](https://github.com/rust-lang/rustc-hash) | 2.1.2 | Apache-2.0 OR MIT |
+| [rustc-hash](https://github.com/rust-lang/rustc-hash) | 2.1.3 | Apache-2.0 OR MIT |
 | [rustc_version](https://github.com/djc/rustc-version-rs) | 0.4.1 | MIT OR Apache-2.0 |
 | [rustix](https://github.com/bytecodealliance/rustix) | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | [rustls](https://github.com/rustls/rustls) | 0.23.40 | Apache-2.0 OR ISC OR MIT |
@@ -749,6 +716,7 @@ là có trong bản phát hành.
 | [rustls-platform-verifier-android](https://github.com/rustls/rustls-platform-verifier) | 0.1.1 | MIT OR Apache-2.0 |
 | [rustls-webpki](https://github.com/rustls/webpki) | 0.103.13 | ISC |
 | [rustversion](https://github.com/dtolnay/rustversion) | 1.0.22 | MIT OR Apache-2.0 |
+| [rustversion](https://github.com/dtolnay/rustversion) | 1.0.23 | MIT OR Apache-2.0 |
 | [ryu-js](https://github.com/boa-dev/ryu-js) | 1.0.3 | Apache-2.0 OR BSL-1.0 |
 | [same-file](https://github.com/BurntSushi/same-file) | 1.0.6 | Unlicense/MIT |
 | [schannel](https://github.com/steffengy/schannel-rs) | 0.1.29 | MIT |
@@ -771,6 +739,7 @@ là có trong bản phát hành.
 | [serde_derive](https://github.com/serde-rs/serde) | 1.0.229 | MIT OR Apache-2.0 |
 | [serde_derive_internals](https://github.com/serde-rs/serde) | 0.29.1 | MIT OR Apache-2.0 |
 | [serde_json](https://github.com/serde-rs/json) | 1.0.150 | MIT OR Apache-2.0 |
+| [serde_json](https://github.com/serde-rs/json) | 1.0.151 | MIT OR Apache-2.0 |
 | [serde_repr](https://github.com/dtolnay/serde-repr) | 0.1.20 | MIT OR Apache-2.0 |
 | [serde_spanned](https://github.com/toml-rs/toml) | 0.6.9 | MIT OR Apache-2.0 |
 | [serde_spanned](https://github.com/toml-rs/toml) | 1.1.1 | MIT OR Apache-2.0 |
@@ -791,12 +760,12 @@ là có trong bản phát hành.
 | [simd-adler32](https://github.com/mcountryman/simd-adler32) | 0.3.10 | MIT |
 | [simd-adler32](https://github.com/mcountryman/simd-adler32) | 0.3.9 | MIT |
 | [simd_cesu8](https://github.com/seancroach/simd_cesu8) | 1.1.1 | Apache-2.0 OR MIT |
-| [simd_helpers](https://github.com/lu-zero/simd_helpers) | 0.1.0 | MIT |
 | [simdutf8](https://github.com/rusticstuff/simdutf8) | 0.1.5 | MIT OR Apache-2.0 |
 | [siphasher](https://github.com/jedisct1/rust-siphash) | 1.0.3 | MIT/Apache-2.0 |
 | [slab](https://github.com/tokio-rs/slab) | 0.4.12 | MIT |
 | [small_btree](https://github.com/boa-dev/boa) | 0.1.0 | Unlicense OR MIT |
 | [smallvec](https://github.com/servo/rust-smallvec) | 1.15.1 | MIT OR Apache-2.0 |
+| [smallvec](https://github.com/servo/rust-smallvec) | 1.15.2 | MIT OR Apache-2.0 |
 | [socket2](https://github.com/rust-lang/socket2) | 0.6.3 | MIT OR Apache-2.0 |
 | [softbuffer](https://github.com/rust-windowing/softbuffer) | 0.4.8 | MIT OR Apache-2.0 |
 | [soup3](https://gitlab.gnome.org/World/Rust/soup3-rs) | 0.5.0 | MIT |
@@ -854,11 +823,11 @@ là có trong bản phát hành.
 | [thiserror-impl](https://github.com/dtolnay/thiserror) | 2.0.19 | MIT OR Apache-2.0 |
 | [tiff](https://github.com/image-rs/image-tiff) | 0.11.3 | MIT |
 | [time](https://github.com/time-rs/time) | 0.3.47 | MIT OR Apache-2.0 |
-| [time](https://github.com/time-rs/time) | 0.3.53 | MIT OR Apache-2.0 |
+| [time](https://github.com/time-rs/time) | 0.3.54 | MIT OR Apache-2.0 |
 | [time-core](https://github.com/time-rs/time) | 0.1.8 | MIT OR Apache-2.0 |
 | [time-core](https://github.com/time-rs/time) | 0.1.9 | MIT OR Apache-2.0 |
 | [time-macros](https://github.com/time-rs/time) | 0.2.27 | MIT OR Apache-2.0 |
-| [time-macros](https://github.com/time-rs/time) | 0.2.31 | MIT OR Apache-2.0 |
+| [time-macros](https://github.com/time-rs/time) | 0.2.32 | MIT OR Apache-2.0 |
 | [tiny-keccak](https://github.com/debris/tiny-keccak) | 2.0.2 | CC0-1.0 |
 | [tiny-skia](https://github.com/RazrFalcon/tiny-skia) | 0.11.4 | BSD-3-Clause |
 | [tiny-skia-path](https://github.com/RazrFalcon/tiny-skia/tree/master/path) | 0.11.4 | BSD-3-Clause |
@@ -906,7 +875,6 @@ là có trong bản phát hành.
 | [unicode-properties](https://github.com/unicode-rs/unicode-properties) | 0.1.4 | MIT/Apache-2.0 |
 | [unicode-segmentation](https://github.com/unicode-rs/unicode-segmentation) | 1.13.2 | MIT OR Apache-2.0 |
 | [unicode-xid](https://github.com/unicode-rs/unicode-xid) | 0.2.6 | MIT OR Apache-2.0 |
-| [unindent](https://github.com/dtolnay/indoc) | 0.2.4 | MIT OR Apache-2.0 |
 | [universal-hash](https://github.com/RustCrypto/traits) | 0.5.1 | MIT OR Apache-2.0 |
 | [untrusted](https://github.com/briansmith/untrusted) | 0.9.0 | ISC |
 | [url](https://github.com/servo/rust-url) | 2.5.8 | MIT OR Apache-2.0 |
@@ -918,7 +886,6 @@ là có trong bản phát hành.
 | [utf8-width](https://github.com/magiclen/utf8-width) | 0.1.8 | MIT |
 | [utf8_iter](https://github.com/hsivonen/utf8_iter) | 1.0.4 | Apache-2.0 OR MIT |
 | [uuid](https://github.com/uuid-rs/uuid) | 1.23.1 | Apache-2.0 OR MIT |
-| [v_frame](https://github.com/rust-av/v_frame) | 0.3.9 | BSD-2-Clause |
 | [value-bag](https://github.com/sval-rs/value-bag) | 1.12.0 | Apache-2.0 OR MIT |
 | [vecmath](https://github.com/pistondevelopers/vecmath) | 1.0.0 | MIT |
 | [version-compare](https://gitlab.com/timvisee/version-compare) | 0.2.1 | MIT |
@@ -929,16 +896,23 @@ là có trong bản phát hành.
 | [want](https://github.com/seanmonstar/want) | 0.3.1 | MIT |
 | [wasi](https://github.com/bytecodealliance/wasi) | 0.11.1+wasi-snapshot-preview1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | [wasip2](https://github.com/bytecodealliance/wasi-rs) | 1.0.3+wasi-0.2.9 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| [wasip2](https://github.com/bytecodealliance/wasi-rs) | 1.0.4+wasi-0.2.12 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | [wasip3](https://github.com/bytecodealliance/wasi-rs) | 0.4.0+wasi-0.3.0-rc-2026-01-06 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | [wasm-bindgen](https://github.com/wasm-bindgen/wasm-bindgen) | 0.2.122 | MIT OR Apache-2.0 |
+| [wasm-bindgen](https://github.com/wasm-bindgen/wasm-bindgen) | 0.2.126 | MIT OR Apache-2.0 |
 | [wasm-bindgen-futures](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures) | 0.4.72 | MIT OR Apache-2.0 |
+| [wasm-bindgen-futures](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures) | 0.4.76 | MIT OR Apache-2.0 |
 | [wasm-bindgen-macro](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro) | 0.2.122 | MIT OR Apache-2.0 |
+| [wasm-bindgen-macro](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro) | 0.2.126 | MIT OR Apache-2.0 |
 | [wasm-bindgen-macro-support](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro-support) | 0.2.122 | MIT OR Apache-2.0 |
+| [wasm-bindgen-macro-support](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro-support) | 0.2.126 | MIT OR Apache-2.0 |
 | [wasm-bindgen-shared](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared) | 0.2.122 | MIT OR Apache-2.0 |
+| [wasm-bindgen-shared](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared) | 0.2.126 | MIT OR Apache-2.0 |
 | [wasm-encoder](https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasm-encoder) | 0.244.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | [wasm-metadata](https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasm-metadata) | 0.244.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | [wasm-streams](https://github.com/MattiasBuelens/wasm-streams/) | 0.5.0 | MIT OR Apache-2.0 |
 | [wasmparser](https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasmparser) | 0.244.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| [web-sys](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys) | 0.3.103 | MIT OR Apache-2.0 |
 | [web-sys](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys) | 0.3.99 | MIT OR Apache-2.0 |
 | [web_atoms](https://github.com/servo/html5ever) | 0.2.4 | MIT OR Apache-2.0 |
 | [webkit2gtk](https://github.com/tauri-apps/webkit2gtk-rs) | 2.0.2 | MIT |
@@ -1021,17 +995,16 @@ là có trong bản phát hành.
 | [x11](https://github.com/AltF02/x11-rs) | 2.21.0 | MIT |
 | [x11-dl](https://github.com/AltF02/x11-rs) | 2.21.0 | MIT |
 | [xattr](https://github.com/Stebalien/xattr) | 1.6.1 | MIT OR Apache-2.0 |
-| [y4m](https://github.com/image-rs/y4m) | 0.8.0 | MIT |
 | [yoke](https://github.com/unicode-org/icu4x) | 0.8.2 | Unicode-3.0 |
 | [yoke](https://github.com/unicode-org/icu4x) | 0.8.3 | Unicode-3.0 |
 | [yoke-derive](https://github.com/unicode-org/icu4x) | 0.8.2 | Unicode-3.0 |
 | [zbus](https://github.com/z-galaxy/zbus/) | 5.15.0 | MIT |
 | [zbus_macros](https://github.com/z-galaxy/zbus/) | 5.15.0 | MIT |
 | [zbus_names](https://github.com/z-galaxy/zbus/) | 4.3.2 | MIT |
-| [zerocopy](https://github.com/google/zerocopy) | 0.8.48 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | [zerocopy](https://github.com/google/zerocopy) | 0.8.49 | BSD-2-Clause OR Apache-2.0 OR MIT |
-| [zerocopy-derive](https://github.com/google/zerocopy) | 0.8.48 | BSD-2-Clause OR Apache-2.0 OR MIT |
+| [zerocopy](https://github.com/google/zerocopy) | 0.8.55 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | [zerocopy-derive](https://github.com/google/zerocopy) | 0.8.49 | BSD-2-Clause OR Apache-2.0 OR MIT |
+| [zerocopy-derive](https://github.com/google/zerocopy) | 0.8.55 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | [zerofrom](https://github.com/unicode-org/icu4x) | 0.1.8 | Unicode-3.0 |
 | [zerofrom-derive](https://github.com/unicode-org/icu4x) | 0.1.7 | Unicode-3.0 |
 | [zeroize](https://github.com/RustCrypto/utils) | 1.8.2 | Apache-2.0 OR MIT |
@@ -1041,8 +1014,8 @@ là có trong bản phát hành.
 | [zerovec-derive](https://github.com/unicode-org/icu4x) | 0.11.3 | Unicode-3.0 |
 | [zip](https://github.com/zip-rs/zip2) | 4.6.1 | MIT |
 | [zmij](https://github.com/dtolnay/zmij) | 1.0.21 | MIT |
+| [zmij](https://github.com/dtolnay/zmij) | 1.0.23 | MIT |
 | [zune-core](https://github.com/etemesi254/zune-image) | 0.5.1 | MIT OR Apache-2.0 OR Zlib |
-| [zune-inflate](https://github.com/etemesi254/zune-image/tree/main/zune-inflate) | 0.2.54 | MIT OR Apache-2.0 OR Zlib |
 | [zune-jpeg](https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg) | 0.5.15 | MIT OR Apache-2.0 OR Zlib |
 | [zvariant](https://github.com/z-galaxy/zbus/) | 5.11.0 | MIT |
 | [zvariant_derive](https://github.com/z-galaxy/zbus/) | 5.11.0 | MIT |
@@ -1083,7 +1056,7 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | @emnapi/core | 1.10.0 | MIT | phát hành |
 | @emnapi/runtime | 1.10.0 | MIT | phát hành |
 | @emnapi/wasi-threads | 1.2.1 | MIT | phát hành |
-| @emnapi/wasi-threads | 1.2.2 | MIT | phát hành |
+| @emnapi/wasi-threads | 1.2.3 | MIT | phát hành |
 | @eslint-community/eslint-utils | 4.9.1 | MIT | build/test |
 | @eslint-community/regexpp | 4.12.2 | MIT | build/test |
 | @eslint/config-array | 0.21.2 | Apache-2.0 | build/test |
@@ -1616,28 +1589,28 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 
 ## 6. Thống kê
 
-- Nhị phân đóng gói: 5
+- Nhị phân đóng gói: 4
 - Thư viện Python: 132
-- Crate Rust: 802
+- Crate Rust: 786
 - Gói npm: 558
 
 | Giấy phép | Số thành phần |
 |---|---|
-| MIT | 660 |
-| MIT OR Apache-2.0 | 375 |
+| MIT | 652 |
+| MIT OR Apache-2.0 | 378 |
 | Apache-2.0 OR MIT | 90 |
 | Apache-2.0 | 45 |
-| BSD-3-Clause | 36 |
-| MIT/Apache-2.0 | 33 |
+| BSD-3-Clause | 32 |
+| MIT/Apache-2.0 | 32 |
 | ISC | 29 |
 | Unicode-3.0 | 24 |
 | Zlib OR Apache-2.0 OR MIT | 21 |
 | MPL-2.0 | 20 |
-| BSD-2-Clause | 18 |
-| Unlicense OR MIT | 16 |
-| Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | 15 |
+| Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | 16 |
+| BSD-2-Clause | 15 |
+| Unlicense OR MIT | 15 |
 | BSD License | 8 |
-| Apache-2.0/MIT | 7 |
+| MIT License | 7 |
 
 3 thành phần không khai giấy phép trong metadata — cần tra thủ công trước khi phát hành.
 

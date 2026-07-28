@@ -183,18 +183,25 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                             autoFocus
                             className="w-16 h-7 text-center text-[13px] border border-blue-400 rounded bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-200 focus:outline-none"
                             value={zoomInputVal}
-                            onChange={(e) => setZoomInputVal(e.target.value.replace(/[^0-9]/g, ''))}
+                            // UIUX (audit 2026-07-27 §C-17): cho phép số thập phân (1 dấu chấm), vd "62.5".
+                            onChange={(e) => {
+                                const raw = e.target.value.replace(/[^0-9.]/g, '');
+                                const firstDot = raw.indexOf('.');
+                                setZoomInputVal(firstDot === -1 ? raw : raw.slice(0, firstDot + 1) + raw.slice(firstDot + 1).replace(/\./g, ''));
+                            }}
                             onKeyDown={(e) => {
                                 if (e.key === 'Enter') {
-                                    const val = parseInt(zoomInputVal);
-                                    if (val >= 1 && val <= 6400) handleCustomZoom(val / 100);
+                                    // UIUX (audit 2026-07-27 §C-17): parseFloat + CLAMP về biên 1–6400 (không nuốt im lặng).
+                                    const val = parseFloat(zoomInputVal);
+                                    if (!isNaN(val)) handleCustomZoom(Math.min(6400, Math.max(1, val)) / 100);
                                     setIsZoomEditing(false);
                                 }
                                 if (e.key === 'Escape') setIsZoomEditing(false);
                             }}
                             onBlur={() => {
-                                const val = parseInt(zoomInputVal);
-                                if (val >= 1 && val <= 6400) handleCustomZoom(val / 100);
+                                // UIUX (audit 2026-07-27 §C-17): parseFloat + CLAMP về biên 1–6400 (không nuốt im lặng).
+                                const val = parseFloat(zoomInputVal);
+                                if (!isNaN(val)) handleCustomZoom(Math.min(6400, Math.max(1, val)) / 100);
                                 setIsZoomEditing(false);
                             }}
                         />
@@ -207,9 +214,11 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                             {Math.round(zoom * 100)}%
                         </button>
                     )}
+                    {/* UIUX (audit 2026-07-27 §C-10): mở rộng vùng bấm w-4→w-6 + thêm title (tooltip). */}
                     <button
-                        className="w-4 h-7 flex items-center justify-center text-slate-500 hover:text-slate-700 dark:hover:text-zinc-300 focus:outline-none transition-colors"
+                        className="w-6 h-7 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10 text-slate-500 hover:text-slate-700 dark:hover:text-zinc-300 focus:outline-none transition-colors"
                         onClick={() => setIsZoomMenuOpen(!isZoomMenuOpen)}
+                        title={t('misc.acrobatToolbar:chon_muc_thu_phong')}
                         aria-label={t('misc.acrobatToolbar:chon_muc_thu_phong')}
                     >
                         <svg width="10" height="6" viewBox="0 0 10 6" fill="currentColor"><path d="M0 0l5 6 5-6z"/></svg>
@@ -233,6 +242,50 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                     )}
                 </div>
 
+                {/* UIUX (audit 2026-07-27 §C-02, chỉnh theo feedback): 3 nút 1-click Vừa ngang /
+                    Vừa cả trang / 1:1 — icon vẽ lại tối giản cho đọc được ở 18px, màu active
+                    theo tông XANH DƯƠNG chung của toolbar (Pointer/Hand), không dùng accent
+                    tím lạc tông giữa cụm. */}
+                <div className="w-px h-5 bg-black/10 dark:bg-white/10 mx-1"></div>
+                <button
+                    className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${fitMode === 'width' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30' : 'hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300'}`}
+                    onClick={applyFitWidth}
+                    title={`${t('misc.acrobatToolbar:vua_chieu_ngang', 'Vừa chiều ngang')} (${getShortcutLabel('view.fit_width')})`}
+                    aria-label={t('misc.acrobatToolbar:vua_chieu_ngang', 'Vừa chiều ngang')}
+                >
+                    {/* Trang + mũi tên ngang hai đầu */}
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="3" y="5" width="18" height="14" rx="1.5" />
+                        <path d="M7.5 12h9" />
+                        <path d="M9.5 9.5L7 12l2.5 2.5" />
+                        <path d="M14.5 9.5L17 12l-2.5 2.5" />
+                    </svg>
+                </button>
+                <button
+                    className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${fitMode === 'page' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30' : 'hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300'}`}
+                    onClick={applyFitPage}
+                    title={`${t('misc.acrobatToolbar:vua_tron_trang')} (${getShortcutLabel('view.fit_page')})`}
+                    aria-label={t('misc.acrobatToolbar:vua_tron_trang')}
+                >
+                    {/* Trang nằm gọn trong 4 ngoặc góc */}
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 8V4.5A1.5 1.5 0 0 1 4.5 3H8" />
+                        <path d="M16 3h3.5A1.5 1.5 0 0 1 21 4.5V8" />
+                        <path d="M21 16v3.5a1.5 1.5 0 0 1-1.5 1.5H16" />
+                        <path d="M8 21H4.5A1.5 1.5 0 0 1 3 19.5V16" />
+                        <rect x="8.5" y="6.5" width="7" height="11" rx="1" />
+                    </svg>
+                </button>
+                <button
+                    className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300 transition-colors text-[11px] font-bold tracking-tight"
+                    onClick={() => handleCustomZoom(1)}
+                    title={`${t('misc.acrobatToolbar:kich_thuoc_that_100', 'Kích thước thật 100%')} (${getShortcutLabel('view.actual_size')})`}
+                    aria-label={t('misc.acrobatToolbar:kich_thuoc_that_100', 'Kích thước thật 100%')}
+                >
+                    {/* Chữ thường như nút DIM — rõ hơn nhét chữ vào SVG 7px */}
+                    1:1
+                </button>
+
                 <div className="relative mx-1">
                     <button className={`h-8 px-2 flex items-center justify-center gap-1.5 rounded transition-colors ${isDisplayMenuOpen ? 'bg-black/10 dark:bg-white/20' : 'hover:bg-black/5 dark:hover:bg-white/10'} text-slate-700 dark:text-zinc-300`} onClick={() => setIsDisplayMenuOpen(!isDisplayMenuOpen)} title={t('misc.acrobatToolbar:hien_thi_trang')} aria-label={t('misc.acrobatToolbar:hien_thi_trang')}>
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -249,29 +302,9 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                             <div className="fixed inset-0 z-40" onClick={() => setIsDisplayMenuOpen(false)} />
                             <div className="absolute top-10 right-0 w-64 bg-white dark:bg-[#2d3236] border border-black/10 dark:border-white/10 shadow-xl rounded py-1.5 z-50 text-[13px] text-slate-700 dark:text-zinc-200">
                                 
-                                <div className="px-4 py-1.5 text-[11px] font-bold text-slate-400 dark:text-zinc-500 uppercase tracking-wider">{t('misc.acrobatToolbar:thu_phong_vua_man_hinh')}</div>
-                                <button className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-3 transition-colors" onClick={() => {applyFitWidth(); setIsDisplayMenuOpen(false);}}>
-                                    {fitMode === 'width' ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-500"><polyline points="20 6 9 17 4 12"></polyline></svg> : <span className="w-[14px]" />} 
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-500 dark:text-zinc-400">
-                                      <polyline points="4 3 4 8 20 8 20 3" />
-                                      <path d="M16 11H4v11h16v-8z" />
-                                      <path d="M16 11v4h4" />
-                                      <path d="M7 18h10M9 16l-2 2 2 2M15 16l2 2-2 2" />
-                                    </svg>
-                                    <span>{t('misc.acrobatToolbar:vua_chieu_ngang')}</span>
-                                </button>
-                                <button className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-3 transition-colors" onClick={() => {applyFitPage(); setIsDisplayMenuOpen(false);}}>
-                                    {fitMode === 'page' ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-500"><polyline points="20 6 9 17 4 12"></polyline></svg> : <span className="w-[14px]" />} 
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-500 dark:text-zinc-400">
-                                      <path d="M15 2H5v20h14V8z" />
-                                      <path d="M15 2v6h6" />
-                                      <path d="M8.5 11.5l2.5 2.5M8.5 11.5h2M8.5 11.5v2M15.5 11.5l-2.5 2.5M15.5 11.5h-2M15.5 11.5v2M8.5 18.5l2.5-2.5M8.5 18.5h2M8.5 18.5v-2M15.5 18.5l-2.5-2.5M15.5 18.5h-2M15.5 18.5v-2" />
-                                    </svg>
-                                    <span>{t('misc.acrobatToolbar:vua_tron_trang')}</span>
-                                </button>
-
-                                <div className="w-full h-px bg-black/10 dark:bg-white/10 my-1.5" />
-
+                                {/* UIUX (audit 2026-07-27 §C-02, feedback user): bỏ mục "Thu phóng (vừa
+                                    màn hình)" — đã có 2 nút fit 1-click ngay cạnh dropdown, giữ bản sao
+                                    trong menu chỉ làm dài thêm. Dropdown giờ thuần Bố cục trang. */}
                                 <div className="px-4 py-1.5 text-[11px] font-bold text-slate-400 dark:text-zinc-500 uppercase tracking-wider">{t('misc.acrobatToolbar:bo_cuc_trang')}</div>
                                 <button className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-3 transition-colors" onClick={() => {setPageDisplayMode('single_fit'); setIsDisplayMenuOpen(false);}}>
                                     {pageDisplayMode === 'single_fit' ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-500"><polyline points="20 6 9 17 4 12"></polyline></svg> : <span className="w-[14px]" />} 

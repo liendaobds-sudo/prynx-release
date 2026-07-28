@@ -2,6 +2,8 @@ import { useEffect, useRef, useCallback, useContext } from 'react';
 import { useWorkspaceStore, WorkspaceContext } from '../../stores/useWorkspaceStore';
 import { useAppSettingsStore } from '../../stores/appSettingsStore';
 import { matchesShortcut } from '../../lib/keyboardShortcuts';
+import { toast } from '../../components/ui/Toast'; // UIUX (audit 2026-07-27 §C-07)
+import i18n from '../../i18n'; // UIUX (audit 2026-07-27 §C-07)
 
 /** Chống 2 listener (nhiều tab mount) toggle DIM 2 lần trong 1 cú nhấn → kẹt ON. */
 const handledDimensionKeyEvents = new WeakSet<KeyboardEvent>();
@@ -151,8 +153,21 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         setFutureStack([]);
     }, [pageOrder, selectedIndices, lastSelectedIndex, pageRotations, setPastStack, setFutureStack]);
 
+    // UIUX (audit 2026-07-27 §C-07): timestamp toast gần nhất — throttle 3s để giữ R liên tục không spam.
+    const rotateHintShownAtRef = useRef(0);
+
     const rotateSelectedPages = useCallback((degrees: 90 | 270) => {
-        if (selectedIndices.size === 0) return;
+        if (selectedIndices.size === 0) {
+            // UIUX (audit 2026-07-27 §C-07): R khi chưa chọn trang trước đây im lặng khó hiểu — nhắc cách chọn.
+            const now = Date.now();
+            if (now - rotateHintShownAtRef.current > 3000) {
+                rotateHintShownAtRef.current = now;
+                toast.info(i18n.t('misc.thumbSidebar:chon_trang_truoc_roi_nhan_r', {
+                    defaultValue: 'Chọn trang ở thanh thumbnail trước rồi nhấn R để xoay (Ctrl+A = chọn tất cả)',
+                }));
+            }
+            return;
+        }
         commitSnapshot();
         setPageRotations((previous) => {
             const next = { ...previous };
@@ -281,22 +296,24 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
 
     // D = DIM bật/tắt. Capture phase + isActive.
     // Đọc mode từ store.getState() (không tin ref stale) → D lần 2 chắc chắn TẮT.
+    //
+    // UIUX (audit 2026-07-27) fix bug user báo — BỘ GÕ TIẾNG VIỆT nuốt phím D lần 2:
+    // Telex hiểu "dd" = "đ" nên keydown vật lý thứ hai bị bộ gõ ăn mất.
+    //   - UniKey (SendInput): browser vẫn nhận keydown tổng hợp key='đ' → binding
+    //     { key: 'đ' } trong keyboardShortcuts bắt được.
+    //   - Vietkey (WM_CHAR): KHÔNG có keydown nào cả → bắt bù bằng KEYUP vật lý của
+    //     phím D (bộ gõ chỉ ăn keydown, keyup vẫn tới). Cơ chế ghép cặp:
+    //       dimPhysDownRef  — keydown KeyD thật đã toggle → keyup tương ứng bỏ qua
+    //                         (mọi thời lượng giữ phím, không dựa timing).
+    //       lastDimToggleAtRef — toggle từ keydown 'đ' (UniKey) vừa xảy ra → keyup
+    //                         KeyD mồ côi trong 250ms kế tiếp thuộc CÙNG lượt nhấn,
+    //                         bỏ qua để không toggle đôi.
+    //     Keyup KeyD mồ côi ngoài 2 trường hợp trên = keydown đã bị bộ gõ nuốt → toggle.
+    const dimPhysDownRef = useRef(false);
+    const lastDimToggleAtRef = useRef(0);
     useEffect(() => {
-        const handleDimensionShortcut = (e: KeyboardEvent) => {
-            if (!matchesShortcut(e, 'viewer.dimension')) return;
-            const target = e.target as HTMLElement | null;
-            if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable) return;
-            // Tab nền: bỏ qua, KHÔNG stopPropagation — để tab active nhận sự kiện.
-            if (!isViewerLive()) return;
-            e.preventDefault();
-            e.stopPropagation();
-            e.stopImmediatePropagation();
-            if (e.repeat) return;
-            // Nhiều listener/tab có thể nhìn thấy cùng một event. Chỉ bỏ event trùng,
-            // không khóa theo thời gian vì người dùng có thể nhấn D hai lần rất nhanh.
-            if (handledDimensionKeyEvents.has(e)) return;
-            handledDimensionKeyEvents.add(e);
-
+        const performDimToggle = () => {
+            lastDimToggleAtRef.current = Date.now();
             const storeApi = workspaceStore;
             const current = storeApi?.getState().viewerToolMode ?? toolModeRef.current;
             const next = current === 'dimension' ? 'pointer' : 'dimension';
@@ -323,8 +340,58 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
                 if (tag === 'BUTTON' || tag === 'A') document.activeElement.blur();
             }
         };
+
+        const isEditableEventTarget = (e: KeyboardEvent) => {
+            const target = e.target as HTMLElement | null;
+            return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || !!target?.isContentEditable;
+        };
+
+        const handleDimensionShortcut = (e: KeyboardEvent) => {
+            if (!matchesShortcut(e, 'viewer.dimension')) return;
+            if (isEditableEventTarget(e)) return;
+            // Tab nền: bỏ qua, KHÔNG stopPropagation — để tab active nhận sự kiện.
+            if (!isViewerLive()) return;
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            if (e.repeat) return;
+            // Nhiều listener/tab có thể nhìn thấy cùng một event. Chỉ bỏ event trùng,
+            // không khóa theo thời gian vì người dùng có thể nhấn D hai lần rất nhanh.
+            if (handledDimensionKeyEvents.has(e)) return;
+            handledDimensionKeyEvents.add(e);
+            // Keydown KeyD THẬT (bộ gõ không can thiệp) → keyup của nó không được toggle nữa.
+            if (e.code === 'KeyD') dimPhysDownRef.current = true;
+            performDimToggle();
+        };
+
+        const handleDimensionKeyUp = (e: KeyboardEvent) => {
+            if (e.code !== 'KeyD') return; // chỉ quan tâm keyup VẬT LÝ của phím D
+            if (dimPhysDownRef.current) {
+                // Cặp với keydown đã xử lý ở trên — reset cờ, không làm gì.
+                dimPhysDownRef.current = false;
+                return;
+            }
+            if (isEditableEventTarget(e)) return;
+            if (!isViewerLive()) return;
+            // Toggle từ keydown 'đ' (UniKey) vừa chạy → keyup này cùng lượt nhấn, bỏ qua.
+            if (Date.now() - lastDimToggleAtRef.current < 250) return;
+            if (handledDimensionKeyEvents.has(e)) return;
+            handledDimensionKeyEvents.add(e);
+            // Keyup mồ côi: keydown đã bị bộ gõ tiếng Việt nuốt (Vietkey/WM_CHAR) → toggle bù.
+            performDimToggle();
+        };
+
+        // Alt+Tab giữa lúc giữ phím: keyup rơi vào app khác → cờ kẹt true; blur thì reset.
+        const handleWindowBlur = () => { dimPhysDownRef.current = false; };
+
         window.addEventListener('keydown', handleDimensionShortcut, true);
-        return () => window.removeEventListener('keydown', handleDimensionShortcut, true);
+        window.addEventListener('keyup', handleDimensionKeyUp, true);
+        window.addEventListener('blur', handleWindowBlur);
+        return () => {
+            window.removeEventListener('keydown', handleDimensionShortcut, true);
+            window.removeEventListener('keyup', handleDimensionKeyUp, true);
+            window.removeEventListener('blur', handleWindowBlur);
+        };
     }, [isViewerLive, workspaceStore]);
 
     // C toggles Crop and stays in sync with the Crop toolbar button.

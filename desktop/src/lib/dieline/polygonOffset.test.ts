@@ -411,31 +411,52 @@ function makeModel(allPaths: PathSegment[], bbox: { width: number; height: numbe
 
 describe('Task 5.7 — computeDieOutline và kẹp âm dieGap', () => {
     it('Outer_Silhouette sẵn có → dùng nó (không phải bbox-rect)', () => {
-        // Một Cut_Piece chữ nhật 40×30 ghép từ 4 đoạn CUT khép kín.
-        const p0 = { x: 0, y: 0 };
-        const p1 = { x: 40, y: 0 };
-        const p2 = { x: 40, y: 30 };
-        const p3 = { x: 0, y: 30 };
-        const cutSegs = [
-            seg(p0, p1, 'CUT'),
-            seg(p1, p2, 'CUT'),
-            seg(p2, p3, 'CUT'),
-            seg(p3, p0, 'CUT'),
+        // Một Cut_Piece hình chữ L 40×30 ghép từ 6 đoạn CUT khép kín. Chọn hình
+        // L (không phải chữ nhật) để phân biệt rõ hai nguồn: bbox-rect luôn có
+        // đúng 4 đỉnh, còn silhouette này có 6 đỉnh dù cùng bao 40×30.
+        const pts = [
+            { x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 10 },
+            { x: 15, y: 10 }, { x: 15, y: 30 }, { x: 0, y: 30 },
         ];
-        // bbox cố tình LỚN hơn silhouette để phân biệt rõ hai nguồn.
-        const bbox = { width: 200, height: 150 };
+        const cutSegs = pts.map((p, i) => seg(p, pts[(i + 1) % pts.length], 'CUT'));
+        // Bao khuôn TRÙNG bao silhouette — điều kiện `silhouetteCoversDie`.
+        const bbox = { width: 40, height: 30 };
         const model = makeModel(cutSegs, bbox);
 
         const outline = computeDieOutline(model, bbox);
 
-        // Phải dùng Outer_Silhouette (40×30), KHÔNG phải bbox-rect (200×150).
-        const xs = outline.map((p) => p.x);
-        const ys = outline.map((p) => p.y);
-        expect(Math.max(...xs)).toBeCloseTo(40, 3);
-        expect(Math.max(...ys)).toBeCloseTo(30, 3);
-        // Khẳng định KHÔNG phải bbox-rect.
-        expect(Math.max(...xs)).not.toBeCloseTo(200, 3);
-        expect(Math.max(...ys)).not.toBeCloseTo(150, 3);
+        // Phải dùng Outer_Silhouette (hình L, 6 đỉnh), KHÔNG phải bbox-rect.
+        expect(outline.length).toBeGreaterThan(4);
+        expect(outline).toEqual(
+            expect.arrayContaining([{ x: 15, y: 10 }]),
+        );
+    });
+
+    // [HANGING-WINDOW 2026-07-27] Test khoá: một vòng CUT khép kín NỘI BỘ (rãnh
+    // xả / khe gài) không được nhận làm biên khuôn. Đo thực tế trước khi sửa:
+    // khuôn pizza 468×736mm nhận về vòng 2,5×45mm ⇒ bước lưới ~11mm ⇒ engine
+    // báo 784 khuôn/tờ (vật lý tối đa 2) kèm vị trí toạ độ âm.
+    it('vòng CUT khép kín nội bộ (không phủ bao khuôn) → bbox-rect', () => {
+        // Khe 2,5×45 nằm giữa khuôn 468×736, cộng vài nét CUT biên hở (không
+        // khép được) đúng như khuôn thật.
+        const slot = [
+            { x: 200, y: 300 }, { x: 202.5, y: 300 },
+            { x: 202.5, y: 345 }, { x: 200, y: 345 },
+        ];
+        const cutSegs = [
+            ...slot.map((p, i) => seg(p, slot[(i + 1) % slot.length], 'CUT')),
+            seg({ x: 0, y: 0 }, { x: 468, y: 0 }, 'CUT'),
+            seg({ x: 0, y: 736 }, { x: 468, y: 736 }, 'CUT'),
+        ];
+        const bbox = { width: 468, height: 736 };
+        const model = makeModel(cutSegs, bbox);
+
+        expect(computeDieOutline(model, bbox)).toEqual([
+            { x: 0, y: 0 },
+            { x: 468, y: 0 },
+            { x: 468, y: 736 },
+            { x: 0, y: 736 },
+        ]);
     });
 
     it('Cut_Piece suy biến (chỉ CREASE, không có CUT/BLEED) → bbox-rect', () => {

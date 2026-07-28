@@ -148,4 +148,32 @@ describe('applyFoldCompensation — Property 5: Gập hoàn toàn cho khít khô
             { numRuns: NUM_RUNS },
         );
     });
+
+    it('tái sử dụng Matrix4 scratch mà không đổi kết quả hình học', () => {
+        const pivot: [Point2D, Point2D] = [{ x: 0, y: 0 }, { x: 120, y: 0 }];
+        const { child, allPanels, depthMap, maxD } = buildTree(pivot, 90);
+        const scratch = {
+            result: new THREE.Matrix4(),
+            step: new THREE.Matrix4(),
+            temp: new THREE.Matrix4(),
+        };
+
+        const optimized = applyFoldCompensation(
+            child, allPanels, 0.65, depthMap, maxD, 1.5, scratch,
+        );
+        const reference = applyFoldCompensation(
+            child, allPanels, 0.65, depthMap, maxD, 1.5,
+        );
+
+        expect(optimized.matrix).toBe(scratch.result);
+        optimized.matrix.elements.forEach((value, index) => {
+            expect(value).toBeCloseTo(reference.matrix.elements[index], 12);
+        });
+
+        const reused = applyFoldCompensation(
+            child, allPanels, 1, depthMap, maxD, 1.5, scratch,
+        );
+        expect(reused.matrix).toBe(scratch.result);
+        expect(reused.matrix.elements.every(Number.isFinite)).toBe(true);
+    });
 });

@@ -14,6 +14,14 @@ import { resizePages } from '../lib/preprocessEngine/PageResizer';
 import { splitPdf, parseRanges } from '../lib/preprocessEngine/PdfSplitter';
 import { mergePdf } from '../lib/preprocessEngine/PdfMerger';
 import i18n, { tv } from '../i18n';
+// UIUX (audit 2026-07-27 §D-15/§D-11): lỗi kỹ thuật → câu Việt + hướng khắc phục; toast có nút hành động
+import { formatError, isCanceled } from './errorMessages';
+import { toast } from '../components/ui/Toast';
+
+// UIUX (audit 2026-07-27 §D-09): tác vụ nặng chạy lâu — trấn an để user không tưởng app treo.
+// (KHÔNG thêm nút hủy: backend chưa có endpoint cancel cho các route preprocess.)
+const LONG_TASK_HINT = () =>
+    i18n.t('lib.processHandlers:file_lon_co_the_mat_vai_phut', { defaultValue: '… (file lớn có thể mất vài phút — đừng đóng tab)' });
 
 // ─── Shared context type for all handlers ───
 export interface ProcessContext {
@@ -216,8 +224,17 @@ export async function runProcessEngine(
                                 labelName: sp.labelName,
                             });
                             setReportMsg(i18n.t('lib.processHandlers:da_tu_dong_luu_ok_file_in_vao_sp_folder', { ok, folder: sp.folder }));
+                            // UIUX (audit 2026-07-27 §D-11): toast thành công kèm nút mở thư mục đã lưu
+                            toast.success(
+                                i18n.t('lib.processHandlers:da_luu_file_in', { defaultValue: 'Đã tự động lưu {{ok}} file in', ok }),
+                                {
+                                    label: i18n.t('lib.processHandlers:mo_thu_muc', { defaultValue: 'Mở thư mục' }),
+                                    onClick: () => { import('@tauri-apps/plugin-shell').then(m => m.open(sp.folder)).catch(() => {}); },
+                                }
+                            );
                         } catch (e: any) {
-                            setError(i18n.t('lib.processHandlers:binh_xong_nhung_tu_dong_luu_file_in_loi') + ' ' + (e?.message || e));
+                            // UIUX (audit 2026-07-27 §D-15): câu Việt + hướng khắc phục thay vì e.message thô
+                            setError(formatError(e, i18n.t('lib.processHandlers:binh_xong_nhung_luu_file_in_loi', { defaultValue: 'Bình xong nhưng tự động lưu file in lỗi' })));
                         }
                     }
                 } else if (status.status === 'failed') {
@@ -284,7 +301,9 @@ export async function runProcessEngine(
             // Silently abort, user cancelled
             return;
         }
-        setError(e.message || i18n.t('lib.processHandlers:loi_he_thong_khi_xu_ly_binh_trang'));
+        // UIUX (audit 2026-07-27 §D-15): Hủy thì im lặng; lỗi khác dịch thành câu Việt + hướng khắc phục
+        if (isCanceled(e)) return;
+        setError(formatError(e, i18n.t('lib.processHandlers:khong_binh_duoc_trang', { defaultValue: 'Không bình được trang' })));
     } finally {
         ctx.setCancelHandler?.(null);
         setIsProcessing(false);
@@ -378,7 +397,8 @@ export async function runCatalogPlan(
             commitWorkingFile(mergedBlob, mergedFileName);
         }
     } catch (e: any) {
-        setError(e.message || i18n.t('lib.processHandlers:loi_khi_xu_ly_catalog_auto_plan'));
+        // UIUX (audit 2026-07-27 §D-15): dịch lỗi kỹ thuật, Hủy thì không báo đỏ
+        if (!isCanceled(e)) setError(formatError(e, i18n.t('lib.processHandlers:khong_xu_ly_duoc_catalog', { defaultValue: 'Không xử lý được Catalog' })));
     } finally {
         setIsProcessing(false);
         setProcessStatus('');
@@ -391,14 +411,16 @@ export async function runCatalogPlan(
 
 export async function runShuffle(ctx: ProcessContext, settings: any) {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
-    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_xao_tron_trang'));
+    // UIUX (audit 2026-07-27 §D-09): thêm hậu tố trấn an cho tác vụ chạy dài
+    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_xao_tron_trang') + LONG_TASK_HINT());
     try {
         const inputBytes = await getWorkingBytes();
         const srcPdf = await PDFDocument.load(inputBytes);
         const totalPages = srcPdf.getPageCount();
 
         if ((totalPages > 1000 || file.size > 300 * 1024 * 1024) && settings.specialAction !== 'split_odd_even') {
-            setProcessStatus(i18n.t('lib.processHandlers:dang_xao_tron_trang'));
+            // UIUX (audit 2026-07-27 §D-09)
+            setProcessStatus(i18n.t('lib.processHandlers:dang_xao_tron_trang') + LONG_TASK_HINT());
             const { backendShufflePages } = await import('../lib/api');
             let action = 'reverse'; let mapping: number[] = [];
             if (settings.presetId === 'special') {
@@ -454,13 +476,15 @@ export async function runShuffle(ctx: ProcessContext, settings: any) {
             if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
             else { await commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
         }
-    } catch (err: any) { setError(i18n.t('lib.processHandlers:loi_xao_tron_trang') + ' ' + err.message); }
+    // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
+    } catch (err: any) { if (!isCanceled(err)) setError(formatError(err, i18n.t('lib.processHandlers:khong_xao_tron_duoc_trang', { defaultValue: 'Không xáo trộn được trang' }))); }
     finally { setIsProcessing(false); setProcessStatus(''); }
 }
 
 export async function runResize(ctx: ProcessContext, settings: any) {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
-    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_doi_kho_trang'));
+    // UIUX (audit 2026-07-27 §D-09): thêm hậu tố trấn an cho tác vụ chạy dài
+    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_doi_kho_trang') + LONG_TASK_HINT());
 
     const MM_TO_PT = 2.83465;
     const resizeMode: string = settings.resizeMode || 'auto';
@@ -557,13 +581,15 @@ export async function runResize(ctx: ProcessContext, settings: any) {
             console.warn('[resize] pdf-lib thất bại, fallback backend:', feErr);
             await emit(await runBackend());
         }
-    } catch (err: any) { setError(i18n.t('lib.processHandlers:loi_doi_kho') + ' ' + err.message); }
+    // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
+    } catch (err: any) { if (!isCanceled(err)) setError(formatError(err, i18n.t('lib.processHandlers:khong_doi_duoc_kho_trang', { defaultValue: 'Không đổi được khổ trang' }))); }
     finally { setIsProcessing(false); setProcessStatus(''); }
 }
 
 export async function runTrimShift(ctx: ProcessContext, settings: any) {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
-    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_cat_xen_doi_noi_dung'));
+    // UIUX (audit 2026-07-27 §D-09): thêm hậu tố trấn an cho tác vụ chạy dài
+    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_cat_xen_doi_noi_dung') + LONG_TASK_HINT());
     try {
         const inputBytes = await getWorkingBytes();
         const { backendTrimShift } = await import('../lib/api');
@@ -592,13 +618,15 @@ export async function runTrimShift(ctx: ProcessContext, settings: any) {
         const newFileName = `TrimShift_${file.name}`;
         if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
         else { commitWorkingFile(blob, newFileName); }
-    } catch (err: any) { setError(i18n.t('lib.processHandlers:loi_cat_xen_doi') + ' ' + err.message); }
+    // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
+    } catch (err: any) { if (!isCanceled(err)) setError(formatError(err, i18n.t('lib.processHandlers:khong_cat_xen_doi_duoc', { defaultValue: 'Không cắt xén/dời được nội dung' }))); }
     finally { setIsProcessing(false); setProcessStatus(''); }
 }
 
 export async function runSplit(ctx: ProcessContext, settings: any) {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, setReportMsg, getWorkingBytes } = ctx;
-    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_tach_pdf'));
+    // UIUX (audit 2026-07-27 §D-09): thêm hậu tố trấn an cho tác vụ chạy dài
+    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_tach_pdf') + LONG_TASK_HINT());
     try {
         // Tuân thủ kết quả cuối cùng: tách trên file đã áp dụng sửa đổi trang.
         const inputBytes = await getWorkingBytes();
@@ -631,13 +659,15 @@ export async function runSplit(ctx: ProcessContext, settings: any) {
                 setReportMsg(i18n.t('lib.processHandlers:da_tach_thanh_results_length_file', { count: results.length }));
             }
         }
-    } catch (err: any) { setError(i18n.t('lib.processHandlers:loi_tach_pdf') + ' ' + err.message); }
+    // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
+    } catch (err: any) { if (!isCanceled(err)) setError(formatError(err, i18n.t('lib.processHandlers:khong_tach_duoc_pdf', { defaultValue: 'Không tách được PDF' }))); }
     finally { setIsProcessing(false); setProcessStatus(''); }
 }
 
 export async function runMerge(ctx: ProcessContext, settings: any) {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
-    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_ghep_pdf'));
+    // UIUX (audit 2026-07-27 §D-09): thêm hậu tố trấn an cho tác vụ chạy dài
+    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_ghep_pdf') + LONG_TASK_HINT());
     try {
         // Tuân thủ kết quả cuối cùng: file nền (tab hiện tại) dùng bản đã áp dụng sửa đổi trang.
         const workingBaseFile = file
@@ -680,6 +710,7 @@ export async function runMerge(ctx: ProcessContext, settings: any) {
             if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
             else { await commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
         }
-    } catch (err: any) { setError(i18n.t('lib.processHandlers:loi_ghep_pdf') + ' ' + err.message); }
+    // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
+    } catch (err: any) { if (!isCanceled(err)) setError(formatError(err, i18n.t('lib.processHandlers:khong_ghep_duoc_pdf', { defaultValue: 'Không ghép được PDF' }))); }
     finally { setIsProcessing(false); setProcessStatus(''); }
 }

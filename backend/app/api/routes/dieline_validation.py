@@ -11,14 +11,27 @@ NUMERIC_PARAMS = {
     "SLW", "SLH", "TRW", "SLP", "LTW", "LTH", "DFH", "BF", "HR", "HM",
     "HS", "cupD1", "cupD2", "cupH", "cupCoverage", "envW", "envH", "envFH",
     "envSF", "envWindowW", "envWindowH", "envWindowX", "envWindowY", "trayTongueW",
-    "sleeveGlue", "pizzaVentD",
+    "sleeveGlue", "lidD", "lidGap", "pizzaVentD",
+    # [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ: rộng/cao cửa sổ + cao tai treo.
+    "WNW", "WNH", "HTH",
+    # [HANGING-WINDOW 2026-07-27] ABD (chiều sâu mảnh đáy dán) trước đây bị bỏ sót
+    # khỏi bản sao này nên không được kiểm là số hữu hạn — bổ sung cho khớp
+    # DEFAULT_PARAMS. Không thể làm hỏng caller cũ: runtimeValidation trong engine
+    # vốn đã bắt buộc mọi khoá của DEFAULT_PARAMS.
+    "ABD",
 }
 BOOLEAN_PARAMS = {
     "lockTab", "handleHoles", "envWindow", "pizzaVent", "pizzaFrontLock", "pizzaCornerLock",
+    # [HANGING-WINDOW 2026-07-27] Công tắc cửa sổ mặt trước của hộp treo.
+    "hgbWindow",
 }
 ENUM_PARAMS: dict[str, set[str]] = {
     "glueSide": {"left", "right"},
-    "boxType": {"rte", "slb", "auto_bottom", "gable", "paper_bag", "cup_sleeve", "pizza", "envelope", "tray"},
+    # [HANGING-WINDOW 2026-07-27] Thiếu 'hanging_window' ở đây làm route trả 422
+    # "params.boxType không hợp lệ." dù engine TS/bundle sidecar đã hỗ trợ.
+    # Enum này là BẢN SAO của ENUM_VALUES trong desktop/src/lib/dieline/runtimeValidation.ts
+    # — thêm loại hộp mới phải sửa ĐỦ HAI ĐẦU.
+    "boxType": {"rte", "slb", "auto_bottom", "gable", "paper_bag", "cup_sleeve", "pizza", "envelope", "tray", "double_tray", "hanging_window"},
     "panelOrder": {"WLWL", "LWLW"},
     "handleShape": {"oval", "roundRect"},
     "handleY": {"bottom", "center"},

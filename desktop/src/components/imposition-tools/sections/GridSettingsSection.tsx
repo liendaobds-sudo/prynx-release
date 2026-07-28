@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { inputCls } from "../SharedUI";
 import { useImposerSettingsStore } from "../useImposerSettingsStore";
 import { useShallow } from "zustand/react/shallow";
-import { useAppSettingsStore } from "../../../stores/appSettingsStore";
+// UIUX (audit 2026-07-27 §B-03): bỏ useAppSettingsStore — giá trị Hở tem luôn là mm, suffix hiển thị cứng 'mm'
 import { parsePastedQuantities } from "../../../lib/parsePastedQuantities";
 import { useTranslation } from 'react-i18next';
 import { resolveImpositionModes } from "../pageSheetPolicy";
@@ -42,11 +42,12 @@ export interface GridSettingsProps {
   viewerActivePage: number;
   viewerPageOrder: number[] | null;
   paperSectionJSX?: React.ReactNode;
+  // UIUX (audit 2026-07-27 §B-09): Enter trong ô SL → commit giá trị rồi chạy bình (ImposerDashboard truyền vào)
+  onRequestExecute?: () => void;
 }
 
 export default function GridSettingsSection(props: GridSettingsProps) {
   const { t } = useTranslation();
-  const { measurementUnit } = useAppSettingsStore();
   const {
     taskMode,
     setTaskMode,
@@ -70,7 +71,8 @@ export default function GridSettingsSection(props: GridSettingsProps) {
     setRows,
     gapX,
     setGapX,
-
+    // UIUX (2026-07-27): gộp lại 1 ô hở dùng chung — gapY luôn bám theo gapX
+    gapY,
     setGapY,
 
 
@@ -79,6 +81,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
     viewerActivePage,
     viewerPageOrder,
     paperSectionJSX,
+    onRequestExecute, // UIUX (audit 2026-07-27 §B-09)
   } = props;
 
   // CNC ghép nhiều mẫu: số tờ in thực tế = MAX số tờ cần của từng mẫu (tất cả
@@ -261,7 +264,10 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 <option value="step_repeat">{t('imposition.gridSettings:binh_trang_s_r')}</option>
                 <option value="nup">{t('imposition.gridSettings:dan_nhieu_mau_n_up')}</option>
               </select>
-              <div
+              {/* UIUX (audit 2026-07-27 §B-17): div onClick → button có aria-label + focus-visible */}
+              <button
+                type="button"
+                aria-label={t('imposition.gridSettings:giai_thich', 'Giải thích')}
                 className="shrink-0 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:text-zinc-500 dark:hover:text-indigo-400 cursor-pointer transition-colors"
                 onClick={() =>
                   setInfoModal({
@@ -302,7 +308,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                     d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
                   />
                 </svg>
-              </div>
+              </button>
             </div>
           </div>
 
@@ -330,7 +336,10 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                   <option value="cut_stacks">{t('imposition.gridSettings:xep_chong_up_xap_dung_thu_tu')}</option>
                   <option value="ratio_stack">{t('imposition.gridSettings:chia_ty_le_xep_chong_nhieu_mau_sl_rieng')}</option>
                 </select>
-                <div
+                {/* UIUX (audit 2026-07-27 §B-17): div onClick → button có aria-label + focus-visible */}
+                <button
+                  type="button"
+                  aria-label={t('imposition.gridSettings:giai_thich', 'Giải thích')}
                   className="shrink-0 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:text-zinc-500 dark:hover:text-indigo-400 cursor-pointer transition-colors"
                   onClick={() =>
                     setInfoModal({
@@ -385,7 +394,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                       d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
                     />
                   </svg>
-                </div>
+                </button>
               </div>
             </div>
           )}
@@ -422,7 +431,10 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                   <option value="ARROW">{t('imposition.gridSettings:mui_ten')}</option>
                   <option value="CUSTOM">{t('imposition.gridSettings:dac_biet')}</option>
                 </select>
-                <div
+                {/* UIUX (audit 2026-07-27 §B-17): div onClick → button có aria-label + focus-visible */}
+                <button
+                  type="button"
+                  aria-label={t('imposition.gridSettings:giai_thich', 'Giải thích')}
                   className="shrink-0 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:text-zinc-500 dark:hover:text-indigo-400 cursor-pointer transition-colors"
                   onClick={() =>
                     setInfoModal({
@@ -453,7 +465,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                       d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
                     />
                   </svg>
-                </div>
+                </button>
               </div>
             </div>
           )}
@@ -476,7 +488,10 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 <option value="simple_auto">{t('imposition.gridSettings:luoi_don_gian')}</option>
                 <option value="manual">{t('imposition.gridSettings:tuy_chinh')}</option>
               </select>
-              <div
+              {/* UIUX (audit 2026-07-27 §B-17): div onClick → button có aria-label + focus-visible */}
+              <button
+                type="button"
+                aria-label={t('imposition.gridSettings:giai_thich', 'Giải thích')}
                 className="shrink-0 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:text-zinc-500 dark:hover:text-indigo-400 cursor-pointer transition-colors"
                 onClick={() =>
                   setInfoModal({
@@ -525,10 +540,10 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                     d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
                   />
                 </svg>
-              </div>
+              </button>
             </div>
           </div>
-          
+
           {gridStrategy === "manual" && (
             <div className="grid grid-cols-2 gap-x-3 gap-y-3">
               <div>
@@ -563,42 +578,62 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 ? t('imposition.gridSettings:khoang_cach_tam')
                 : t('imposition.gridSettings:ho_tem')}
             </label>
-            <div className="flex flex-1 items-center gap-3 min-w-0">
-                <div className="relative flex-1 min-w-0">
-                    <input
-                        type="number" step="1"
-                        value={gapX} 
-                        onChange={(e) => {
-                            setGapX(Number(e.target.value));
-                            setGapY(Number(e.target.value));
-                        }}
-                        className="w-full h-8 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium pr-7"
-                        style={{ paddingLeft: "9px" }}
-                        title={t('imposition.gridSettings:khoang_ho_giua_cac_nhan_gap')}
-                    />
-                    <div className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none uppercase">
-                        {measurementUnit}
+            <div className="flex flex-1 items-end gap-2 min-w-0">
+                {/* UIUX (2026-07-27): gộp 2 ô Hở ngang / Hở dọc về 1 ô dùng chung — 1 thông số
+                    áp cho cả 2 phương (ghi đồng thời gapX + gapY) */}
+                <div className="flex-1 min-w-0">
+                    <label className="text-[10px] text-slate-500 block mb-0.5 font-medium truncate" title={t('imposition.gridSettings:khoang_ho_giua_cac_nhan_gap')}>
+                        {t('imposition.gridSettings:khoang_ho', 'Khoảng hở')}
+                    </label>
+                    <div className="relative min-w-0">
+                        <input
+                            type="number" step="1" min="0"
+                            value={gapX}
+                            // UIUX (audit 2026-07-27 §B-04): clamp không âm
+                            onChange={(e) => {
+                                const v = Math.max(0, Number(e.target.value) || 0);
+                                setGapX(v);
+                                setGapY(v);
+                            }}
+                            className="w-full h-8 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium pr-6"
+                            style={{ paddingLeft: "9px" }}
+                            title={t('imposition.gridSettings:khoang_ho_giua_cac_nhan_gap')}
+                        />
+                        {/* UIUX (audit 2026-07-27 §B-03): giá trị luôn là mm — suffix cứng 'mm' */}
+                        <div className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none uppercase">
+                            mm
+                        </div>
                     </div>
                 </div>
 
                 {/* Moved Bleed here — ẩn cho Bế tem & CNC (kích thước lấy từ ĐƯỜNG KHUÔN BẾ, bleed không tác dụng) */}
                 {!dieGeometryMode && (
-                  <>
-                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide whitespace-nowrap shrink-0 pl-1">
-                      BLEED
+                  <div className="flex-1 min-w-0">
+                    {/* UIUX (audit 2026-07-27 §B-08): label hardcode 'BLEED' → i18n tiếng Việt */}
+                    <label className="text-[10px] text-slate-500 block mb-0.5 font-medium truncate" title={t('imposition.gridSettings:tran_le_bleed', 'Tràn lề (Bleed)')}>
+                      {t('imposition.gridSettings:tran_le_bleed', 'Tràn lề (Bleed)')}
                     </label>
-                    <div className="relative flex-1 min-w-0">
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={s.bleed}
-                        onChange={(e) => s.setBleed(Number(e.target.value))}
-                        className="w-full h-8 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium pr-7"
-                        style={{ paddingLeft: "9px" }}
-                      />
+                    <div className="flex items-center gap-1 min-w-0">
+                      {/* UIUX (audit 2026-07-27 §B-02): thu nhỏ input, suffix mm không còn bị nút mắt chiếm chỗ */}
+                      <div className="relative flex-1 min-w-0">
+                        <input
+                          type="number"
+                          step="0.1"
+                          min="0"
+                          value={s.bleed}
+                          // UIUX (audit 2026-07-27 §B-04): clamp không âm
+                          onChange={(e) => s.setBleed(Math.max(0, Number(e.target.value) || 0))}
+                          className="w-full h-8 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium pr-6"
+                          style={{ paddingLeft: "9px" }}
+                        />
+                        <div className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none uppercase">
+                          mm
+                        </div>
+                      </div>
                       <button
                         onClick={() => s.setShowBleedView(!s.showBleedView)}
-                        className={`absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 rounded flex items-center justify-center transition-colors ${
+                        // UIUX (audit 2026-07-27 §B-24): w-6 h-6 → w-7 h-7 (nút mắt dễ bấm hơn)
+                        className={`shrink-0 w-7 h-7 rounded flex items-center justify-center transition-colors ${
                           s.showBleedView
                             ? "text-rose-600 dark:text-rose-400"
                             : "text-slate-400 hover:text-slate-600 dark:hover:text-zinc-300"
@@ -616,7 +651,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                         )}
                       </button>
                     </div>
-                  </>
+                  </div>
                 )}
             </div>
           </div>
@@ -680,6 +715,12 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 : taskMode === "nup" || taskMode === "sticker_imposer"
                   ? t('imposition.gridSettings:sl_moi_loai')
                   : t('imposition.gridSettings:so_luong')}
+              {/* UIUX (audit 2026-07-27 \§B-10): chú thích 0 = tự lấp đầy ngay trong label */}
+              {quantityApplies && (
+                <span className="block font-normal normal-case tracking-normal text-[9px] text-slate-400">
+                  {t('imposition.gridSettings:chu_thich_0_tu_lap_day', '(0 = tự lấp đầy tờ)')}
+                </span>
+              )}
             </label>
             <div className="flex flex-1 items-center gap-2 min-w-0">
               <input
@@ -690,14 +731,21 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 onChange={(e) =>
                   setTargetQuantity(Math.max(0, parseInt(e.target.value) || 0))
                 }
+                // UIUX (audit 2026-07-27 \§B-09): Enter \→ commit giá trị (blur) rồi chạy bình
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.currentTarget.blur();
+                    onRequestExecute?.();
+                  }
+                }}
                 className="flex-1 min-w-0 h-8 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium disabled:opacity-60 disabled:cursor-not-allowed"
                 style={{ paddingLeft: "9px", paddingRight: "8px" }}
                 placeholder={
                   !quantityApplies
-                    ? "Kh\u00f4ng \u00e1p d\u1ee5ng cho X\u1ebfp ch\u1ed3ng"
-                    : taskMode === "nup" || taskMode === "sticker_imposer"
-                    ? t('imposition.gridSettings:trong_tu_dong_lap_day_1_to')
-                    : t('imposition.gridSettings:0_xep_toi_da_tren_1_to')
+                    // UIUX (audit 2026-07-27 \§B-08): bỏ chuỗi unicode-escape \→ tiếng Việt có dấu qua i18n
+                    ? t('imposition.gridSettings:khong_ap_dung_cho_xep_chong', 'Không áp dụng cho Xếp chồng')
+                    // UIUX (audit 2026-07-27 \§B-10): placeholder rút gọn (chú thích đã nằm trong label)
+                    : t('imposition.gridSettings:tu_lap_day_placeholder', 'Tự lấp đầy')
                 }
               />
               {sourceTotalPages > 1 && quantityApplies ? (
@@ -728,7 +776,8 @@ export default function GridSettingsSection(props: GridSettingsProps) {
 
           {!quantityApplies && (
             <div className="pl-[107px] text-[11px] leading-snug text-slate-500 dark:text-zinc-400">
-              {"X\u1ebfp ch\u1ed3ng d\u00f9ng m\u1ed7i trang PDF \u0111\u00fang m\u1ed9t l\u1ea7n; s\u1ed1 l\u01b0\u1ee3ng kh\u00f4ng \u00e1p d\u1ee5ng."}
+              {/* UIUX (audit 2026-07-27 \§B-08): bỏ chuỗi unicode-escape \→ tiếng Việt có dấu qua i18n */}
+              {t('imposition.gridSettings:xep_chong_moi_trang_mot_lan', 'Xếp chồng dùng mỗi trang PDF đúng một lần; số lượng không áp dụng.')}
             </div>
           )}
           {quantityApplies && showPageQuantities && sourceTotalPages > 1 && (
@@ -861,6 +910,13 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                             newVals[idx] = val;
                           }
                           setTargetQuantitiesByPage(newVals);
+                        }}
+                        // UIUX (audit 2026-07-27 §B-09): Enter → commit giá trị (blur) rồi chạy bình
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.currentTarget.blur();
+                            onRequestExecute?.();
+                          }
                         }}
                         placeholder={
                           targetQuantity === 0

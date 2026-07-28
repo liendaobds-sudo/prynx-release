@@ -181,6 +181,58 @@ def test_pdfx4_export_without_gs(no_ghostscript, sample_pdf):
             os.remove(out)
 
 
+def test_no_gs_product_refuses_action_without_calling_legacy_runner(
+    no_ghostscript, sample_pdf, monkeypatch
+):
+    """File ngoài phạm vi phải thành REFUSED, không giả thành thiếu GS."""
+    from app.core import gs_usage, pdf_actions_native
+    from app.core.action_engine import ActionEngine
+    monkeypatch.setattr(
+        pdf_actions_native,
+        "analyze_font_embedding",
+        lambda _path: {
+            "readable": True,
+            "missing": ["FontThieu"],
+            "embedded": [],
+            "base14": [],
+            "warnings": [],
+        },
+    )
+    gs_usage.reset_for_tests()
+
+    engine = ActionEngine()
+    engine.gs_path = no_ghostscript
+    result = asyncio.run(engine.execute(sample_pdf, "EMBED_FONTS"))
+
+    assert result.success is False
+    assert result.log and result.log[0].status == "refused"
+    assert result.log[0].engine == "none"
+    assert "dừng an toàn" in (result.error or "")
+    assert "Ghostscript" not in (result.error or "")
+    assert _gs_calls() == 0
+
+
+def test_no_gs_product_refuses_pdfx_without_calling_legacy_runner(
+    no_ghostscript, sample_pdf, monkeypatch
+):
+    """PDF/X native không làm được thì ném giới hạn sản phẩm, không chạy GS."""
+    from app.core import gs_usage
+    from app.core.gs_availability import InternalEngineUnsupported
+    from app.core.pdfx_export import PdfxExportEngine
+    gs_usage.reset_for_tests()
+    engine = PdfxExportEngine()
+    engine.gs_path = no_ghostscript
+    monkeypatch.setattr(engine, "_export_x4_native", lambda *_a, **_k: False)
+
+    with pytest.raises(InternalEngineUnsupported) as exc:
+        asyncio.run(engine.export_pdfx(sample_pdf, "x4"))
+
+    assert "dừng an toàn" in str(exc.value)
+    assert "Ghostscript" not in str(exc.value)
+    assert engine.last_engine == "none"
+    assert _gs_calls() == 0
+
+
 def test_pdfx4_warns_when_it_sets_trimbox_itself(no_ghostscript, tmp_path):
     """Đặt TrimBox hộ người dùng thì PHẢI nói ra.
 

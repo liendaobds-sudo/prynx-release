@@ -523,6 +523,7 @@ const DEFAULT_PREVIEWS: Record<string, { label: string }> = {
     pizza: { label: 'Hộp Pizza' },
     envelope: { label: 'Bì Thư' },
     tray: { label: 'Hộp Diêm / Khay' },
+    double_tray: { label: 'Hộp Âm Dương (Khay + Nắp)' }, // [DOUBLE-TRAY 2026-07-26]
 };
 
 /** Floating label thumbnail — góc trên phải canvas 2D (Desktop: no images, just label) */

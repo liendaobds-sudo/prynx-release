@@ -72,3 +72,34 @@ Các ca phụ thuộc font tùy chọn được skip trên máy hiện tại; nh
 | §4.2 — sai `Tr`, chỉ verify trang 1, nền trắng pha loãng sai lệch | Đã sửa và có hồi quy |
 | §4.3 — fallback có rủi ro nhưng UI hứa tuyệt đối | Đã chuyển fail-closed và sửa UI/i18n |
 | Telemetry “95% job/30 ngày” | Loại khỏi phạm vi theo quyết định chủ dự án |
+## 5. Bổ sung 2026-07-28 — file `HDKK NAME CARD.pdf`
+
+### Nguyên nhân
+
+- `pikepdf` parse số canh chữ thập phân trong mảng `TJ` thành `Decimal`, nhưng
+  parser chỉ nhận `int`/`float`, nên nhánh native từ chối oan.
+- Font CFF name-keyed được phép bỏ toán tử `charset` để dùng ISOAdobe mặc định;
+  đường đọc CFF trần chưa gắn mặc định này nên không đọc được font chỉ chứa
+  `.notdef` và `space`.
+- Sau khi hai lỗi parser được mô phỏng sửa, màu CMYK trong content stream giữ
+  nguyên nhưng so-kẽm toàn trang vẫn vượt ngưỡng do text hinting biến mất:
+  viền path đậm thêm tối đa 1 px trên trang có nhiều chữ nhỏ.
+
+### Sửa chữa
+
+- Nhận `Decimal` ở `TJ`, `/Differences` và các mảng số PDF liên quan.
+- Dùng `_deref()` cho `/W` thay vì gọi `resolve()` trên Array trực tiếp.
+- Gắn ISOAdobe mặc định cho CFF name-keyed không khai `charset`.
+- Nhánh object-level phải giữ nguyên chữ ký toán tử/trạng thái màu và vượt lưới
+  mất/thêm/lệch mực cục bộ. Chỉ nhánh này được bỏ qua ngưỡng mean/coverage toàn
+  trang khi sai biệt nằm trong viền 1 px; nhánh GS vẫn giữ chốt cũ.
+- Test parity backend không còn đọc `PreflightTab.tsx` đã xoá; nguồn UI duy nhất
+  là `PreflightTool.tsx`.
+
+### Xác minh
+
+- Nhóm OUT FONT: **53 passed, 1 skipped**.
+- Nhóm Action/Preflight/no-GS: **100 passed**.
+- Toàn bộ backend: **1.469 passed, 1 skipped, 6 warnings**.
+- Chạy `ActionEngine` trên file thực tế với GS bị tắt:
+  `success=true`, `engine=pikepdf`, `glyphs=522`, `live_text=0`, `gs_calls=0`.

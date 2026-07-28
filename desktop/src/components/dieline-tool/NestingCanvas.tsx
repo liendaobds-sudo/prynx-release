@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // NestingCanvas — SVG preview xếp khuôn vào khổ in
 // Hiển thị tờ giấy, lề, và các khuôn bế đã xếp
 // ============================================================
@@ -223,7 +223,19 @@ export default function NestingCanvas() {
   const { t } = useTranslation();
     const { dieline, nestingConfig, nestingResult, sleeveNestingResult, params } = useBoxStore();
     const tagStyles = useTagStyles();
-    const svgRef = useRef<SVGSVGElement>(null);
+    // [NESTING-ZOOM 2026-07-27] Giữ node <svg> trong STATE, không chỉ trong ref.
+    // VÌ SAO: component return sớm ("nhập thông số để xem xếp khuôn") khi chưa có
+    // kết quả xếp, nên lúc effect chạy lần đầu `ref.current` = null → listener
+    // wheel/touch không bao giờ được gắn; `updateTransform` lại ổn định nên
+    // effect không chạy lại khi <svg> xuất hiện ⇒ lăn chuột không zoom được.
+    // Ngoài ra canvas có 3 nhánh render (khay+vỏ gộp / tách / thường), đổi nhánh
+    // là thay node mới — dùng state để mỗi lần node đổi thì gắn lại listener.
+    const [svgEl, setSvgEl] = useState<SVGSVGElement | null>(null);
+    const svgRef = useRef<SVGSVGElement | null>(null);
+    const attachSvg = useCallback((el: SVGSVGElement | null) => {
+        svgRef.current = el;
+        setSvgEl(el);
+    }, []);
 
     // ── CQ-3: useRef for pan state to avoid stale closures ──
     const transformRef = useRef({ x: 0, y: 0, scale: 1 });
@@ -239,8 +251,8 @@ export default function NestingCanvas() {
 
     // Auto-fit on first render or when result changes
     useEffect(() => {
-        if (!nestingResult || !svgRef.current) return;
-        const svg = svgRef.current;
+        if (!nestingResult || !svgEl) return;
+        const svg = svgEl;
         const rect = svg.getBoundingClientRect();
         const { actualSheet } = nestingResult;
         const padding = 40;
@@ -250,11 +262,12 @@ export default function NestingCanvas() {
         const x = (rect.width - actualSheet.width * scale) / 2;
         const y = (rect.height - actualSheet.height * scale) / 2;
         updateTransform({ x, y, scale });
-    }, [nestingResult, updateTransform]);
+    }, [nestingResult, svgEl, updateTransform]);
 
-    // Zoom (wheel)
+    // Zoom (wheel) — listener native với { passive: false } để preventDefault
+    // thực sự chặn zoom của webview.
     useEffect(() => {
-        const svg = svgRef.current;
+        const svg = svgEl;
         if (!svg) return;
         const handleWheel = (e: WheelEvent) => {
             e.preventDefault();
@@ -273,7 +286,7 @@ export default function NestingCanvas() {
         };
         svg.addEventListener('wheel', handleWheel, { passive: false });
         return () => svg.removeEventListener('wheel', handleWheel);
-    }, [updateTransform]);
+    }, [svgEl, updateTransform]);
 
     // ── Pan (mouse) ──
     const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -297,7 +310,7 @@ export default function NestingCanvas() {
     const lastTouchRef = useRef<{ x: number; y: number; dist: number } | null>(null);
 
     useEffect(() => {
-        const svg = svgRef.current;
+        const svg = svgEl;
         if (!svg) return;
 
         const getTouchCenter = (touches: TouchList) => ({
@@ -359,7 +372,7 @@ export default function NestingCanvas() {
             svg.removeEventListener('touchend', onTouchEnd);
             svg.removeEventListener('touchcancel', onTouchEnd);
         };
-    }, [updateTransform]);
+    }, [svgEl, updateTransform]);
 
     // Build fill path — per-panel polygon (memoized per dieline)
     const contourFillD = useMemo(
@@ -368,22 +381,26 @@ export default function NestingCanvas() {
     );
 
     // ── Split mode helpers: filter paths/panels by part ──
-    const isSplit = params.boxType === 'tray' && nestingConfig.trayNestingMode === 'split';
+    // [DOUBLE-TRAY 2026-07-26] Khe "sleeve" của hộp 2 mảnh: vỏ hộp diêm
+    // (sleeve_*) hoặc nắp hộp âm dương (lid_*) — khớp splitTwoPieceDieline.
+    const isTwoPiece = params.boxType === 'tray' || params.boxType === 'double_tray';
+    const isSleevePartName = (name: string) => name.startsWith('sleeve_') || name.startsWith('lid_');
+    const isSplit = isTwoPiece && nestingConfig.trayNestingMode === 'split';
 
     // Build part-specific fill paths and bboxes
     const trayPanels = useMemo(
-        () => dieline ? dieline.panels.filter(p => !p.name.startsWith('sleeve_')) : [],
+        () => dieline ? dieline.panels.filter(p => !isSleevePartName(p.name)) : [],
         [dieline],
     );
     const sleevePanels = useMemo(
-        () => dieline ? dieline.panels.filter(p => p.name.startsWith('sleeve_')) : [],
+        () => dieline ? dieline.panels.filter(p => isSleevePartName(p.name)) : [],
         [dieline],
     );
     const trayPaths = useMemo(
         () => dieline ? dieline.allPaths.filter((_, i) => {
             // Find which panel owns this path
             for (const p of (dieline?.panels ?? [])) {
-                if (p.paths.includes(dieline!.allPaths[i]) && p.name.startsWith('sleeve_')) return false;
+                if (p.paths.includes(dieline!.allPaths[i]) && isSleevePartName(p.name)) return false;
             }
             return true;
         }) : [],
@@ -392,7 +409,7 @@ export default function NestingCanvas() {
     const sleevePaths = useMemo(
         () => dieline ? dieline.allPaths.filter((_, i) => {
             for (const p of (dieline?.panels ?? [])) {
-                if (p.paths.includes(dieline!.allPaths[i]) && p.name.startsWith('sleeve_')) return true;
+                if (p.paths.includes(dieline!.allPaths[i]) && isSleevePartName(p.name)) return true;
             }
             return false;
         }) : [],
@@ -437,7 +454,7 @@ export default function NestingCanvas() {
     const effectiveBottom = Math.max(margin.bottom, gripperMargin);
 
     // ── Combined tray mode: 1 sheet, 2 part types ──
-    const isCombinedTray = params.boxType === 'tray' && !isSplit && sleeveNestingResult && trayBB && sleeveBB;
+    const isCombinedTray = isTwoPiece && !isSplit && sleeveNestingResult && trayBB && sleeveBB;
 
     if (isCombinedTray) {
         return (
@@ -456,7 +473,7 @@ export default function NestingCanvas() {
                     </span>
                 </div>
 
-                <svg ref={svgRef} className="dt-dieline-svg"
+                <svg ref={attachSvg} className="dt-dieline-svg"
                     onMouseDown={handleMouseDown} onMouseMove={handleMouseMove}
                     onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}
                     style={{ touchAction: 'none' }}>
@@ -558,7 +575,7 @@ export default function NestingCanvas() {
                     </span>
                 </div>
 
-                <svg ref={svgRef} className="dt-dieline-svg"
+                <svg ref={attachSvg} className="dt-dieline-svg"
                     onMouseDown={handleMouseDown} onMouseMove={handleMouseMove}
                     onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}
                     style={{ touchAction: 'none' }}>
@@ -678,7 +695,7 @@ export default function NestingCanvas() {
             </div>
 
             <svg
-                ref={svgRef}
+                ref={attachSvg}
                 className="dt-dieline-svg"
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}

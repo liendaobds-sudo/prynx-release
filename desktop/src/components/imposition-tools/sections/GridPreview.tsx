@@ -6,6 +6,8 @@ import type { NupSettings } from "../types";
 import { inheritedSingleMoldMaster } from "../shapeDetectionPolicy";
 import { materializePreviewViewerPdf, parsePreviewViewerState, resolvePreviewCellType, resolvePreviewPageCount, shouldDeferPreviewLayout } from "../previewSourcePolicy";
 import { useTranslation } from 'react-i18next';
+// UIUX (audit 2026-07-27 §B-05): lỗi kỹ thuật → câu Việt + hướng khắc phục
+import { formatError } from "../../../lib/errorMessages";
 
 export interface GridPreviewProps {
   taskMode: string;
@@ -1356,7 +1358,7 @@ export default function GridPreview(props: GridPreviewProps) {
 
         if (!res.ok) {
           const errText = await res.text();
-          let message = `Kh\u00f4ng th\u1ec3 t\u00ednh preview (${res.status}).`;
+          let message = `Không thể tính preview (${res.status}).`;
           try {
             const parsed = JSON.parse(errText);
             if (typeof parsed?.detail === "string") message = parsed.detail;
@@ -1523,7 +1525,12 @@ export default function GridPreview(props: GridPreviewProps) {
           } else {
             setLayoutResult(null);
             if (onCapacityChangeRef.current) onCapacityChangeRef.current(0);
-            setPreviewError(data.error || "Kh\u00f4ng th\u1ec3 t\u00ednh b\u1ed1 c\u1ee5c preview.");
+            // UIUX (audit 2026-07-27 §B-05): giữ nội dung lỗi backend, nối gợi ý khắc phục khi lỗi quá khổ/không vừa
+            const beMsg = data.error || t('imposition.gridPreview:khong_the_tinh_bo_cuc_preview', 'Không thể tính bố cục preview.');
+            const oversizeHint = /không vừa|quá khổ|exceed|too large/i.test(beMsg)
+              ? t('imposition.gridPreview:goi_y_qua_kho', ' — thử giảm số hàng/cột, tăng khổ giấy hoặc giảm lề.')
+              : '';
+            setPreviewError(beMsg + oversizeHint);
           }
           setIsLoading(false);
         }
@@ -1532,7 +1539,8 @@ export default function GridPreview(props: GridPreviewProps) {
           console.error("Preview layout fetch error:", err);
           setLayoutResult(null);
           setIsLoading(false);
-          setPreviewError(err?.message || "Kh\u00f4ng th\u1ec3 t\u1ea3i preview.");
+          // UIUX (audit 2026-07-27 §B-05): formatError thay vì err.message thô
+          setPreviewError(formatError(err, t('imposition.gridPreview:khong_dung_duoc_preview_bo_cuc', 'Không dựng được preview bố cục')));
           if (onCapacityChangeRef.current) onCapacityChangeRef.current(0);
         }
       }

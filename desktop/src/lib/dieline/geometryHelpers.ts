@@ -16,6 +16,9 @@
 
 import { Point2D, PathSegment, BoxParams } from './types';
 import { tracePerimeter } from './tracePerimeter';
+// [HANGING-WINDOW 2026-07-27] Kích thước phụ của hộp treo (tai treo, cửa sổ)
+// được suy từ chính hàm của generator để mô hình diện tích không lệch hằng số.
+import { hangingWindowDims } from './HangingWindowBox';
 
 const EPS = 1e-12;
 
@@ -214,6 +217,26 @@ export function expectedFlatArea(params: BoxParams): number {
             return body + closures + dust;
         }
 
+        case 'hanging_window': {
+            // [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ = thân RTE
+            // (mép keo + 4 vách + nắp gài so le + 4 tai bụi) cộng cụm tai treo
+            // euro HAI LỚP và lưỡi khoá trên mặt sau, TRỪ phần cửa sổ khoét ở
+            // mặt trước (lỗ euro bỏ qua vì diện tích không đáng kể so với
+            // ngưỡng của mô hình gần đúng này).
+            const dims = hangingWindowDims(params);
+            const bodyW = G + 2 * L + 2 * W;
+            const body = bodyW * D;
+            // Nắp đậy khẩu độ (W − T) + lưỡi gài cao TH, ở cả trên và dưới
+            const closures = 2 * (L * (W - T + TH));
+            // 4 tai bụi ~ rộng W, cao TH (xấp xỉ hình thang ~ 0.5) — như RTE
+            const dust = 4 * (W * TH * 0.5);
+            // Tai treo: lớp 1 cao tabH + lớp 2 cao tab2H, rộng gần bằng mặt sau
+            const hangTabs = L * (dims.tabH + dims.tab2H);
+            const hangLip = dims.lipW * dims.lipH;
+            const window = dims.hasWindow ? dims.winW * dims.winH : 0;
+            return body + closures + dust + hangTabs + hangLip - window;
+        }
+
         case 'auto_bottom': {
             // Thân giống RTE/SLB
             const bodyW = G + 2 * L + 2 * W;
@@ -288,6 +311,26 @@ export function expectedFlatArea(params: BoxParams): number {
             const sleeveGlue = params.sleeveGlue > 0 ? params.sleeveGlue : 15;
             const sleeve = (2 * L + 2 * D) * sleeveGlue;
             return bottom + wallsLong + wallsShort + tabs + sleeve;
+        }
+
+        case 'double_tray': {
+            // Hộp âm dương: 2 mảnh khay thành kép (đáy + nắp). [DOUBLE-TRAY 2026-07-26]
+            // Mỗi mảnh: thân + 4 dải (thành D + dầm G + thành trong D−T + mí TH)
+            // + 4 vạt góc + 4 tai khóa; trừ gần đúng 8 tam giác vát 45° của mí.
+            const { C, lidD, lidGap } = params;
+            const piece = (bl: number, bw: number, bd: number): number => {
+                const inner = bd - T;
+                const stack = bd + G + inner + TH;
+                const body = bl * bw;
+                const strips = 2 * (bl + bw) * stack - 4 * TH * TH;
+                const slit = Math.max(2 * T, 2 * C);
+                const corners = 4 * Math.max(0, bd - T - slit) * (bd + C);
+                const dust = 4 * Math.max(0, bd - 2 * T) * Math.max(0, inner - C);
+                return body + strips + corners + dust;
+            };
+            const delta = 8 * T + 2 * lidGap;
+            const lidDepth = lidD > 0 ? lidD : D + 2 * T;
+            return piece(L, W, D) + piece(L + delta, W + delta, lidDepth);
         }
 
         default:

@@ -289,6 +289,50 @@ mod tests {
             .is_some_and(|n| n > 0));
     }
 
+    /// [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ phải chạy được TRONG Boa, không
+    /// chỉ qua được tầng validate. Test này là chốt end-to-end phía Rust: bundle nhúng
+    /// trong binary có generator mới, sinh đủ panel tai treo + cửa sổ mặt trước.
+    /// Trước khi vá, request bị `dieline_request` chặn nên lỗi hiện ra ở UI chỉ là
+    /// "Không thể tạo khuôn với thông số này." — không chỉ được tầng nào chặn.
+    #[test]
+    fn bundled_hanging_window_generates_hang_tabs_and_window() {
+        let mut request: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/dieline_default_request.json"
+        ))
+        .expect("valid request fixture");
+        request["params"]["boxType"] = serde_json::Value::String("hanging_window".to_owned());
+        // Preset mẫu Dacdora: L=80 × W=30 × D=140.
+        request["params"]["L"] = serde_json::json!(80);
+        request["params"]["W"] = serde_json::json!(30);
+        request["params"]["D"] = serde_json::json!(140);
+        request["includeNesting"] = serde_json::Value::Bool(false);
+
+        let raw = super::run_engine(&request.to_string(), test_key())
+            .expect("bundled hanging-window engine should run");
+        let value: serde_json::Value = serde_json::from_str(&raw).expect("valid response JSON");
+        let dieline = &value["dieline"];
+        assert_eq!(dieline["params"]["boxType"], "hanging_window");
+
+        let panels = dieline["panels"].as_array().expect("panels array");
+        let names: Vec<&str> = panels
+            .iter()
+            .filter_map(|panel| panel["name"].as_str())
+            .collect();
+        for expected in ["hang_tab_1", "hang_tab_2", "hang_tab_lip", "front", "back"] {
+            assert!(names.contains(&expected), "thiếu panel {expected}: {names:?}");
+        }
+
+        // Cửa sổ mặt trước phải là LỖ thật trên panel (3D khoét được), không chỉ là nét vẽ.
+        let front = panels
+            .iter()
+            .find(|panel| panel["name"] == "front")
+            .expect("panel mặt trước");
+        assert!(
+            front["holes"].as_array().is_some_and(|h| !h.is_empty()),
+            "mặt trước phải có lỗ cửa sổ",
+        );
+    }
+
     #[test]
     fn bundled_slb_has_only_one_visible_tuck_fold() {
         let mut request: serde_json::Value = serde_json::from_str(include_str!(

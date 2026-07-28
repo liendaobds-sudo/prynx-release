@@ -51,8 +51,17 @@ export interface AutoBottomDims {
     step: number;
     earW: number;
     earInset: number;
+    /**
+     * @deprecated [AUTO-BOTTOM FIX 2026-07-27] KHÔNG còn quyết định hình free-edge.
+     * Kệ ngang giờ suy ra từ vị trí nấc F/G (luôn ở giữa mặt dài L) —
+     * xem `computeDeepBottomKeyPoints`. Giữ field cho tương thích.
+     */
     shelfW: number;
     notchH: number;
+    /**
+     * @deprecated [AUTO-BOTTOM FIX 2026-07-27] KHÔNG còn quyết định hình free-edge.
+     * Vế ngang của vai giờ = hDeep − hWing − nấc để vai H→G luôn đúng 45°.
+     */
     shoulder: number;
     botInsetRatio: number;
     /** Khe B↔W trên đoạn gấp */
@@ -163,6 +172,16 @@ export type DeepBottomKeyPoints = {
     /** Bo nhẹ chỉ góc sâu (I/H/ear) — KHÔNG fillet mọi góc */
     filletR: number;
     yBase: number;
+    /**
+     * [AUTO-BOTTOM FIX 2026-07-27] Chiều sâu THỰC của mảnh đáy sau khi giữ vai
+     * H→G đúng 45°. Bằng `dims.hDeep` ở hộp thường; nhỏ hơn khi hộp cực dẹt
+     * (L ≪ W) buộc phải rút sâu để vai không dựng đứng.
+     */
+    hDeepEff: number;
+    /** Bề rộng kệ ngang F→E (nét lõm) — 0 khi hộp gần vuông, kệ tiêu biến */
+    shelfSpan: number;
+    /** Bề rộng dải đáy sâu I→H (phần chồng chịu lực) */
+    bandSpan: number;
 };
 
 export function computeDeepBottomKeyPoints(
@@ -176,7 +195,7 @@ export function computeDeepBottomKeyPoints(
 ): DeepBottomKeyPoints {
     const {
         hDeep, hWing, step, earW,
-        shelfW, notchH, shoulder, botInsetRatio, foldGap,
+        notchH, botInsetRatio, foldGap,
     } = dims;
     const span = Math.max(1, xR - xL);
 
@@ -194,33 +213,53 @@ export function computeDeepBottomKeyPoints(
     const xE = snap(xB - st - gl); // = xB - hWing
     const yE = snap(yBase - hWing);
     const yW = yE;
-    const yD = snap(yBase - hDeep);
+
+    // ── [AUTO-BOTTOM FIX 2026-07-27] Phân bổ chiều ngang theo QUY TẮC HÌNH HỌC ──
+    // Bản cũ cấp phát tuần tự từ phải sang trái: kệ F→E lấy đủ 0.5·W trước, vai
+    // lấy 0.215·W, dải đáy I→H nhận phần CÒN LẠI. Mọi kích thước con đó tỉ lệ
+    // theo W nhưng ngân sách ngang lại là L ⇒ hộp có L ≲ 1.26·W bị âm ngân sách,
+    // clamp cũ dồn toàn bộ sai số vào H: dải đáy sập còn 1mm (lưỡi giấy bế không
+    // được) và vai H→G mất góc 45° (đo được ~85°). Đo trên mẫu 100010-01 cho
+    // thấy nấc F/G của mẫu nằm ĐÚNG giữa mặt dài, nên quy tắc đúng là:
+    //   1. Nấc F/G LUÔN ở GIỮA mặt dài L theo trục dọc → xShelfL = xL + span/2.
+    //      ⇒ kệ (nét lõm) F→E = span/2 − gap − hWing, TỰ CO khi L nhỏ dần; khi
+    //        L ≈ W đường nhấn 45° chạm đúng tâm nên kệ tiêu biến, chỉ còn nấc dọc.
+    //   2. Vai H→G giữ ĐÚNG 45°: Δx = Δy = hDeep − hWing − nấc.
+    //   3. Dải đáy I→H (phần chồng chịu lực của đáy) KHÔNG bị hy sinh nữa. Chỉ
+    //      hộp cực dẹt (L ≪ W) mới chạm sàn `bandMin`; khi đó GIẢM CHIỀU SÂU
+    //      đáy để giữ vai 45°, thay vì dựng vai gần thẳng đứng như bản cũ.
+    const xBotL = snap(xL + Math.min(botInsetRatio * span, Math.max(0.5, span * 0.02)));
+    const nH = Math.min(notchH, Math.max(0, hDeep - hWing - 0.3));
+    const yNotch = snap(yW - nH);
+
+    // (1) Nấc ở giữa mặt dài; không bao giờ vượt quá đỉnh kệ E (hộp L ≤ W).
+    let xShelfL = snap(Math.min(xL + span / 2, xE));
+    const hasShelf = xE - xShelfL > 0.3;
+    if (!hasShelf) xShelfL = xE;
+
+    // (2)+(3) Vai 45°, trần theo ngân sách còn lại sau khi chừa dải đáy tối thiểu.
+    const bandMin = Math.max(3, Math.min(8, span * 0.08));
+    const shoulderRun = Math.min(
+        Math.max(0, hDeep - hWing - nH),
+        Math.max(0, xShelfL - xBotL - bandMin),
+    );
+    const xShoulder = snap(xShelfL - shoulderRun);
+    // Chiều sâu HIỆU DỤNG của mảnh đáy = kệ + nấc + vế 45° của vai.
+    const hDeepEff = snap(hWing + nH + shoulderRun);
+    const yD = snap(yBase - hDeepEff);
 
     // Tai — mẫu: outer x ≈ B − gap (gần B), đáy yD, đỉnh M depth ≈ 1.71·step
     const earZone = Math.max(0, xB - xE);
     let xEarR = snap(xB - Math.min(Math.max(gap, st * 0.12), earZone * 0.12, 4));
     let xEarL = snap(xEarR - Math.min(earW, earZone * 0.4, Math.max(2, (xEarR - xE) * 0.45)));
     if (xEarL < xE + 0.5) xEarL = snap(xE + Math.min(1, Math.max(0.5, earZone * 0.1)));
-    const hasEar = xEarR > xEarL + 0.5 && earZone >= 2.5 && hDeep > hWing + 1;
+    const hasEar = xEarR > xEarL + 0.5 && earZone >= 2.5 && hDeepEff > hWing + 1;
 
     // M sâu hơn C (mẫu), nông hơn đáy tai — trên dọc ear outer
     const depthM = Math.min(st * 1.71, hWing * 0.75, Math.max(st + 2.5, st * 1.5));
     let yM = snap(yBase - depthM);
     yM = snap(Math.min(yM, yC - Math.max(2, st * 0.5)));
-    yM = snap(Math.max(yM, yD + Math.max(4, hDeep * 0.08)));
-
-    // Kệ + vai + đáy trái
-    const shelfMax = Math.max(0, xE - xL - span * 0.05);
-    const shW = Math.min(shelfW, shelfMax);
-    const xShelfL = snap(xE - shW);
-    const nH = Math.min(notchH, Math.max(0.3, hDeep - hWing - 0.3));
-    const yNotch = snap(yW - nH);
-    const sh = Math.min(shoulder, Math.max(0.5, hDeep - hWing - nH));
-    let xShoulder = snap(xShelfL - sh);
-    const xBotL = snap(xL + Math.min(botInsetRatio * span, Math.max(0.5, span * 0.02)));
-    if (xShoulder < xBotL + 0.5) {
-        xShoulder = snap(xBotL + Math.min(1, Math.max(0, xShelfL - xBotL)));
-    }
+    yM = snap(Math.max(yM, yD + Math.max(4, hDeepEff * 0.08)));
 
     // Bo NHẸ chỉ góc sâu (mẫu bo 1 góc ear ngoài) — không > ~1.2mm
     const filletR = snap(Math.min(1.2, Math.max(0.4, st * 0.15)));
@@ -238,7 +277,10 @@ export function computeDeepBottomKeyPoints(
     if (H.x > I.x + 0.2) verts.push(H);
     if (xShelfL > H.x + 0.15) {
         verts.push(G);
-        if (yNotch < yW - 0.15) verts.push(F);
+        // [AUTO-BOTTOM FIX 2026-07-27] Chỉ chèn F khi CÒN kệ ngang thật: hộp
+        // gần vuông có kệ tiêu biến (xShelfL = xE) ⇒ F trùng E, chèn vào sẽ
+        // sinh đoạn CUT dài 0mm.
+        if (hasShelf && yNotch < yW - 0.15) verts.push(F);
     }
     verts.push(E);
 
@@ -258,6 +300,8 @@ export function computeDeepBottomKeyPoints(
     return {
         A, I, H, G, F, E, EarL, EarR, M, C, B,
         verts, filletR, yBase,
+        hDeepEff, shelfSpan: snap(hasShelf ? xE - xShelfL : 0),
+        bandSpan: snap(Math.max(0, H.x - I.x)),
     };
 }
 

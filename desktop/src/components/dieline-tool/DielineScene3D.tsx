@@ -17,13 +17,13 @@
 // _Requirements: 3.1, 3.5, 7.1, 8.4, 9.3_
 // ============================================================
 
-import React, { useMemo, useRef, useEffect } from 'react';
+import React, { useMemo, useRef, useEffect, useLayoutEffect } from 'react';
 import { useLoader, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, GizmoHelper, GizmoViewcube } from '@react-three/drei';
 import * as THREE from 'three';
 import { useBoxStore } from '../../store/useBoxStore';
 import { useMockupStore } from '../../store/useMockupStore';
-import { Panel } from '../../lib/dieline/types';
+import type { DielineNesting, Panel } from '../../lib/dieline/types';
 import { computeBoundingBox } from '../../lib/dieline/utils';
 import MockupCanvas from './MockupCanvas';
 import EnvironmentRig from './EnvironmentRig';
@@ -31,6 +31,8 @@ import CameraRig from './CameraRig';
 import ShadowFloor from './ShadowFloor';
 import DimensionOverlay from './DimensionOverlay';
 import SolidPanelMesh from './SolidPanelMesh';
+// [HANGING-WINDOW 2026-07-27] Màng cửa sổ trong suốt — thuần hiển thị 3D.
+import WindowPaneMesh from './WindowPaneMesh';
 import GussetMesh from './GussetMesh';
 import { computeConeWarp } from '../../lib/mockup3d/cupSleeveCone';
 import { sampleHeroTimeline } from '../../lib/mockup3d/heroTimeline';
@@ -45,6 +47,146 @@ import { useSceneExport } from './useSceneExport';
 import { useTranslation } from 'react-i18next';
 
 // ─── Helpers ───────────────────────────────────────────────
+
+/** Mảnh ĐỨNG YÊN của hộp 2 mảnh khi model có `nesting`: vỏ hộp diêm
+ *  (sleeve_*) hoặc khay đáy hộp âm dương (base_*). Mảnh còn lại (khay diêm /
+ *  nắp lid_*) trượt theo vector nesting cuối hoạt ảnh. [DOUBLE-TRAY 2026-07-26] */
+const isStaticPieceName = (name: string) => name.startsWith('sleeve_') || name.startsWith('base_');
+/** Toàn bộ gấp hoàn tất trước khi bắt đầu lồng/chụp hai mảnh. */
+const NEST_START = 0.8;
+
+function nestingProgress(progress: number): number {
+    const raw = Math.max(0, Math.min(1, (progress - NEST_START) / (1 - NEST_START)));
+    return raw < 0.5 ? 2 * raw * raw : 1 - Math.pow(-2 * raw + 2, 2) / 2;
+}
+
+function phaseProgress(value: number, start: number, end: number): number {
+    if (end <= start) return value >= end ? 1 : 0;
+    return THREE.MathUtils.smoothstep(Math.max(0, Math.min(1, (value - start) / (end - start))), 0, 1);
+}
+
+/**
+ * Pose cấp mảnh đọc trực tiếp `foldLive`, tránh chờ React/Zustand commit rồi nhảy nắp
+ * ở cuối hoạt ảnh. Pivot nằm trong hệ tọa độ khuôn toàn cục.
+ */
+function NestingMotionGroup({
+    nesting,
+    foldProgress,
+    children,
+}: {
+    nesting: DielineNesting;
+    foldProgress: number;
+    children: React.ReactNode;
+}) {
+    const groupRef = useRef<THREE.Group>(null);
+    const liveVersionRef = useRef(-1);
+    const pivot = nesting.pivot ?? { x: 0, y: 0, z: 0 };
+    const rotationDeg = nesting.rotationDeg ?? { x: 0, y: 0, z: 0 };
+    const choreography = nesting.choreography;
+    const preRotationDeg = choreography?.preRotationDeg ?? { x: 0, y: 0, z: 0 };
+    const preQuaternion = useMemo(() => new THREE.Quaternion().setFromEuler(new THREE.Euler(
+        THREE.MathUtils.degToRad(preRotationDeg.x),
+        THREE.MathUtils.degToRad(preRotationDeg.y),
+        THREE.MathUtils.degToRad(preRotationDeg.z),
+    )), [preRotationDeg.x, preRotationDeg.y, preRotationDeg.z]);
+    const flipQuaternion = useMemo(() => new THREE.Quaternion().setFromEuler(new THREE.Euler(
+        THREE.MathUtils.degToRad(rotationDeg.x),
+        THREE.MathUtils.degToRad(rotationDeg.y),
+        THREE.MathUtils.degToRad(rotationDeg.z),
+    )), [rotationDeg.x, rotationDeg.y, rotationDeg.z]);
+    const targetQuaternion = useMemo(
+        () => choreography ? preQuaternion.clone().multiply(flipQuaternion) : flipQuaternion.clone(),
+        [choreography, preQuaternion, flipQuaternion],
+    );
+
+    const applyPose = (progress: number) => {
+        const group = groupRef.current;
+        if (!group?.quaternion || !group.position) return;
+        const k = nestingProgress(progress);
+        let moveK = k;
+        let z = nesting.z * k;
+
+        if (choreography) {
+            const preEnd = choreography.preRotateEnd;
+            const liftEnd = choreography.liftEnd;
+            const translateEnd = choreography.translateEnd;
+            const preK = phaseProgress(k, 0, preEnd);
+            const liftK = phaseProgress(k, preEnd, liftEnd);
+            moveK = phaseProgress(k, liftEnd, translateEnd);
+            const flipK = phaseProgress(k, translateEnd, 1);
+            if (k < preEnd) {
+                z = 0;
+                group.quaternion.identity().slerp(preQuaternion, preK);
+            } else if (k < liftEnd) {
+                z = THREE.MathUtils.lerp(0, choreography.liftZ, liftK);
+                group.quaternion.copy(preQuaternion);
+            } else if (k < translateEnd) {
+                z = choreography.liftZ;
+                group.quaternion.copy(preQuaternion);
+            } else {
+                z = THREE.MathUtils.lerp(choreography.liftZ, nesting.z, flipK);
+                group.quaternion.copy(preQuaternion).slerp(targetQuaternion, flipK);
+            }
+        } else {
+            group.quaternion.identity().slerp(targetQuaternion, k);
+        }
+
+        group.position.set(
+            pivot.x + nesting.x * moveK,
+            pivot.y + nesting.y * moveK,
+            pivot.z + z,
+        );
+        group.matrixWorldNeedsUpdate = true;
+    };
+
+    useLayoutEffect(() => {
+        applyPose(foldProgress);
+        liveVersionRef.current = foldLive.version;
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [
+        foldProgress,
+        nesting.x,
+        nesting.y,
+        nesting.z,
+        pivot.x,
+        pivot.y,
+        pivot.z,
+        rotationDeg.x,
+        rotationDeg.y,
+        rotationDeg.z,
+        targetQuaternion,
+        choreography?.preRotateEnd,
+        choreography?.liftEnd,
+        choreography?.translateEnd,
+        choreography?.liftZ,
+        preQuaternion,
+    ]);
+
+    useFrame(() => {
+        if (foldLive.version === liveVersionRef.current) return;
+        liveVersionRef.current = foldLive.version;
+        applyPose(foldLive.progress);
+    });
+
+    return (
+        <group ref={groupRef}>
+            <group position={[-pivot.x, -pivot.y, -pivot.z]}>
+                {children}
+            </group>
+        </group>
+    );
+}
+
+function artworkPartForPanel(
+    panelName: string,
+    boxType: string,
+): 'tray' | 'sleeve' {
+    // [DOUBLE-TRAY FIX 2026-07-27 §DT3D-003] Contract split: base=tray, lid=sleeve.
+    if (boxType === 'double_tray') {
+        return panelName.startsWith('base_') ? 'tray' : 'sleeve';
+    }
+    return isStaticPieceName(panelName) ? 'sleeve' : 'tray';
+}
 
 /** Tính depth (level) trong cây panel → dùng cho auto foldPhase */
 function computeDepths(panels: Panel[]): Map<string, number> {
@@ -82,7 +224,11 @@ const BLANK_TEXTURE =
 // ─── Scene Component ───────────────────────────────────────
 
 function BoxScene() {
-    const { dieline, foldProgress, mockupTextureUrl } = useBoxStore();
+    // [PERF (audit 2026-07-27 §DT3D-006)] Chỉ subscribe ba trường scene thực sự dùng;
+    // thay đổi unrelated trong useBoxStore không dựng lại toàn bộ cây 50 panel.
+    const dieline = useBoxStore((state) => state.dieline);
+    const foldProgress = useBoxStore((state) => state.foldProgress);
+    const mockupTextureUrl = useBoxStore((state) => state.mockupTextureUrl);
     // Nguồn ảnh nghệ thuật hợp nhất: ưu tiên ảnh từ panel Mockup (có transform
     // chỉnh được + view canh chỉnh 2D), fallback ảnh tải nhanh ở ParamPanel.
     const outerArtworkUrl = useMockupStore((s) => s.artwork.outer.url);
@@ -93,6 +239,8 @@ function BoxScene() {
     const spotUvMaskUrl = useMockupStore((s) => s.artwork.spotUvMaskUrl);
     const embossMaskUrl = useMockupStore((s) => s.artwork.embossMaskUrl);
     const showTechnicalLines = useMockupStore((s) => s.showTechnicalLines);
+    // [HANGING-WINDOW 2026-07-27] Công tắc màng cửa sổ trong suốt (chỉ hiển thị).
+    const showWindowFilm = useMockupStore((s) => s.showWindowFilm);
     const textureUrl = outerArtworkUrl ?? mockupTextureUrl;
     const innerUrl = innerArtworkEnabled ? innerArtworkUrl : null;
     const maxAnisotropy = useThree((s) => s.gl.capabilities.getMaxAnisotropy());
@@ -228,18 +376,22 @@ function BoxScene() {
 
 
     // Compute depth map for auto-phasing (cần cho SolidPanelMesh / foldCompensation).
-    const panels = dieline?.panels ?? [];
+    const panels = useMemo(() => dieline?.panels ?? [], [dieline?.panels]);
     const depthMap = useMemo(() => computeDepths(panels), [panels]);
     const maxD = useMemo(() => maxDepth(depthMap), [depthMap]);
-    const matchboxArtworkBBoxes = useMemo(() => {
+    const partArtworkBBoxes = useMemo(() => {
         if (!dieline?.nesting) return null;
-        const tray = panels.filter((panel) => !panel.name.startsWith('sleeve_'));
-        const sleeve = panels.filter((panel) => panel.name.startsWith('sleeve_'));
+        const tray = panels.filter(
+            (panel) => artworkPartForPanel(panel.name, dieline.params.boxType) === 'tray',
+        );
+        const sleeve = panels.filter(
+            (panel) => artworkPartForPanel(panel.name, dieline.params.boxType) === 'sleeve',
+        );
         return {
             tray: computeBoundingBox(tray.flatMap((panel) => panel.paths)),
             sleeve: computeBoundingBox(sleeve.flatMap((panel) => panel.paths)),
         };
-    }, [dieline?.nesting, panels]);
+    }, [dieline?.nesting, dieline?.params.boxType, panels]);
 
     // Bọc ly: tham số cuộn nón cụt cho panel `body` (chỉ khi là khuôn bọc ly).
     // Memo theo thông số ly để ổn định tham chiếu (tránh dựng lại geometry thừa).
@@ -283,39 +435,54 @@ function BoxScene() {
     // lộ rõ chỗ xuyên/khe của khối dày (1.5mm board) — trông phẳng sát như thật.
     const thickness = dieline.standardCode === 'ENV' ? 0.25 : (params.T || 0.5);
 
-    // ── Hộp diêm: LỒNG khay vào vỏ ở cuối hoạt ảnh ──
+    // ── Hộp hai mảnh: LỒNG/CHỤP mảnh động vào mảnh tĩnh ở cuối hoạt ảnh ──
     // Khi có `nesting`, dồn toàn bộ GẬP vào [0, NEST_START], rồi dùng đoạn
-    // [NEST_START, 1] để TRƯỢT khay vào lòng vỏ. Hộp khác giữ nguyên (foldT =
+    // [NEST_START, 1] để chạy choreography lắp khay/nắp. Hộp khác giữ nguyên (foldT =
     // foldProgress).
-    const NEST_START = 0.8;
     const nesting = dieline.nesting;
     const foldT = nesting ? Math.min(foldProgress / NEST_START, 1) : foldProgress;
-    let nestK = 0;
-    if (nesting) {
-        const raw = Math.max(0, Math.min(1, (foldProgress - NEST_START) / (1 - NEST_START)));
-        nestK = raw < 0.5 ? 2 * raw * raw : 1 - Math.pow(-2 * raw + 2, 2) / 2; // ease in-out
-    }
-    const trayShift: [number, number, number] = nesting
-        ? [nesting.x * nestK, nesting.y * nestK, nesting.z * nestK]
-        : [0, 0, 0];
-    const isSleeve = (name: string) => name.startsWith('sleeve_');
+
+    const isSleeve = isStaticPieceName; // sleeve_ (vỏ diêm) hoặc base_ (đáy hộp âm dương)
     const trayPanels = nesting ? panels.filter((p) => !isSleeve(p.name)) : panels;
     const sleevePanels = nesting ? panels.filter((p) => isSleeve(p.name)) : [];
 
     const renderPanel = (panel: Panel) => {
-        const sleevePart = nesting && isSleeve(panel.name);
-        const artworkPart = nesting ? (sleevePart ? 'sleeve' : 'tray') : 'default';
+        const artworkPart = nesting
+            ? artworkPartForPanel(panel.name, dieline.params.boxType)
+            : 'default';
+        const sleeveArtworkPart = artworkPart === 'sleeve';
         const partTextureUrl = nesting
-            ? (sleevePart ? sleeveArtworkUrl : trayArtworkUrl)
+            ? (sleeveArtworkPart ? sleeveArtworkUrl : trayArtworkUrl)
             : textureUrl;
         const partTexture = nesting
-            ? (sleevePart ? sleeveTexture : trayTexture)
+            ? (sleeveArtworkPart ? sleeveTexture : trayTexture)
             : texture;
-        const partBBox = matchboxArtworkBBoxes
-            ? (sleevePart ? matchboxArtworkBBoxes.sleeve : matchboxArtworkBBoxes.tray)
+        const partBBox = partArtworkBBoxes
+            ? (sleeveArtworkPart ? partArtworkBBoxes.sleeve : partArtworkBBoxes.tray)
             : dieline.boundingBox;
 
-        return panel.gusset ? (
+        // [HANGING-WINDOW 2026-07-27] Panel có lỗ khoét cửa sổ → kèm màng nhựa
+        // trong suốt. Chỉ áp cho các loại hộp CÓ cửa sổ thật (hiện: hộp treo);
+        // lỗ euro của tai treo là lỗ TREO, không dán màng nên loại trừ.
+        const pane = showWindowFilm
+            && dieline.params.boxType === 'hanging_window'
+            && panel.name === 'front'
+            && (panel.holes?.length ?? 0) > 0
+            ? (
+                <WindowPaneMesh
+                    key={`${panel.name}__film`}
+                    panel={panel}
+                    allPanels={panels}
+                    foldProgress={foldProgress}
+                    liveFoldEnd={nesting ? NEST_START : 1}
+                    depthMap={depthMap}
+                    maxD={maxD}
+                    thickness={thickness}
+                />
+            )
+            : null;
+
+        const panelMesh = panel.gusset ? (
             <GussetMesh
                 key={panel.name}
                 panel={panel}
@@ -331,14 +498,15 @@ function BoxScene() {
                 key={panel.name}
                 panel={panel}
                 allPanels={panels}
-                foldProgress={foldT}
+                foldProgress={foldProgress}
+                liveFoldEnd={nesting ? NEST_START : 1}
                 depthMap={depthMap}
                 maxD={maxD}
                 thickness={thickness}
                 globalBBox={partBBox}
                 texture={partTextureUrl ? partTexture : null}
                 innerTexture={innerUrl ? innerTexture : null}
-                outerFaceNegativeZ={dieline.params.boxType === 'pizza' || dieline.params.boxType === 'tray'}
+                outerFaceNegativeZ={dieline.params.boxType === 'pizza' || dieline.params.boxType === 'tray' || dieline.params.boxType === 'double_tray'}
                 artworkPart={artworkPart}
                 spotUvTexture={spotUvMaskUrl ? spotUvTexture : null}
                 embossTexture={embossMaskUrl ? embossTexture : null}
@@ -349,14 +517,28 @@ function BoxScene() {
                 roundFolds={dieline.params.boxType === 'pizza'}
             />
         );
+
+        if (!pane) return panelMesh;
+        return (
+            <React.Fragment key={panel.name}>
+                {panelMesh}
+                {pane}
+            </React.Fragment>
+        );
     };
 
     return (
         <group position={[-center.x, -center.y, 0]}>
-            {/* Khay (trượt vào vỏ khi đóng) */}
-            <group position={trayShift}>
-                {trayPanels.map(renderPanel)}
-            </group>
+            {/* Mảnh động: khay hộp diêm hoặc nắp hộp âm dương. */}
+            {nesting ? (
+                <NestingMotionGroup nesting={nesting} foldProgress={foldProgress}>
+                    {trayPanels.map(renderPanel)}
+                </NestingMotionGroup>
+            ) : (
+                <group>
+                    {trayPanels.map(renderPanel)}
+                </group>
+            )}
             {/* Vỏ (đứng yên) */}
             {sleevePanels.length > 0 && (
                 <group>
@@ -722,7 +904,7 @@ export default function DielineScene3D() {
                     size={bbExtent}
                     showFloorPlane
                     showGrid={showFloorGrid}
-                    shadowRevision={isAnimating || heroDemoPlaying ? 'animating' : 'idle'}
+                    freezeShadow={isAnimating || heroDemoPlaying}
                 />
 
                 {/* Box + orbit live (không re-render React khi yaw đổi) */}

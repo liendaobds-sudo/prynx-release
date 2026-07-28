@@ -2,7 +2,11 @@ import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { startVdpDrag } from '../../utils/vdpDrag';
 import Papa from 'papaparse';
-import { startVdpJobBackend, pollVdpJob, cancelVdpJobBackend, readVdpDatasource, listVdpSheets, previewVdpRecord, validateVdp, downloadVdpErrorReport, type VdpFieldError, type VdpIssue, type VdpGating } from '@/lib/api';
+import { startVdpJobBackend, pollVdpJob, cancelVdpJobBackend, readVdpDatasource, listVdpSheets, previewVdpRecord, validateVdp, downloadVdpErrorReport, type VdpFieldError, type VdpIssue, type VdpGating, type VdpProgressInfo } from '@/lib/api'; // UIUX (audit 2026-07-27 §D-07)
+import { toast } from '../ui/Toast'; // UIUX (audit 2026-07-27 §D-04)
+import { confirmDialog } from '../ui/confirmDialog'; // UIUX (audit 2026-07-27 §D-06)
+import { ProgressBar } from '../ui/ProgressBar'; // UIUX (audit 2026-07-27 §D-07)
+import { formatError, isCanceled } from '@/lib/errorMessages'; // UIUX (audit 2026-07-27 §D-15)
 import { generateBarcodeDataURL } from '@/engine/barcode/barcodeEngine';
 import { FontSelector } from './FontSelector';
 import { ToolDivider, ToolNumberInput } from './ToolUI';
@@ -466,6 +470,8 @@ export default function DataMergeTool({
     const [manualColName, setManualColName] = useState('Noidung');
     const [statusMessage, setStatusMessage] = useState("");
     const [isGenerating, setIsGenerating] = useState(false);
+    // UIUX (audit 2026-07-27 §D-07): tiến độ job VDP ({processed,total}) cho ProgressBar
+    const [progressInfo, setProgressInfo] = useState<VdpProgressInfo | null>(null);
 
     // ── Nguồn dữ liệu mở rộng (xlsx / Google Sheets) — task 14.1 ──
     // Số bản ghi THẬT do backend báo về (preview_rows chỉ là mẫu hiển thị).
@@ -534,10 +540,27 @@ export default function DataMergeTool({
         }
     };
 
+    // UIUX (audit 2026-07-27 §D-04): sau khi thay nguồn dữ liệu, so tên cột cũ mà các
+    // field đang map với headers MỚI — field mất cột nguồn thì báo để user map lại.
+    const warnMissingMappedColumns = (newHeaders: string[]) => {
+        const newSet = new Set(newHeaders);
+        const oldSet = new Set(csvHeaders);
+        const missing = [...new Set(
+            vdpFields.map((f: any) => f?.name).filter((n: any) => n && oldSet.has(n) && !newSet.has(n))
+        )] as string[];
+        if (missing.length > 0) {
+            toast.info(t('preprocess.dataMerge:nguon_moi_thieu_cot_can_map_lai', {
+                defaultValue: 'Nguồn mới thiếu cột: {{cols}} — các ô này cần map lại',
+                cols: missing.join(', '),
+            }));
+        }
+    };
+
     const loadCsvIntoState = (file: File, hasHeader: boolean) => {
         setStatusMessage(t('preprocess.dataMerge:dang_doc_file_csv'));
         parseCsv(file, hasHeader).then(({ headers, data, duplicated }) => {
             if (data.length > 0) {
+                warnMissingMappedColumns(headers); // UIUX (audit 2026-07-27 §D-04)
                 setCsvHeaders(headers);
                 setCsvData(data);
                 if (duplicated.length > 0) setStatusMessage(t('preprocess.dataMerge:da_tai_n_dong_cot_trung_ten', { n: data.length, cols: duplicated.join(', ') }));
@@ -570,6 +593,7 @@ export default function DataMergeTool({
     ) => {
         setSourceError('');
         setBatchFiles([]);            // nguồn xlsx/gsheet không dùng chạy hàng loạt CSV
+        warnMissingMappedColumns(result.columns); // UIUX (audit 2026-07-27 §D-04)
         setCsvHeaders(result.columns);
         setCsvData(result.preview_rows);
         setSourceRecordCount(result.record_count);
@@ -883,7 +907,12 @@ export default function DataMergeTool({
         setIsGenerating(true);
         try {
             const templateFile = getWorkingFile ? await getWorkingFile() : pdfFile;
-            let ok = 0;
+
+            // UIUX (audit 2026-07-27 §D-06): pass 1 — đọc + kiểm tra TẤT CẢ file trước,
+            // gom các file có cảnh báo lại để hỏi MỘT lần thay vì window.confirm từng file.
+            type BatchItem = { csvFile: File; tag: string; data: Record<string, string>[]; warn: boolean };
+            const runnable: BatchItem[] = [];
+            const warnLines: string[] = [];
             for (let i = 0; i < files.length; i++) {
                 const csvFile = files[i];
                 const tag = `(${i + 1}/${files.length}) ${csvFile.name}`;
@@ -906,39 +935,74 @@ export default function DataMergeTool({
                             setStatusMessage(`${tag}: ${t('preprocess.dataMerge:co_n_loi_chan_bo_qua_file', { n: errCount })}`);
                             continue;
                         }
-                        if (vres.gating === 'needs_confirmation') {
+                        const warn = vres.gating === 'needs_confirmation';
+                        if (warn) {
                             const warnCount = vres.issues.filter(i => i.severity === 'warning').length;
-                            const ok = window.confirm(`${csvFile.name}: ${t('preprocess.dataMerge:n_canh_bao_vd_anh_thieu_van_tiep_tuc', { n: warnCount })}`);
-                            if (!ok) { setStatusMessage(`${tag}: ${t('preprocess.dataMerge:da_bo_qua_do_con_canh_bao')}`); continue; }
+                            warnLines.push(t('preprocess.dataMerge:dong_file_co_canh_bao', {
+                                defaultValue: '• {{name}}: {{n}} cảnh báo',
+                                name: csvFile.name, n: warnCount,
+                            }));
                         }
+                        runnable.push({ csvFile, tag, data, warn });
                     } catch (vErr: any) {
                         setStatusMessage(`${tag}: ${t('preprocess.dataMerge:loi_kiem_tra_du_lieu_bo_qua', { e: vErr?.message || vErr })}`);
                         continue;
                     }
-                    setStatusMessage(`${tag}: ${t('preprocess.dataMerge:dang_sinh_n_ban_ghi', { n: data.length })}`);
-                    const jobId = await startVdpJobBackend(templateFile, vdpFields, data, csvFile, csvHasHeader);
+                } catch (err: any) {
+                    if (isCanceled(err)) return; // UIUX (audit 2026-07-27 §D-15)
+                    setStatusMessage(`${tag}: ${t('preprocess.dataMerge:loi_x', { e: formatError(err) })}`); // UIUX (audit 2026-07-27 §D-15)
+                }
+            }
+
+            // UIUX (audit 2026-07-27 §D-06): MỘT hộp thoại xác nhận chung cho mọi file có cảnh báo.
+            let skipWarned = false;
+            if (warnLines.length > 0) {
+                const okWarn = await confirmDialog({
+                    title: t('preprocess.dataMerge:du_lieu_co_canh_bao', 'Dữ liệu có cảnh báo'),
+                    message: t('preprocess.dataMerge:cac_file_sau_co_canh_bao_vd_anh_thieu',
+                        'Các file sau có cảnh báo (ví dụ ảnh thiếu) — record liên quan có thể bị thiếu nội dung:')
+                        + '\n' + warnLines.join('\n'),
+                    confirmText: t('preprocess.dataMerge:van_chay', 'Vẫn chạy'),
+                    cancelText: t('preprocess.dataMerge:xem_lai', 'Xem lại'),
+                    danger: true,
+                });
+                if (!okWarn) skipWarned = true;
+            }
+
+            let ok = 0;
+            for (let ri = 0; ri < runnable.length; ri++) {
+                const item = runnable[ri];
+                if (item.warn && skipWarned) {
+                    setStatusMessage(`${item.tag}: ${t('preprocess.dataMerge:da_bo_qua_do_con_canh_bao')}`);
+                    continue;
+                }
+                try {
+                    setStatusMessage(`${item.tag}: ${t('preprocess.dataMerge:dang_sinh_n_ban_ghi', { n: item.data.length })}`);
+                    const jobId = await startVdpJobBackend(templateFile, vdpFields, item.data, item.csvFile, csvHasHeader);
                     activeVdpJobRef.current = jobId;
                     setActiveVdpJobId(jobId);
                     pollAbortRef.current = new AbortController();
-                    const result = await pollVdpJob(jobId, (m) => setStatusMessage(`${tag}: ${m}`), true, pollAbortRef.current.signal);
-                    if (!result.blob) { setStatusMessage(`${tag}: ${t('preprocess.dataMerge:loi_khong_co_ket_qua')}`); continue; }
-                    const baseName = csvFile.name.replace(/\.[^/.]+$/, '') || `VDP_${i + 1}`;
+                    // UIUX (audit 2026-07-27 §D-07): lưu thêm {processed,total} cho ProgressBar
+                    const result = await pollVdpJob(jobId, (m, info) => { setStatusMessage(`${item.tag}: ${m}`); setProgressInfo(info ?? null); }, true, pollAbortRef.current.signal);
+                    if (!result.blob) { setStatusMessage(`${item.tag}: ${t('preprocess.dataMerge:loi_khong_co_ket_qua')}`); continue; }
+                    const baseName = item.csvFile.name.replace(/\.[^/.]+$/, '') || `VDP_${ri + 1}`;
                     onSpawnTab(result.blob, `${baseName}.pdf`, result.path ?? undefined);
                     ok++;
                     // Nhường UI một nhịp giữa các file
                     await new Promise(r => setTimeout(r, 50));
                 } catch (err: any) {
-                    if (err?.name === 'AbortError') return;
-                    setStatusMessage(`${tag}: ${t('preprocess.dataMerge:loi_x', { e: err.message })}`);
+                    if (isCanceled(err)) return; // UIUX (audit 2026-07-27 §D-15)
+                    setStatusMessage(`${item.tag}: ${formatError(err, t('preprocess.dataMerge:khong_chay_duoc_vdp', 'Không chạy được VDP'))}`); // UIUX (audit 2026-07-27 §D-15)
                 }
             }
             setStatusMessage(t('preprocess.dataMerge:hoan_thanh_ok_tren_tong_file_csv', { ok, total: files.length }));
         } catch (e: any) {
-            if (e?.name === 'AbortError') return;
-            setStatusMessage(t('preprocess.dataMerge:loi_xu_ly_hang_loat', { e: e.message }));
+            if (isCanceled(e)) return; // UIUX (audit 2026-07-27 §D-15)
+            setStatusMessage(formatError(e, t('preprocess.dataMerge:khong_chay_duoc_vdp', 'Không chạy được VDP'))); // UIUX (audit 2026-07-27 §D-15)
         } finally {
             activeVdpJobRef.current = null;
             setActiveVdpJobId(null);
+            setProgressInfo(null); // UIUX (audit 2026-07-27 §D-07)
             setIsGenerating(false);
         }
     };
@@ -1143,10 +1207,15 @@ export default function DataMergeTool({
                 return false;
             }
             if (result.gating === 'needs_confirmation') {
-                const ok = window.confirm(
-                    t('preprocess.dataMerge:phat_hien_n_canh_bao_vi_du_anh_thieu', { n: warnCount }) + '\n\n' +
-                    t('preprocess.dataMerge:cac_record_lien_quan_co_the_bi_thieu')
-                );
+                // UIUX (audit 2026-07-27 §D-06): confirmDialog trong app thay window.confirm
+                const ok = await confirmDialog({
+                    title: t('preprocess.dataMerge:du_lieu_co_canh_bao', 'Dữ liệu có cảnh báo'),
+                    message: t('preprocess.dataMerge:phat_hien_n_canh_bao_vi_du_anh_thieu', { n: warnCount }) + '\n\n' +
+                        t('preprocess.dataMerge:cac_record_lien_quan_co_the_bi_thieu'),
+                    confirmText: t('preprocess.dataMerge:van_chay', 'Vẫn chạy'),
+                    cancelText: t('preprocess.dataMerge:xem_lai', 'Xem lại'),
+                    danger: true,
+                });
                 if (!ok) {
                     setStatusMessage(t('preprocess.dataMerge:da_huy_sinh_lo_do_con_canh_bao_chua_xu'));
                     return false;
@@ -1221,7 +1290,8 @@ export default function DataMergeTool({
 
             // Poll
             pollAbortRef.current = new AbortController();
-            const result = await pollVdpJob(jobId, setStatusMessage, true, pollAbortRef.current.signal);
+            // UIUX (audit 2026-07-27 §D-07): lưu thêm {processed,total} vào state cho ProgressBar
+            const result = await pollVdpJob(jobId, (m, info) => { setStatusMessage(m); setProgressInfo(info ?? null); }, true, pollAbortRef.current.signal);
             const blob = result.blob;
             const path = result.path;
             if (!blob) throw new Error(t('preprocess.dataMerge:khong_nhan_duoc_file_ket_qua_tu_may_chu'));
@@ -1242,12 +1312,14 @@ export default function DataMergeTool({
                 setStatusMessage(t('preprocess.dataMerge:hoan_thanh_da_de_du_lieu_len_file_hien'));
             }
         } catch (error: any) {
-            if (error?.name === 'AbortError') return;
+            // UIUX (audit 2026-07-27 §D-15): hủy → báo nhẹ; lỗi khác → câu Việt + hướng khắc phục
+            if (isCanceled(error)) { setStatusMessage(t('preprocess.dataMerge:da_huy', 'Đã hủy')); return; }
             console.error("PDF Generation Error:", error);
-            setStatusMessage(t('preprocess.dataMerge:loi_sinh_file_pdf_x', { x: error.message }));
+            setStatusMessage(formatError(error, t('preprocess.dataMerge:khong_chay_duoc_vdp', 'Không chạy được VDP'))); // UIUX (audit 2026-07-27 §D-15)
         } finally {
             activeVdpJobRef.current = null;
             setActiveVdpJobId(null);
+            setProgressInfo(null); // UIUX (audit 2026-07-27 §D-07)
             setIsGenerating(false);
         }
     };
@@ -1606,24 +1678,35 @@ export default function DataMergeTool({
                             </select>
                         </div>
                         
-                        {selectedField.type !== 'text' && (
-                            <div className="grid grid-cols-2 gap-3 mt-1">
-                                {/* Field lưu theo "mm phồng" (CSS px). Hiển thị/nhập theo mm THẬT
-                                    (×0.75) để khớp kích thước trang & file xuất. */}
-                                <ToolNumberInput 
-                                    label={t('preprocess.dataMerge:rong_w')}
-                                    value={Math.round((selectedField.width || 0) * 0.75 * 100) / 100}
-                                    onChange={(val) => updateSelectedField({ width: val / 0.75 })}
-                                    suffix="mm" step={0.1}
-                                />
-                                <ToolNumberInput 
-                                    label="Cao H"
-                                    value={Math.round((selectedField.height || 0) * 0.75 * 100) / 100}
-                                    onChange={(val) => updateSelectedField({ height: val / 0.75 })}
-                                    suffix="mm" step={0.1}
-                                />
-                            </div>
-                        )}
+                        {/* UIUX (audit 2026-07-27 §M-4/§D-01): X/Y + W/H cho MỌI loại field kể cả
+                            text. Field lưu theo "mm phồng" (CSS px). Hiển thị/nhập theo mm THẬT
+                            (×0.75) để khớp kích thước trang & file xuất. */}
+                        <div className="grid grid-cols-2 gap-3 mt-1">
+                            <ToolNumberInput
+                                label={t('preprocess.dataMerge:vi_tri_x', 'Vị trí X')}
+                                value={Math.round((selectedField.x || 0) * 0.75 * 100) / 100}
+                                onChange={(val) => updateSelectedField({ x: val / 0.75 })}
+                                suffix="mm" step={0.1}
+                            />
+                            <ToolNumberInput
+                                label={t('preprocess.dataMerge:vi_tri_y', 'Vị trí Y')}
+                                value={Math.round((selectedField.y || 0) * 0.75 * 100) / 100}
+                                onChange={(val) => updateSelectedField({ y: val / 0.75 })}
+                                suffix="mm" step={0.1}
+                            />
+                            <ToolNumberInput
+                                label={t('preprocess.dataMerge:rong_w')}
+                                value={Math.round((selectedField.width || 0) * 0.75 * 100) / 100}
+                                onChange={(val) => updateSelectedField({ width: val / 0.75 })}
+                                suffix="mm" step={0.1}
+                            />
+                            <ToolNumberInput
+                                label="Cao H"
+                                value={Math.round((selectedField.height || 0) * 0.75 * 100) / 100}
+                                onChange={(val) => updateSelectedField({ height: val / 0.75 })}
+                                suffix="mm" step={0.1}
+                            />
+                        </div>
                         {selectedFieldIds.length >= 1 && (
                             <VdpAlignPanel
                                 vdpFields={vdpFields}
@@ -2141,7 +2224,8 @@ export default function DataMergeTool({
                             disabled={previewLoading || previewTotal <= 0}
                             className="shrink-0 h-8 px-3 text-[12px] font-semibold bg-teal-600 hover:bg-teal-700 disabled:bg-slate-400 disabled:cursor-not-allowed text-white rounded transition-colors"
                         >
-                            Xem
+                            {/* UIUX (audit 2026-07-27 §D-05) */}
+                            {t('preprocess.dataMerge:nut_xem', 'Xem')}
                         </button>
                     </div>
 
@@ -2184,7 +2268,8 @@ export default function DataMergeTool({
                             </div>
                         ) : (
                             <div className="text-[12px] text-slate-400 dark:text-zinc-500 py-8 px-3 text-center">
-                                Bấm "Xem" để tạo bản xem trước record.
+                                {/* UIUX (audit 2026-07-27 §D-05) */}
+                                {t('preprocess.dataMerge:bam_xem_de_tao_ban_xem_truoc_record', 'Bấm "Xem" để tạo bản xem trước record.')}
                             </div>
                         )}
 
@@ -2201,7 +2286,8 @@ export default function DataMergeTool({
                     {previewErrors.length > 0 && (
                         <div className="flex flex-col gap-1">
                             <span className="text-[11px] font-bold text-red-600 dark:text-red-400">
-                                {previewErrors.length} field lỗi ở record này:
+                                {/* UIUX (audit 2026-07-27 §D-05) */}
+                                {t('preprocess.dataMerge:n_field_loi_o_record_nay', { defaultValue: '{{n}} field lỗi ở record này:', n: previewErrors.length })}
                             </span>
                             {previewErrors.map((er, i) => (
                                 <div key={i} className="text-[10px] text-slate-600 dark:text-zinc-400 leading-snug">
@@ -2290,10 +2376,21 @@ export default function DataMergeTool({
 
             {/* Action Buttons */}
             <div className="border-t border-slate-200 pt-4 dark:border-zinc-700">
+                {/* UIUX (audit 2026-07-27 §D-07): đang chạy job → ProgressBar % thật + nút Hủy */}
                 {statusMessage && (
-                    <div className="text-[11px] text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 p-2 rounded mb-3 text-center">
-                        {statusMessage}
-                    </div>
+                    isGenerating ? (
+                        <ProgressBar
+                            message={statusMessage}
+                            processed={progressInfo?.processed}
+                            total={progressInfo?.total}
+                            onCancel={activeVdpJobId ? () => void cancelActiveVdp().catch((err) => setStatusMessage(formatError(err))) : undefined}
+                            className="mb-3"
+                        />
+                    ) : (
+                        <div className="text-[11px] text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 p-2 rounded mb-3 text-center">
+                            {statusMessage}
+                        </div>
+                    )
                 )}
                 
                 <button

@@ -2,7 +2,7 @@
 
 exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs baseline) > giữ nguyên số lượng/thứ tự/tọa độ panels & allPaths cho auto_bottom (Hộp đáy dán) 1`] = `
 {
-  "allPathCount": 106,
+  "allPathCount": 88,
   "allPaths": [
     {
       "points": [
@@ -184,20 +184,6 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         },
       ],
       "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 15,
-          "y": 0,
-        },
-        {
-          "x": 415,
-          "y": 0,
-        },
-      ],
-      "tag": "CREASE",
       "type": "line",
     },
     {
@@ -847,7 +833,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "y": 0,
         },
         {
-          "x": 29.845,
+          "x": 29.595,
           "y": -40,
         },
       ],
@@ -857,11 +843,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 29.845,
+          "x": 29.595,
           "y": -40,
         },
         {
-          "x": 54.75,
+          "x": 55,
           "y": -40,
         },
       ],
@@ -871,7 +857,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 54.75,
+          "x": 55,
           "y": -40,
         },
         {
@@ -889,30 +875,8 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "y": 0,
         },
         {
-          "x": 96.507,
-          "y": 0,
-        },
-        {
-          "x": 95.299,
-          "y": -1.257,
-        },
-        {
-          "x": 95.352,
-          "y": -2.598,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
-    {
-      "points": [
-        {
-          "x": 95.352,
-          "y": -2.598,
-        },
-        {
-          "x": 97.546,
-          "y": -58.398,
+          "x": 97.354,
+          "y": -59.751,
         },
       ],
       "tag": "CUT",
@@ -921,19 +885,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 97.546,
-          "y": -58.398,
+          "x": 97.354,
+          "y": -59.751,
         },
         {
-          "x": 97.602,
-          "y": -59.816,
+          "x": 97.378,
+          "y": -60.37,
         },
         {
-          "x": 98.625,
+          "x": 97.825,
           "y": -60.8,
         },
         {
-          "x": 100.044,
+          "x": 98.445,
           "y": -60.8,
         },
       ],
@@ -943,11 +907,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 100.044,
+          "x": 98.445,
           "y": -60.8,
         },
         {
-          "x": 115.422,
+          "x": 137.195,
           "y": -60.8,
         },
       ],
@@ -957,34 +921,12 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 115.422,
+          "x": 137.195,
           "y": -60.8,
         },
         {
-          "x": 117.633,
-          "y": -60.8,
-        },
-        {
-          "x": 115.672,
-          "y": -61.628,
-        },
-        {
-          "x": 117.214,
-          "y": -60.043,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
-    {
-      "points": [
-        {
-          "x": 117.214,
-          "y": -60.043,
-        },
-        {
-          "x": 132.97,
-          "y": -43.848,
+          "x": 154.875,
+          "y": -43.12,
         },
       ],
       "tag": "CUT",
@@ -993,69 +935,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 132.97,
-          "y": -43.848,
+          "x": 154.875,
+          "y": -43.12,
         },
         {
-          "x": 134.535,
-          "y": -42.24,
-        },
-        {
-          "x": 133.678,
-          "y": -44.349,
-        },
-        {
-          "x": 133.678,
-          "y": -42.105,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
-    {
-      "points": [
-        {
-          "x": 133.678,
-          "y": -42.105,
-        },
-        {
-          "x": 133.678,
-          "y": -41.56,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 133.678,
-          "y": -41.56,
-        },
-        {
-          "x": 133.678,
-          "y": -40.698,
-        },
-        {
-          "x": 134.376,
-          "y": -40,
-        },
-        {
-          "x": 135.238,
-          "y": -40,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
-    {
-      "points": [
-        {
-          "x": 135.238,
-          "y": -40,
-        },
-        {
-          "x": 172.906,
+          "x": 154.875,
           "y": -40,
         },
       ],
@@ -1065,69 +949,25 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 172.906,
+          "x": 154.875,
           "y": -40,
         },
         {
-          "x": 175.365,
+          "x": 173.678,
+          "y": -40,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 173.678,
           "y": -40,
         },
         {
-          "x": 172.286,
-          "y": -39.049,
-        },
-        {
-          "x": 174.316,
-          "y": -40.436,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
-    {
-      "points": [
-        {
-          "x": 174.316,
-          "y": -40.436,
-        },
-        {
-          "x": 203.488,
-          "y": -60.364,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 203.488,
-          "y": -60.364,
-        },
-        {
-          "x": 205.518,
-          "y": -61.751,
-        },
-        {
-          "x": 202.439,
-          "y": -60.8,
-        },
-        {
-          "x": 204.898,
-          "y": -60.8,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
-    {
-      "points": [
-        {
-          "x": 204.898,
-          "y": -60.8,
-        },
-        {
-          "x": 210.106,
+          "x": 204.126,
           "y": -60.8,
         },
       ],
@@ -1137,20 +977,34 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 210.106,
+          "x": 204.126,
           "y": -60.8,
         },
         {
-          "x": 211.487,
+          "x": 211.514,
+          "y": -60.8,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 211.514,
+          "y": -60.8,
+        },
+        {
+          "x": 212.117,
           "y": -60.8,
         },
         {
           "x": 212.606,
-          "y": -59.681,
+          "y": -60.311,
         },
         {
           "x": 212.606,
-          "y": -58.3,
+          "y": -59.708,
         },
       ],
       "tag": "CUT",
@@ -1160,11 +1014,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 212.606,
-          "y": -58.3,
+          "y": -59.708,
         },
         {
           "x": 212.606,
-          "y": -12.646,
+          "y": -10.92,
         },
       ],
       "tag": "CUT",
@@ -1174,33 +1028,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 212.606,
-          "y": -12.646,
+          "y": -10.92,
         },
         {
-          "x": 212.606,
-          "y": -10.666,
-        },
-        {
-          "x": 213.125,
-          "y": -11.619,
-        },
-        {
-          "x": 211.461,
-          "y": -10.546,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
-    {
-      "points": [
-        {
-          "x": 211.461,
-          "y": -10.546,
-        },
-        {
-          "x": 209.001,
-          "y": -8.959,
+          "x": 206.398,
+          "y": -7.28,
         },
       ],
       "tag": "CUT",
@@ -1209,66 +1041,8 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 209.001,
-          "y": -8.959,
-        },
-        {
-          "x": 208.011,
-          "y": -8.321,
-        },
-        {
-          "x": 207.755,
-          "y": -5.923,
-        },
-        {
-          "x": 208.588,
-          "y": -5.09,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
-    {
-      "points": [
-        {
-          "x": 208.588,
-          "y": -5.09,
-        },
-        {
-          "x": 211.166,
-          "y": -2.512,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 211.166,
-          "y": -2.512,
-        },
-        {
-          "x": 211.442,
-          "y": -2.236,
-        },
-        {
-          "x": 210.515,
-          "y": 0,
-        },
-        {
-          "x": 213.643,
-          "y": -0.035,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
-    {
-      "points": [
-        {
-          "x": 213.643,
-          "y": -0.035,
+          "x": 206.398,
+          "y": -7.28,
         },
         {
           "x": 213.678,
@@ -1299,7 +1073,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "y": 0,
         },
         {
-          "x": 229.845,
+          "x": 229.595,
           "y": -40,
         },
       ],
@@ -1309,11 +1083,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 229.845,
+          "x": 229.595,
           "y": -40,
         },
         {
-          "x": 254.75,
+          "x": 255,
           "y": -40,
         },
       ],
@@ -1323,7 +1097,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 254.75,
+          "x": 255,
           "y": -40,
         },
         {
@@ -1341,30 +1115,8 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "y": 0,
         },
         {
-          "x": 296.507,
-          "y": 0,
-        },
-        {
-          "x": 295.299,
-          "y": -1.257,
-        },
-        {
-          "x": 295.352,
-          "y": -2.598,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
-    {
-      "points": [
-        {
-          "x": 295.352,
-          "y": -2.598,
-        },
-        {
-          "x": 297.546,
-          "y": -58.398,
+          "x": 297.359,
+          "y": -59.751,
         },
       ],
       "tag": "CUT",
@@ -1373,19 +1125,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 297.546,
-          "y": -58.398,
+          "x": 297.359,
+          "y": -59.751,
         },
         {
-          "x": 297.602,
-          "y": -59.816,
+          "x": 297.383,
+          "y": -60.371,
         },
         {
-          "x": 298.625,
+          "x": 297.83,
           "y": -60.8,
         },
         {
-          "x": 300.044,
+          "x": 298.45,
           "y": -60.8,
         },
       ],
@@ -1395,11 +1147,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 300.044,
+          "x": 298.45,
           "y": -60.8,
         },
         {
-          "x": 315.422,
+          "x": 337.32,
           "y": -60.8,
         },
       ],
@@ -1409,34 +1161,12 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 315.422,
+          "x": 337.32,
           "y": -60.8,
         },
         {
-          "x": 317.633,
-          "y": -60.8,
-        },
-        {
-          "x": 315.672,
-          "y": -61.628,
-        },
-        {
-          "x": 317.214,
-          "y": -60.043,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
-    {
-      "points": [
-        {
-          "x": 317.214,
-          "y": -60.043,
-        },
-        {
-          "x": 332.97,
-          "y": -43.848,
+          "x": 355,
+          "y": -43.12,
         },
       ],
       "tag": "CUT",
@@ -1445,69 +1175,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 332.97,
-          "y": -43.848,
+          "x": 355,
+          "y": -43.12,
         },
         {
-          "x": 334.535,
-          "y": -42.24,
-        },
-        {
-          "x": 333.678,
-          "y": -44.349,
-        },
-        {
-          "x": 333.678,
-          "y": -42.105,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
-    {
-      "points": [
-        {
-          "x": 333.678,
-          "y": -42.105,
-        },
-        {
-          "x": 333.678,
-          "y": -41.56,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 333.678,
-          "y": -41.56,
-        },
-        {
-          "x": 333.678,
-          "y": -40.698,
-        },
-        {
-          "x": 334.376,
-          "y": -40,
-        },
-        {
-          "x": 335.238,
-          "y": -40,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
-    {
-      "points": [
-        {
-          "x": 335.238,
-          "y": -40,
-        },
-        {
-          "x": 372.906,
+          "x": 355,
           "y": -40,
         },
       ],
@@ -1517,69 +1189,25 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 372.906,
+          "x": 355,
           "y": -40,
         },
         {
-          "x": 375.365,
+          "x": 375,
+          "y": -40,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 375,
           "y": -40,
         },
         {
-          "x": 372.286,
-          "y": -39.049,
-        },
-        {
-          "x": 374.316,
-          "y": -40.436,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
-    {
-      "points": [
-        {
-          "x": 374.316,
-          "y": -40.436,
-        },
-        {
-          "x": 403.488,
-          "y": -60.364,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 403.488,
-          "y": -60.364,
-        },
-        {
-          "x": 405.518,
-          "y": -61.751,
-        },
-        {
-          "x": 402.439,
-          "y": -60.8,
-        },
-        {
-          "x": 404.898,
-          "y": -60.8,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
-    {
-      "points": [
-        {
-          "x": 404.898,
-          "y": -60.8,
-        },
-        {
-          "x": 410.106,
+          "x": 405.646,
           "y": -60.8,
         },
       ],
@@ -1589,20 +1217,34 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 410.106,
+          "x": 405.646,
           "y": -60.8,
         },
         {
-          "x": 411.487,
+          "x": 413.034,
+          "y": -60.8,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 413.034,
           "y": -60.8,
         },
         {
-          "x": 412.606,
-          "y": -59.681,
+          "x": 413.637,
+          "y": -60.8,
         },
         {
-          "x": 412.606,
-          "y": -58.3,
+          "x": 414.126,
+          "y": -60.311,
+        },
+        {
+          "x": 414.126,
+          "y": -59.708,
         },
       ],
       "tag": "CUT",
@@ -1611,12 +1253,12 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 412.606,
-          "y": -58.3,
+          "x": 414.126,
+          "y": -59.708,
         },
         {
-          "x": 412.606,
-          "y": -12.646,
+          "x": 414.126,
+          "y": -10.92,
         },
       ],
       "tag": "CUT",
@@ -1625,34 +1267,12 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 412.606,
-          "y": -12.646,
+          "x": 414.126,
+          "y": -10.92,
         },
         {
-          "x": 412.606,
-          "y": -10.666,
-        },
-        {
-          "x": 413.125,
-          "y": -11.619,
-        },
-        {
-          "x": 411.461,
-          "y": -10.546,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
-    {
-      "points": [
-        {
-          "x": 411.461,
-          "y": -10.546,
-        },
-        {
-          "x": 409.001,
-          "y": -8.959,
+          "x": 407.72,
+          "y": -7.28,
         },
       ],
       "tag": "CUT",
@@ -1661,66 +1281,8 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 409.001,
-          "y": -8.959,
-        },
-        {
-          "x": 408.011,
-          "y": -8.321,
-        },
-        {
-          "x": 407.755,
-          "y": -5.923,
-        },
-        {
-          "x": 408.588,
-          "y": -5.09,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
-    {
-      "points": [
-        {
-          "x": 408.588,
-          "y": -5.09,
-        },
-        {
-          "x": 411.166,
-          "y": -2.512,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 411.166,
-          "y": -2.512,
-        },
-        {
-          "x": 411.442,
-          "y": -2.236,
-        },
-        {
-          "x": 410.515,
-          "y": 0,
-        },
-        {
-          "x": 413.643,
-          "y": -0.035,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
-    {
-      "points": [
-        {
-          "x": 413.643,
-          "y": -0.035,
+          "x": 407.72,
+          "y": -7.28,
         },
         {
           "x": 415,
@@ -1744,17 +1306,59 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "tag": "CREASE",
       "type": "line",
     },
+    {
+      "points": [
+        {
+          "x": 213.678,
+          "y": 0,
+        },
+        {
+          "x": 215,
+          "y": 0,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 15,
+          "y": 0,
+        },
+        {
+          "x": 213.678,
+          "y": 0,
+        },
+      ],
+      "tag": "CREASE",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 215,
+          "y": 0,
+        },
+        {
+          "x": 415,
+          "y": 0,
+        },
+      ],
+      "tag": "CREASE",
+      "type": "line",
+    },
   ],
   "boundingBox": {
-    "height": 336.251,
+    "height": 335.3,
     "maxX": 415,
     "maxY": 274.5,
     "minX": 0,
-    "minY": -61.751,
+    "minY": -60.8,
     "width": 415,
   },
   "name": "Auto-Bottom Box",
-  "panelCount": 14,
+  "panelCount": 16,
   "panels": [
     {
       "foldAngle": 92,
@@ -2766,7 +2370,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
               "y": 0,
             },
             {
-              "x": 29.845,
+              "x": 29.595,
               "y": -40,
             },
           ],
@@ -2776,11 +2380,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 29.845,
+              "x": 29.595,
               "y": -40,
             },
             {
-              "x": 54.75,
+              "x": 55,
               "y": -40,
             },
           ],
@@ -2790,7 +2394,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 54.75,
+              "x": 55,
               "y": -40,
             },
             {
@@ -2817,30 +2421,8 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
               "y": 0,
             },
             {
-              "x": 96.507,
-              "y": 0,
-            },
-            {
-              "x": 95.299,
-              "y": -1.257,
-            },
-            {
-              "x": 95.352,
-              "y": -2.598,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 95.352,
-              "y": -2.598,
-            },
-            {
-              "x": 97.546,
-              "y": -58.398,
+              "x": 97.354,
+              "y": -59.751,
             },
           ],
           "tag": "CUT",
@@ -2849,19 +2431,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 97.546,
-              "y": -58.398,
+              "x": 97.354,
+              "y": -59.751,
             },
             {
-              "x": 97.602,
-              "y": -59.816,
+              "x": 97.378,
+              "y": -60.37,
             },
             {
-              "x": 98.625,
+              "x": 97.825,
               "y": -60.8,
             },
             {
-              "x": 100.044,
+              "x": 98.445,
               "y": -60.8,
             },
           ],
@@ -2871,11 +2453,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 100.044,
+              "x": 98.445,
               "y": -60.8,
             },
             {
-              "x": 115.422,
+              "x": 137.195,
               "y": -60.8,
             },
           ],
@@ -2885,34 +2467,12 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 115.422,
+              "x": 137.195,
               "y": -60.8,
             },
             {
-              "x": 117.633,
-              "y": -60.8,
-            },
-            {
-              "x": 115.672,
-              "y": -61.628,
-            },
-            {
-              "x": 117.214,
-              "y": -60.043,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 117.214,
-              "y": -60.043,
-            },
-            {
-              "x": 132.97,
-              "y": -43.848,
+              "x": 154.875,
+              "y": -43.12,
             },
           ],
           "tag": "CUT",
@@ -2921,69 +2481,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 132.97,
-              "y": -43.848,
+              "x": 154.875,
+              "y": -43.12,
             },
             {
-              "x": 134.535,
-              "y": -42.24,
-            },
-            {
-              "x": 133.678,
-              "y": -44.349,
-            },
-            {
-              "x": 133.678,
-              "y": -42.105,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 133.678,
-              "y": -42.105,
-            },
-            {
-              "x": 133.678,
-              "y": -41.56,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 133.678,
-              "y": -41.56,
-            },
-            {
-              "x": 133.678,
-              "y": -40.698,
-            },
-            {
-              "x": 134.376,
-              "y": -40,
-            },
-            {
-              "x": 135.238,
-              "y": -40,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 135.238,
-              "y": -40,
-            },
-            {
-              "x": 172.906,
+              "x": 154.875,
               "y": -40,
             },
           ],
@@ -2993,214 +2495,12 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 172.906,
+              "x": 154.875,
               "y": -40,
             },
             {
-              "x": 175.365,
+              "x": 173.678,
               "y": -40,
-            },
-            {
-              "x": 172.286,
-              "y": -39.049,
-            },
-            {
-              "x": 174.316,
-              "y": -40.436,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 174.316,
-              "y": -40.436,
-            },
-            {
-              "x": 203.488,
-              "y": -60.364,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 203.488,
-              "y": -60.364,
-            },
-            {
-              "x": 205.518,
-              "y": -61.751,
-            },
-            {
-              "x": 202.439,
-              "y": -60.8,
-            },
-            {
-              "x": 204.898,
-              "y": -60.8,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 204.898,
-              "y": -60.8,
-            },
-            {
-              "x": 210.106,
-              "y": -60.8,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 210.106,
-              "y": -60.8,
-            },
-            {
-              "x": 211.487,
-              "y": -60.8,
-            },
-            {
-              "x": 212.606,
-              "y": -59.681,
-            },
-            {
-              "x": 212.606,
-              "y": -58.3,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 212.606,
-              "y": -58.3,
-            },
-            {
-              "x": 212.606,
-              "y": -12.646,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 212.606,
-              "y": -12.646,
-            },
-            {
-              "x": 212.606,
-              "y": -10.666,
-            },
-            {
-              "x": 213.125,
-              "y": -11.619,
-            },
-            {
-              "x": 211.461,
-              "y": -10.546,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 211.461,
-              "y": -10.546,
-            },
-            {
-              "x": 209.001,
-              "y": -8.959,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 209.001,
-              "y": -8.959,
-            },
-            {
-              "x": 208.011,
-              "y": -8.321,
-            },
-            {
-              "x": 207.755,
-              "y": -5.923,
-            },
-            {
-              "x": 208.588,
-              "y": -5.09,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 208.588,
-              "y": -5.09,
-            },
-            {
-              "x": 211.166,
-              "y": -2.512,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 211.166,
-              "y": -2.512,
-            },
-            {
-              "x": 211.442,
-              "y": -2.236,
-            },
-            {
-              "x": 210.515,
-              "y": 0,
-            },
-            {
-              "x": 213.643,
-              "y": -0.035,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 213.643,
-              "y": -0.035,
-            },
-            {
-              "x": 213.678,
-              "y": 0,
             },
           ],
           "tag": "CUT",
@@ -3223,6 +2523,107 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       ],
     },
     {
+      "foldAngle": 180,
+      "foldDirection": -1,
+      "label": "Tam giác dán đáy trước",
+      "name": "bottom_tab_front",
+      "parent": "bottom_main_front",
+      "paths": [
+        {
+          "points": [
+            {
+              "x": 173.678,
+              "y": -40,
+            },
+            {
+              "x": 204.126,
+              "y": -60.8,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 204.126,
+              "y": -60.8,
+            },
+            {
+              "x": 211.514,
+              "y": -60.8,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 211.514,
+              "y": -60.8,
+            },
+            {
+              "x": 212.117,
+              "y": -60.8,
+            },
+            {
+              "x": 212.606,
+              "y": -60.311,
+            },
+            {
+              "x": 212.606,
+              "y": -59.708,
+            },
+          ],
+          "tag": "CUT",
+          "type": "bezier",
+        },
+        {
+          "points": [
+            {
+              "x": 212.606,
+              "y": -59.708,
+            },
+            {
+              "x": 212.606,
+              "y": -10.92,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 212.606,
+              "y": -10.92,
+            },
+            {
+              "x": 206.398,
+              "y": -7.28,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 206.398,
+              "y": -7.28,
+            },
+            {
+              "x": 213.678,
+              "y": 0,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+      ],
+    },
+    {
       "foldAngle": -90,
       "foldDirection": -1,
       "label": "Tai dán đáy phải",
@@ -3236,7 +2637,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
               "y": 0,
             },
             {
-              "x": 229.845,
+              "x": 229.595,
               "y": -40,
             },
           ],
@@ -3246,11 +2647,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 229.845,
+              "x": 229.595,
               "y": -40,
             },
             {
-              "x": 254.75,
+              "x": 255,
               "y": -40,
             },
           ],
@@ -3260,7 +2661,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 254.75,
+              "x": 255,
               "y": -40,
             },
             {
@@ -3287,30 +2688,8 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
               "y": 0,
             },
             {
-              "x": 296.507,
-              "y": 0,
-            },
-            {
-              "x": 295.299,
-              "y": -1.257,
-            },
-            {
-              "x": 295.352,
-              "y": -2.598,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 295.352,
-              "y": -2.598,
-            },
-            {
-              "x": 297.546,
-              "y": -58.398,
+              "x": 297.359,
+              "y": -59.751,
             },
           ],
           "tag": "CUT",
@@ -3319,19 +2698,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 297.546,
-              "y": -58.398,
+              "x": 297.359,
+              "y": -59.751,
             },
             {
-              "x": 297.602,
-              "y": -59.816,
+              "x": 297.383,
+              "y": -60.371,
             },
             {
-              "x": 298.625,
+              "x": 297.83,
               "y": -60.8,
             },
             {
-              "x": 300.044,
+              "x": 298.45,
               "y": -60.8,
             },
           ],
@@ -3341,11 +2720,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 300.044,
+              "x": 298.45,
               "y": -60.8,
             },
             {
-              "x": 315.422,
+              "x": 337.32,
               "y": -60.8,
             },
           ],
@@ -3355,34 +2734,12 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 315.422,
+              "x": 337.32,
               "y": -60.8,
             },
             {
-              "x": 317.633,
-              "y": -60.8,
-            },
-            {
-              "x": 315.672,
-              "y": -61.628,
-            },
-            {
-              "x": 317.214,
-              "y": -60.043,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 317.214,
-              "y": -60.043,
-            },
-            {
-              "x": 332.97,
-              "y": -43.848,
+              "x": 355,
+              "y": -43.12,
             },
           ],
           "tag": "CUT",
@@ -3391,69 +2748,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 332.97,
-              "y": -43.848,
+              "x": 355,
+              "y": -43.12,
             },
             {
-              "x": 334.535,
-              "y": -42.24,
-            },
-            {
-              "x": 333.678,
-              "y": -44.349,
-            },
-            {
-              "x": 333.678,
-              "y": -42.105,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 333.678,
-              "y": -42.105,
-            },
-            {
-              "x": 333.678,
-              "y": -41.56,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 333.678,
-              "y": -41.56,
-            },
-            {
-              "x": 333.678,
-              "y": -40.698,
-            },
-            {
-              "x": 334.376,
-              "y": -40,
-            },
-            {
-              "x": 335.238,
-              "y": -40,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 335.238,
-              "y": -40,
-            },
-            {
-              "x": 372.906,
+              "x": 355,
               "y": -40,
             },
           ],
@@ -3463,214 +2762,12 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 372.906,
+              "x": 355,
               "y": -40,
             },
             {
-              "x": 375.365,
+              "x": 375,
               "y": -40,
-            },
-            {
-              "x": 372.286,
-              "y": -39.049,
-            },
-            {
-              "x": 374.316,
-              "y": -40.436,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 374.316,
-              "y": -40.436,
-            },
-            {
-              "x": 403.488,
-              "y": -60.364,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 403.488,
-              "y": -60.364,
-            },
-            {
-              "x": 405.518,
-              "y": -61.751,
-            },
-            {
-              "x": 402.439,
-              "y": -60.8,
-            },
-            {
-              "x": 404.898,
-              "y": -60.8,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 404.898,
-              "y": -60.8,
-            },
-            {
-              "x": 410.106,
-              "y": -60.8,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 410.106,
-              "y": -60.8,
-            },
-            {
-              "x": 411.487,
-              "y": -60.8,
-            },
-            {
-              "x": 412.606,
-              "y": -59.681,
-            },
-            {
-              "x": 412.606,
-              "y": -58.3,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 412.606,
-              "y": -58.3,
-            },
-            {
-              "x": 412.606,
-              "y": -12.646,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 412.606,
-              "y": -12.646,
-            },
-            {
-              "x": 412.606,
-              "y": -10.666,
-            },
-            {
-              "x": 413.125,
-              "y": -11.619,
-            },
-            {
-              "x": 411.461,
-              "y": -10.546,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 411.461,
-              "y": -10.546,
-            },
-            {
-              "x": 409.001,
-              "y": -8.959,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 409.001,
-              "y": -8.959,
-            },
-            {
-              "x": 408.011,
-              "y": -8.321,
-            },
-            {
-              "x": 407.755,
-              "y": -5.923,
-            },
-            {
-              "x": 408.588,
-              "y": -5.09,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 408.588,
-              "y": -5.09,
-            },
-            {
-              "x": 411.166,
-              "y": -2.512,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 411.166,
-              "y": -2.512,
-            },
-            {
-              "x": 411.442,
-              "y": -2.236,
-            },
-            {
-              "x": 410.515,
-              "y": 0,
-            },
-            {
-              "x": 413.643,
-              "y": -0.035,
-            },
-          ],
-          "tag": "CUT",
-          "type": "bezier",
-        },
-        {
-          "points": [
-            {
-              "x": 413.643,
-              "y": -0.035,
-            },
-            {
-              "x": 415,
-              "y": 0,
             },
           ],
           "tag": "CUT",
@@ -3688,6 +2785,107 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
             },
           ],
           "tag": "CREASE",
+          "type": "line",
+        },
+      ],
+    },
+    {
+      "foldAngle": 180,
+      "foldDirection": -1,
+      "label": "Tam giác dán đáy sau",
+      "name": "bottom_tab_back",
+      "parent": "bottom_main_back",
+      "paths": [
+        {
+          "points": [
+            {
+              "x": 375,
+              "y": -40,
+            },
+            {
+              "x": 405.646,
+              "y": -60.8,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 405.646,
+              "y": -60.8,
+            },
+            {
+              "x": 413.034,
+              "y": -60.8,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 413.034,
+              "y": -60.8,
+            },
+            {
+              "x": 413.637,
+              "y": -60.8,
+            },
+            {
+              "x": 414.126,
+              "y": -60.311,
+            },
+            {
+              "x": 414.126,
+              "y": -59.708,
+            },
+          ],
+          "tag": "CUT",
+          "type": "bezier",
+        },
+        {
+          "points": [
+            {
+              "x": 414.126,
+              "y": -59.708,
+            },
+            {
+              "x": 414.126,
+              "y": -10.92,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 414.126,
+              "y": -10.92,
+            },
+            {
+              "x": 407.72,
+              "y": -7.28,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 407.72,
+              "y": -7.28,
+            },
+            {
+              "x": 415,
+              "y": 0,
+            },
+          ],
+          "tag": "CUT",
           "type": "line",
         },
       ],

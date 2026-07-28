@@ -17,6 +17,8 @@
 
 import React from 'react';
 import { useMockupStore, type CameraPreset, type MockupQualityTier } from '../../store/useMockupStore';
+// [HANGING-WINDOW 2026-07-27] Cần biết khuôn hiện tại có lỗ cửa sổ hay không.
+import { useBoxStore } from '../../store/useBoxStore';
 import {
     SUBSTRATE_LIBRARY,
     SURFACE_FINISH_LIBRARY,
@@ -72,6 +74,14 @@ export default function MockupPanel() {
     const setToneExposure = useMockupStore((s) => s.setToneExposure);
     const showPaperGrain = useMockupStore((s) => s.showPaperGrain);
     const setShowPaperGrain = useMockupStore((s) => s.setShowPaperGrain);
+    // [HANGING-WINDOW 2026-07-27] Công tắc màng cửa sổ; chỉ hiện khi khuôn hiện
+    // tại THẬT SỰ có lỗ cửa sổ (mặt trước của hộp treo) — tránh ô tích vô nghĩa.
+    const showWindowFilm = useMockupStore((s) => s.showWindowFilm);
+    const setShowWindowFilm = useMockupStore((s) => s.setShowWindowFilm);
+    const hasWindowHole = useBoxStore((s) => (
+        s.dieline?.params.boxType === 'hanging_window'
+        && (s.dieline?.panels.some((p) => p.name === 'front' && (p.holes?.length ?? 0) > 0) ?? false)
+    ));
     const showTechnicalLines = useMockupStore((s) => s.showTechnicalLines);
     const setShowTechnicalLines = useMockupStore((s) => s.setShowTechnicalLines);
     const showFloorGrid = useMockupStore((s) => s.showFloorGrid);
@@ -149,6 +159,21 @@ export default function MockupPanel() {
                     </label>
                     <input type="checkbox" checked={showPaperGrain} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
                 </div>
+
+                {/* [HANGING-WINDOW 2026-07-27] Màng cửa sổ — chỉ hiện với hộp có cửa sổ. */}
+                {hasWindowHole && (
+                    <div
+                        className="dt-param-cell"
+                        style={{ cursor: 'pointer', marginTop: '0.75rem' }}
+                        onClick={() => setShowWindowFilm(!showWindowFilm)}
+                        title="Màng PVC/PET trong suốt dán mặt trong cửa sổ — chỉ hiển thị 3D, không đổi khuôn bế"
+                    >
+                        <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>
+                            Màng cửa sổ (PVC)
+                        </label>
+                        <input type="checkbox" checked={showWindowFilm} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
+                    </div>
+                )}
             </CollapsibleSection>
 
             {/* ─── Cảnh / Ánh sáng / Camera ─── */}

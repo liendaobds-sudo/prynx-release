@@ -10,12 +10,14 @@ interface RulerProps {
   /** id phần tử trang dùng làm gốc "0" của thước (mép trang thật). Nếu không có
    *  hoặc không tìm thấy → fallback về gốc vùng cuộn (hành vi cũ). */
   pageAnchorId?: string;
+  /** UIUX (audit 2026-07-27 §C-04): chuột phải lên thước → xoay vòng đơn vị mm→cm→inch. */
+  onCycleUnit?: () => void;
 }
 
 const DPI = 96;
 const INCH_TO_MM = 25.4;
 
-export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness = 20, onMouseDown, pageAnchorId }: RulerProps) {
+export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness = 20, onMouseDown, pageAnchorId, onCycleUnit }: RulerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const mousePosRef = useRef<{x: number, y: number} | null>(null);
@@ -267,9 +269,11 @@ export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness =
   }, [size, scrollOffset, zoom, unit, orientation, thickness]);
 
   return (
-    <div 
+    <div
       ref={containerRef}
       onMouseDown={(e) => onMouseDown && onMouseDown(e, orientation)}
+      // UIUX (audit 2026-07-27 §C-04): chuột phải lên thước (cả ngang lẫn dọc) → đổi đơn vị.
+      onContextMenu={(e) => { if (onCycleUnit) { e.preventDefault(); onCycleUnit(); } }}
       className={`absolute top-0 left-0 bg-slate-50 dark:bg-[#121212] z-40 border-slate-300 dark:border-white/5 ${orientation === 'horizontal' ? 'w-full border-b' : 'h-full border-r'}`}
       style={{
         [orientation === 'horizontal' ? 'height' : 'width']: thickness,
@@ -277,6 +281,20 @@ export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness =
       }}
     >
       <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
+      {/* UIUX (audit 2026-07-27 §C-03): nhãn đơn vị hiện hành ở Ô VUÔNG GÓC giao 2 thước.
+          Canvas thước KHÔNG phủ ô góc (container đã offset marginLeft=thickness) nên vẽ
+          bằng div đặt tại left:-thickness thay vì fillText; màu/nền tái dùng class sẵn có.
+          stopPropagation mousedown để click ô góc không tạo guide; click = đổi đơn vị. */}
+      {orientation === 'horizontal' && (
+        <div
+          className="absolute top-0 flex items-center justify-center bg-slate-50 dark:bg-[#121212] border-b border-r border-slate-300 dark:border-white/5 text-slate-400 dark:text-zinc-500 select-none cursor-pointer"
+          style={{ left: -thickness, width: thickness, height: thickness, fontSize: 9, lineHeight: 1 }}
+          onMouseDown={(e) => { e.stopPropagation(); }}
+          onClick={() => onCycleUnit && onCycleUnit()}
+        >
+          {unit === 'inch' ? 'in' : unit}
+        </div>
+      )}
     </div>
   );
 }

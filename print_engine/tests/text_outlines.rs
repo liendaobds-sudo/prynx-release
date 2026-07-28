@@ -321,6 +321,114 @@ fn missing_embedded_font_is_reported_so_caller_can_refuse() {
     assert!(!r.text_outlines.is_complete());
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Hợp đồng đếm mã ký tự (OUT-FONT, audit lần 3 §3.2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn block_code_count_includes_spaces_and_invisible_text() {
+    // Con số này là hợp đồng đồng bộ chỉ số với bộ ghi PDF bên Python: nó phải đếm
+    // MỌI mã ký tự. Đếm chỉ những glyph vẽ được sẽ làm hai bên lệch ngay ở dấu cách
+    // và path bị gán cho glyph khác.
+    let ttf = font_or_skip!();
+    let doc = build("BT /F1 24 Tf 20 100 Td (A B) Tj ET", ttf, None);
+    let r = collect(&doc);
+    assert_eq!(r.text_outlines.blocks.len(), 1, "{:?}", r.text_outlines.blocks);
+    let b = &r.text_outlines.blocks[0];
+    assert_eq!(b.stream, StreamKey::Page);
+    assert_eq!(b.text_object_index, 0);
+    assert_eq!(b.code_count, 3, "dấu cách vẫn phải được đếm");
+    // Chỉ 2 glyph có path (dấu cách rỗng) — đúng chỗ hai con số phải khác nhau.
+    assert_eq!(r.text_outlines.glyphs.len(), 2);
+}
+
+#[test]
+fn each_block_reports_its_own_code_count() {
+    let ttf = font_or_skip!();
+    let doc = build(
+        "BT /F1 24 Tf 20 40 Td (A) Tj ET BT /F1 24 Tf 20 90 Td (BCD) Tj ET",
+        ttf,
+        None,
+    );
+    let r = collect(&doc);
+    let counts: Vec<(u32, u32)> = r
+        .text_outlines
+        .blocks
+        .iter()
+        .map(|b| (b.text_object_index, b.code_count))
+        .collect();
+    assert_eq!(counts, vec![(0, 1), (1, 3)], "{counts:?}");
+}
+
+#[test]
+fn invisible_text_still_counts_so_indices_stay_aligned() {
+    // `Tr 3` không sinh path nào, nhưng bộ ghi Python vẫn duyệt qua các mã đó. Nếu
+    // engine không đếm chúng thì hai bên lệch số và cả khối bị loại oan.
+    let ttf = font_or_skip!();
+    let doc = build("BT /F1 24 Tf 3 Tr 20 100 Td (ABC) Tj ET", ttf, None);
+    let r = collect(&doc);
+    assert!(r.text_outlines.glyphs.is_empty());
+    assert_eq!(r.text_outlines.blocks.len(), 1);
+    assert_eq!(r.text_outlines.blocks[0].code_count, 3);
+}
+
+#[test]
+fn visible_glyph_after_invisible_run_keeps_the_python_ordinal() {
+    // Hồi quy có thật: khi việc đếm còn nằm sau cổng `paints_ink`, khối này cho engine
+    // ordinal 0,1 trong khi bộ ghi Python đếm 3,4 — path của `X` bị gán cho `a`. File
+    // vẫn mở được, vẫn có chữ, chỉ sai chỗ, và chỉ thấy khi đã in.
+    let ttf = font_or_skip!();
+    let doc = build(
+        "BT /F1 24 Tf 20 100 Td 3 Tr (abc) Tj 0 Tr (XY) Tj ET",
+        ttf,
+        None,
+    );
+    let r = collect(&doc);
+    let idx: Vec<u32> = r
+        .text_outlines
+        .glyphs
+        .iter()
+        .map(|g| g.glyph_index)
+        .collect();
+    assert_eq!(idx, vec![3, 4], "chỉ số phải tính cả 3 mã vô hình phía trước");
+    assert_eq!(r.text_outlines.blocks[0].code_count, 5);
+}
+
+#[test]
+fn form_invoked_twice_reports_the_count_once_not_doubled() {
+    // Cộng dồn ở đây là bug thật chờ xảy ra: cùng một Form XObject được `Do` hai lần
+    // sẽ khai 2× số mã, Python đếm ra 1× và loại oan toàn bộ chữ trong form.
+    let ttf = font_or_skip!();
+    let form_content = b"BT /F1 24 Tf 5 5 Td (AB) Tj ET".to_vec();
+    let add_form = |doc: &mut Document, res: &mut Dictionary| {
+        let inner_res_id = doc.add_object(res.clone());
+        let id = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Form",
+                "BBox" => vec![0.into(), 0.into(), 100.into(), 100.into()],
+                "Resources" => Object::Reference(inner_res_id),
+            },
+            form_content.clone(),
+        ));
+        res.set("XObject", dictionary! { "X1" => Object::Reference(id) });
+    };
+    let doc = build(
+        "q 1 0 0 1 20 20 cm /X1 Do Q q 1 0 0 1 20 120 cm /X1 Do Q",
+        ttf,
+        Some(&add_form),
+    );
+    let r = collect(&doc);
+    let form_blocks: Vec<&print_engine::text::outlines::TextBlockCodes> = r
+        .text_outlines
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.stream, StreamKey::Form(_, _)))
+        .collect();
+    assert_eq!(form_blocks.len(), 1, "{:?}", r.text_outlines.blocks);
+    assert_eq!(form_blocks[0].code_count, 2, "số mã bị cộng dồn theo số lần Do");
+}
+
 use std::cell::Cell;
 thread_local! {
     static FORM_ID: Cell<Option<(u32, u16)>> = const { Cell::new(None) };

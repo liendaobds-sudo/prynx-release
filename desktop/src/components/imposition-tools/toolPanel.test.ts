@@ -62,7 +62,7 @@ describe('resolveRightPanel — routing panel-phải ImpositionTab (lưới an t
 
     it('mọi tool còn lại (bình bài + tiền xử lý + none) → "dashboard"', () => {
         for (const t of ['none', 'booklet', 'nup', 'sticker_imposer', 'cnc_imposer',
-            'merge', 'shuffle', 'resize', 'split', 'pages', 'sticker', 'preflight',
+            'merge', 'shuffle', 'resize', 'split', 'pages', 'sticker', 'preflight', 'font_tools',
             'hairlines', 'convertcolors', 'trapping', 'pdfx', 'ocr', 'optimize',
             'bgremover', 'watermark', 'upscale', 'encrypt', 'metadata', 'office_convert']) {
             expect(resolveRightPanel(t, false)).toBe('dashboard');

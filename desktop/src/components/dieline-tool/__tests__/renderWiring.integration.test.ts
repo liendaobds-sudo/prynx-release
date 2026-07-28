@@ -52,6 +52,8 @@ const h = vi.hoisted(() => ({
     canvasProps: [] as any[],
     /** Callback đăng ký qua useFrame (để mô phỏng vòng render). */
     frameCallbacks: [] as Array<(state?: unknown, delta?: number) => void>,
+    /** Props ContactShadows để khóa hành vi giữ/chụp bóng quanh animation. */
+    contactShadowProps: [] as Array<{ frames?: number }>,
     /** Trạng thái giả cho useThree (gl/scene/camera/size/controls/invalidate). */
     threeState: null as any,
     /** Texture giả trả về từ useLoader. */
@@ -60,6 +62,8 @@ const h = vi.hoisted(() => ({
     solidPanelProps: [] as any[],
     /** Props của bốn miếng góc khay để kiểm tra công tắc đường kỹ thuật. */
     gussetProps: [] as any[],
+    /** [HANGING-WINDOW 2026-07-27] Props của màng cửa sổ trong suốt. */
+    windowPaneProps: [] as any[],
     /** Kết quả parseAsync của GLTFExporter mock. */
     glbResult: null as unknown,
     /** Cho phép GLTFExporter.parseAsync reject để kiểm nhánh lỗi. */
@@ -91,7 +95,10 @@ vi.mock('@react-three/drei', () => ({
     Environment: (props: any) => props.children ?? null,
     Lightformer: () => null,
     Html: (props: any) => props.children ?? null,
-    ContactShadows: () => null,
+    ContactShadows: (props: { frames?: number }) => {
+        h.contactShadowProps.push(props);
+        return null;
+    },
     OrbitControls: () => null,
     // View cube định hướng (DielineScene3D import GizmoHelper + GizmoViewcube).
     // GizmoHelper bọc viewcube làm children → render children để wiring khớp;
@@ -129,6 +136,13 @@ vi.mock('../SolidPanelMesh', () => ({
 vi.mock('../GussetMesh', () => ({
     default: (props: any) => {
         h.gussetProps.push(props);
+        return null;
+    },
+}));
+// [HANGING-WINDOW 2026-07-27] Màng cửa sổ trong suốt — chỉ ghi props để kiểm wiring.
+vi.mock('../WindowPaneMesh', () => ({
+    default: (props: any) => {
+        h.windowPaneProps.push(props);
         return null;
     },
 }));
@@ -191,8 +205,10 @@ let toBlobSpy: ReturnType<typeof vi.spyOn> | null = null;
 beforeEach(() => {
     h.canvasProps.length = 0;
     h.frameCallbacks.length = 0;
+    h.contactShadowProps.length = 0;
     h.solidPanelProps.length = 0;
     h.gussetProps.length = 0;
+    h.windowPaneProps.length = 0;
     h.glbReject = false;
     h.glbResult = null;
     h.threeState = makeFakeThreeState();
@@ -324,6 +340,59 @@ describe('DielineScene3D — composition wiring (Yêu cầu 3.1, 3.5, 7.2)', () 
         expect(h.solidPanelProps.length).toBeGreaterThan(0);
         expect(h.solidPanelProps.every((props) => props.outerFaceNegativeZ === true)).toBe(true);
     });
+    // [HANGING-WINDOW 2026-07-27] Màng cửa sổ trong suốt: chỉ dựng cho panel mặt
+    // trước CÓ lỗ khoét, và tắt được bằng công tắc `showWindowFilm` (thuần hiển
+    // thị — không đụng khuôn bế nên không có gì phải kiểm ở generator).
+    it('hộp treo có cửa sổ: dựng màng nhựa đúng panel mặt trước', async () => {
+        const params = {
+            ...DEFAULT_PARAMS, boxType: 'hanging_window' as const,
+            L: 80, W: 30, D: 140, T: 0.5, C: 0.5, G: 15, TH: 15,
+        };
+        useBoxStore.setState({ params, dieline: generateDieline(params), isModelCurrent: true });
+        useMockupStore.setState({ showWindowFilm: true });
+
+        await act(async () => {
+            render(e(DielineScene3D, null));
+        });
+
+        expect(h.windowPaneProps).toHaveLength(1);
+        const pane = h.windowPaneProps[0];
+        expect(pane.panel.name).toBe('front');
+        expect(pane.panel.holes?.length).toBe(1);
+        // Màng dùng CHUNG hệ gấp với panel: nhận đủ allPanels/depthMap/thickness.
+        expect(pane.allPanels.length).toBeGreaterThan(0);
+        expect(pane.thickness).toBeCloseTo(params.T, 6);
+        expect(pane.depthMap).toBeDefined();
+    });
+
+    it('tắt công tắc màng cửa sổ thì không dựng màng', async () => {
+        const params = {
+            ...DEFAULT_PARAMS, boxType: 'hanging_window' as const,
+            L: 80, W: 30, D: 140, T: 0.5, C: 0.5, G: 15, TH: 15,
+        };
+        useBoxStore.setState({ params, dieline: generateDieline(params), isModelCurrent: true });
+        useMockupStore.setState({ showWindowFilm: false });
+
+        await act(async () => {
+            render(e(DielineScene3D, null));
+        });
+
+        expect(h.windowPaneProps).toHaveLength(0);
+        useMockupStore.setState({ showWindowFilm: true });
+    });
+
+    it('loại hộp không có cửa sổ thì không dựng màng', async () => {
+        const params = { ...DEFAULT_PARAMS, boxType: 'rte' as const };
+        useBoxStore.setState({ params, dieline: generateDieline(params), isModelCurrent: true });
+        useMockupStore.setState({ showWindowFilm: true });
+
+        await act(async () => {
+            render(e(DielineScene3D, null));
+        });
+
+        expect(h.windowPaneProps).toHaveLength(0);
+    });
+
     it('hộp diêm tách texture và vùng UV của khay khỏi vỏ hộp', async () => {
         const params = { ...DEFAULT_PARAMS, boxType: 'tray' as const, L: 200, W: 150, D: 40, T: 1 };
         useBoxStore.setState({ params, dieline: generateDieline(params), isModelCurrent: true });
@@ -388,6 +457,23 @@ describe('DielineScene3D — composition wiring (Yêu cầu 3.1, 3.5, 7.2)', () 
             render(e(DielineScene3D, null));
         });
         expect(useMockupStore.getState().hdriStatus).toBe('ready');
+    });
+
+    it('giữ texture contact shadow khi animation chạy và chụp lại khi đứng yên', async () => {
+        await act(async () => {
+            render(e(DielineScene3D, null));
+        });
+        expect(h.contactShadowProps.at(-1)?.frames).toBe(1);
+
+        await act(async () => {
+            useBoxStore.getState().setIsAnimating(true);
+        });
+        expect(h.contactShadowProps.at(-1)?.frames).toBe(0);
+
+        await act(async () => {
+            useBoxStore.getState().setIsAnimating(false);
+        });
+        expect(h.contactShadowProps.at(-1)?.frames).toBe(1);
     });
 });
 

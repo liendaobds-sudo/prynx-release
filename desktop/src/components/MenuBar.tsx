@@ -90,7 +90,8 @@ export function MenuBar({ menus }: MenuBarProps) {
                             const reserveCheck = menu.items.some((it) => typeof it.checked === 'boolean');
                             const reserveIcon = menu.items.some((it) => it.icon != null);
                             return (
-                                <div className="absolute top-full left-0 mt-0 min-w-[220px] bg-white dark:bg-[#2d3236] border border-black/10 dark:border-white/10 shadow-xl rounded-b-md py-1 z-[200] animate-in fade-in slide-in-from-top-1 duration-100">
+                                // UIUX (audit 2026-07-27 §A-03/§A-08): hex nền/viền → bg-app-2/border-app-line, z-[200] → z-context-menu
+                                <div className="absolute top-full left-0 mt-0 min-w-[220px] bg-app-2 border border-app-line shadow-xl rounded-b-md py-1 z-context-menu animate-in fade-in slide-in-from-top-1 duration-100">
                                     {menu.items.map((item, j) =>
                                         item.separator
                                             ? <div key={`sep-${j}`} className="my-1 h-px bg-black/10 dark:bg-white/10" />
@@ -112,10 +113,11 @@ function MenuRow({ item, onRun, reserveCheck, reserveIcon }: { item: MenuItem; o
     const [subOpen, setSubOpen] = useState(false);
     const hasSub = !!item.submenu && item.submenu.length > 0;
 
+    // UIUX (audit 2026-07-27 §A-02): hover xanh blue-500 lệch tông → token hover:bg-app-accent
     const rowClass = `w-full text-left px-3 py-1.5 flex items-center gap-2.5 transition-colors ${
         item.disabled
             ? 'text-slate-400 dark:text-zinc-600 cursor-default'
-            : 'hover:bg-blue-500 hover:text-white text-slate-700 dark:text-zinc-200'
+            : 'hover:bg-app-accent hover:text-white text-slate-700 dark:text-zinc-200'
     }`;
 
     const content = (
@@ -134,7 +136,8 @@ function MenuRow({ item, onRun, reserveCheck, reserveIcon }: { item: MenuItem; o
             {hasSub
                 ? <span className="ml-4 shrink-0 text-[11px] opacity-60">▶</span>
                 : item.shortcut && (
-                    <span className="ml-6 shrink-0 text-[11px] opacity-60 tabular-nums">{item.shortcut}</span>
+                    // UIUX (audit 2026-07-27 §A-14): tabular-nums rời rạc → class num thống nhất
+                    <span className="ml-6 shrink-0 text-[11px] opacity-60 num">{item.shortcut}</span>
                 )}
         </>
     );
@@ -151,7 +154,9 @@ function MenuRow({ item, onRun, reserveCheck, reserveIcon }: { item: MenuItem; o
         >
             <button disabled={item.disabled} className={rowClass}>{content}</button>
             {subOpen && !item.disabled && (
-                <div className="absolute top-0 left-full ml-0.5 min-w-[200px] max-h-[70vh] overflow-y-auto bg-white dark:bg-[#2d3236] border border-black/10 dark:border-white/10 shadow-xl rounded-md py-1 z-[210] animate-in fade-in slide-in-from-left-1 duration-100">
+                // UIUX (audit 2026-07-27 §A-03/§A-08): hex nền/viền → bg-app-2/border-app-line; z-[210] → z-context-menu
+                // (submenu là con trong stacking context của dropdown cha nên vẫn vẽ đè lên trên)
+                <div className="absolute top-0 left-full ml-0.5 min-w-[200px] max-h-[70vh] overflow-y-auto bg-app-2 border border-app-line shadow-xl rounded-md py-1 z-context-menu animate-in fade-in slide-in-from-left-1 duration-100">
                     {item.submenu!.length === 0
                         ? <div className="px-3 py-1.5 text-[12px] text-slate-400 dark:text-zinc-600">{t('misc.menuBar:trong')}</div>
                         : item.submenu!.map((sub, k) =>
@@ -164,7 +169,8 @@ function MenuRow({ item, onRun, reserveCheck, reserveIcon }: { item: MenuItem; o
                                     className={`w-full text-left px-3 py-1.5 flex items-center gap-2.5 transition-colors ${
                                         sub.disabled
                                             ? 'text-slate-400 dark:text-zinc-600 cursor-default'
-                                            : 'hover:bg-blue-500 hover:text-white text-slate-700 dark:text-zinc-200'
+                                            // UIUX (audit 2026-07-27 §A-02): hover xanh blue-500 → token hover:bg-app-accent
+                                            : 'hover:bg-app-accent hover:text-white text-slate-700 dark:text-zinc-200'
                                     }`}
                                     title={sub.label}
                                 >

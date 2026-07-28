@@ -87,6 +87,8 @@ export function PaperSettingsDialog({
             : (classification === 'offset' ? ['offset'] : ['in_nhanh']);
     const [usages, setUsages] = useState<PaperUsage[]>(initialUsages);
     const [gripper, setGripper] = useState(gripperMargin || 0);
+    // UIUX (audit 2026-07-27 §B-04): lỗi inline đỏ khi W/H không hợp lệ lúc bấm Áp dụng/Lưu
+    const [sizeError, setSizeError] = useState<string | null>(null);
 
     const primaryClassification = primaryClassificationFromUsages(usages);
 
@@ -102,9 +104,10 @@ export function PaperSettingsDialog({
     const isEditing = currentFormsize.startsWith('custom_');
 
     useEffect(() => {
-        if (isOpen) { 
-            setW(width); setH(height); setMT(marginTop); setMB(marginBottom); setML(marginLeft); setMR(marginRight); setMMode(marginMode); 
+        if (isOpen) {
+            setW(width); setH(height); setMT(marginTop); setMB(marginBottom); setML(marginLeft); setMR(marginRight); setMMode(marginMode);
             setGripper(gripperMargin || 0);
+            setSizeError(null); // UIUX (audit 2026-07-27 §B-04)
             if (isEditing) {
                 const f = savedForms.find(x => x.id === currentFormsize);
                 if (f) {
@@ -203,13 +206,25 @@ export function PaperSettingsDialog({
                         <div className="grid grid-cols-2 gap-4">
                             <div>
                                 <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.paperSettingsUI:chieu_rong_w')}</label>
-                                <input type="number" step="0.5" value={w} onChange={e => setW(Number(e.target.value))} className={inputCls} />
+                                {/* UIUX (audit 2026-07-27 §B-02): suffix mm; §B-04: min 10 — khổ giấy 0 là vô nghĩa */}
+                                <span className="relative block">
+                                    <input type="number" step="0.5" min="10" value={w} onChange={e => { setW(Number(e.target.value)); setSizeError(null); }} className={inputCls + " pr-7"} />
+                                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none">mm</span>
+                                </span>
                             </div>
                             <div>
                                 <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.paperSettingsUI:chieu_cao_h')}</label>
-                                <input type="number" step="0.5" value={h} onChange={e => setH(Number(e.target.value))} className={inputCls} />
+                                {/* UIUX (audit 2026-07-27 §B-02): suffix mm; §B-04: min 10 — khổ giấy 0 là vô nghĩa */}
+                                <span className="relative block">
+                                    <input type="number" step="0.5" min="10" value={h} onChange={e => { setH(Number(e.target.value)); setSizeError(null); }} className={inputCls + " pr-7"} />
+                                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none">mm</span>
+                                </span>
                             </div>
                         </div>
+                        {/* UIUX (audit 2026-07-27 §B-04): dòng đỏ inline khi Áp dụng với W/H không hợp lệ — không im lặng */}
+                        {sizeError && (
+                            <p className="text-[11px] text-red-600 dark:text-red-400 mt-2 leading-snug">{sizeError}</p>
+                        )}
                     </div>
 
                     {/* Hàng 3: Vùng lề */}
@@ -231,21 +246,34 @@ export function PaperSettingsDialog({
                             </div>
                         ) : (
                             <div className="grid grid-cols-4 gap-3">
+                                {/* UIUX (audit 2026-07-27 §B-02): suffix mm cho 4 ô lề; §B-04: min 0 + clamp không âm */}
                                 <div>
                                     <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.paperSettingsUI:tren_top')}</label>
-                                    <input type="number" step="0.5" value={mT} onChange={e => setMT(Number(e.target.value))} className={inputCls} />
+                                    <span className="relative block">
+                                        <input type="number" step="0.5" min="0" value={mT} onChange={e => setMT(Math.max(0, Number(e.target.value) || 0))} className={inputCls + " pr-6"} />
+                                        <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none">mm</span>
+                                    </span>
                                 </div>
                                 <div>
                                     <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.paperSettingsUI:duoi_bottom')}</label>
-                                    <input type="number" step="0.5" value={mB} onChange={e => setMB(Number(e.target.value))} className={inputCls} />
+                                    <span className="relative block">
+                                        <input type="number" step="0.5" min="0" value={mB} onChange={e => setMB(Math.max(0, Number(e.target.value) || 0))} className={inputCls + " pr-6"} />
+                                        <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none">mm</span>
+                                    </span>
                                 </div>
                                 <div>
                                     <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.paperSettingsUI:trai_left')}</label>
-                                    <input type="number" step="0.5" value={mL} onChange={e => setML(Number(e.target.value))} className={inputCls} />
+                                    <span className="relative block">
+                                        <input type="number" step="0.5" min="0" value={mL} onChange={e => setML(Math.max(0, Number(e.target.value) || 0))} className={inputCls + " pr-6"} />
+                                        <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none">mm</span>
+                                    </span>
                                 </div>
                                 <div>
                                     <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.paperSettingsUI:phai_right')}</label>
-                                    <input type="number" step="0.5" value={mR} onChange={e => setMR(Number(e.target.value))} className={inputCls} />
+                                    <span className="relative block">
+                                        <input type="number" step="0.5" min="0" value={mR} onChange={e => setMR(Math.max(0, Number(e.target.value) || 0))} className={inputCls + " pr-6"} />
+                                        <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none">mm</span>
+                                    </span>
                                 </div>
                             </div>
                         )}
@@ -285,8 +313,13 @@ export function PaperSettingsDialog({
                     <Button 
                         variant="primary" 
                         disabled={usages.length === 0}
-                        onClick={() => { 
+                        onClick={() => {
                             if (usages.length === 0) return;
+                            // UIUX (audit 2026-07-27 §B-04): chặn Áp dụng/Lưu khi khổ giấy < 10mm — báo đỏ inline, không im lặng
+                            if (!(Number(w) >= 10) || !(Number(h) >= 10)) {
+                                setSizeError(t('imposition.paperSettingsUI:kho_giay_toi_thieu_10mm', 'Khổ giấy không hợp lệ — Chiều rộng và Chiều cao tối thiểu 10 mm.'));
+                                return;
+                            }
                             if (isEditing) {
                                 onUpdatePreset(currentFormsize, presetName, w, h, mT, mB, mL, mR, mMode, primaryClassification, gripper, usages);
                             } else {

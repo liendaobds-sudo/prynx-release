@@ -88,6 +88,28 @@ export interface Panel {
         center: Point2D;
     };
 }
+/** Pose 3D của mảnh chuyển động ở cuối giai đoạn lồng/chụp hai mảnh. */
+export interface DielineNesting {
+    /** Vector tịnh tiến cuối trong hệ tọa độ khuôn đã gấp (mm). */
+    x: number;
+    y: number;
+    z: number;
+    /** Góc xoay cuối quanh từng trục, dùng độ để đồng nhất với `Panel.foldAngle`. */
+    rotationDeg?: { x: number; y: number; z: number };
+    /** Tâm xoay trong hệ tọa độ phẳng toàn cục của khuôn (mm). */
+    pivot?: { x: number; y: number; z: number };
+    /** Choreography tùy chọn cho mảnh cần lắp theo nhiều pha (Double Tray). */
+    choreography?: {
+        /** Xoay tại chỗ trước khi nhấc mảnh. */
+        preRotationDeg: { x: number; y: number; z: number };
+        /** Cao độ trung gian khi mảnh di chuyển ngang (mm). */
+        liftZ: number;
+        /** Mốc nội suy trong khoảng 0..1 của pha lồng/chụp. */
+        preRotateEnd: number;
+        liftEnd: number;
+        translateEnd: number;
+    };
+}
 
 /** Mô hình khuôn bế hoàn chỉnh */
 export interface DielineModel {
@@ -114,10 +136,10 @@ export interface DielineModel {
     params: BoxParams;
     /** Cảnh báo về kích thước / khả năng sản xuất */
     warnings?: string[];
-    /** (Chỉ hộp diêm tray+sleeve) Vector tịnh tiến (hệ phẳng-đã-gập) để KHAY
-     *  LỒNG vào VỎ ở cuối hoạt ảnh kéo đóng. Lớp render dồn toàn bộ gập vào
-     *  [0, NEST_START] rồi trượt khay theo vector này trong [NEST_START, 1]. */
-    nesting?: { x: number; y: number; z: number };
+    /** (Chỉ hộp hai mảnh) Pose để mảnh động LỒNG/CHỤP vào mảnh tĩnh ở cuối hoạt ảnh.
+     *  Lớp render dồn toàn bộ gấp vào [0, NEST_START], rồi nội suy pose này trong
+     *  [NEST_START, 1]. Hộp diêm chỉ dùng tịnh tiến; hộp âm dương dùng thêm xoay. */
+    nesting?: DielineNesting;
 }
 
 /** Thông số hộp đầu vào */
@@ -138,8 +160,8 @@ export interface BoxParams {
     TH: number;
     /** Vị trí tai dán: 'left' hoặc 'right', mặc định 'left' */
     glueSide: 'left' | 'right';
-    /** Loại hộp: 'rte' = Reverse Tuck End, 'slb' = Snap-Lock Bottom, 'auto_bottom' = Hộp đáy dán tự động, 'gable' = Gable Box, 'paper_bag' = Túi giấy SOS, 'cup_sleeve' = Bọc ly, 'pizza' = Pizza Box FEFCO 0426, 'envelope' = Bì thư, 'tray' = Hộp diêm / Khay */
-    boxType: 'rte' | 'slb' | 'auto_bottom' | 'gable' | 'paper_bag' | 'cup_sleeve' | 'pizza' | 'envelope' | 'tray';
+    /** Loại hộp: 'rte' = Reverse Tuck End, 'slb' = Snap-Lock Bottom, 'auto_bottom' = Hộp đáy dán tự động, 'gable' = Gable Box, 'paper_bag' = Túi giấy SOS, 'cup_sleeve' = Bọc ly, 'pizza' = Pizza Box FEFCO 0426, 'envelope' = Bì thư, 'tray' = Hộp diêm / Khay, 'double_tray' = Hộp âm dương (khay + nắp chụp), 'hanging_window' = Hộp treo có cửa sổ (nắp gài + tai treo euro) */
+    boxType: 'rte' | 'slb' | 'auto_bottom' | 'gable' | 'paper_bag' | 'cup_sleeve' | 'pizza' | 'envelope' | 'tray' | 'double_tray' | 'hanging_window';
     /** Thứ tự panel: 'WLWL' = Hông→Mặt→Hông→Lưng, 'LWLW' = Mặt→Hông→Lưng→Hông */
     panelOrder: 'WLWL' | 'LWLW';
     /** Chiều cao phần tay cầm vượt khỏi cạnh trên thân hộp (mm), mặc định 40 */
@@ -237,6 +259,30 @@ export interface BoxParams {
      *  Độc lập với dầm khay (G). */
     sleeveGlue: number;
 
+    // ── Double Tray (Hộp âm dương — khay đáy + nắp chụp) params ──
+    // [DOUBLE-TRAY 2026-07-26] Số đo rút từ mẫu 100010-01 (xem DoubleTray.ts).
+    /** Cao thành nắp (mm), 0 = tự động (D + 2T — nắp trùm kín, full telescope) */
+    lidD: number;
+    /** Khe lỏng nắp mỗi bên (mm), mặc định 1.
+     *  Thân nắp = thân đáy + 8·T + 2·lidGap mỗi trục (mẫu đo: +14mm với T=1.5, lidGap=1). */
+    lidGap: number;
+
+    // ── Hanging Window Box (Hộp treo có cửa sổ) params ──
+    // [HANGING-WINDOW 2026-07-27] Thân/đáy/tai bụi giống Reverse Tuck End;
+    // khác ở tai treo euro gập đôi trên mặt sau + cửa sổ trên mặt trước.
+    // Chỉ 3 tham số riêng — lỗ treo euro suy ra từ hằng HGB_* để form gọn.
+    /** Bật/tắt cửa sổ mặt trước (dán màng PVC/PET mặt trong), mặc định bật.
+     *  Công tắc riêng theo tiền lệ `envWindow` của bì thư: WNW = 0 đã mang nghĩa
+     *  "tự động" nên không thể đồng thời mang nghĩa "tắt cửa sổ". */
+    hgbWindow: boolean;
+    /** Rộng cửa sổ mặt trước (mm), 0 = tự động (0.5 × L). Luôn căn giữa mặt trước. */
+    WNW: number;
+    /** Cao cửa sổ mặt trước (mm), 0 = tự động (0.5 × D). Luôn căn giữa mặt trước. */
+    WNH: number;
+    /** Cao MỘT lớp tai treo (mm), 0 = tự động (0.25 × D, kẹp 20–40mm).
+     *  Tai treo gồm 2 lớp gập úp vào nhau nên phần nhô lên khỏi hộp = giá trị này. */
+    HTH: number;
+
     // ── Pizza Box (FEFCO 0426) params ──
     /** Bật/tắt lỗ thông hơi trên nắp */
     pizzaVent: boolean;
@@ -300,6 +346,13 @@ export const DEFAULT_PARAMS: BoxParams = {
     envWindowY: 15,
     trayTongueW: 15,
     sleeveGlue: 15,
+    lidD: 0,
+    lidGap: 1,
+    // [HANGING-WINDOW 2026-07-27] 0 = tự động theo L/D (xem HangingWindowBox.ts)
+    hgbWindow: true,
+    WNW: 0,
+    WNH: 0,
+    HTH: 0,
     pizzaVent: true,
     pizzaVentD: 0,
     pizzaFrontLock: true,

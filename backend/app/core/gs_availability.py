@@ -28,6 +28,10 @@ class GhostscriptUnavailable(RuntimeError):
     """Một đường chạy cần Ghostscript nhưng bản đang chạy không có nó."""
 
 
+class InternalEngineUnsupported(RuntimeError):
+    """Engine nội bộ từ chối file có chủ đích để không giao bản in sai."""
+
+
 MARKER_NAME = "NO_GHOSTSCRIPT.txt"
 
 
@@ -73,22 +77,21 @@ def is_no_gs_build() -> bool:
 
 
 def unavailable_message(operation: str | None = None) -> str:
-    """Câu giải thích ở mức sản phẩm, không phải mã lỗi của công cụ ngoài.
+    """Thông điệp tương thích cho call site legacy; sản phẩm luôn no-GS."""
+    return unsupported_message(operation)
 
-    Người dùng là thợ chế bản, không phải người vận hành Ghostscript: họ cần biết
-    thao tác nào không xong và làm gì tiếp, chứ không cần chuỗi `Ghostscript failed:`.
+def unsupported_message(operation: str | None = None) -> str:
+    """Thông điệp fail-closed của sản phẩm no-GS, không giả là lỗi cài đặt.
+
+    GS-SUNSET (audit 2026-07-28 §3.2): bản no-GS phải từ chối ngay khi engine
+    nội bộ không bảo toàn được file. Nếu vẫn gọi runner GS rồi mới báo thiếu,
+    telemetry và UI đều hiểu nhầm đây là phụ thuộc runtime thay vì một giới hạn
+    sản phẩm đã công bố.
     """
     what = f"“{operation}”" if operation else "Thao tác này"
-    if is_no_gs_build():
-        return (
-            f"{what} chưa xử lý được bằng engine nội bộ (PrynX Print Engine) cho "
-            "file này, và bản PrynX đang chạy không đóng gói Ghostscript. Tác vụ đã "
-            "dừng thay vì giao ra bản in có thể sai. Cách xử lý: xuất lại file nguồn "
-            "đơn giản hơn (nhúng đủ font, giảm hiệu ứng trong suốt), hoặc liên hệ hỗ "
-            "trợ kèm file để bổ sung đường xử lý nội bộ."
-        )
     return (
-        f"{what} cần Ghostscript nhưng không tìm thấy Ghostscript trên máy. Cài "
-        "Ghostscript rồi thử lại, hoặc đặt biến môi trường GHOSTSCRIPT_PATH trỏ tới "
-        "gswin64c.exe."
+        f"{what} chưa xử lý chắc chắn được file này bằng PrynX Print Engine. "
+        "Tác vụ đã dừng an toàn và không tạo file kết quả. Hãy nhúng đủ phông, "
+        "giảm hiệu ứng hoặc xuất lại PDF nguồn đơn giản hơn; nếu file vẫn bị từ "
+        "chối, hãy gửi file cho bộ phận hỗ trợ để bổ sung engine nội bộ."
     )

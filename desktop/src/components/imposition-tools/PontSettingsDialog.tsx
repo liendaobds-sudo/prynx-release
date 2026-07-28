@@ -61,7 +61,11 @@ export const PontSettingsDialog = ({
             if (savedPresets) {
                 try {
                     setPresets(JSON.parse(savedPresets));
-                } catch (e) {}
+                } catch (e) {
+                    // UIUX (audit 2026-07-27 §D-14)
+                    // nuốt chủ đích: dữ liệu preset trong localStorage hỏng định dạng khi mở dialog —
+                    // không phải thao tác user chủ động, bỏ qua và coi như chưa có mẫu lưu (không toast).
+                }
             }
         }
     }, [isOpen, config]);

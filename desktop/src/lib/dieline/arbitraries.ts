@@ -84,8 +84,8 @@ function buildValid(boxType: GeneratorBoxType, partial: Partial<BoxParams>): Box
 /**
  * Sinh `BoxParams` hợp lệ cho một loại hộp cụ thể.
  *
- * @param boxType Một trong 9 loại: rte | slb | auto_bottom | gable |
- *                paper_bag | cup_sleeve | pizza | envelope | tray
+ * @param boxType Một trong 10 loại: rte | slb | auto_bottom | gable |
+ *                paper_bag | cup_sleeve | pizza | envelope | tray | double_tray
  * @returns fast-check Arbitrary<BoxParams> đã đi qua validateParams
  */
 export function arbBoxParams(boxType: GeneratorBoxType): fc.Arbitrary<BoxParams> {
@@ -242,6 +242,77 @@ export function arbBoxParams(boxType: GeneratorBoxType): fc.Arbitrary<BoxParams>
                         TH: r.TH,
                         trayTongueW: r.trayTongueW,
                         sleeveGlue: r.sleeveGlue,
+                    }),
+                );
+        }
+
+        case 'double_tray': {
+            // Hộp âm dương cho phép W > L; phủ lidD auto (0) & tùy chỉnh,
+            // lidGap 0–5 (thiên về mặc định 1). [DOUBLE-TRAY 2026-07-26]
+            return fc
+                .record({
+                    lw: arbLW(30, 600, 15, 400, true),
+                    D: arbBiasedInt(10, 200),
+                    T: arbT(),
+                    C: arbT(),
+                    G: arbBiasedInt(5, 30),
+                    TH: arbBiasedInt(5, 40),
+                    lidD: arbAutoSize(10, 200),
+                    lidGap: fc.oneof(
+                        { weight: 2, arbitrary: fc.constant(1) },
+                        { weight: 1, arbitrary: fc.integer({ min: 0, max: 5 }) },
+                    ),
+                })
+                .map(r =>
+                    buildValid('double_tray', {
+                        L: r.lw.L,
+                        W: r.lw.W,
+                        D: r.D,
+                        T: r.T,
+                        C: r.C,
+                        G: r.G,
+                        TH: r.TH,
+                        lidD: r.lidD,
+                        lidGap: r.lidGap,
+                    }),
+                );
+        }
+
+        case 'hanging_window': {
+            // [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ — dải kích thước
+            // thực tế của hàng điện tử treo kệ (mẫu Dacdora L80×W30×D140).
+            // WNW/WNH/HTH phủ cả giá trị 0 (= tự động suy theo L/D) và
+            // `hgbWindow` phủ cả hai nhánh bật/tắt cửa sổ.
+            return fc
+                .record({
+                    lw: arbLW(40, 200, 15, 80, false),
+                    D: arbBiasedInt(60, 300),
+                    T: arbT(),
+                    C: arbT(),
+                    G: arbBiasedInt(8, 25),
+                    TH: arbBiasedInt(8, 30),
+                    WNW: arbAutoSize(10, 200),
+                    WNH: arbAutoSize(10, 300),
+                    HTH: arbAutoSize(8, 40),
+                    hgbWindow: fc.boolean(),
+                    panelOrder: fc.constantFrom('WLWL', 'LWLW') as fc.Arbitrary<BoxParams['panelOrder']>,
+                    glueSide: fc.constantFrom('left', 'right') as fc.Arbitrary<BoxParams['glueSide']>,
+                })
+                .map(r =>
+                    buildValid('hanging_window', {
+                        L: r.lw.L,
+                        W: r.lw.W,
+                        D: r.D,
+                        T: r.T,
+                        C: r.C,
+                        G: r.G,
+                        TH: r.TH,
+                        WNW: r.WNW,
+                        WNH: r.WNH,
+                        HTH: r.HTH,
+                        hgbWindow: r.hgbWindow,
+                        panelOrder: r.panelOrder,
+                        glueSide: r.glueSide,
                     }),
                 );
         }

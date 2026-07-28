@@ -76,7 +76,8 @@ export default function RecentFilesGrid({ onOpenFile, active = true }: Props) {
         
         onOpenFile(fileObj);
       } catch (err) {
-        toast.error('File might have been moved or deleted:\n' + rf.path);
+        // UIUX (audit 2026-07-27 §D-13): câu Việt qua i18n thay chuỗi tiếng Anh hardcode
+        toast.error(t('misc.recentFilesGrid:file_da_di_chuyen', 'File không còn ở vị trí cũ (có thể đã bị di chuyển hoặc xóa):') + '\n' + rf.path);
         removeFile(rf.path);
       }
     }

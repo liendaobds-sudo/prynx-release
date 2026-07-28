@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { reduceWheelNav, createWheelNavState } from './wheelPageNav';
+import { toast } from '../../components/ui/Toast';
+import i18n from '../../i18n';
 
 // Padding hàng trang (AcrobatViewer): L/R 24+24, T/B 32+32, gap 12 giữa 2 trang.
 // SAFETY: scrollbar-gutter both-edges + subpixel — zoom sát 100% khung → tràn 1–2px
@@ -105,15 +107,37 @@ export function useViewerZoom(props: UseViewerZoomProps) {
         return Math.min(zoomW, zoomH);
     }, [actualWidth100, pageDim, pageDisplayMode, getScrollViewport]);
 
+    // UIUX (audit 2026-07-27 §C-02) fix-verify: với trang KHỔ NGANG (tờ bình), zoom
+    // vừa-ngang == vừa-trọn-trang (chiều ngang chạm giới hạn trước), và khi mở file app
+    // đã fit sẵn — bấm nút là "đúng nhưng vô hình", user tưởng nút chết. Khi zoom đích
+    // trùng zoom hiện tại (chênh <0.5%) → toast nhẹ xác nhận thay vì im lặng.
+    const fitNoopToastAtRef = useRef(0);
+    const notifyFitNoop = useCallback((msgKey: string, msgDefault: string) => {
+        const now = Date.now();
+        if (now - fitNoopToastAtRef.current < 1500) return;
+        fitNoopToastAtRef.current = now;
+        toast.info(i18n.t(msgKey, { defaultValue: msgDefault }));
+    }, []);
+
     const applyFitWidth = useCallback(() => {
-        setZoom(calcFitWidthZoom());
+        const target = calcFitWidthZoom();
+        const prev = currentZoomRef.current;
+        setZoom(target);
         setFitMode('width');
-    }, [calcFitWidthZoom, setZoom, setFitMode]);
+        if (Math.abs(target - prev) / Math.max(prev, 0.0001) < 0.005) {
+            notifyFitNoop('misc.acrobatViewer:da_vua_chieu_ngang', 'Trang đã vừa khít chiều ngang ở mức thu phóng hiện tại');
+        }
+    }, [calcFitWidthZoom, setZoom, setFitMode, notifyFitNoop]);
 
     const applyFitPage = useCallback(() => {
-        setZoom(calcFitPageZoom());
+        const target = calcFitPageZoom();
+        const prev = currentZoomRef.current;
+        setZoom(target);
         setFitMode('page');
-    }, [calcFitPageZoom, setZoom, setFitMode]);
+        if (Math.abs(target - prev) / Math.max(prev, 0.0001) < 0.005) {
+            notifyFitNoop('misc.acrobatViewer:da_vua_tron_trang', 'Trang đã vừa trọn màn hình ở mức thu phóng hiện tại');
+        }
+    }, [calcFitPageZoom, setZoom, setFitMode, notifyFitNoop]);
 
     // ═══ Auto-zoom on fitMode / container resize ═══
     useEffect(() => {
@@ -131,21 +155,32 @@ export function useViewerZoom(props: UseViewerZoomProps) {
         }
     }, [mainWidth, mainHeight, fitMode, actualWidth100, pageDim, pageDisplayMode, calcFitWidthZoom, calcFitPageZoom]);
 
-    // Sau fit: nếu vẫn tràn nhẹ → căn giữa (tránh dính góc trên-trái do `safe center`).
-    // Nếu vừa khít → scroll 0 (không cần pan).
+    // Sau fit: căn giữa THEO TRANG ĐANG XEM (anchor #pdf-page-container-N), không theo
+    // tổng scrollWidth/Height. UIUX (audit 2026-07-27 §C-02) fix-verify: cách cũ
+    // scrollLeft/Top = max/2 căn tâm của KHỐI NỘI DUNG TỔNG — ở chế độ xem-một-trang
+    // các trang đã ghé thăm vẫn mounted (ẩn) phình scrollWidth → trang thật bị đẩy
+    // lệch trái chui dưới thước/cột thumbnail; ở chế độ cuộn dọc max/2 còn nhảy tới
+    // GIỮA tài liệu. Căn theo anchor thì đúng mọi chế độ; thiếu anchor → chỉ căn
+    // ngang, tuyệt đối không đụng scrollTop.
     useLayoutEffect(() => {
         if (fitMode !== 'width' && fitMode !== 'page' && fitMode !== 'smart') return;
         const el = internalScrollRef.current;
         if (!el) return;
         // Đợi layout áp dụng width trang sau setZoom
         const id = requestAnimationFrame(() => {
-            const maxL = el.scrollWidth - el.clientWidth;
-            const maxT = el.scrollHeight - el.clientHeight;
-            el.scrollLeft = maxL > 1 ? maxL / 2 : 0;
-            el.scrollTop = maxT > 1 ? maxT / 2 : 0;
+            const anchor = el.querySelector<HTMLElement>(`#pdf-page-container-${activePage}`);
+            if (anchor) {
+                const er = el.getBoundingClientRect();
+                const ar = anchor.getBoundingClientRect();
+                el.scrollLeft += (ar.left + ar.width / 2) - (er.left + er.width / 2);
+                el.scrollTop += (ar.top + ar.height / 2) - (er.top + er.height / 2);
+            } else {
+                const maxL = el.scrollWidth - el.clientWidth;
+                el.scrollLeft = maxL > 1 ? maxL / 2 : 0;
+            }
         });
         return () => cancelAnimationFrame(id);
-    }, [zoom, fitMode, internalScrollRef]);
+    }, [zoom, fitMode, internalScrollRef, activePage]);
 
     // ═══ Fallback measurement when numPages changes ═══
     useEffect(() => {

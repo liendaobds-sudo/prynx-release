@@ -5,6 +5,8 @@ import { FontSelector } from './FontSelector';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { formatPageNumber, applyTokens, effectiveLR, NUMBER_STYLES, type NumberStyle } from '../../lib/stampFormat';
+import { toast } from '../ui/Toast'; // UIUX (audit 2026-07-27 §D-14)
+import { formatError } from '../../lib/errorMessages'; // UIUX (audit 2026-07-27 §D-14)
 import { useTranslation } from 'react-i18next';
 
 interface Props {
@@ -102,6 +104,8 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
                     font = await doc.embedFont(fontBytes);
                 } catch (e) {
                     console.error("Failed to load custom font", e);
+                    // UIUX (audit 2026-07-27 §D-14): báo user file xuất sẽ khác font (GIỮ fallback, không chặn)
+                    toast.error(formatError(e, t('preprocess.stickTextNumber:khong_nap_duoc_font_tuy_chinh', 'Không nạp được font tùy chỉnh — đang dùng font thay thế')));
                 }
             }
 
@@ -119,6 +123,8 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
                     }
                 } catch (e) {
                     console.error("Failed to load bundled Unicode font", e);
+                    // UIUX (audit 2026-07-27 §D-14): báo user font Unicode kèm app không nạp được (GIỮ fallback)
+                    toast.error(formatError(e, t('preprocess.stickTextNumber:khong_nap_duoc_font_unicode', 'Không nạp được font Unicode kèm ứng dụng — đang dùng font thay thế')));
                 }
             }
 

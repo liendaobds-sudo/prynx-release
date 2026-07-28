@@ -345,6 +345,10 @@ pub fn ppe_softproof(
 ///       "glyph_index": int, "fill": bool, "stroke": bool, "clip": bool,
 ///       "line_width": float, "verbs": bytes, "coords": [float, ...] }, ...
 ///   ],
+///   "blocks": [                     # hợp đồng đồng bộ chỉ số theo SỐ LƯỢNG mã ký tự
+///     { "stream": "page" | [obj, gen], "text_object_index": int,
+///       "code_count": int }, ...    # đếm cả dấu cách và `Tr 3`
+///   ],
 ///   "has_type3": bool,              # glyph là content stream ⇒ không outline được
 ///   "has_unsupported_context": bool # chữ trong soft mask / tiling pattern / form vô danh
 ///   "missing_glyphs": int,          # tra không ra đường viền ⇒ chữ sẽ MẤT
@@ -418,9 +422,26 @@ pub fn ppe_text_outlines(
         glyphs.append(item)?;
     }
 
+    // Số mã ký tự của từng khối `BT … ET`. Đây là hợp đồng để lớp ghi PDF đối chiếu
+    // bằng SỐ LƯỢNG: khớp số ⇒ chỉ số hai bên khớp theo cấu trúc, không phụ thuộc
+    // glyph to hay nhỏ (chốt hình học cũ bỏ sót dấu chấm 12pt vì nó chỉ 9 px mực).
+    let blocks = PyList::empty(py);
+    for b in &report.blocks {
+        let item = PyDict::new(py);
+        match b.stream {
+            StreamKey::Page => item.set_item("stream", "page")?,
+            StreamKey::Form(id, gen) => item.set_item("stream", (id, gen))?,
+            StreamKey::Unaddressable => item.set_item("stream", "unaddressable")?,
+        }
+        item.set_item("text_object_index", b.text_object_index)?;
+        item.set_item("code_count", b.code_count)?;
+        blocks.append(item)?;
+    }
+
     let out = PyDict::new(py);
     out.set_item("engine", "ppe")?;
     out.set_item("glyphs", glyphs)?;
+    out.set_item("blocks", blocks)?;
     out.set_item("has_type3", report.has_type3)?;
     out.set_item("has_unsupported_context", report.has_unsupported_context)?;
     out.set_item("missing_glyphs", report.missing_glyphs)?;

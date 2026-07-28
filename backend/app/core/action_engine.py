@@ -24,6 +24,10 @@ from pathlib import Path
 import pikepdf
 
 from app.config import settings
+from app.core.gs_availability import (
+    InternalEngineUnsupported,
+    unsupported_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +196,10 @@ class ActionEngine:
         stem = Path(original_name).stem if original_name else Path(pdf_path).stem
         output_name = f"{stem}_{action_id}_{uuid.uuid4().hex[:6]}.pdf"
         output_path = str(self.output_dir / output_name)
-        params = params or {}
+        params = dict(params or {})
+        # GS-SUNSET (audit 2026-07-28 §3.7): input API cũ không được phép
+        # đổi engine; bỏ khóa trước khi bất kỳ handler nào đọc nó.
+        params.pop("force_gs", None)
 
         start = datetime.now()
         try:
@@ -248,6 +255,27 @@ class ActionEngine:
                 success=success,
                 output_path=output_path if success else None,
                 log=[log_entry],
+            )
+
+        except InternalEngineUnsupported as exc:
+            # GS-SUNSET (audit 2026-07-28 §3.2): đây là REFUSED có chủ đích,
+            # không phải lỗi hệ thống. Xoá mọi output dở để API không bao giờ
+            # giao nhầm file của lần thử native vừa thất bại.
+            try:
+                if os.path.isfile(output_path):
+                    os.remove(output_path)
+            except OSError:
+                pass
+            duration = int((datetime.now() - start).total_seconds() * 1000)
+            message = str(exc)
+            logger.info("Action %s dừng an toàn: %s", action_id, message)
+            return ActionResult(
+                success=False,
+                error=message,
+                log=[ActionLogEntry(
+                    action_id=action_id, status="refused",
+                    message=message, duration_ms=duration, engine="none",
+                )],
             )
 
         except Exception as e:
@@ -1192,41 +1220,14 @@ class ActionEngine:
     # ────────────────────────────────────────────────────────
 
     async def _run_gs(self, cmd: list[str], action_name: str) -> bool:
-        """Run a Ghostscript command asynchronously (Windows-compatible)."""
-        import subprocess
-        from app.utils.subprocess_utils import run_hidden
-        logger.info(f"GS [{action_name}]: {' '.join(cmd[:6])}...")
-
-        def _run_sync():
-            return run_hidden(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=300,  # 5 min max
-                # Khai tên action cho bộ đếm §8.1: dò ngăn xếp chỉ ra được
-                # `_run_sync`, còn thứ cần biết là action nào chưa rời GS.
-                gs_reason=f"action:{action_name}",
+        """Từ chối cố định mọi nhánh Ghostscript còn sót trong action legacy."""
+        # GS-SUNSET (audit 2026-07-28 §3.7): không đọc cấu hình và không gọi
+        # subprocess; dev, test và release có cùng một hành vi fail-closed.
+        raise InternalEngineUnsupported(
+            unsupported_message(
+                AVAILABLE_ACTIONS.get(action_name, {}).get("title") or action_name
             )
-
-        try:
-            result = await asyncio.to_thread(_run_sync)
-
-            if result.returncode != 0:
-                err = result.stderr.decode("utf-8", errors="ignore").strip()
-                if not err:
-                    err = result.stdout.decode("utf-8", errors="ignore").strip()
-                raise RuntimeError(f"Lỗi hệ thống khi xử lý (mã {result.returncode}): {err[:500]}")
-
-            logger.info(f"GS [{action_name}]: Success")
-            return True
-
-        except FileNotFoundError:
-            raise RuntimeError(
-                f"Lỗi: Không tìm thấy module xử lý đồ họa lõi. "
-                "Vui lòng liên hệ kỹ thuật viên để cài đặt bổ sung thư viện nền tảng."
-            )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(f"Hệ thống xử lý quá hạn (>5 phút) cho thao tác {action_name}")
+        )
 
     @staticmethod
     def get_available_actions() -> dict:

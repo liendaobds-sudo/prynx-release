@@ -95,25 +95,21 @@ def test_run_hidden_explains_instead_of_file_not_found(monkeypatch, style, tmp_p
     assert "PrynX" in text or "Ghostscript" in text
 
 
-def test_bare_name_resolvable_on_path_is_not_blocked(monkeypatch):
-    """Máy có Ghostscript trên PATH: lệnh tên trần vẫn phải chạy.
-
-    `os.path.isfile("gswin64c.exe")` trả False cho tên trần, nên guard phải tra PATH.
-    Không tra thì bản có bundle GS bị chặn oan đúng ở cấu hình phổ biến nhất.
-    """
-    import shutil
-
-    if shutil.which("gswin64c") is None:
-        pytest.skip("máy này không có Ghostscript trên PATH")
+def test_bare_name_on_path_is_still_blocked(monkeypatch):
+    """GS cài trên PATH cũng không được làm thay đổi hành vi sản phẩm."""
     from app.config import settings
     from app.utils import subprocess_utils
 
     monkeypatch.setattr(settings, "GHOSTSCRIPT_PATH", "gswin64c.exe")
+    calls = []
     monkeypatch.setattr(
-        subprocess_utils.subprocess, "run", lambda cmd, **kw: "ok"
+        subprocess_utils.subprocess,
+        "run",
+        lambda cmd, **kw: calls.append(cmd) or "ok",
     )
-    assert subprocess_utils.run_hidden(["gswin64c.exe", "--version"]) == "ok"
-
+    with pytest.raises(GhostscriptUnavailable):
+        subprocess_utils.run_hidden(["gswin64c.exe", "--version"])
+    assert calls == []
 
 def test_configured_but_missing_path_is_reported_as_unavailable(monkeypatch, tmp_path):
     """Đường dẫn cấu hình sai không mang tên gs vẫn phải nhận đúng thông điệp."""
@@ -134,11 +130,12 @@ def test_other_external_tools_keep_their_own_error(monkeypatch, tmp_path):
         run_hidden([str(tmp_path / "pdftoppm.exe")], capture_output=True, timeout=5)
 
 
-def test_message_differs_between_no_gs_build_and_missing_install(monkeypatch):
+def test_message_is_identical_in_dev_and_packaged_build(monkeypatch):
     monkeypatch.setenv("PRYNX_NO_GS_BUILD", "1")
     packaged = gs_availability.unavailable_message("Outline Text")
     monkeypatch.setenv("PRYNX_NO_GS_BUILD", "0")
     dev = gs_availability.unavailable_message("Outline Text")
-    assert "Outline Text" in packaged and "Outline Text" in dev
-    assert "GHOSTSCRIPT_PATH" in dev
+    assert packaged == dev
+    assert "Outline Text" in packaged
     assert "GHOSTSCRIPT_PATH" not in packaged
+    assert "Ghostscript" not in packaged

@@ -15,6 +15,7 @@ import { generateGableBox } from '../../dieline/GableBox';
 import { generatePaperBag } from '../../dieline/PaperBag';
 import { generatePizzaBox } from '../../dieline/PizzaBox';
 import { generateMatchboxTray } from '../../dieline/MatchboxTray';
+import { generateDoubleTray } from '../../dieline/DoubleTray';
 import { DEFAULT_PARAMS, type BoxParams, type DielineModel, type Panel } from '../../dieline/types';
 import { applyFoldCompensation } from '../foldCompensation';
 
@@ -54,6 +55,9 @@ function structuralPanels(model: DielineModel): Panel[] {
         if (model.params.boxType === 'tray') {
             if (/_(beam|sec|tab)$/.test(p.name)) return false;
         }
+        // [AUTO-BOTTOM FIX 2026-07-27] Tam giác dán gập 180° vào trong để
+        // áp lên tai hông; đây không phải mặt cấu trúc phải hướng ảnh in ra ngoài.
+        if (model.params.boxType === 'auto_bottom' && p.name.startsWith('bottom_tab_')) return false;
         return true;
     });
 }
@@ -127,6 +131,39 @@ describe('foldPrintOutward — physical print face points outside after full fol
         const model = generateAutoBottomBox(makeParams({ boxType: 'auto_bottom' }));
         const r = evaluateOutward(model);
         expect(r.inverted, `inverted: ${r.inverted.join(', ')}`).toEqual([]);
+    });
+
+    it('Auto-bottom glue tabs intentionally turn inward 180° against their parent panel', () => {
+        const model = generateAutoBottomBox(makeParams({ boxType: 'auto_bottom' }));
+        const { depthMap, maxD } = buildDepthMap(model.panels);
+
+        for (const side of ['front', 'back'] as const) {
+            const main = model.panels.find((panel) => panel.name === `bottom_main_${side}`)!;
+            const tab = model.panels.find((panel) => panel.name === `bottom_tab_${side}`)!;
+            const mainFold = applyFoldCompensation(
+                main,
+                model.panels,
+                1,
+                depthMap,
+                maxD,
+                model.params.T,
+            );
+            const tabFold = applyFoldCompensation(
+                tab,
+                model.panels,
+                1,
+                depthMap,
+                maxD,
+                model.params.T,
+            );
+            const mainNormal = new THREE.Vector3(0, 0, 1).transformDirection(mainFold.matrix);
+            const tabNormal = new THREE.Vector3(0, 0, 1).transformDirection(tabFold.matrix);
+
+            expect(
+                tabNormal.dot(mainNormal),
+                `${tab.name} phải úp mặt in vào panel cha để tạo vùng dán`,
+            ).toBeLessThan(-0.999);
+        }
     });
 
     it('SLB structural panels: print outward', () => {
@@ -245,5 +282,126 @@ describe('foldPrintOutward — physical print face points outside after full fol
         const r = evaluateOutward(sleeveOnly);
         expect(r.inverted, `inverted: ${r.inverted.join(', ')}`).toEqual([]);
         expect(r.ok.length).toBeGreaterThan(0);
+    });
+
+    it('Double Tray lid flips 180 degrees around its root center and closes over the base', () => {
+        const model = generateDoubleTray(
+            makeParams({
+                boxType: 'double_tray',
+                L: 361,
+                W: 261,
+                D: 52,
+                T: 1.5,
+                C: 1,
+                G: 5,
+                TH: 15,
+                lidD: 0,
+                lidGap: 1,
+            }),
+        );
+        const nesting = model.nesting!;
+        const base = model.panels.find((panel) => panel.name === 'base_bottom')!;
+        const lid = model.panels.find((panel) => panel.name === 'lid_bottom')!;
+        const centerOf = (panel: Panel) => {
+            const outline = panel.outline!;
+            return new THREE.Vector3(
+                outline.reduce((sum, point) => sum + point.x, 0) / outline.length,
+                outline.reduce((sum, point) => sum + point.y, 0) / outline.length,
+                0,
+            );
+        };
+        const baseCenter = centerOf(base);
+        const lidCenter = centerOf(lid);
+        const pivot = nesting.pivot!;
+        const rotationDeg = nesting.rotationDeg!;
+        const choreography = nesting.choreography!;
+        // Nắp lật một lần quanh trục ngang tại tâm; không xoay phẳng như cái đĩa.
+        expect(rotationDeg.y).toBe(0);
+        expect(choreography.preRotationDeg.y).toBe(-180);
+        expect(choreography.preRotationDeg.z).toBe(0);
+        expect(choreography.liftZ).toBeGreaterThan(nesting.z);
+        expect(choreography.preRotateEnd).toBeLessThan(choreography.liftEnd);
+        expect(choreography.liftEnd).toBeLessThan(choreography.translateEnd);
+        const flipQuaternion = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+            THREE.MathUtils.degToRad(rotationDeg.x),
+            THREE.MathUtils.degToRad(rotationDeg.y),
+            THREE.MathUtils.degToRad(rotationDeg.z),
+        ));
+        const preQuaternion = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+            THREE.MathUtils.degToRad(choreography.preRotationDeg.x),
+            THREE.MathUtils.degToRad(choreography.preRotationDeg.y),
+            THREE.MathUtils.degToRad(choreography.preRotationDeg.z),
+        ));
+        const pose = new THREE.Matrix4()
+            .makeTranslation(
+                pivot.x + nesting.x,
+                pivot.y + nesting.y,
+                pivot.z + nesting.z,
+            )
+            .multiply(new THREE.Matrix4().makeRotationFromQuaternion(preQuaternion.multiply(flipQuaternion)))
+            .multiply(new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z));
+
+        const closedLidCenter = lidCenter.clone().applyMatrix4(pose);
+        expect(closedLidCenter.x).toBeCloseTo(baseCenter.x, 6);
+        expect(closedLidCenter.y).toBeCloseTo(baseCenter.y, 6);
+        expect(closedLidCenter.z).toBeCloseTo(nesting.z, 6);
+
+        const lidRootNormal = new THREE.Vector3(0, 0, 1).transformDirection(pose);
+        expect(lidRootNormal.z).toBeLessThan(-0.999);
+    });
+
+    it('Double Tray base and lid walls both fold outward before the lid pose is applied', () => {
+        const model = generateDoubleTray(
+            makeParams({
+                boxType: 'double_tray',
+                L: 361,
+                W: 261,
+                D: 52,
+                T: 1.5,
+                C: 1,
+                G: 5,
+                TH: 15,
+                lidD: 0,
+                lidGap: 1,
+            }),
+        );
+        const { depthMap, maxD } = buildDepthMap(model.panels);
+
+        for (const prefix of ['base', 'lid'] as const) {
+            const root = model.panels.find((panel) => panel.name === `${prefix}_bottom`)!;
+            const rootOutline = root.outline!;
+            const rootCenter = new THREE.Vector3(
+                rootOutline.reduce((sum, point) => sum + point.x, 0) / rootOutline.length,
+                rootOutline.reduce((sum, point) => sum + point.y, 0) / rootOutline.length,
+                0,
+            );
+
+            for (const side of ['front', 'back', 'left', 'right'] as const) {
+                const panel = model.panels.find(
+                    (candidate) => candidate.name === `${prefix}_${side}_wall`,
+                )!;
+                const outline = panel.outline!;
+                const localCenter = new THREE.Vector3(
+                    outline.reduce((sum, point) => sum + point.x, 0) / outline.length,
+                    outline.reduce((sum, point) => sum + point.y, 0) / outline.length,
+                    0,
+                );
+                const fold = applyFoldCompensation(
+                    panel,
+                    model.panels,
+                    1,
+                    depthMap,
+                    maxD,
+                    model.params.T,
+                );
+                const wallCenter = localCenter.applyMatrix4(fold.matrix);
+                const radial = wallCenter.clone().sub(rootCenter).setZ(0).normalize();
+                const outerNormal = new THREE.Vector3(0, 0, -1).transformDirection(fold.matrix);
+                expect(
+                    outerNormal.dot(radial),
+                    `${panel.name} phải hướng mặt ngoài ra khỏi lòng khay`,
+                ).toBeGreaterThan(0.99);
+            }
+        }
     });
 });

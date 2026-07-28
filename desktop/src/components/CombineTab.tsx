@@ -1116,7 +1116,8 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
             onClick={() => fileInputRef.current?.click()}
             className="flex items-center gap-2 px-4 py-2 bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-slate-700 dark:text-zinc-200 rounded-md transition-colors text-sm font-medium"
           >
-            <span className="text-lg leading-none">+</span> Add Files...
+            {/* UIUX (audit 2026-07-27 §D-18): nhãn tiếng Anh → i18n tiếng Việt */}
+            {t('tabs.combine:them_file', '+ Thêm file...')}
           </button>
           <input 
             type="file" 
@@ -1183,7 +1184,8 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
               ? t('tabs.combine:ghep_tung_nhom_tab_nay_nhom_1_cac_nhom')
               : t('tabs.combine:ghep_tat_ca_thanh_1_file')}
           >
-            {groupByPageSize ? t('tabs.combine:combine_theo_nhom') : 'Combine'}
+            {/* UIUX (audit 2026-07-27 §D-18): nhãn tiếng Anh → i18n tiếng Việt */}
+            {groupByPageSize ? t('tabs.combine:combine_theo_nhom') : t('tabs.combine:ghep_file', 'Ghép file')}
           </button>
         </div>
       </div>
@@ -1195,10 +1197,16 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
         onDragOver={(e) => e.preventDefault()}
       >
         {nodes.length === 0 ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400">
+          <div
+            // UIUX (audit 2026-07-27 §D-18): empty-state click mở dialog thêm file (cùng handler nút '+ Thêm file...')
+            onClick={() => fileInputRef.current?.click()}
+            className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 cursor-pointer"
+          >
             <div className="text-6xl mb-4 opacity-50">📄</div>
             <p className="text-lg font-medium">{t('tabs.combine:chua_co_file_nao_duoc_chon')}</p>
             <p className="text-sm mt-2 opacity-80">{t('tabs.combine:bam_add_files_de_them_pdf_hoac_anh')}</p>
+            {/* UIUX (audit 2026-07-27 §D-18): bổ sung hướng dẫn kéo-thả */}
+            <p className="text-sm mt-1 opacity-80">{t('tabs.combine:hoac_keo_tha_file_pdf_vao_day', 'hoặc kéo-thả file PDF vào đây')}</p>
           </div>
         ) : (
           <div 

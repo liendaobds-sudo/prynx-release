@@ -4,10 +4,15 @@ const NUMERIC_PARAMS: &[&str] = &[
     "L", "W", "D", "T", "C", "G", "TH", "HH", "HW", "HHL", "HFH", "SLW", "SLH",
     "TRW", "SLP", "LTW", "LTH", "DFH", "BF", "HR", "HM", "HS", "cupD1", "cupD2",
     "cupH", "cupCoverage", "envW", "envH", "envFH", "envSF", "envWindowW", "envWindowH",
-    "envWindowX", "envWindowY", "trayTongueW", "sleeveGlue", "pizzaVentD",
+    "envWindowX", "envWindowY", "trayTongueW", "sleeveGlue", "lidD", "lidGap", "pizzaVentD",
+    // [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ: rộng/cao cửa sổ + cao tai treo.
+    // Kèm ABD (chiều sâu đáy dán) trước đây bị bỏ sót khỏi bản sao này.
+    "WNW", "WNH", "HTH", "ABD",
 ];
 const BOOLEAN_PARAMS: &[&str] = &[
     "lockTab", "handleHoles", "envWindow", "pizzaVent", "pizzaFrontLock", "pizzaCornerLock",
+    // [HANGING-WINDOW 2026-07-27] Công tắc cửa sổ mặt trước của hộp treo.
+    "hgbWindow",
 ];
 const STRING_PARAMS: &[&str] = &[
     "glueSide", "boxType", "panelOrder", "handleShape", "handleY", "gableStyle",
@@ -46,7 +51,12 @@ pub fn validate_request_json(request_json: &str) -> Result<Value, String> {
             return Err(format!("params.{key} must be a string"));
         }
     }
-    one_of(params.get("boxType"), "params.boxType", &["rte", "slb", "auto_bottom", "gable", "paper_bag", "cup_sleeve", "pizza", "envelope", "tray"])?;
+    // [HANGING-WINDOW 2026-07-27] Đây là BẢN SAO THỨ BA của allow-list boxType
+    // (sau runtimeValidation.ts và backend/app/api/routes/dieline_validation.py) và
+    // chạy TRƯỚC Boa. Thiếu loại hộp ở đây làm route trả 422 "Không thể tạo khuôn
+    // với thông số này." — thông báo mờ, không chỉ ra tầng nào chặn. Thêm loại hộp
+    // mới phải sửa ĐỦ BA ĐẦU.
+    one_of(params.get("boxType"), "params.boxType", &["rte", "slb", "auto_bottom", "gable", "paper_bag", "cup_sleeve", "pizza", "envelope", "tray", "double_tray", "hanging_window"])?;
     one_of(params.get("glueSide"), "params.glueSide", &["left", "right"])?;
     one_of(params.get("panelOrder"), "params.panelOrder", &["WLWL", "LWLW"])?;
     one_of(params.get("handleShape"), "params.handleShape", &["oval", "roundRect"])?;
@@ -106,5 +116,40 @@ mod tests {
         let mut value: serde_json::Value = serde_json::from_str(valid).unwrap();
         value["includeNesting"] = serde_json::json!("yes");
         assert!(super::validate_request_json(&value.to_string()).is_err());
+    }
+
+    #[test]
+    fn accepts_double_tray() {
+        let valid = include_str!("../tests/fixtures/dieline_default_request.json");
+        let mut value: serde_json::Value = serde_json::from_str(valid).unwrap();
+        value["params"]["boxType"] = serde_json::json!("double_tray");
+        assert!(super::validate_request_json(&value.to_string()).is_ok());
+    }
+
+    /// [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ phải qua được tầng validate
+    /// Rust. Trước khi vá, allow-list ở đây thiếu `hanging_window` nên engine bị
+    /// chặn trước cả khi Boa chạy.
+    #[test]
+    fn accepts_hanging_window() {
+        let valid = include_str!("../tests/fixtures/dieline_default_request.json");
+        let mut value: serde_json::Value = serde_json::from_str(valid).unwrap();
+        value["params"]["boxType"] = serde_json::json!("hanging_window");
+        assert!(super::validate_request_json(&value.to_string()).is_ok());
+    }
+
+    /// Fixture phải mang đủ mọi khoá mới, nếu không NUMERIC/BOOLEAN_PARAMS mở rộng
+    /// sẽ làm mọi request thiếu khoá bị từ chối.
+    #[test]
+    fn fixture_has_hanging_window_params() {
+        let valid = include_str!("../tests/fixtures/dieline_default_request.json");
+        let value: serde_json::Value = serde_json::from_str(valid).unwrap();
+        let params = value["params"].as_object().expect("params object");
+        for key in ["WNW", "WNH", "HTH", "ABD"] {
+            assert!(params.get(key).is_some_and(|v| v.is_number()), "thiếu số {key}");
+        }
+        assert!(
+            params.get("hgbWindow").is_some_and(|v| v.is_boolean()),
+            "thiếu boolean hgbWindow",
+        );
     }
 }

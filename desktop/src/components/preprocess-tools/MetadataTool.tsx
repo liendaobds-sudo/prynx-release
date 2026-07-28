@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { authenticatedFetch, getApiUrl, prepareFileForUpload } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { ToolSectionLabel, ToolInfo } from './ToolUI';
@@ -31,15 +31,16 @@ export default function MetadataTool({ pdfFile, onFileFixed }: Props) {
     const [isProcessing, setIsProcessing] = useState(false);
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
+    const expectedOutputNameRef = useRef<string | null>(null);
 
-    const loadMetadata = async () => {
+    const loadMetadata = async (preserveSuccess = false) => {
         if (!pdfFile) {
             setFields({ ...EMPTY });
             return;
         }
         setIsLoading(true);
         setError('');
-        setSuccess('');
+        if (!preserveSuccess) setSuccess('');
         try {
             const realFile = await prepareFileForUpload((await getWorkingFile()) || pdfFile);
             const formData = new FormData();
@@ -72,7 +73,10 @@ export default function MetadataTool({ pdfFile, onFileFixed }: Props) {
     };
 
     useEffect(() => {
-        loadMetadata();
+        // UIUX (audit 2026-07-28 §PF.1): đọc lại metadata nhưng giữ thông báo của file vừa lưu.
+        const preserveSuccess = expectedOutputNameRef.current === pdfFile?.name;
+        expectedOutputNameRef.current = null;
+        loadMetadata(preserveSuccess);
         // eslint-disable-next-line react-hooks/exhaustive-deps -- reload when file changes
     }, [pdfFile?.name, pdfFile?.size, pdfFile?.lastModified]);
 
@@ -113,7 +117,9 @@ export default function MetadataTool({ pdfFile, onFileFixed }: Props) {
             setSuccess(clearAll ? t('preprocess.metadata:xoa_thanh_cong') : t('preprocess.metadata:luu_thanh_cong'));
             if (clearAll) setFields({ ...EMPTY });
             if (onFileFixed) {
-                onFileFixed(blob, `metadata_${pdfFile.name}`);
+                const outputName = `metadata_${pdfFile.name}`;
+                expectedOutputNameRef.current = outputName;
+                onFileFixed(blob, outputName);
             }
         } catch (e: any) {
             setError(e.message || t('preprocess.metadata:loi_khong_xac_dinh'));
@@ -141,7 +147,7 @@ export default function MetadataTool({ pdfFile, onFileFixed }: Props) {
                     />
                     <button
                         type="button"
-                        onClick={loadMetadata}
+                        onClick={() => loadMetadata()}
                         disabled={!pdfFile || isLoading}
                         className="px-3 py-2 rounded-lg text-[12px] font-bold bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 disabled:opacity-50"
                     >

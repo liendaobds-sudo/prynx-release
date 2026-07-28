@@ -14,7 +14,7 @@
 #    .\build_production.ps1 -SkipPreflightQA # Emergency build without automated QA
 #    .\build_production.ps1 -NoOpenExplorer  # Do not open Explorer after build
 #    .\build_production.ps1 -Version 1.0.0-beta.13  # Bump version before build
-#    .\build_production.ps1 -NoGhostscript   # Build WITHOUT bundling Ghostscript (AGPL)
+#    Ghostscript is never bundled; dev/test/release share one no-GS contract.
 #
 # ============================================================
 
@@ -26,11 +26,15 @@ param(
     [switch]$AllowPlaintextDieline,
     [switch]$SkipPreflightQA,
     [switch]$NoOpenExplorer,
-    # Khong dong goi Ghostscript vao installer.
-    # Ghostscript la AGPL-3.0: dong goi vao san pham closed-source la rui ro ban
-    # quyen. Co nay tao artifact PPE/pikepdf/fontTools KHONG chua AGPL; cac gate
-    # no-GS trong release QA phai xanh truoc khi dong goi.
-    # Cung co the dat bang bien moi truong: PRYNX_BUNDLE_GS=0
+    # GS-SUNSET (audit 2026-07-27 lan 3, muc 3.1): KHONG dong goi Ghostscript la
+    # MAC DINH. Co nay giu lai de moi lenh/script cu van chay, khong con tac dung
+    # doi hanh vi (mac dinh da la no-GS).
+    #
+    # Vi sao dao mac dinh: Ghostscript la AGPL-3.0, dong goi vao san pham
+    # closed-source la rui ro ban quyen. Khi no-GS chi la MOT CO PHAI NHO, moi
+    # duong phat hanh bo sot co do se sinh installer chua AGPL - va do la dung
+    # thu da xay ra: release_update.ps1 / PHAT_HANH.bat / quanly_phathanh.ps1
+    # deu goi build ma khong truyen co nay.
     [switch]$NoGhostscript,
     [ValidateRange(1, 8)]
     [int]$NuitkaJobs = 4,
@@ -84,9 +88,9 @@ function Copy-DirectoryWithRetry {
 }
 
 
-# ---- Optional: bump version from -Version (Build NỘI BỘ / CLI) ----
-# Trước đây chỉ release_update.ps1 ghi version; build nội bộ đọc tauri.conf cũ
-# → gõ 1.0.0-beta.12 vẫn ra installer .11. Ghi UTF-8 không BOM (tránh hỏng JSON).
+# ---- Optional: bump version from -Version (Build NOI BO / CLI) ----
+# Truoc day chi release_update.ps1 ghi version; build noi bo doc tauri.conf cu
+# -> go 1.0.0-beta.12 van ra installer .11. Ghi UTF-8 khong BOM (tranh hong JSON).
 if (-not [string]::IsNullOrWhiteSpace($Version)) {
     $Version = $Version.Trim()
     if ($Version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$') {
@@ -663,8 +667,10 @@ if (Test-Path $gsRoot) {
 $GS_DEST = "$SIDECAR_DIR\gs"
 
 # Quyet dinh co dong goi Ghostscript hay khong.
-$BUNDLE_GS = $true
-if ($NoGhostscript -or $env:PRYNX_BUNDLE_GS -eq "0") { $BUNDLE_GS = $false }
+#
+# GS-SUNSET (audit 2026-07-27 lan 3, muc 3.1): MAC DINH la KHONG dong goi.
+# Dev, test va release dung cung mot artifact no-GS; khong co co/env bat lai.
+$BUNDLE_GS = $false
 
 if (-not $BUNDLE_GS) {
     # Ban KHONG chua AGPL. Phai xoa sach ban copy cu: neu de lai, installer van
@@ -692,7 +698,7 @@ if (-not $BUNDLE_GS) {
         "docs/PRYNX_GS_REPLACEMENT_ENGINE_PLAN.md for the replacement engine (PPE)."
     ) | Set-Content -Path (Join-Path $GS_DEST "NO_GHOSTSCRIPT.txt") -Encoding UTF8
 
-    Write-Host "  Ghostscript NOT bundled (-NoGhostscript)." -ForegroundColor Yellow
+    Write-Host "  Ghostscript NOT bundled (mac dinh tu 2026-07-27)." -ForegroundColor Green
     Write-Host "  Prepress engine: PPE + pikepdf + fontTools (khong fallback GS bundle)." -ForegroundColor Green
     Write-Host "  No-GS regression gate da chay trong release QA." -ForegroundColor Green
     Write-Host "  Luu y: PDF/X van can doi chieu bang validator doc lap truoc khi public release." -ForegroundColor Yellow
@@ -711,10 +717,8 @@ if (-not $BUNDLE_GS) {
     Write-Host "    Dong goi vao installer closed-source la rui ro ban quyen chua giai quyet." -ForegroundColor Yellow
     Write-Host "    Xem THIRD_PARTY_NOTICES.md muc 1 va docs/PRYNX_GS_REPLACEMENT_ENGINE_PLAN.md." -ForegroundColor DarkYellow
 } else {
-    Write-Host "ERROR: Ghostscript not found at $GS_SRC." -ForegroundColor Red
-    Write-Host "  Build nay dang yeu cau bundle Ghostscript cho muc dich legacy/doi chieu." -ForegroundColor Red
-    Write-Host "  Dung -NoGhostscript de tao artifact PPE khong AGPL, hoac cai Ghostscript" -ForegroundColor Yellow
-    Write-Host "  neu ban chu dich tao build legacy/so sanh." -ForegroundColor Yellow
+    Write-Host "ERROR: no-GS invariant was violated in build_production.ps1." -ForegroundColor Red
+    Write-Host "  Build cannot continue because Ghostscript bundling is disabled." -ForegroundColor Yellow
     Write-Host "  Build aborted." -ForegroundColor Red
     exit 1
 }
@@ -903,7 +907,7 @@ if (-not $SkipTauri) {
             "BUILD_EXE_SHA256 = $buildExeHash",
             "SIDECAR_SHA256 = $HASH",
             "FRONTEND_SHA256 = $($env:PRYNX_FRONTEND_HASH)",
-            "CODE_SIGNED    = no (Authenticode chua bat -> runtime khong the tu verify exe)",
+            "CODE_SIGNED    = no (Windows Authenticode not configured; updater .sig is separate)",
             "DIELINE_LOCKED = $(if ($script:DIELINE_LOCKED) { $script:DIELINE_LOCKED } else { 'no' })"
         )
         Set-Content -Path $manifestPath -Value $manifestLines -Encoding ASCII

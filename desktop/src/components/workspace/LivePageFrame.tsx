@@ -1846,6 +1846,9 @@ export const LivePageFrame = (props: any) => {
     // Bắt đầu một thao tác transform (move/resize/rotate) cho object đang chọn.
     // Khử xoay tọa độ chuột để nhất quán với overlay; xóa preview cũ + transform tạm.
     const beginEditInteraction = (e: React.PointerEvent, type: EditInteraction['type'], handle?: EditHandle) => {
+        // UIUX (audit 2026-07-27 §C-01) fix-verify: chỉ chuột trái bắt đầu move/resize/rotate
+        // (PointerEvent cùng field button) — tránh xung đột middle-pan / context menu.
+        if (e.button !== 0) return;
         if (!containerRef.current || !pageDim?.w) return;
         const rect = containerRef.current.getBoundingClientRect();
         // editScale = px màn / POINT (bbox edit ở point). = (displayWidth/px@96) × 96/72.
@@ -2237,6 +2240,9 @@ export const LivePageFrame = (props: any) => {
     };
 
     const handleMouseDown = (e: React.MouseEvent) => {
+        // UIUX (audit 2026-07-27 §C-01) fix-verify: chỉ chuột trái — chuột giữa dành cho
+        // middle-pan của AcrobatViewer, chuột phải cho context menu (tránh giành sự kiện).
+        if (e.button !== 0) return;
         if ((!isObjectEditMode && !isVdpMode && !isCropMode) || !containerRef.current) return;
         if (isCropMode && cropSelection?.ownerId !== cropOwnerId) {
             setCropSelection({
@@ -2300,6 +2306,8 @@ export const LivePageFrame = (props: any) => {
     };
 
     const handleMouseUp = (e: React.MouseEvent) => {
+        // UIUX (audit 2026-07-27 §C-01) fix-verify: chỉ chuột trái (khớp guard handleMouseDown).
+        if (e.button !== 0) return;
         // Edit drag kết thúc ở window pointerup (useEffect) — không commit ở đây
         // để tránh double-commit khi vừa pointerup vừa mouseup.
         if (editInteraction) {
@@ -2519,6 +2527,9 @@ export const LivePageFrame = (props: any) => {
     }, [editInteraction]);
 
     const handleMouseLeave = () => {
+        // UIUX (audit 2026-07-27 §C-03) fix-verify: chuột rời trang → xoá toạ độ X/Y trên
+        // StatusBar (chỉ clear khi KHÔNG có tương tác kéo — kéo dùng listener window nên giữ).
+        if (!dragRef.current.active && !editInteraction && !vdpInteraction) setHoveredPdfPosition?.(null);
         dragRef.current.active = false;
         // KHÔNG huỷ editInteraction / vdpInteraction khi rời khung: listener window
         // quản lý pointerup → kéo ra ngoài vẫn commit được (tránh "kéo chữ bị mất").
@@ -2598,7 +2609,8 @@ export const LivePageFrame = (props: any) => {
                         <div className="absolute inset-0 flex items-center justify-center bg-slate-50/50 z-0">
                             <div className="flex flex-col items-center opacity-50">
                                 <div className="w-8 h-8 border-4 border-slate-300 border-t-slate-500 rounded-full animate-spin mb-2" />
-                                <span className="text-xs font-semibold text-slate-500 tracking-wider">RENDERING</span>
+                                {/* UIUX (audit 2026-07-27 §C-14): 'RENDERING' hardcode → tiếng Việt qua i18n */}
+                                <span className="text-xs font-semibold text-slate-500 tracking-wider">{t('misc.livePageFrame:dang_dung_hinh', 'ĐANG DỰNG HÌNH')}</span>
                             </div>
                         </div>
                         <div className="absolute inset-0 z-10">
@@ -2740,15 +2752,27 @@ export const LivePageFrame = (props: any) => {
                  </div>
              )}
              {bleedView?.show && (
-                 <div 
-                     className="absolute inset-0 pointer-events-none z-[60]" 
-                     style={{ 
+                 <div
+                     className="absolute inset-0 pointer-events-none z-[60]"
+                     style={{
                          borderWidth: `${bleedView.mm * (96 / 25.4) * zoom}px`,
                          borderColor: 'rgba(239, 68, 68, 0.4)',
                          borderStyle: 'solid',
                          boxSizing: 'border-box'
                      }}
-                 />
+                 >
+                     {/* UIUX (audit 2026-07-27 §C-06): nhãn cho biết viền đỏ là vùng bleed + giá trị mm.
+                         Chỉ hiện khi zoom đủ lớn (viền dày ≥ ~5px) để không lấn trang lúc thu nhỏ.
+                         Cùng RGB đỏ overlay, alpha đậm hơn cho chữ trắng 9px đọc được. */}
+                     {bleedView.mm * (96 / 25.4) * zoom >= 5 && (
+                         <span
+                             className="absolute top-0 left-0 pointer-events-none text-[9px] leading-none text-white font-semibold px-1 py-0.5 rounded-br-sm"
+                             style={{ background: 'rgba(239, 68, 68, 0.75)' }}
+                         >
+                             Bleed <span className="num">{bleedView.mm}</span> mm
+                         </span>
+                     )}
+                 </div>
              )}
              
              {highlightBoxes && highlightBoxes.map((box: any, idx: number) => {
@@ -3478,7 +3502,9 @@ export const LivePageFrame = (props: any) => {
                                  if (editingTextId === field.id) return;
                                  // Nút phải: để onContextMenu xử lý (mở menu xoay), KHÔNG
                                  // khởi động move — nếu không sẽ vừa mở menu vừa kéo nhầm.
-                                 if (e.button === 2) return;
+                                 // UIUX (audit 2026-07-27 §C-01) fix-verify: chuột giữa cũng bỏ
+                                 // qua (dành cho middle-pan) → chỉ chuột trái bắt đầu move.
+                                 if (e.button !== 0) return;
                                  e.stopPropagation();
                                  let newSelection = [...safeSelectedIds];
                                  
@@ -3717,6 +3743,8 @@ export const LivePageFrame = (props: any) => {
                                          key={handle}
                                          className={`absolute ${posMap[handle]} w-3 h-3 bg-white border-2 border-blue-500 ${isEdge(handle) ? 'rounded-sm' : 'rounded-full'} shadow-sm hover:scale-150 transition-transform z-[65]`}
                                          onPointerDown={(e) => {
+                                             // UIUX (audit 2026-07-27 §C-01) fix-verify: chỉ chuột trái resize.
+                                             if (e.button !== 0) return;
                                              e.stopPropagation();
                                              if (!containerRef.current) return;
                                              const rect = containerRef.current.getBoundingClientRect();

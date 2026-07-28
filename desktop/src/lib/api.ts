@@ -1,4 +1,8 @@
-import { tv } from '../i18n';
+import i18n, { tv } from '../i18n';
+// UIUX (audit 2026-07-27 §D-16): i18nT = t() dùng được ở module non-component, có chuỗi
+// mặc định tiếng Việt nên KHÔNG cần thêm key vào vi.json (thiếu key → dùng default).
+const i18nT = (key: string, defaultValue: string, opts?: Record<string, unknown>) =>
+  i18n.t(key, { defaultValue, ...(opts || {}) });
 /**
  * API client for the PDF Inspection backend (Python sidecar).
  * 
@@ -487,8 +491,9 @@ export async function getVdpJobStatus(jobId: string) {
 export async function cancelVdpJobBackend(jobId: string) {
   const res = await authenticatedFetch(`${API_BASE}/api/vdp/vdp-cancel/${jobId}`, { method: 'POST' });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'Kh?ng th? h?y job VDP' }));
-    throw new Error(err.detail || 'Kh?ng th? h?y job VDP');
+    // UIUX (audit 2026-07-27 §D-10): sửa mojibake 'Kh?ng th? h?y...'
+    const err = await res.json().catch(() => ({ detail: 'Không thể hủy tiến trình VDP' }));
+    throw new Error(err.detail || 'Không thể hủy tiến trình VDP');
   }
   return res.json();
 }
@@ -499,22 +504,25 @@ export async function downloadVdpJob(jobId: string): Promise<Blob> {
   return await res.blob();
 }
 
-export async function pollVdpJob(jobId: string, onProgress: (msg: string) => void, skipDownload: boolean = false, signal?: AbortSignal): Promise<{ blob: Blob | null, path: string | null }> {
+// UIUX (audit 2026-07-27 §D-07): onProgress nhận thêm {processed,total} (tùy chọn) để các tool
+// VDP vẽ progress bar % thật thay vì chỉ một dòng text. Caller cũ chỉ đọc msg vẫn chạy nguyên.
+export type VdpProgressInfo = { processed?: number; total?: number; stage: 'processing' | 'saving' | 'downloading' | 'done' };
+export async function pollVdpJob(jobId: string, onProgress: (msg: string, info?: VdpProgressInfo) => void, skipDownload: boolean = false, signal?: AbortSignal): Promise<{ blob: Blob | null, path: string | null }> {
   while (true) {
       if (signal?.aborted) throw new DOMException('VDP polling aborted', 'AbortError');
       const status = await getVdpJobStatus(jobId);
       if (status.status === 'processing') {
-          onProgress(`Đang xử lý dữ liệu: ${status.processed} / ${status.total} trang...`);
+          onProgress(i18nT('lib.api:vdp_dang_xu_ly', 'Đang xử lý dữ liệu: {{processed}} / {{total}} trang...', { processed: status.processed, total: status.total }), { processed: status.processed, total: status.total, stage: 'processing' }); // UIUX (audit 2026-07-27 §D-07/§D-16)
       } else if (status.status === 'saving') {
-          onProgress(`Đang đóng gói file PDF...`);
+          onProgress(i18nT('lib.api:vdp_dang_dong_goi', 'Đang đóng gói file PDF...'), { stage: 'saving' }); // UIUX §D-16
       } else if (status.status === 'completed') {
           if (skipDownload) {
-              onProgress(`Hoàn tất tạo file!`);
+              onProgress(i18nT('lib.api:vdp_hoan_tat', 'Hoàn tất tạo file!'), { stage: 'done' }); // UIUX §D-16
               // Return a tiny dummy blob just so the File constructor doesn't fail, 
               // and the absolute path so useTileRenderer can use tile:// native loader.
               return { blob: new Blob(['dummy'], { type: 'application/pdf' }), path: status.result };
           }
-          onProgress(`Đang tải file kết quả...`);
+          onProgress(i18nT('lib.api:vdp_dang_tai', 'Đang tải file kết quả...'), { stage: 'downloading' }); // UIUX §D-16
           return { blob: await downloadVdpJob(jobId), path: status.result };
       } else if (status.status === 'failed') {
           throw new Error(status.error);
@@ -550,8 +558,9 @@ export async function getNupJobStatus(jobId: string) {
 export async function cancelNupJobBackend(jobId: string) {
   const res = await authenticatedFetch(`${API_BASE}/api/imposition/nup-cancel/${jobId}`, { method: 'POST' });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'Kh?ng th? h?y job N-Up' }));
-    throw new Error(err.detail || 'Kh?ng th? h?y job N-Up');
+    // UIUX (audit 2026-07-27 §D-10): sửa mojibake 'Kh?ng th? h?y...'
+    const err = await res.json().catch(() => ({ detail: 'Không thể hủy tiến trình N-Up' }));
+    throw new Error(err.detail || 'Không thể hủy tiến trình N-Up');
   }
   return res.json();
 }
@@ -592,7 +601,7 @@ export async function backendMergePdfs(files: File[], mode: string = 'merge_file
     method: 'POST',
     body: formData,
   });
-  if (!res.ok) throw new Error('Backend merge failed: ' + await res.text());
+  if (!res.ok) throw new Error('Ghép file thất bại: ' + await res.text()); // UIUX (audit 2026-07-27 §D-13)
   return await res.blob();
 }
 
@@ -627,7 +636,7 @@ export async function backendMergeManifest(files: File[], manifest: BackendMerge
     method: 'POST',
     body: formData,
   });
-  if (!res.ok) throw new Error('Backend manifest merge failed: ' + await res.text());
+  if (!res.ok) throw new Error('Ghép file (manifest) thất bại: ' + await res.text()); // UIUX (audit 2026-07-27 §D-13)
   if (res.headers.get('content-type')?.includes('application/json')) {
     const payload = await res.json() as { path: string; filename?: string };
     return { path: payload.path, filename: payload.filename || 'Combined.pdf' };
@@ -644,7 +653,7 @@ export async function backendSplitPdf(file: File, mode: string, config: unknown)
     method: 'POST',
     body: formData,
   });
-  if (!res.ok) throw new Error('Backend split failed: ' + await res.text());
+  if (!res.ok) throw new Error('Tách file thất bại: ' + await res.text()); // UIUX (audit 2026-07-27 §D-13)
   return await res.blob();
 }
 
@@ -669,7 +678,7 @@ export async function backendResizePages(
     method: 'POST',
     body: formData,
   });
-  if (!res.ok) throw new Error('Backend resize failed: ' + await res.text());
+  if (!res.ok) throw new Error('Đổi khổ trang thất bại: ' + await res.text()); // UIUX (audit 2026-07-27 §D-13)
   return await res.blob();
 }
 
@@ -683,7 +692,7 @@ export async function backendShufflePages(file: File, action: string, mapping: n
     method: 'POST',
     body: formData,
   });
-  if (!res.ok) throw new Error('Backend shuffle failed: ' + await res.text());
+  if (!res.ok) throw new Error('Xáo trộn trang thất bại: ' + await res.text()); // UIUX (audit 2026-07-27 §D-13)
   return await res.blob();
 }
 
@@ -697,7 +706,7 @@ export async function backendTrimShift(file: File, applyTo: string, config: unkn
     method: 'POST',
     body: formData,
   });
-  if (!res.ok) throw new Error('Backend trim-shift failed: ' + await res.text());
+  if (!res.ok) throw new Error('Dịch lề xén thất bại: ' + await res.text()); // UIUX (audit 2026-07-27 §D-13)
   return await res.blob();
 }
 

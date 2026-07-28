@@ -20,6 +20,8 @@ import { RichSelect, Checkbox, SectionLabel, Divider } from '../SharedUI';
 import { useShallow } from 'zustand/react/shallow';
 import { useTranslation } from 'react-i18next';
 import { HIDE_OFFSET_BOOKLET } from '../../../lib/featureFocus';
+// UIUX (audit 2026-07-27 §B-06): toast báo khi tay sách bị làm tròn bội số 4
+import { toast } from '../../ui/Toast';
 
 export default function BookletSettingsSection() {
   const { t } = useTranslation();
@@ -68,8 +70,12 @@ export default function BookletSettingsSection() {
                                 // Tay sách bắt buộc là bội số của 4; tự làm tròn khi rời ô.
                                 const raw = Number(e.target.value);
                                 const snapped = Number.isFinite(raw) ? Math.max(4, Math.round(raw / 4) * 4) : 16;
+                                // UIUX (audit 2026-07-27 §B-06): báo rõ khi giá trị gõ bị làm tròn — không im lặng
+                                if (snapped !== raw) toast.info(t('imposition.bookletSettings:tay_sach_boi_4_da_lam_tron', 'Tay sách phải là bội số của 4 — đã làm tròn thành {{n}}', { n: snapped }));
                                 if (snapped !== s.foliosize) s.setFoliosize(snapped);
                             }}
+                            // UIUX (audit 2026-07-27 §B-06): Enter → blur để kích hoạt snap ngay
+                            onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
                             className="w-16 h-7 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500"
                         />
                         <span className="text-[10px] text-slate-400">{t('imposition.bookletSettings:boi_so_cua_4')}</span>
@@ -229,11 +235,19 @@ export default function BookletSettingsSection() {
                             <div className="grid grid-cols-2 gap-x-3 gap-y-3 pt-2 border-t border-slate-200 dark:border-white/10 mt-1">
                                 <div>
                                     <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.bookletSettings:khoang_cach_gay_gap_x')}</label>
-                                    <input type="number" step="1" value={s.gapX} onChange={e => s.setGapX(Number(e.target.value))} className="w-full h-8 px-3 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 transition-colors" />
+                                    {/* UIUX (audit 2026-07-27 §B-02): thêm suffix mm; §B-04: min 0 + clamp không âm */}
+                                    <span className="relative block">
+                                        <input type="number" step="1" min="0" value={s.gapX} onChange={e => s.setGapX(Math.max(0, Number(e.target.value) || 0))} className="w-full h-8 px-3 pr-7 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 transition-colors" />
+                                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none uppercase">mm</span>
+                                    </span>
                                 </div>
                                 <div>
                                     <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.bookletSettings:ho_doc_gap_y')}</label>
-                                    <input type="number" step="1" value={s.gapY} onChange={e => s.setGapY(Number(e.target.value))} className="w-full h-8 px-3 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 transition-colors" />
+                                    {/* UIUX (audit 2026-07-27 §B-02): thêm suffix mm; §B-04: min 0 + clamp không âm */}
+                                    <span className="relative block">
+                                        <input type="number" step="1" min="0" value={s.gapY} onChange={e => s.setGapY(Math.max(0, Number(e.target.value) || 0))} className="w-full h-8 px-3 pr-7 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 transition-colors" />
+                                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none uppercase">mm</span>
+                                    </span>
                                 </div>
                             </div>
                         )}

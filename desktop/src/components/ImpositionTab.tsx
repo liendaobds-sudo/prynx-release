@@ -35,6 +35,8 @@ import OutputPreviewTab, { type PlateOverlay } from './OutputPreviewTab';
 import RecipeRecordControl from './recipe/RecipeRecordControl';
 import RecipePanel from './recipe/RecipePanel';
 import { toast } from './ui/Toast';
+// UIUX (audit 2026-07-27 §B-20 + §B-23): phím tắt dialog + dịch lỗi kỹ thuật
+import DialogKeys from './ui/DialogKeys';
 import type { Recipe } from '../lib/recipe/recipeTypes';
 import DataMergeTool from './preprocess-tools/DataMergeTool';
 import NumberingTool from './preprocess-tools/NumberingTool';
@@ -1251,6 +1253,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             commitWorkingFile,
             // Bọc setError: khi một thao tác (đã noteOperation) BÁO LỖI (msg≠'') →
             // dọn pending note để KHÔNG bị ghép nhầm vào commit của thao tác sau.
+            // UIUX (audit 2026-07-27 §B-23) fix-verify: KHÔNG formatError lần hai ở đây —
+            // processHandlers đã format sẵn; format chồng từng cắt cụt 200 ký tự.
             setError: (msg: string) => { if (msg) recipeRecorder.discardPending(); setError(msg); },
             setIsProcessing, setProcessStatus, setReportMsg, setBatchOutput,
             setCancelHandler: (handler: (() => Promise<void>) | null) => {
@@ -2223,6 +2227,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     />
                     {confirmBookletSettings && createPortal(
                         <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => setConfirmBookletSettings(null)} onKeyDown={e => { if (e.key === 'Escape') setConfirmBookletSettings(null); }} tabIndex={-1} ref={el => el?.focus()}>
+                            {/* UIUX (audit 2026-07-27 §B-20): Esc/Enter mức document — không phụ thuộc focus ref */}
+                            <DialogKeys
+                                onCancel={() => setConfirmBookletSettings(null)}
+                                onConfirm={() => {
+                                    const finalSettings = { ...(confirmBookletSettings.settings as any), blankPlacement: confirmBlankPlacement };
+                                    processEngine(finalSettings, confirmBookletSettings.spawnNewTab);
+                                    setConfirmBookletSettings(null);
+                                }}
+                            />
                             <div className="bg-white dark:bg-zinc-800 rounded-xl shadow-2xl w-full max-w-lg overflow-hidden animate-slide-up" onClick={e => e.stopPropagation()}>
                                 <div className="p-5 border-b border-slate-200 dark:border-white/10 flex items-center justify-between">
                                     <h2 className="text-lg font-bold text-slate-800 dark:text-white flex items-center gap-2">
@@ -2276,8 +2289,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         document.body
                     )}
 
+                    {/* UIUX (audit 2026-07-27 §B-23): whitespace-pre-line để dòng "hướng khắc phục" của formatError xuống hàng */}
                     {error && (
-                        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-100 dark:bg-red-900 border border-red-400 dark:border-red-600 text-red-700 dark:text-red-200 px-4 py-3 rounded shadow-lg z-[100] flex items-center gap-3">
+                        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-100 dark:bg-red-900 border border-red-400 dark:border-red-600 text-red-700 dark:text-red-200 px-4 py-3 rounded shadow-lg z-[100] flex items-center gap-3 whitespace-pre-line">
                             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                             {error}
                         </div>
@@ -2445,11 +2459,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                             className={`shrink-0 bg-[#f8fafc] dark:bg-zinc-900 shadow-[-10px_0_30px_rgba(0,0,0,0.05)] flex flex-row justify-end z-20 h-full transition-all ${isDraggingSidebar ? 'duration-0' : 'duration-300'} relative border-l border-slate-200 dark:border-zinc-800`}
                                         >
                                         {/* Resizer Handle */}
+                                        {/* UIUX (audit 2026-07-27 §B-25): vùng bắt chuột rộng gấp đôi (w-2.5), chỉ vẽ 1px ở giữa — nhìn không đổi */}
                                         <div
-                                            className="absolute left-0 top-0 bottom-0 w-1.5 -ml-[3px] cursor-col-resize hover:bg-blue-500/50 active:bg-blue-500 z-50 transition-colors"
+                                            className="absolute left-0 top-0 bottom-0 w-2.5 -ml-[5px] cursor-col-resize hover:bg-blue-500/50 active:bg-blue-500 z-50 transition-colors"
                                             onMouseDown={(e) => {
                                                 e.preventDefault();
-                                                const initialWidth = activeDashboardTool !== 'none' 
+                                                const initialWidth = activeDashboardTool !== 'none'
                                                     ? (isSidebarOpen ? sidebarWidth : (isMiniToolbarExpanded ? 220 : 48))
                                                     : sidebarWidth;
                                                 sidebarDragRef.current = {
@@ -2460,7 +2475,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                 };
                                                 setIsDraggingSidebar(true);
                                             }}
-                                        />
+                                        >
+                                            <div className="absolute left-1/2 -translate-x-1/2 top-0 bottom-0 w-px bg-app-line pointer-events-none" />
+                                        </div>
                                         
                                         {/* Main Config Panel */}
                                         {isSidebarOpen && (
@@ -2468,7 +2485,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                 {/* Sidebar Header */}
                                                 <div className="px-4 h-12 flex items-center justify-between border-b border-black/5 dark:border-white/5 bg-slate-100 dark:bg-[#1a1a1a] shrink-0 shadow-sm relative z-10">
                                                     <h2 className="text-[13px] font-bold text-slate-800 dark:text-zinc-200 flex items-center gap-1.5 uppercase tracking-wide">
-                                                        {(activeDashboardTool === 'bgremover' || activeDashboardTool === 'upscale') ? (
+                                                        {/* UIUX (audit 2026-07-27 §B-11): nút ‹ Quay lại cho MỌI tool (trước chỉ bgremover/upscale) — cùng hàng với tiêu đề */}
+                                                        {activeDashboardTool !== 'none' && (
                                                             <button
                                                                 onClick={() => setActiveDashboardTool('none')}
                                                                 className="flex items-center gap-1.5 text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300 transition-colors"
@@ -2477,11 +2495,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
                                                                 {t('tabs.imposition:quay_lai')}
                                                             </button>
-                                                        ) : (
-                                                            <>
-                                                                <span>🛠️</span> {t('tabs.imposition:thong_so')}
-                                                                {fileSizeStr && <span className="text-[10px] text-slate-400 dark:text-zinc-500 font-mono normal-case tracking-normal ml-1 border pl-1.5 pr-1.5 py-0.5 rounded-full border-black/5 dark:border-white/5">{fileSizeStr}</span>}
-                                                            </>
+                                                        )}
+                                                        {/* UIUX (audit 2026-07-27) feedback user: bỏ nhãn "🛠️ THÔNG SỐ" — rối,
+                                                            nút ‹ Quay lại đã đủ định vị; giữ chip dung lượng file (thông tin thật) */}
+                                                        {(activeDashboardTool !== 'bgremover' && activeDashboardTool !== 'upscale') && fileSizeStr && (
+                                                            <span className="text-[10px] text-slate-400 dark:text-zinc-500 font-mono normal-case tracking-normal border pl-1.5 pr-1.5 py-0.5 rounded-full border-black/5 dark:border-white/5">{fileSizeStr}</span>
                                                         )}
                                                     </h2>
                                                     <div className="flex items-center gap-1">
@@ -2759,7 +2777,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                                         ${showMiniLabels ? 'justify-start px-2' : 'justify-center'}
                                                                                         ${isActive ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 shadow-sm border border-amber-300 dark:border-amber-700/50' : 'bg-amber-50/50 dark:bg-amber-900/20 text-slate-700 dark:text-zinc-300 border border-amber-200/50 dark:border-amber-700/30 hover:bg-amber-100/80 dark:hover:bg-amber-900/40 hover:text-amber-900 dark:hover:text-amber-100'}`
                                                                                     }
-                                                                                    title={tv(tool.title)}
+                                                                                    // UIUX (audit 2026-07-27 §B-14): báo trước click tool đang mở sẽ thu gọn panel
+                                                                                    title={isActive && isSidebarOpen ? t('tabs.imposition:dang_mo_bam_de_thu_gon_panel', 'Đang mở — bấm để thu gọn panel') : tv(tool.title)}
                                                                                 >
                                                                                     <span className="text-lg shrink-0 flex items-center justify-center w-6">{tool.icon}</span>
                                                                                     {showMiniLabels && <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tv(tool.title)}</span>}
@@ -2809,7 +2828,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                                         ${showMiniLabels ? 'justify-start px-2' : 'justify-center'}
                                                                                         ${isActive ? 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 shadow-sm border border-indigo-300 dark:border-indigo-700/50' : 'hover:bg-slate-200 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-300 border border-transparent'}`
                                                                                     }
-                                                                                    title={tv(tool.title)}
+                                                                                    // UIUX (audit 2026-07-27 §B-14): báo trước click tool đang mở sẽ thu gọn panel
+                                                                                    title={isActive && isSidebarOpen ? t('tabs.imposition:dang_mo_bam_de_thu_gon_panel', 'Đang mở — bấm để thu gọn panel') : tv(tool.title)}
                                                                                 >
                                                                                     <span className="text-lg shrink-0 flex items-center justify-center w-6">{tool.icon}</span>
                                                                                     {showMiniLabels && <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tv(tool.title)}</span>}
@@ -2851,6 +2871,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
             {scaleConfirmModal && createPortal(
                 <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => { scaleConfirmModal.resolve(false); setScaleConfirmModal(null); }} onKeyDown={e => { if (e.key === 'Escape') { scaleConfirmModal.resolve(false); setScaleConfirmModal(null); } }} tabIndex={-1} ref={el => el?.focus()}>
+                    {/* UIUX (audit 2026-07-27 §B-20): Esc/Enter mức document — không phụ thuộc focus ref */}
+                    <DialogKeys
+                        onCancel={() => { scaleConfirmModal.resolve(false); setScaleConfirmModal(null); }}
+                        onConfirm={() => { scaleConfirmModal.resolve(true); setScaleConfirmModal(null); }}
+                    />
                     <div className="bg-white dark:bg-zinc-800 rounded-xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200 dark:border-zinc-700" onClick={e => e.stopPropagation()}>
                         <div className="px-6 py-4 border-b border-slate-200 dark:border-zinc-700 flex justify-between items-center bg-amber-50 dark:bg-amber-500/10">
                             <h3 className="text-lg font-bold text-amber-600 dark:text-amber-500 flex items-center gap-2">
@@ -2889,6 +2914,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             {/* Custom Close Confirm Modal */}
             {showCloseConfirm && createPortal(
                 <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 font-sans" onClick={() => setShowCloseConfirm(false)} onKeyDown={e => { if (e.key === 'Escape') setShowCloseConfirm(false); }} tabIndex={-1} ref={el => el?.focus()}>
+                    {/* UIUX (audit 2026-07-27 §B-20): Esc/Enter mức document — không phụ thuộc focus ref */}
+                    <DialogKeys onCancel={() => setShowCloseConfirm(false)} onConfirm={forceReset} />
                     <div className="bg-white dark:bg-[#1e1e1e] w-[380px] rounded-xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10" onClick={e => e.stopPropagation()}>
                         <div className="p-6">
                             <h3 className="text-[16px] font-semibold text-slate-800 dark:text-white mb-2">

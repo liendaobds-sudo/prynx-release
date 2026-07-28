@@ -84,6 +84,12 @@ def test_verify_catches_text_moved_to_the_wrong_place(text_pdf, tmp_path):
     assert ok is False, "verify bỏ lọt chữ đặt sai chỗ"
     assert reason
 
+    native_ok, native_reason = outline_text.verify_outline(
+        text_pdf, moved, native_object_level=True
+    )
+    assert native_ok is False, "profile native bỏ lọt chữ đặt sai chỗ"
+    assert native_reason
+
 
 def test_verify_accepts_a_correct_outline(text_pdf, tmp_path):
     out = str(tmp_path / "ok.pdf")
@@ -91,6 +97,139 @@ def test_verify_accepts_a_correct_outline(text_pdf, tmp_path):
     ok, reason = outline_text.verify_outline(text_pdf, out)
     assert ok, reason
 
+
+def test_native_verify_accepts_explained_one_pixel_edge_growth(tmp_path, monkeypatch):
+    """Viền outline dày 1 px không phải đổi màu khi trạng thái màu giữ nguyên."""
+    import numpy as np
+
+    original = str(tmp_path / "edge_before.pdf")
+    outlined = str(tmp_path / "edge_after.pdf")
+    for path in (original, outlined):
+        pdf = pikepdf.Pdf.new()
+        pdf.add_blank_page(page_size=(128, 128))
+        pdf.save(path)
+        pdf.close()
+
+    before = np.zeros((128, 128), dtype=np.int32)
+    after = before.copy()
+    for x in (16, 40, 72, 104):
+        before[:, x] = 220
+        after[:, x:x + 2] = 220
+
+    def fake_plate_stats(path, _page_number, _dpi):
+        array = before if path == original else after
+        coverage = float((array > 127).mean() * 100.0)
+        return {"Cyan": (coverage, array)}
+
+    monkeypatch.setattr(outline_text, "_plate_stats", fake_plate_stats)
+
+    strict_ok, _ = outline_text.verify_outline(original, outlined)
+    native_ok, reason = outline_text.verify_outline(
+        original, outlined, native_object_level=True
+    )
+
+    assert strict_ok is False, "profile GS vẫn phải giữ ngưỡng mean/coverage"
+    assert native_ok is True, reason
+
+
+def test_native_verify_rejects_changed_color_operator(tmp_path, monkeypatch):
+    """Lưới hình học giống nhau không được che việc đổi toán tử CMYK."""
+    import numpy as np
+
+    original = str(tmp_path / "color_before.pdf")
+    outlined = str(tmp_path / "color_after.pdf")
+    for path, content in (
+        (original, b"0 0 0 1 k"),
+        (outlined, b"1 0 0 0 k"),
+    ):
+        pdf = pikepdf.Pdf.new()
+        page = pdf.add_blank_page(page_size=(128, 128))
+        page.Contents = pdf.make_stream(content)
+        pdf.save(path)
+        pdf.close()
+
+    plate = np.zeros((128, 128), dtype=np.int32)
+    monkeypatch.setattr(
+        outline_text,
+        "_plate_stats",
+        lambda *_args: {"Cyan": (0.0, plate)},
+    )
+
+    ok, reason = outline_text.verify_outline(
+        original, outlined, native_object_level=True
+    )
+
+    assert ok is False
+    assert "màu" in reason
+
+def test_tj_decimal_spacing_is_outlineable(text_pdf, tmp_path):
+    """[OUT-FONT FIX 2026-07-28] pikepdf parse số lẻ trong TJ thành Decimal."""
+    from app.core.outline_fonts import count_live_text
+
+    src = str(tmp_path / "tj_decimal.pdf")
+    out = str(tmp_path / "tj_decimal_out.pdf")
+    with pikepdf.open(text_pdf) as pdf:
+        pdf.pages[0].Contents = pdf.make_stream(
+            b"0 0 0 1 k BT /F1 36 Tf 20 60 Td [(PR) 18.1 (YNX)] TJ ET"
+        )
+        pdf.save(src)
+
+    result = outline_text.outline_fonts(src, out)
+
+    assert result["supported"], result["warnings"]
+    assert result["glyphs"] == 5
+    assert count_live_text(out)["total"] == 0
+
+
+def test_cff_without_charset_uses_iso_adobe_default(monkeypatch):
+    """CFF name-keyed bỏ charset phải dùng mặc định ISOAdobe theo chuẩn."""
+    import fontTools.cffLib as cff_lib
+
+    class FakeTop:
+        numGlyphs = 2
+        rawDict = {"FontMatrix": [0.001, 0, 0, 0.001, 0, 0]}
+
+        @property
+        def CharStrings(self):
+            if not hasattr(self, "charset"):
+                raise AttributeError("charset")
+            return {".notdef": object(), "space": object()}
+
+    top = FakeTop()
+
+    class FakeCff:
+        fontNames = ["Fixture"]
+
+        def decompile(self, _stream, _ot_font):
+            return None
+
+        def __getitem__(self, _name):
+            return top
+
+    monkeypatch.setattr(cff_lib, "CFFFontSet", FakeCff)
+    font = outline_text._EmbeddedFont.__new__(outline_text._EmbeddedFont)
+    font.glyph_set = None
+    font.upem = 1000.0
+    font.code_to_glyph = {}
+
+    loaded = font._load_cff(
+        b"\x01\x00\x04\x02",
+        pikepdf.Dictionary(Encoding=pikepdf.Name("/WinAnsiEncoding")),
+    )
+
+    assert loaded is True
+    assert top.charset[:2] == [".notdef", "space"]
+    assert font.code_to_glyph[32] == "space"
+
+
+def test_cid_width_array_accepts_direct_pikepdf_arrays():
+    """Không được gọi resolve() trên Array trực tiếp trong /W."""
+    font = outline_text._EmbeddedFont.__new__(outline_text._EmbeddedFont)
+    font.widths = {}
+
+    font._parse_w(pikepdf.Array([1, pikepdf.Array([500, 600]), 5, 6, 700]))
+
+    assert font.widths == {1: 500.0, 2: 600.0, 5: 700.0, 6: 700.0}
 
 def test_incomplete_type0_font_is_declined_not_guessed(tmp_path):
     """Type0 thiếu tài nguyên bắt buộc phải bị từ chối thay vì đoán glyph."""
@@ -125,7 +264,9 @@ def test_action_outline_without_ghostscript(text_pdf, tmp_path, monkeypatch):
 
     engine = ActionEngine()
     engine.gs_path = missing
-    result = asyncio.run(engine.execute(text_pdf, "OUTLINE_FONTS"))
+    result = asyncio.run(
+        engine.execute(text_pdf, "OUTLINE_FONTS", {"force_gs": True})
+    )
 
     assert result.success, result.error
     assert result.log[0].engine == "pikepdf"
@@ -251,8 +392,13 @@ def test_verify_checks_every_page(text_pdf, tmp_path):
     assert "trang 2" in reason
 
 
-def test_verify_local_iou_catches_small_shift_on_large_page(text_pdf, tmp_path):
-    """Mean/coverage toàn trang từng bỏ lọt chữ nhỏ dịch trên nền trắng lớn."""
+def test_verify_tile_check_catches_small_shift_on_large_page(text_pdf, tmp_path):
+    """Mean/coverage toàn trang từng bỏ lọt chữ nhỏ dịch trên nền trắng lớn.
+
+    Thước đo theo tile đổi từ IoU sang recall/precision ở audit lần 2 (IoU đối xứng
+    nên phạt cả phần outline nở ra một cách vô hại). Chữ dịch 30pt phải vẫn bị bắt —
+    nó làm mực rời khỏi ô cũ, tức recall sụp về 0.
+    """
     original = str(tmp_path / "large_page.pdf")
     changed = str(tmp_path / "large_page_changed.pdf")
     with pikepdf.open(text_pdf) as pdf:
@@ -271,7 +417,7 @@ def test_verify_local_iou_catches_small_shift_on_large_page(text_pdf, tmp_path):
 
     ok, reason = outline_text.verify_outline(original, changed)
     assert ok is False
-    assert "lệch cục bộ" in reason
+    assert "mất mực" in reason, reason
 
 
 def test_q_q_restores_text_state(text_pdf, tmp_path):

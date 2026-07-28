@@ -31,13 +31,10 @@ def test_recognizes_ghostscript_by_executable_stem():
     assert not gs_usage.is_ghostscript_command([])
 
 
-def test_run_hidden_counts_ghostscript_but_not_other_tools(monkeypatch, tmp_path):
-    """Đếm ở `run_hidden` — chỗ MỌI lệnh GS của sản phẩm đi qua.
+def test_run_hidden_blocks_ghostscript_but_runs_other_tools(monkeypatch, tmp_path):
+    """Chốt toàn cục phải từ chối GS trước subprocess và trước telemetry."""
+    from app.core.gs_availability import GhostscriptUnavailable
 
-    Ghostscript phải là file có thật: từ audit 2026-07-27 §A.4, `run_hidden` dừng
-    sớm với thông điệp sản phẩm khi lệnh GS không chạy được, nên một đường dẫn không
-    tồn tại sẽ không bao giờ tới được bộ đếm — và đó là hành vi đúng.
-    """
     fake_gs = tmp_path / "gswin64c.exe"
     fake_gs.write_bytes(b"")
     fake_qpdf = tmp_path / "qpdf.exe"
@@ -47,53 +44,44 @@ def test_run_hidden_counts_ghostscript_but_not_other_tools(monkeypatch, tmp_path
         subprocess, "run", lambda cmd, **kw: calls.append(cmd) or "ok"
     )
 
-    subprocess_utils.run_hidden([str(fake_gs), "-dBATCH"])
-    subprocess_utils.run_hidden([str(fake_qpdf), "--version"])
+    with pytest.raises(GhostscriptUnavailable):
+        subprocess_utils.run_hidden([str(fake_gs), "-dBATCH"])
+    assert subprocess_utils.run_hidden([str(fake_qpdf), "--version"]) == "ok"
 
-    stats = gs_usage.summary()
-    assert stats["total_gs_calls"] == 1, stats
-    assert len(calls) == 2, "cả hai lệnh vẫn phải chạy"
+    assert gs_usage.summary()["total_gs_calls"] == 0
+    assert calls == [[str(fake_qpdf), "--version"]]
 
-
-def test_reason_points_at_the_real_module_that_asked_for_ghostscript(monkeypatch, tmp_path):
-    """Nhãn phải chỉ ra ĐƯỜNG nào còn cần GS — đó là thứ quyết định việc tiếp theo.
-
-    Dùng call site thật (`pdf_tools_engine._gs_downsample`) chứ không phải hàm
-    dựng trong test: điều cần chứng minh là cơ chế dò ngăn xếp nhận đúng module
-    sản phẩm, và chỉ code sản phẩm mới có ngăn xếp thật.
-    """
+def test_product_call_is_blocked_before_subprocess(monkeypatch, tmp_path):
+    """Một call site legacy thật cũng không được vượt qua chốt no-GS."""
     from app.config import settings
     from app.workers import pdf_tools_engine
 
     fake_gs = tmp_path / "gswin64c.exe"
     fake_gs.write_bytes(b"")
     monkeypatch.setattr(settings, "GHOSTSCRIPT_PATH", str(fake_gs))
+    calls = []
+    monkeypatch.setattr(
+        subprocess, "run", lambda cmd, **kw: calls.append(cmd) or None
+    )
 
-    class _Done:
-        returncode = 1  # để hàm trả False, không cần output thật
+    ok = pdf_tools_engine._gs_downsample(
+        str(tmp_path / "a.pdf"), str(tmp_path / "b.pdf"), 300
+    )
+    assert ok is False
+    assert calls == []
+    assert gs_usage.summary()["total_gs_calls"] == 0
 
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: _Done())
-
-    pdf_tools_engine._gs_downsample(str(tmp_path / "a.pdf"), str(tmp_path / "b.pdf"), 300)
-
-    reasons = gs_usage.summary()["by_reason"]
-    assert sum(reasons.values()) == 1, reasons
-    label = next(iter(reasons))
-    assert "pdf_tools_engine" in label, f"nhãn không chỉ đúng module: {label}"
-
-
-def test_counter_failure_never_breaks_the_job(monkeypatch, tmp_path):
-    """Một lệnh in KHÔNG được thất bại vì bộ đếm — đó là điều lố bịch nhất có thể."""
-    fake_gs = tmp_path / "gswin64c.exe"
-    fake_gs.write_bytes(b"")
+def test_non_gs_job_is_independent_from_telemetry(monkeypatch, tmp_path):
+    """Lỗi telemetry không được ảnh hưởng công cụ ngoài không phải GS."""
+    fake_qpdf = tmp_path / "qpdf.exe"
+    fake_qpdf.write_bytes(b"")
     monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: "ok")
 
     def explode(*_a, **_k):
         raise RuntimeError("đĩa đầy")
 
     monkeypatch.setattr(gs_usage, "record_gs_call", explode)
-    assert subprocess_utils.run_hidden([str(fake_gs)]) == "ok"
-
+    assert subprocess_utils.run_hidden([str(fake_qpdf)]) == "ok"
 
 def test_record_swallows_disk_errors(monkeypatch):
     monkeypatch.setattr(gs_usage, "_log_path", lambda: (_ for _ in ()).throw(OSError("x")))

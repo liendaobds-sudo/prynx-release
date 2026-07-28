@@ -13,6 +13,10 @@ from pathlib import Path
 import pikepdf
 
 from app.config import settings
+from app.core.gs_availability import (
+    InternalEngineUnsupported,
+    unsupported_message,
+)
 from app.utils.subprocess_utils import run_hidden
 
 logger = logging.getLogger(__name__)
@@ -427,13 +431,12 @@ class PdfxExportEngine:
         except Exception as e:  # noqa: BLE001
             logger.warning("PDF/X object-level lỗi, fallback Ghostscript: %s", e)
 
-        self.last_engine = "ghostscript"
-        _ensure_gs(self.gs_path)
-
-        if standard == "x1a":
-            return await self._export_x1a(file_path, output_path)
-        else:
-            return await self._export_x4(file_path, output_path)
+        # GS-SUNSET (audit 2026-07-28 §3.7): native không chứng minh được
+        # compliance thì dừng có chủ đích; không tồn tại cấu hình bật GS lại.
+        self.last_engine = "none"
+        raise InternalEngineUnsupported(
+            unsupported_message(f"Xuất PDF/X-{standard.upper()}")
+        )
 
     def _export_x1a_native(self, input_path: str, output_path: str) -> bool:
         """PDF/X-1a bằng pikepdf: flatten trong suốt rồi đi tiếp đường X-4.

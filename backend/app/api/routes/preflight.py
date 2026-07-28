@@ -897,14 +897,16 @@ async def get_separations(
     """
     Trích xuất bản kẽm (Separations) — gần Acrobat Output Preview.
 
-    Mặc định: Ghostscript tiffsep (kẽm process + spot, ICC FOGRA39 khi có).
-    ``use_gs=false``: fallback nhanh PDF→RGB→CMYK giả (chỉ debug).
+    Mặc định dùng PrynX Print Engine (PPE) để dựng kẽm process + spot.
+    ``use_gs=false`` là tên query legacy, hiện có nghĩa buộc đường xem nhanh
+    PDF→RGB→CMYK xấp xỉ.
     """
     pdf_path = _get_file_path(file_id)
 
     try:
         engine = SeparationEngine()
-        # Query ``use_gs`` omitted → None → engine prefers GS.
+        # Query legacy `use_gs` được giữ để không phá client cũ: None/True =
+        # PPE chính xác; False = buộc đường xấp xỉ.
         result = await engine.extract_separations(
             pdf_path, page, dpi,
             use_ghostscript=use_gs,
@@ -919,7 +921,7 @@ class SeparationsPathRequest(BaseModel):
     file_path: str
     page: int = 1
     dpi: int = 150
-    # None = prefer Ghostscript (Acrobat-like). False = force approximate.
+    # Tên legacy: None/True = PPE chính xác; False = buộc đường xấp xỉ.
     use_gs: bool | None = None
     profile_id: str = "fogra39"
 
@@ -1237,6 +1239,10 @@ async def export_pdfx(req: ExportPdfxRequest):
     """Xuất file chuẩn PDF/X."""
     file_path = _get_file_path(req.file_id)
     from app.core.pdfx_export import PdfxExportEngine, GhostscriptNotFoundError
+    from app.core.gs_availability import (
+        InternalEngineUnsupported,
+        unsupported_message,
+    )
     engine = PdfxExportEngine()
     try:
         output = await engine.export_pdfx(file_path, req.standard)
@@ -1249,12 +1255,19 @@ async def export_pdfx(req: ExportPdfxRequest):
             "warnings": list(getattr(engine, "last_warnings", None) or []),
             "engine": getattr(engine, "last_engine", None),
         }
+    except InternalEngineUnsupported as e:
+        # GS-SUNSET (audit 2026-07-28 §3.2): giới hạn file là 422, không phải
+        # lỗi server. UI hiển thị nguyên hướng xử lý an toàn cho người dùng.
+        raise HTTPException(status_code=422, detail=str(e))
     except GhostscriptNotFoundError as e:
-        # Ghostscript thiếu → báo rõ để user cài / kiểm bản cài, không nuốt thành lỗi mơ hồ.
-        raise HTTPException(status_code=500, detail=str(e))
+        # Nhánh legacy chỉ tồn tại ở bản dev/đối chiếu. Không hướng người dùng
+        # bản thương mại đi cài công cụ ngoài để thay đổi engine của sản phẩm.
+        raise HTTPException(
+            status_code=422,
+            detail=unsupported_message(f"Xuất PDF/X-{req.standard.upper()}"),
+        ) from e
     except Exception as e:
-        # Trả message THẬT (Ghostscript báo gì) thay vì chỉ tên exception — trước đây
-        # nuốt sạch nên không ai chẩn đoán được. Log full traceback ở server để debug.
+        # Log full traceback ở server; UI chỉ nhận ngữ cảnh tác vụ.
         import logging
         logging.getLogger(__name__).exception("PDF/X export failed")
         raise HTTPException(status_code=500, detail=f"Xuất PDF/X thất bại: {e}")

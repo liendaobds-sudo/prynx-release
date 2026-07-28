@@ -41,7 +41,7 @@
 // _Requirements: 1.1, 2.1, 4.4, 5.1, 5.3, 7.5_
 // ============================================================
 
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { Line } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
@@ -62,9 +62,10 @@ import {
     SPOT_UV_GLOSS_ROUGHNESS,
 } from '../../lib/mockup3d/materialLibrary';
 import { getKraftGrainBumpTexture } from '../../lib/mockup3d/proceduralTextures';
-import { applyFoldCompensation } from '../../lib/mockup3d/foldCompensation';
+import { applyFoldCompensation, type FoldCompensationScratch } from '../../lib/mockup3d/foldCompensation';
 import { applyExplodedOffset, type Vec3 } from '../../lib/mockup3d/explodedView';
 import { foldLive, seedFoldLiveFromStore } from '../../lib/mockup3d/foldLive';
+import { moveToMockupVisualOnlyLayer } from './renderLayers';
 import { useDisposableResource } from './useDisposeResources';
 
 // ─── Bảng màu ───────────────────────────────────────────────────────────────
@@ -153,6 +154,8 @@ export interface SolidPanelMeshProps {
     allPanels: Panel[];
     /** Tiến trình gập hiện tại trong [0, 1]. */
     foldProgress: number;
+    /** Mốc kết thúc gấp trong tiến trình live; phần còn lại dành cho lồng/chụp hai mảnh. */
+    liveFoldEnd?: number;
     /** Bản đồ độ sâu (level) của panel trong cây gập. */
     depthMap: Map<string, number>;
     /** Độ sâu tối đa trong cây gập (dùng cho auto-phase). */
@@ -530,6 +533,7 @@ export default function SolidPanelMesh({
     panel,
     allPanels,
     foldProgress,
+    liveFoldEnd = 1,
     depthMap,
     maxD,
     thickness,
@@ -548,6 +552,10 @@ export default function SolidPanelMesh({
     roundFolds = false,
 }: SolidPanelMeshProps) {
     const groupRef = useRef<THREE.Group>(null);
+    const cadVisualsRef = useRef<THREE.Group>(null);
+    const resolvedFoldProgress = liveFoldEnd < 1
+        ? Math.min(foldProgress / Math.max(liveFoldEnd, 1e-6), 1)
+        : foldProgress;
 
     // State trình bày từ store mockup (tách biệt khỏi đường dẫn dieline).
     const substrateId = useMockupStore((s) => s.substrateId);
@@ -602,11 +610,11 @@ export default function SolidPanelMesh({
                 const outline = (panel.outline && panel.outline.length >= 3)
                     ? panel.outline
                     : tracePerimeter(panel.paths);
-                const patch = buildConeGluePatchGeometry(outline, coneWarp, foldProgress, thickness);
+                const patch = buildConeGluePatchGeometry(outline, coneWarp, resolvedFoldProgress, thickness);
                 patch.translate(cx, ty, 0);
                 return patch;
             }
-            const cone = buildConeFrustumGeometry(coneWarp, thickness, foldProgress);
+            const cone = buildConeFrustumGeometry(coneWarp, thickness, resolvedFoldProgress);
             cone.translate(cx, ty, 0);
             return cone;
         }
@@ -621,7 +629,7 @@ export default function SolidPanelMesh({
         }
         return geo;
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [panel, thickness, coneWarp, conePatchOnly, coneWarp ? foldProgress : 0]);
+    }, [panel, thickness, coneWarp, conePatchOnly, coneWarp ? resolvedFoldProgress : 0]);
 
     // ── 1b. Dải BO TRÒN tại nếp gập (fillet) — góc gập cong mượt như giấy ──
     const foldFilletGeo = useDisposableResource<THREE.BufferGeometry | null>(() => {
@@ -629,7 +637,7 @@ export default function SolidPanelMesh({
         if (panel.parent === null || !panel.pivotEdge) return null;
         const piv = panel.pivotEdge;
         const depthLevel = depthMap.get(panel.name) ?? 0;
-        const theta = effFoldAngleRad(panel, foldProgress, depthLevel, maxD);
+        const theta = effFoldAngleRad(panel, resolvedFoldProgress, depthLevel, maxD);
         if (Math.abs(theta) < 1e-4) return null;
         const ring = (panel.outline && panel.outline.length >= 3)
             ? panel.outline
@@ -640,7 +648,7 @@ export default function SolidPanelMesh({
         cx /= ring.length; cy /= ring.length;
         return buildFoldFilletGeometry(piv[0], piv[1], theta, thickness, { x: cx, y: cy });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [panel, thickness, roundFolds, coneWarp, foldProgress, depthMap, maxD]);
+    }, [panel, thickness, roundFolds, coneWarp, resolvedFoldProgress, depthMap, maxD]);
 
     // ── 2. UV theo ảnh nghệ thuật (Yêu cầu 5.1, 5.3, 5.4) ──
     // Áp lại khi geometry hoặc tham số ánh xạ đổi; mutate uv attribute tại chỗ.
@@ -804,15 +812,22 @@ export default function SolidPanelMesh({
                 if (conePatchOnly) {
                     return [new THREE.BufferGeometry(), new THREE.BufferGeometry()];
                 }
-                return buildConeOutlineGeometries(coneWarp, foldProgress, thickness);
+                return buildConeOutlineGeometries(coneWarp, resolvedFoldProgress, thickness);
             }
             return buildPathLineGeometries(panel);
         },
         // eslint-disable-next-line react-hooks/exhaustive-deps
-        [panel, coneWarp, conePatchOnly, coneWarp ? foldProgress : 0, thickness],
+        [panel, coneWarp, conePatchOnly, coneWarp ? resolvedFoldProgress : 0, thickness],
     );
     const cutGeo = lineGeometries?.[0] ?? null;
     const creaseGeo = lineGeometries?.[1] ?? null;
+
+    // [SHADOW FIX 2026-07-27 §DT3D-008] Đường CAD chỉ là lớp chú thích hiển thị.
+    // Tách chúng khỏi depth pass của ContactShadows để hai khuôn phẳng của hộp
+    // âm dương không in hàng sọc vào texture bóng; mesh giấy vẫn đổ bóng như hộp khác.
+    useLayoutEffect(() => {
+        moveToMockupVisualOnlyLayer(cadVisualsRef.current);
+    }, [cutGeo, creaseGeo, hideCadLines, resolvedFoldProgress]);
 
     // Điểm cho FAT LINE (drei <Line segments>) — đặt nét NGAY TRÊN mặt ngoài
     // panel (z = offsetZ), KHÔNG nâng hình học (nâng nhiều → nét lềnh bềnh tách
@@ -829,6 +844,12 @@ export default function SolidPanelMesh({
         basePos: new THREE.Vector3(),
         worldNormal: new THREE.Vector3(),
         delta: new THREE.Matrix4(),
+        // [PERF (audit 2026-07-27 §DT3D-004)] Tái sử dụng ma trận cho panel này.
+        fold: {
+            result: new THREE.Matrix4(),
+            step: new THREE.Matrix4(),
+            temp: new THREE.Matrix4(),
+        } satisfies FoldCompensationScratch,
         warned: false,
     });
 
@@ -843,6 +864,7 @@ export default function SolidPanelMesh({
         }
         const foldResult = applyFoldCompensation(
             panel, allPanels, progress, depthMap, maxD, thickness,
+            foldScratch.current.fold,
         );
         if (foldResult.skipped && foldResult.warning && !foldScratch.current.warned) {
             foldScratch.current.warned = true;
@@ -867,21 +889,29 @@ export default function SolidPanelMesh({
         group.matrixWorldNeedsUpdate = true;
     };
 
+    const resolveLiveProgress = (progress: number) => (
+        liveFoldEnd < 1
+            ? Math.min(progress / Math.max(liveFoldEnd, 1e-6), 1)
+            : progress
+    );
+
     // Slider / store → live (khi không có driver animation).
     useEffect(() => {
         seedFoldLiveFromStore(foldProgress);
         if (!foldLive.driving) {
-            applyFoldMatrix(foldProgress);
+            applyFoldMatrix(resolvedFoldProgress);
             foldScratch.current.version = foldLive.version;
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [foldProgress, panel, allPanels, depthMap, maxD, thickness, explodedFactor, explodeSpacing, coneWarp]);
+    }, [foldProgress, resolvedFoldProgress, liveFoldEnd, panel, allPanels, depthMap, maxD, thickness, explodedFactor, explodeSpacing, coneWarp]);
 
     // Animation: cập nhật ma trận mỗi frame từ foldLive, không re-render React.
     useFrame(() => {
         if (foldLive.version === foldScratch.current.version) return;
         foldScratch.current.version = foldLive.version;
-        applyFoldMatrix(foldLive.progress);
+        // [DOUBLE-TRAY FIX 2026-07-27 §DT3D-002] Panel hoàn tất gấp
+        // trước khi pose lồng/chụp bắt đầu.
+        applyFoldMatrix(resolveLiveProgress(foldLive.progress));
     });
 
     // ── Kéo ảnh TRỰC TIẾP trên mặt 3D (artworkEditMode) ──
@@ -987,27 +1017,29 @@ export default function SolidPanelMesh({
                 <mesh geometry={foldFilletGeo} material={filletMaterial} castShadow receiveShadow />
             )}
 
-            {/* ── Nét khuôn bám mặt nón (bọc ly) — cuốn theo foldProgress ── */}
-            {coneCutHas && (
-                <lineSegments geometry={cutGeo!} position={coneLinePos}>
-                    <lineBasicMaterial color="#5a4a36" transparent opacity={0.55} depthWrite={false} />
-                </lineSegments>
-            )}
-            {coneCreaseHas && (
-                <lineSegments geometry={creaseGeo!} position={coneLinePos}>
-                    <lineBasicMaterial color="#8a6a40" transparent opacity={0.5} depthWrite={false} />
-                </lineSegments>
-            )}
+            <group ref={cadVisualsRef} name="panel-cad-visuals">
+                {/* ── Nét khuôn bám mặt nón (bọc ly) — cuốn theo foldProgress ── */}
+                {coneCutHas && (
+                    <lineSegments geometry={cutGeo!} position={coneLinePos}>
+                        <lineBasicMaterial color="#5a4a36" transparent opacity={0.55} depthWrite={false} />
+                    </lineSegments>
+                )}
+                {coneCreaseHas && (
+                    <lineSegments geometry={creaseGeo!} position={coneLinePos}>
+                        <lineBasicMaterial color="#8a6a40" transparent opacity={0.5} depthWrite={false} />
+                    </lineSegments>
+                )}
 
-            {/* ── Overlay đường CAD (FAT LINE, bám mặt nhờ polygonOffset) ── */}
-            {flatHasCut && cutOuterPts.length > 1 && (
-                <Line points={cutOuterPts} segments color="#23272e" lineWidth={1.6} transparent opacity={0.9}
-                    depthWrite={false} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-4} />
-            )}
-            {flatHasCrease && creaseOuterPts.length > 1 && (
-                <Line points={creaseOuterPts} segments color="#e23b3b" lineWidth={1.6} transparent opacity={0.95}
-                    depthWrite={false} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-4} />
-            )}
+                {/* ── Overlay đường CAD (FAT LINE, bám mặt nhờ polygonOffset) ── */}
+                {flatHasCut && cutOuterPts.length > 1 && (
+                    <Line points={cutOuterPts} segments color="#23272e" lineWidth={1.6} transparent opacity={0.9}
+                        depthWrite={false} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-4} />
+                )}
+                {flatHasCrease && creaseOuterPts.length > 1 && (
+                    <Line points={creaseOuterPts} segments color="#e23b3b" lineWidth={1.6} transparent opacity={0.95}
+                        depthWrite={false} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-4} />
+                )}
+            </group>
         </group>
     );
 }

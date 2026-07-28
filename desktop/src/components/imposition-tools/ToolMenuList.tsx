@@ -5,6 +5,9 @@ import { useAppSettingsStore } from '../../stores/appSettingsStore';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
 
+// UIUX (audit 2026-07-27 §B-12) fix-verify: B-12 rút lại — menu chỉ render khi
+// activeTool==='none' (menu/tool loại trừ nhau) nên prop activeTool luôn 'none',
+// highlight không bao giờ chạy; mini-toolbar đã có highlight riêng. Gỡ dead code.
 interface ToolMenuListProps {
     setActiveTool: (tool: string) => void;
     setTaskMode: (mode: string) => void;

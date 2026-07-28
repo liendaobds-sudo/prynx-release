@@ -4,7 +4,7 @@
 // trình duyệt bị WebView2 nuốt im lặng nên file không rơi xuống đĩa).
 //
 // Trong Tauri: mở save-dialog → ghi nguyên tử qua lệnh Rust
-// `write_file_atomic` (giống ImpositionTab/PreflightTab, không vướng
+// `write_file_atomic` (giống ImpositionTab, không vướng
 // scope plugin-fs). Ngoài Tauri (browser/dev): fallback `<a download>`.
 // ============================================================
 

@@ -126,6 +126,65 @@ describe('deep bottom flap — bất biến hình học free-edge', () => {
         expect(Math.abs(Math.abs(dx) - Math.abs(dy))).toBeLessThan(1.5);
     });
 
+    /**
+     * [AUTO-BOTTOM FIX 2026-07-27] Luật phân bổ chiều ngang mảnh đáy chính.
+     *
+     * Hồi quy đã xảy ra: mọi kích thước con (kệ 0.5·W, vai 0.215·W, chân 45°
+     * ≈ W/2) tỉ lệ theo W nhưng ngân sách ngang lại là L ⇒ hộp có L ≲ 1.26·W
+     * bị âm ngân sách, clamp cũ dồn hết sai số vào H nên dải đáy I→H sập còn
+     * 1.0mm (lưỡi giấy 1.3mm × 28mm — dao bế không giữ được) và vai H→G mất
+     * 45° (đo được ~85°). Bộ test cũ chỉ chạy L120×W80 = 1.5·W nên không thấy.
+     *
+     * Luật khoá ở đây:
+     *   1. Nấc F/G luôn ở GIỮA mặt dài L (sai lệch < 0.35mm — chỉ khi kệ tiêu
+     *      biến thì nấc trùng đỉnh kệ E).
+     *   2. Vai H→G đúng 45°.
+     *   3. Dải đáy I→H không bao giờ thoái hoá thành lưỡi giấy (≥ 3mm).
+     *   4. Kệ F→E là phần TỰ CO khi L nhỏ dần (đơn điệu theo L).
+     */
+    describe('phân bổ ngang: nấc F/G giữa mặt dài, vai 45°, kệ tự co', () => {
+        const RATIOS: Array<[number, number]> = [
+            [200, 100], [140, 100], [120, 100], [110, 100], [100, 100], [90, 100], [60, 100],
+        ];
+
+        const kpFor = (L: number, W: number) => {
+            const dims = autoBottomDims(L, W, PARAMS.T, PARAMS.C, 0);
+            const span = L - PARAMS.T / 2;
+            return { span, kp: computeDeepBottomKeyPoints(0, span, 0, dims) };
+        };
+
+        for (const [L, W] of RATIOS) {
+            it(`L=${L} × W=${W}: F/G giữa mặt L, vai 45°, đáy không thành lưỡi`, () => {
+                const { span, kp } = kpFor(L, W);
+
+                // (1) Nấc F/G ở giữa mặt dài (hoặc trùng E khi kệ đã tiêu biến).
+                expect(Math.abs(kp.G.x - Math.min(span / 2, kp.E.x))).toBeLessThan(0.35);
+                expect(kp.F.x).toBe(kp.G.x);
+
+                // (2) Vai H→G đúng 45°.
+                const dx = kp.G.x - kp.H.x;
+                const dy = kp.G.y - kp.H.y; // H ở đáy sâu (y âm hơn), G ở nấc
+                expect(dx).toBeGreaterThan(0);
+                expect(dy).toBeGreaterThan(0);
+                expect(Math.abs(dx - dy)).toBeLessThan(0.05);
+
+                // (3) Dải đáy I→H là phần chồng chịu lực — không được thành lưỡi giấy.
+                expect(kp.bandSpan).toBeGreaterThanOrEqual(3);
+            });
+        }
+
+        it('kệ F→E co dần khi L giảm, dải đáy I→H không bị hy sinh', () => {
+            const shelves = RATIOS.map(([L, W]) => kpFor(L, W).kp.shelfSpan);
+            for (let i = 1; i < shelves.length; i++) {
+                expect(shelves[i]).toBeLessThanOrEqual(shelves[i - 1] + 0.01);
+            }
+            // Hộp vuông: kệ gần như tiêu biến, đáy vẫn dày (trước fix: 1.0mm).
+            const square = kpFor(100, 100).kp;
+            expect(square.shelfSpan).toBeLessThan(2);
+            expect(square.bandSpan).toBeGreaterThan(15);
+        });
+    });
+
     it('key point thô: A.y = B.y = yBase và M sâu hơn C', () => {
         const dims = autoBottomDims(PARAMS.L, PARAMS.W, PARAMS.T, PARAMS.C, PARAMS.ABD);
         const kp = computeDeepBottomKeyPoints(0, PARAMS.L, 0, dims);

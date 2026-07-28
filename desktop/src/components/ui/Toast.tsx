@@ -6,15 +6,22 @@ import { useTranslation } from 'react-i18next';
 
 export type ToastType = 'success' | 'error' | 'info';
 
+/** UIUX (audit 2026-07-27 §D-11/M-3): toast có thể kèm 1 nút hành động (vd "Mở thư mục"). */
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 export interface ToastItem {
   id: number;
   type: ToastType;
   message: string;
+  action?: ToastAction;
 }
 
 interface ToastStore {
   toasts: ToastItem[];
-  push: (type: ToastType, message: string) => number;
+  push: (type: ToastType, message: string, action?: ToastAction) => number;
   dismiss: (id: number) => void;
 }
 
@@ -22,18 +29,20 @@ let _seq = 0;
 
 const useToastStore = create<ToastStore>((set) => ({
   toasts: [],
-  push: (type, message) => {
+  push: (type, message, action) => {
     const id = ++_seq;
-    set((s) => ({ toasts: [...s.toasts, { id, type, message }] }));
+    set((s) => ({ toasts: [...s.toasts, { id, type, message, action }] }));
     return id;
   },
   dismiss: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 }));
 
 const AUTO_DISMISS_MS = 4000;
+/* Toast có nút hành động cần thời gian để bấm — giữ lâu hơn toast thường */
+const AUTO_DISMISS_ACTION_MS = 8000;
 
-function emit(type: ToastType, message: string): number {
-  return useToastStore.getState().push(type, message);
+function emit(type: ToastType, message: string, action?: ToastAction): number {
+  return useToastStore.getState().push(type, message, action);
 }
 
 /**
@@ -41,11 +50,12 @@ function emit(type: ToastType, message: string): number {
  *   toast.success('✅ Đã lưu...')
  *   toast.error('Lỗi: ...')
  *   toast.info('Vui lòng nhập ...')
+ *   toast.success('Đã lưu 5 file', { label: 'Mở thư mục', onClick: () => ... })
  */
 export const toast = {
-  success: (message: string) => emit('success', message),
-  error: (message: string) => emit('error', message),
-  info: (message: string) => emit('info', message),
+  success: (message: string, action?: ToastAction) => emit('success', message, action),
+  error: (message: string, action?: ToastAction) => emit('error', message, action),
+  info: (message: string, action?: ToastAction) => emit('info', message, action),
   dismiss: (id: number) => useToastStore.getState().dismiss(id),
 };
 
@@ -60,9 +70,10 @@ function ToastCard({ item }: { item: ToastItem }) {
   const dismiss = useToastStore((s) => s.dismiss);
 
   useEffect(() => {
-    const t = setTimeout(() => dismiss(item.id), AUTO_DISMISS_MS);
+    const ms = item.action ? AUTO_DISMISS_ACTION_MS : AUTO_DISMISS_MS;
+    const t = setTimeout(() => dismiss(item.id), ms);
     return () => clearTimeout(t);
-  }, [item.id, dismiss]);
+  }, [item.id, item.action, dismiss]);
 
   const style = TYPE_STYLES[item.type];
   const Icon = style.Icon;
@@ -75,6 +86,14 @@ function ToastCard({ item }: { item: ToastItem }) {
       <span className={`shrink-0 mt-0.5 ${style.iconColor}`}><Icon className="w-5 h-5" /></span>
       <span className="flex-1 text-[13px] font-medium leading-snug break-words whitespace-pre-line">
         {item.message}
+        {item.action && (
+          <button
+            onClick={() => { item.action?.onClick(); dismiss(item.id); }}
+            className="block mt-1.5 text-[12px] font-semibold text-app-accent hover:text-app-accent-hover underline underline-offset-2"
+          >
+            {item.action.label}
+          </button>
+        )}
       </span>
       <button
         onClick={() => dismiss(item.id)}

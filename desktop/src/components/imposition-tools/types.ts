@@ -338,7 +338,7 @@ export const DEFAULT_BOOK_REPORT_CONFIG: BookReportDisplayConfig = {
 
 export type TaskMode = 'booklet' | 'nup' | 'step_repeat' | 'offset' | 'sticker_imposer' | 'cnc_imposer';
 
-export type ActiveToolType = 'none' | 'booklet' | 'nup' | 'shuffle' | 'resize' | 'split' | 'merge' | 'preflight' | 'hairlines' | 'convertcolors' | 'trapping' | 'pdfx' | 'datamerge' | 'numbering' | 'cover_numbering' | 'stick_text_number' | 'ocr' | 'optimize' | 'sticker' | 'sticker_imposer' | 'cnc_imposer' | 'bgremover' | 'watermark' | 'upscale' | 'pages' | 'trim_shift' | 'encrypt' | 'metadata' | 'office_convert' | 'crop';
+export type ActiveToolType = 'none' | 'booklet' | 'nup' | 'shuffle' | 'resize' | 'split' | 'merge' | 'preflight' | 'font_tools' | 'hairlines' | 'convertcolors' | 'trapping' | 'pdfx' | 'datamerge' | 'numbering' | 'cover_numbering' | 'stick_text_number' | 'ocr' | 'optimize' | 'sticker' | 'sticker_imposer' | 'cnc_imposer' | 'bgremover' | 'watermark' | 'upscale' | 'pages' | 'trim_shift' | 'encrypt' | 'metadata' | 'office_convert' | 'crop';
 
 /**
  * Loại panel mà một công cụ hiển thị trong workspace bình bài.
@@ -377,6 +377,8 @@ export const WORKSPACE_TOOL_PANEL: Record<ActiveToolType, WorkspacePanelKind> = 
     split: 'preprocess',
     pages: 'preprocess',
     preflight: 'preprocess',
+    // UIUX (audit 2026-07-28 §F.2): xử lý chữ/font có panel riêng, vẫn dùng router tiền xử lý.
+    font_tools: 'preprocess',
     hairlines: 'preprocess',
     convertcolors: 'preprocess',
     trapping: 'preprocess',

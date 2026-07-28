@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
@@ -24,8 +24,15 @@ export default function TrapPresetsTool({ pdfFile, onFileFixed }: Props) {
   const [preserveOverprint, setPreserveOverprint] = useState(true);
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState('');
+  const expectedOutputNameRef = useRef<string | null>(null);
 
-  useEffect(() => { setFileId(''); setStatus(''); }, [pdfFile]);
+  useEffect(() => {
+    // UIUX (audit 2026-07-28 §PF.1): giữ thông báo khi viewer nhận đúng file vừa xử lý.
+    const preserveSuccess = expectedOutputNameRef.current === pdfFile?.name;
+    expectedOutputNameRef.current = null;
+    setFileId('');
+    if (!preserveSuccess) setStatus('');
+  }, [pdfFile]);
 
   const getWorkingFile = useWorkingPdf();
   const ensureUploaded = useCallback(async (): Promise<string> => {
@@ -54,6 +61,7 @@ export default function TrapPresetsTool({ pdfFile, onFileFixed }: Props) {
         setStatus(t('preprocess.trapPresets:da_ap_dung_overprint_den'));
         if (data.output_filename && onFileFixed) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
+          expectedOutputNameRef.current = data.output_filename;
           onFileFixed(await dl.blob(), data.output_filename);
         }
       } else { recipeRecorder.discardPending(); setStatus(t('preprocess.trapPresets:loi_x', { msg: data.error || 'Lỗi' })); }

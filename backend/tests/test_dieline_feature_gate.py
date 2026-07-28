@@ -61,6 +61,28 @@ def test_pro_plan_reaches_native_engine(monkeypatch):
     assert response.json() == expected
 
 
+def test_double_tray_reaches_native_engine(monkeypatch):
+    request = json.loads(json.dumps(REQUEST))
+    request["params"]["boxType"] = "double_tray"
+    expected = {
+        "params": {"boxType": "double_tray"},
+        "dieline": {"panels": []},
+        "nestingResult": None,
+        "sleeveNestingResult": None,
+        "wasClamped": False,
+    }
+    monkeypatch.setattr(dieline, "_generate_native", lambda *_: json.dumps(expected))
+    app.dependency_overrides[require_license] = lambda: {
+        "license_key": "PRO", "hwid": "TEST", "verified": True,
+        "plan": "pro", "features": [],
+    }
+    with TestClient(app) as client:
+        response = client.post("/api/dieline/generate", json=request)
+
+    assert response.status_code == 200
+    assert response.json() == expected
+
+
 def test_native_engine_reuses_one_dedicated_worker(monkeypatch):
     expected = {
         "params": {"boxType": "rte"}, "dieline": {}, "nestingResult": None,

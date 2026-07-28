@@ -21,6 +21,11 @@ Nếu ba mốc này lệch, path của glyph này bị gán cho glyph khác: fil
 vẫn có chữ, chỉ sai chỗ — kiểu hỏng chỉ phát hiện được khi đã in. Vì vậy module
 này **không đoán**: thiếu mốc thì trả `None` và bộ ghi tự lùi về đường fontTools,
 rồi chốt so-kẽm vẫn chặn ở cuối như trước.
+
+Ngoài ba mốc, engine còn khai **số mã ký tự của từng khối** (`code_count`). Bộ ghi
+đếm lại bằng code của chính nó và chỉ tin path của PPE cho những khối khớp số — nhờ
+vậy lệch chỉ số trở thành *không thể xảy ra* thay vì *được lưới so-kẽm bắt kịp*, và
+không còn phụ thuộc glyph to hay nhỏ (audit lần 3 §3.2).
 """
 
 from __future__ import annotations
@@ -73,17 +78,30 @@ def stream_key_of(obj) -> tuple[int, int] | str:
     return "unaddressable"
 
 
+def _stream_of(entry: dict[str, Any]):
+    """Khoá stream trong một mục báo cáo, đưa list `[obj, gen]` về tuple để tra được."""
+    stream = entry.get("stream")
+    if isinstance(stream, (list, tuple)):
+        return (int(stream[0]), int(stream[1]))
+    return stream
+
+
 class PpeGlyphSource:
     """Đường viền glyph của MỘT trang, tra theo ba mốc đồng bộ."""
 
     def __init__(self, report: dict[str, Any]):
         self._by_key: dict[tuple[Any, int, int], dict] = {}
         for g in report.get("glyphs", []):
-            stream = g.get("stream")
-            if isinstance(stream, (list, tuple)):
-                stream = (int(stream[0]), int(stream[1]))
+            stream = _stream_of(g)
             key = (stream, int(g.get("text_object_index", 0)), int(g.get("glyph_index", 0)))
             self._by_key[key] = g
+        # OUT-FONT (audit lần 3 §3.2): số mã ký tự mỗi khối `BT … ET` theo khai báo của
+        # engine. Đây là chốt chống lệch chỉ số bằng SỐ LƯỢNG — xem `code_count`.
+        self._block_codes: dict[tuple[Any, int], int] = {}
+        for b in report.get("blocks", []):
+            self._block_codes[(_stream_of(b), int(b.get("text_object_index", 0)))] = int(
+                b.get("code_count", 0)
+            )
         self.has_type3 = bool(report.get("has_type3"))
         self.has_unsupported_context = bool(report.get("has_unsupported_context"))
         self.missing_glyphs = int(report.get("missing_glyphs", 0))
@@ -122,6 +140,22 @@ class PpeGlyphSource:
         if self.missing_glyphs:
             return f"{self.missing_glyphs} glyph không tra được đường viền"
         return None
+
+    def code_count(self, stream: Any, text_object_index: int) -> int | None:
+        """Số mã ký tự engine đã đi qua trong một khối `BT … ET`, hoặc `None`.
+
+        `None` nghĩa là engine không khai gì cho khối đó (bản native cũ, hoặc khối
+        engine không tới được). Caller phải coi đó là "không đối chiếu được" và lùi về
+        đường fontTools, chứ KHÔNG được suy ra "khối rỗng".
+
+        Vì sao đối chiếu bằng số lượng: hai bên đi qua cùng content stream bằng hai bộ
+        code khác nhau, nên rủi ro thật là **lệch chỉ số** — path glyph này bị gán cho
+        glyph khác. Khớp số mã trong cùng một khối ⇒ chỉ số khớp theo cấu trúc, không
+        phụ thuộc glyph to hay nhỏ và không cần ngưỡng nào. Chốt hình học trước đó phụ
+        thuộc kích thước: dấu chấm 12pt chỉ 9 px mực nên lưới so-kẽm bỏ qua, và chữ
+        dịch 30pt vẫn báo hậu kiểm thành công (audit lần 3 §3.2).
+        """
+        return self._block_codes.get((stream, int(text_object_index)))
 
     def path_for(
         self,

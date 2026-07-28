@@ -10,7 +10,7 @@ import { scheduleWarmupPdfjs } from './lib/pdfWarmup';
 import { appPerf } from './lib/perfMarks';
 import SystemIntegrations from './components/SystemIntegrations';
 import UpdateChecker from './components/UpdateChecker';
-import { TOOL_REGISTRY, TOOL_CATEGORIES, getToolsByCategory, getToolUniqueKey, getTabTitle, getExistingInstance, type AppToolId } from './lib/toolRegistry';
+import { TOOL_REGISTRY, TOOL_CATEGORIES, getToolsByCategory, getToolUniqueKey, getTabTitle, getExistingInstance, isImpositionFamilyTool, type AppToolId } from './lib/toolRegistry';
 import { isOfficePathOrName } from './lib/officeFileTypes';
 import { MenuBar, type MenuDef } from './components/MenuBar';
 import AboutModal, { SUPPORT } from './components/AboutModal';
@@ -26,6 +26,8 @@ import TrialExpiryBanner from './components/auth/TrialExpiryBanner';
 import SplashScreen from './components/SplashScreen';
 import { supabase } from './lib/supabase';
 import { ToastViewport, toast } from './components/ui/Toast';
+// UIUX (audit 2026-07-27 §D-13): câu lỗi tiếng Việt + hướng khắc phục thay vì "Min/Max/Close Error"
+import { formatError } from './lib/errorMessages';
 import { ConfirmDialogHost } from './components/ui/confirmDialog';
 import { listSnapshots, clearAllSnapshots, deleteSnapshot, type RecoverySnapshot } from './lib/recovery';
 import { ZoomIn, ZoomOut, Maximize, MoveHorizontal, FileText, ScrollText, Columns2, Rows2, Ruler, Moon } from 'lucide-react';
@@ -53,17 +55,41 @@ interface AppTab {
 // Custom Frameless Window Titlebar (OhMyShot style)
 function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const { t } = useTranslation();
+  // UIUX (audit 2026-07-27 §A-10): theo dõi trạng thái phóng to để đổi icon + title nút maximize
+  const [isMaximized, setIsMaximized] = useState(false);
+  useEffect(() => {
+    if (!(window as any).__TAURI_INTERNALS__) return; // chỉ áp cho desktop Tauri
+    const win = getCurrentWindow();
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const sync = () => {
+      win.isMaximized().then((v) => { if (!disposed) setIsMaximized(v); }).catch(() => {});
+    };
+    sync();
+    win.onResized(() => sync())
+      .then((fn) => { if (disposed) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { disposed = true; if (unlisten) unlisten(); };
+  }, []);
+  // UIUX §A-08 fix-verify: titlebar là chrome, phải nằm DƯỚI thang overlay z-modal/z-confirm/z-toast
+  // (1000+ trong index.css) — z-[9999] cũ nổi trên backdrop modal, bấm xuyên được.
   return (
     <div
       data-tauri-drag-region
-      className="h-10 w-full bg-[#f0f0f0] dark:bg-[#121212] flex items-center justify-between select-none z-[9999] shrink-0 transition-colors"
+      className="h-10 w-full bg-[#f0f0f0] dark:bg-[#121212] flex items-center justify-between select-none z-[900] shrink-0 transition-colors"
     >
       <div
         onPointerDown={(e) => {
+          // UIUX (audit 2026-07-27 §A-10) fix-verify: nhấn thứ 2 của double-click không được mở
+          // move-loop startDragging (nuốt mouseup, race với toggle built-in của Tauri)
+          if (e.detail > 1) return;
           if (e.buttons === 1 || e.button === 0) {
             getCurrentWindow().startDragging();
           }
         }}
+        // UIUX (audit 2026-07-27 §A-10) fix-verify: BỎ onDoubleClick toggleMaximize — div này có
+        // data-tauri-drag-region nên drag.js built-in của Tauri v2 đã bắt mousedown detail===2
+        // và tự toggleMaximize; thêm handler JS nữa gây double-toggle race.
         data-tauri-drag-region
         className="flex items-center gap-2 pl-6 flex-1 h-full"
       >
@@ -99,7 +125,8 @@ function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
         <div
           className="w-12 h-full flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer group text-slate-700 dark:text-zinc-300"
           onClick={() => {
-            getCurrentWindow().minimize().catch((e: any) => toast.error("Min Error: " + (e.message || e)));
+            // UIUX (audit 2026-07-27 §D-13): lỗi tiếng Việt qua formatError
+            getCurrentWindow().minimize().catch((e: any) => toast.error(formatError(e, t('shell:khong_thu_nho_duoc_cua_so', 'Không thu nhỏ được cửa sổ'))));
           }}
           title={t('shell:thu_nho')}
           role="button"
@@ -112,15 +139,25 @@ function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
         <div
           className="w-12 h-full flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer group text-slate-700 dark:text-zinc-300"
           onClick={() => {
-            getCurrentWindow().toggleMaximize().catch((e: any) => toast.error("Max Error: " + (e.message || e)));
+            // UIUX (audit 2026-07-27 §D-13): lỗi tiếng Việt qua formatError
+            getCurrentWindow().toggleMaximize().catch((e: any) => toast.error(formatError(e, t('shell:khong_phong_to_duoc_cua_so', 'Không phóng to được cửa sổ'))));
           }}
-          title={t('shell:phong_to')}
+          // UIUX (audit 2026-07-27 §A-10): title + icon đổi theo trạng thái phóng to
+          title={isMaximized ? t('shell:khoi_phuc', 'Khôi phục') : t('shell:phong_to')}
           role="button"
           aria-label={t('shell:phong_to_cua_so')}
         >
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="opacity-50 group-hover:opacity-100 transition-opacity pointer-events-none">
-            <rect x="0.5" y="0.5" width="9" height="9" stroke="currentColor" />
-          </svg>
+          {isMaximized ? (
+            // UIUX (audit 2026-07-27 §A-10): đã phóng to → icon 2 ô chồng (Khôi phục)
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="opacity-50 group-hover:opacity-100 transition-opacity pointer-events-none">
+              <rect x="0.5" y="2.5" width="7" height="7" stroke="currentColor" />
+              <path d="M2.5 2.5V0.5H9.5V7.5H7.5" stroke="currentColor" />
+            </svg>
+          ) : (
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="opacity-50 group-hover:opacity-100 transition-opacity pointer-events-none">
+              <rect x="0.5" y="0.5" width="9" height="9" stroke="currentColor" />
+            </svg>
+          )}
         </div>
         <div
           className="w-12 h-full flex items-center justify-center hover:bg-red-500 text-slate-700 dark:text-zinc-300 hover:text-white transition-colors cursor-pointer group"
@@ -633,7 +670,8 @@ function AppInner() {
     if (dirtyIds.length === 0) {
       forceCloseRef.current = true;
       clearAllSnapshots().finally(() => {
-        getCurrentWindow().destroy().catch((e: any) => toast.error("Close Error: " + (e.message || e)));
+        // UIUX (audit 2026-07-27 §D-13) fix-verify: destroy() đóng ỨNG DỤNG, không phải tab → sửa câu lỗi
+        getCurrentWindow().destroy().catch((e: any) => toast.error(formatError(e, t('shell:khong_dong_duoc_ung_dung', 'Không đóng được ứng dụng'))));
       });
       return;
     }
@@ -647,7 +685,8 @@ function AppInner() {
     quitQueueRef.current = [];
     setQuitBusy(false);
     clearAllSnapshots().finally(() => {
-      getCurrentWindow().destroy().catch((e: any) => toast.error("Close Error: " + (e.message || e)));
+      // UIUX (audit 2026-07-27 §D-13) fix-verify: destroy() đóng ỨNG DỤNG, không phải tab → sửa câu lỗi
+      getCurrentWindow().destroy().catch((e: any) => toast.error(formatError(e, t('shell:khong_dong_duoc_ung_dung', 'Không đóng được ứng dụng'))));
     });
   }, []);
 
@@ -737,7 +776,8 @@ function AppInner() {
         beginQuitWithDirtyPrompt();
         return;
       }
-      getCurrentWindow().destroy().catch((e: any) => toast.error("Close Error: " + (e.message || e)));
+      // UIUX (audit 2026-07-27 §D-13) fix-verify: destroy() đóng ỨNG DỤNG, không phải tab → sửa câu lỗi
+      getCurrentWindow().destroy().catch((e: any) => toast.error(formatError(e, t('shell:khong_dong_duoc_ung_dung', 'Không đóng được ứng dụng'))));
     };
     window.addEventListener('prynx-request-quit', onQuit);
     return () => window.removeEventListener('prynx-request-quit', onQuit);
@@ -987,7 +1027,7 @@ function AppInner() {
 
   const menus: MenuDef[] = [
     {
-      label: 'File',
+      label: t('shell:menu_file', 'Tệp'), // UIUX (audit 2026-07-27 §A-12)
       items: [
         { label: tv('Tài liệu mới'), shortcut: 'Ctrl+N', onClick: () => setIsNewDocOpen(true) },
         { label: tv('Mở file…'), shortcut: 'Ctrl+O', onClick: handleOpenFile },
@@ -1017,7 +1057,7 @@ function AppInner() {
       ],
     },
     {
-      label: 'Edit',
+      label: t('shell:menu_edit', 'Sửa'), // UIUX (audit 2026-07-27 §A-12)
       items: [
         { label: tv('Hoàn tác'), shortcut: 'Ctrl+Z', disabled: !isToolActive, onClick: () => viewerCmd('undo') },
         { label: tv('Làm lại'), shortcut: 'Ctrl+Y', disabled: !isToolActive, onClick: () => viewerCmd('redo') },
@@ -1028,7 +1068,7 @@ function AppInner() {
       ],
     },
     {
-      label: 'View',
+      label: t('shell:menu_view', 'Xem'), // UIUX (audit 2026-07-27 §A-12)
       items: [
         { label: t('shell:phong_to'), shortcut: getShortcutLabel('view.zoom_in'), icon: <ZoomIn className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-in') },
         { label: t('shell:thu_nho'), shortcut: getShortcutLabel('view.zoom_out'), icon: <ZoomOut className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-out') },
@@ -1047,7 +1087,7 @@ function AppInner() {
       ],
     },
     {
-      label: 'Tools',
+      label: t('shell:menu_tools', 'Công cụ'), // UIUX (audit 2026-07-27 §A-12)
       // Mỗi category = 1 mục cha có ▶, rê chuột xổ ra tool con (tránh đổ hết ~25 tool ra 1 cột).
       items: TOOL_CATEGORIES.flatMap((cat) => {
         const tools = getToolsByCategory(cat.id).filter((t) => t.isEnabled && !hiddenTools.includes(getToolUniqueKey(t)));
@@ -1063,7 +1103,7 @@ function AppInner() {
       }),
     },
     {
-      label: 'Window',
+      label: t('shell:menu_window', 'Cửa sổ'), // UIUX (audit 2026-07-27 §A-12)
       items: tabs.length > 1
         ? tabs.map((t) => ({
             label: t.title,
@@ -1073,7 +1113,7 @@ function AppInner() {
         : [{ label: tv('Chỉ có tab Home'), disabled: true }],
     },
     {
-      label: 'Help',
+      label: t('shell:menu_help', 'Trợ giúp'), // UIUX (audit 2026-07-27 §A-12)
       items: [
         { label: tv('Cài đặt & Cấu hình'), shortcut: 'Ctrl+K', onClick: () => { setSettingsInitialTab('tools'); setIsGlobalSettingsOpen(true); } },
         { label: tv('Phím tắt'), onClick: () => { setSettingsInitialTab('shortcuts'); setIsGlobalSettingsOpen(true); } },
@@ -1106,7 +1146,15 @@ function AppInner() {
       )}
 
       {/* ACROBAT MDI TAB BAR */}
-      <div className="flex items-end min-h-[34px] bg-[#f0f0f0] dark:bg-[#121212] shrink-0 overflow-x-auto overflow-y-hidden border-b border-black/10 dark:border-white/10 pl-6 pr-4 pt-1 gap-1.5 focus:outline-none [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+      <div
+        // UIUX (audit 2026-07-27 §A-06): lăn chuột dọc → cuộn ngang thanh tab (scrollbar đã ẩn).
+        // KHÔNG preventDefault — listener React là passive, gọi sẽ lỗi console.
+        onWheel={(e) => {
+          if (e.deltaY !== 0 && e.deltaX === 0) {
+            e.currentTarget.scrollLeft += e.deltaY;
+          }
+        }}
+        className="flex items-end min-h-[34px] bg-[#f0f0f0] dark:bg-[#121212] shrink-0 overflow-x-auto overflow-y-hidden border-b border-black/10 dark:border-white/10 pl-6 pr-4 pt-1 gap-1.5 focus:outline-none [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
 
         {/* Pinned Home Tab */}
         {tabs.filter(t => t.id === 'home').map((tab) => {
@@ -1202,8 +1250,9 @@ function AppInner() {
               // đóng tab/app) + lockedMode + initialFile. Trước đây chỉ type==='imposition'
               // được props; nup/diecut/cnc rơi nhánh mặc định (KHÔNG onDirtyChange) →
               // đóng tab/app mất dữ liệu không cảnh báo (audit an toàn dữ liệu).
-              const IMPOSITION_FAMILY = ['imposition', 'nup', 'diecut', 'cnc'];
-              if (IMPOSITION_FAMILY.includes(tab.type)) {
+              // UIUX (audit 2026-07-27 §WR.1): dùng một nguồn routing để shortcut Preflight
+              // không rơi sang component/menu độc lập khi người dùng mở công cụ trước PDF.
+              if (isImpositionFamilyTool(tab.type)) {
                 return (
                   <Suspense fallback={<div className="flex items-center justify-center h-full"><div className="w-8 h-8 border-3 border-indigo-400 border-t-transparent rounded-full animate-spin" /></div>}>
                     <ToolComponent
@@ -1313,7 +1362,8 @@ function AppInner() {
       })()}
 
       {recoverySnaps && recoverySnaps.length > 0 && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+        // UIUX (audit 2026-07-27 §A-08): z số tay → class ngữ nghĩa z-modal
+        <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-white dark:bg-zinc-800 p-6 rounded-lg shadow-2xl max-w-md w-full mx-4 border border-amber-500/40">
             <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">{t('shell:khoi_phuc_phien_chua_luu')}</h3>
             <p className="text-sm text-slate-600 dark:text-zinc-300 mb-3 font-medium">
@@ -1395,7 +1445,8 @@ function ConfirmCloseModal({
 
   if (!isOpen) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+    // UIUX (audit 2026-07-27 §A-08): z số tay → class ngữ nghĩa z-confirm (nổi trên z-modal)
+    <div className="fixed inset-0 z-confirm flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div className="bg-white dark:bg-zinc-800 p-6 rounded-lg shadow-2xl max-w-md w-full mx-4 border border-rose-500/30">
         <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">{title || tv('Cảnh báo chưa lưu')}</h3>
         <p className="text-sm text-slate-600 dark:text-zinc-300 mb-6 font-medium">

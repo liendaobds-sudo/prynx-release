@@ -90,10 +90,10 @@ class Settings(BaseSettings):
     PREVIEW_DPI: int = 150
 
     # Preflight & Auto-Fix Engine
-    GHOSTSCRIPT_PATH: str = _find_ghostscript()
-    PRYNX_PRINT_ENGINE: str = "auto"  # auto | ppe | gs
-    PRYNX_ALLOW_GS_FALLBACK: bool = _default_allow_gs_fallback()
-    PRYNX_FORCE_GS: bool = False
+    # GS-SUNSET (audit 2026-07-28 §3.7): đây là chính sách sản phẩm cố định,
+    # không phải cấu hình môi trường. Giá trị được khóa lại sau khi BaseSettings
+    # đọc .env để dev/test/release không thể vô tình chạy hai engine khác nhau.
+    GHOSTSCRIPT_PATH: str = ""
     # None = tự chọn theo RAM máy; số dương = quyền ghi đè của người vận hành.
     # PERF (audit 2026-07-27 §4.4): không hard-cap máy >=16 GB ở 512 MiB.
     PRYNX_PPE_MEMORY_BUDGET_MB: int | None = None
@@ -102,6 +102,10 @@ class Settings(BaseSettings):
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:80"]
+
+    def model_post_init(self, __context) -> None:
+        """Khóa chính sách no-GS sau khi đã đọc mọi nguồn cấu hình."""
+        object.__setattr__(self, "GHOSTSCRIPT_PATH", "")
 
     class Config:
         env_file = ".env"

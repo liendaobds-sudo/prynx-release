@@ -258,7 +258,6 @@ class TestPreflightEngine:
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_RULE_SOURCES = [
-    PROJECT_ROOT / "desktop/src/components/PreflightTab.tsx",
     PROJECT_ROOT / "desktop/src/components/preprocess-tools/PreflightTool.tsx",
 ]
 

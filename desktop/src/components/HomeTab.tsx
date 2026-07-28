@@ -196,6 +196,32 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
     const favoriteTools = useAppSettingsStore(state => state.favoriteTools);
     const toggleFavoriteTool = useAppSettingsStore(state => state.toggleFavoriteTool);
     const [toolQuery, setToolQuery] = useState('');
+    // UIUX (audit 2026-07-27 §D-17): trạng thái đang kéo file lên dropzone → đổi viền/nền sang accent
+    const [isDragOver, setIsDragOver] = useState(false);
+
+    // UIUX (audit 2026-07-27 §D-17) fix-verify: trong app Tauri thật (dragDropEnabled)
+    // webview NUỐT DOM drag events → onDragOver/onDragLeave KHÔNG BAO GIỜ bắn; đường
+    // drop thật là event Tauri (SystemIntegrations lắng tauri://drag-drop). Nghe
+    // onDragDropEvent của webview để bật/tắt highlight; DOM handler bên dưới giữ làm
+    // fallback khi chạy browser dev.
+    useEffect(() => {
+        if (!(window as any).__TAURI_INTERNALS__) return;
+        let isUnmounted = false;
+        let unlistenDrag: (() => void) | null = null;
+        import('@tauri-apps/api/webview').then(m =>
+            m.getCurrentWebview().onDragDropEvent(ev => {
+                const ty = ev.payload.type; // 'enter' | 'over' | 'drop' | 'leave'
+                setIsDragOver(ty === 'enter' || ty === 'over');
+            })
+        ).then(unlisten => {
+            if (isUnmounted) unlisten();
+            else unlistenDrag = unlisten;
+        }).catch(() => { /* API không sẵn có → giữ fallback DOM */ });
+        return () => {
+            isUnmounted = true;
+            if (unlistenDrag) unlistenDrag();
+        };
+    }, []);
     const _q = toolQuery.trim().toLowerCase();
     const matchesQuery = (t: ToolDefinition) => toolMatchesQuery(t, toolQuery);
 
@@ -269,8 +295,13 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
 
                     {/* BIG DROPZONE / BROWSE BUTTON */}
                     <div
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={(e) => { e.preventDefault(); /* Tauri tauri://drag-drop xử lý path */ }}
+                        // UIUX (audit 2026-07-27 §D-17) fix-verify: phản hồi thị giác khi kéo file
+                        // (fallback browser dev; app Tauri dùng onDragDropEvent ở effect trên).
+                        onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+                        // Guard chống nhấp nháy: dragleave bắn cả khi rê qua phần tử CON —
+                        // chỉ tắt highlight khi con trỏ RỜI HẲN dropzone.
+                        onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setIsDragOver(false); }}
+                        onDrop={(e) => { e.preventDefault(); setIsDragOver(false); /* Tauri tauri://drag-drop xử lý path */ }}
                         onClick={async () => {
                             if ((window as any).__TAURI_INTERNALS__) {
                                 try {
@@ -312,7 +343,8 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
                                 document.getElementById('home-generic-pdf-input')?.click();
                             }
                         }}
-                        className={`w-full relative bg-white dark:bg-zinc-900 rounded-[2rem] border-[3px] border-dashed border-indigo-200 dark:border-indigo-900/60 hover:border-indigo-500 hover:bg-indigo-50/50 dark:hover:bg-indigo-950/20 transition-all cursor-pointer flex flex-col xl:flex-row items-center justify-center gap-6 xl:gap-10 shadow-sm hover:shadow-xl hover:shadow-indigo-500/10 group shrink-0 ${hasRecentFiles ? 'p-6 md:p-8 max-w-2xl mx-auto' : 'p-8 md:p-14'}`}
+                        // UIUX (audit 2026-07-27 §D-17): khi isDragOver → viền + nền accent
+                        className={`w-full relative rounded-[2rem] border-[3px] border-dashed transition-all cursor-pointer flex flex-col xl:flex-row items-center justify-center gap-6 xl:gap-10 shadow-sm hover:shadow-xl hover:shadow-indigo-500/10 group shrink-0 ${isDragOver ? 'border-app-accent bg-app-accent-soft' : 'bg-white dark:bg-zinc-900 border-indigo-200 dark:border-indigo-900/60 hover:border-indigo-500 hover:bg-indigo-50/50 dark:hover:bg-indigo-950/20'} ${hasRecentFiles ? 'p-6 md:p-8 max-w-2xl mx-auto' : 'p-8 md:p-14'}`}
                     >
                         <input
                             id="home-generic-pdf-input"
@@ -356,12 +388,13 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
             </div>
 
             {/* RESIZER */}
+            {/* UIUX (audit 2026-07-27 §A-11): vùng bắt chuột rộng w-2.5 trong suốt, vạch nhìn thấy chỉ 1px */}
             <div
                 ref={resizerRef}
                 onMouseDown={startResizing}
-                className="w-1 hover:w-1.5 transition-all h-full flex flex-col justify-center items-center shrink-0 z-10 bg-slate-200 dark:bg-zinc-800 hover:bg-indigo-500 dark:hover:bg-indigo-500 cursor-col-resize group"
+                className="w-2.5 h-full flex flex-col justify-center items-center shrink-0 z-10 bg-transparent cursor-col-resize group"
             >
-                <div className={`h-12 w-1 rounded-full text-transparent bg-slate-400/30 group-hover:bg-white transition-colors ${isResizing ? 'bg-indigo-500' : ''}`} />
+                <div className={`w-px h-full mx-auto pointer-events-none transition-colors ${isResizing ? 'bg-app-accent' : 'bg-app-line group-hover:bg-app-accent'}`} />
             </div>
 
             {/* RIGHT PANE: Tools Menu */}

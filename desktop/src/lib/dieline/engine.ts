@@ -8,6 +8,9 @@ import { generateCupSleeve } from './CupSleeve';
 import { generatePizzaBox } from './PizzaBox';
 import { generateEnvelope } from './Envelope';
 import { generateMatchboxTray } from './MatchboxTray';
+import { generateDoubleTray, splitDoubleTrayDieline } from './DoubleTray';
+// [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ — dùng chung hợp đồng hình học RTE
+import { generateHangingWindowBox } from './HangingWindowBox';
 import { validateParams } from './validateParams';
 import { attachWarnings } from './attachWarnings';
 import { NestingConfig, NestingResult } from './nestingTypes';
@@ -35,10 +38,29 @@ function dispatchGenerator(params: BoxParams): DielineModel {
             return generateEnvelope(params);
         case 'tray':
             return generateMatchboxTray(params);
+        case 'double_tray':
+            return generateDoubleTray(params);
+        // [HANGING-WINDOW 2026-07-27] Định tuyến loại hộp treo có cửa sổ
+        case 'hanging_window':
+            return generateHangingWindowBox(params);
         case 'rte':
         default:
             return generateReverseTuckEnd(params);
     }
+}
+
+/** Các loại hộp 2 mảnh dùng chung hạ tầng nesting khay/vỏ (tray/sleeve).
+ *  [DOUBLE-TRAY 2026-07-26] Tổng quát hóa gate cũ (hard-code 'tray'):
+ *  double_tray dùng khe tray = mảnh ĐÁY, khe sleeve = mảnh NẮP. */
+function isTwoPieceBoxType(boxType: BoxParams['boxType']): boolean {
+    return boxType === 'tray' || boxType === 'double_tray';
+}
+
+/** Tách model 2 mảnh theo loại hộp: khay+vỏ (tray) hoặc đáy+nắp (double_tray). */
+function splitTwoPieceDieline(dieline: DielineModel) {
+    return dieline.params.boxType === 'double_tray'
+        ? splitDoubleTrayDieline(dieline)
+        : splitTrayDieline(dieline);
 }
 
 /**
@@ -68,10 +90,10 @@ function recalcNestingSplit(
     dieline: DielineModel | null,
     config: NestingConfig,
 ): { tray: NestingResult | null; sleeve: NestingResult | null } {
-    if (!dieline || dieline.params.boxType !== 'tray') {
+    if (!dieline || !isTwoPieceBoxType(dieline.params.boxType)) {
         return { tray: null, sleeve: null };
     }
-    const parts = splitTrayDieline(dieline);
+    const parts = splitTwoPieceDieline(dieline);
     if (!parts) return { tray: null, sleeve: null };
     const trayModel = parts.tray;
     const sleeveModel = parts.sleeve;
@@ -90,7 +112,7 @@ function recalcNestingCombinedTray(
     dieline: DielineModel,
     config: NestingConfig,
 ): { tray: NestingResult | null; sleeve: NestingResult | null } {
-    const parts = splitTrayDieline(dieline);
+    const parts = splitTwoPieceDieline(dieline);
     if (!parts) return { tray: null, sleeve: null };
     const trayModel = parts.tray;
     const sleeveModel = parts.sleeve;
@@ -327,10 +349,10 @@ export function runDielineEngine(request: DielineEngineRequest): DielineEngineRe
     }
 
     const config = normalizeNestingConfig(request.nestingConfig);
-    const isTray = params.boxType === 'tray';
-    const dualResult = isTray && config.trayNestingMode === 'split'
+    const isTwoPiece = isTwoPieceBoxType(params.boxType);
+    const dualResult = isTwoPiece && config.trayNestingMode === 'split'
         ? recalcNestingSplit(dieline, config)
-        : isTray && config.trayNestingMode === 'combined'
+        : isTwoPiece && config.trayNestingMode === 'combined'
             ? recalcNestingCombinedTray(dieline, config)
             : null;
 

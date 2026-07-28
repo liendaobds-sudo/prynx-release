@@ -192,20 +192,13 @@ class SeparationEngine:
         Extract separation plates (Acrobat Output Preview style).
 
         Strategy (theo thứ tự ưu tiên):
-        1. **PrynX Print Engine (PPE)** — tách kẽm trong không gian mực n kênh
-           (Rust, không subprocess). Chỉ dùng khi engine tự khai lượng mực đáng
-           tin; trang có shading/transparency chưa dựng bị nhường xuống bước 2
-           thay vì trả số thấp hơn thực tế.
-        2. Ghostscript ``tiffsep`` — real process + spot plates (color-managed
-           when ICC available).
-        3. Fallback: pypdfium2 RGB → naive CMYK split (fast, **approximate only**).
+        1. **PrynX Print Engine (PPE)** — tách kẽm trong không gian mực n kênh.
+        2. Nếu PPE không đủ tin cậy: PDFium RGB → CMYK xấp xỉ và ghi rõ độ tin cậy.
 
-        ``use_ghostscript``:
-          - None / True → prefer GS when installed
-          - False → force approximate path (debug / no GS); cũng tắt luôn PPE để
-            giữ đúng ý nghĩa "buộc đường xấp xỉ" của tham số này.
+        ``use_ghostscript`` chỉ còn để tương thích API cũ: ``False`` buộc đường
+        xấp xỉ; ``None/True`` chạy PPE. Tham số này không thể kích hoạt GS.
 
-        ``use_ppe``: tắt PPE riêng lẻ (so sánh engine / gỡ lỗi) mà vẫn dùng GS.
+        ``use_ppe=False`` buộc đường xấp xỉ để phục vụ kiểm tra chéo.
 
         ``ink_accurate``:
           - True → DeviceCMYK ink coverage (no ICC, no AA) for TAC / ink-limit.
@@ -215,40 +208,11 @@ class SeparationEngine:
         spot_names = self._detect_spot_inks(pdf_path)
         has_spots = len(spot_names) > 0
 
-        gs_available = bool(self.gs_path and os.path.isfile(str(self.gs_path)))
-        configured_mode = str(
-            getattr(settings, "PRYNX_PRINT_ENGINE", "auto")
-        ).strip().lower()
-        if configured_mode not in {"auto", "ppe", "gs"}:
-            logger.warning(
-                "PRYNX_PRINT_ENGINE=%r is invalid; using 'auto'.",
-                configured_mode,
-            )
-            configured_mode = "auto"
-
         force_approximate = use_ghostscript is False
-        force_gs = (
-            not force_approximate
-            and (
-                bool(getattr(settings, "PRYNX_FORCE_GS", False))
-                or configured_mode == "gs"
-            )
-        )
-        try_ppe = bool(use_ppe) and not force_approximate and not force_gs
-        request_gs = (
-            not force_approximate
-            and (
-                force_gs
-                or not use_ppe
-                or (
-                    configured_mode == "auto"
-                    and bool(getattr(settings, "PRYNX_ALLOW_GS_FALLBACK", True))
-                )
-            )
-        )
+        try_ppe = bool(use_ppe) and not force_approximate
 
         # ── Nhánh 1: PrynX Print Engine (PPE) ───────────────────────────────
-        # Thử PPE TRƯỚC Ghostscript, nhưng chỉ nhận kết quả khi chính engine khai
+        # PPE là engine chính duy nhất; chỉ nhận kết quả khi chính engine khai
         # là lượng mực đáng tin (`ink_unsound=False`). PPE tách kẽm trong không
         # gian mực n kênh nên spot/overprint là mô hình gốc, không phải mô phỏng;
         # bù lại nó chưa vẽ được shading/transparency, và những trang đó bị facade
@@ -272,8 +236,8 @@ class SeparationEngine:
                     result["detected_spots"] = result.get("detected_spots") or spot_names
                     return result
             except ppe_facade.PpeResultUntrusted as e:
-                # Không phải lỗi: engine tự khai giới hạn của chính nó. Nhường GS.
-                logger.info("PPE không đủ tin cậy (trang %d), dùng fallback đã cấu hình: %s", page_num, e)
+                # Không phải lỗi: engine tự khai giới hạn; chuyển sang kết quả xấp xỉ có nhãn.
+                logger.info("PPE không đủ tin cậy (trang %d), chuyển sang xấp xỉ: %s", page_num, e)
                 # ── Ngoại lệ: đo mực trên nội dung RGB thì GS KHÔNG phải thước ──
                 #
                 # Ở chế độ `ink_accurate`, GS buộc phải chạy `-dUseFastColor=true`
@@ -301,35 +265,7 @@ class SeparationEngine:
             except ppe_facade.PpeUnavailable as e:
                 logger.debug("PPE chưa khả dụng: %s", e)
             except Exception as e:  # noqa: BLE001
-                logger.warning("PPE lỗi (trang %d): %s. Dùng fallback đã cấu hình.", page_num, e)
-
-        if request_gs and gs_available:
-            try:
-                result = await self._run_ghostscript_tiffsep(
-                    pdf_path,
-                    page_num,
-                    dpi,
-                    cmyk_profile_id=None if ink_accurate else cmyk_profile_id,
-                    ink_accurate=ink_accurate,
-                )
-                if result and len(result.get("plates", [])) > 0:
-                    result["has_spot_colors"] = has_spots or any(
-                        p.get("is_spot") for p in result.get("plates", [])
-                    )
-                    result["detected_spots"] = spot_names or [
-                        p["name"] for p in result.get("plates", []) if p.get("is_spot")
-                    ]
-                    result["engine"] = "ghostscript"
-                    result["accuracy"] = "rip_separations"
-                    result["quality_note"] = (
-                        "Ghostscript tiffsep — kẽm process/spot gần RIP (Acrobat Output Preview)."
-                    )
-                    return result
-            except Exception as e:
-                logger.warning(
-                    "Ghostscript tiffsep failed: %s. Falling back to approximate RGB→CMYK.",
-                    e,
-                )
+                logger.warning("PPE lỗi (trang %d): %s. Chuyển sang xấp xỉ.", page_num, e)
 
         result = self._run_pikepdf_fallback(pdf_path, page_num, dpi)
         result["has_spot_colors"] = has_spots
@@ -337,11 +273,9 @@ class SeparationEngine:
         result["engine"] = "pdfium_approx"
         result["accuracy"] = "approximate"
         result["quality_note"] = (
-            "Xấp xỉ: PDF→RGB→tách CMYK giả (không ICC). "
-            "Bật chế độ RIP chính xác để dùng PPE hoặc Ghostscript."
+            "Xấp xỉ: PDF→RGB→tách CMYK giả (không ICC). PrynX PPE chưa dựng "
+            "được trang này đủ tin cậy; không dùng kết quả để chốt kẽm."
         )
-        if request_gs and not gs_available:
-            result["quality_note"] += " Ghostscript chưa được cấu hình (GHOSTSCRIPT_PATH)."
         return result
 
     def _tac_unverifiable(

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
@@ -34,8 +34,16 @@ export default function HairlinesTool({ pdfFile, onFileFixed }: Props) {
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(true);
+  const expectedOutputNameRef = useRef<string | null>(null);
 
-  useEffect(() => { setFileId(''); setResult(null); setError(''); }, [pdfFile]);
+  useEffect(() => {
+    // UIUX (audit 2026-07-28 §PF.1): giữ kết quả khi viewer nhận đúng file vừa xử lý.
+    const preserveSuccess = expectedOutputNameRef.current === pdfFile?.name;
+    expectedOutputNameRef.current = null;
+    setFileId('');
+    if (!preserveSuccess) setResult(null);
+    setError('');
+  }, [pdfFile]);
 
   const getWorkingFile = useWorkingPdf();
   const ensureUploaded = useCallback(async (): Promise<string> => {
@@ -66,6 +74,7 @@ export default function HairlinesTool({ pdfFile, onFileFixed }: Props) {
         setResult(data);
         if (data.output_filename && onFileFixed) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
+          expectedOutputNameRef.current = data.output_filename;
           onFileFixed(await dl.blob(), data.output_filename);
         }
       } else { recipeRecorder.discardPending(); setError(data.error || data.detail || t('preprocess.hairlines:that_bai')); }

@@ -32,7 +32,7 @@ const BOX_TYPES: BoxTypeCard[] = [
         type: 'auto_bottom',
         name: 'Tạo khuôn hộp đáy dán',
         desc: 'Auto-Bottom — đáy dán keo sẵn, tự bung khi dựng',
-        image: '/images/dieline/auto_bottom.svg',
+        image: '/images/dieline/auto_bottom.png',
     },
     {
         type: 'paper_bag',
@@ -69,6 +69,21 @@ const BOX_TYPES: BoxTypeCard[] = [
         name: 'Hộp Diêm / Khay',
         desc: 'hộp khay 4 góc dán, đựng thực phẩm',
         image: '/images/dieline/tray.png',
+    },
+    {
+        // [DOUBLE-TRAY 2026-07-26]
+        type: 'double_tray',
+        name: 'Hộp Âm Dương (Khay + Nắp)',
+        desc: 'Khay thành kép + nắp chụp rời',
+        image: '/images/dieline/double_tray.png',
+    },
+    {
+        // [HANGING-WINDOW 2026-07-27] Ảnh minh hoạ: public/images/dieline/hanging_window.png
+        // (nguồn: test/"hop guong.png", 1896×986 — cùng quy cách các thumbnail khác).
+        type: 'hanging_window',
+        name: 'Hộp treo có cửa sổ',
+        desc: 'HANGING-WINDOW — hộp treo hàng điện tử, phụ kiện, treo kệ siêu thị',
+        image: '/images/dieline/hanging_window.png',
     },
 ];
 

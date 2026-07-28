@@ -1,4 +1,6 @@
 import { useTranslation } from 'react-i18next';
+// UIUX (audit 2026-07-27 §D-12): icon lucide thay emoji ✅/❌
+import { Check, X } from 'lucide-react';
 interface ProgressTrackerProps {
   progress: number;
   status: string;
@@ -23,9 +25,10 @@ export default function ProgressTracker({
       {/* Header */}
       <div className="flex items-center gap-4 mb-6">
         {isCompleted ? (
-          <div className="text-4xl">✅</div>
+          // UIUX (audit 2026-07-27 §D-12): icon lucide + token màu thay emoji
+          <Check className="w-10 h-10 text-app-success" />
         ) : isFailed ? (
-          <div className="text-4xl">❌</div>
+          <X className="w-10 h-10 text-app-danger" />
         ) : (
           <div className="w-10 h-10 border-3 border-blue-400 border-t-transparent rounded-full animate-spin" />
         )}
@@ -58,11 +61,15 @@ export default function ProgressTracker({
 
       {/* Stats */}
       <div className="flex justify-between text-sm">
-        <span className="text-slate-500">
-          {totalPages > 0 ? `Trang ${currentPage}/${totalPages}` : t('misc.progressTracker:chuan_bi')}
+        <span className="text-slate-500 num">
+          {/* UIUX (audit 2026-07-27 §D-12): i18n hoá chuỗi hardcode */}
+          {totalPages > 0
+            ? t('misc.progressTracker:trang_x_y', 'Trang {{current}}/{{total}}', { current: currentPage, total: totalPages })
+            : t('misc.progressTracker:chuan_bi')}
         </span>
+        {/* UIUX (audit 2026-07-27 §D-12): class num cho con số % */}
         <span
-          className={`font-semibold ${
+          className={`font-semibold num ${
             isCompleted
               ? 'text-green-400'
               : isFailed

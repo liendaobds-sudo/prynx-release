@@ -116,6 +116,12 @@ export interface MockupState {
     /** Bật bump sợi giấy procedural (kraft/SBS). */
     showPaperGrain: boolean;
     /**
+     * [HANGING-WINDOW 2026-07-27] Hiện màng cửa sổ trong suốt (PVC/PET) ở 3D.
+     * Thuần hiển thị: không đụng khuôn bế, không vào golden master. Chỉ có tác
+     * dụng với hộp mà generator đã khoét lỗ cửa sổ (`panel.holes`).
+     */
+    showWindowFilm: boolean;
+    /**
      * Hero demo đang chạy (fold timeline + orbit nhẹ).
      * Tách khỏi `useBoxStore.isAnimating` (ping-pong fold cũ).
      */
@@ -175,6 +181,7 @@ export interface MockupState {
     setQualityTier: (tier: MockupQualityTier) => void;
     setToneExposure: (exposure: number) => void;
     setShowPaperGrain: (show: boolean) => void;
+    setShowWindowFilm: (show: boolean) => void;
     setHeroDemoPlaying: (playing: boolean) => void;
     setHeroOrbitYawRad: (yaw: number) => void;
     setExplodedFactor: (factor: number) => void;
@@ -306,7 +313,8 @@ function createInitialState(): Omit<
     | 'setEdgeColor' | 'setSubstrateId' | 'setSurfaceFinishId' | 'setFinishId'
     | 'setHdriPreset' | 'setCameraPreset'
     | 'setBackgroundPreset' | 'setQualityTier' | 'setToneExposure'
-    | 'setShowPaperGrain' | 'setHeroDemoPlaying' | 'setHeroOrbitYawRad'
+    | 'setShowPaperGrain' | 'setShowWindowFilm'
+    | 'setHeroDemoPlaying' | 'setHeroOrbitYawRad'
     | 'setExplodedFactor' | 'setShowDimensions'
     | 'setShowTechnicalLines' | 'setShowFloorGrid'
     | 'setExportScale' | 'setHdriStatus' | 'setWebglSupported'
@@ -336,6 +344,8 @@ function createInitialState(): Omit<
         qualityTier: DEFAULT_QUALITY_TIER,
         toneExposure: DEFAULT_TONE_EXPOSURE,
         showPaperGrain: false,
+        // [HANGING-WINDOW 2026-07-27] Mặc định BẬT: hộp có cửa sổ thì luôn có màng.
+        showWindowFilm: true,
         heroDemoPlaying: false,
         heroOrbitYawRad: 0,
         explodedFactor: EXPLODED_FACTOR_MIN,
@@ -412,6 +422,7 @@ export const useMockupStore = create<MockupState>((set) => ({
     setQualityTier: (tier) => set({ qualityTier: tier === 'high' ? 'high' : 'balanced' }),
     setToneExposure: (exposure) => set({ toneExposure: clampToneExposure(exposure) }),
     setShowPaperGrain: (show) => set({ showPaperGrain: !!show }),
+    setShowWindowFilm: (show) => set({ showWindowFilm: !!show }),
     setHeroDemoPlaying: (playing) =>
         set({
             heroDemoPlaying: !!playing,

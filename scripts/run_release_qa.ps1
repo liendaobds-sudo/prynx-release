@@ -9,6 +9,12 @@ $ROOT = Split-Path -Parent $PSScriptRoot
 $PYTHON = "$ROOT\backend\venv\Scripts\python.exe"
 $NPM_CACHE = Join-Path ([System.IO.Path]::GetTempPath()) "prynx-npm-cache"
 $FRONTEND_QA_DIR = Join-Path ([System.IO.Path]::GetTempPath()) ("prynx-frontend-qa-" + [guid]::NewGuid().ToString("N"))
+$NO_GS_CORPUS = if ($env:PRYNX_NO_GS_CORPUS) {
+    $env:PRYNX_NO_GS_CORPUS
+} else {
+    Join-Path $ROOT "private_test_corpus\incoming"
+}
+$NO_GS_AUDIT_OUT = Join-Path $ROOT "tmp\release_no_gs_audit.json"
 
 function Invoke-Checked {
     param(
@@ -36,6 +42,16 @@ try {
     Invoke-Checked "Backend test suite" { & $PYTHON -m pytest -q }
 } finally {
     Pop-Location
+}
+
+# RELEASE QA (audit 2026-07-28): the no-GS product contract is corpus-backed.
+# REFUSED is an intentional fail-closed outcome; GS and ERROR fail the release.
+if (-not (Test-Path -LiteralPath $NO_GS_CORPUS)) {
+    throw "No-GS corpus not found: $NO_GS_CORPUS (set PRYNX_NO_GS_CORPUS)"
+}
+Invoke-Checked "No-GS dependency gate (18 files x 16 operations)" {
+    & $PYTHON "$ROOT\scripts\gs_dependency_audit.py" $NO_GS_CORPUS `
+        --limit 18 --gate --out $NO_GS_AUDIT_OUT
 }
 
 # RELEASE QA (audit 2026-07-27): Windows dev servers keep native npm DLLs locked,
@@ -71,6 +87,7 @@ try {
         Invoke-Checked "Locked frontend dependencies (isolated)" {
             npm.cmd ci --no-audit --no-fund --cache $NPM_CACHE
         }
+        Invoke-Checked "Frontend typecheck (isolated)" { npm.cmd run typecheck }
         Invoke-Checked "Frontend test suite (isolated)" { npm.cmd test }
     } finally {
         Pop-Location
@@ -86,6 +103,14 @@ Push-Location "$ROOT\imposition_core"
 try {
     Invoke-Checked "Imposition core tests" { cargo test --locked }
     Invoke-Checked "Imposition core release compile" { cargo check --release --locked }
+} finally {
+    Pop-Location
+}
+
+Push-Location "$ROOT\print_engine"
+try {
+    Invoke-Checked "Print engine tests" { cargo test --locked }
+    Invoke-Checked "Print engine release compile" { cargo check --release --locked }
 } finally {
     Pop-Location
 }

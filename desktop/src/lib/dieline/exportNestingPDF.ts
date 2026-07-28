@@ -18,6 +18,7 @@ import i18n, { tv } from '../../i18n';
 import { validateClosedContours } from './contourValidator';
 import { svgPlacementTransform } from './placementTransform';
 import { splitTrayDieline } from './trayParts';
+import { splitDoubleTrayDieline } from './DoubleTray';
 import { savePdfBlob } from './savePdfBlob';
 
 /** Tolerance cho so sánh điểm (0.01mm) */
@@ -189,6 +190,11 @@ function buildSpecBlock(model: DielineModel, result: NestingResult, config: Nest
         if (params.G) lines.push(i18n.t('lib.exportNestingPDF:dam_g_params_g_mm', { G: params.G }));
         if (params.sleeveGlue) lines.push(i18n.t('lib.exportNestingPDF:mi_dan_vo_params_sleeveglue_mm', { sleeveGlue: params.sleeveGlue }));
     }
+    if (params.boxType === 'double_tray') {
+        // [DOUBLE-TRAY 2026-07-26] Dầm + khe lỏng nắp cho hộp âm dương
+        if (params.G) lines.push(i18n.t('lib.exportNestingPDF:dam_g_params_g_mm', { G: params.G }));
+        lines.push(i18n.t('lib.exportNestingPDF:khe_long_nap_params_lidgap_mm', { lidGap: params.lidGap }));
+    }
     if (params.TH) lines.push(i18n.t('lib.exportNestingPDF:mi_gap_th_params_th_mm', { TH: params.TH }));
     lines.push('');
     lines.push(i18n.t('lib.exportNestingPDF:to_actualsheet_width_actualsheet_height', { width: actualSheet.width, height: actualSheet.height }));
@@ -345,7 +351,10 @@ export async function buildTrayNestingPdfBlob(
     sleeveResult: NestingResult,
     config: NestingConfig,
 ): Promise<Blob> {
-    const parts = splitTrayDieline(model);
+    // [DOUBLE-TRAY 2026-07-26] đáy+nắp dùng chung hạ tầng khay+vỏ
+    const parts = model.params.boxType === 'double_tray'
+        ? splitDoubleTrayDieline(model)
+        : splitTrayDieline(model);
     if (!parts) throw new Error('Không tìm thấy đủ khuôn khay và vỏ.');
     for (const part of [parts.tray, parts.sleeve]) {
         if (!validateClosedContours(part).allClosed) {

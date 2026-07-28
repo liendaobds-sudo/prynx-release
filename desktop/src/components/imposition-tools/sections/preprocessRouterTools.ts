@@ -9,7 +9,7 @@
  */
 export const PREPROCESS_ROUTER_TOOLS = [
     'shuffle', 'resize', 'trim_shift', 'split', 'pages',
-    'preflight', 'hairlines', 'convertcolors', 'trapping', 'pdfx',
+    'preflight', 'font_tools', 'hairlines', 'convertcolors', 'trapping', 'pdfx',
     'ocr', 'optimize', 'sticker', 'bgremover', 'watermark', 'upscale',
     'encrypt', 'metadata', 'office_convert', 'crop',
 ] as const;

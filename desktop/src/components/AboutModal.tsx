@@ -123,8 +123,9 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
     : null;
 
   return createPortal(
+    // UIUX (audit 2026-07-27 §A-08): z-[9999] tùy tiện → thang z ngữ nghĩa z-modal
     <div
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+      className="fixed inset-0 z-modal flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-150"
       onClick={onClose}
       role="dialog"
       aria-modal="true"
@@ -145,7 +146,8 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
             />
           </div>
           <h2 className="text-lg font-bold text-slate-900 dark:text-white">PrynX</h2>
-          <p className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
+          {/* UIUX (audit 2026-07-27 §A-14): số phiên bản dùng class num */}
+          <p className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5 num">
             {version ? `Phiên bản ${version} · ` : ''}by PrintSolutions.vn
           </p>
         </div>
@@ -210,7 +212,8 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
           {upd.kind === 'available' ? (
             <div className="flex items-center gap-3">
               <div className="flex-1 min-w-0">
-                <div className="text-[13px] font-semibold text-emerald-600 dark:text-emerald-400">
+                {/* UIUX (audit 2026-07-27 §A-14): số phiên bản dùng class num */}
+                <div className="text-[13px] font-semibold text-emerald-600 dark:text-emerald-400 num">
                   {t('misc.about:co_ban_moi')}{upd.version ? ` ${upd.version}` : ''}
                 </div>
                 <div className="text-[11px] text-slate-500 dark:text-zinc-400">{t('misc.about:cai_dat_roi_khoi_dong_lai')}</div>
@@ -224,7 +227,8 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
             </div>
           ) : upd.kind === 'downloading' ? (
             <div className="space-y-1.5">
-              <div className="text-[13px] font-medium text-slate-700 dark:text-zinc-200">{t('misc.about:dang_tai_cai_dat', { percent: upd.percent })}</div>
+              {/* UIUX (audit 2026-07-27 §A-14): số % tải về dùng class num */}
+              <div className="text-[13px] font-medium text-slate-700 dark:text-zinc-200 num">{t('misc.about:dang_tai_cai_dat', { percent: upd.percent })}</div>
               <div className="h-1.5 rounded-full bg-slate-200 dark:bg-zinc-700 overflow-hidden">
                 <div className="h-full bg-emerald-500 transition-all duration-200" style={{ width: `${upd.percent}%` }} />
               </div>

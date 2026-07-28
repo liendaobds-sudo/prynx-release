@@ -6,6 +6,9 @@
 // ============================================================
 
 import { BoxParams } from './types';
+// [HANGING-WINDOW 2026-07-27] Kẹp tham số riêng của hộp treo theo đúng miền
+// mà hangingWindowDims() dùng, để form không hiển thị số đo khác khuôn thật.
+import { HGB_WINDOW_MARGIN_MM, HGB_TAB_H_MIN, HGB_TAB_H_MAX } from './constants';
 
 /** Kết quả validation */
 export interface ValidationResult {
@@ -53,6 +56,12 @@ const LIMITS = {
     envWindowH: { min: 10, max: 200 },
     envWindowX: { min: 5, max: 400 },
     envWindowY: { min: 5, max: 300 },
+    lidD: { min: 0, max: 600 },
+    lidGap: { min: 0, max: 5 },
+    // [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ — 0 = tự động suy theo L/D.
+    WNW: { min: 0, max: 600 },
+    WNH: { min: 0, max: 600 },
+    HTH: { min: 0, max: HGB_TAB_H_MAX },
 } as const;
 
 type NumericKey = keyof typeof LIMITS;
@@ -88,8 +97,8 @@ export function validateParams(
         }
     }
 
-    // --- 2. Ràng buộc: W ≤ L (bỏ qua cho pizza, tray — hộp hình chữ nhật ngang hợp lệ) ---
-    if (p.W > p.L && p.boxType !== 'pizza' && p.boxType !== 'tray') {
+    // --- 2. Ràng buộc: W ≤ L (bỏ qua cho pizza, tray, double_tray — hộp hình chữ nhật ngang hợp lệ) ---
+    if (p.W > p.L && p.boxType !== 'pizza' && p.boxType !== 'tray' && p.boxType !== 'double_tray') {
         if (changedKey === 'W') {
             // Nếu user đang chỉnh W → tự động tăng L lên bằng W
             p.L = clamp(p.W, LIMITS.L.min, LIMITS.L.max);
@@ -256,6 +265,38 @@ export function validateParams(
         }
     }
 
+    // --- 11c. Ràng buộc Double Tray (hộp âm dương) --- [DOUBLE-TRAY 2026-07-26]
+    if (p.boxType === 'double_tray') {
+        const shortSide = Math.min(p.L, p.W);
+        // Dầm hai bên không được nuốt hết cạnh ngắn (chừa ≥ 1mm cho mí).
+        const maxG = Math.max(LIMITS.G.min, Math.floor((shortSide - 1) / 2));
+        if (p.G > maxG) {
+            p.G = maxG;
+            wasClamped = true;
+            warnings.push(`Dầm quá rộng so với cạnh ngắn, đã giảm về ${p.G}mm`);
+        }
+        // Hai vát 45° của mí không được chồng nhau trên cạnh ngắn.
+        const maxTH = Math.max(0.5, (shortSide - 2 * p.G) / 2);
+        if (p.TH > maxTH) {
+            p.TH = Math.round(maxTH * 10) / 10;
+            wasClamped = true;
+            warnings.push(`Mí gập quá cao so với cạnh ngắn, đã giảm về ${p.TH}mm`);
+        }
+        // Thành đủ sâu cho khe vạt góc max(2T, 2C) + bề vạt + mép an toàn.
+        const slit = Math.max(2 * p.T, 2 * p.C);
+        const minD = Math.max(LIMITS.D.min, Math.ceil(slit + p.T + 2));
+        if (p.D < minD) {
+            p.D = minD;
+            wasClamped = true;
+            warnings.push(`Thành quá thấp cho kết cấu góc thành kép, đã tăng về ${p.D}mm`);
+        }
+        if (p.lidD > 0 && p.lidD < minD) {
+            p.lidD = minD;
+            wasClamped = true;
+            warnings.push(`Thành nắp quá thấp, đã tăng về ${p.lidD}mm`);
+        }
+    }
+
     // --- 12. Ràng buộc Envelope ---
     if (p.boxType === 'envelope') {
         // FH không nên vượt quá envH
@@ -283,6 +324,38 @@ export function validateParams(
                 p.envWindowH = Math.floor(Math.max(10, maxWinH));
                 wasClamped = true;
                 warnings.push(`Cửa sổ quá cao, đã giảm về ${p.envWindowH}mm`);
+            }
+        }
+    }
+
+    // --- 13. Ràng buộc Hộp treo có cửa sổ --- [HANGING-WINDOW 2026-07-27]
+    if (p.boxType === 'hanging_window') {
+        // Cửa sổ luôn căn giữa mặt trước và phải chừa lề HGB_WINDOW_MARGIN_MM
+        // mỗi phía (chỗ dán màng PVC/PET) — kẹp đúng miền của hangingWindowDims.
+        if (p.hgbWindow && p.WNW > 0) {
+            const maxWNW = p.L - 2 * HGB_WINDOW_MARGIN_MM;
+            if (p.WNW > maxWNW) {
+                // Giữ ≥ 1mm để không rơi về 0 (0 mang nghĩa "tự động").
+                p.WNW = Math.max(1, Math.floor(maxWNW));
+                wasClamped = true;
+                warnings.push(`Rộng cửa sổ vượt lề an toàn ${HGB_WINDOW_MARGIN_MM}mm mỗi bên, đã giảm về ${p.WNW}mm`);
+            }
+        }
+        if (p.hgbWindow && p.WNH > 0) {
+            const maxWNH = p.D - 2 * HGB_WINDOW_MARGIN_MM;
+            if (p.WNH > maxWNH) {
+                p.WNH = Math.max(1, Math.floor(maxWNH));
+                wasClamped = true;
+                warnings.push(`Cao cửa sổ vượt lề an toàn ${HGB_WINDOW_MARGIN_MM}mm mỗi bên, đã giảm về ${p.WNH}mm`);
+            }
+        }
+        // Cao MỘT lớp tai treo: chỉ nằm trong miền treo được lỗ euro.
+        if (p.HTH > 0) {
+            const clampedTabH = clamp(p.HTH, HGB_TAB_H_MIN, HGB_TAB_H_MAX);
+            if (clampedTabH !== p.HTH) {
+                p.HTH = clampedTabH;
+                wasClamped = true;
+                warnings.push(`Cao tai treo phải trong khoảng ${HGB_TAB_H_MIN}–${HGB_TAB_H_MAX}mm, đã đưa về ${p.HTH}mm`);
             }
         }
     }

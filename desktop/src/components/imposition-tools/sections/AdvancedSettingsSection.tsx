@@ -302,17 +302,23 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
 
                         {/* === ĐƯỜNG CẮT (chỉ Bế tem) === */}
                         {stickerGeometryMode && (
-                            <div className="flex items-center gap-3 relative z-[20] pb-1">
-                                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:duong_cat')}</label>
-                                <div className="flex flex-1 items-center gap-2 min-w-0">
-                                    <select
-                                        value={s.cutType}
-                                        onChange={e => s.setCutType(e.target.value)}
-                                        className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
-                                    >
-                                        <option value="default">{t('imposition.advancedSettings:mac_dinh')}</option>
-                                        <option value="one_dao">1 Dao (Dao LETA)</option>
-                                    </select>
+                            <div className="flex flex-col gap-1 relative z-[20] pb-1">
+                                <div className="flex items-center gap-3">
+                                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:duong_cat')}</label>
+                                    <div className="flex flex-1 items-center gap-2 min-w-0">
+                                        <select
+                                            value={s.cutType}
+                                            onChange={e => s.setCutType(e.target.value)}
+                                            className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+                                        >
+                                            <option value="default">{t('imposition.advancedSettings:mac_dinh')}</option>
+                                            <option value="one_dao">1 Dao (Dao LETA)</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                {/* UIUX (audit 2026-07-27 §B-15): nói rõ dao cắt không nhớ giữa các phiên */}
+                                <div className="text-[10px] text-app-text-3 pl-[107px] leading-snug">
+                                    {t('imposition.advancedSettings:dao_cat_reset_moi_phien', 'Dao cắt về mặc định mỗi phiên để an toàn — chọn lại nếu cần dao khác')}
                                 </div>
                             </div>
                         )}
@@ -405,7 +411,10 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                             <div className="flex flex-col gap-3 pb-1">
                                 <div className="flex items-center justify-between">
                                     <label className="text-[10px] text-slate-400 italic">{t('imposition.advancedSettings:bat_tuy_chinh_khoi_thong_tin_in_len_to')}</label>
-                                    <div
+                                    {/* UIUX (audit 2026-07-27 §B-17): div onClick → button có aria-label + focus-visible */}
+                                    <button
+                                        type="button"
+                                        aria-label={t('imposition.advancedSettings:giai_thich', 'Giải thích')}
                                         className="shrink-0 w-6 h-6 flex items-center justify-center text-slate-400 hover:text-indigo-600 cursor-pointer transition-colors"
                                         onClick={() => setInfoModal({
                                             title: t('imposition.advancedSettings:report_lenh_in'),
@@ -450,7 +459,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                         })}
                                     >
                                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                                    </div>
+                                    </button>
                                 </div>
 
                                 <Checkbox
@@ -773,7 +782,10 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         <div>
                             <div className="flex items-center justify-between mb-2">
                                 <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0">{t('imposition.advancedSettings:cach_chia_cum')}</label>
-                                <div
+                                {/* UIUX (audit 2026-07-27 §B-17): div onClick → button có aria-label + focus-visible */}
+                                <button
+                                    type="button"
+                                    aria-label={t('imposition.advancedSettings:giai_thich', 'Giải thích')}
                                     className="shrink-0 w-6 h-6 flex items-center justify-center text-slate-400 hover:text-indigo-600 cursor-pointer transition-colors"
                                     onClick={() => setInfoModal({
                                         title: t('imposition.advancedSettings:cach_chia_cum_grouping'),
@@ -796,7 +808,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                     })}
                                 >
                                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                                </div>
+                                </button>
                             </div>
                             <select
                                 value={s.groupingStrategy}
@@ -1020,7 +1032,10 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                             <div>
                                 <div className="flex items-center justify-between mb-2">
                                     <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0">{t('imposition.advancedSettings:canh_khoi_sau_khi_xep')}</label>
-                                    <div
+                                    {/* UIUX (audit 2026-07-27 §B-17): div onClick → button có aria-label + focus-visible */}
+                                    <button
+                                        type="button"
+                                        aria-label={t('imposition.advancedSettings:giai_thich', 'Giải thích')}
                                         className="shrink-0 w-6 h-6 flex items-center justify-center text-slate-400 hover:text-indigo-600 cursor-pointer transition-colors"
                                         onClick={() => setInfoModal({
                                             title: t('imposition.advancedSettings:canh_khoi_alignment'),
@@ -1039,7 +1054,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                         })}
                                     >
                                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                                    </div>
+                                    </button>
                                 </div>
                                 <select
                                     value={s.align} onChange={(e) => s.setAlign(e.target.value as any)}
@@ -1089,7 +1104,8 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                                         </div>
                                     </div>
-                                    <button onClick={() => s.setShowMarksModal(true)} className="hover:bg-slate-200 dark:hover:bg-zinc-700 rounded transition-colors text-slate-400 hover:text-indigo-600 p-0.5" title={t('imposition.advancedSettings:cai_dat_dau_xen')}>
+                                    {/* UIUX (audit 2026-07-27 §B-24): p-0.5 → p-1.5 (vùng bấm bánh răng lớn hơn) */}
+                                    <button onClick={() => s.setShowMarksModal(true)} className="hover:bg-slate-200 dark:hover:bg-zinc-700 rounded transition-colors text-slate-400 hover:text-indigo-600 p-1.5" title={t('imposition.advancedSettings:cai_dat_dau_xen')}>
                                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
                                     </button>
                                 </div>
@@ -1178,10 +1194,14 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                             {s.taskMode === 'booklet' && (s.signatureMode === 'saddle' || s.signatureMode === 'thread') && (
                                 <div className="flex flex-col gap-2 h-full justify-end">
                                     <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide block -mb-0.5" title={t('imposition.advancedSettings:su_dung_do_day_giay_de_bu_lem_gay_creep')}>{t('imposition.advancedSettings:day_giay_creep_mm')}</label>
-                                    <input
-                                        type="number" step="0.01" value={s.paperThickness} onChange={e => s.setPaperThickness(Number(e.target.value))}
-                                        className="w-full h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
-                                    />
+                                    {/* UIUX (audit 2026-07-27 §B-02): thêm suffix mm */}
+                                    <div className="relative">
+                                        <input
+                                            type="number" step="0.01" value={s.paperThickness} onChange={e => s.setPaperThickness(Number(e.target.value))}
+                                            className="w-full h-8 px-2 pr-7 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+                                        />
+                                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none uppercase">mm</span>
+                                    </div>
                                 </div>
                             )}
                             <div className="flex flex-col gap-2 h-full justify-end">
@@ -1199,10 +1219,14 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                         )}
                                     </button>
                                 </div>
-                                <input
-                                    type="number" step="0.1" value={s.bleed} onChange={e => s.setBleed(Number(e.target.value))}
-                                    className="w-full h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
-                                />
+                                {/* UIUX (audit 2026-07-27 §B-02): thêm suffix mm; §B-04: min 0 + clamp không âm */}
+                                <div className="relative">
+                                    <input
+                                        type="number" step="0.1" min="0" value={s.bleed} onChange={e => s.setBleed(Math.max(0, Number(e.target.value) || 0))}
+                                        className="w-full h-8 px-2 pr-7 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+                                    />
+                                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none uppercase">mm</span>
+                                </div>
                             </div>
                         </div>
                         )}

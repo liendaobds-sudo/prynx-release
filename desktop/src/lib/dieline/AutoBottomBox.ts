@@ -552,6 +552,10 @@ export function generateAutoBottomBox(params: BoxParams): DielineModel {
     const abDims = autoBottomDims(L, W, T, C, params.ABD);
     const colX: Array<[number, number]> = [[x1, x2], [x2, x3], [x3, x4], [x4, x5]];
     const modelWarnings: string[] = [];
+    // [AUTO-BOTTOM FIX 2026-07-27] Chiều sâu THỰC nhỏ nhất của mảnh đáy chính:
+    // hộp cực dẹt (L ≪ W) bị rút sâu để giữ vai H→G đúng 45° → cảnh báo theo
+    // số thực này, không theo ABD người dùng nhập.
+    let hDeepEffMin = abDims.hDeep;
 
     // Khe B↔góc cột trên đoạn gấp tại các GÓC DÁN TRONG — ghi lại để đóng
     // bằng nét CUT và tách đường cấn đáy ở D2. Mỗi phần tử: [xB, xGócCột].
@@ -574,6 +578,7 @@ export function generateAutoBottomBox(params: BoxParams): DielineModel {
                 xFL, xFR, yBot, abDims,
                 isSeamGlue ? { glueEdgeGap: 0 } : undefined,
             );
+            hDeepEffMin = Math.min(hDeepEffMin, kp.hDeepEff);
             const freeEdge = buildDeepBottomFreeEdge(kp);
             const creaseSeg = line(kp.B, kp.E, 'CREASE');
             allPaths.push(...freeEdge, creaseSeg);
@@ -677,10 +682,18 @@ export function generateAutoBottomBox(params: BoxParams): DielineModel {
     }
 
     // Cảnh báo sản xuất: mảnh chính không sâu hơn W/2 → hai mảnh không chồng mí
-    if (abDims.hDeep <= W / 2 + 0.5) {
+    if (hDeepEffMin <= W / 2 + 0.5) {
         modelWarnings.push(
             'Đáy dán: chiều sâu mảnh đáy chính (ABD) không lớn hơn W/2 — '
             + 'hai mảnh đáy không chồng mí, đáy có thể hở. Hãy tăng ABD.',
+        );
+    }
+    // [AUTO-BOTTOM FIX 2026-07-27] Hộp cực dẹt: giữ vai 45° nên phải rút sâu đáy.
+    if (hDeepEffMin < abDims.hDeep - 0.05) {
+        modelWarnings.push(
+            `Đáy dán: mặt dài L quá ngắn so với W nên chiều sâu mảnh đáy đã rút từ `
+            + `${abDims.hDeep.toFixed(1)}mm còn ${hDeepEffMin.toFixed(1)}mm để giữ vai bế 45°. `
+            + 'Cân nhắc đảo L ↔ W hoặc giảm ABD.',
         );
     }
 

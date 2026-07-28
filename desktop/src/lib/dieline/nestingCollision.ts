@@ -2,6 +2,7 @@ import { PlacedDieline } from './nestingTypes';
 import { Point2D } from './types';
 import { DIELINE_LIMITS } from './runtimeValidation';
 import { mapPointToPlacement } from './placementTransform';
+import { placementsTooClose, type DieProfile } from './nestingProfile';
 
 type Bounds = { minX: number; minY: number; maxX: number; maxY: number };
 
@@ -72,12 +73,21 @@ function polygonsTooClose(a: Point2D[], b: Point2D[], gap: number): boolean {
     return minDistance < gap - 0.01;
 }
 
-/** Validate heuristic output against the true CUT contour using a spatial index. */
+/**
+ * Validate heuristic output against the true CUT contour using a spatial index.
+ *
+ * [HANGING-WINDOW 2026-07-27] Thêm tham số `profile` (tuỳ chọn). VÌ SAO: `outline`
+ * truyền vào đây thực tế LUÔN là bbox-rect (xem `nestingProfile.ts`), nên phép so
+ * polygon coi mọi vị trí LỒNG là va chạm và loại sạch — mọi chiến lược lồng khuôn
+ * mất tác dụng trong app. Khi có `profile` (biên dạng thật theo cột), dùng nó cho
+ * các cặp 0°/180°; cặp có khuôn xoay 90°/270° vẫn dùng phép polygon thận trọng.
+ */
 export function validatePlacementPositions(
     candidates: PlacedDieline[],
     outline: Point2D[],
     gap: number,
     printable: { left: number; top: number; right: number; bottom: number },
+    profile?: DieProfile,
 ): { positions: PlacedDieline[]; removed: number } {
     const accepted: { pos: PlacedDieline; polygon: Point2D[]; bounds: Bounds }[] = [];
     const buckets = new Map<string, number[]>();
@@ -104,6 +114,13 @@ export function validatePlacementPositions(
             const other = accepted[index];
             if (bounds.maxX + gap < other.bounds.minX || other.bounds.maxX + gap < bounds.minX
                 || bounds.maxY + gap < other.bounds.minY || other.bounds.maxY + gap < bounds.minY) continue;
+            if (profile && !profile.synthetic) {
+                const byProfile = placementsTooClose(pos, other.pos, profile, gap);
+                if (byProfile !== null) {
+                    if (byProfile) { safe = false; break; }
+                    continue;
+                }
+            }
             if (polygonsTooClose(polygon, other.polygon, gap)) { safe = false; break; }
         }
         if (!safe) continue;

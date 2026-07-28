@@ -13,11 +13,12 @@
 // _Requirements: 3.5, 7.3, 7.4_
 // ============================================================
 
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { ContactShadows } from '@react-three/drei';
 import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useMockupStore } from '../../store/useMockupStore';
+import { MOCKUP_VISUAL_ONLY_LAYER, moveToMockupVisualOnlyLayer } from './renderLayers';
 
 // ─── Định nghĩa preset nền/sàn ──────────────────────────────────────────────
 
@@ -246,8 +247,8 @@ export interface ShadowFloorProps {
     showFloorPlane?: boolean;
     /** Lưới đo kỹ thuật trên sàn; mặc định tắt cho chế độ mockup sạch. */
     showGrid?: boolean;
-    /** Đổi giá trị để chụp lại bóng một lần sau khi hình học hộp đã ổn định. */
-    shadowRevision?: string | number;
+    /** Giữ nguyên texture bóng trong lúc panel đang chuyển động; hết animation chụp lại một lần. */
+    freezeShadow?: boolean;
 }
 
 /**
@@ -264,7 +265,7 @@ export default function ShadowFloor({
     applyBackground = true,
     showFloorPlane = true,
     showGrid = false,
-    shadowRevision = 0,
+    freezeShadow = false,
 }: ShadowFloorProps) {
     const backgroundPreset = useMockupStore((s) => s.backgroundPreset);
     const preset = useMemo(() => getBackgroundPreset(backgroundPreset), [backgroundPreset]);
@@ -272,6 +273,19 @@ export default function ShadowFloor({
     // Đặt nền scene: solid Color hoặc CanvasTexture radial (showcase-style).
     // Không dùng `<color attach="background">` trong <group>. Khôi phục khi unmount.
     const scene = useThree((s) => s.scene);
+    const camera = useThree((s) => s.camera);
+    const floorVisualsRef = useRef<THREE.Group>(null);
+
+    // [SHADOW FIX 2026-07-27 §DT3D-007] Không để sàn/lưới lọt vào depth pass
+    // của ContactShadows. Nếu bị capture, mặt sàn sẽ ghi đè depth của hộp và
+    // sinh các sọc ngang/moire như ảnh lỗi người dùng cung cấp.
+    useLayoutEffect(() => {
+        const floorVisuals = floorVisualsRef.current;
+        if (!floorVisuals?.traverse || !camera?.layers) return;
+        camera.layers.enable(MOCKUP_VISUAL_ONLY_LAYER);
+        moveToMockupVisualOnlyLayer(floorVisuals);
+        return () => camera.layers.disable(MOCKUP_VISUAL_ONLY_LAYER);
+    }, [camera, showFloorPlane, showGrid, preset.id]);
     useEffect(() => {
         if (!applyBackground) return;
         const prev = scene.background;
@@ -320,7 +334,6 @@ export default function ShadowFloor({
         <group name="mockup-floor">
             {/* Soft/contact shadow tại chân hộp tiếp giáp mặt nền (Yêu cầu 3.5) */}
             <ContactShadows
-                key={shadowRevision}
                 position={[0, floorY + shadowLift, 0]}
                 scale={shadowScale}
                 resolution={512}
@@ -328,41 +341,44 @@ export default function ShadowFloor({
                 blur={preset.shadowBlur}
                 opacity={preset.shadowOpacity}
                 color={preset.shadowColor}
-                frames={1}
+                // Giữ texture cũ khi chuyển động; scene đứng yên mới chụp lại một lần.
+                frames={freezeShadow ? 0 : 1}
                 smooth
                 depthWrite={false}
             />
 
-            {/* Mặt sàn đặc hoặc ShadowMaterial (product turntable) */}
-            {showFloorPlane && (
-                <mesh
-                    rotation={[-Math.PI / 2, 0, 0]}
-                    position={[0, floorY, 0]}
-                    receiveShadow
-                >
-                    <planeGeometry args={[floorSize, floorSize]} />
-                    {preset.floorShadowOnly ? (
-                        <shadowMaterial opacity={Math.min(0.35, preset.shadowOpacity * 0.6)} />
-                    ) : (
-                        <meshStandardMaterial
-                            color={preset.floorColor}
-                            roughness={preset.floorRoughness}
-                            metalness={preset.floorMetalness}
-                            side={THREE.FrontSide}
-                        />
-                    )}
-                </mesh>
-            )}
+            <group ref={floorVisualsRef} name="mockup-floor-visuals">
+                {/* Mặt sàn đặc hoặc ShadowMaterial (product turntable) */}
+                {showFloorPlane && (
+                    <mesh
+                        rotation={[-Math.PI / 2, 0, 0]}
+                        position={[0, floorY, 0]}
+                        receiveShadow
+                    >
+                        <planeGeometry args={[floorSize, floorSize]} />
+                        {preset.floorShadowOnly ? (
+                            <shadowMaterial opacity={Math.min(0.35, preset.shadowOpacity * 0.6)} />
+                        ) : (
+                            <meshStandardMaterial
+                                color={preset.floorColor}
+                                roughness={preset.floorRoughness}
+                                metalness={preset.floorMetalness}
+                                side={THREE.FrontSide}
+                            />
+                        )}
+                    </mesh>
+                )}
 
-            {/* Lưới chỉ dành cho kiểm tra kỹ thuật, không phủ lên mockup mặc định. */}
-            {showGrid && (
-                <SingleLayerFloorGrid
-                    size={floorSize}
-                    divisions={divisions}
-                    y={floorY + gridLift}
-                    color={gridColor}
-                />
-            )}
+                {/* Lưới chỉ dành cho kiểm tra kỹ thuật, không phủ lên mockup mặc định. */}
+                {showGrid && (
+                    <SingleLayerFloorGrid
+                        size={floorSize}
+                        divisions={divisions}
+                        y={floorY + gridLift}
+                        color={gridColor}
+                    />
+                )}
+            </group>
         </group>
     );
 }

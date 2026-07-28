@@ -13,6 +13,8 @@ import { ThemeToggle } from './ThemeToggle';
 import { useTranslation } from 'react-i18next';
 import { usePrintDialog } from './shared/usePrintDialog';
 import { toast } from './ui/Toast';
+// UIUX (audit 2026-07-27 §D-15): lỗi kỹ thuật → câu Việt + hướng khắc phục
+import { formatError, isCanceled } from '../lib/errorMessages';
 
 type Phase = 'upload' | 'processing' | 'results';
 
@@ -82,7 +84,8 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
       const result = await uploadPDF(file);
       store.setFileB({ ...result, localFile: file });
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : t('tabs.compare:upload_that_bai'));
+      // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
+      if (!isCanceled(e)) setError(formatError(e, t('tabs.compare:upload_that_bai')));
     } finally {
       setUploadingB(false);
     }
@@ -100,7 +103,8 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
          setTimeout(() => handleUploadB(allFiles[1]), 500);
       }
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : t('tabs.compare:upload_that_bai'));
+      // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
+      if (!isCanceled(e)) setError(formatError(e, t('tabs.compare:upload_that_bai')));
     } finally {
       setUploadingA(false);
     }
@@ -231,7 +235,8 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
       }, 600000);
       void runPoll();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : t('tabs.compare:khong_the_tao_job'));
+      // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy (timeout ~10 phút giữ nguyên)
+      if (!isCanceled(e)) setError(formatError(e, t('tabs.compare:khong_the_tao_job')));
       setPhase('upload');
     }
   }, [store, t]);

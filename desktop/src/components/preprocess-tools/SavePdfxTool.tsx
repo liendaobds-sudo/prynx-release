@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
@@ -32,15 +32,14 @@ const COMPARE = [
 
 // Giải thích chi tiết từng mục kiểm tra — click icon "?" để mở modal. Khớp theo
 // check.id trả từ backend (pdfx_export.check_compliance).
-// autoFix: xuất PDF/X (Ghostscript) có TỰ sửa mục này không. TrimBox = false vì
-// lệnh GS hiện tại không sinh TrimBox — phải đặt thủ công trước (Set Page Boxes).
+// autoFix: PrynX Print Engine có thể sửa mục này mà không phải đoán dữ liệu nguồn.
 interface CheckHelp { what: string; why: string; fix: string; autoFix: boolean; }
 const CHECK_HELP: Record<string, CheckHelp> = {
   FONTS_EMBEDDED: {
     what: 'Kiểm tra mọi phông chữ trong file đã được nhúng (embed) vào PDF hay chưa.',
     why: 'Nếu phông không nhúng, máy RIP của nhà in không có phông đó sẽ thay bằng phông khác — chữ bị nhảy phông, sai khoảng cách, thậm chí mất chữ. Chuẩn PDF/X bắt buộc nhúng toàn bộ phông.',
-    fix: 'Khi bấm "Xuất PDF/X", hệ thống tự nhúng toàn bộ phông (kể cả phông hệ thống) vào file.',
-    autoFix: true,
+    fix: 'Nhúng phông ngay từ phần mềm nguồn hoặc dùng Khóa Font. PrynX sẽ dừng an toàn nếu không có đúng dữ liệu phông để bảo toàn chữ.',
+    autoFix: false,
   },
   TRIMBOX_EXISTS: {
     what: 'Kiểm tra mỗi trang đã khai báo TrimBox (khung thành phẩm — đường cắt cuối) hay chưa.',
@@ -69,7 +68,7 @@ const CHECK_HELP: Record<string, CheckHelp> = {
   PDF_VERSION: {
     what: 'Kiểm tra phiên bản PDF phù hợp với chuẩn đã chọn (X-1a cần 1.3, X-4 cần 1.6).',
     why: 'Mỗi chuẩn PDF/X gắn với một phiên bản PDF nhất định để đảm bảo chỉ dùng những tính năng máy RIP hỗ trợ. Sai phiên bản có thể chứa tính năng chuẩn không cho phép.',
-    fix: 'Khi xuất PDF/X, Ghostscript tự hạ/nâng đúng phiên bản PDF theo chuẩn — nên mục này luôn được xử lý tự động.',
+    fix: 'Khi xuất PDF/X, PrynX Print Engine đặt đúng phiên bản PDF theo chuẩn đã chọn.',
     autoFix: true,
   },
 };
@@ -85,8 +84,17 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
   const [status, setStatus] = useState('');
   const [isStandardOpen, setIsStandardOpen] = useState(true);
   const [helpFor, setHelpFor] = useState<CheckItem | null>(null);
+  const expectedOutputNameRef = useRef<string | null>(null);
 
-  useEffect(() => { setFileId(''); setChecks([]); setCompliance(null); setStatus(''); }, [pdfFile]);
+  useEffect(() => {
+    // UIUX (audit 2026-07-28 §PF.1): giữ thông báo khi viewer nhận đúng file vừa xuất.
+    const preserveSuccess = expectedOutputNameRef.current === pdfFile?.name;
+    expectedOutputNameRef.current = null;
+    setFileId('');
+    setChecks([]);
+    setCompliance(null);
+    if (!preserveSuccess) setStatus('');
+  }, [pdfFile]);
 
   // Esc đóng modal giải thích (chỉ gắn listener khi modal đang mở).
   useEffect(() => {
@@ -131,6 +139,7 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
         setStatus(`✅ ${t('preprocess.savePdfx:da_xuat_x_thanh_cong', { x: standard === 'x1a' ? 'PDF/X-1a' : 'PDF/X-4' })}`);
         if (data.output_filename && onFileFixed) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
+          expectedOutputNameRef.current = data.output_filename;
           onFileFixed(await dl.blob(), data.output_filename);
         }
       } else { recipeRecorder.discardPending(); setStatus(`❌ ${data.detail || t('preprocess.savePdfx:loi_xuat_pdf_x')}`); }
@@ -243,8 +252,8 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
           </div>
 
           {compliance && (() => {
-            // Mục chưa đạt mà Ghostscript KHÔNG tự sửa khi xuất (vd TrimBox) → phải
-            // xử lý thủ công trước. Không hứa "tự sửa" nếu còn mục như vậy.
+            // Mục engine nội bộ không thể sửa chắc chắn phải được xử lý ở file
+            // nguồn trước; không hứa tự sửa nếu có nguy cơ đổi bản in.
             const manualFixes = checks.filter(c => !c.passed && CHECK_HELP[c.id]?.autoFix === false);
             const allAutoFixable = manualFixes.length === 0;
             return (

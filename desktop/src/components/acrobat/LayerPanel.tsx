@@ -54,6 +54,7 @@ const ObjectRow = React.memo(function ObjectRow({ obj, objKey, depth }: {
                 }}
                 className="w-3.5 h-3.5 flex items-center justify-center shrink-0 hover:bg-black/5 dark:hover:bg-white/10 rounded transition-colors"
                 aria-label={isObjHidden ? t('misc.layer:hien_doi_tuong') : t('misc.layer:an_doi_tuong')}
+                title={isObjHidden ? t('misc.layer:hien_doi_tuong') : t('misc.layer:an_doi_tuong')} // UIUX (audit 2026-07-27 §C-10)
             >
                 {isObjHidden ? (
                     <svg className="w-2.5 h-2.5 text-slate-300 dark:text-zinc-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -114,6 +115,7 @@ const LayerItem = React.memo(function LayerItem({ layer, depth = 0 }: {
                         onClick={(e) => { e.stopPropagation(); setExpanded(prev => prev.includes(layer.id) ? prev.filter(id => id !== layer.id) : [...prev, layer.id]); }}
                         className="w-4 h-4 flex items-center justify-center text-slate-400 dark:text-zinc-500 hover:text-slate-700 dark:hover:text-zinc-200 transition-colors shrink-0"
                         aria-label={isExpanded ? t('misc.layer:thu_gon_lop') : t('misc.layer:mo_rong_lop')}
+                        title={isExpanded ? t('misc.layer:thu_gon_lop') : t('misc.layer:mo_rong_lop')} // UIUX (audit 2026-07-27 §C-10)
                     >
                         <svg className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
