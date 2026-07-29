@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { statRecentFile } from '../../lib/useRecentFiles'; // §RF.1 (audit menu 2026-07-28)
+import { localFileUrl } from '../../lib/localFileTransport';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -14,11 +16,6 @@ const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
   const [src, setSrc] = useState<string | { data: Uint8Array }>('');
   const [fileExists, setFileExists] = useState<boolean | null>(null);
   const [imgError, setImgError] = useState(false);
-
-  useEffect(() => {
-    setFileExists(null);
-    setImgError(false);
-  }, [path]);
 
   const isPdf = name.toLowerCase().endsWith('.pdf');
   const isTauri = typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__;
@@ -36,21 +33,19 @@ const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
       // Tauri IPC (file 96MB → ~323MB serialize) → chặn IPC/host vài giây MỖI file →
       // lưới recnt nhiều file lớn = đơ cả app (đã đo Network: nhiều plugin:fs|read_file
       // 100-323MB). Thay bằng protocol tile:// — Rust render trang 1 ở DPI nhỏ (~chục KB,
-      // có disk cache), KHÔNG nạp full file. Ảnh/file non-PDF dùng convertFileSrc (lazy).
+      // có disk cache), KHÔNG nạp full file. Ảnh/file non-PDF dùng protocol localfile (lazy).
       //
       // Kiểm tra file CÒN TỒN TẠI trước khi request tile: recent file user đã xóa/di
       // chuyển vẫn nằm trong danh sách → nếu request tile sẽ nổ 500 (FS read error) spam
       // console. stat() throw → hiện "Missing" luôn, KHÔNG request tile.
       (async () => {
-        try {
-          const { stat } = await import('@tauri-apps/plugin-fs');
-          await stat(path);
-        } catch {
+        // §RF.1: dùng helper dùng chung — nó ghi cờ "file đã mất" vào store nên lưới
+        // Home, menu Mở gần đây và thumbnail này cùng thấy một trạng thái.
+        const info = await statRecentFile(path);
+        if (!info) {
           if (isActive) setFileExists(false);
           return;
         }
-        if (!isActive) return;
-        const { convertFileSrc } = await import('@tauri-apps/api/core');
         if (!isActive) return;
         if (isPdf) {
           const enc = encodeURIComponent(path);
@@ -58,7 +53,8 @@ const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
           setSrc(`http://tile.localhost/${enc}/1/0.3/0/0/0/0/0`);
           setFileExists(true);
         } else {
-          setSrc(convertFileSrc(path));
+          // FILEIO (audit 2026-07-28 §FL.03): ảnh recent có thể ở ổ ngoài scope.
+          setSrc(localFileUrl(path));
           setFileExists(true);
         }
       })();
@@ -140,7 +136,7 @@ class ThumbnailErrorBoundary extends React.Component<{children: React.ReactNode}
 export default function ThumbnailViewWrapper(props: Props) {
   return (
     <ThumbnailErrorBoundary>
-      <ThumbnailView {...props} />
+      <ThumbnailView key={props.path} {...props} />
     </ThumbnailErrorBoundary>
   );
 }

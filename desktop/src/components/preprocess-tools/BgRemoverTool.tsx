@@ -2,6 +2,7 @@ import React, { useRef } from 'react';
 import { getApiUrl, authenticatedFetch } from '../../lib/api';
 import BgRemoverOptions from './BgRemoverOptions';
 import { useBgRemoverStore, defaultTabState } from './useBgRemoverStore';
+import { invalidateBatchResults } from './imageBatch/store';
 import { normalizeAndAddFiles, openFilePicker, saveBatch } from './imageBatch/helpers';
 import { ImageBatchPreview } from './imageBatch/ImageBatchPreview';
 import { toast } from '../ui/Toast';
@@ -15,59 +16,133 @@ interface Props {
     pdfFile: File | null;
 }
 
+
+// ─── Process batch (riêng cho tách nền — gọi /remove-background) ──────────────
+const bgControllers = new Map<string, AbortController>();
+const bgWarmups = new Map<string, Promise<boolean>>();
+const BG_WARMUP_TIMEOUT_MS = 15_000;
+
+async function readApiError(response: Response): Promise<string> {
+    const text = await response.text();
+    try {
+        const payload = JSON.parse(text) as { detail?: string };
+        return payload.detail || tv('Tách nền thất bại');
+    } catch {
+        return text || tv('Tách nền thất bại');
+    }
+}
+
+function ensureBgModelReady(engine: string): Promise<boolean> {
+    const key = engine || 'general';
+    const existing = bgWarmups.get(key);
+    if (existing) return existing;
+    const body = new FormData();
+    body.append('engine', key);
+    const request = authenticatedFetch(`${getApiUrl()}/pdf-tools/remove-background/warmup`, {
+        method: 'POST', body,
+    }).then(async response => {
+        if (!response.ok) return false;
+        const payload = await response.json() as { ok?: boolean };
+        return payload.ok === true;
+    }).catch(() => false);
+    // UIUX (audit 2026-07-28 §BG.08): sidecar dừng hoặc ký request bị kẹt
+    // không được giữ công cụ ở trạng thái chuẩn bị vô hạn.
+    const timeout = new Promise<boolean>(resolve => {
+        window.setTimeout(() => resolve(false), BG_WARMUP_TIMEOUT_MS);
+    });
+    const promise = Promise.race([request, timeout]);
+    bgWarmups.set(key, promise);
+    void promise.then(ok => { if (!ok && bgWarmups.get(key) === promise) bgWarmups.delete(key); });
+    return promise;
+}
+
+
+
 // ─── Process batch (riêng cho tách nền — gọi /remove-background) ──────────────
 async function processBatch(tabId: string) {
     const store = useBgRemoverStore.getState();
     const tabState = store.getTab(tabId);
     const { options, batchItems } = tabState;
+    const controller = new AbortController();
+    bgControllers.set(tabId, controller);
+    store.setError(tabId, '');
     store.setIsProcessing(tabId, true);
     const items = [...batchItems];
+    const totalPending = items.filter(item => item.status !== 'success').length;
     let processed = 0;
-    const apiUrl = getApiUrl();
-    for (let i = 0; i < items.length; i++) {
-        if (items[i].status === 'success') continue;
-        processed++;
-        store.setProgress(tabId, `${tv('Đang tách nền')} ${processed} / ${items.length}...`);
-        items[i] = { ...items[i], status: 'processing', error: undefined };
-        store.setBatchItems(tabId, [...items]);
-        try {
-            const formData = new FormData();
-            const item = items[i];
-            // Always send file content if available (normalized PNG)
-            if (item.fileObj && item.fileObj.size > 0) {
-                formData.append('file', item.fileObj, item.fileName);
-            } else if (item.path && item.path !== 'browser-file') {
-                formData.append('file_path', item.path);
-            } else {
-                throw new Error(tv('Không tìm thấy file gốc'));
+    let failed = 0;
+
+    try {
+
+        for (let i = 0; i < items.length; i++) {
+            if (items[i].status === 'success') continue;
+            if (controller.signal.aborted) break;
+            processed++;
+            store.setProgress(tabId, `${tv('Đang tách nền')} ${processed} / ${totalPending}...`);
+            items[i] = { ...items[i], status: 'processing', error: undefined };
+            store.setBatchItems(tabId, [...items]);
+            try {
+                const formData = new FormData();
+                const item = items[i];
+                if (item.fileObj && item.fileObj.size > 0) {
+                    formData.append('file', item.fileObj, item.fileName);
+                } else if (item.path && item.path !== 'browser-file') {
+                    formData.append('file_path', item.path);
+                } else {
+                    throw new Error(tv('Không tìm thấy file gốc'));
+                }
+                formData.append('engine', options.aiEngine || 'general');
+                formData.append('edge_shift', options.edgeShift.toString());
+                formData.append('bg_color', options.bgColor);
+                formData.append('custom_hex', options.customHex);
+                formData.append('auto_crop', options.autoCrop ? 'true' : 'false');
+                const response = await authenticatedFetch(`${getApiUrl()}/pdf-tools/remove-background`, {
+                    method: 'POST', body: formData, signal: controller.signal,
+                });
+                if (!response.ok) throw new Error(await readApiError(response));
+
+                const warnings = (response.headers.get('X-Bg-Removal-Warnings') || '').split(',').filter(Boolean);
+                if (warnings.includes('resolution-reduced')) {
+                    toast.info(tv('Ảnh đã được giảm kích thước phù hợp với bộ nhớ của máy.'));
+                }
+                if (warnings.includes('color-converted-to-srgb')) {
+                    toast.info(tv('Ảnh đã được chuyển sang sRGB để mô hình AI xử lý đúng màu.'));
+                }
+                if (warnings.includes('icc-profile-discarded')) {
+                    toast.info(tv('Không đọc được hồ sơ màu nguồn; hãy kiểm tra màu ảnh kết quả.'));
+                }
+                const outputSize = response.headers.get('X-Bg-Removal-Output-Size') || '';
+                const outBlob = await response.blob();
+                const outUrl = URL.createObjectURL(outBlob);
+                items[i] = {
+                    ...items[i], status: 'success', resultBlob: outBlob, resultUrl: outUrl,
+                    resultInfo: outputSize ? outputSize.replace('x', ' × ') + ' px' : undefined,
+                };
+            } catch (error: unknown) {
+                if (controller.signal.aborted) {
+                    items[i] = { ...items[i], status: 'pending', error: undefined };
+                    store.setBatchItems(tabId, [...items]);
+                    break;
+                }
+                const message = error instanceof Error ? error.message : tv('Tách nền thất bại');
+                console.error('[BgRemover] Error:', error);
+                failed++;
+                items[i] = { ...items[i], status: 'error', error: message };
+                store.setError(tabId, message);
             }
-            formData.append('engine', options.aiEngine || 'general');
-            formData.append('edge_shift', options.edgeShift.toString());
-            formData.append('bg_color', options.bgColor);
-            formData.append('custom_hex', options.customHex);
-            formData.append('auto_crop', options.autoCrop ? 'true' : 'false');
-            // PHẢI dùng authenticatedFetch: router /pdf-tools có Depends(require_license)
-            // → ở production cần bộ header license + chữ ký HMAC từ Rust.
-            // Raw fetch thiếu các header này → 403 trên bản đóng gói (chỉ dev mới lọt).
-            const res = await authenticatedFetch(`${apiUrl}/pdf-tools/remove-background`, { method: 'POST', body: formData });
-            if (!res.ok) {
-                const errorText = await res.text();
-                console.error('[BgRemover] Server error:', errorText);
-                throw new Error(`${tv('Lỗi Server')} (${res.status}): ${errorText}`);
-            }
-            const outBlob = await res.blob();
-            const outUrl = URL.createObjectURL(outBlob);
-            items[i] = { ...items[i], status: 'success', resultBlob: outBlob, resultUrl: outUrl };
-        } catch (e: any) {
-            console.error('[BgRemover] Error:', e);
-            items[i] = { ...items[i], status: 'error', error: e.message };
+            store.setBatchItems(tabId, [...items]);
         }
-        store.setBatchItems(tabId, [...items]);
+        if (failed === 0) store.setError(tabId, '');
+    } finally {
+        if (bgControllers.get(tabId) === controller) bgControllers.delete(tabId);
+        store.setProgress(tabId, '');
+        store.setIsProcessing(tabId, false);
     }
-    store.setProgress(tabId, '');
-    store.setIsProcessing(tabId, false);
 }
 
+function cancelBatch(tabId: string) {
+    bgControllers.get(tabId)?.abort();
+}
 async function handleSave(tabId: string) {
     const { saved, ok } = await saveBatch(tabId, useBgRemoverStore, 'nobg');
     if (!ok) toast.error(tv('Lỗi khi lưu file.'));
@@ -101,7 +176,8 @@ export default function BgRemoverTool({ tabId, pdfFile }: Props) {
         const isImage = pdfFile.type.startsWith('image/') || pdfFile.name.match(/\.(jpg|jpeg|png|webp|gif|tiff?|bmp)$/i);
         // console.log('[BgRemover] Auto-add: checking pdfFile', pdfFile.name, 'isImage:', !!isImage);
         if (!isImage) return;
-        const key = ((pdfFile as any).path || '') + '|' + pdfFile.name + '|' + pdfFile.size;
+        const sourcePath = 'path' in pdfFile && typeof pdfFile.path === 'string' ? pdfFile.path : '';
+        const key = sourcePath + '|' + pdfFile.name + '|' + pdfFile.size;
         if (addedRef.current.has(key)) {
             // console.log('[BgRemover] Auto-add: already added', key);
             return;
@@ -110,27 +186,24 @@ export default function BgRemoverTool({ tabId, pdfFile }: Props) {
         normalizeAndAddFiles([pdfFile], tabId, useBgRemoverStore);
     }, [pdfFile, tabId]);
 
-    // Global flag
+    // BG (audit 2026-07-28 §BG.01/02/08): chuẩn bị ngầm bằng một promise theo
+    // model. Warmup không được khóa nút chạy; request thật dùng chung session lock.
     React.useEffect(() => {
-        (window as any).__isBgRemoverActive = true;
-        // Nạp sẵn ĐÚNG model AI người dùng đang chọn (chạy nền) → lần bấm Tách Nền
-        // đầu không phải chờ cold-start. Fire-and-forget, lỗi bỏ qua.
-        try {
-            const eng = useBgRemoverStore.getState().getTab(tabId)?.options?.aiEngine || 'general';
-            const fd = new FormData();
-            fd.append('engine', eng);
-            authenticatedFetch(`${getApiUrl()}/pdf-tools/remove-background/warmup`, { method: 'POST', body: fd }).catch(() => {});
-        } catch { /* ignore */ }
-        return () => { (window as any).__isBgRemoverActive = false; };
-    }, [tabId]);
+        void ensureBgModelReady(options.aiEngine);
+    }, [tabId, options.aiEngine]);
 
     // Listen for external file events
     React.useEffect(() => {
         const handleAdd = (e: Event) => {
-            const files = (e as CustomEvent).detail?.files as File[];
+            const detail = (e as CustomEvent).detail;
+            if (detail?.tabId !== tabId) return;
+            const files = detail.files as File[];
             if (files?.length) normalizeAndAddFiles(files, tabId, useBgRemoverStore);
         };
-        const handleTrigger = () => openFilePicker(tabId, useBgRemoverStore);
+        const handleTrigger = (e: Event) => {
+            if ((e as CustomEvent).detail?.tabId !== tabId) return;
+            openFilePicker(tabId, useBgRemoverStore);
+        };
         window.addEventListener('prynx-bgremover-add-files', handleAdd);
         window.addEventListener('prynx-bgremover-trigger-select', handleTrigger);
         return () => {
@@ -140,6 +213,15 @@ export default function BgRemoverTool({ tabId, pdfFile }: Props) {
     }, [tabId]);
 
     // Removed reset store on unmount to keep state when switching tools
+
+    const handleOptionsChange = (nextOptions: typeof options) => {
+        if (JSON.stringify(nextOptions) === JSON.stringify(options)) return;
+        // UIUX (audit 2026-07-28 §BG.06): cấu hình mới không được lưu blob cũ.
+        storeActions.setBatchItems(tabId, invalidateBatchResults(batchItems));
+
+        storeActions.setOptions(tabId, nextOptions);
+        storeActions.setError(tabId, '');
+    };
 
 
     return (
@@ -172,7 +254,7 @@ export default function BgRemoverTool({ tabId, pdfFile }: Props) {
                 </div>
             )}
 
-            <BgRemoverOptions options={options} onChange={(opts) => storeActions.setOptions(tabId, opts)} />
+            <BgRemoverOptions options={options} disabled={isProcessing} onChange={handleOptionsChange} />
 
             <div className="flex flex-col gap-2">
                 <button onClick={() => processBatch(tabId)} disabled={isProcessing || !hasPending}
@@ -182,6 +264,12 @@ export default function BgRemoverTool({ tabId, pdfFile }: Props) {
                         : 'bg-indigo-600 hover:bg-indigo-700 text-white'}`}>
                     {t('preprocess.common:run')}{isProcessing ? '…' : ''}
                 </button>
+                {isProcessing && (
+                    <button onClick={() => cancelBatch(tabId)}
+                        className="w-full h-10 rounded-xl text-[13px] font-bold bg-rose-600 hover:bg-rose-700 text-white transition-colors">
+                        {tv('Hủy xử lý')}
+                    </button>
+                )}
                 {hasSuccess && (
                     <div className="flex gap-2">
                         <button onClick={() => handleSave(tabId)}
@@ -218,11 +306,12 @@ export default function BgRemoverTool({ tabId, pdfFile }: Props) {
 // PREVIEW — wrapper mỏng quanh ImageBatchPreview dùng chung (zoom/pan/slider).
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export function BgRemoverPreview({ tabId }: { tabId: string }) {
+export function BgRemoverPreview({ tabId, isActive }: { tabId: string; isActive: boolean }) {
   const { t } = useTranslation();
     return (
         <ImageBatchPreview
             tabId={tabId}
+            isActive={isActive}
             store={useBgRemoverStore}
             labels={{
                 resultBadge: t('preprocess.bgRemover:da_tach_nen'),

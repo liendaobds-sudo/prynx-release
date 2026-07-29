@@ -153,8 +153,9 @@ const operatorNeedsValue = (op: VdpOperator) => op !== 'empty' && op !== 'not_em
 
 // Panel cấu hình điều kiện ẩn/hiện (conditions) và bảng rule (rules) cho field
 // đang chọn. Persist qua onChange → updateSelectedField để gửi kèm field tới backend.
-function VdpLogicPanel({ field, csvHeaders, onChange }: {
+function VdpLogicPanel({ field, csvHeaders, onChange, isActive }: {
     field: any;
+    isActive: boolean;
     csvHeaders: string[];
     onChange: (changes: any) => void;
 }) {
@@ -166,7 +167,7 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
 
     // Đóng modal trợ giúp bằng phím ESC (chỉ gắn listener khi modal đang mở).
     useEffect(() => {
-        if (!showHelp) return;
+        if (!showHelp || !isActive) return;
         const onKey = (e: KeyboardEvent) => {
             if (e.key === 'Escape') {
                 e.stopPropagation();
@@ -175,7 +176,7 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [showHelp]);
+    }, [showHelp, isActive]);
 
     const inputClass = "h-8 px-2 text-[12px] bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded focus:outline-none focus:border-teal-500 transition-all";
     const selectClass = inputClass + " font-medium";
@@ -447,7 +448,7 @@ interface Props {
   onSelectField?: (ids: string[]) => void;
   onBack?: () => void;
   onSpawnTab?: (blob: Blob, name: string, path?: string) => void;
-  onApplyResult?: (blob: Blob, name: string, path?: string) => void;
+  onApplyResult?: (blob: Blob, name: string, path?: string) => void | Promise<void>;
   isActive?: boolean;
 }
 export default function DataMergeTool({
@@ -794,13 +795,13 @@ export default function DataMergeTool({
 
     // Đóng modal hướng dẫn "Chèn thêm cột" bằng phím ESC.
     useEffect(() => {
-        if (!showQuickHelp) return;
+        if (!showQuickHelp || !isActive) return;
         const onKey = (e: KeyboardEvent) => {
             if (e.key === 'Escape') { e.stopPropagation(); setShowQuickHelp(false); }
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [showQuickHelp]);
+    }, [showQuickHelp, isActive]);
     const [csvHasHeader, setCsvHasHeader] = useState(true);
     const lastCsvFileRef = useRef<File | null>(null);
     const [batchFiles, setBatchFiles] = useState<File[]>([]);
@@ -1308,7 +1309,7 @@ export default function DataMergeTool({
             } else if (onApplyResult) {
                 setStatusMessage(t('preprocess.dataMerge:dang_mo_file_ket_qua'));
                 await new Promise(r => setTimeout(r, 100));
-                onApplyResult(blob, outName, path ?? undefined);
+                await onApplyResult(blob, outName, path ?? undefined);
                 setStatusMessage(t('preprocess.dataMerge:hoan_thanh_da_de_du_lieu_len_file_hien'));
             }
         } catch (error: any) {
@@ -2176,6 +2177,7 @@ export default function DataMergeTool({
                     <VdpLogicPanel
                         field={selectedField}
                         csvHeaders={csvHeaders}
+                        isActive={isActive}
                         onChange={updateSelectedField}
                     />
                 </VdpSection>

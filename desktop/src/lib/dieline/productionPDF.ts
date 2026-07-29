@@ -9,6 +9,11 @@ import { mapPointToPlacement } from './placementTransform';
 import { splitTrayDieline } from './trayParts';
 import { splitDoubleTrayDieline } from './DoubleTray';
 import { PDFDocument } from 'pdf-lib';
+import {
+    addOptionalContentSource,
+    createOptionalContentTransfer,
+    finishOptionalContentTransfer,
+} from '../pdfOptionalContent';
 import type { NestingConfig } from './nestingTypes';
 
 const PT_PER_MM = 72 / 25.4;
@@ -163,11 +168,16 @@ export async function buildProductionTrayNestingPdf(
         placementCommands(parts.sleeve, sleeveResult),
     );
     const merged = await PDFDocument.create();
+    // [OCG FIX 2026-07-28] Giữ optional content khi ghép, để lớp khuôn bế không bị mất
+    // nếu về sau makePdf sinh ra layer.
+    const ocTransfer = createOptionalContentTransfer();
     for (const blob of [trayPdf, sleevePdf]) {
         const source = await PDFDocument.load(await blob.arrayBuffer());
+        addOptionalContentSource(ocTransfer, source);
         const pages = await merged.copyPages(source, source.getPageIndices());
         pages.forEach((page) => merged.addPage(page));
     }
+    finishOptionalContentTransfer(ocTransfer, merged);
     return new Blob([new Uint8Array(await merged.save())], { type: 'application/pdf' });
 }
 

@@ -487,21 +487,69 @@ if (-not $SkipNuitka) {
     $UPSCALE_MODELS_FLAG = ""
     $MODELS_DIR = "$ROOT\backend\app\data\models"
     $GEN_ONNX = "$MODELS_DIR\realesr-general-x4v3.onnx"
-    if (-not (Test-Path $GEN_ONNX)) {
+    $QUALITY_ONNX = "$MODELS_DIR\realesrgan-x4plus.onnx"
+    $ISNET_ONNX = "$MODELS_DIR\isnet-general-use.onnx"
+    $EXPECTED_ISNET_SHA256 = "60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a"
+    # RELEASE (audit 2026-07-28 §BG.02): luôn bundle model Nhanh để Tách nền
+    # hoạt động offline ngay lần đầu. Helper tải `.part`, kiểm hash rồi rename atomic.
+    if (-not (Test-Path $ISNET_ONNX) -or
+        (Get-FileHash -LiteralPath $ISNET_ONNX -Algorithm SHA256).Hash.ToLowerInvariant() -ne $EXPECTED_ISNET_SHA256) {
+        $resolvedIsnet = (& $VENV_PYTHON -c "from app.workers.isnet_engine import _download_model_if_needed; print(_download_model_if_needed())").Trim()
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $resolvedIsnet)) {
+            Write-Host "ERROR: Cannot prepare verified ISNet model for offline bundle." -ForegroundColor Red
+            Pop-Location
+            exit 1
+        }
+        Copy-Item -LiteralPath $resolvedIsnet -Destination $ISNET_ONNX -Force
+    }
+    $actualIsnetHash = (Get-FileHash -LiteralPath $ISNET_ONNX -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualIsnetHash -ne $EXPECTED_ISNET_SHA256) {
+        Write-Host "ERROR: ISNet model SHA-256 mismatch: $actualIsnetHash" -ForegroundColor Red
+        Pop-Location
+        exit 1
+    }
+    if (-not (Test-Path $GEN_ONNX) -or -not (Test-Path $QUALITY_ONNX)) {
         # Try conversion when the build venv has torch.
         & $VENV_PYTHON -c "import torch" *> $null
         if ($LASTEXITCODE -eq 0) {
             Write-Host "  Converting Real-ESRGAN .pth -> .onnx (build-time)..." -ForegroundColor DarkGray
-            & $VENV_PYTHON "$ROOT\backend\scripts\convert_realesrgan_onnx.py" --out "$MODELS_DIR"
+            & $VENV_PYTHON "$ROOT\backend\scripts\convert_realesrgan_onnx.py" --out "$MODELS_DIR" --model all
         } else {
             Write-Host "  torch not in build venv; cannot generate the required upscale model." -ForegroundColor Yellow
         }
     }
-    if (Test-Path $GEN_ONNX) {
+    if ((Test-Path $GEN_ONNX) -and (Test-Path $QUALITY_ONNX)) {
         $UPSCALE_MODELS_FLAG = "--include-data-dir=app/data/models=app/data/models"
         Write-Host "  Real-ESRGAN models bundled: $MODELS_DIR" -ForegroundColor DarkGray
+        # RELEASE QA (audit 2026-07-28 §UP-05/11): khóa đúng model đã benchmark.
+        $EXPECTED_UPSCALE_SHA256 = "027319ffe4f00ec2550957c0957d44969638a03d2ed2f0329af9fd6cd44a457a"
+        $actualUpscaleHash = (Get-FileHash -LiteralPath $GEN_ONNX -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualUpscaleHash -ne $EXPECTED_UPSCALE_SHA256) {
+            Write-Host "ERROR: Real-ESRGAN model SHA-256 mismatch: $actualUpscaleHash" -ForegroundColor Red
+            Pop-Location
+            exit 1
+        }
+        $EXPECTED_QUALITY_SHA256 = "c1b85fae35947577b4c4b7d310af54546c6e7971f14a0862a769e83689ddc003"
+        $actualQualityHash = (Get-FileHash -LiteralPath $QUALITY_ONNX -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualQualityHash -ne $EXPECTED_QUALITY_SHA256) {
+            Write-Host "ERROR: RealESRGAN_x4plus SHA-256 mismatch: $actualQualityHash" -ForegroundColor Red
+            Pop-Location
+            exit 1
+        }
+        & $VENV_PYTHON -c "from app.workers.realesrgan_engine import warmup; raise SystemExit(0 if warmup('general') and warmup('quality') else 1)"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Real-ESRGAN bundled-model smoke inference failed." -ForegroundColor Red
+            Pop-Location
+            exit 1
+        }
+        & $VENV_PYTHON -c "from app.workers.isnet_engine import warmup; raise SystemExit(0 if warmup() else 1)"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Bundled ISNet smoke inference failed." -ForegroundColor Red
+            Pop-Location
+            exit 1
+        }
     } else {
-        Write-Host "ERROR: Real-ESRGAN model absent: $GEN_ONNX" -ForegroundColor Red
+        Write-Host "ERROR: Real-ESRGAN model absent: $GEN_ONNX or $QUALITY_ONNX" -ForegroundColor Red
         Write-Host "  Build aborted to avoid shipping a broken AI Upscale feature." -ForegroundColor Red
         Pop-Location
         exit 1

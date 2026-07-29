@@ -25,7 +25,15 @@ const PATH_STYLES: Record<string, { stroke: string; dashArray: string; width: nu
 /** Nút debug (tên mặt / đoạn cắt / chú thích điểm) chỉ hiện khi dev. */
 const IS_DEV = import.meta.env.DEV;
 
-export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.ReactNode } = {}) {
+export default function DielineCanvas2D({ rightSlot, isActive = true }: {
+    rightSlot?: React.ReactNode;
+    /**
+     * Tab Khuôn bế có đang được xem không. Mọi tab trong app đều mounted nên nếu
+     * không có cờ này, lệnh menu Xem phát ra lúc đang ở tab khác vẫn zoom canvas
+     * khuôn bế ở nền (audit menu 2026-07-28 §MB.1).
+     */
+    isActive?: boolean;
+} = {}) {
   const { t } = useTranslation();
     const { dieline } = useBoxStore();
     const svgRef = useRef<SVGSVGElement>(null);
@@ -211,22 +219,63 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
         window.addEventListener('mouseup', up);
     }, [gizmo, artTransform, setArtTransform, toLocal]);
 
-    // Auto-fit on dieline change
-    useEffect(() => {
-        if (dieline && svgRef.current) {
-            const svg = svgRef.current;
-            const rect = svg.getBoundingClientRect();
-            const padding = 60;
-            const scaleX = (rect.width - padding * 2) / dieline.boundingBox.width;
-            const scaleY = (rect.height - padding * 2) / dieline.boundingBox.height;
-            const scale = Math.min(scaleX, scaleY, 4);
-            setTransform({
-                x: (rect.width / 2) - (dieline.boundingBox.minX + dieline.boundingBox.width / 2) * scale,
-                y: (rect.height / 2) + (dieline.boundingBox.minY + dieline.boundingBox.height / 2) * scale,
-                scale,
-            });
-        }
+    // Canh khuôn vừa khung. mode 'page' = vừa cả hai chiều (mặc định), 'width' = chỉ
+    // theo chiều ngang (khuôn dài như túi giấy xem chi tiết theo bề rộng dễ hơn).
+    // Tách khỏi effect auto-fit để menu Xem gọi lại được (audit menu 2026-07-28 §MB.1).
+    const fitToView = useCallback((mode: 'page' | 'width' = 'page') => {
+        const svg = svgRef.current;
+        if (!dieline || !svg) return;
+        const rect = svg.getBoundingClientRect();
+        const padding = 60;
+        const scaleX = (rect.width - padding * 2) / dieline.boundingBox.width;
+        const scaleY = (rect.height - padding * 2) / dieline.boundingBox.height;
+        const scale = mode === 'width' ? Math.min(scaleX, 4) : Math.min(scaleX, scaleY, 4);
+        setTransform({
+            x: (rect.width / 2) - (dieline.boundingBox.minX + dieline.boundingBox.width / 2) * scale,
+            y: (rect.height / 2) + (dieline.boundingBox.minY + dieline.boundingBox.height / 2) * scale,
+            scale,
+        });
     }, [dieline]);
+
+    // Auto-fit on dieline change
+    useEffect(() => { fitToView('page'); }, [fitToView]);
+
+    /** Zoom quanh TÂM khung nhìn (khác wheel: wheel zoom quanh con trỏ chuột). */
+    const zoomAroundCenter = useCallback((factor: number) => {
+        const svg = svgRef.current;
+        if (!svg) return;
+        const rect = svg.getBoundingClientRect();
+        const cx = rect.width / 2;
+        const cy = rect.height / 2;
+        setTransform((prev) => {
+            const newScale = Math.max(0.1, Math.min(20, prev.scale * factor));
+            return {
+                scale: newScale,
+                x: cx - (cx - prev.x) * (newScale / prev.scale),
+                y: cy - (cy - prev.y) * (newScale / prev.scale),
+            };
+        });
+    }, []);
+
+    // UIUX (audit menu 2026-07-28 §MB.1): trước đây menu Xem > Phóng to/Thu nhỏ/Vừa khung
+    // sáng đèn trên tab Khuôn bế nhưng bấm KHÔNG có gì xảy ra — chỉ AcrobatViewer nghe
+    // 'prynx-menu-command'. Nay canvas khuôn bế nhận đúng nhóm lệnh zoom/fit của nó.
+    useEffect(() => {
+        if (!isActive) return;
+        const onMenuCommand = (e: Event) => {
+            switch ((e as CustomEvent).detail?.cmd as string) {
+                case 'zoom-in': zoomAroundCenter(1.25); break;
+                case 'zoom-out': zoomAroundCenter(1 / 1.25); break;
+                // "Về 100%" khớp với chỉ số % trên thanh canvas (badge hiện scale × 100).
+                case 'zoom-100': setTransform((prev) => ({ ...prev, scale: 1 })); break;
+                case 'fit-page': fitToView('page'); break;
+                case 'fit-width': fitToView('width'); break;
+                default: break;
+            }
+        };
+        window.addEventListener('prynx-menu-command', onMenuCommand);
+        return () => window.removeEventListener('prynx-menu-command', onMenuCommand);
+    }, [isActive, zoomAroundCenter, fitToView]);
 
     // Zoom — dùng native listener với { passive: false } để preventDefault thực sự chặn browser zoom
     const handleWheel = useCallback((e: WheelEvent) => {

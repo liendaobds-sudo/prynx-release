@@ -22,7 +22,7 @@ interface Props {
     onSelectField?: (ids: string[]) => void;
     onBack?: () => void;
     onSpawnTab?: (blob: Blob, name: string, path?: string) => void;
-    onApplyResult?: (blob: Blob, name: string, path?: string) => void;
+    onApplyResult?: (blob: Blob, name: string, path?: string) => void | Promise<void>;
     isActive?: boolean;
 }
 
@@ -209,7 +209,7 @@ export default function CoverNumberingTool({
             if (!result.blob) throw new Error(t('preprocess.coverNumbering:khong_nhan_duoc_file_ket_qua'));
             const outName = `MecBia_${pdfFile.name}`;
             if (spawnNewTab && onSpawnTab) { onSpawnTab(result.blob, outName, result.path ?? undefined); setStatus(t('preprocess.coverNumbering:hoan_thanh_da_tao_tab_moi')); }
-            else if (onApplyResult) { onApplyResult(result.blob, outName, result.path ?? undefined); setStatus(t('preprocess.coverNumbering:hoan_thanh')); }
+            else if (onApplyResult) { await onApplyResult(result.blob, outName, result.path ?? undefined); setStatus(t('preprocess.coverNumbering:hoan_thanh')); }
         } catch (e: any) {
             // UIUX (audit 2026-07-27 §D-15): hủy → báo nhẹ; lỗi khác → câu Việt + hướng khắc phục
             if (isCanceled(e)) { setStatus(t('preprocess.coverNumbering:da_huy', 'Đã hủy')); return; }

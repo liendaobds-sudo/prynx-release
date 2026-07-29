@@ -44,3 +44,14 @@ Frontend gọi backend qua `desktop/src/lib/**/api.ts`; backend route mỏng, en
 ## Khi bắt đầu một việc
 
 Xác định việc thuộc tầng nào (UI / backend route / core engine / Rust) rồi đọc skill chuyên sâu tương ứng (`prynx-dieline`, `prynx-imposition`, `prynx-performance`…). Sửa xuyên tầng (ví dụ đổi schema API) thì phải sửa đủ cả `api.ts` phía desktop lẫn `schemas/` + route phía backend trong cùng một lần — hai đầu này không có codegen chung, lệch là lỗi runtime im lặng.
+
+## Bất biến điều hướng desktop
+
+- `App.tsx` giữ mọi tab đã mở ở trạng thái mounted; tab nền chỉ bị ẩn bằng CSS. Effect/listener của tab nền vẫn sống nếu không tự kiểm tra `isActive` hoặc `tabId`.
+- `payload.focusFeature`/`lockedMode` mô tả **ý định lúc tạo tab**, không phải công cụ runtime sau khi user đổi menu.
+- `activeDashboardTool` trong store được scope theo tab mới là nguồn trạng thái công cụ đang hiển thị; shell cần đồng bộ theo `tabId` khi định tuyến file/lệnh.
+- File kéo từ Windows Explorer đi qua `SystemIntegrations` và sự kiện Tauri native trước khi tới App; WebView có thể không phát `dataTransfer.files`/React `onDrop`.
+- Vì vậy test DOM drop không thay thế test native drop, và sửa dropzone cục bộ không đủ nếu shell đã định tuyến file sang tab khác.
+- Mọi event tài liệu toàn cục phải mang `tabId`/session id; listener phải từ chối tab nền và đích không tồn tại.
+- Không dùng boolean toàn cục kiểu `__isUpscalerActive`: nhiều tab cùng mounted làm cờ sai chủ sở hữu và cleanup của tab này có thể ghi đè tab khác.
+- Khi truy vết lỗi “đúng giao diện nhưng sai luồng”, đối chiếu đủ ba lớp: launch intent → runtime tool theo tab → tuyến sự kiện native/DOM.

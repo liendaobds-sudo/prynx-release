@@ -1,13 +1,14 @@
 import React, { useRef } from 'react';
 import { getApiUrl, authenticatedFetch } from '../../lib/api';
 import { ToolSectionLabel } from './ToolUI';
-import { useUpscaleStore } from './useUpscaleStore';
+import { defaultUpscaleTabState, useUpscaleStore } from './useUpscaleStore';
 import { normalizeAndAddFiles, openFilePicker, saveBatch } from './imageBatch/helpers';
 import { ImageBatchPreview } from './imageBatch/ImageBatchPreview';
 import { toast } from '../ui/Toast';
 import { RotateCcw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
+import { IMAGE_BATCH_DROP_EVENTS } from '../../lib/tabNavigation';
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 interface Props {
@@ -15,83 +16,98 @@ interface Props {
     pdfFile: File | null;
 }
 
-// ─── Downscale 2x ─────────────────────────────────────────────────────────────
-// Backend chạy scale x4 cố định. Nếu người dùng chọn 2x, hạ ảnh kết
-// quả xuống 1/2 bằng canvas chất lượng cao (vẫn nét hơn nội suy trực tiếp từ ảnh
-// gốc vì đã qua tái tạo chi tiết AI ở 4x).
-async function downscaleBlob(sourceBlob: Blob, factor: number): Promise<Blob> {
-    if (factor >= 4) return sourceBlob;
-    const img = new Image();
-    const url = URL.createObjectURL(sourceBlob);
-    try {
-        img.src = url;
-        await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error(tv('Lỗi đọc ảnh kết quả'))); });
-        const targetW = Math.round(img.width * (factor / 4));
-        const targetH = Math.round(img.height * (factor / 4));
-        const canvas = document.createElement('canvas');
-        canvas.width = targetW;
-        canvas.height = targetH;
-        const ctx = canvas.getContext('2d')!;
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(img, 0, 0, targetW, targetH);
-        return await new Promise<Blob>((resolve, reject) =>
-            canvas.toBlob(b => b ? resolve(b) : reject(new Error('Canvas toBlob failed')), 'image/png'));
-    } finally {
-        URL.revokeObjectURL(url);
-    }
-}
 
 // ─── Process batch (riêng cho upscale — gọi /upscale) ─────────────────────────
+const upscaleControllers = new Map<string, AbortController>();
+let warmupWarningShown = false;
+
 async function processBatch(tabId: string) {
     const store = useUpscaleStore.getState();
     const tabState = store.getTab(tabId);
     const { options, batchItems } = tabState;
+    const controller = new AbortController();
+    upscaleControllers.set(tabId, controller);
     store.setIsProcessing(tabId, true);
     const items = [...batchItems];
     let processed = 0;
     const apiUrl = getApiUrl();
-    for (let i = 0; i < items.length; i++) {
-        if (items[i].status === 'success') continue;
-        processed++;
-        store.setProgress(tabId, `${tv('Đang phóng to')} ${processed} / ${items.length}...`);
-        items[i] = { ...items[i], status: 'processing', error: undefined };
-        store.setBatchItems(tabId, [...items]);
-        try {
-            const formData = new FormData();
-            const item = items[i];
-            if (item.fileObj && item.fileObj.size > 0) {
-                formData.append('file', item.fileObj, item.fileName);
-            } else if (item.path && item.path !== 'browser-file') {
-                formData.append('file_path', item.path);
-            } else {
-                throw new Error(tv('Không tìm thấy file gốc'));
+
+    try {
+        for (let i = 0; i < items.length; i++) {
+            if (items[i].status === 'success') continue;
+            if (controller.signal.aborted) break;
+            processed++;
+            store.setProgress(tabId, tv('Đang phóng to') + ' ' + processed + ' / ' + items.length + '...');
+            items[i] = { ...items[i], status: 'processing', error: undefined };
+            store.setBatchItems(tabId, [...items]);
+            try {
+                const formData = new FormData();
+                const item = items[i];
+                if (item.fileObj && item.fileObj.size > 0) {
+                    formData.append('file', item.fileObj, item.fileName);
+                } else if (item.path && item.path !== 'browser-file') {
+                    formData.append('file_path', item.path);
+                } else {
+                    throw new Error(tv('Không tìm thấy file gốc'));
+                }
+                formData.append('engine', options.model);
+                formData.append('scale_factor', String(options.scaleFactor));
+                const res = await authenticatedFetch(apiUrl + '/pdf-tools/upscale', {
+                    method: 'POST',
+                    body: formData,
+                    signal: controller.signal,
+                });
+                if (!res.ok) {
+                    const errorText = await res.text();
+                    console.error('[Upscale] Server error:', errorText);
+                    throw new Error(tv('Lỗi Server') + ' (' + res.status + '): ' + errorText);
+                }
+                const warningCodes = (res.headers.get('X-Upscale-Warnings') || '').split(',');
+                if (warningCodes.includes('color-converted-to-srgb')) {
+                    toast.info(tv('Ảnh CMYK đã được chuyển sang sRGB để mô hình AI xử lý.'));
+                }
+                if (warningCodes.includes('bit-depth-reduced-to-8')) {
+                    toast.info(tv('Ảnh 16-bit được xử lý ở 8-bit; hãy kiểm tra chuyển sắc trước khi in.'));
+                }
+                const outputSize = res.headers.get('X-Upscale-Output-Size') || '';
+                const outBlob = await res.blob();
+                const outUrl = URL.createObjectURL(outBlob);
+                items[i] = {
+                    ...items[i],
+                    status: 'success',
+                    resultBlob: outBlob,
+                    resultUrl: outUrl,
+                    resultInfo: outputSize
+                        ? outputSize.replace('x', ' × ') + ' px · ×' + options.scaleFactor + ' · ' + (options.model === 'quality' ? 'RealESRGAN_x4plus' : options.model === 'balanced' ? 'Real-ESRGAN · giữ texture' : 'Real-ESRGAN x4v3')
+                        : '×' + options.scaleFactor + ' · ' + (options.model === 'quality' ? 'RealESRGAN_x4plus' : options.model === 'balanced' ? 'Real-ESRGAN · giữ texture' : 'Real-ESRGAN x4v3'),
+                };
+            } catch (error: unknown) {
+                if (controller.signal.aborted) {
+                    items[i] = {
+                        ...items[i],
+                        status: 'pending',
+                        error: undefined,
+                        resultInfo: undefined,
+                    };
+                    store.setBatchItems(tabId, [...items]);
+                    break;
+                }
+                console.error('[Upscale] Error:', error);
+                const message = error instanceof Error ? error.message : tv('Phóng to ảnh thất bại');
+                items[i] = { ...items[i], status: 'error', error: message };
             }
-            formData.append('engine', 'general');
-            // authenticatedFetch: router /pdf-tools yêu cầu license + chữ ký HMAC
-            // ở bản đóng gói. Raw fetch thiếu header → 403 (chỉ dev mới lọt).
-            const res = await authenticatedFetch(`${apiUrl}/pdf-tools/upscale`, { method: 'POST', body: formData });
-            if (!res.ok) {
-                const errorText = await res.text();
-                console.error('[Upscale] Server error:', errorText);
-                throw new Error(`${tv('Lỗi Server')} (${res.status}): ${errorText}`);
-            }
-            let outBlob = await res.blob();
-            if (options.scaleFactor === 2) {
-                outBlob = await downscaleBlob(outBlob, 2);
-            }
-            const outUrl = URL.createObjectURL(outBlob);
-            items[i] = { ...items[i], status: 'success', resultBlob: outBlob, resultUrl: outUrl };
-        } catch (e: any) {
-            console.error('[Upscale] Error:', e);
-            items[i] = { ...items[i], status: 'error', error: e.message };
+            store.setBatchItems(tabId, [...items]);
         }
-        store.setBatchItems(tabId, [...items]);
+    } finally {
+        if (upscaleControllers.get(tabId) === controller) upscaleControllers.delete(tabId);
+        store.setProgress(tabId, '');
+        store.setIsProcessing(tabId, false);
     }
-    store.setProgress(tabId, '');
-    store.setIsProcessing(tabId, false);
 }
 
+function cancelBatch(tabId: string) {
+    upscaleControllers.get(tabId)?.abort();
+}
 async function handleSave(tabId: string) {
     const { saved, ok } = await saveBatch(tabId, useUpscaleStore, 'upscaled');
     if (!ok) toast.error(tv('Lỗi khi lưu file.'));
@@ -104,7 +120,7 @@ async function handleSave(tabId: string) {
 
 export default function UpscaleTool({ tabId, pdfFile }: Props) {
   const { t } = useTranslation();
-    const tabState = useUpscaleStore(state => state.tabs[tabId] || useUpscaleStore.getState().getTab(tabId));
+    const tabState = useUpscaleStore(state => state.tabs[tabId] || defaultUpscaleTabState);
     const storeActions = useUpscaleStore.getState();
     const { batchItems, selectedId, options, isProcessing, progress, error } = tabState;
 
@@ -116,26 +132,70 @@ export default function UpscaleTool({ tabId, pdfFile }: Props) {
     React.useEffect(() => {
         useUpscaleStore.getState().initTab(tabId);
         if (!pdfFile) return;
-        const isImage = pdfFile.type.startsWith('image/') || pdfFile.name.match(/\.(jpg|jpeg|png|webp|gif|tiff?|bmp)$/i);
+        const isImage = pdfFile.type.startsWith('image/') || pdfFile.name.match(/\.(jpg|jpeg|png|webp|tiff?|bmp)$/i);
         if (!isImage) return;
-        const key = ((pdfFile as any).path || '') + '|' + pdfFile.name + '|' + pdfFile.size;
+        const sourcePath = 'path' in pdfFile && typeof pdfFile.path === 'string' ? pdfFile.path : '';
+        const key = sourcePath + '|' + pdfFile.name + '|' + pdfFile.size;
         if (addedRef.current.has(key)) return;
         addedRef.current.add(key);
         normalizeAndAddFiles([pdfFile], tabId, useUpscaleStore);
     }, [pdfFile, tabId]);
 
-    // Global flag + warm model (fire-and-forget).
     React.useEffect(() => {
-        (window as any).__isUpscalerActive = true;
-        try {
-            const fd = new FormData();
-            fd.append('engine', 'general');
-            authenticatedFetch(`${getApiUrl()}/pdf-tools/upscale/warmup`, { method: 'POST', body: fd }).catch(() => {});
-        } catch { /* ignore */ }
-        return () => { (window as any).__isUpscalerActive = false; };
+        const handleExternalFiles = (event: Event) => {
+            const detail = (event as CustomEvent<{ tabId?: string; files?: File[] }>).detail;
+            if (detail?.tabId !== tabId || !detail.files?.length) return;
+            void normalizeAndAddFiles(detail.files, tabId, useUpscaleStore);
+        };
+
+        // NAV (audit điều hướng tab 2026-07-28 §DROP.01): Tauri phát path qua
+        // tuyến native, không đi vào dataTransfer.files của vùng preview.
+        window.addEventListener(IMAGE_BATCH_DROP_EVENTS.upscale, handleExternalFiles);
+        return () => {
+            window.removeEventListener(IMAGE_BATCH_DROP_EVENTS.upscale, handleExternalFiles);
+        };
     }, [tabId]);
 
+    // Global flag + warm model (fire-and-forget).
+    React.useEffect(() => {
+        const upscaleWindow = window as Window & { __isUpscalerActive?: boolean };
+        upscaleWindow.__isUpscalerActive = true;
+        try {
+            const fd = new FormData();
+            fd.append('engine', options.model);
+            void authenticatedFetch(getApiUrl() + '/pdf-tools/upscale/warmup', { method: 'POST', body: fd })
+                .then(async response => {
+                    const payload = response.ok ? await response.json() as { ok?: boolean } : null;
+                    if (!payload?.ok && !warmupWarningShown) {
+                        warmupWarningShown = true;
+                        toast.info(tv('Mô hình Upscale chưa sẵn sàng; lần xử lý đầu có thể thất bại.'));
+                    }
+                })
+                .catch(() => {
+                    if (!warmupWarningShown) {
+                        warmupWarningShown = true;
+                        toast.info(tv('Không thể kiểm tra mô hình Upscale; hãy kiểm tra sidecar.'));
+                    }
+                });
+        } catch { /* ignore */ }
+        return () => { upscaleWindow.__isUpscalerActive = false; };
+    }, [tabId, options.model]);
+
     const setOption = <K extends keyof typeof options>(key: K, val: (typeof options)[K]) => {
+        if (options[key] === val) return;
+        // UIUX (audit 2026-07-28 §UP-04): cấu hình đổi thì kết quả cũ không còn
+        // đúng hợp đồng. Thu hồi URL và buộc chạy lại thay vì lưu nhầm ảnh cũ.
+        storeActions.setBatchItems(tabId, batchItems.map(item => {
+            if (item.resultUrl) URL.revokeObjectURL(item.resultUrl);
+            return {
+                ...item,
+                status: 'pending' as const,
+                resultBlob: undefined,
+                resultUrl: undefined,
+                resultInfo: undefined,
+                error: undefined,
+            };
+        }));
         storeActions.setOptions(tabId, { ...options, [key]: val });
     };
 
@@ -171,9 +231,31 @@ export default function UpscaleTool({ tabId, pdfFile }: Props) {
 
             {/* Options */}
             <div>
+                <ToolSectionLabel>{t('preprocess.upscale:che_do_ai')}</ToolSectionLabel>
+                <select
+                    value={options.model}
+                    disabled={isProcessing}
+                    onChange={(e) => setOption('model', e.target.value as 'quality' | 'balanced' | 'general')}
+                    className="w-full h-10 mt-1 bg-white dark:bg-[#27272a] border border-slate-200 dark:border-white/10 rounded-lg px-3 text-[13px] font-medium text-slate-700 dark:text-zinc-200 outline-none"
+                >
+                    <option value="balanced">{t('preprocess.upscale:model_can_bang')}</option>
+                    <option value="general">{t('preprocess.upscale:model_nhanh')}</option>
+                    <option value="quality">{t('preprocess.upscale:model_chat_luong')}</option>
+                </select>
+                <p className="mt-1 text-[11px] text-slate-500 dark:text-zinc-400">
+                    {options.model === 'quality'
+                        ? t('preprocess.upscale:model_chat_luong_goi_y')
+                        : options.model === 'balanced'
+                            ? t('preprocess.upscale:model_can_bang_goi_y')
+                            : t('preprocess.upscale:model_nhanh_goi_y')}
+                </p>
+            </div>
+
+            <div>
                 <ToolSectionLabel>{t('preprocess.upscale:muc_do_phong_to_upscale_factor')}</ToolSectionLabel>
                 <select
                     value={options.scaleFactor}
+                    disabled={isProcessing}
                     onChange={(e) => setOption('scaleFactor', parseInt(e.target.value) as 2 | 4)}
                     className="w-full h-10 mt-1 bg-white dark:bg-[#27272a] border border-slate-200 dark:border-white/10 rounded-lg px-3 text-[13px] font-medium text-slate-700 dark:text-zinc-200 outline-none"
                 >
@@ -190,6 +272,12 @@ export default function UpscaleTool({ tabId, pdfFile }: Props) {
                         : 'bg-indigo-600 hover:bg-indigo-700 text-white'}`}>
                     {t('preprocess.common:run')}{isProcessing ? '…' : ''}
                 </button>
+                {isProcessing && (
+                    <button onClick={() => cancelBatch(tabId)}
+                        className="w-full h-10 rounded-xl text-[13px] font-bold bg-rose-600 hover:bg-rose-700 text-white transition-colors">
+                        {t('preprocess.upscale:huy_xu_ly')}
+                    </button>
+                )}
                 {hasSuccess && (
                     <div className="flex gap-2">
                         <button onClick={() => handleSave(tabId)}
@@ -225,11 +313,12 @@ export default function UpscaleTool({ tabId, pdfFile }: Props) {
 // PREVIEW — Rendered in the MAIN content area
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export function UpscalePreview({ tabId }: { tabId: string }) {
+export function UpscalePreview({ tabId, isActive }: { tabId: string; isActive: boolean }) {
   const { t } = useTranslation();
     return (
         <ImageBatchPreview
             tabId={tabId}
+            isActive={isActive}
             store={useUpscaleStore}
             labels={{
                 resultBadge: t('preprocess.upscale:da_phong_to'),

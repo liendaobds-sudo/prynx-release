@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import type { UseEditSession } from '../../hooks/useEditSession';
 import { confirmDialog } from '../ui/confirmDialog';
+import { toast } from '../ui/Toast';
 import { assignComponentsToDeepestLayers } from './layerComponentTree';
 import { requestEditObjectFocus, scrollElementVerticallyIntoView } from './verticalScroll';
 
@@ -34,6 +35,7 @@ interface OcgLayer {
 }
 
 interface EditLayersPanelProps {
+    tabId?: string;
     handleDeleteObjects: (objs: any[], pageNum: number) => void;
     // For edit PDF upgrade: pass accurate current page objects from edit system for "thành phần"
     editObjects?: any[];
@@ -42,6 +44,7 @@ interface EditLayersPanelProps {
 }
 
 export default function EditLayersPanel({
+    tabId,
     handleDeleteObjects,
     editObjects,
     isEditMode,
@@ -66,7 +69,8 @@ export default function EditLayersPanel({
         lockedOcgLayerIds: state.lockedOcgLayerIds, setLockedOcgLayerIds: state.setLockedOcgLayerIds,
         expandedOcgLayerIds: state.expandedOcgLayerIds, setExpandedOcgLayerIds: state.setExpandedOcgLayerIds,
         viewerActivePage: state.viewerActivePage,
-        setError: state.setError, editAddMode: state.editAddMode, setEditAddMode: state.setEditAddMode,
+        setError: state.setError,
+        editAddMode: state.editAddMode, setEditAddMode: state.setEditAddMode,
     })));
 
     const [searchTerm, setSearchTerm] = useState(''); // Search for components (thành phần)
@@ -140,6 +144,7 @@ export default function EditLayersPanel({
     useEffect(() => {
         const syncVisibility = (event: Event) => {
             const detail = (event as CustomEvent).detail || {};
+            if (detail.tabId !== tabId) return;
             if (Number(detail.page) !== Math.max(0, viewerActivePage - 1)) return;
             const ids: string[] = Array.isArray(detail.targetIds) ? detail.targetIds : [];
             setHiddenObjectIds(prev => detail.visible
@@ -149,7 +154,7 @@ export default function EditLayersPanel({
         };
         window.addEventListener('edit-object-visibility-changed', syncVisibility);
         return () => window.removeEventListener('edit-object-visibility-changed', syncVisibility);
-    }, [viewerActivePage, setHiddenObjectIds]);
+    }, [viewerActivePage, setHiddenObjectIds, tabId]);
     useEffect(() => {
         const objectId = pendingCanvasFocusRef.current;
         if (!objectId || !selectedObjectIds.includes(objectId)) return;
@@ -283,6 +288,11 @@ export default function EditLayersPanel({
             const result = await editSession.flatten();
             if (!result?.success || !result.output_fid) {
                 throw new Error('Không thể tạo Working File Flatten.');
+            }
+            // GS-SUNSET (audit 2026-07-28 §FL.2): toast là bề mặt UI nhìn thấy thật;
+            // reportMsg không được render nên trước đây cảnh báo vẫn bị mất.
+            if (result.warning) {
+                toast.info(`⚠ ${result.warning}`);
             }
         } catch (err: any) {
             setError(err?.message || 'Flatten layer thất bại.');

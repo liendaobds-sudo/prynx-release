@@ -5,6 +5,8 @@
 
 import { PDFDocument } from 'pdf-lib';
 
+import { beginOptionalContentTransfer, finishOptionalContentTransfer } from '../pdfOptionalContent';
+
 const MM_TO_POINTS = 2.83465;
 
 export type ScaleMode = 'fit' | 'fill' | 'stretch' | 'center_no_scale';
@@ -43,6 +45,12 @@ export async function resizePages(
     const targetWPt = options.targetW * MM_TO_POINTS;
     const targetHPt = options.targetH * MM_TO_POINTS;
     const pageCount = srcPdf.getPageCount();
+
+    // [OCG FIX 2026-07-28] Cả copyPages và embedPages đều không mang /OCProperties sang.
+    // Trang đổi khổ nằm trong Form XObject nên OCG tụt vào /Resources của form — hàm dựng
+    // lại catalog có lần theo XObject lồng nhau nên vẫn nhận ra.
+    // srcPdf là bản load cục bộ trong hàm này nên không cần try/finally để dọn dấu.
+    const ocTransfer = beginOptionalContentTransfer([srcPdf]);
 
     for (let i = 0; i < pageCount; i++) {
         const srcPage = srcPdf.getPage(i);
@@ -131,5 +139,6 @@ export async function resizePages(
         });
     }
 
+    finishOptionalContentTransfer(ocTransfer, outputPdf);
     return outputPdf.save();
 }

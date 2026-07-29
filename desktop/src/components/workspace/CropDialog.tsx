@@ -14,6 +14,7 @@ interface PageBoxesResponse {
     artbox: BoxMm;
 }
 interface CropOpenDetail {
+    tabId?: string;
     pageNum: number;
     ownerId?: string;
     /** Nhiều vùng: mỗi vùng tạo một trang kết quả. */
@@ -25,6 +26,7 @@ interface CropOpenDetail {
 }
 
 interface CropSelectionDetail {
+    tabId?: string;
     ownerId?: string;
     pageNum?: number;
     fracs?: Frac[];
@@ -119,13 +121,14 @@ interface RegionAlignment {
 }
 
 interface Props {
+    tabId?: string;
     ensureFileId: (signal?: AbortSignal) => Promise<string>;
     onApplied: (blob: Blob, filename: string, openInNewTab: boolean) => void | Promise<void>;
     onClose: () => void;
     embedded?: boolean;
 }
 
-export default function CropDialog({ ensureFileId, onApplied, onClose, embedded = false }: Props) {
+export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, onClose, embedded = false }: Props) {
     const { t } = useTranslation();
     const rememberedPreferencesRef = useRef<CropPreferences | null>(null);
     if (rememberedPreferencesRef.current === null) {
@@ -226,7 +229,7 @@ export default function CropDialog({ ensureFileId, onApplied, onClose, embedded 
     useEffect(() => {
         const onOpen = async (e: Event) => {
             const detail = (e as CustomEvent<CropOpenDetail>).detail;
-            if (!detail) return;
+            if (!detail || detail.tabId !== tabId) return;
             const list = detail.fracs?.length ? detail.fracs : (detail.frac ? [detail.frac] : []);
             if (list.length === 0) return;
 
@@ -303,12 +306,14 @@ export default function CropDialog({ ensureFileId, onApplied, onClose, embedded 
             window.removeEventListener('prynx-crop-open', onOpen as EventListener);
             abortPending();
         };
-    }, [abortPending, ensureFileId, t]);
+    }, [abortPending, ensureFileId, t, tabId]);
 
     useEffect(() => {
         if (!open) return;
         if (!embedded) dialogRef.current?.focus();
         const onKey = (event: KeyboardEvent) => {
+            // NAV (audit điều hướng tab 2026-07-28): dialog của tab ẩn vẫn mounted.
+            if (dialogRef.current?.closest('.opacity-0')) return;
             if (event.key === 'Escape') {
                 event.preventDefault();
                 event.stopImmediatePropagation();
@@ -333,7 +338,7 @@ export default function CropDialog({ ensureFileId, onApplied, onClose, embedded 
         if (!open) return;
         const onSelectionChange = (event: Event) => {
             const detail = (event as CustomEvent<CropSelectionDetail>).detail;
-            if (!detail || detail.ownerId !== ownerId || detail.pageNum !== pageNum) return;
+            if (!detail || detail.tabId !== tabId || detail.ownerId !== ownerId || detail.pageNum !== pageNum) return;
             if (Array.isArray(detail.fracs) && detail.fracs.length > 0) {
                 const nextFracs = detail.fracs.map((frac) => ({ ...frac }));
                 const sameFracs = fracsRef.current.length === nextFracs.length
@@ -362,7 +367,7 @@ export default function CropDialog({ ensureFileId, onApplied, onClose, embedded 
         };
         window.addEventListener('prynx-crop-selection-change', onSelectionChange as EventListener);
         return () => window.removeEventListener('prynx-crop-selection-change', onSelectionChange as EventListener);
-    }, [open, ownerId, pageNum]);
+    }, [open, ownerId, pageNum, tabId]);
 
     // PDF.js displays CropBox. Using MediaBox here shifts and rescales selections on cropped PDFs.
     const pageBox = boxes?.cropbox || boxes?.mediabox || null;
@@ -481,12 +486,12 @@ export default function CropDialog({ ensureFileId, onApplied, onClose, embedded 
         }
         window.dispatchEvent(new CustomEvent('prynx-crop-preview-change', {
             detail: {
-                ownerId, pageNum,
+                tabId, ownerId, pageNum,
                 fracs: visualFracs.map((frac) => ({ ...frac })),
                 selectedIndex: selectedIdx,
             },
         }));
-    }, [open, ownerId, pageNum, selectedIdx, visualFracs]);
+    }, [open, ownerId, pageNum, selectedIdx, visualFracs, tabId]);
     const selectedSourceFrac = sourceFracs[selectedIdx] || selectedFrac;
     const selectedRect = effectiveRects[selectedIdx] || null;
     const selectedAlignment = regionAlignments[selectedIdx] || { horizontal: horizontalAlignment, vertical: verticalAlignment };

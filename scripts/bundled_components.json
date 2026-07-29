@@ -18,9 +18,9 @@
       "source": "https://github.com/ArtifexSoftware/ghostpdl-downloads",
       "bundled_path": "binaries/gs/",
       "linkage": "Tiến trình riêng, gọi qua dòng lệnh (không liên kết thư viện)",
-      "used_for": "Tách kẽm CMYK/spot, soft-proof ICC, chuyển màu, PDF/X, flatten, outline font, downsample ảnh, nén PDF",
-      "bundled": true,
-      "notes": "AGPL-3.0. Đang được thay bằng PrynX Print Engine (xem docs/PRYNX_GS_REPLACEMENT_ENGINE_PLAN.md); đặt `bundled: false` khi gỡ khỏi installer."
+      "used_for": "Không còn dùng. Trước đây: tách kẽm CMYK/spot, soft-proof ICC, chuyển màu, PDF/X, flatten, outline font, downsample ảnh, nén PDF",
+      "bundled": false,
+      "notes": "GS-SUNSET 2026-07-28: KHÔNG còn đóng gói và KHÔNG còn chạy được. build_production.ps1 gõ cứng $BUNDLE_GS=$false; config.py ép GHOSTSCRIPT_PATH=''; subprocess_utils._guard_ghostscript ném GhostscriptUnavailable vô điều kiện. Giữ entry lại (bundled=false) làm mốc lịch sử — generator tự bỏ khỏi NOTICE, nên sinh lại NOTICE mà quên cờ --no-ghostscript cũng KHÔNG khai lại AGPL. Đừng đặt lại true nếu chưa thực sự đóng gói GS."
     },
     {
       "id": "tesseract",
@@ -70,9 +70,48 @@
       "source": "https://github.com/microsoft/DirectML",
       "bundled_path": "onnxruntime/capi/DirectML.dll",
       "linkage": "Thư viện động của onnxruntime",
-      "used_for": "Tăng tốc GPU cho tách nền ảnh (DirectX 12)",
+      "used_for": "Tăng tốc GPU cho tách nền và phóng to ảnh AI (DirectX 12)",
       "bundled": true,
       "notes": "Chỉ có ở bản Windows; bản CPU không kèm."
+    },
+    {
+      "id": "isnet-general-use-model",
+      "name": "ISNet general-use ONNX model",
+      "version": "rembg v0.0.0 model artifact",
+      "license": "Apache-2.0",
+      "homepage": "https://github.com/danielgatis/rembg",
+      "source": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx",
+      "bundled_path": "app/data/models/isnet-general-use.onnx",
+      "linkage": "Trọng số ONNX nạp cục bộ qua ONNX Runtime",
+      "used_for": "Tách nền offline ở chế độ Nhanh",
+      "bundled": true,
+      "notes": "SHA-256: 60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a. BiRefNet-lite/full vẫn tải theo nhu cầu bằng cache atomic có kiểm hash."
+    },
+    {
+      "id": "realesrgan-x4v3-model",
+      "name": "Real-ESRGAN realesr-general-x4v3 model",
+      "version": "x4v3 + x4plus / ONNX conversion",
+      "license": "BSD-3-Clause",
+      "homepage": "https://github.com/xinntao/Real-ESRGAN",
+      "source": "https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.3.0",
+      "bundled_path": "app/data/models/realesr-general-x4v3.onnx + realesrgan-x4plus.onnx",
+      "linkage": "Trọng số ONNX nạp cục bộ qua ONNX Runtime",
+      "used_for": "Phóng to và phục hồi chi tiết ảnh bằng AI",
+      "bundled": true,
+      "notes": "Chuyển từ trọng số .pth chính thức bằng backend/scripts/convert_realesrgan_onnx.py; SHA-256 x4v3: 027319ffe4f00ec2550957c0957d44969638a03d2ed2f0329af9fd6cd44a457a; x4plus: c1b85fae35947577b4c4b7d310af54546c6e7971f14a0862a769e83689ddc003.",
+      "license_text": [
+        "BSD 3-Clause License",
+        "",
+        "Copyright (c) 2021, Xintao Wang",
+        "All rights reserved.",
+        "",
+        "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:",
+        "1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.",
+        "2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.",
+        "3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.",
+        "",
+        "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+      ]
     }
   ]
 }

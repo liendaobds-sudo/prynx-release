@@ -3,7 +3,7 @@
 PrynX sử dụng các thành phần mã nguồn mở dưới đây. Bản quyền thuộc về các
 tác giả tương ứng; mỗi thành phần được phân phối theo giấy phép của nó.
 
-*Sinh tự động ngày 2026-07-27 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
+*Sinh tự động ngày 2026-07-28 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
 
 > Đây không phải tư vấn pháp lý. Tài liệu này liệt kê thành phần và giấy
 > phép để phục vụ nghĩa vụ ghi công; việc đánh giá tuân thủ là việc riêng.
@@ -58,7 +58,9 @@ PrynX dùng nguyên bản, không sửa.
 | [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) | 5.x | Apache-2.0 | Nhận dạng chữ trong ảnh (OCR) | `binaries/tesseract/` |
 | [Leptonica](http://www.leptonica.org/) | 1.8x | BSD-2-Clause | Xử lý ảnh nền cho OCR | `binaries/tesseract/ (DLL)` |
 | [PDFium](https://pdfium.googlesource.com/pdfium/) | bundled build | BSD-3-Clause | Render trang, đọc hình học đối tượng PDF | `pdfium.dll (trong sidecar) + pypdfium2` |
-| [DirectML](https://github.com/microsoft/DirectML) | theo onnxruntime-directml | MIT | Tăng tốc GPU cho tách nền ảnh (DirectX 12) | `onnxruntime/capi/DirectML.dll` |
+| [DirectML](https://github.com/microsoft/DirectML) | theo onnxruntime-directml | MIT | Tăng tốc GPU cho tách nền và phóng to ảnh AI (DirectX 12) | `onnxruntime/capi/DirectML.dll` |
+| [ISNet general-use ONNX model](https://github.com/danielgatis/rembg) | rembg v0.0.0 model artifact | Apache-2.0 | Tách nền offline ở chế độ Nhanh | `app/data/models/isnet-general-use.onnx` |
+| [Real-ESRGAN realesr-general-x4v3 model](https://github.com/xinntao/Real-ESRGAN) | x4v3 + x4plus / ONNX conversion | BSD-3-Clause | Phóng to và phục hồi chi tiết ảnh bằng AI | `app/data/models/realesr-general-x4v3.onnx + realesrgan-x4plus.onnx` |
 
 ### Tesseract OCR
 
@@ -86,6 +88,35 @@ PrynX dùng nguyên bản, không sửa.
 - Liên kết: Thư viện động của onnxruntime
 - Mã nguồn: https://github.com/microsoft/DirectML
 - Ghi chú: Chỉ có ở bản Windows; bản CPU không kèm.
+
+### ISNet general-use ONNX model
+
+- Giấy phép: **Apache-2.0**
+- Liên kết: Trọng số ONNX nạp cục bộ qua ONNX Runtime
+- Mã nguồn: https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx
+- Ghi chú: SHA-256: 60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a. BiRefNet-lite/full vẫn tải theo nhu cầu bằng cache atomic có kiểm hash.
+
+### Real-ESRGAN realesr-general-x4v3 model
+
+- Giấy phép: **BSD-3-Clause**
+- Liên kết: Trọng số ONNX nạp cục bộ qua ONNX Runtime
+- Mã nguồn: https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.3.0
+- Ghi chú: Chuyển từ trọng số .pth chính thức bằng backend/scripts/convert_realesrgan_onnx.py; SHA-256 x4v3: 027319ffe4f00ec2550957c0957d44969638a03d2ed2f0329af9fd6cd44a457a; x4plus: c1b85fae35947577b4c4b7d310af54546c6e7971f14a0862a769e83689ddc003.
+- Toàn văn giấy phép đi kèm bản phân phối:
+
+```text
+BSD 3-Clause License
+
+Copyright (c) 2021, Xintao Wang
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
 
 ## 3. Thư viện Python
 
@@ -1589,7 +1620,7 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 
 ## 6. Thống kê
 
-- Nhị phân đóng gói: 4
+- Nhị phân đóng gói: 6
 - Thư viện Python: 132
 - Crate Rust: 786
 - Gói npm: 558
@@ -1599,8 +1630,8 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | MIT | 652 |
 | MIT OR Apache-2.0 | 378 |
 | Apache-2.0 OR MIT | 90 |
-| Apache-2.0 | 45 |
-| BSD-3-Clause | 32 |
+| Apache-2.0 | 46 |
+| BSD-3-Clause | 33 |
 | MIT/Apache-2.0 | 32 |
 | ISC | 29 |
 | Unicode-3.0 | 24 |

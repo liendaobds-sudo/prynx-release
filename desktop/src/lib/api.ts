@@ -1,4 +1,5 @@
 import i18n, { tv } from '../i18n';
+import { fetchLocalFileBuffer } from './localFileTransport';
 // UIUX (audit 2026-07-27 §D-16): i18nT = t() dùng được ở module non-component, có chuỗi
 // mặc định tiếng Việt nên KHÔNG cần thêm key vào vi.json (thiếu key → dùng default).
 const i18nT = (key: string, defaultValue: string, opts?: Record<string, unknown>) =>
@@ -220,33 +221,20 @@ export async function prepareFileForUpload(file: File): Promise<File | Blob> {
       // File 0 byte → backend ghi file rỗng → PDFium "Data format error" khi mở lại.
       const blobIsEmpty = file.size === 0 || file.slice(0, 1).size === 0;
       if (blobIsEmpty) {
-          // ⚡ PERF: lấy bytes qua ASSET PROTOCOL (convertFileSrc + fetch) — KÊNH RIÊNG,
-          // KHÔNG dùng kênh invoke IPC. Trước đây readFile() (plugin-fs) đọc cả file qua
-          // IPC → file lớn (vd 15MB) serialize làm NGHẼN kênh IPC → invoke('get_pdf_metadata')
-          // bị trễ 1.7-3.3s → spinner "Đang tải file PDF..." kéo dài. (Xem §15.10.)
+          // FILEIO (audit 2026-07-28 §FL.01): protocol Rust đọc được ổ D/USB/NAS mà
+          // không serialize cả file qua IPC và không phụ thuộc scope của asset/plugin-fs.
           try {
-              const { convertFileSrc } = await import('@tauri-apps/api/core');
-              const resp = await fetch(convertFileSrc(file.path));
-              if (resp.ok) {
-                  const realBlob = new Blob([await resp.arrayBuffer()], { type: file.type || 'application/pdf' });
-                  Object.defineProperty(realBlob, 'name', { value: file.name });
-                  Object.defineProperty(realBlob, 'path', { value: file.path });
-                  return realBlob;
-              }
-          } catch (e) {
-              console.warn("asset-fetch upload prep failed, fallback readFile:", e);
-          }
-          try {
-              const { readFile } = await import('@tauri-apps/plugin-fs');
-              const fileData = await readFile(file.path);
+              const fileData = await fetchLocalFileBuffer(file.path);
+              if (fileData.byteLength === 0) throw new Error('File trên đĩa đang rỗng');
               const realBlob = new Blob([fileData], { type: file.type || 'application/pdf' });
-              // Re-inject properties to make it act like a File
               Object.defineProperty(realBlob, 'name', { value: file.name });
               Object.defineProperty(realBlob, 'path', { value: file.path });
               return realBlob;
           } catch (e) {
-              console.error("Failed to read fake file object from disk", e);
-              return file; // Fallback
+              console.error('Không đọc được fake File từ đường dẫn cục bộ', e);
+              // Không được gửi tiếp `file`: blob thật của nó rỗng dù `.size` có thể đã bị
+              // gắn giả. Dừng tại đây để backend không nhận một PDF 0 byte khó chẩn đoán.
+              throw new Error(`Không đọc được file gốc trên đĩa. File có thể đã bị di chuyển hoặc không còn quyền truy cập: ${file.name}`);
           }
       }
   }

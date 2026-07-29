@@ -22,7 +22,7 @@ interface Props {
   onSelectField?: (ids: string[]) => void;
   onBack?: () => void;
   onSpawnTab?: (blob: Blob, name: string, path?: string) => void;
-  onApplyResult?: (blob: Blob, name: string, path?: string) => void;
+  onApplyResult?: (blob: Blob, name: string, path?: string) => void | Promise<void>;
   isActive?: boolean;
 }
 
@@ -65,13 +65,13 @@ export default function NumberingTool({
 
     // Đóng modal trợ giúp bằng phím ESC (chỉ gắn listener khi modal đang mở).
     useEffect(() => {
-        if (!showHelp) return;
+        if (!showHelp || !isActive) return;
         const onKey = (e: KeyboardEvent) => {
             if (e.key === 'Escape') { e.stopPropagation(); setShowHelp(false); }
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [showHelp]);
+    }, [showHelp, isActive]);
 
     // Generation State
     const [genMethod, setGenMethod] = useState<'range' | 'set'>('range');
@@ -336,7 +336,7 @@ export default function NumberingTool({
                 onSpawnTab(blob, outName, path ?? undefined);
                 setStatusMessage(t('preprocess.numbering:hoan_thanh_da_tao_tab_pdf_moi'));
             } else if (onApplyResult) {
-                onApplyResult(blob, outName, path ?? undefined);
+                await onApplyResult(blob, outName, path ?? undefined);
                 setStatusMessage(t('preprocess.numbering:hoan_thanh_da_ghi_de_file_hien_tai'));
             }
         } catch (error: any) {

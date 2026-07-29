@@ -21,6 +21,7 @@ export interface PreviewLabels {
 
 interface Props<O> {
     tabId: string;
+    isActive: boolean;
     store: BatchStore<O>;
     labels: PreviewLabels;
 }
@@ -36,7 +37,7 @@ const checkerboardStyle: React.CSSProperties = {
     backgroundPosition: '0 0, 0 10px, 10px -10px, -10px 0px',
 };
 
-export function ImageBatchPreview<O>({ tabId, store, labels }: Props<O>) {
+export function ImageBatchPreview<O>({ tabId, isActive, store, labels }: Props<O>) {
   const { t } = useTranslation();
     const tabState = store(state => state.tabs[tabId]);
     const batchItems = tabState?.batchItems ?? [];
@@ -62,12 +63,24 @@ export function ImageBatchPreview<O>({ tabId, store, labels }: Props<O>) {
 
     // Track Space key for hand-tool panning
     React.useEffect(() => {
-        const onKeyDown = (e: KeyboardEvent) => { if (e.code === 'Space' && !e.repeat) { spaceHeld.current = true; e.preventDefault(); } };
+        if (!isActive) {
+            spaceHeld.current = false;
+            return;
+        }
+        const isTypingTarget = (target: EventTarget | null) => {
+            const element = target as HTMLElement | null;
+            return !!element?.closest?.('input, textarea, select, [contenteditable="true"]');
+        };
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.code !== 'Space' || e.repeat || isTypingTarget(e.target)) return;
+            spaceHeld.current = true;
+            e.preventDefault();
+        };
         const onKeyUp = (e: KeyboardEvent) => { if (e.code === 'Space') spaceHeld.current = false; };
         window.addEventListener('keydown', onKeyDown);
         window.addEventListener('keyup', onKeyUp);
         return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); };
-    }, []);
+    }, [isActive]);
 
     // Slider drag
     const handleSliderMove = useCallback((clientX: number) => {
@@ -127,6 +140,7 @@ export function ImageBatchPreview<O>({ tabId, store, labels }: Props<O>) {
 
     const imgTransform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
     const imgClass = "max-w-[90vw] max-h-[85vh] pointer-events-none";
+    const compareImgClass = "absolute inset-0 w-full h-full object-contain pointer-events-none";
     const imgTransition = isPanning ? 'none' : 'transform 0.1s ease-out';
 
     return (
@@ -162,15 +176,17 @@ export function ImageBatchPreview<O>({ tabId, store, labels }: Props<O>) {
                     {hasResult ? (
                         <>
                             {/* Result layer (full, below) */}
-                            <div style={{ transform: imgTransform, transition: imgTransition, transformOrigin: 'center center' }}>
-                                <img src={selectedItem.resultUrl!} alt={t('preprocess.imageBatchPreview:ket_qua')} className={imgClass} draggable={false} />
+                            <div className="absolute inset-0"
+                                style={{ transform: imgTransform, transition: imgTransition, transformOrigin: 'center center' }}>
+                                <img src={selectedItem.resultUrl!} alt={t('preprocess.imageBatchPreview:ket_qua')} className={compareImgClass} draggable={false} />
                             </div>
 
                             {/* Original layer (clipped from the right side of slider) */}
                             <div className="absolute inset-0 flex items-center justify-center overflow-hidden"
                                 style={{ clipPath: `inset(0 0 0 ${sliderPos}%)` }}>
-                                <div style={{ transform: imgTransform, transition: imgTransition, transformOrigin: 'center center' }}>
-                                    <img src={selectedItem.originalUrl} alt={t('preprocess.imageBatchPreview:anh_goc')} className={imgClass} draggable={false} />
+                                <div className="absolute inset-0"
+                                    style={{ transform: imgTransform, transition: imgTransition, transformOrigin: 'center center' }}>
+                                    <img src={selectedItem.originalUrl} alt={t('preprocess.imageBatchPreview:anh_goc')} className={compareImgClass} draggable={false} />
                                 </div>
                             </div>
 
@@ -224,6 +240,7 @@ export function ImageBatchPreview<O>({ tabId, store, labels }: Props<O>) {
             {selectedItem && (
                 <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-black/50 backdrop-blur-sm text-white text-[11px] font-medium px-4 py-1.5 rounded-lg z-10 max-w-[80%] truncate">
                     {selectedItem.fileName}
+                    {selectedItem.resultInfo && <span className="text-emerald-200 ml-2">— {selectedItem.resultInfo}</span>}
                     {selectedItem.status === 'error' && <span className="text-red-300 ml-2">— {selectedItem.error}</span>}
                 </div>
             )}

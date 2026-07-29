@@ -1,5 +1,10 @@
 import { PDFDocument, degrees } from 'pdf-lib';
 
+import {
+  beginOptionalContentTransfer,
+  finishOptionalContentTransfer,
+} from '../../lib/pdfOptionalContent';
+
 export type PreviewViewerState = {
   order: number[];
   rotations: number[];
@@ -81,20 +86,27 @@ export async function materializePreviewViewerPdf(
   const outDoc = await PDFDocument.create();
   const fallback = srcDoc.getPages()[0]?.getSize() || { width: 595.28, height: 841.89 };
 
-  for (let position = 0; position < state.order.length; position += 1) {
-    const sourcePage = state.order[position];
-    if (sourcePage === -1) {
-      outDoc.addPage([fallback.width, fallback.height]);
-      continue;
+  // [OCG FIX 2026-07-28] copyPages bỏ /OCProperties → layer đã ẩn hiện lại ngay trên
+  // khung xem trước. Vòng lặp có throw giữa đường nên dọn dấu trong finally.
+  const ocTransfer = beginOptionalContentTransfer([srcDoc]);
+  try {
+    for (let position = 0; position < state.order.length; position += 1) {
+      const sourcePage = state.order[position];
+      if (sourcePage === -1) {
+        outDoc.addPage([fallback.width, fallback.height]);
+        continue;
+      }
+      const sourceIndex = sourcePage - 1;
+      if (sourceIndex < 0 || sourceIndex >= srcDoc.getPageCount()) {
+        throw new Error(`Invalid preview page ${sourcePage} at position ${position + 1}`);
+      }
+      const [copied] = await outDoc.copyPages(srcDoc, [sourceIndex]);
+      const rotation = state.rotations[position] || 0;
+      if (rotation) copied.setRotation(degrees(copied.getRotation().angle + rotation));
+      outDoc.addPage(copied);
     }
-    const sourceIndex = sourcePage - 1;
-    if (sourceIndex < 0 || sourceIndex >= srcDoc.getPageCount()) {
-      throw new Error(`Invalid preview page ${sourcePage} at position ${position + 1}`);
-    }
-    const [copied] = await outDoc.copyPages(srcDoc, [sourceIndex]);
-    const rotation = state.rotations[position] || 0;
-    if (rotation) copied.setRotation(degrees(copied.getRotation().angle + rotation));
-    outDoc.addPage(copied);
+  } finally {
+    finishOptionalContentTransfer(ocTransfer, outDoc);
   }
 
   return new Uint8Array(await outDoc.save());

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useRecentFiles, type RecentFile } from '../../lib/useRecentFiles';
+import { useRecentFiles, statRecentFile, type RecentFile } from '../../lib/useRecentFiles';
 import ThumbnailView from './ThumbnailView';
 import { useAppSettingsStore } from '../../stores/appSettingsStore';
 import { toast } from '../ui/Toast';
@@ -63,23 +63,24 @@ export default function RecentFilesGrid({ onOpenFile, active = true }: Props) {
       return;
     }
     if ((window as any).__TAURI_INTERNALS__) {
-      try {
-        const { stat } = await import('@tauri-apps/plugin-fs');
-        const fileStat = await stat(rf.path);
-        
-        const type = rf.name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 
-                    rf.name.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
-                    
-        const fileObj = new File([], rf.name, { type });
-        Object.defineProperty(fileObj, 'path', { value: rf.path });
-        Object.defineProperty(fileObj, 'size', { value: fileStat.size });
-        
-        onOpenFile(fileObj);
-      } catch (err) {
+      // §RF.1 (audit menu 2026-07-28): stat qua helper dùng chung của store, không tự
+      // import plugin-fs ở đây nữa — cờ "file đã mất" nhờ vậy dùng chung với thumbnail
+      // và menu Mở gần đây.
+      const info = await statRecentFile(rf.path);
+      if (!info) {
         // UIUX (audit 2026-07-27 §D-13): câu Việt qua i18n thay chuỗi tiếng Anh hardcode
-        toast.error(t('misc.recentFilesGrid:file_da_di_chuyen', 'File không còn ở vị trí cũ (có thể đã bị di chuyển hoặc xóa):') + '\n' + rf.path);
+        toast.error(t('misc.recentFilesGrid:file_da_di_chuyen') + '\n' + rf.path);
         removeFile(rf.path);
+        return;
       }
+      const type = rf.name.toLowerCase().endsWith('.pdf') ? 'application/pdf' :
+                  rf.name.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+
+      const fileObj = new File([], rf.name, { type });
+      Object.defineProperty(fileObj, 'path', { value: rf.path });
+      Object.defineProperty(fileObj, 'size', { value: info.size });
+
+      onOpenFile(fileObj);
     }
   };
 

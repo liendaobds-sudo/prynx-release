@@ -219,7 +219,10 @@ function MiniPathRenderer({ path, tagStyles }: { path: PathSegment; tagStyles: R
     );
 }
 
-export default function NestingCanvas() {
+export default function NestingCanvas({ isActive = true }: {
+    /** Tab Khuôn bế đang được xem? Tab nền không được phản ứng với lệnh menu Xem. */
+    isActive?: boolean;
+} = {}) {
   const { t } = useTranslation();
     const { dieline, nestingConfig, nestingResult, sleeveNestingResult, params } = useBoxStore();
     const tagStyles = useTagStyles();
@@ -249,20 +252,54 @@ export default function NestingCanvas() {
         setTransform(newT);
     }, []);
 
-    // Auto-fit on first render or when result changes
-    useEffect(() => {
+    // Canh tờ giấy vừa khung. 'width' = chỉ theo bề rộng tờ (xem hàng khuôn rõ hơn).
+    // Tách khỏi effect auto-fit để menu Xem gọi lại được (audit menu 2026-07-28 §MB.1).
+    const fitSheetToView = useCallback((mode: 'page' | 'width' = 'page') => {
         if (!nestingResult || !svgEl) return;
-        const svg = svgEl;
-        const rect = svg.getBoundingClientRect();
+        const rect = svgEl.getBoundingClientRect();
         const { actualSheet } = nestingResult;
         const padding = 40;
         const scaleX = (rect.width - padding * 2) / actualSheet.width;
         const scaleY = (rect.height - padding * 2) / actualSheet.height;
-        const scale = Math.min(scaleX, scaleY, 3);
-        const x = (rect.width - actualSheet.width * scale) / 2;
-        const y = (rect.height - actualSheet.height * scale) / 2;
-        updateTransform({ x, y, scale });
+        const scale = mode === 'width' ? Math.min(scaleX, 3) : Math.min(scaleX, scaleY, 3);
+        updateTransform({
+            x: (rect.width - actualSheet.width * scale) / 2,
+            y: (rect.height - actualSheet.height * scale) / 2,
+            scale,
+        });
     }, [nestingResult, svgEl, updateTransform]);
+
+    // Auto-fit on first render or when result changes
+    useEffect(() => { fitSheetToView('page'); }, [fitSheetToView]);
+
+    // UIUX (audit menu 2026-07-28 §MB.1): nhận nhóm lệnh zoom/fit từ thanh menu.
+    useEffect(() => {
+        if (!isActive || !svgEl) return;
+        const zoomAroundCenter = (factor: number) => {
+            const rect = svgEl.getBoundingClientRect();
+            const cx = rect.width / 2;
+            const cy = rect.height / 2;
+            const prev = transformRef.current;
+            const newScale = Math.max(0.1, Math.min(10, prev.scale * factor));
+            updateTransform({
+                scale: newScale,
+                x: cx - (cx - prev.x) * (newScale / prev.scale),
+                y: cy - (cy - prev.y) * (newScale / prev.scale),
+            });
+        };
+        const onMenuCommand = (e: Event) => {
+            switch ((e as CustomEvent).detail?.cmd as string) {
+                case 'zoom-in': zoomAroundCenter(1.25); break;
+                case 'zoom-out': zoomAroundCenter(1 / 1.25); break;
+                case 'zoom-100': updateTransform({ ...transformRef.current, scale: 1 }); break;
+                case 'fit-page': fitSheetToView('page'); break;
+                case 'fit-width': fitSheetToView('width'); break;
+                default: break;
+            }
+        };
+        window.addEventListener('prynx-menu-command', onMenuCommand);
+        return () => window.removeEventListener('prynx-menu-command', onMenuCommand);
+    }, [isActive, svgEl, updateTransform, fitSheetToView]);
 
     // Zoom (wheel) — listener native với { passive: false } để preventDefault
     // thực sự chặn zoom của webview.

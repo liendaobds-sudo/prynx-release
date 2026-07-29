@@ -47,7 +47,6 @@ def test_color_match_default_die_palette():
     assert _color_matches_die((1.0, 0.0, 1.0), CFG.die_colors, CFG.die_color_tol)
     assert _color_matches_die((0.0, 0.0, 0.0, 1.0), CFG.die_colors, CFG.die_color_tol)
     assert _color_matches_die((0.0, 0.0, 0.0), CFG.die_colors, CFG.die_color_tol)
-    assert _color_matches_die((0.0,), CFG.die_colors, CFG.die_color_tol)
     assert _color_matches_die((1.0, 0.0, 0.0, 0.0), CFG.die_colors, CFG.die_color_tol)
     assert _color_matches_die((0.0, 0.0, 1.0), CFG.die_colors, CFG.die_color_tol)
     assert _color_matches_die((0.0, 1.0, 1.0), CFG.die_colors, CFG.die_color_tol)
@@ -59,6 +58,11 @@ def test_color_match_default_die_palette():
     assert not _color_matches_die((0.0, 1.0, 1.0, 0.0), CFG.die_colors, CFG.die_color_tol)  # đỏ process
     assert not _color_matches_die((1.0, 1.0, 1.0), CFG.die_colors, CFG.die_color_tol)
     assert not _color_matches_die(None, CFG.die_colors, CFG.die_color_tol)
+    # [DIE-TINT 2026-07-28] Bảng màu bế KHÔNG còn mục 1 thành phần. DeviceGray đen đi
+    # qua 'G'/'g' đã là (0,0,0) nên vẫn khớp; còn tuple 1 số chỉ có thể là tint kênh
+    # spot, và tint không nói gì về sắc màu.
+    assert not _color_matches_die((0.0,), CFG.die_colors, CFG.die_color_tol)
+    assert not _color_matches_die((1.0,), CFG.die_colors, CFG.die_color_tol)
 
 
 def test_select_picks_black_yellow_or_cyan_stroke_without_spot():

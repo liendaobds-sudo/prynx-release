@@ -12,6 +12,7 @@ export interface BatchItem {
     originalUrl: string;
     resultBlob?: Blob;
     resultUrl?: string;
+    resultInfo?: string;
     status: 'pending' | 'processing' | 'success' | 'error';
     error?: string;
     fileObj?: File;
@@ -43,6 +44,31 @@ export interface ImageBatchStore<O> {
     reset: (tabId: string) => void;
 }
 
+export function invalidateBatchResults(items: BatchItem[]): BatchItem[] {
+    return items.map(item => ({
+        ...item,
+        status: 'pending' as const,
+        resultBlob: undefined,
+        resultUrl: undefined,
+        resultInfo: undefined,
+        error: undefined,
+    }));
+}
+
+function revokeUrl(url?: string) {
+    if (!url || typeof URL === 'undefined' || typeof URL.revokeObjectURL !== 'function') return;
+    URL.revokeObjectURL(url);
+}
+
+function revokeReplacedUrls(previous: BatchItem[], next: BatchItem[]) {
+    const nextById = new Map(next.map(item => [item.id, item]));
+    for (const item of previous) {
+        const current = nextById.get(item.id);
+        if (!current || current.originalUrl !== item.originalUrl) revokeUrl(item.originalUrl);
+        if (!current || current.resultUrl !== item.resultUrl) revokeUrl(item.resultUrl);
+    }
+}
+
 /** Tạo một zustand store xử-lý-lô-ảnh với bộ options mặc định cho trước. */
 export function createImageBatchStore<O>(defaultOptions: O) {
     const makeDefaultTab = (): BatchTabState<O> => ({
@@ -68,6 +94,7 @@ export function createImageBatchStore<O>(defaultOptions: O) {
         setBatchItems: (tabId, itemsOrFn) => set(state => {
             const tab = state.tabs[tabId] || makeDefaultTab();
             const newItems = typeof itemsOrFn === 'function' ? itemsOrFn(tab.batchItems) : itemsOrFn;
+            revokeReplacedUrls(tab.batchItems, newItems);
             return { tabs: { ...state.tabs, [tabId]: { ...tab, batchItems: newItems } } };
         }),
         setSelectedId: (tabId, id) => set(state => {
@@ -102,6 +129,8 @@ export function createImageBatchStore<O>(defaultOptions: O) {
         }),
         removeItem: (tabId, id) => set(state => {
             const tab = state.tabs[tabId] || makeDefaultTab();
+            const removed = tab.batchItems.find(i => i.id === id);
+            if (removed) revokeReplacedUrls([removed], []);
             const updated = tab.batchItems.filter(i => i.id !== id);
             return {
                 tabs: {
@@ -116,13 +145,16 @@ export function createImageBatchStore<O>(defaultOptions: O) {
         }),
         undoItem: (tabId, id) => set(state => {
             const tab = state.tabs[tabId] || makeDefaultTab();
+            revokeUrl(tab.batchItems.find(i => i.id === id)?.resultUrl);
             const updated = tab.batchItems.map(i =>
-                i.id === id ? { ...i, status: 'pending' as const, resultUrl: undefined, resultBlob: undefined, error: undefined } : i
+                i.id === id ? { ...i, status: 'pending' as const, resultUrl: undefined, resultBlob: undefined, resultInfo: undefined, error: undefined } : i
             );
             return { tabs: { ...state.tabs, [tabId]: { ...tab, batchItems: updated } } };
         }),
-        reset: (tabId) => set(state => ({
-            tabs: { ...state.tabs, [tabId]: makeDefaultTab() }
-        })),
+        reset: (tabId) => set(state => {
+            const tab = state.tabs[tabId];
+            if (tab) revokeReplacedUrls(tab.batchItems, []);
+            return { tabs: { ...state.tabs, [tabId]: makeDefaultTab() } };
+        }),
     }));
 }

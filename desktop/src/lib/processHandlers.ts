@@ -6,6 +6,12 @@
  */
 
 import { PDFDocument, PDFName, PDFString } from 'pdf-lib';
+
+import {
+    addOptionalContentSource,
+    createOptionalContentTransfer,
+    finishOptionalContentTransfer,
+} from './pdfOptionalContent';
 import { imposeCatalogBatchViaBackend, ImpositionMode, type ProcessingSettings } from '../lib/pdfImposer';
 import { planCatalog, verifyCatalogPlan, type PlanConfig } from '../lib/imposerEngine/CatalogPlanner';
 import { getImposerCapability } from '../components/imposition-tools/types';
@@ -344,14 +350,20 @@ export async function runCatalogPlan(
 
 
         const mergedDoc = await PDFDocument.create();
+        // [OCG FIX 2026-07-28] Kết quả bình bản từ backend có mang OCG (lớp dao cắt
+        // Result_Cutline_*). copyPages bỏ /OCProperties → mất lớp, máy bế không dò được,
+        // và lớp đã ẩn của file gốc hiện lại.
+        const ocTransfer = createOptionalContentTransfer();
         for (const r of batchResults) {
             if (r.blob.size > 0) {
                 const rBytes = await r.blob.arrayBuffer();
                 const rDoc = await PDFDocument.load(rBytes, { ignoreEncryption: true });
+                addOptionalContentSource(ocTransfer, rDoc);
                 const copiedPages = await mergedDoc.copyPages(rDoc, rDoc.getPageIndices());
                 copiedPages.forEach(p => mergedDoc.addPage(p));
             }
         }
+        finishOptionalContentTransfer(ocTransfer, mergedDoc);
 
         // Renumber plates globally
         let globalPlateNum = 0;

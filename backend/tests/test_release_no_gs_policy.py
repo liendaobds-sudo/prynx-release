@@ -84,6 +84,16 @@ def test_runtime_policy_ignores_all_gs_environment(monkeypatch):
     assert not hasattr(configured, "PRYNX_FORCE_GS")
 
 
+def test_corpus_gate_uses_fixed_no_gs_contract():
+    """Cổng corpus không được đọc thuộc tính fallback đã bị xoá khỏi Settings."""
+    text = _read(AUDIT)
+    assert not re.search(r"settings\s*\.\s*PRYNX_ALLOW_GS_FALLBACK", text), (
+        "gs_dependency_audit.py còn đọc thuộc tính Settings đã bị xoá; "
+        "cổng phát hành sẽ crash trước khi audit corpus"
+    )
+    assert "settings.GHOSTSCRIPT_PATH" in text
+
+
 @pytest.mark.parametrize("entry", RELEASE_ENTRIES, ids=lambda p: p.name)
 def test_release_entries_never_turn_bundling_back_on(entry):
     """Wrapper phát hành không được bật lại bundle GS.
@@ -257,3 +267,78 @@ def test_release_scripts_parse_under_windows_powershell(script):
     )
     out = (proc.stdout or "").strip()
     assert out == "OK", f"{script.name} không parse được -> {out or proc.stderr.strip()[:200]}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  NOTICE trong repo — khoá lỗ hổng đã gây hồi quy ngày 2026-07-28
+#
+#  Chuyện đã xảy ra: có người thêm Real-ESRGAN vào `bundled_components.json` rồi
+#  chạy tay `gen_third_party_notices.py` để cập nhật NOTICE, THIẾU cờ
+#  `--no-ghostscript`. Vì entry ghostscript vẫn `bundled: true`, việc thiếu cờ
+#  lặng lẽ dựng LẠI lời khai "Ghostscript AGPL-3.0 có trong bản phát hành,
+#  binaries/gs/" — trong khi build gõ cứng `$BUNDLE_GS=$false`. HEAD sạch, working
+#  tree khai sai: đúng loại lỗi không ai thấy.
+#
+#  Gate cũ chỉ canh (a) build script truyền cờ, (b) verifier soi artifact ĐÃ CÀI.
+#  Không gì canh chính file NOTICE trong repo — tức là văn bản mà người đọc repo và
+#  bên pháp lý nhìn vào. Ba test dưới đóng chỗ đó.
+#
+#  Cách sửa gốc: đặt `bundled: false` trong dữ liệu. `load_native` bỏ mọi component
+#  `bundled=false` BẤT KỂ cờ dòng lệnh, nên sinh lại NOTICE mà quên cờ vẫn ra đúng.
+# ─────────────────────────────────────────────────────────────────────────────
+
+import json  # noqa: E402
+
+NOTICE = REPO / "THIRD_PARTY_NOTICES.md"
+COMPONENTS = REPO / "scripts" / "bundled_components.json"
+
+
+def _native_components() -> list[dict]:
+    return json.loads(_read(COMPONENTS))["native_components"]
+
+
+def test_ghostscript_is_declared_not_bundled():
+    """Cờ dữ liệu là chốt DUY NHẤT không phụ thuộc việc caller nhớ truyền cờ."""
+    gs = [c for c in _native_components() if c.get("id") == "ghostscript"]
+    assert gs, (
+        "mất entry ghostscript khỏi bundled_components.json — giữ nó lại với "
+        "bundled=false làm mốc lịch sử, đừng xoá"
+    )
+    assert gs[0].get("bundled") is False, (
+        "ghostscript phải khai bundled=false. Đặt lại true là NOTICE sẽ khai "
+        "AGPL-3.0 có trong installer ngay lần sinh lại kế tiếp, kể cả khi "
+        "build_production.ps1 vẫn không đóng gói GS."
+    )
+
+
+def test_repo_notice_declares_no_strong_copyleft_in_release():
+    """Mục 'CÓ trong bản phát hành' không được chứa thành phần copyleft mạnh."""
+    text = _read(NOTICE)
+    marker = "### Copyleft mạnh — CÓ trong bản phát hành"
+    assert marker in text, f"NOTICE mất mục '{marker}' — generator đã đổi khuôn?"
+
+    section = text.split(marker, 1)[1].split("###", 1)[0]
+    listed = [
+        line.strip()
+        for line in section.splitlines()
+        if line.strip().startswith("- ")
+    ]
+    assert not listed, (
+        "NOTICE khai có copyleft mạnh trong bản phát hành: "
+        f"{listed}. Nếu đúng là đã đóng gói thì phải có quyết định giấy phép; "
+        "nếu không thì sinh lại NOTICE (scripts/gen_third_party_notices.py)."
+    )
+
+
+def test_repo_notice_never_mentions_agpl():
+    """AGPL ở bất kỳ đâu trong NOTICE nghĩa là ta đang tự khai nghĩa vụ copyleft."""
+    hits = [
+        f"dòng {i}: {line.strip()}"
+        for i, line in enumerate(_read(NOTICE).splitlines(), start=1)
+        if "AGPL" in line
+    ]
+    assert not hits, (
+        "NOTICE còn nhắc AGPL:\n  " + "\n  ".join(hits)
+        + "\nPrynX không đóng gói thành phần AGPL nào (xem $BUNDLE_GS trong "
+        "build_production.ps1). Chạy lại scripts/gen_third_party_notices.py."
+    )

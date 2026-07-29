@@ -396,6 +396,10 @@ export const WORKSPACE_TOOL_PANEL: Record<ActiveToolType, WorkspacePanelKind> = 
     crop: 'preprocess',
 };
 
+export function isWorkspaceTool(value: unknown): value is ActiveToolType {
+    return typeof value === 'string' && Object.prototype.hasOwnProperty.call(WORKSPACE_TOOL_PANEL, value);
+}
+
 /**
  * Panel-PHẢI mà ImpositionTab render theo công cụ đang chọn (routing tường minh,
  * thuần — test được mà KHÔNG cần render component nặng).

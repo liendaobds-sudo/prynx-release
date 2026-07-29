@@ -1,19 +1,20 @@
 # Bộ skill AI của PrynX
 
-10 skill đóng gói kiến thức dự án cho AI coding agent, theo định dạng SKILL.md chuẩn chung (frontmatter `name` + `description`) — chạy được với cả **Claude Code**, **OpenAI Codex**, và các tool khác đọc được định dạng này (Cursor, OpenCode…).
+11 skill đóng gói kiến thức dự án cho AI coding agent, theo định dạng SKILL.md chuẩn chung (frontmatter `name` + `description`) — chạy được với cả **Claude Code**, **OpenAI Codex**, và các tool khác đọc được định dạng này (Cursor, OpenCode…).
 
 ## Cấu trúc
 
 - **Bản gốc (sửa ở đây):** `.agents/skills/<tên>/SKILL.md` — Codex tự quét thư mục này của repo.
 - **Bản sao cho Claude Code:** `.claude/skills/` — sau khi sửa bản gốc, chạy `powershell scripts/sync_ai_skills.ps1` để đồng bộ.
 - `AGENTS.md` (gốc repo): quy tắc chung + bảng chỉ mục skill — Codex đọc tự động; `CLAUDE.md` import lại nó cho Claude Code.
-- `.claude/commands/`: lệnh tắt `/audit`, `/add-boxtype`, `/verify` (chỉ Claude Code; Codex gọi skill bằng `$prynx-audit-workflow`… hoặc mô tả bằng lời).
+- `.claude/commands/`: lệnh tắt `/loop`, `/audit`, `/add-boxtype`, `/verify` (chỉ Claude Code; Codex gọi skill bằng `$prynx-task-loop`… hoặc mô tả bằng lời).
 
 ## Danh sách skill
 
 | Skill | Nội dung |
 |---|---|
 | `prynx-architecture` | Bản đồ kiến trúc, thư mục, luồng dữ liệu |
+| `prynx-task-loop` | Vòng sửa bug/tính năng nhỏ–vừa dựa trên bằng chứng, có điều kiện thoát |
 | `prynx-dieline` | Bất biến hình học 2D + hệ gấp 3D + quy trình test khuôn bế |
 | `prynx-imposition` | Scheduler/threadpool/khóa PDFium cho bình bản, nup, VDP |
 | `prynx-performance` | Nguyên tắc RAM-gating, quy tắc Cargo LTO, hồi quy đã biết |

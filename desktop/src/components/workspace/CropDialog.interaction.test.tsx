@@ -38,6 +38,7 @@ function openCropDialog(overrides: Record<string, unknown> = {}) {
     act(() => {
         window.dispatchEvent(new CustomEvent('prynx-crop-open', {
             detail: {
+                tabId: 'legacy',
                 pageNum: 1,
                 ownerId: 'page-1',
                 fracs: [{ x0: 0.1, y0: 0.1, x1: 0.9, y1: 0.9 }],
@@ -57,6 +58,16 @@ describe('CropDialog interaction safety', () => {
         cleanup();
     });
 
+    it('chỉ mở hộp thoại thuộc tab phát lệnh', async () => {
+        render(<>
+            <CropDialog tabId="tab-a" embedded ensureFileId={async () => 'a'} onApplied={vi.fn()} onClose={vi.fn()} />
+            <CropDialog tabId="tab-b" embedded ensureFileId={async () => 'b'} onApplied={vi.fn()} onClose={vi.fn()} />
+        </>);
+
+        openCropDialog({ tabId: 'tab-b', totalPages: pageBoxes.total_pages, pageBox: pageBoxes.cropbox });
+
+        expect(await screen.findAllByRole('dialog')).toHaveLength(1);
+    });
     it('aborts an in-flight crop when the user cancels', async () => {
         let cropSignal: AbortSignal | undefined;
         vi.mocked(authenticatedFetch).mockImplementation((url, init) => {
@@ -276,6 +287,7 @@ describe('CropDialog interaction safety', () => {
         window.addEventListener('prynx-crop-preview-change', echoedPreview);
         act(() => window.dispatchEvent(new CustomEvent('prynx-crop-selection-change', {
             detail: {
+                tabId: 'legacy',
                 ownerId: 'page-1',
                 pageNum: 1,
                 selectedIndex: 1,

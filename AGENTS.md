@@ -10,7 +10,8 @@ Kiến thức chi tiết được tách thành các skill trong `.agents/skills/
 | Việc đang làm | Skill |
 |---|---|
 | Tìm hiểu code, sửa bug, thêm tính năng bất kỳ | `prynx-architecture` |
-| Khuôn bế bao bì 2D/3D (`desktop/src/lib/dieline`, `mockup3d`) | `prynx-dieline` |
+| Sửa bug hoặc làm tính năng nhỏ–vừa theo vòng lặp có bằng chứng | `prynx-task-loop` |
+| Khuôn bế bao bì 2D/3D + xếp khuôn vào tờ (`desktop/src/lib/dieline`, `mockup3d`) | `prynx-dieline` |
 | Bình tem bế / nup / VDP / backend nặng | `prynx-imposition` |
 | Tối ưu hiệu năng, thêm cap/limit/worker pool | `prynx-performance` |
 | Chạy test, verify trước khi báo xong | `prynx-testing` |

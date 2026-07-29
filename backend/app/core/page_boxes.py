@@ -1129,15 +1129,43 @@ class PageBoxesEngine:
             ops += _draw((x0 - b, y1, b, b),     (-1, 0, 0, -1, 2 * x0, 2 * y1))  # TL
             ops += _draw((x1, y1, b, b),         (-1, 0, 0, -1, 2 * x1, 2 * y1))  # TR
 
-            new_content = pikepdf.Stream(doc, "\n".join(ops).encode("ascii"))
+            # [MIRROR-ORIGIN 2026-07-28] Dịch toàn bộ nội dung để gốc trang về (0,0).
+            #
+            # Trước đây hàm chỉ nở box ra ngoài: MediaBox = [x0-b, y0-b, x1+b, y1+b].
+            # Với trim bắt đầu tại (0,0) thì gốc MediaBox thành ÂM (-b, -b). Tầng đặt
+            # tem của bình bản giả định trang bắt đầu tại (0,0) — `pdf_ops.page_rect()`
+            # trả Rect(0, 0, w, h) và bỏ hẳn mb[0]/mb[1], còn `show_pdf_page` tính tâm
+            # nguồn bằng `clip.x0 + clip_w/2` — nên mọi tem bị lệch ĐÚNG một lượng
+            # bleed mỗi trục. Sai số nằm trước ma trận xoay nên ô xoay 90/180° lệch
+            # theo hướng khác → trên tờ bình trông như lệch lung tung.
+            # Người dùng từng phải chữa tạm bằng cách Resize đúng khổ hiện tại: resize
+            # dựng trang mới ở gốc (0,0) nên nướng mất gốc âm (nhưng làm rơi TrimBox).
+            #
+            # Cách chuẩn hoá: gói ops trong một phép dịch, KHÔNG sửa từng ma trận con —
+            # các ma trận mirror `2*x0`, `2*y1`… vẫn đúng trong hệ toạ độ gốc, chỉ cả
+            # khối được dịch. BBox của Form XObject nằm ở hệ toạ độ RIÊNG của form
+            # (trước phép dịch) nên phải giữ nguyên mb gốc.
+            dx = b - x0
+            dy = b - y0
+            trim_w = x1 - x0
+            trim_h = y1 - y0
+            shifted_ops = [
+                "q",
+                f"1 0 0 1 {dx:.4f} {dy:.4f} cm",
+                *ops,
+                "Q",
+            ]
+
+            new_content = pikepdf.Stream(doc, "\n".join(shifted_ops).encode("ascii"))
             page[pikepdf.Name("/Contents")] = new_content
 
-            bleed_rect = [x0 - b, y0 - b, x1 + b, y1 + b]
-            page[pikepdf.Name("/MediaBox")] = pikepdf.Array(bleed_rect)
-            page[pikepdf.Name("/CropBox")] = pikepdf.Array(bleed_rect)
-            page[pikepdf.Name("/BleedBox")] = pikepdf.Array(bleed_rect)
-            page[pikepdf.Name("/TrimBox")] = pikepdf.Array(trim)
-            page[pikepdf.Name("/ArtBox")] = pikepdf.Array(trim)
+            page_box = [0.0, 0.0, trim_w + 2 * b, trim_h + 2 * b]
+            trim_box = [b, b, b + trim_w, b + trim_h]
+            page[pikepdf.Name("/MediaBox")] = pikepdf.Array(page_box)
+            page[pikepdf.Name("/CropBox")] = pikepdf.Array(page_box)
+            page[pikepdf.Name("/BleedBox")] = pikepdf.Array(page_box)
+            page[pikepdf.Name("/TrimBox")] = pikepdf.Array(trim_box)
+            page[pikepdf.Name("/ArtBox")] = pikepdf.Array(trim_box)
 
         output_name = f"{Path(file_path).stem}_mirror_{uuid.uuid4().hex[:6]}.pdf"
         output_path = str(self.output_dir / output_name)

@@ -17,6 +17,10 @@ import { useCallback, useEffect, useRef } from 'react';
 import { PDFDocument, degrees } from 'pdf-lib';
 import { useWorkspaceStore } from '../stores/useWorkspaceStore';
 import { getFileArrayBuffer } from '../lib/utils';
+import {
+    beginOptionalContentTransfer,
+    finishOptionalContentTransfer,
+} from '../lib/pdfOptionalContent';
 
 export function useWorkingPdf(): () => Promise<File | null> {
     const file = useWorkspaceStore(state => state.file);
@@ -63,6 +67,11 @@ export function useWorkingPdf(): () => Promise<File | null> {
         const srcDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
         const newDoc = await PDFDocument.create();
 
+        // [OCG FIX 2026-07-28] copyPages bỏ /OCProperties ở catalog trong khi content vẫn
+        // còn /OC … BDC → layer thợ đã ẩn trong Illustrator hiện lại hết ngay trên khung xem
+        // và lọt vào bản in. srcDoc là bản load cục bộ nên không cần try/finally dọn dấu.
+        const ocTransfer = beginOptionalContentTransfer([srcDoc]);
+
         const order = (viewerPageOrder && viewerPageOrder.length > 0)
             ? viewerPageOrder
             : srcDoc.getPageIndices().map(i => i + 1);
@@ -95,6 +104,7 @@ export function useWorkingPdf(): () => Promise<File | null> {
             }
         }
 
+        finishOptionalContentTransfer(ocTransfer, newDoc);
         const pdfBytes = await newDoc.save();
         return new File([pdfBytes as any], file.name, { type: 'application/pdf' });
     }, [file, viewerPageOrder, viewerPageRotations]);

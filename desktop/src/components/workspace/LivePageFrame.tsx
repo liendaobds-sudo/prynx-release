@@ -1,15 +1,17 @@
-import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Page } from 'react-pdf';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { localFileUrl } from '../../lib/localFileTransport';
 import { authenticatedFetch, getApiUrl, getSystemFonts } from '../../lib/api';
 import { adjustCropRegion, cropDragToFrac, cropFracToPixels, type CropAdjustMode, type CropRegionFrac } from '../../lib/cropGeometry';
+import { getVisiblePlateOverlaysForPage } from '../../lib/outputPreviewOverlay';
 import { useCropPointerDrawing } from '../../hooks/useCropPointerDrawing';
 import { VdpPreviewImage } from './ViewerHelpers';
 import { useViewerHotkeys } from '../../hooks/viewer/useViewerHotkeys';
 import { globalPdfObjectCache } from '../../stores/pdfObjectCache';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
+import { useAppSettingsStore } from '../../stores/appSettingsStore'; // §R.9 (audit độ nét 2026-07-28)
 import { useShallow } from 'zustand/react/shallow';
 import type { ObjType, BBox, EditOp, ImageClipShape } from './editTypes';
 import type { SessionOpOutcome } from '../../hooks/useEditSession';
@@ -44,12 +46,29 @@ const PASTE_OFFSET_MM = 3;
 // Công thức renderZoom TÁCH ra hàm thuần để PREFETCH (AcrobatViewer) tính ĐÚNG cùng
 // giá trị mà view chính dùng → cache key tile Rust khớp bit-chính-xác → cuộn tới là
 // cache HIT thật (trả tức thì), không phải chỉ warm decode. Lệch 1 ULP float là miss.
-export function computeRenderZoomPure(z: number, actualWidth100: number, pageDimW?: number, pageDimH?: number): number {
+/** Ngân sách cạnh dài bitmap nền (px) theo cài đặt "Chất lượng xem trước". */
+export const RENDER_BUDGET_PX = { high: 6000, fast: 3000 } as const;
+
+export function computeRenderZoomPure(
+    z: number,
+    actualWidth100: number,
+    pageDimW?: number,
+    pageDimH?: number,
+    /**
+     * PERF (audit độ nét 2026-07-28 §R.9): trần cạnh dài bitmap, nối với cài đặt
+     * `previewQuality`. Trước đây hằng 6000 cứng trong hàm nên tuỳ chọn "Chất lượng xem
+     * trước" trong Cài đặt là NÚT CHẾT — có UI, có mô tả, nhưng không đường render nào đọc.
+     * 'fast' = 3000 → số pixel nền giảm 4× ở zoom cao (chi phí render tỉ lệ với pixel).
+     * Mặc định vẫn 6000 ('high') → máy mạnh không bị hạ gì, đúng nguyên tắc hiệu năng của
+     * dự án (chỉ giảm khi người dùng CHỦ ĐỘNG chọn, không tự cap).
+     */
+    budgetPx: number = RENDER_BUDGET_PX.high,
+): number {
     const dpr = (window.devicePixelRatio || 1);
     const target = Math.max(dpr, z * dpr);
     const w100 = actualWidth100 || 800;
     const ratio = (pageDimW && pageDimW > 0) ? Math.max(1, (pageDimH || 0) / pageDimW) : 1.414;
-    const capByBudget = 6000 / (w100 * ratio);
+    const capByBudget = (budgetPx || RENDER_BUDGET_PX.high) / (w100 * ratio);
     return Math.max(dpr, Math.min(24, target, capByBudget));
 }
 
@@ -191,6 +210,53 @@ function clearEditObjectsCache() {
 const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible }: any) => {
     const tileRef = useRef<HTMLDivElement>(null);
     const imgRef = useRef<HTMLImageElement>(null);
+    // NÉT (audit độ nét 2026-07-28 §R.4): ép ảnh vẽ ở ĐÚNG kích thước pixel gốc để tỉ lệ
+    // scale = 1.0 (map 1:1 device pixel) — đó là điều kiện DUY NHẤT để chữ nét như Acrobat.
+    //
+    // VÌ SAO TRƯỚC ĐÂY MỜ: bitmap nền do Rust tạo rộng `(width_pt*render_scale) as i32`
+    // (CẮT thập phân), còn khung CSS là `Math.ceil(displayWidth)` → lệch tới 1px. Với
+    // width:100%/height:100% + objectFit:'fill', browser phải resample bilinear TOÀN trang
+    // vì tỉ lệ ≠ 1 → chữ mềm ở MỌI mức zoom, không riêng zoom cao. (Tile sắc của TileLayer
+    // vốn đã khớp 1:1 nên nó nét — đó là lý do "chờ xong thì nét".)
+    //
+    // CHỈ snap khi bitmap gần bằng khung (±2 device px) = trường hợp CHỦ ĐÍCH 1:1. Khi
+    // renderZoom bị cap ở zoom cao, bitmap nhỏ hơn khung nhiều và PHẢI giãn ra để phủ kín
+    // trang (nếu snap sẽ chừa mảng trống) → giữ nguyên 100%/100% như cũ.
+    // Toạ độ overlay (thước, guide, DIM, edit object) neo theo KHUNG chứ không theo ảnh
+    // nên đổi kích thước vẽ của <img> không xê dịch gì.
+    // NÉT (audit độ nét 2026-07-28 §R.4) fix-verify: TRẢ VỀ GIÃN THEO KHUNG ngay khi khung
+    // đổi kích thước. Bắt buộc phải có, vì px tuyệt đối do applyExactFit đặt sẽ "kẹt" lại
+    // trong hai tình huống:
+    //   1. Zoom đang chuyển: khung đã phình theo zoom mới nhưng tile mới chưa về → ảnh giữ
+    //      px cũ → nội dung như bị bóp trong khung trắng rồi mới nhảy lại (bug user báo).
+    //   2. Zoom cao: renderZoom bị chặn bởi capByBudget nên tham số tile KHÔNG đổi → không
+    //      có lần load mới → onLoad không bao giờ chạy lại → kẹt vĩnh viễn.
+    // Chạy ở useLayoutEffect (trước khi browser vẽ) nên không thấy nháy. Tile mới load xong
+    // thì onLoad snap lại 1:1 như thiết kế.
+    useLayoutEffect(() => {
+        const el = imgRef.current;
+        if (!el) return;
+        el.style.width = '100%';
+        el.style.height = '100%';
+    }, [cssW, cssH, clipW, clipH]);
+
+    const applyExactFit = useCallback((imgEl: HTMLImageElement) => {
+        const bw = imgEl.naturalWidth;
+        const bh = imgEl.naturalHeight;
+        const boxW = (cssW || clipW) as number;
+        const boxH = (cssH || clipH) as number;
+        if (!bw || !bh || !boxW || !boxH) return;
+        const dpr = window.devicePixelRatio || 1;
+        const wantW = Math.round(boxW * dpr);
+        const wantH = Math.round(boxH * dpr);
+        if (Math.abs(bw - wantW) <= 2 && Math.abs(bh - wantH) <= 2) {
+            imgEl.style.width = `${bw / dpr}px`;
+            imgEl.style.height = `${bh / dpr}px`;
+        } else {
+            imgEl.style.width = '100%';
+            imgEl.style.height = '100%';
+        }
+    }, [cssW, cssH, clipW, clipH]);
     const loadedParamsRef = useRef('');
     const preloadRef = useRef<HTMLImageElement|null>(null);
     const hasLoadedOnce = useRef(false);
@@ -327,8 +393,18 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
     }, []);
     
     return (
-        <div ref={tileRef} style={{ position: 'absolute', left: cssLeft ?? clipX, top: cssTop ?? clipY, width: cssW || clipW, height: cssH || clipH, outline: 'none', opacity: hasLoadedOnce.current ? 1 : 0, transition: 'opacity 0.05s ease-in' }} className="tile-container">
-            <img ref={imgRef} draggable={false} style={{ width: '100%', height: '100%', objectFit: 'fill', pointerEvents: 'none', userSelect: 'none', background: 'white' }} />
+        // background:'white' cho khung: khi snap 1:1 (§R.4) bitmap có thể hụt ≤2px so với
+        // khung do làm tròn → chừa sợi mảnh ở mép phải/dưới. Nền trắng làm nó vô hình trên
+        // trang PDF (PDFium render với clear_color=WHITE), thay vì hở ra nền skeleton xám.
+        <div ref={tileRef} style={{ position: 'absolute', left: cssLeft ?? clipX, top: cssTop ?? clipY, width: cssW || clipW, height: cssH || clipH, outline: 'none', opacity: hasLoadedOnce.current ? 1 : 0, transition: 'opacity 0.05s ease-in', background: 'white' }} className="tile-container">
+            {/* onLoad chạy cho MỌI đường vào (tải mới, khôi phục từ cache, pixel rỗng ban
+                đầu) nên chỉ cần một chỗ để bảo đảm map 1:1 — xem applyExactFit. */}
+            <img
+                ref={imgRef}
+                draggable={false}
+                onLoad={(e) => applyExactFit(e.currentTarget)}
+                style={{ width: '100%', height: '100%', objectFit: 'fill', pointerEvents: 'none', userSelect: 'none', background: 'white' }}
+            />
         </div>
     );
 });
@@ -465,6 +541,8 @@ const VdpAutoFitText = ({ field, scale, text }: any) => {
     const align = field.alignment || 'left';
 
     useLayoutEffect(() => {
+        // Cần đồng bộ ngay sau layout để preview chữ không lóe sai tỷ lệ.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         if (field.autoFit === false) { setScaleX(1); return; }
         const el = ref.current;
         if (!el) return;
@@ -530,6 +608,8 @@ const SelectableTextLine = React.memo(function SelectableTextLine({ line, scale,
 
     useLayoutEffect(() => {
         const el = ref.current;
+        // Giá trị phụ thuộc phép đo DOM nên phải cập nhật trong layout effect.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         if (!el || targetW <= 0) { setScaleX(1); return; }
         const natural = el.offsetWidth; // bề rộng tự nhiên (chưa tính transform)
         setScaleX(natural > 0 ? targetW / natural : 1);
@@ -596,12 +676,12 @@ const SelectableTextLayer = React.memo(function SelectableTextLayer({
 export const LivePageFrame = (props: any) => {
   const { t } = useTranslation();
     //#region Props & State
-    const { originalPageNum, pageInstanceId, actualWidth100, zoom, rotation, bleedView, highlightBoxes, pageDim,
+    const { originalPageNum, viewerPageNum, pageInstanceId, actualWidth100, zoom, rotation, bleedView, highlightBoxes, pageDim,
         onObjectDelete,
         getTileUrl, textBlocks, isVdpMode, onVdpBoxCreate, onVdpBoxSelect, onVdpFieldsChange,
         setHoveredPdfPosition, detectedDimension, isBlankDoc, onEditCommit, isActivePage,
         isImageFile: isImage, nativeFilePath, previewRevision,
-        editSession, totalPages
+        editSession, totalPages, tabId, isViewerActive
     } = props;
     // Trang ĐANG xem (active) trong danh sách ảo (Virtuoso). Chỉ frame active mới
     // đẩy editObjects của mình lên store `currentEditObjects` → panel "Thành phần"
@@ -653,6 +733,15 @@ export const LivePageFrame = (props: any) => {
         viewerToolMode: state.viewerToolMode,
     })));
 
+    const previewFramePage = typeof viewerPageNum === 'number' ? viewerPageNum : originalPageNum;
+    const separationPreviewBelongsToFrame = separationPlates.some(
+        plate => plate.pageNum === previewFramePage,
+    );
+    const visibleSeparationPlates = getVisiblePlateOverlaysForPage(
+        separationPlates,
+        previewFramePage,
+    );
+
     const isCropPanMode = isCropMode && viewerToolMode === 'hand';
     const isCropInteractionEnabled = isCropMode && !isCropPanMode;
     
@@ -662,6 +751,8 @@ export const LivePageFrame = (props: any) => {
         // định che chỗ trống cho). pdfium + prefetch trang lân cận + page LRU đã đủ nhanh.
     // Migrated to imposer store per P1-T03
     const activeDashboardTool = useImposerSettingsStore(s => s.activeDashboardTool);
+    // PERF (audit độ nét 2026-07-28 §R.9): selector riêng một trường — không subscribe cả store.
+    const previewQuality = useAppSettingsStore(s => s.previewQuality);
     const containerRef = useRef<HTMLDivElement>(null);
     const marqueeRef = useRef<HTMLDivElement>(null);
     const dragRef = useRef<{ startX: number; startY: number; active: boolean; lastHoverTime?: number }>({ startX: 0, startY: 0, active: false });
@@ -806,11 +897,11 @@ export const LivePageFrame = (props: any) => {
     // phần render) — KHÔNG dùng window 'pointerdown' vì cú chuột phải mở menu có
     // thể tự đóng ngay (race giữa pointerdown mở và listener đóng).
     useEffect(() => {
-        if (!vdpCtxMenu) return;
+        if (!vdpCtxMenu || isViewerActive === false) return;
         const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setVdpCtxMenu(null); };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [vdpCtxMenu]);
+    }, [vdpCtxMenu, isViewerActive]);
 
     const [editingTextId, setEditingTextId] = useState<string | null>(null);
 
@@ -936,6 +1027,7 @@ export const LivePageFrame = (props: any) => {
     useEffect(() => {
         const refreshObjects = (event: Event) => {
             const detail = (event as CustomEvent)?.detail || {};
+            if (detail.tabId !== tabId) return;
             const changedPage = Number(detail.page);
             if (!isObjectEditMode || !selectionFileId || changedPage !== originalPageNum - 1) return;
             const requestedIds = Array.isArray(detail.targetIds) ? detail.targetIds.map(String) : [];
@@ -947,7 +1039,7 @@ export const LivePageFrame = (props: any) => {
         };
         window.addEventListener('edit-session-objects-changed', refreshObjects);
         return () => window.removeEventListener('edit-session-objects-changed', refreshObjects);
-    }, [isObjectEditMode, selectionFileId, originalPageNum, selectedObjectIds]);
+    }, [isObjectEditMode, selectionFileId, originalPageNum, selectedObjectIds, tabId]);
 
     // ─── Edit PDF Object — Hit-test + overlay (task 10.1) ────────────────────
     // Nguồn dữ liệu object lấy từ GET /edit/objects (Geometry_Reader, PDFium read-only).
@@ -1042,15 +1134,18 @@ export const LivePageFrame = (props: any) => {
     // làm tròn lên gây render dư pixel → chậm trên màn HiDPI).
     // Cap bộ nhớ: cạnh dài bitmap ≤ 6000px (1 render). Dùng hàm thuần dùng chung với
     // prefetch (computeRenderZoomPure) → cùng giá trị → cache key tile khớp.
-    const computeRenderZoom = (z: number) => computeRenderZoomPure(z, actualWidth100, pageDim?.w, pageDim?.h);
+    // PERF (audit độ nét 2026-07-28 §R.9): ngân sách pixel theo cài đặt của người dùng.
+    const renderBudgetPx = previewQuality === 'fast' ? RENDER_BUDGET_PX.fast : RENDER_BUDGET_PX.high;
+    const computeRenderZoom = (z: number) => computeRenderZoomPure(z, actualWidth100, pageDim?.w, pageDim?.h, renderBudgetPx);
     const [renderZoom, setRenderZoom] = useState(() => computeRenderZoom(zoom));
 
+    // Đổi cài đặt chất lượng phải áp NGAY (không chờ zoom kế tiếp) → renderBudgetPx trong deps.
     useEffect(() => {
         const timeoutId = setTimeout(() => {
             setRenderZoom(computeRenderZoom(zoom));
         }, 250);
         return () => clearTimeout(timeoutId);
-    }, [zoom]);
+    }, [zoom, renderBudgetPx]);
 
     // ─── Edit PDF Object: nạp danh sách object từ /edit/objects (task 10.1) ───
     // Khi vào Selection_Mode, gọi GET /edit/objects/{fid}/{pageIndex} (0-based) để lấy
@@ -1213,7 +1308,7 @@ export const LivePageFrame = (props: any) => {
     // gate, bấm Delete khiến mọi frame gửi /edit/delete với cùng targetIds lên TRANG KHÁC
     // (nơi id không tồn tại) → backend trả 404 + toast lỗi, dù frame active đã xóa thành công.
     useEffect(() => {
-        if (!isObjectEditMode || isVdpMode || !isActiveFrame) return;
+        if (!isObjectEditMode || isVdpMode || !isActiveFrame || isViewerActive === false) return;
         const onKey = (e: KeyboardEvent) => {
             // Bỏ qua khi đang gõ trong input/textarea (vd. editor text inline).
             const t = e.target as HTMLElement | null;
@@ -1278,7 +1373,7 @@ export const LivePageFrame = (props: any) => {
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [isObjectEditMode, isVdpMode, isActiveFrame, editObjects, selectedObjectIds, editBusy, originalPageNum, selectionFileId, onEditCommit, lockedObjectIds, editClipboard, setEditClipboard]);
+    }, [isObjectEditMode, isVdpMode, isActiveFrame, editObjects, selectedObjectIds, editBusy, originalPageNum, selectionFileId, onEditCommit, lockedObjectIds, editClipboard, setEditClipboard, isViewerActive]);
 
     // ─── Edit PDF Object: reset transform tạm + preview khi đổi lựa chọn (10.2) ─
     // Khi tập chọn thay đổi (hoặc bỏ chọn), bỏ transform tạm và ảnh preview cũ để
@@ -1458,7 +1553,7 @@ export const LivePageFrame = (props: any) => {
 
         const handleDrop = (e: DragEvent) => {
             el.style.opacity = '1';
-            if (!isVdpMode) return;
+            if (!isVdpMode || isViewerActive === false) return;
             e.preventDefault();
             
             let vdpType = '';
@@ -1518,7 +1613,7 @@ export const LivePageFrame = (props: any) => {
         };
 
         const handleVdpDrop = (e: CustomEvent) => {
-            if (!isVdpMode) return;
+            if (!isVdpMode || isViewerActive === false) return;
             const targetEl = e.detail.target as HTMLElement;
             if (!el.contains(targetEl) && el !== targetEl) return;
             
@@ -1579,7 +1674,7 @@ export const LivePageFrame = (props: any) => {
             el.removeEventListener('drop', handleDrop);
             window.removeEventListener('vdp-drop', handleVdpDrop as EventListener);
         };
-    }, [isVdpMode, pageDim, displayWidth, onVdpBoxCreate, vdpFields.length, originalPageNum]);
+    }, [isVdpMode, pageDim, displayWidth, onVdpBoxCreate, vdpFields.length, originalPageNum, isViewerActive]);
 
     const displayHeight = pageDim && pageDim.w ? displayWidth * (pageDim.h / pageDim.w) : displayWidth * 1.414;
     const cropPageBox = pageDim?.w && pageDim?.h ? { x0: 0, y0: 0, x1: pageDim.w * 25.4 / 96, y1: pageDim.h * 25.4 / 96, width: pageDim.w * 25.4 / 96, height: pageDim.h * 25.4 / 96 } : undefined;
@@ -1587,14 +1682,14 @@ export const LivePageFrame = (props: any) => {
     // Crop PDF: Enter → dialog (mọi vùng); Esc → xóa hết; Delete/Backspace → xóa vùng cuối.
     // cropSelection toàn workspace chỉ có một ownerId nên luôn chỉ có một listener.
     useEffect(() => {
-        if (!isCropMode || cropSels.length === 0) return;
+        if (!isCropMode || isViewerActive === false || cropSels.length === 0) return;
         const onKey = (e: KeyboardEvent) => {
             const target = e.target as HTMLElement | null;
             if (target?.closest?.('[role="dialog"]')) return;
             if (e.key === 'Enter') {
                 e.preventDefault();
                 window.dispatchEvent(new CustomEvent('prynx-crop-open', {
-                    detail: { ownerId: cropOwnerId, pageNum: originalPageNum, totalPages, pageBox: cropPageBox, fracs: cropSels, frac: cropSels[0] },
+                    detail: { tabId, ownerId: cropOwnerId, pageNum: originalPageNum, totalPages, pageBox: cropPageBox, fracs: cropSels, frac: cropSels[0] },
                 }));
             } else if (e.key === 'Escape') {
                 commitCropSelection(null);
@@ -1615,7 +1710,7 @@ export const LivePageFrame = (props: any) => {
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [isCropMode, cropSels, cropOwnerId, selectedCropIdx, commitCropSelection, originalPageNum, totalPages, cropPageBox]);
+    }, [isCropMode, cropSels, cropOwnerId, selectedCropIdx, commitCropSelection, originalPageNum, totalPages, cropPageBox, tabId, isViewerActive]);
 
     // Crop panel -> page overlay: keep the selected frame visible and live.
     // ownerId prevents updates from reaching a duplicate instance of the same page.
@@ -1623,12 +1718,13 @@ export const LivePageFrame = (props: any) => {
         if (!isCropMode) return;
         const onPreviewChange = (event: Event) => {
             const detail = (event as CustomEvent<{
+                tabId?: string;
                 ownerId?: string;
                 pageNum?: number;
                 fracs?: CropRegionFrac[];
                 selectedIndex?: number;
             }>).detail;
-            if (!detail || detail.ownerId !== cropOwnerId || !Array.isArray(detail.fracs) || detail.fracs.length === 0) return;
+            if (!detail || detail.tabId !== tabId || detail.ownerId !== cropOwnerId || !Array.isArray(detail.fracs) || detail.fracs.length === 0) return;
             const regions = detail.fracs.map((frac) => ({ ...frac }));
             const selectedIndex = Math.max(0, Math.min(
                 regions.length - 1,
@@ -1648,7 +1744,7 @@ export const LivePageFrame = (props: any) => {
         };
         window.addEventListener('prynx-crop-preview-change', onPreviewChange as EventListener);
         return () => window.removeEventListener('prynx-crop-preview-change', onPreviewChange as EventListener);
-    }, [isCropMode, cropOwnerId, setCropSelection]);
+    }, [isCropMode, cropOwnerId, setCropSelection, tabId]);
     // Panel -> canvas uses an explicit focus request. Canvas clicks only update
     // selection and must never recenter the document viewport.
     useEffect(() => {
@@ -1706,13 +1802,14 @@ export const LivePageFrame = (props: any) => {
     const notifyCropPanel = React.useCallback((regions: CropRegionFrac[], selectedIndex: number) => {
         window.dispatchEvent(new CustomEvent('prynx-crop-selection-change', {
             detail: {
+                tabId,
                 ownerId: cropOwnerId,
                 pageNum: originalPageNum,
                 fracs: regions.map((frac) => ({ ...frac })),
                 selectedIndex,
             },
         }));
-    }, [cropOwnerId, originalPageNum]);
+    }, [cropOwnerId, originalPageNum, tabId]);
 
     const cropDrawing = useCropPointerDrawing({
         enabled: isCropInteractionEnabled,
@@ -1736,7 +1833,7 @@ export const LivePageFrame = (props: any) => {
             });
             window.dispatchEvent(new CustomEvent('prynx-crop-open', {
                 detail: {
-                    ownerId: cropOwnerId, totalPages, pageBox: cropPageBox,
+                    tabId, ownerId: cropOwnerId, totalPages, pageBox: cropPageBox,
                     pageNum: originalPageNum,
                     fracs: regions,
                     frac: regions[0],
@@ -2044,7 +2141,7 @@ export const LivePageFrame = (props: any) => {
     // Arrow-key nudge: preview is updated directly in the DOM. Repeated key events
     // are accumulated and committed as one edit operation after the key is released.
     useEffect(() => {
-        if (!isObjectEditMode || isVdpMode || !isActiveFrame) return;
+        if (!isObjectEditMode || isVdpMode || !isActiveFrame || isViewerActive === false) return;
 
         const flushNudge = async () => {
             const delta = editNudgeDeltaRef.current;
@@ -2131,7 +2228,7 @@ export const LivePageFrame = (props: any) => {
     }, [
         isObjectEditMode, isVdpMode, isActiveFrame, selectedObjectIds, lockedObjectIds,
                 editBusy, selectionFileId, pageDim?.w, displayWidth,
-        originalPageNum,
+        originalPageNum, isViewerActive,
         // applyOpViaSession is intentionally omitted: recreating this listener on every
         // render could discard an accumulated key-repeat delta before it is committed.
     ]);
@@ -2557,7 +2654,7 @@ export const LivePageFrame = (props: any) => {
                 <style key={`vdp-font-${field.id || idx}`}>{`
                     @font-face {
                         font-family: "${field.fontName}_local";
-                        src: url("${convertFileSrc(field.fontFile)}");
+                        src: url("${localFileUrl(field.fontFile)}");
                     }
                 `}</style>
             ) : null
@@ -2603,6 +2700,23 @@ export const LivePageFrame = (props: any) => {
                 const dpr = window.devicePixelRatio || 1;
                 const needsTiling = isActiveFrame && !isImage && (rotation || 0) % 360 === 0
                     && renderZoom < zoom * dpr * 0.95;
+                // PERF (audit độ nét 2026-07-28 §R.1): TRẦN zoom cho nền của trang KHÔNG
+                // đang xem. Virtuoso giữ ~9 trang mounted và LiveTile gọi _loadTile() ĐỒNG BỘ
+                // (cố tình bỏ qua IntersectionObserver để chống màn trắng khi WebView2 bị
+                // occluded) → cả 9 trang đều xin render nền ở renderZoom hiện tại. Ở zoom cao
+                // mỗi bản có cạnh dài tới 6000px, và MỌI render PDFium trong app đi tuần tự
+                // sau RENDER_LOCK → tile sắc của vùng đang nhìn xếp hàng sau 8 bản không ai xem.
+                //
+                // Trang không active chỉ là ẢNH CHỜ lúc cuộn tới, 2×dpr là quá đủ. Trang đang
+                // xem GIỮ NGUYÊN renderZoom (không đổi gì) để không hạ chất lượng chỗ đang nhìn.
+                // Cố tình KHÔNG chạm lối gọi _loadTile đồng bộ: đó là bản sửa lỗi màn trắng.
+                //
+                // PHẠM VI ẢNH HƯỞNG có giới hạn rõ: vì dùng Math.min, trần này chỉ CÓ tác dụng
+                // khi renderZoom > 2×dpr, tức zoom > ~200%. Ở mức fit/100% mọi thứ y như trước.
+                // Đánh đổi duy nhất: xem 2 trang cạnh nhau ở zoom >200% thì trang không active
+                // nét bằng nửa cho tới khi cuộn sang (nó thành active và render lại đủ nét).
+                const BG_IDLE_ZOOM_CAP = 2;
+                const bgZoom = isActiveFrame ? S : Math.min(S, BG_IDLE_ZOOM_CAP * dpr);
                 return (
                     <div style={{ width: displayWidth, height: displayHeight, position: 'relative' }}>
                         {/* Loading Skeleton */}
@@ -2614,7 +2728,7 @@ export const LivePageFrame = (props: any) => {
                             </div>
                         </div>
                         <div className="absolute inset-0 z-10">
-                            <LiveTile fileKey={pdfUrl || 'unknown'} key="full" pageNum={originalPageNum} zoom={S} rot={0} clipX={0} clipY={0} clipW={0} clipH={0} cssW={Math.ceil(displayWidth)} cssH={Math.ceil(displayHeight)} getTileUrl={getTileUrl} onVisible={handleTileVisibility} />
+                            <LiveTile fileKey={pdfUrl || 'unknown'} key="full" pageNum={originalPageNum} zoom={bgZoom} rot={0} clipX={0} clipY={0} clipW={0} clipH={0} cssW={Math.ceil(displayWidth)} cssH={Math.ceil(displayHeight)} getTileUrl={getTileUrl} onVisible={handleTileVisibility} />
                         </div>
                         {needsTiling && (
                             <div className="absolute inset-0 z-[11]">
@@ -2655,9 +2769,9 @@ export const LivePageFrame = (props: any) => {
             )}
 
              {/* Output Preview: Separation plate overlays rendered on the PDF page */}
-             {separationPlates.length > 0 && (
+             {separationPreviewBelongsToFrame && (
                  <div className="absolute inset-0 z-[14] bg-white pointer-events-none">
-                     {separationPlates.map((plate: any) => plate.visible ? (
+                     {visibleSeparationPlates.map(plate => (
                          <img 
                              key={plate.name}
                              src={plate.dataUrl}
@@ -2665,12 +2779,12 @@ export const LivePageFrame = (props: any) => {
                              className="absolute inset-0 w-full h-full mix-blend-multiply"
                              style={{ objectFit: 'fill' }}
                          />
-                     ) : null)}
+                     ))}
                  </div>
              )}
 
              {/* ICC Soft-Proof Overlay — simulates print output */}
-             {softProofImageUrl && (
+             {separationPreviewBelongsToFrame && softProofImageUrl && (
                  <img 
                      src={softProofImageUrl}
                      alt="Soft-Proof"
@@ -2680,7 +2794,7 @@ export const LivePageFrame = (props: any) => {
              )}
 
              {/* Gamut Warning Overlay — highlights out-of-gamut pixels */}
-             {gamutWarningUrl && (
+             {separationPreviewBelongsToFrame && gamutWarningUrl && (
                  <img 
                      src={gamutWarningUrl}
                      alt="Gamut Warning"
@@ -2690,7 +2804,7 @@ export const LivePageFrame = (props: any) => {
              )}
 
              {/* TAC Heatmap Overlay — highlights areas exceeding total ink coverage threshold */}
-             {tacHeatmapUrl && (
+             {separationPreviewBelongsToFrame && tacHeatmapUrl && (
                  <img 
                      src={tacHeatmapUrl}
                      alt="TAC Heatmap"
@@ -2700,7 +2814,7 @@ export const LivePageFrame = (props: any) => {
              )}
 
              {/* Overprint Preview Overlay — simulates overprint rendering */}
-             {overprintPreviewUrl && (
+             {separationPreviewBelongsToFrame && overprintPreviewUrl && (
                  <img 
                      src={overprintPreviewUrl}
                      alt="Overprint Preview"
@@ -3487,7 +3601,7 @@ export const LivePageFrame = (props: any) => {
                              }}
                              onMouseDown={(e) => e.stopPropagation()}
                              onContextMenu={(e) => {
-                                 if (!isVdpMode) return;
+                                 if (!isVdpMode || isViewerActive === false) return;
                                  e.preventDefault();
                                  e.stopPropagation();
                                  // Chọn field (nếu chưa) rồi mở menu xoay tại vị trí chuột.

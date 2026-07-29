@@ -882,7 +882,13 @@ async def flatten_layers(req: FlattenLayersRequest):
     engine = LayerEngine()
     try:
         output = engine.flatten_visible(pdf_path)
-        return {"success": True, "output_filename": Path(output).name}
+        # `warning` KHÔNG rỗng nghĩa là đã phải raster hoá: file ra mất vector/CMYK/
+        # màu pha. Trả lên để UI nói cho thợ biết, đừng chỉ success=True (GS-SUNSET).
+        return {
+            "success": True,
+            "output_filename": Path(output).name,
+            "warning": engine.last_flatten_warning,
+        }
     except Exception as e:
         raise_http(e, "Lỗi khi flatten layers")
 

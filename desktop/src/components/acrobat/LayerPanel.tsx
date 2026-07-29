@@ -212,6 +212,13 @@ const LayerItem = React.memo(function LayerItem({ layer, depth = 0 }: {
     );
 });
 
+/** Nút trong cây layer OCG do `/imposition/pdf-layers` trả về (chỉ field cần đọc). */
+type OcgLayerNode = {
+    id: number;
+    visible?: boolean;
+    children?: OcgLayerNode[];
+};
+
 export default function LayerPanel() {
   const { t } = useTranslation();
     // Selector useShallow: panel CHỈ re-render khi state layer đổi, không phải mọi
@@ -237,6 +244,9 @@ export default function LayerPanel() {
     const [isLoading, setIsLoading] = useState(false);
     const [isRendering, setIsRendering] = useState(false);
     const renderAbortRef = useRef<AbortController | null>(null);
+    // [OCG FIX 2026-07-28] Trạng thái ẩn GỐC CỦA FILE, để khi đóng panel trả về đúng
+    // nó thay vì đặt rỗng. Rỗng nghĩa là "không layer nào bị ẩn" — xem effect đóng panel.
+    const fileHiddenLayerIdsRef = useRef<number[] | null>(null);
 
     // ─── Fetch layers when panel opens ──────────────────────
     useEffect(() => {
@@ -255,7 +265,23 @@ export default function LayerPanel() {
                 });
                 if (layerRes.ok) {
                     const layerData = await layerRes.json();
-                    setPdfOcgLayers(layerData.layers || []);
+                    const layers = layerData.layers || [];
+                    setPdfOcgLayers(layers);
+
+                    // [OCG FIX 2026-07-28] SEED trạng thái ẩn từ chính file, đệ quy cả
+                    // layer con. Trước đây chỉ nạp cây layer mà không seed, nên
+                    // hiddenOcgLayerIds vẫn rỗng dù file có layer đang tắt. Hệ quả: chỉ
+                    // cần ẩn một ĐỐI TƯỢNG là preview được render với hidden_layer_ids=[]
+                    // → backend dựng lại /OFF rỗng → lớp thợ đã ẩn trong Illustrator hiện
+                    // ra. Cùng cách làm với ImpositionTab để hai nơi không lệch nhau.
+                    const hidden: number[] = [];
+                    const walk = (items: OcgLayerNode[]) => items.forEach((layer) => {
+                        if (layer.visible === false) hidden.push(layer.id);
+                        if (Array.isArray(layer.children)) walk(layer.children);
+                    });
+                    walk(layers as OcgLayerNode[]);
+                    fileHiddenLayerIdsRef.current = hidden;
+                    setHiddenOcgLayerIds(hidden);
                 }
             } catch (err) {
                 console.error('Failed to fetch OCG layers:', err);
@@ -265,7 +291,7 @@ export default function LayerPanel() {
         };
 
         fetchLayers();
-    }, [isLayerPanelOpen, file]);
+    }, [isLayerPanelOpen, file, setPdfOcgLayers, setHiddenOcgLayerIds]);
 
     // ─── Render preview when hidden layers change ────────────
     useEffect(() => {
@@ -322,13 +348,33 @@ export default function LayerPanel() {
     }, [hiddenOcgLayerIds, hiddenObjectKeys, file, isLayerPanelOpen, viewerActivePage]);
 
     // ─── Clear preview when panel closes ─────────────────────
+    // [OCG FIX 2026-07-28] Hai sai ở bản cũ:
+    //
+    // 1. Đặt `setHiddenOcgLayerIds([])` = khai "không layer nào bị ẩn". Nhưng giá trị
+    //    này KHÔNG chỉ dùng cho preview: ImposerDashboard đọc nó rồi processHandlers
+    //    truyền xuống pipeline bình bản. Nên chỉ cần mở rồi đóng panel layer một lần
+    //    là lớp thợ đã ẩn trong Illustrator được coi như hiện và lọt vào tờ in.
+    //    Nay trả về đúng trạng thái GỐC CỦA FILE (bỏ các toggle tạm của người dùng,
+    //    vẫn giữ ý nghĩa "đóng panel là huỷ thao tác thử").
+    //
+    // 2. Effect cũ chạy cả lúc MOUNT (panel đang đóng) nên xoá luôn trạng thái mà
+    //    ImpositionTab vừa seed từ file — tuỳ thứ tự effect mà thắng/thua, lỗi chập
+    //    chờn. Nay chỉ dọn khi panel thực sự chuyển MỞ → ĐÓNG.
+    const wasLayerPanelOpenRef = useRef(false);
     useEffect(() => {
-        if (!isLayerPanelOpen) {
-            setOcgPreviewUrl(null);
-            setHiddenOcgLayerIds([]);
-            setHiddenObjectKeys([]);
+        if (isLayerPanelOpen) {
+            wasLayerPanelOpenRef.current = true;
+            return;
         }
-    }, [isLayerPanelOpen]);
+        if (!wasLayerPanelOpenRef.current) return;
+        wasLayerPanelOpenRef.current = false;
+
+        setOcgPreviewUrl(null);
+        setHiddenOcgLayerIds(fileHiddenLayerIdsRef.current ?? []);
+        // hiddenObjectKeys là thao tác ẩn từng đối tượng trong phiên, không phải
+        // trạng thái của file → dọn sạch là đúng.
+        setHiddenObjectKeys([]);
+    }, [isLayerPanelOpen, setOcgPreviewUrl, setHiddenOcgLayerIds, setHiddenObjectKeys]);
 
     const [panelWidth, setPanelWidth] = useState(280);
     const isDraggingRef = useRef(false);

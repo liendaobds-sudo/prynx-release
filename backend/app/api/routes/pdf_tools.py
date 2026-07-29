@@ -39,6 +39,72 @@ _MAX_CONCURRENT_STICKER = max(
 _STICKER_JOB_SEMAPHORE = threading.BoundedSemaphore(_MAX_CONCURRENT_STICKER)
 
 
+def _validate_upscale_memory(width: int, height: int) -> None:
+    """Từ chối sớm nếu pipeline x4 chắc chắn vượt RAM vật lý còn trống.
+
+    Model luôn suy luận x4, kể cả đầu ra người dùng chọn x2. Ước lượng gồm mảng
+    float32 đầu ra, ảnh uint8 và vùng làm việc khi ghép tile. Đây là chốt an toàn
+    theo RAM khả dụng, không phải hard-cap kích thước: máy mạnh vẫn được chạy hết.
+    """
+    from app.core.system_memory import read_memory_status_mb
+
+    if width <= 0 or height <= 0:
+        raise HTTPException(status_code=400, detail="Kích thước ảnh không hợp lệ")
+
+    model_output_pixels = width * height * 16
+    estimated_peak_mb = model_output_pixels * 20 / (1024 * 1024)
+    _total_mb, available_mb = read_memory_status_mb()
+    if available_mb is None:
+        return
+
+    # PERF (audit 2026-07-28 §UP-01/07): dùng RAM còn trống thực tế thay vì cap
+    # 2.000 px cho mọi máy. Chừa ít nhất 1 GiB cho hệ điều hành và WebView.
+    usable_mb = max(0.0, available_mb - 1024.0) * 0.70
+    if estimated_peak_mb > usable_mb:
+        output_w, output_h = width * 4, height * 4
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Ảnh {width}×{height} px cần khoảng {estimated_peak_mb / 1024:.1f} GB RAM "
+                f"để xử lý AI (trung gian {output_w}×{output_h} px), nhưng máy hiện "
+                "không còn đủ bộ nhớ. Hãy đóng bớt ứng dụng hoặc dùng ảnh nhỏ hơn."
+            ),
+        )
+
+
+def _plan_background_work_size(width: int, height: int) -> tuple[tuple[int, int], list[str]]:
+    """Lập kế hoạch kích thước theo RAM; máy >=16 GB không bị hạ âm thầm."""
+    from app.core.system_memory import read_memory_status_mb
+
+    if width <= 0 or height <= 0:
+        raise HTTPException(status_code=400, detail="Kích thước ảnh không hợp lệ")
+    total_mb, available_mb = read_memory_status_mb()
+    if total_mb is None or available_mb is None:
+        return (width, height), []
+
+    estimated_mb = width * height * 72 / (1024 * 1024)
+    reserve_mb = 512.0 if total_mb < 8192 else 1024.0
+    usable_mb = max(0.0, available_mb - reserve_mb) * (0.55 if total_mb < 8192 else 0.65)
+
+    if total_mb >= 16384:
+        if estimated_mb > usable_mb:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Ảnh {width}×{height} px cần khoảng {estimated_mb / 1024:.1f} GB RAM "
+                    "để tách nền nhưng máy hiện không còn đủ bộ nhớ. Hãy đóng bớt ứng dụng rồi thử lại."
+                ),
+            )
+        return (width, height), []
+
+    if estimated_mb <= usable_mb:
+        return (width, height), []
+    target_pixels = max(1, int(usable_mb * 1024 * 1024 / 72))
+    scale = min(1.0, (target_pixels / float(width * height)) ** 0.5)
+    target = (max(1, int(width * scale)), max(1, int(height * scale)))
+    return target, ["resolution-reduced"]
+
+
 @contextmanager
 def _sticker_job_slot(job_id: str = ""):
     """Acquire slot; job vượt mức chờ tới lượt (xếp hàng), không spawn song song."""
@@ -1532,8 +1598,8 @@ async def remove_background_endpoint(
     """
     from app.workers.image_postprocessor import apply_edge_shift, apply_auto_crop, apply_background
     from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
-    from PIL import Image
-    import io
+    from io import BytesIO
+    from PIL import Image, ImageCms, ImageOps
 
     if file:
         source_path = await save_upload(file)
@@ -1547,7 +1613,7 @@ async def remove_background_endpoint(
             raise HTTPException(status_code=400, detail="Invalid path: symbolic links not allowed")
         if not os.path.isfile(real):
             raise HTTPException(status_code=400, detail="File not found")
-        allowed_exts = ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff', '.pdf')
+        allowed_exts = ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tif', '.tiff')
         if not real.lower().endswith(allowed_exts):
             raise HTTPException(status_code=400, detail="Unsupported file type")
         source_path = real
@@ -1557,20 +1623,52 @@ async def remove_background_endpoint(
 
     job_id = uuid.uuid4().hex[:8]
     output_path = os.path.join(RESULTS_DIR, f"bg_removed_{job_id}.png")
+    output_meta: dict[str, object] = {"warnings": []}
 
     # Suy luận AI nặng (BiRefNet ONNX ~927MB / rembg) là tác vụ ĐỒNG BỘ, CPU/GPU-bound.
     # Phải chạy trong threadpool — KHÔNG chạy thẳng trong async endpoint, nếu không sẽ
     # KHOÁ event loop → cả server "đứng hình" suốt lúc tách nền (đó là lý do "nặng/không chạy").
     def _process_bg_removal():
         with Image.open(source_path) as img:
+            source_size = (img.width, img.height)
+            planned_size, memory_warnings = _plan_background_work_size(*source_size)
+            source_icc = img.info.get("icc_profile")
+            source_dpi = img.info.get("dpi")
             img.load()
-            work = img
-            # Chặn OOM/treo với ảnh siêu lớn: mask AI luôn ở 1024px nên ảnh > 6000px
-            # không tăng chất lượng mà chỉ ngốn RAM. Hạ về 6000px cạnh dài (giữ tỷ lệ).
-            MAX_SIDE = 6000
-            if max(work.size) > MAX_SIDE:
-                ratio = MAX_SIDE / float(max(work.size))
-                work = work.resize((max(1, int(work.width * ratio)), max(1, int(work.height * ratio))), Image.LANCZOS)
+            work = ImageOps.exif_transpose(img)
+            scale = planned_size[0] / float(source_size[0])
+            target_size = (
+                max(1, int(work.width * scale)),
+                max(1, int(work.height * scale)),
+            )
+            warnings: list[str] = output_meta["warnings"]  # type: ignore[assignment]
+            warnings.extend(memory_warnings)
+            output_icc = source_icc
+
+            if source_icc:
+                try:
+                    alpha = work.getchannel("A") if "A" in work.getbands() else None
+                    source_profile = ImageCms.ImageCmsProfile(BytesIO(source_icc))
+                    srgb_profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB"))
+                    work = ImageCms.profileToProfile(
+                        work.convert("RGB"), source_profile, srgb_profile, outputMode="RGB"
+                    )
+                    if alpha is not None:
+                        work.putalpha(alpha)
+                    output_icc = srgb_profile.tobytes()
+                    warnings.append("color-converted-to-srgb")
+                except Exception:
+                    logger.warning("Không chuyển được ICC ảnh tách nền; dùng RGB mặc định", exc_info=True)
+                    work = work.convert("RGBA" if "A" in work.getbands() else "RGB")
+                    output_icc = None
+                    warnings.append("icc-profile-discarded")
+            elif work.mode == "CMYK":
+                work = work.convert("RGB")
+                output_icc = None
+                warnings.append("color-converted-to-srgb")
+
+            if work.size != target_size:
+                work = work.resize(target_size, Image.Resampling.LANCZOS)
 
             if engine == 'fast':
                 # NHANH NHẤT (hàng loạt) — ISNet (~0.1s GPU / 0.6s CPU), chất lượng khá.
@@ -1592,17 +1690,30 @@ async def remove_background_endpoint(
             if bg_color != 'transparent':
                 result_img = apply_background(result_img, bg_color, custom_hex)
 
-            result_img.save(output_path, format="PNG")
+            save_kwargs: dict[str, object] = {}
+            if output_icc:
+                save_kwargs["icc_profile"] = output_icc
+            if source_dpi:
+                save_kwargs["dpi"] = source_dpi
+            result_img.save(output_path, format="PNG", **save_kwargs)
+            output_meta["size"] = result_img.size
 
     try:
         await run_in_threadpool(_process_bg_removal)
 
         return FileResponse(
             path=output_path,
-            filename=f"bg_removed_{file.filename.split('.')[0]}.png" if file and file.filename else f"bg_removed_{job_id}.png",
+            filename=f"bg_removed_{os.path.splitext(file.filename)[0]}.png" if file and file.filename else f"bg_removed_{job_id}.png",
             media_type="image/png",
+            headers={
+                "X-Bg-Removal-Output-Size": "x".join(str(v) for v in output_meta.get("size", ())),
+                "X-Bg-Removal-Warnings": ",".join(output_meta["warnings"]),
+            },
             background=BackgroundTask(_cleanup_file, output_path),
         )
+    except HTTPException:
+        _cleanup_file(output_path)
+        raise
     except Exception as e:
         _cleanup_file(output_path)
         logger.error("remove-background thất bại: %s", e, exc_info=True)
@@ -1646,13 +1757,15 @@ async def upscale_endpoint(
     file: Optional[UploadFile] = File(None),
     file_path: Optional[str] = Form(None),
     engine: str = Form('general'),
+    scale_factor: int = Form(4),
 ):
-    """Phóng to ảnh 4x bằng AI super-resolution (ONNX). Nhận JPG/PNG/WebP..., trả PNG.
+    """Phóng to ảnh 2x/4x bằng AI super-resolution (ONNX), trả PNG.
 
-    Chỉ còn một model (general). Giữ alpha nếu ảnh có.
+    Hỗ trợ model general (nhanh) và quality (RRDBNet). Giữ alpha nếu ảnh có.
     """
     from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
-    from PIL import Image
+    from io import BytesIO
+    from PIL import Image, ImageCms, ImageOps
 
     if file:
         source_path = await save_upload(file)
@@ -1666,7 +1779,7 @@ async def upscale_endpoint(
             raise HTTPException(status_code=400, detail="Invalid path: symbolic links not allowed")
         if not os.path.isfile(real):
             raise HTTPException(status_code=400, detail="File not found")
-        allowed_exts = ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff')
+        allowed_exts = ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tif', '.tiff')
         if not real.lower().endswith(allowed_exts):
             raise HTTPException(status_code=400, detail="Unsupported file type")
         source_path = real
@@ -1674,32 +1787,87 @@ async def upscale_endpoint(
     else:
         raise HTTPException(status_code=400, detail="Vui lòng cung cấp file hoặc file_path hợp lệ")
 
-    variant = 'general'  # chỉ còn một model
+    if scale_factor not in (2, 4):
+        if is_temp:
+            try: os.remove(source_path)
+            except OSError: pass
+        raise HTTPException(status_code=400, detail="Mức phóng to chỉ hỗ trợ ×2 hoặc ×4")
+
+    requested_engine = (engine or '').strip().lower()
+    variant = requested_engine if requested_engine in ('general', 'balanced', 'quality') else 'balanced'
     job_id = uuid.uuid4().hex[:8]
     output_path = os.path.join(RESULTS_DIR, f"upscaled_{job_id}.png")
+    output_meta: dict[str, object] = {"warnings": []}
 
     def _process_upscale():
         from app.workers.realesrgan_engine import upscale as _upscale
         with Image.open(source_path) as img:
+            # PERF (audit 2026-07-28 §UP-01/07): đọc kích thước từ header và kiểm
+            # RAM trước img.load(), không giải nén ảnh cực lớn rồi mới giới hạn.
+            _validate_upscale_memory(img.width, img.height)
             img.load()
-            work = img
-            # Chặn OOM: model x4 → ảnh vào quá lớn sẽ ra ảnh khổng lồ (RAM + thời gian
-            # phi thực tế). Giới hạn cạnh vào 2000px (ra 8000px) — quá ngưỡng in thường.
-            MAX_SIDE = 2000
-            if max(work.size) > MAX_SIDE:
-                ratio = MAX_SIDE / float(max(work.size))
-                work = work.resize((max(1, int(work.width * ratio)), max(1, int(work.height * ratio))), Image.LANCZOS)
+            source_mode = img.mode
+            source_icc = img.info.get("icc_profile")
+            source_dpi = img.info.get("dpi")
+            work = ImageOps.exif_transpose(img)
+
+            warnings: list[str] = output_meta["warnings"]  # type: ignore[assignment]
+            output_icc = source_icc
+            if source_mode == "CMYK":
+                # UPSCALE (audit 2026-07-28 §UP-03): model chỉ nhận RGB. Nếu có
+                # profile nguồn thì chuyển sang sRGB có quản lý màu; không bao giờ
+                # gắn nhầm ICC CMYK lên ảnh RGB đầu ra.
+                try:
+                    if source_icc:
+                        source_profile = ImageCms.ImageCmsProfile(BytesIO(source_icc))
+                        srgb_profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB"))
+                        work = ImageCms.profileToProfile(
+                            work, source_profile, srgb_profile, outputMode="RGB"
+                        )
+                        output_icc = srgb_profile.tobytes()
+                    else:
+                        work = work.convert("RGB")
+                        output_icc = None
+                except Exception:
+                    logger.warning("Không chuyển được ICC CMYK; dùng chuyển RGB mặc định", exc_info=True)
+                    work = work.convert("RGB")
+                    output_icc = None
+                warnings.append("color-converted-to-srgb")
+
+            if source_mode.startswith("I;16") or source_mode in ("I", "F"):
+                warnings.append("bit-depth-reduced-to-8")
+
             result_img = _upscale(work, variant=variant)
-            result_img.save(output_path, format="PNG")
+            if scale_factor == 2:
+                # UPSCALE (audit 2026-07-28 §UP-04): hậu xử lý xác định ở backend,
+                # tránh canvas WebView và bảo đảm đúng kích thước đã cam kết.
+                result_img = result_img.resize(
+                    (work.width * 2, work.height * 2),
+                    Image.Resampling.LANCZOS,
+                )
+            save_kwargs: dict[str, object] = {}
+            if output_icc:
+                save_kwargs["icc_profile"] = output_icc
+            if source_dpi:
+                save_kwargs["dpi"] = source_dpi
+            result_img.save(output_path, format="PNG", **save_kwargs)
+            output_meta["size"] = result_img.size
 
     try:
         await run_in_threadpool(_process_upscale)
         return FileResponse(
             path=output_path,
-            filename=f"upscaled_{file.filename.split('.')[0]}.png" if file and file.filename else f"upscaled_{job_id}.png",
+            filename=f"upscaled_{os.path.splitext(file.filename)[0]}.png" if file and file.filename else f"upscaled_{job_id}.png",
             media_type="image/png",
+            headers={
+                "X-Upscale-Output-Size": "x".join(str(v) for v in output_meta.get("size", ())),
+                "X-Upscale-Warnings": ",".join(output_meta["warnings"]),
+            },
             background=BackgroundTask(_cleanup_file, output_path),
         )
+    except HTTPException:
+        _cleanup_file(output_path)
+        raise
     except Exception as e:
         _cleanup_file(output_path)
         logger.error("upscale thất bại: %s", e, exc_info=True)
@@ -1715,5 +1883,6 @@ async def upscale_warmup(engine: str = Form("general")):
     """Nạp sẵn model upscale (chạy nền) để lần bấm đầu không phải chờ cold-start."""
     from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
     from app.workers.realesrgan_engine import warmup
-    ok = await run_in_threadpool(warmup, "general")
+    variant = "quality" if (engine or "").strip().lower() == "quality" else "general"
+    ok = await run_in_threadpool(warmup, variant)
     return {"ok": bool(ok)}

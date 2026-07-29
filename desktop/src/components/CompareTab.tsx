@@ -52,6 +52,10 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
 
   // Keyboard globals for GIF Viewer
   useEffect(() => {
+    if (!isActive) {
+      setIsSpacePressed(false);
+      return;
+    }
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setActiveGif(null);
@@ -75,7 +79,7 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [activeGif]);
+  }, [activeGif, isActive]);
 
   const handleUploadB = useCallback(async (file: File) => {
     setUploadingB(true);

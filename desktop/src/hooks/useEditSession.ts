@@ -72,9 +72,17 @@ export interface SessionCommitResult {
     output_url?: string;
     output_path?: string;
     output_filename?: string;
+    /**
+     * Cảnh báo suy giảm chất lượng dù thao tác THÀNH CÔNG. Hiện có: flatten phải
+     * raster hoá nên file ra mất vector/CMYK/màu pha (Pantone, kênh bế). Bắt buộc
+     * hiện lên UI — success=true kèm file mất màu pha mà im lặng là fail-open.
+     */
+    warning?: string | null;
 }
 
 export interface UseEditSessionOptions {
+    /** Phạm vi tab cho các tín hiệu đồng bộ UI vẫn dùng CustomEvent. */
+    eventScopeId?: string;
     /** Override ngưỡng debounce-commit (ms). */
     debounceCommitMs?: number;
     /** Gọi khi 1 lần debounce-commit (tự động) hoàn tất → FE đổi sang tile thật. */
@@ -264,12 +272,13 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
             const outcomeKind = String(outcome.opResult?.kind || outcome.opResult?.action || "");
             const isLayerOp = outcomeKind.startsWith("layer");
             if (isLayerOp) {
-                window.dispatchEvent(new CustomEvent("refresh-ocg-layers"));
+                window.dispatchEvent(new CustomEvent("refresh-ocg-layers", { detail: { tabId: optsRef.current.eventScopeId } }));
             }
             if (outcomeKind === "objectVisibility") {
                 const detail = outcome.opResult?.detail || {};
                 window.dispatchEvent(new CustomEvent("edit-object-visibility-changed", {
                     detail: {
+                        ...(optsRef.current.eventScopeId ? { tabId: optsRef.current.eventScopeId } : {}),
                         page: outcome.page,
                         targetIds: detail.target_ids || [],
                         visible: !!detail.visible,
@@ -279,6 +288,7 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
                 // Hình học và xóa layer làm object/ID/membership đổi. Các thao tác layer khác chỉ refresh cây OCG.
                 window.dispatchEvent(new CustomEvent("edit-session-objects-changed", {
                     detail: {
+                        ...(optsRef.current.eventScopeId ? { tabId: optsRef.current.eventScopeId } : {}),
                         page: outcome.page,
                         path,
                         kind: String((body.op as EditOp | undefined)?.kind || ''),
@@ -338,6 +348,7 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
                 output_url: data?.output_url,
                 output_path: data?.output_path,
                 output_filename: data?.output_filename,
+                warning: data?.warning ?? null,
             };
             setDirtyFlag(false);
             setCanUndo(false);

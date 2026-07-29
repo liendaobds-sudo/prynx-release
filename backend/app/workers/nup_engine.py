@@ -18,6 +18,8 @@ Architecture:
 
 import os
 
+import contextlib
+
 import io
 
 from app.workers import pdf_wrapper as pdf_lib
@@ -87,21 +89,39 @@ def _build_repeat_sheet_metadata(sheet_mapping):
     return metadata
 
 
-def _canonicalize_rotation(source_path: str, job_id: str = None) -> tuple:
-    """Bake /Rotate ≠ 0 vào content stream để mọi bước hạ nguồn (die detection, trim,
-    layout, placement) thấy trang KHÔNG xoay. Trả (path, is_temp).
+def _canonicalize_page_space(source_path: str, job_id: str = None) -> tuple:
+    """Bake /Rotate ≠ 0 VÀ gốc MediaBox ≠ (0,0) vào content stream, để mọi bước hạ
+    nguồn (die detection, trim, layout, placement) thấy trang không xoay, gốc (0,0).
+    Trả (path, is_temp).
 
-    Vì sao: engine bình đọc kích thước trang qua page_rect = MediaBox CHƯA xoay
-    (không nhánh nào đọc page.rotation), nhưng show_pdf_page dùng as_form_xobject()
-    lại bake /Rotate vào /Matrix → trang có /Rotate=90 (MediaBox portrait, nhìn thực
-    tế landscape) bị dựng ô sai + tràn/méo. Bản vá canonicalize của VDP chỉ áp cho
-    VDP; luồng nup/CNC trước đây bỏ sót (audit bảo toàn nội dung 2026-07-07).
+    Vì sao phần /Rotate: engine bình đọc kích thước trang qua page_rect = MediaBox
+    CHƯA xoay (không nhánh nào đọc page.rotation), nhưng show_pdf_page dùng
+    as_form_xobject() lại bake /Rotate vào /Matrix → trang có /Rotate=90 (MediaBox
+    portrait, nhìn thực tế landscape) bị dựng ô sai + tràn/méo. Bản vá canonicalize
+    của VDP chỉ áp cho VDP; luồng nup/CNC trước đây bỏ sót (audit bảo toàn nội dung
+    2026-07-07).
 
-    CHỈ đụng khi có trang /Rotate ≠ 0 → file không xoay giữ NGUYÊN byte (bảo toàn
-    hành vi hiện tại). Dùng MediaBox làm hệ quy chiếu (khớp cách nup đọc kích thước);
-    bake cả 4 box phụ qua cùng ma trận.
+    Vì sao phần GỐC TOẠ ĐỘ [ORIGIN-CANON 2026-07-28]: cả tầng đặt tem giả định trang
+    bắt đầu tại (0,0) — `pdf_ops.page_rect()` trả Rect(0, 0, w, h) và bỏ hẳn
+    mb[0]/mb[1]; `pdf_ops.show_pdf_page` tính tâm nguồn bằng `clip.x0 + clip_w/2`;
+    `pdf_content_parser` lật y quanh `mb[3]-mb[1]` thay vì `mb[3]`. Đo trên trang
+    MediaBox [50,30,250,130]: nhánh KHÔNG die-cut lệch đúng (+50, +30) pt, còn parser
+    trả bbox đường bế y âm (-20, 60). Trang có gốc lệch đến từ nhiều nguồn thật: bù
+    xén lật gương (trước khi sửa), file Illustrator/Corel xuất giữ gốc artboard,
+    trang đã crop chỉ đổi box.
+    Chuẩn hoá tại ĐÚNG MỘT chỗ ở cửa vào pipeline an toàn hơn nhiều so với dạy từng
+    tầng hạ nguồn cách đọc gốc: nhánh die-cut hiện đang TỰ TRIỆT TIÊU sai số (rel_tx0
+    dùng x raw, show_pdf_page map content-0 → mép ô), nên sửa riêng show_pdf_page sẽ
+    làm nhánh đó lệch đúng một lượng mb. Đã đo: sau chuẩn hoá cả hai nhánh đều đúng.
+
+    CHỈ đụng khi có trang /Rotate ≠ 0 hoặc gốc MediaBox ≠ 0 → file đã chuẩn giữ
+    NGUYÊN byte (bảo toàn hành vi hiện tại). Dùng MediaBox làm hệ quy chiếu (khớp cách
+    nup đọc kích thước); bake cả 4 box phụ qua cùng ma trận.
     """
     import pikepdf
+    # Dưới ngưỡng này thì lệch gốc không có ý nghĩa in ấn (0.01pt ≈ 0.0035mm) —
+    # không rewrite file chỉ vì nhiễu số thực.
+    origin_eps = 0.01
     try:
         needs = False
         _p = pikepdf.Pdf.open(source_path)
@@ -110,18 +130,30 @@ def _canonicalize_rotation(source_path: str, job_id: str = None) -> tuple:
                 if int(page.get("/Rotate", 0) or 0) % 360 != 0:
                     needs = True
                     break
+                try:
+                    _mb = [float(x) for x in page.MediaBox]
+                except Exception:
+                    continue
+                if abs(_mb[0]) > origin_eps or abs(_mb[1]) > origin_eps:
+                    needs = True
+                    break
             if not needs:
                 _p.close()
                 return source_path, False
             for page in _p.pages:
                 rotate = int(page.get("/Rotate", 0) or 0) % 360
-                if rotate == 0:
-                    continue
                 mb = [float(x) for x in page.MediaBox]
                 mx0, my0, mx1, my1 = mb
                 mw = mx1 - mx0
                 mh = my1 - my0
-                if rotate == 90:
+                if rotate == 0 and abs(mx0) <= origin_eps and abs(my0) <= origin_eps:
+                    continue
+                if rotate == 0:
+                    # Chỉ dịch gốc về (0,0). Các ma trận xoay bên dưới đã tự gánh
+                    # phần dịch gốc rồi (vd 90°: mtx e=-my0, f=mx0+mw).
+                    mtx = (1.0, 0.0, 0.0, 1.0, -mx0, -my0)
+                    new_w, new_h = mw, mh
+                elif rotate == 90:
                     mtx = (0.0, -1.0, 1.0, 0.0, -my0, mx0 + mw)
                     new_w, new_h = mh, mw
                 elif rotate == 180:
@@ -140,7 +172,7 @@ def _canonicalize_rotation(source_path: str, job_id: str = None) -> tuple:
                     old = stream.read_bytes()
                     stream.write(prefix + old + b"\nQ")
                 else:
-                    # A rotated blank page legitimately has no content stream.
+                    # A rotated or offset blank page legitimately has no content stream.
                     page.obj["/Contents"] = pikepdf.Stream(_p, prefix + b"Q")
                 page.MediaBox = pikepdf.Array([0, 0, new_w, new_h])
                 page.CropBox = pikepdf.Array([0, 0, new_w, new_h])
@@ -166,8 +198,35 @@ def _canonicalize_rotation(source_path: str, job_id: str = None) -> tuple:
             except Exception:
                 pass
     except Exception as e:
-        logger.warning(f"[ROTATE-CANON] bỏ qua canonicalize /Rotate ({e}); dùng file gốc.")
+        logger.warning(
+            f"[PAGE-CANON] bỏ qua canonicalize /Rotate + gốc MediaBox ({e}); dùng file gốc."
+        )
         return source_path, False
+
+
+@contextlib.contextmanager
+def canonical_page_space(source_path: str, job_id: str = None):
+    """Context manager công khai cho `_canonicalize_page_space`, tự dọn file tạm.
+
+    [AUDIT §2.1 2026-07-28] Dùng cho các đường KHÔNG đi qua `run_nup_engine` (route
+    detect-shape, preview) để chúng đọc CÙNG hệ quy chiếu với export. Đo được trên
+    trang /Rotate=90 khổ 200×100: preview thấy 200×100 còn export sau chuẩn hoá thấy
+    100×200 — lệch hoán w/h, đủ để preview dựng sai lưới ô.
+
+    Yield đường dẫn đã chuẩn hoá; file tạm (nếu có) được xoá khi ra khỏi block, kể cả
+    khi thân block ném ngoại lệ.
+    """
+    path, is_temp = _canonicalize_page_space(source_path, job_id)
+    try:
+        yield path
+    finally:
+        if is_temp:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                logger.warning("[PAGE-CANON] không xoá được %s: %s", path, error)
 
 
 def _effective_diecut_grouping(layout_type, is_die_cut, grouping_strategy):
@@ -238,7 +297,7 @@ def run_nup_engine(
     except Exception:
         perf_stages = None
 
-    canonical_path, is_temporary = _canonicalize_rotation(source_path, job_id)
+    canonical_path, is_temporary = _canonicalize_page_space(source_path, job_id)
     if perf_stages is not None:
         perf_stages.mark("canonical_s")
     try:

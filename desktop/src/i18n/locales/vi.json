@@ -1,7 +1,7 @@
 {
   "catalog": {
-    "ai_sieu_phan_giai_phong_to_anh_2x_4x": "AI siêu phân giải phóng to ảnh 2x, 4x, phục hồi chi tiết ảnh chụp/sản phẩm và khử nhiễu mà không vỡ hạt. Xử lý ngay trên máy.",
-    "anh_do_phan_giai_thap_can_phong_to_ma": "Ảnh độ phân giải thấp cần phóng to mà không vỡ hạt.",
+    "ai_sieu_phan_giai_phong_to_anh_2x_4x": "Real-ESRGAN cải thiện độ nét cảm nhận khi phóng to 2x, 4x. AI có thể suy đoán chi tiết; cần kiểm tra chữ và logo ở mức zoom 100%.",
+    "anh_do_phan_giai_thap_can_phong_to_ma": "Ảnh độ phân giải thấp cần tăng kích thước; luôn kiểm tra chữ và logo ở mức zoom 100%.",
     "artwork_lech_kho_can_fit_khit_a4_a3": "Artwork lệch khổ, cần fit khít A4/A3 hoặc khổ tùy chọn.",
     "ban_ve_ky_thuat_bieu_mau_khung_vien": "Bản vẽ kỹ thuật, biểu mẫu, khung viền nhiều đường mảnh.",
     "bao_ve_ban_quyen_bang_watermark": "Bảo vệ bản quyền bằng watermark.",
@@ -133,8 +133,8 @@
     "offset_can_cmyk_dung_icc_de_mau_khop_in": "Offset cần CMYK đúng ICC để màu khớp. In nhanh nhiều máy nhận RGB nhưng chuyển CMYK giúp màu ổn định hơn.",
     "phan_tich_cau_truc_pdf_he_mau_rgb_cmyk": "Phân tích cấu trúc PDF: hệ màu RGB/CMYK, font nhúng, ảnh low-res, transparency, bleed. Tự động sửa lỗi giống PitStop.",
     "phoi_hop_voi_nhay_so_mec_so_dung_chung": "Phối hợp với Nhảy số (mẹc số) dùng chung dải để khớp bìa–ruột.",
-    "phong_to_anh_net_cang_2x_4x": "Phóng to ảnh nét căng (2x, 4x)",
-    "phong_to_anh_net_cang_2x_4x_bang_sieu": "Phóng to ảnh nét căng (2x, 4x) bằng siêu phân giải.",
+    "phong_to_anh_net_cang_2x_4x": "Phóng to ảnh AI đúng kích thước (2x, 4x)",
+    "phong_to_anh_net_cang_2x_4x_bang_sieu": "Phóng to đúng 2x, 4x bằng Real-ESRGAN chạy trên máy.",
     "preflight_chuan_in": "Preflight chuẩn in",
     "quan_ly_cau_truc_file_pdf_nhan_ban": "Quản lý cấu trúc file PDF: nhân bản trang, di chuyển thứ tự, xóa trang, xoay trang (theo trang/dải/chẵn lẻ).",
     "quan_ly_trang": "Quản lý trang",
@@ -400,6 +400,9 @@
     "xoa_label": "Xoá {{label}}",
     "mat_na_se_duoc_co_gian": "Mặt nạ {{iw}}×{{ih}}px sẽ được co giãn về bề mặt {{sw}}×{{sh}}px.",
     "kich_thuoc_mat_na_phai_khop": "Kích thước mặt nạ phải khớp bề mặt {{w}}×{{h}} px."
+  ,
+    "anh_khay": "Ảnh khay",
+    "anh_vo_hop": "Ảnh vỏ hộp"
   },
   "dieline.mockupCanvas": {
     "dang_kiem_tra_ho_tro_do_hoa": "Đang kiểm tra hỗ trợ đồ hoạ…"
@@ -843,6 +846,9 @@
     "moi_loai_nam_1_coc_rieng_coc_rong_hep": "Mỗi loại nằm 1 cọc riêng, cọc rộng hẹp theo số lượng, có bộ dấu xén riêng.",
     "xem_truoc_se_in_o": "📋 Xem trước — sẽ in ở {{pos}}",
     "xong": "Xong"
+  ,
+    "dao_cat_reset_moi_phien": "Dao cắt về mặc định mỗi phiên để an toàn — chọn lại nếu cần dao khác",
+    "giai_thich": "Giải thích"
   },
   "imposition.api": {
     "khong_tai_duoc_danh_sach_may_be_res": "Không tải được danh sách máy bế (${res.status})",
@@ -931,6 +937,8 @@
     "tu_chon_so_do_gap_phu_hop_nhat_cho_tung": "Tự chọn sơ đồ gấp phù hợp nhất cho từng tay sách (4p/8p/16p).",
     "tu_dong_theo_tay_sach": "Tự động theo tay sách",
     "tu_dong_xoay_nguoc_coc_phai_180_giup_2": "Tự động xoay ngược cọc phải 180°. Giúp 2 nửa đối xứng lề khi chập vào."
+  ,
+    "tay_sach_boi_4_da_lam_tron": "Tay sách phải là bội số của 4 — đã làm tròn thành {{n}}"
   },
   "imposition.cutExport": {
     "an_tuy_chon_nang_cao": "▾ Ẩn tùy chọn nâng cao",
@@ -975,6 +983,9 @@
     "to_k_loi": "Tờ {{k}} lỗi",
     "to_x_y": "Tờ {{x}} / {{y}}",
     "xong_ok_total_to": "Xong: {{ok}}/{{total}} tờ."
+  ,
+    "khong_gui_duoc_lenh_cat": "Không gửi được lệnh cắt",
+    "khong_tai_duoc_cau_hinh_may_cat": "Không tải được cấu hình máy cắt"
   },
   "imposition.cutterMachines": {
     "chon": "Chọn",
@@ -1078,6 +1089,10 @@
     "n_loai_tron_theo_ty_le_in_to": "{{n}} loại trộn theo tỷ lệ số lượng · in {{sheets}} tờ",
     "khong_du_cho_tren_to_cho_trang_tach": "Không đủ chỗ trên tờ cho trang {{pages}} — nên tách sang bài in khác.",
     "tem_thanh_pham": "Tem thành phẩm:"
+  ,
+    "goi_y_qua_kho": " — thử giảm số hàng/cột, tăng khổ giấy hoặc giảm lề.",
+    "khong_dung_duoc_preview_bo_cuc": "Không dựng được preview bố cục",
+    "khong_the_tinh_bo_cuc_preview": "Không thể tính bố cục preview."
   },
   "imposition.gridSettings": {
     "0_xep_toi_da_tren_1_to": "0 = Xếp tối đa trên 1 tờ",
@@ -1182,6 +1197,14 @@
     "sp_n_trang_m": "SP {{n}} (trang {{m}})",
     "sp_n_mat_a_b": "SP {{n}} (mặt {{a}}–{{b}})",
     "trang_n": "Trang {{n}}"
+  ,
+    "chu_thich_0_tu_lap_day": "(0 = tự lấp đầy tờ)",
+    "giai_thich": "Giải thích",
+    "khoang_ho": "Khoảng hở",
+    "khong_ap_dung_cho_xep_chong": "Không áp dụng cho Xếp chồng",
+    "tran_le_bleed": "Tràn lề (Bleed)",
+    "tu_lap_day_placeholder": "Tự lấp đầy",
+    "xep_chong_moi_trang_mot_lan": "Xếp chồng dùng mỗi trang PDF đúng một lần; số lượng không áp dụng."
   },
   "imposition.imposerDashboard": {
     "binh_2_mat_bat_buoc_so_trang_chan_file": "Bình 2 mặt bắt buộc số trang chẵn. File hiện ${sourceTotalPages} trang (lẻ) — thêm/xóa 1 trang ở thumbnail, hoặc chọn 1 Mặt.",
@@ -1229,6 +1252,8 @@
     "xem_bai_in": "🖨️ Xem Bài In",
     "xem_thanh_pham": "📖 Xem Thành Phẩm",
     "binh_2_mat_bat_buoc_so_trang_chan_file_hien_le": "Bình 2 mặt bắt buộc số trang chẵn. File hiện {{n}} trang (lẻ) — thêm/xóa 1 trang ở thumbnail, hoặc chọn 1 Mặt."
+  ,
+    "mo_file_pdf_truoc_khi_binh": "Mở file PDF trước khi bình"
   },
   "imposition.marksSettingsDialog": {
     "ap_dung": "Áp dụng",
@@ -1260,7 +1285,7 @@
   "imposition.outputSettings": {
     "duong_cat": "ĐƯỜNG CẮT",
     "kc_cum_phu": "KC CỤM PHỤ",
-    "khoang_cach_giua_cum_chinh_va_cum_phu": "Khoảng cách giữa cụm chính và cụm phụ (lấp đầy).&#10;Chỉ áp dụng khi dùng Xếp tối ưu + Bế 1 Dao.&#10;Đặt > 0 để nét bế 1 Dao có chỗ lòi ra an toàn,&#10;không cắt vào tem của cụm khác.",
+    "khoang_cach_giua_cum_chinh_va_cum_phu": "Khoảng cách giữa cụm chính và cụm phụ (lấp đầy).\nChỉ áp dụng khi dùng Xếp tối ưu + Bế 1 Dao.\nĐặt > 0 để nét bế 1 Dao có chỗ lòi ra an toàn,\nkhông cắt vào tem của cụm khác.",
     "mac_dinh": "Mặc định"
   },
   "imposition.paperSettingsUI": {
@@ -1294,6 +1319,8 @@
     "vung_an_toan_vung_in_le_mm": "Vùng An Toàn / Vùng In (Lề mm)",
     "xoa_preset": "Xóa Preset",
     "ten_kho_giay_label": "Tên Khổ Giấy"
+  ,
+    "kho_giay_toi_thieu_10mm": "Khổ giấy không hợp lệ — Chiều rộng và Chiều cao tối thiểu 10 mm."
   },
   "imposition.pontSettingsDialog": {
     "boong_may_graphtec": "Boong Máy Graphtec",
@@ -1362,7 +1389,7 @@
     "overprint_text_den_chong_loi_knockout": "Overprint text đen, chống lỗi knockout.",
     "phat_hien_tang_do_day_net_qua_manh": "Phát hiện & tăng độ dày nét quá mảnh.",
     "phong_to_anh": "Phóng to Ảnh",
-    "phong_to_anh_nhung_van_giu_duoc_do_sac": "Phóng to ảnh nhưng vẫn giữ được độ sắc nét, không bị vỡ hạt.",
+    "phong_to_anh_nhung_van_giu_duoc_do_sac": "Cải thiện độ nét cảm nhận khi phóng to; AI có thể suy đoán chi tiết.",
     "preflight_kiem_tra_chuan_in": "Preflight (Kiểm tra chuẩn in)",
     "quan_ly_trang": "Quản lý trang",
     "quet_hinh_anh_tu_dong_offset_vien_va": "Quét hình ảnh, tự động offset viền và tràn lề cho tem nhãn.",
@@ -1858,6 +1885,18 @@
     "quy_tac_trong_hoac_khong_hop_le": "Quy tắc trống hoặc không hợp lệ.",
     "resize_pdf_lib_that_bai_fallback": "[resize] pdf-lib thất bại, fallback backend:",
     "thao_tac_tach_khong_tao_ra_file_nao": "Thao tác tách không tạo ra file nào."
+  ,
+    "binh_xong_nhung_luu_file_in_loi": "Bình xong nhưng tự động lưu file in lỗi",
+    "da_luu_file_in": "Đã tự động lưu {{ok}} file in",
+    "file_lon_co_the_mat_vai_phut": "… (file lớn có thể mất vài phút — đừng đóng tab)",
+    "khong_binh_duoc_trang": "Không bình được trang",
+    "khong_cat_xen_doi_duoc": "Không cắt xén/dời được nội dung",
+    "khong_doi_duoc_kho_trang": "Không đổi được khổ trang",
+    "khong_ghep_duoc_pdf": "Không ghép được PDF",
+    "khong_tach_duoc_pdf": "Không tách được PDF",
+    "khong_xao_tron_duoc_trang": "Không xáo trộn được trang",
+    "khong_xu_ly_duoc_catalog": "Không xử lý được Catalog",
+    "mo_thu_muc": "Mở thư mục"
   },
   "lib.productAdvisor": {
     "1_to_sheetlabel_n_cuon_to": "1 tờ ${sheetLabel} = ${n} cuốn/tờ",
@@ -2106,6 +2145,8 @@
     "xoa_trang": "Xóa Trang",
     "xoa_trang_quick_delete": "Xóa Trang (Quick Delete)",
     "xem_hai_trang": "Xem hai trang"
+  ,
+    "kich_thuoc_that_100": "Kích thước thật 100%"
   },
   "misc.acrobatViewer": {
     "chua_co_file_de_cat_kho": "Chưa có file để cắt khổ",
@@ -2131,7 +2172,16 @@
     "loi_tai_pdf": "Lỗi tải PDF",
     "tai_lai_trang": "Tải lại trang",
     "xuat_anh": "Xuất ảnh",
-    "xuat_anh_png_jpeg_tiff": "Xuất ảnh (PNG/JPEG/TIFF)"
+    "xuat_anh_png_jpeg_tiff": "Xuất ảnh (PNG/JPEG/TIFF)",
+    "chon_trang_truoc_khi_xoay": "Chọn trang ở thanh thumbnail trước rồi xoay (Ctrl+A = chọn tất cả)"
+  ,
+    "bam_de_xoa_dim": "Bấm để xóa số đo này",
+    "da_xoa_dim": "Đã xóa số đo {{label}}",
+    "status_doi_don_vi": "Đổi đơn vị đo (mm → cm → inch)",
+    "status_toa_do_chuot": "Tọa độ chuột — gốc là mép trang hiện hành",
+    "status_trang": "Trang",
+    "status_zoom": "Zoom",
+    "thuoc_don_vi_doi": "Thước: {{unit}}"
   },
   "misc.barcodeEngine": {
     "can_len_chu_so_hoac_len_1_de_tu_tinh": "Cần ${len} chữ số (hoặc ${len - 1} để tự tính check digit)",
@@ -2408,6 +2458,8 @@
     "thay_anh": "Thay ảnh",
     "xoa_doi_tuong": "Xóa đối tượng",
     "xoay_khung": "Xoay khung"
+  ,
+    "dang_dung_hinh": "ĐANG DỰNG HÌNH"
   },
   "misc.login": {
     "dang_xuat": "Đăng xuất",
@@ -2439,6 +2491,9 @@
     "tao_tai_lieu_trang_moi": "Tạo tài liệu trắng mới",
     "ten_tai_lieu": "Tên tài liệu",
     "tuy_chinh": "Tùy chỉnh..."
+  ,
+    "cao_mm": "Cao (mm)",
+    "ngang": "Ngang"
   },
   "misc.pDFUploader": {
     "click_de_chon_file_khac": "Click để chọn file khác",
@@ -2455,6 +2510,8 @@
     "co_loi_xay_ra": "Có lỗi xảy ra",
     "dang_so_sanh": "Đang so sánh...",
     "hoan_thanh": "Hoàn thành!"
+  ,
+    "trang_x_y": "Trang {{current}}/{{total}}"
   },
   "misc.qrEngine": {
     "bo_tron": "Bo tròn",
@@ -2541,7 +2598,8 @@
     "thoi_gian_mo": "Thời gian mở",
     "xoa_da_chon": "Xóa đã chọn",
     "xoa_lich_su_giu_lai_sao": "Xóa lịch sử (giữ lại sao)",
-    "da_chon_n_muc": "Đã chọn {{n}} mục"
+    "da_chon_n_muc": "Đã chọn {{n}} mục",
+    "file_da_di_chuyen": "File không còn ở vị trí cũ (có thể đã bị di chuyển hoặc xóa):"
   },
   "misc.report": {
     "ban_sao_bi_loi": "Bản sao bị lỗi",
@@ -2650,6 +2708,9 @@
     "da_luu_ok_file_vao": "✅ Đã lưu {{ok}} file vào: {{folder}}",
     "cnc_moi_don_vi_tach_ra_file_rieng": "CNC: mỗi đơn vị tách {{mode}} ra file riêng.",
     "n_loai_tong_to_file": "⇒ {{types}} loại · tổng {{sheets}} tờ · {{files}} file"
+  ,
+    "trang_1": "Trang 1",
+    "trang_n": "Trang {{n}}"
   },
   "misc.selectionLayers": {
     "2x_click_doi_ten": "2x Click = Đổi tên",
@@ -2773,6 +2834,13 @@
     "xoay_trai_rotate_ccw": "Xoay trái (Rotate CCW)",
     "trang_kich_thuoc_tooltip": "Trang {{page}}\nKích thước: {{w}} x {{h}} mm",
     "dang_an_n_thumbnails_con_lai": "Đang ẩn {{n}} thumbnails còn lại để tránh treo máy."
+  ,
+    "chon_trang_truoc_hint": "Chọn trang trước (click / Shift+click / Ctrl+A)",
+    "chon_trang_truoc_roi_nhan_r": "Chọn trang ở thanh thumbnail trước rồi nhấn R để xoay (Ctrl+A = chọn tất cả)",
+    "dang_uu_tien_trang_chinh": "Đang ưu tiên hiển thị trang chính...",
+    "phong_to_thumbnail_hint": "Phóng to thumbnail (Ctrl+lăn chuột trên danh sách cũng đổi được)",
+    "shift_ctrl_click_chon_nhieu": "Shift/Ctrl+click để chọn nhiều",
+    "thu_nho_thumbnail_hint": "Thu nhỏ thumbnail (Ctrl+lăn chuột trên danh sách cũng đổi được)"
   },
   "misc.toast": {
     "dong": "Đóng",
@@ -2917,6 +2985,15 @@
   },
   "preprocess.bgRemover": {
     "anh_goc": "👁 ẢNH GỐC",
+    "che_do_ai": "Chế độ AI",
+    "model_chat_luong": "Chất lượng",
+    "model_can_bang": "Cân bằng",
+    "model_nhanh": "Nhanh",
+    "model_chat_luong_goi_y": "Chi tiết tốt hơn; cần GPU tương thích và chỉ chạy khi bạn chủ động chọn.",
+    "model_can_bang_goi_y": "Nhanh gần như chế độ Nhanh nhưng giữ hạt và texture nguồn tốt hơn.",
+    "model_nhanh_goi_y": "Model gọn cho máy yếu hoặc cần xử lý nhanh.",
+    "canh_bao_cmyk_srgb": "Ảnh CMYK đã được chuyển sang sRGB để mô hình AI xử lý.",
+    "canh_bao_16_bit": "Ảnh 16-bit được xử lý ở 8-bit; hãy kiểm tra chuyển sắc trước khi in.",
     "bat_dau_tach_nen": "🚀 Bắt Đầu Tách Nền",
     "da_luu_thanh_cong_saved_anh": "✅ Đã lưu thành công ${saved} ảnh!",
     "da_tach_nen": "✨ ĐÃ TÁCH NỀN",
@@ -2925,9 +3002,14 @@
     "dang_xu_ly": "⏳ Đang xử lý...",
     "ho_tro_jpg_png_tiff_webp_bmp": "Hỗ trợ JPG, PNG, TIFF, WebP, BMP.",
     "hoan_tac": "Hoàn tác",
+    "huy_xu_ly": "Hủy xử lý",
+    "loi_phong_to": "Phóng to ảnh thất bại",
+    "model_chua_san_sang": "Mô hình Upscale chưa sẵn sàng; lần xử lý đầu có thể thất bại.",
+    "khong_kiem_tra_duoc_model": "Không thể kiểm tra mô hình Upscale; hãy kiểm tra sidecar.",
     "hoan_tac_de_chinh_sua_lai": "Hoàn tác để chỉnh sửa lại",
     "keo_tha_anh_vao_day_hoac_bam_de_chon": "Kéo thả ảnh vào đây hoặc bấm để chọn file.",
     "khong_tim_thay_file_goc": "Không tìm thấy file gốc",
+    "gif_khong_ho_tro": "GIF động chưa được hỗ trợ; hãy chuyển sang PNG, TIFF hoặc WebP tĩnh.",
     "loi_khi_luu_file": "Lỗi khi lưu file.",
     "loi_server_res_status_errortext": "Lỗi Server (${res.status}): ${errorText}",
     "tach_nen_ai": "Tách nền AI",
@@ -2949,10 +3031,15 @@
     "toi_da_long_toc_kinh": "Tối đa — Lông, Tóc & Kính",
     "tu_dong_cat_cup_auto_crop": "Tự động cắt cúp (Auto-Crop)",
     "tuy_chon_khung_anh": "Tùy chọn Khung ảnh",
+    "mau_nen": "Màu nền đầu ra",
+    "trong_suot": "Trong suốt",
+    "trang": "Trắng",
+    "den": "Đen",
+    "tuy_chon": "Tùy chọn",
     "vien_sac_net_bam_chi_tiet_tot_can_bang": "Viền sắc nét, bám chi tiết tốt. Cân bằng đẹp/nhanh (~vài giây). Dùng cho hầu hết sản phẩm, tem, người, vật thể."
   },
   "preprocess.common": {
-    "run": "RUN"
+    "run": "Thực thi"
   },
   "preprocess.convertColors": {
     "bat_doi_luon_mau_pha_cmyk_neu_muon_gop": "Bật \"Đổi luôn màu pha → CMYK\" nếu muốn gộp Pantone/HKS vào 4 màu (in 4 màu thường).",
@@ -2960,7 +3047,7 @@
     "bo_mau_in_1_mau_den_grayscale": "Bỏ màu, in 1 màu đen (Grayscale).",
     "cho_in_offset_in_4_mau_rgb_cmyk": "Cho in offset / in 4 màu (RGB → CMYK).",
     "chua_co_file_pdf": "Chưa có file PDF",
-    "chua_ro_xem_huong_dan_amp_giai_thich": "Chưa rõ? Xem hướng dẫn &amp; giải thích",
+    "chua_ro_xem_huong_dan_amp_giai_thich": "Chưa rõ? Xem hướng dẫn & giải thích",
     "chuyen_cmyk_quan_trong_nhat_cho_in": "Chuyển CMYK quan trọng nhất cho IN OFFSET. In nhanh (kỹ thuật số) nhiều máy nhận RGB nên có thể không cần.",
     "chuyen_doi_mau_huong_dan": "Chuyển đổi màu — Hướng dẫn",
     "chuyen_sang_cmyk": "Chuyển sang CMYK",
@@ -3049,6 +3136,9 @@
     "file_co_n_trang": "File có {{n}} trang.",
     "se_dung_n_trang_bia": "Sẽ dùng {{n}} trang bìa: {{list}}. Trang còn lại là ruột (dùng Mẹc Số).",
     "tao_bia_n_cuon": "Tạo bìa ({{n}} cuốn)"
+  ,
+    "da_huy": "Đã hủy",
+    "khong_chay_duoc_vdp": "Không chạy được VDP"
   },
   "preprocess.dataMerge": {
     "1_chon_cot": "1. Chọn cột",
@@ -3416,6 +3506,20 @@
     "danh_sach_file_csv": "Danh sách file CSV ({{n}})",
     "dang_doc_n_file": "Đang đọc {{n}} file…",
     "ban_ghi_2": "bản ghi"
+  ,
+    "bam_xem_de_tao_ban_xem_truoc_record": "Bấm \"Xem\" để tạo bản xem trước record.",
+    "cac_file_sau_co_canh_bao_vd_anh_thieu": "Các file sau có cảnh báo (ví dụ ảnh thiếu) — record liên quan có thể bị thiếu nội dung:",
+    "da_huy": "Đã hủy",
+    "dong_file_co_canh_bao": "• {{name}}: {{n}} cảnh báo",
+    "du_lieu_co_canh_bao": "Dữ liệu có cảnh báo",
+    "khong_chay_duoc_vdp": "Không chạy được VDP",
+    "n_field_loi_o_record_nay": "{{n}} field lỗi ở record này:",
+    "nguon_moi_thieu_cot_can_map_lai": "Nguồn mới thiếu cột: {{cols}} — các ô này cần map lại",
+    "nut_xem": "Xem",
+    "van_chay": "Vẫn chạy",
+    "vi_tri_x": "Vị trí X",
+    "vi_tri_y": "Vị trí Y",
+    "xem_lai": "Xem lại"
   },
   "preprocess.fontSelector": {
     "go_de_tim_font": "Gõ để tìm Font...",
@@ -3584,6 +3688,9 @@
     "help_phanbo_linear": "Số chạy lần lượt trên từng tờ: tờ 1 mang 1,2,3…; tờ 2 mang các số tiếp theo. In xong xếp chồng theo thứ tự tờ là đọc được ngay.",
     "help_phanbo_stack": "Dành cho máy cắt & chồng cọc (cut & stack): số nhảy xuyên qua các tờ sao cho sau khi in xong, cắt cọc giấy và chồng lên nhau thì số chạy liên tục trong từng chồng. Chọn sai chế độ này sẽ khiến số bị nhảy loạn sau khi cắt.",
     "help_ghi_chu": "Mẹo: xem khung Xem trước ở dưới để kiểm tra vài tờ đầu trước khi tạo file. Bật Xáo trộn ngẫu nhiên nếu làm vé bốc thăm."
+  ,
+    "da_huy": "Đã hủy",
+    "khong_chay_duoc_vdp": "Không chạy được VDP"
   },
   "preprocess.ocr": {
     "bat_cho_file_scan_tu_giay_tat_neu_file": "Bật cho file scan từ giấy. Tắt nếu file đã sạch (export từ Photoshop/AI).",
@@ -4107,6 +4214,9 @@
     "tu_hoan_doi_le_trai_phai_o_trang_chan": "Tự hoán đổi lề Trái/Phải ở trang chẵn để lề trong luôn nằm phía gáy.",
     "tuy_chon": "Tùy chọn...",
     "meo_go_trang_page_total": "Mẹo: gõ \"Trang [page]/[total]\" để ra \"Trang 1/20\". Kiểu La Mã/chữ cái bỏ qua \"Độ dài số\"."
+  ,
+    "khong_nap_duoc_font_tuy_chinh": "Không nạp được font tùy chỉnh — đang dùng font thay thế",
+    "khong_nap_duoc_font_unicode": "Không nạp được font Unicode kèm ứng dụng — đang dùng font thay thế"
   },
   "preprocess.sticker": {
     "1_duong_cat_dieline": "1. Đường cắt (Dieline)",
@@ -4139,6 +4249,8 @@
     "chi_mo_nen_tran_mau": "Chỉ mở nền (tràn màu).",
     "chi_nen_dung_cho_nen_truu_tuong_hoa_van": ". Chỉ nên dùng cho nền trừu tượng/hoa văn. Ảnh có chữ/chi tiết nên chọn",
     "co_gian_vien": "Co/Giãn viền",
+    "bu_xen_ngoai_duong_cat": "Bù xén ngoài đường cắt",
+    "tom_tat_hinh_hoc_bu_xen": "Đường cắt {{cut}} mm · Mép màu {{outer}} mm · Bù xén ngoài đường cắt {{bleed}} mm",
     "da_tao_bu_xen_thanh_cong": "Đã tạo bù xén thành công!",
     "da_xay_ra_loi_khong_xac_dinh": "Đã xảy ra lỗi không xác định.",
     "dac_ruot": "✅ Đặc ruột",
@@ -4260,6 +4372,15 @@
   },
   "preprocess.upscale": {
     "anh_goc": "👁 ẢNH GỐC",
+    "che_do_ai": "Chế độ AI",
+    "model_chat_luong": "Chất lượng",
+    "model_can_bang": "Cân bằng",
+    "model_nhanh": "Nhanh",
+    "model_chat_luong_goi_y": "Chi tiết tốt hơn; cần GPU tương thích và chỉ chạy khi bạn chủ động chọn.",
+    "model_can_bang_goi_y": "Nhanh gần như chế độ Nhanh nhưng giữ hạt và texture nguồn tốt hơn.",
+    "model_nhanh_goi_y": "Model gọn cho máy yếu hoặc cần xử lý nhanh.",
+    "canh_bao_cmyk_srgb": "Ảnh CMYK đã được chuyển sang sRGB để mô hình AI xử lý.",
+    "canh_bao_16_bit": "Ảnh 16-bit được xử lý ở 8-bit; hãy kiểm tra chuyển sắc trước khi in.",
     "bat_dau_phong_to_anh": "🚀 Bắt Đầu Phóng To Ảnh",
     "da_luu_thanh_cong_saved_anh": "✅ Đã lưu thành công ${saved} ảnh!",
     "da_phong_to": "🪄 ĐÃ PHÓNG TO",
@@ -4270,9 +4391,14 @@
     "gap_4_lan_4x": "Gấp 4 lần (4x)",
     "ho_tro_jpg_png_tiff_webp_bmp": "Hỗ trợ JPG, PNG, TIFF, WebP, BMP.",
     "hoan_tac": "Hoàn tác",
+    "huy_xu_ly": "Hủy xử lý",
+    "loi_phong_to": "Phóng to ảnh thất bại",
+    "model_chua_san_sang": "Mô hình Upscale chưa sẵn sàng; lần xử lý đầu có thể thất bại.",
+    "khong_kiem_tra_duoc_model": "Không thể kiểm tra mô hình Upscale; hãy kiểm tra sidecar.",
     "hoan_tac_de_chinh_sua_lai": "Hoàn tác để chỉnh sửa lại",
     "keo_tha_anh_vao_day_hoac_bam_de_chon": "Kéo thả ảnh vào đây hoặc bấm để chọn file.",
     "khong_tim_thay_file_goc": "Không tìm thấy file gốc",
+    "gif_khong_ho_tro": "GIF động chưa được hỗ trợ; hãy chuyển sang PNG, TIFF hoặc WebP tĩnh.",
     "loi_doc_anh_ket_qua": "Lỗi đọc ảnh kết quả",
     "loi_khi_luu_file": "Lỗi khi lưu file.",
     "loi_server_res_status_errortext": "Lỗi Server (${res.status}): ${errorText}",
@@ -4553,6 +4679,9 @@
     "shortcut_rotate_left": "Xoay c\u00e1c trang \u0111ang ch\u1ecdn sang tr\u00e1i 90\u00b0",
     "shortcut_select_all_pages": "Ch\u1ecdn to\u00e0n b\u1ed9 trang",
     "shortcut_clear_page_selection": "B\u1ecf ch\u1ecdn to\u00e0n b\u1ed9 trang",
+    "shortcut_next_tab": "Chuyển sang tab kế tiếp",
+    "shortcut_prev_tab": "Chuyển về tab trước",
+    "shortcut_help": "Mở bảng phím tắt (trợ giúp)",
     "bang_tra_cuu_nhanh_cac_phim_tat_lam": "Bảng tra cứu nhanh các phím tắt làm việc trong PrynX. Tính năng tự tùy biến phím tắt sẽ có mặt trong bản cập nhật sau.",
     "bat_tat_cac_cong_cu_khong_su_dung_de": "Bật/tắt các công cụ không sử dụng để không gian làm việc gọn gàng hơn.",
     "bo_yeu_thich": "Bỏ yêu thích",
@@ -4717,7 +4846,50 @@
     "trang_chu_printsolutions": "Trang chủ PrintSolutions.vn",
     "xem_hai_trang": "Xem hai trang",
     "khong_khoi_phuc_duoc": "Không khôi phục được \"{{title}}\": file gốc không còn.",
-    "ctrl_p_chi_ho_tro_trinh_xem_pdf": "Ctrl+P chỉ dùng được khi đang xem PDF trong Bình bài, Bình trang, Bình tem bế hoặc CNC."
+    "ctrl_p_chi_ho_tro_trinh_xem_pdf": "Ctrl+P chỉ dùng được khi đang xem PDF trong Bình bài, Bình trang, Bình tem bế hoặc CNC.",
+    "tab_nay_chua_ho_tro_luu_bang_ctrl_s": "Tab này chưa hỗ trợ Lưu — dùng nút xuất file riêng của công cụ.",
+    "menu_file": "Tệp",
+    "menu_edit": "Sửa",
+    "menu_view": "Xem",
+    "menu_tools": "Công cụ",
+    "menu_window": "Cửa sổ",
+    "menu_help": "Trợ giúp",
+    "menu_in": "In…",
+    "menu_trang_dau": "Trang đầu",
+    "menu_trang_truoc": "Trang trước",
+    "menu_trang_sau": "Trang sau",
+    "menu_trang_cuoi": "Trang cuối",
+    "menu_xoay_phai": "Xoay phải 90°",
+    "menu_xoay_trai": "Xoay trái 90°",
+    "menu_chon_tat_ca_trang": "Chọn tất cả trang",
+    "menu_bo_chon_trang": "Bỏ chọn trang",
+    "menu_trich_xuat_trang": "Trích xuất trang…",
+    "menu_xoa_danh_sach_gan_day": "Xóa danh sách gần đây",
+    "menu_tab_ke_tiep": "Tab kế tiếp",
+    "menu_tab_truoc": "Tab trước",
+    "menu_dong_tat_ca_tab": "Đóng tất cả tab",
+    "menu_huong_dan_su_dung": "Hướng dẫn sử dụng",
+    "menu_tuy_chon": "Cài đặt & Cấu hình",
+    "luu_thay_doi_truoc_khi_dong_tab": "Lưu thay đổi trước khi đóng tab?",
+    "can_key_prynx_pro": "Cần key PrynX Pro"
+  ,
+    "err_backend_down": "không kết nối được với bộ xử lý của PrynX",
+    "err_backend_down_hint": "Bộ xử lý nền có thể chưa khởi động xong hoặc đã bị tắt. Chờ vài giây rồi thử lại; nếu vẫn lỗi, đóng và mở lại PrynX.",
+    "err_canceled": "Đã hủy thao tác.",
+    "err_notfound": "không tìm thấy file",
+    "err_notfound_hint": "File có thể đã bị di chuyển, đổi tên hoặc xóa. Mở lại file từ vị trí hiện tại của nó.",
+    "err_oom": "máy không đủ bộ nhớ để xử lý file này",
+    "err_oom_hint": "Đóng bớt tab/phần mềm đang mở rồi thử lại. Với file rất nặng, hãy tách nhỏ file hoặc hạ độ phân giải xuất.",
+    "err_permission": "không có quyền truy cập file hoặc thư mục",
+    "err_permission_hint": "File có thể đang mở ở phần mềm khác, nằm trong thư mục chỉ-đọc, hoặc bị phần mềm diệt virus chặn. Đóng file ở phần mềm kia rồi thử lại, hoặc chọn thư mục lưu khác.",
+    "err_raw_detail": "Chi tiết",
+    "err_server": "bộ xử lý gặp lỗi khi chạy tác vụ này",
+    "err_server_hint": "Thử lại một lần nữa. Nếu vẫn lỗi, file nguồn có thể hỏng hoặc dùng tính năng PDF mà PrynX chưa hỗ trợ.",
+    "err_unknown": "đã xảy ra lỗi không xác định",
+    "huy": "Hủy",
+    "khong_dong_duoc_ung_dung": "Không đóng được ứng dụng",
+    "khong_phong_to_duoc_cua_so": "Không phóng to được cửa sổ",
+    "khong_thu_nho_duoc_cua_so": "Không thu nhỏ được cửa sổ"
   },
   "tabs.aiQc": {
     "bao_cao_cua_ai_proofreader_se_hien_thi": "Báo cáo của AI Proofreader sẽ hiển thị tại đây.",
@@ -4797,6 +4969,10 @@
     "da_ghep_n_nhom_tab_combine": "Đã ghép {{n}} nhóm → tab này + {{rest}} tab Combine",
     "nhom_n_trang": "Nhóm {{n}} trang",
     "xoay_90_rotate": "Xoay 90° (Rotate)"
+  ,
+    "ghep_file": "Ghép file",
+    "hoac_keo_tha_file_pdf_vao_day": "hoặc kéo-thả file PDF vào đây",
+    "them_file": "+ Thêm file..."
   },
   "tabs.compare": {
     "300_dpi_chinh_xac": "300 DPI — Chính xác",
@@ -4829,6 +5005,8 @@
     "upload_that_bai": "Upload thất bại",
     "xem_bao_cao": "📋 Xem Báo cáo",
     "xep_long_khop": "Xếp lồng khớp"
+  ,
+    "can_file_de_in": "Cần file PDF để in"
   },
   "tabs.home": {
     "bo_khoi_yeu_thich": "Bỏ khỏi Yêu thích",
@@ -4953,7 +5131,11 @@
     "trang": "trang",
     "can_them_n_trang_trang_lam_tron": "(Cần thêm {{add}} trang trắng để làm tròn thành {{total}} trang chẵn theo quy tắc gấp tay sách).",
     "dat_n_trang_trang_o_dau": "Đặt {{n}} trang trắng ở đâu?",
-    "thong_so": "THÔNG SỐ"
+    "thong_so": "THÔNG SỐ",
+    "chua_co_file_de_luu": "Chưa có file nào để lưu — mở hoặc kéo file PDF vào đã.",
+    "khong_co_thay_doi_nao_can_luu": "File chưa có thay đổi nào cần lưu."
+  ,
+    "dang_mo_bam_de_thu_gon_panel": "Đang mở — bấm để thu gọn panel"
   },
   "tabs.outputPreview": {
     "ban_kem": "Bản kẽm",
@@ -5030,5 +5212,11 @@
   "misc.languageToggle": {
     "chuyen_sang_tieng_viet": "Chuyển sang Tiếng Việt",
     "chuyen_sang_english": "Chuyển sang English"
+  },
+  "imposition.bookReport": {
+    "title": "THÔNG TIN SÁCH / TẠP CHÍ (REPORT)"
+  },
+  "lib.combineAssembly": {
+    "chi_nhan_file_pdf": "Chức năng ghép qua backend chỉ nhận file PDF"
   }
 }

@@ -14,6 +14,8 @@
 
 import { PDFDocument, degrees } from 'pdf-lib';
 
+import { beginOptionalContentTransfer, finishOptionalContentTransfer } from '../pdfOptionalContent';
+
 // ─── Types ───────────────────────────────────────────────────────────────
 
 export interface ShuffleRule {
@@ -297,20 +299,26 @@ export async function executeShuffle(
     const outputPdf = await PDFDocument.create();
     const srcPageCount = inputPdf.getPageCount();
 
-    for (const entry of mapping) {
-        if (entry.srcPage < 0 || entry.srcPage >= srcPageCount) {
-            // Blank page — add empty page with same size as first page
-            const refPage = inputPdf.getPage(0);
-            const { width, height } = refPage.getSize();
-            outputPdf.addPage([width, height]);
-        } else {
-            const [copiedPage] = await outputPdf.copyPages(inputPdf, [entry.srcPage]);
-            if (entry.rotation !== 0) {
-                const currentRotation = copiedPage.getRotation().angle;
-                copiedPage.setRotation(degrees(currentRotation + entry.rotation));
+    // [OCG FIX 2026-07-28] copyPages bỏ /OCProperties → layer đã ẩn hiện lại sau xáo trang.
+    const ocTransfer = beginOptionalContentTransfer([inputPdf]);
+    try {
+        for (const entry of mapping) {
+            if (entry.srcPage < 0 || entry.srcPage >= srcPageCount) {
+                // Blank page — add empty page with same size as first page
+                const refPage = inputPdf.getPage(0);
+                const { width, height } = refPage.getSize();
+                outputPdf.addPage([width, height]);
+            } else {
+                const [copiedPage] = await outputPdf.copyPages(inputPdf, [entry.srcPage]);
+                if (entry.rotation !== 0) {
+                    const currentRotation = copiedPage.getRotation().angle;
+                    copiedPage.setRotation(degrees(currentRotation + entry.rotation));
+                }
+                outputPdf.addPage(copiedPage);
             }
-            outputPdf.addPage(copiedPage);
         }
+    } finally {
+        finishOptionalContentTransfer(ocTransfer, outputPdf);
     }
 
     return outputPdf.save();

@@ -285,6 +285,260 @@ def _build_edge_color_source_mask(
     return silhouette.copy()
 
 
+_EDGE_COLOR_MAX_SAMPLES = 100_000
+_EDGE_COLOR_TRANSITION_RGB = 48
+_EDGE_COLOR_TRANSITION_RATIO = 0.05
+_EDGE_COLOR_LUMA_SPAN = 30.0
+_EDGE_COLOR_MIN_SAMPLES = 64
+_EDGE_COLOR_ADAPTIVE_MAX_MM = 0.60
+_EDGE_COLOR_ADAPTIVE_ACCEPT_RATIO = 0.75
+_EDGE_COLOR_DEPTH_PENALTY = 0.002
+_SEAM_FEATHER_MM = 0.15
+
+
+def _edge_color_instability_metrics(
+    source_mask: np.ndarray,
+    img: np.ndarray,
+) -> dict[str, float]:
+    """Đo nhiễu màu cao tần trên shell dùng để kéo bù xén.
+
+    Chỉ lấy mẫu tối đa 100k pixel của shell, không quét/chuyển kiểu cả raster lớn.
+    Một viền đổi màu theo các đoạn dài vẫn có rất ít cặp kề nhau đổi gắt; halo
+    AA/JPEG lốm đốm có tỷ lệ chuyển màu cao và sẽ bị nearest kéo thành nan quạt.
+    """
+    if (
+        source_mask is None
+        or img is None
+        or source_mask.size == 0
+        or img.ndim != 3
+        or img.shape[2] < 3
+    ):
+        return {"sample_count": 0.0, "transition_ratio": 0.0, "luma_span": 0.0}
+
+    ys, xs = np.where(source_mask > 0)
+    if ys.size == 0:
+        return {"sample_count": 0.0, "transition_ratio": 0.0, "luma_span": 0.0}
+
+    stride = max(1, int(math.ceil(ys.size / _EDGE_COLOR_MAX_SAMPLES)))
+    ys = ys[::stride]
+    xs = xs[::stride]
+    rgb = img[ys, xs, :3].astype(np.int16)
+    luma = (
+        0.2126 * rgb[:, 0]
+        + 0.7152 * rgb[:, 1]
+        + 0.0722 * rgb[:, 2]
+    )
+    luma_span = float(np.percentile(luma, 90) - np.percentile(luma, 10))
+
+    changed_pairs = 0
+    total_pairs = 0
+    height, width = source_mask.shape[:2]
+    for dy, dx in ((0, 1), (1, 0)):
+        valid = (ys + dy < height) & (xs + dx < width)
+        if not np.any(valid):
+            continue
+        y0 = ys[valid]
+        x0 = xs[valid]
+        neighbor_is_source = source_mask[y0 + dy, x0 + dx] > 0
+        if not np.any(neighbor_is_source):
+            continue
+        y0 = y0[neighbor_is_source]
+        x0 = x0[neighbor_is_source]
+        current = img[y0, x0, :3].astype(np.int16)
+        neighbor = img[y0 + dy, x0 + dx, :3].astype(np.int16)
+        delta = np.max(np.abs(current - neighbor), axis=1)
+        changed_pairs += int(np.count_nonzero(delta >= _EDGE_COLOR_TRANSITION_RGB))
+        total_pairs += int(delta.size)
+
+    return {
+        "sample_count": float(ys.size),
+        "transition_ratio": changed_pairs / total_pairs if total_pairs else 0.0,
+        "luma_span": luma_span,
+    }
+
+
+def _edge_color_is_unstable(metrics: dict[str, float]) -> bool:
+    """True khi shell có đủ mẫu và đổi màu cao tần đủ gây nan quạt."""
+    return (
+        metrics.get("sample_count", 0.0) >= _EDGE_COLOR_MIN_SAMPLES
+        and metrics.get("transition_ratio", 0.0) >= _EDGE_COLOR_TRANSITION_RATIO
+        and metrics.get("luma_span", 0.0) >= _EDGE_COLOR_LUMA_SPAN
+    )
+
+
+def _edge_color_stability_score(metrics: dict[str, float]) -> float:
+    """Điểm thấp hơn = shell ổn định hơn; ưu tiên giảm đổi màu từng pixel."""
+    transition = max(0.0, float(metrics.get("transition_ratio", 0.0)))
+    luma = min(255.0, max(0.0, float(metrics.get("luma_span", 0.0)))) / 255.0
+    return transition + 0.02 * luma
+
+
+def _build_adaptive_edge_color_source_mask(
+    silhouette: np.ndarray,
+    img: np.ndarray,
+    *,
+    band_px: int,
+    peel_px: int,
+    max_peel_px: int,
+    edge_bite_px: int = 0,
+    kernel_type: int = cv2.MORPH_ELLIPSE,
+    exclude_near_white: bool = True,
+) -> tuple[np.ndarray, int]:
+    """Chọn shell nông nhất đủ ổn định, thay vì kéo halo sát mép ra bleed.
+
+    QUALITY (audit 2026-07-28 §BX.1/§BX.2): mask hình học vẫn giữ nguyên;
+    chỉ mask lấy màu được thử sâu dần. Viền gồm các mảng màu dài có tỷ lệ đổi
+    pixel thấp nên giữ shell ban đầu. Chỉ shell cao tần mới được dịch vào trong,
+    tối đa 0,60 mm do caller quy đổi sang pixel.
+    """
+    initial_peel = max(0, int(peel_px))
+    initial = _build_edge_color_source_mask(
+        silhouette,
+        img,
+        band_px=band_px,
+        peel_px=initial_peel,
+        edge_bite_px=edge_bite_px,
+        kernel_type=kernel_type,
+        exclude_near_white=exclude_near_white,
+    )
+    initial_metrics = _edge_color_instability_metrics(initial, img)
+    if not _edge_color_is_unstable(initial_metrics):
+        return initial, initial_peel
+
+    deepest_peel = max(initial_peel, int(max_peel_px))
+    band = max(1, int(band_px))
+    step = max(1, int(round(band / 3)))
+    candidate_peels = sorted({
+        min(deepest_peel, initial_peel + step),
+        min(deepest_peel, initial_peel + max(step, (band + 1) // 2)),
+        min(deepest_peel, initial_peel + band),
+        deepest_peel,
+    })
+
+    best_mask = initial
+    best_peel = initial_peel
+    initial_score = _edge_color_stability_score(initial_metrics)
+    best_score = initial_score
+    for candidate_peel in candidate_peels:
+        if candidate_peel <= initial_peel:
+            continue
+        candidate = _build_edge_color_source_mask(
+            silhouette,
+            img,
+            band_px=band,
+            peel_px=candidate_peel,
+            edge_bite_px=edge_bite_px,
+            kernel_type=kernel_type,
+            exclude_near_white=exclude_near_white,
+        )
+        metrics = _edge_color_instability_metrics(candidate, img)
+        if _edge_color_is_unstable(metrics):
+            continue
+        depth_penalty = (
+            _EDGE_COLOR_DEPTH_PENALTY
+            * (candidate_peel - initial_peel)
+            / band
+        )
+        score = _edge_color_stability_score(metrics) + depth_penalty
+        if score < best_score:
+            best_mask = candidate
+            best_peel = candidate_peel
+            best_score = score
+
+    if (
+        best_peel > initial_peel
+        and best_score <= initial_score * _EDGE_COLOR_ADAPTIVE_ACCEPT_RATIO
+    ):
+        return best_mask, best_peel
+    return initial, initial_peel
+
+
+def _build_feathered_bleed_join_mask(
+    bleed_mask: np.ndarray,
+    sticker_footprint: np.ndarray,
+    *,
+    solid_overlap_px: int,
+    feather_px: int,
+) -> np.ndarray:
+    """Tạo alpha mềm ở mép trong của lớp bleed chồng lên artwork.
+
+    QUALITY (audit 2026-07-28 §BX.5): phía ngoài tem vẫn đục hoàn toàn; bleed
+    chồng kín qua vùng halo trong ``solid_overlap_px``, rồi giảm alpha bằng
+    smoothstep ở dải feather. Nhờ vậy đường cong không còn biên mask 0/255 dạng
+    bậc thang và phần chuyển màu nằm sâu trong vùng màu nguồn đã ổn định.
+    """
+    if (
+        bleed_mask is None
+        or sticker_footprint is None
+        or bleed_mask.shape != sticker_footprint.shape
+        or np.count_nonzero(bleed_mask) == 0
+        or np.count_nonzero(sticker_footprint) == 0
+    ):
+        return bleed_mask.copy() if bleed_mask is not None else bleed_mask
+
+    roi = _bleed_roi_bbox(bleed_mask)
+    if roi is None:
+        return bleed_mask.copy()
+    y0, y1, x0, x1 = roi
+    coverage = bleed_mask[y0:y1, x0:x1] > 0
+    footprint = sticker_footprint[y0:y1, x0:x1] > 0
+    sub_alpha = np.zeros(coverage.shape, dtype=np.uint8)
+    sub_alpha[coverage & ~footprint] = 255
+
+    solid = max(0, int(solid_overlap_px))
+    feather = max(1, int(feather_px))
+    # Chỉ EDT trên bbox bleed; không tạo thêm float32 cỡ cả tờ PDF.
+    distance_inside = cv2.distanceTransform(
+        footprint.astype(np.uint8), cv2.DIST_L2, 5
+    )
+    transition = np.clip(
+        (solid + feather - distance_inside) / float(feather),
+        0.0,
+        1.0,
+    )
+    transition = transition * transition * (3.0 - 2.0 * transition)
+    inside = coverage & footprint
+    sub_alpha[inside] = np.rint(transition[inside] * 255.0).astype(np.uint8)
+
+    alpha = np.zeros_like(bleed_mask, dtype=np.uint8)
+    alpha[y0:y1, x0:x1] = sub_alpha
+    return alpha
+
+
+def _edge_color_sampling_warning(
+    source_mask: np.ndarray,
+    img: np.ndarray,
+    page_number: int,
+) -> str | None:
+    """Cảnh báo khi nearest có nguy cơ kéo nhiễu mép thành vệt dài."""
+    metrics = _edge_color_instability_metrics(source_mask, img)
+    if _edge_color_is_unstable(metrics):
+        return (
+            f"Trang {page_number}: màu viền lấy mẫu thay đổi gắt theo từng pixel; "
+            "bù xén có thể xuất hiện vệt. Hãy kiểm tra bản xem trước hoặc chọn "
+            "‘Đổ màu trơn’."
+        )
+    return None
+
+
+def _compose_sticker_warning(
+    all_pages_meta: list[dict],
+    pages_no_dieline: list[int],
+) -> str | None:
+    """Gộp cảnh báo chất lượng và hình học mà không làm rơi cảnh báo nào."""
+    warnings: list[str] = []
+    for page_meta in all_pages_meta:
+        warning = page_meta.get("bleed_warning") if isinstance(page_meta, dict) else None
+        if warning and warning not in warnings:
+            warnings.append(str(warning))
+    if pages_no_dieline:
+        warnings.append(
+            "Một số trang không dò được hình để tạo đường cắt: "
+            + ", ".join(str(page) for page in sorted(pages_no_dieline))
+        )
+    return " ".join(warnings) if warnings else None
+
+
 def _nearest_color_fill(sub_src, sub_img, max_dim: int = 4000):
     """Lấp màu nearest-neighbor từ vùng có màu (sub_src>0) ra toàn ROI
     ('Kéo giãn mép ảnh'). Chạy FULL-RES để giữ NÉT — nhân bản pixel mép vuông
@@ -1797,6 +2051,7 @@ class StickerEngine:
                 bleed_ring = None
                 sticker_footprint = None
                 is_bleed_cmyk = False
+                bleed_quality_warning = None
                 
                 # ============================================================
                 # STEP A: Compute dieline_poly FIRST (needed for bleed mask)
@@ -2013,25 +2268,52 @@ class StickerEngine:
                         
                         padded_img = np.pad(img_native, pad_width=((pad_b, pad_b), (pad_b, pad_b), (0, 0)), mode='constant', constant_values=255)
                         
-                        # Nguồn màu = dải VIỀN tem gốc (shell), không erode cả ruột.
-                        # - peel ~0.08mm: bỏ 1 lớp AA trộn nền ở mép render.
-                        # - band ~0.25mm: lấy màu thật ngay sau peel (đúng "màu viền tem").
-                        # - edge_bite: co silhouette trước (doa viền trắng file không tràn lề).
-                        # Fallback trong _build_edge_color_source_mask nếu shell rỗng.
+                        # Nguồn màu tách khỏi mask hình học đường cắt. Với mode image,
+                        # shell cao tần được dò sâu dần để bỏ halo AA/JPEG; các mảng
+                        # màu dài vẫn giữ đúng shell 0,08 mm ban đầu.
                         edge_bite_px = max(0, int(edge_bite_mm * px_per_mm))
                         peel_px = max(1, int(0.08 * px_per_mm))
                         edge_band_px = max(2, int(0.25 * px_per_mm))
-                        # depth dùng cho band_r (halo nearest): xa nhất nguồn có thể lùi vào trong.
-                        source_depth_px = edge_bite_px + peel_px + edge_band_px
-                        color_source_mask = _build_edge_color_source_mask(
-                            padded_original_mask,
-                            padded_img,
-                            band_px=edge_band_px,
-                            peel_px=peel_px,
-                            edge_bite_px=edge_bite_px,
-                            kernel_type=kernel_type,
-                            exclude_near_white=not rectangle_mode,
+                        selected_peel_px = peel_px
+                        if bleed_color_type == "image" and not rectangle_mode:
+                            max_adaptive_peel_px = max(
+                                peel_px,
+                                int(round(_EDGE_COLOR_ADAPTIVE_MAX_MM * px_per_mm)),
+                            )
+                            color_source_mask, selected_peel_px = (
+                                _build_adaptive_edge_color_source_mask(
+                                    padded_original_mask,
+                                    padded_img,
+                                    band_px=edge_band_px,
+                                    peel_px=peel_px,
+                                    max_peel_px=max_adaptive_peel_px,
+                                    edge_bite_px=edge_bite_px,
+                                    kernel_type=kernel_type,
+                                    exclude_near_white=True,
+                                )
+                            )
+                        else:
+                            color_source_mask = _build_edge_color_source_mask(
+                                padded_original_mask,
+                                padded_img,
+                                band_px=edge_band_px,
+                                peel_px=peel_px,
+                                edge_bite_px=edge_bite_px,
+                                kernel_type=kernel_type,
+                                exclude_near_white=not rectangle_mode,
+                            )
+                        # Halo tile phải đủ sâu tới shell thực tế đã chọn.
+                        source_depth_px = (
+                            edge_bite_px + selected_peel_px + edge_band_px
                         )
+                        # QUALITY (audit 2026-07-28 §BX.1/§BX.4): chỉ cảnh báo
+                        # khi dò sâu vẫn không loại được nguồn màu bất ổn.
+                        if bleed_color_type == "image" and not rectangle_mode:
+                            bleed_quality_warning = _edge_color_sampling_warning(
+                                color_source_mask,
+                                padded_img,
+                                page_idx + 1,
+                            )
                         # Giữ tên inset_px cho log/công thức band cũ (tương đương depth nguồn).
                         inset_px = max(1, source_depth_px)
 
@@ -2114,14 +2396,49 @@ class StickerEngine:
                         # VÀO TRONG vài px: SMask lùa xuống DƯỚI artwork (layer trên phủ
                         # footprint) → bịt khe hở subpixel ở mối nối raster(SMask)↔clip-vector,
                         # tránh hở nền tạo sợi mảnh. Phần nới nằm dưới artwork nên vô hình.
-                        _tuck_px = max(1, int(0.2 * px_per_mm))
-                        _fp_inner = cv2.erode(sticker_footprint, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_tuck_px*2+1, _tuck_px*2+1)))
-                        bleed_ring = cv2.subtract(bleed_mask, _fp_inner)
+                        _seam_clean_px = (
+                            selected_peel_px
+                            if bleed_color_type == "image" and not rectangle_mode
+                            else 0
+                        )
+                        _tuck_px = max(1, int(0.2 * px_per_mm), _seam_clean_px)
+                        _sampled_seam_overlay = (
+                            bleed_color_type in ("image", "inpaint")
+                            and not rectangle_mode
+                            and not selection_page_mode
+                        )
+                        _seam_feather_px = 0
+                        if _sampled_seam_overlay:
+                            _seam_feather_px = max(
+                                1, int(round(_SEAM_FEATHER_MM * px_per_mm))
+                            )
+                            bleed_ring = _build_feathered_bleed_join_mask(
+                                bleed_mask,
+                                sticker_footprint,
+                                solid_overlap_px=_tuck_px,
+                                feather_px=_seam_feather_px,
+                            )
+                        else:
+                            _fp_inner = cv2.erode(
+                                sticker_footprint,
+                                cv2.getStructuringElement(
+                                    cv2.MORPH_ELLIPSE,
+                                    (_tuck_px * 2 + 1, _tuck_px * 2 + 1),
+                                ),
+                            )
+                            bleed_ring = cv2.subtract(bleed_mask, _fp_inner)
                         
                         # Band = dải quanh ring, đủ rộng để chứa nguồn màu viền (source_depth)
-                        # + bleed ngoài + tuck. Nguồn là shell mép, không còn full-interior.
+                        # + bleed ngoài + tuck/feather. Nguồn là shell mép, không còn full-interior.
                         _SAFETY = 4
-                        band_r = int(bleed_px + inset_px + _tuck_px + 1 + _SAFETY)
+                        band_r = int(
+                            bleed_px
+                            + inset_px
+                            + _tuck_px
+                            + _seam_feather_px
+                            + 1
+                            + _SAFETY
+                        )
                         band_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (band_r*2+1, band_r*2+1))
                         band = cv2.dilate(bleed_ring, band_kernel)
 
@@ -2235,6 +2552,7 @@ class StickerEngine:
                     src_xobj_name = page_out.add_resource(src_xobj, pikepdf.Name.XObject)
 
                 page_content_stream = []
+                sampled_bleed_overlay_stream = []
                 vector_bite_x = 0.0
                 vector_bite_y = 0.0
                 if use_vector_rectangle_bleed:
@@ -2263,6 +2581,7 @@ class StickerEngine:
                     mask_obj.ColorSpace = pikepdf.Name.DeviceGray
                     mask_obj.BitsPerComponent = 8
                     mask_obj.Filter = pikepdf.Name.FlateDecode
+                    mask_obj.Interpolate = True
                     
                     img_obj = pikepdf.Stream(doc_out, bleed_stream_data)
                     img_obj.Type = pikepdf.Name.XObject
@@ -2279,6 +2598,7 @@ class StickerEngine:
                     # Cả 2 nhánh nay đều zlib (lossless) → FlateDecode. Trước RGB là DCTDecode (JPEG).
                     img_obj.Filter = pikepdf.Name.FlateDecode
                     img_obj.SMask = mask_obj
+                    img_obj.Interpolate = True
                     
                     img_name = page_out.add_resource(img_obj, pikepdf.Name.XObject)
                     
@@ -2302,10 +2622,20 @@ class StickerEngine:
                             img_w_pt, shift_x, shift_y, max_expansion_pts, pad_b,
                         )
 
-                    page_content_stream.append("q")
-                    page_content_stream.append(f"{img_w_pt:.4f} 0 0 {img_h_pt:.4f} {shift_x:.4f} {shift_y:.4f} cm")
-                    page_content_stream.append(f"{str(img_name)} Do")
-                    page_content_stream.append("Q")
+                    bleed_draw_ops = [
+                        "q",
+                        f"{img_w_pt:.4f} 0 0 {img_h_pt:.4f} {shift_x:.4f} {shift_y:.4f} cm",
+                        f"{str(img_name)} Do",
+                        "Q",
+                    ]
+                    if (
+                        bleed_color_type in ("image", "inpaint")
+                        and not rectangle_mode
+                        and not selection_page_mode
+                    ):
+                        sampled_bleed_overlay_stream.extend(bleed_draw_ops)
+                    else:
+                        page_content_stream.extend(bleed_draw_ops)
 
                 selection_bleed_content_stream = []
                 if selection_page_mode:
@@ -2366,6 +2696,10 @@ class StickerEngine:
                     # was copied intact. Drop the legacy re-draw layer to avoid
                     # changing transparency/overprint by painting it twice.
                     del page_content_stream[artwork_ops_start:]
+                elif sampled_bleed_overlay_stream:
+                    # QUALITY (audit 2026-07-28 §BX.5): phủ choke màu lấy mẫu lên
+                    # dải mép rất hẹp sau artwork để che halo/AA trắng của nguồn.
+                    page_content_stream.extend(sampled_bleed_overlay_stream)
 
 
 
@@ -2558,6 +2892,8 @@ class StickerEngine:
                 elif cut_mode != "none":
                     # Yêu cầu tạo đường cắt nhưng không dò được hình trên trang này.
                     pages_no_dieline.append(page_idx + 1)
+                if bleed_quality_warning:
+                    page_meta["bleed_warning"] = bleed_quality_warning
                 
                 all_pages_meta.append(page_meta)
                 if rectangle_mode and bleed_color_type == "inpaint":
@@ -2618,11 +2954,9 @@ class StickerEngine:
                         "nếu nền màu trắng, hoặc kiểm tra lại file (hình quá nhạt/trống)."
                     )
                 }
-            if pages_no_dieline:
-                final_meta["warning"] = (
-                    "Một số trang không dò được hình để tạo đường cắt: "
-                    + ", ".join(str(p) for p in pages_no_dieline)
-                )
+            combined_warning = _compose_sticker_warning(all_pages_meta, pages_no_dieline)
+            if combined_warning:
+                final_meta["warning"] = combined_warning
 
             return True, final_meta
             
@@ -2911,11 +3245,8 @@ class StickerEngine:
                     "nếu nền màu trắng, hoặc kiểm tra lại file (hình quá nhạt/trống)."
                 )
             }
-        if pages_no_dieline:
-            pages_no_dieline.sort()
-            final_meta["warning"] = (
-                "Một số trang không dò được hình để tạo đường cắt: "
-                + ", ".join(str(p) for p in pages_no_dieline)
-            )
+        combined_warning = _compose_sticker_warning(all_pages_meta, pages_no_dieline)
+        if combined_warning:
+            final_meta["warning"] = combined_warning
 
         return True, final_meta

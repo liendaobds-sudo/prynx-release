@@ -15,4 +15,4 @@ Get-ChildItem -Directory $src | ForEach-Object {
     Copy-Item -Path (Join-Path $_.FullName "*") -Destination $target -Recurse -Force
     Write-Host ("da dong bo: " + $_.Name)
 }
-Write-Host "Xong. Ban goc: .agents\skills — sua o do roi chay lai script nay."
+Write-Host "Xong. Ban goc: .agents\skills - sua o do roi chay lai script nay."

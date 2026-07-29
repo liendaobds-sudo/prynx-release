@@ -7,6 +7,7 @@ import { useWorkspaceStore } from '../stores/useWorkspaceStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useImposerSettingsStore } from './imposition-tools/useImposerSettingsStore';
 import { useAppSettingsStore } from '../stores/appSettingsStore';
+import { useActiveViewerStore } from '../stores/useActiveViewerStore'; // UIUX (audit menu 2026-07-28 §MB.5)
 
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { LivePageFrame, clearTileUrlCache } from './workspace/LivePageFrame';
@@ -507,7 +508,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     useEffect(() => {
         if (!isActive) return;
         const handleMenuCommand = (e: Event) => {
-            const cmd = (e as CustomEvent).detail?.cmd as string;
+            const detail = (e as CustomEvent<{ cmd?: string; page?: number }>).detail;
+            const cmd = detail?.cmd || '';
             switch (cmd) {
                 case 'zoom-in': setZoom(z => Math.min(64, z * 1.25)); setFitMode('custom'); break;
                 case 'zoom-out': setZoom(z => Math.max(0.01, z / 1.25)); setFitMode('custom'); break;
@@ -522,6 +524,11 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 case 'last-page': navigatePage(pageOrder.length); break;
                 case 'prev-page': navigatePage(activePage - 1); break;
                 case 'next-page': navigatePage(activePage + 1); break;
+                case 'go-to-page': {
+                    const page = Number(detail?.page);
+                    if (Number.isFinite(page)) navigatePage(page);
+                    break;
+                }
                 case 'toggle-rulers': toggleRulers(); break;
                 case 'toggle-object-edit': setIsObjectEditMode(v => !v); break;
                 case 'crop': {
@@ -538,6 +545,18 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         window.addEventListener('prynx-menu-command', handleMenuCommand);
         return () => window.removeEventListener('prynx-menu-command', handleMenuCommand);
     }, [isActive, setZoom, setFitMode, applyFitWidth, applyFitPage, setPageDisplayMode, navigatePage, pageOrder.length, activePage, toggleRulers, setIsObjectEditMode, setIsCropMode, setToolMode, undo, redo, isCropMode, undoCropSelection, redoCropSelection]);
+
+    // UIUX (audit menu 2026-07-28 §MB.5): phát trạng thái hiển thị lên store toàn cục
+    // để menu Xem tick được mục đang chọn. Chỉ tab ĐANG XEM phát (tab nền vẫn mounted).
+    useEffect(() => {
+        if (!isActive) return;
+        useActiveViewerStore.getState().publish({
+            tabId: tabId ?? null,
+            pageDisplayMode,
+            fitMode,
+            numPages: pageOrder.length,
+        });
+    }, [isActive, tabId, pageDisplayMode, fitMode, pageOrder.length]);
 
     // Điều hướng trang giữ nguyên điểm đang nhìn theo tỷ lệ trên trang.
     useEffect(() => {
@@ -616,7 +635,10 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     // PageTools event listener
     useEffect(() => {
         const handlePageToolsAction = (e: any) => {
-            const { action, payload } = e.detail;
+            const { tabId: targetTabId, action, payload } = e.detail || {};
+            // NAV (audit điều hướng tab 2026-07-28): mọi viewer vẫn mounted,
+            // nên chỉ tab đích đang hiển thị mới được phép sửa cấu trúc trang.
+            if (!isActive || !tabId || targetTabId !== tabId) return;
             if (action === 'duplicate') handlePageToolsDuplicate(payload.targetType, payload.range, payload.copies, payload.collate);
             else if (action === 'move') handlePageToolsMove(payload.startPage, payload.endPage, payload.targetType, payload.targetPage);
             else if (action === 'delete') handlePageToolsDelete(payload.targetType, payload.range, payload.filter);
@@ -626,7 +648,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         };
         window.addEventListener('prynx-pagetools-action', handlePageToolsAction);
         return () => window.removeEventListener('prynx-pagetools-action', handlePageToolsAction);
-    }, [pageOrder, selectedIndices, activePage]);
+    }, [pageOrder, selectedIndices, activePage, isActive, tabId]);
 
     // ═══ Page Tool Handlers ═══
     const handleQuickDeleteConfirm = () => {
@@ -652,6 +674,57 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         }
         setPageRotations(newRotations);
     };
+
+    // UIUX (audit menu 2026-07-28 §MB.6): các thao tác TRANG trước đây chỉ có phím tắt
+    // (R / Shift+R / Ctrl+A / E) nên khách dùng chuột không biết là có. Đăng ký listener
+    // RIÊNG, đặt SAU các handler thao tác trang: mảng deps của effect được đánh giá ngay
+    // trong lúc render, nếu gộp vào effect menu ở trên (khai báo trước handler) sẽ chạm
+    // TDZ của handleQuickRotate → ReferenceError.
+    // Giữ giá trị/handler MỚI NHẤT trong ref: nếu đưa activePage, selectedIndices,
+    // handleQuickRotate vào deps thì listener bị gỡ/gắn lại mỗi lần cuộn trang.
+    const pageCmdRef = useRef({ selectedIndices, pageCount: pageOrder.length, activePage, quickRotate: handleQuickRotate });
+    useEffect(() => {
+        pageCmdRef.current = { selectedIndices, pageCount: pageOrder.length, activePage, quickRotate: handleQuickRotate };
+    });
+    useEffect(() => {
+        if (!isActive) return;
+        const handlePageMenuCommand = (e: Event) => {
+            const detail = (e as CustomEvent<{ cmd?: string; page?: number }>).detail;
+            const cmd = detail?.cmd || '';
+            const { selectedIndices: sel, pageCount, activePage: page, quickRotate } = pageCmdRef.current;
+            switch (cmd) {
+                case 'rotate-right':
+                case 'rotate-left': {
+                    // Xoay áp cho các trang ĐANG CHỌN ở thanh thumbnail — giống phím R.
+                    if (sel.size === 0) {
+                        toast.info(t('misc.acrobatViewer:chon_trang_truoc_khi_xoay', 'Chọn trang ở thanh thumbnail trước rồi xoay (Ctrl+A = chọn tất cả)'));
+                        return;
+                    }
+                    quickRotate(cmd === 'rotate-right' ? 90 : 270);
+                    break;
+                }
+                case 'select-all-pages':
+                    if (pageCount === 0) return;
+                    setSelectedIndices(new Set(Array.from({ length: pageCount }, (_, i) => i)));
+                    setLastSelectedIndex(Math.max(0, page - 1));
+                    setIsSidebarOpen(true); // chọn mà không thấy thanh thumbnail thì vô nghĩa
+                    break;
+                case 'clear-page-selection':
+                    setSelectedIndices(new Set());
+                    setLastSelectedIndex(null);
+                    break;
+                case 'extract-pages': {
+                    if (pageCount === 0) return;
+                    const sorted = Array.from(sel).sort((a, b) => a - b).map(i => i + 1);
+                    setExtractPagesStrForModal(sorted.length > 0 ? sorted.join(', ') : String(page));
+                    setIsExtractModalOpen(true);
+                    break;
+                }
+            }
+        };
+        window.addEventListener('prynx-menu-command', handlePageMenuCommand);
+        return () => window.removeEventListener('prynx-menu-command', handlePageMenuCommand);
+    }, [isActive, setSelectedIndices, setLastSelectedIndex, setIsSidebarOpen, setExtractPagesStrForModal, t]);
 
     const handlePageToolsDuplicate = (target: 'current' | 'all' | 'range', range: [number, number], copies: number, collate: boolean) => {
         commitSnapshot();
@@ -1350,7 +1423,10 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 {plateLabel && <div className="text-[11px] font-semibold text-yellow-400 mb-1 px-2 py-0.5 tracking-wide max-w-full truncate">{plateLabel}</div>}
                 <div className="relative">
                     <LivePageFrame
+                        tabId={tabId}
+                        isViewerActive={isActive}
                         originalPageNum={originalPageNum}
+                        viewerPageNum={(flatIndex ?? (originalPageNum - 1)) + 1}
                         pageInstanceId={instId || `page-${originalPageNum}-${flatIndex ?? 0}`}
                         actualWidth100={localWidth100}
                         zoom={zoom}
@@ -1380,7 +1456,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 </div>
             </div>
         );
-    }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, zoom, bleedView, highlightBoxes, isVdpMode, getTileUrl, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage]);
+    }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, zoom, bleedView, highlightBoxes, isVdpMode, getTileUrl, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage, tabId, isActive]);
 
     // Kiểm tra loadError SAU khi mọi hook đã được gọi (xem ghi chú ở đầu component).
     if (loadError) {

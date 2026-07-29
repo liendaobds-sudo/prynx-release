@@ -1,0 +1,76 @@
+// @vitest-environment jsdom
+// GS-SUNSET (audit 2026-07-28 §FL.2): cảnh báo raster hoá phải xuất hiện trên UI.
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mocks = vi.hoisted(() => ({
+    confirmDialog: vi.fn(),
+    toastInfo: vi.fn(),
+    workspaceState: {
+        pdfUrl: null,
+        selectedObjectIds: [],
+        setSelectedObjectIds: vi.fn(),
+        hiddenObjectIds: [],
+        setHiddenObjectIds: vi.fn(),
+        lockedObjectIds: [],
+        setLockedObjectIds: vi.fn(),
+        pdfOcgLayers: [],
+        hiddenOcgLayerIds: [],
+        setHiddenOcgLayerIds: vi.fn(),
+        lockedOcgLayerIds: [],
+        setLockedOcgLayerIds: vi.fn(),
+        expandedOcgLayerIds: [],
+        setExpandedOcgLayerIds: vi.fn(),
+        viewerActivePage: 1,
+        setError: vi.fn(),
+        editAddMode: null,
+        setEditAddMode: vi.fn(),
+    },
+}));
+
+vi.mock('react-i18next', () => ({
+    useTranslation: () => ({ t: (key: string) => key }),
+}));
+vi.mock('zustand/react/shallow', () => ({ useShallow: (selector: unknown) => selector }));
+vi.mock('../../stores/useWorkspaceStore', () => ({
+    useWorkspaceStore: (selector: (state: typeof mocks.workspaceState) => unknown) =>
+        selector(mocks.workspaceState),
+}));
+vi.mock('../../stores/pdfObjectCache', () => ({
+    globalPdfObjectCache: { getAllObjects: () => ({}) },
+}));
+vi.mock('../ui/confirmDialog', () => ({ confirmDialog: mocks.confirmDialog }));
+vi.mock('../ui/Toast', () => ({ toast: { info: mocks.toastInfo } }));
+
+import EditLayersPanel from './SelectionLayersPanel';
+
+beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.confirmDialog.mockResolvedValue(true);
+});
+
+describe('SelectionLayersPanel — cảnh báo Flatten', () => {
+    it('hiện toast khi backend báo Working File đã bị raster hoá', async () => {
+        const flatten = vi.fn().mockResolvedValue({
+            success: true,
+            output_fid: 'fid-moi',
+            warning: 'Đã raster hoá 300 DPI RGB; mất vector, Pantone và kênh bế.',
+        });
+
+        render(
+            <EditLayersPanel
+                handleDeleteObjects={vi.fn()}
+                editObjects={[]}
+                isEditMode
+                editSession={{ sessionId: 'session-test', flatten } as any}
+            />,
+        );
+
+        fireEvent.click(screen.getByRole('button', { name: 'Flatten' }));
+
+        await waitFor(() => expect(flatten).toHaveBeenCalledTimes(1));
+        expect(mocks.toastInfo).toHaveBeenCalledWith(
+            expect.stringContaining('mất vector, Pantone và kênh bế'),
+        );
+    });
+});

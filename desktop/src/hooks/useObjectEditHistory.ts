@@ -64,7 +64,7 @@ export function useObjectEditHistory() {
         // dọn Working_File trung gian tương ứng (backend chỉ xoá file trong edit_output).
         // Strip bytes khỏi File nếu có path đĩa (render/đọc lại qua path) → chặn phình RAM
         // (audit 2026-07-06). File không path → giữ nguyên (fallback). applySnap dùng lại
-        // snap.pdfUrl; file có path đi kèm pdfUrl=convertFileSrc (asset, KHÔNG revoke) → sống.
+        // snap.pdfUrl; file có path đi kèm URL protocol local (KHÔNG revoke) → sống.
         const lightSnap: EditSnap = { ...snap, file: snap.file ? stripBytesIfOnDisk(snap.file) : null };
         const all = [...st.objectEditPast, lightSnap];
         let dropped: EditSnap[] = [];

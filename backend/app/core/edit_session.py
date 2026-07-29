@@ -2142,7 +2142,11 @@ def flatten(session: EditSession) -> dict:
                 temp_input = tmp.name
             session.pdf.save(temp_input, compress_streams=False)
 
-            engine_output = LayerEngine().flatten_visible(temp_input)
+            # Giữ engine lại để đọc `last_flatten_warning`: đường raster fallback tạo
+            # Working File mất vector/CMYK/màu pha mà vẫn trả success (GS-SUNSET).
+            layer_engine = LayerEngine()
+            engine_output = layer_engine.flatten_visible(temp_input)
+            flatten_warning = layer_engine.last_flatten_warning
             original_name = _resolve_original_name(session.source_fid)
             final_path = edit_io.build_working_file_path(
                 session.source_path,
@@ -2182,6 +2186,7 @@ def flatten(session: EditSession) -> dict:
             "output_url": result_access_url(f"/results/{EDIT_OUTPUT_SUBDIR}/{filename}"),
             "output_path": abs_output_path,
             "output_fid": output_fid,
+            "warning": flatten_warning,
         }
 
 __all__ = [

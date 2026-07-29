@@ -385,12 +385,14 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
                             {generationError ? tv('Khuôn hiện tại đã cũ — hãy sửa lỗi hoặc thử lại.') : tv('Đang tính lại khuôn…')}
                         </div>
                     )}
+                    {/* isActive: lệnh menu Xem chỉ áp cho tab đang xem (audit menu 2026-07-28 §MB.1) */}
                     {activeTab === '2d' ? (
-                        <DielineCanvas2D />
+                        <DielineCanvas2D isActive={isActive !== false} />
                     ) : activeTab === 'nesting' ? (
-                        <NestingCanvas />
+                        <NestingCanvas isActive={isActive !== false} />
                     ) : activeTab === 'split' ? (
                         <DielineCanvas2D
+                            isActive={isActive !== false}
                             rightSlot={
                                 <Scene3DErrorBoundary>
                                     <Suspense fallback={

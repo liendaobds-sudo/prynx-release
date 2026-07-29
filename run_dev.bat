@@ -131,6 +131,11 @@ if errorlevel 1 (
 )
 cd ..
 
+:: UIUX (audit 2026-07-28 §DEV.01): assetProtocol chi doc cac thu muc an toan
+:: nhu %%TEMP%%. Dat file trung gian dev tai day de viewer khong bi 403 asset.localhost.
+set "UPLOAD_DIR=%TEMP%\PrynX-dev\uploads"
+set "RESULTS_DIR=%TEMP%\PrynX-dev\results"
+
 echo - Khoi dong Backend (FastAPI - Port 8321)
 start "PDF Inspector - Backend" cmd /k "cd backend && venv\Scripts\python.exe -m uvicorn app.main:app --port 8321 --reload --reload-dir app"
 

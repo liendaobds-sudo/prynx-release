@@ -15,3 +15,19 @@ export const PREPROCESS_ROUTER_TOOLS = [
 ] as const;
 
 export type PreprocessRouterTool = (typeof PREPROCESS_ROUTER_TOOLS)[number];
+
+/** Các công cụ mở thành tab chuyên dụng và không dùng workspace PDF làm màn hình gốc. */
+export const DEDICATED_STANDALONE_TOOLS = ['bgremover', 'upscale', 'office_convert'] as const;
+
+export type DedicatedStandaloneTool = (typeof DEDICATED_STANDALONE_TOOLS)[number];
+
+export function resolveDedicatedInitialTool(initialFeature?: string): DedicatedStandaloneTool | null {
+    return DEDICATED_STANDALONE_TOOLS.includes(initialFeature as DedicatedStandaloneTool)
+        ? initialFeature as DedicatedStandaloneTool
+        : null;
+}
+
+/** Công cụ có thể tự nhận ảnh/Office mà không cần một PDF đang mở trong workspace. */
+export function canToolRunWithoutPdf(tool?: string | null): boolean {
+    return DEDICATED_STANDALONE_TOOLS.includes(tool as DedicatedStandaloneTool);
+}

@@ -54,7 +54,7 @@ import { HIDE_PRODUCT_FIRST } from '../../lib/featureFocus';
 
 // Store & Types
 import { useImposerSettingsStore } from './useImposerSettingsStore';
-import { PREDEFINED_SIZES, DEFAULT_FORMSIZE, getImposerCapability, WORKSPACE_TOOL_PANEL, type ActiveToolType, type TaskMode, type ImposerDashboardProps } from './types';
+import { PREDEFINED_SIZES, DEFAULT_FORMSIZE, getImposerCapability, WORKSPACE_TOOL_PANEL, isWorkspaceTool, type ActiveToolType, type TaskMode, type ImposerDashboardProps } from './types';
 export type { BookletSettings, NupSettings } from './types';
 export { PREDEFINED_SIZES, DEFAULT_FORMSIZE } from './types';
 
@@ -148,18 +148,12 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         if (changed) s.setTargetQuantitiesByPage(nextQuantities);
     }, [viewerPageInstanceIds, s.targetQuantitiesByPage, s.setTargetQuantitiesByPage]);
 
-    // ═══ Active Tool (local — synced with parent) ═══
-    // Ưu tiên lockedMode (tab mở từ Home: tem bế / bế rớt / cắt xén) — KHÔNG để
-    // activeDashboardTool='none' (truthy) che mất lockedMode.
-    const [activeTool, setActiveTool] = useState<ActiveToolType>(() => {
-        if (lockedMode === 'booklet' || lockedMode === 'nup') return lockedMode;
-        if (lockedMode === 'sticker_imposer') return 'sticker_imposer';
-        if (lockedMode === 'cnc_imposer') return 'cnc_imposer';
-        if (currentTool && currentTool !== 'none') return currentTool as any;
-        const allowedFeatures = ['shuffle', 'resize', 'trim_shift', 'split', 'merge', 'preflight', 'font_tools', 'sticker', 'bgremover', 'optimize', 'numbering', 'datamerge', 'ocr', 'encrypt', 'metadata', 'office_convert', 'watermark', 'upscale', 'pages', 'pdfx', 'hairlines', 'convertcolors', 'trapping', 'crop'];
-        if (initialFeature && allowedFeatures.includes(initialFeature)) return initialFeature as any;
-        return 'none';
-    });
+    // NAV (audit điều hướng tab 2026-07-28): store theo tab là nguồn trạng thái duy nhất.
+    // Không giữ bản sao useState cục bộ vì hai nguồn từng lệch nhau khi Back/restore.
+    const activeTool: ActiveToolType = isWorkspaceTool(currentTool) ? currentTool : 'none';
+    const setActiveTool = useCallback((tool: ActiveToolType) => {
+        onActiveToolChange(tool);
+    }, [onActiveToolChange]);
 
     const {
         pageSheetMode,
@@ -172,25 +166,6 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     const sourcePageDimForGeometry = pageSheetMode
         ? (s.sourceMediaPageDim || s.sourcePageDim)
         : s.sourcePageDim;
-
-    useEffect(() => {
-        if (currentTool && currentTool !== 'none' && currentTool !== activeTool) {
-            setActiveTool(currentTool as any);
-        }
-    }, [currentTool]);
-
-    // UIUX (audit 2026-07-27 §B-11): store về 'none' (nút ‹ Quay lại ở header panel)
-    // → panel cũng quay về danh sách công cụ. CHỈ khi store ĐỔI thật sau mount —
-    // không đè lockedMode/initialFeature lúc khởi tạo (store 'none' ban đầu là giá
-    // trị mặc định, không phải lệnh Quay lại của người dùng).
-    const prevStoreToolRef = useRef<string>(currentTool);
-    useEffect(() => {
-        const prevStore = prevStoreToolRef.current;
-        prevStoreToolRef.current = currentTool;
-        if (currentTool === 'none' && prevStore && prevStore !== 'none' && activeTool !== 'none') {
-            setActiveTool('none');
-        }
-    }, [currentTool]);
 
     // UIUX (audit 2026-07-27 §B-13/§B-21): chọn tool mới → focus vào panel cấu hình
     // để Tab đi thẳng vào field đầu của form (không phải Tab xuyên qua toolbar).
@@ -205,9 +180,6 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         }
     }, [activeTool]);
 
-    useEffect(() => {
-        if (onActiveToolChange) onActiveToolChange(activeTool);
-    }, [activeTool, onActiveToolChange]);
 
     // Tool Profiles: khi đổi công cụ, lưu thiết lập thuật toán của tool cũ và nạp tool mới
     // (chống rò rỉ state giữa N-up / Bế tem / Booklet — Task 15/Req 5).
@@ -990,12 +962,6 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         }
     }, [systemMergeFiles]);
 
-    // Preset modal listener
-    useEffect(() => {
-        const h = () => s.setIsPresetOpen(true);
-        window.addEventListener('open-preset-modal', h);
-        return () => window.removeEventListener('open-preset-modal', h);
-    }, []);
 
     // ═══ Execute Handler ═══
     const handleExecute = async () => {

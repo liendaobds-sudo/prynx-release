@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { fetchLocalFileBuffer } from './localFileTransport';
 
 /**
  * Utility to merge tailwind classes with standard overrides,
@@ -12,19 +13,9 @@ export function cn(...inputs: ClassValue[]) {
 export const getFileArrayBuffer = async (file: File | Blob): Promise<ArrayBuffer> => {
     const path = (file as any).path as string | undefined;
     if ((window as any).__TAURI_INTERNALS__ && path) {
-        const { convertFileSrc, invoke } = await import('@tauri-apps/api/core');
-        try {
-            const resp = await fetch(convertFileSrc(path));
-            if (resp.ok) return await resp.arrayBuffer();
-            throw new Error('asset fetch status ' + resp.status);
-        } catch (e) {
-            // Fallback: đọc qua lệnh Rust read_system_file (std::fs) — chắc chắn đọc
-            // được file trên Ổ MẠNG/NAS (UNC \\server\share\...) kể cả khi asset
-            // protocol vướng edge-case với path mạng.
-            const raw: any = await invoke('read_system_file', { path });
-            const u8 = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
-            return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
-        }
+        // FILEIO (audit 2026-07-28 §FL.04): một kênh Rust có Range thay cho phép thử
+        // asset-403 + fallback IPC. Không làm chậm file lớn trên máy mạnh.
+        return fetchLocalFileBuffer(path);
     }
     return file.arrayBuffer();
 };
@@ -35,7 +26,7 @@ export const getFileArrayBuffer = async (file: File | Blob): Promise<ArrayBuffer
  * (audit RAM 2026-07-06: file 50MB × N bước undo = leak vài GB/tab).
  *
  * File rỗng + path vẫn render đúng qua pdfium (native) và đọc lại bytes qua
- * `getFileArrayBuffer` (fetch từ đĩa qua convertFileSrc). Nếu KHÔNG có path (web
+ * `getFileArrayBuffer` (đọc từ đĩa qua protocol `localfile`). Nếu KHÔNG có path (web
  * fallback / blob) → GIỮ NGUYÊN file (fallback bytes) → hành vi y hệt hiện tại.
  */
 export function stripBytesIfOnDisk<T extends File | null>(file: T): T {
@@ -79,11 +70,12 @@ export async function detectColorSpace(file: File): Promise<string | null> {
 
             const fetchChunk = async (start: number, end: number) => {
                 if ((window as any).__TAURI_INTERNALS__ && (file as any).path) {
-                    const { convertFileSrc } = await import('@tauri-apps/api/core');
-                    const resp = await fetch(convertFileSrc((file as any).path), {
-                        headers: { 'Range': `bytes=${start}-${end - 1}` }
-                    });
-                    return await resp.arrayBuffer();
+                    // FILEIO (audit 2026-07-28 §FL.02): helper bắt status lỗi và dùng
+                    // protocol đọc file thật; body 403 không còn bị phân tích như PDF.
+                    return fetchLocalFileBuffer(
+                        (file as any).path,
+                        end > start ? { start, endExclusive: end } : undefined,
+                    );
                 } else {
                     return await file.slice(start, end).arrayBuffer();
                 }

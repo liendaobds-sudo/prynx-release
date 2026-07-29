@@ -56,10 +56,13 @@ class DetectionConfig:
         # Magenta
         (0.0, 1.0, 0.0, 0.0),  # CMYK M100
         (1.0, 0.0, 1.0),       # RGB magenta
-        # Đen
+        # Đen. DeviceGray đi qua 'G'/'g' (và cs+scn) đã được parser ghi thành
+        # (g, g, g) nên khớp mục "RGB black" bên dưới — KHÔNG thêm mục 1 thành phần.
+        # [DIE-TINT 2026-07-28] Màu 1 thành phần giờ chỉ còn một nghĩa: TINT của kênh
+        # Separation/DeviceN. Tint không mang thông tin sắc màu (tint 0 = không mực),
+        # nên không có màu bế nào được khai báo dạng 1 thành phần.
         (0.0, 0.0, 0.0, 1.0),  # CMYK K100
         (0.0, 0.0, 0.0),       # RGB black
-        (0.0,),                # DeviceGray black
         # Xanh dương (process cyan / RGB blue)
         (1.0, 0.0, 0.0, 0.0),  # CMYK C100
         (0.0, 0.0, 1.0),       # RGB blue
@@ -507,6 +510,87 @@ _PROCESS_CS_NAMES: frozenset[str] = frozenset({
 })
 
 
+# [DIE-SPOT-DENY 2026-07-28] Kênh spot của LỚP GIA CÔNG — không bao giờ là đường bế.
+# Lý do có mục này: trước đây mọi kênh Separation không-phải-process đều được +400
+# ("spot nào cũng có thể là bế"), nên lớp mực trắng lót / phủ UV / ép kim bị nhận
+# thành đường cắt. Khách báo trực tiếp ca "màu spot là màu trắng để in" bị nhận nhầm.
+# Khớp theo TỪ trong tên (nên bắt được 'White Ink', 'Opaque White', 'Spot UV') chứ
+# không phải chuỗi con, để tên spot thường như 'Gold-Pantone' không bị loại oan.
+_NON_DIE_SPOT_WORDS: frozenset[str] = frozenset({
+    # Mực trắng (lót hoặc in phủ)
+    "white", "whites", "blanco", "blanc", "weiss", "wit", "opaque",
+    "underprint", "underbase", "trắng",
+    # Phủ / vecni / UV định vị
+    "varnish", "vernis", "verni", "lacquer", "gloss", "matt", "matte",
+    "uv", "coating", "aqueous",
+    # Ép kim / nhũ
+    "foil", "metallic", "silver", "nhũ",
+    # Dập nổi / dập chìm
+    "emboss", "embossing", "deboss", "debossing",
+    # Lớp kỹ thuật khác
+    "primer", "adhesive", "glue", "keo", "braille", "texture",
+})
+
+# Tên viết liền (không tách được thành từ) của cùng nhóm lớp gia công.
+_NON_DIE_SPOT_TOKENS: frozenset[str] = frozenset({
+    "whiteink", "inkwhite", "opaquewhite", "spotwhite", "whitebase",
+    "underprintwhite", "muctrang", "mautrang",
+    "spotuv", "uvspot", "uvvarnish", "spotvarnish", "glossvarnish",
+    "mattvarnish", "mattevarnish", "phuuv", "uvdinhvi", "canbong", "canmo",
+    "hotfoil", "coldfoil", "hotstamp", "coldstamp", "epnhu", "epkim", "epkimloai",
+    "dapnoi", "dapchim",
+})
+
+# Từ khoá ngành in chỉ đường bế/cấn. Tên spot chứa các từ này KHÔNG bị deny-list
+# loại, kể cả khi có kèm từ gia công (vd 'Matte Cut') — tránh mất khuôn thật.
+_DIE_WORD_HINTS: frozenset[str] = frozenset({
+    "cut", "cutting", "cutcontour", "contour", "die", "dieline", "diecut",
+    "crease", "fold", "perf", "perforate", "perforation", "thru", "thrucut",
+    "kiss", "kisscut", "stanc", "decoupe", "bế", "be", "dao", "khuôn",
+})
+
+
+def _spot_words(spot_part: str) -> frozenset[str]:
+    """Tách tên kênh thành các TỪ (cắt ở mọi ký tự không phải chữ/số), lowercase.
+
+    'White Ink' → {'white','ink'}; 'C=0 M=100 Y=0 K=0' → {'c','0','m','100','y','k'}.
+    """
+    words: set[str] = set()
+    cur: list[str] = []
+    for ch in str(spot_part).lower():
+        if ch.isalnum():
+            cur.append(ch)
+        elif cur:
+            words.add("".join(cur))
+            cur = []
+    if cur:
+        words.add("".join(cur))
+    return frozenset(words)
+
+
+def _is_non_die_spot(spot_name) -> bool:
+    """Tên kênh thuộc LỚP GIA CÔNG (trắng / phủ UV / ép kim / dập nổi …) → không phải bế.
+
+    Kiểm theo từng kênh của DeviceN (nối '+'). Kênh nào có từ khoá bế thì bỏ qua
+    deny-list cho kênh đó. Chỉ cần MỘT kênh là lớp gia công thuần → coi cả path là
+    lớp gia công (vd 'White+Varnish').
+    """
+    if not spot_name:
+        return False
+    for part in str(spot_name).split("+"):
+        part = part.strip()
+        if not part:
+            continue
+        words = _spot_words(part)
+        if words & _DIE_WORD_HINTS:
+            continue
+        if words & _NON_DIE_SPOT_WORDS:
+            return True
+        if _norm_channel_token(part) in _NON_DIE_SPOT_TOKENS:
+            return True
+    return False
+
+
 def _is_genuine_spot(spot_name) -> bool:
     """spot_name là kênh Separation/DeviceN DÀNH RIÊNG (không phải tên process).
 
@@ -548,6 +632,11 @@ def _is_hairline(width, page_rect) -> bool:
     return w <= 2.0 or w <= 0.01 * short
 
 
+_NAME_MATCH_SCORE = 1000.0   # khớp tên kênh bế cấu hình — tín hiệu tin cậy nhất
+_ANON_SPOT_SCORE = 400.0     # kênh spot dành riêng nhưng tên không nhận ra
+_DIE_COLOR_SCORE = 300.0     # nét đúng màu bế quy ước, không có kênh spot
+
+
 def _score_die_candidate(path, page_rect, names_lower, die_colors, die_color_tol):
     """Chấm điểm 1 path là ĐƯỜNG BẾ — tách TÍN HIỆU MẠNH / YẾU.
 
@@ -575,15 +664,26 @@ def _score_die_candidate(path, page_rect, names_lower, die_colors, die_color_tol
     by_spot = False
 
     if _match_die_channel(spot, names_lower):
-        strong += 1000.0
+        strong += _NAME_MATCH_SCORE
         by_spot = True
+    elif _is_non_die_spot(spot):
+        # [DIE-SPOT-DENY 2026-07-28] Lớp gia công (mực trắng, phủ UV, ép kim…):
+        # loại DỨT ĐIỂM, không cho nhánh màu bên dưới vớt lại. Nét trên kênh spot
+        # có tint 1 thành phần, tint 0 trùng 'DeviceGray đen' trong die_colors nên
+        # nếu chỉ bỏ điểm spot thì vẫn lọt qua đường +300 khớp màu.
+        return 0.0, 0.0, False
     elif _is_genuine_spot(spot):
-        strong += 400.0
+        strong += _ANON_SPOT_SCORE
         by_spot = True
 
     # Màu bế chỉ trên stroke color (không đọc fill — path stroke-only đã không có fill).
-    if _color_matches_die(color, die_colors, die_color_tol):
-        strong += 300.0
+    # [DIE-TINT 2026-07-28] Bỏ qua khi path nằm trên kênh Separation/DeviceN: giá trị
+    # `color` lúc đó là TINT (một số 0..1) mà parser nhân thành (t,t,t) để giữ hợp đồng
+    # màu 3 thành phần. Tint 0 = KHÔNG MỰC nhưng lại đúng bằng (0,0,0) = "đen RGB" trong
+    # die_colors, nên nét spot ở 0% từng được cộng 300 điểm màu bế oan (vd Separation
+    # /Black ở tint 0). Kênh spot đã có tín hiệu riêng ở trên, không cần điểm màu.
+    if spot is None and _color_matches_die(color, die_colors, die_color_tol):
+        strong += _DIE_COLOR_SCORE
 
     # Yếu: xếp hạng khi đã có strong > 0.
     if ptype == "s":
@@ -599,6 +699,37 @@ def _score_die_candidate(path, page_rect, names_lower, die_colors, die_color_tol
     return strong, weak, by_spot
 
 
+def _paint_order_map(paths) -> dict:
+    """{id(path): thứ tự tô}. Dùng 'paint_index' do parser gắn; thiếu thì lấy vị trí list.
+
+    Fallback theo vị trí giữ nguyên ý nghĩa vì parser append `drawings` đúng thứ tự
+    tô — nhờ vậy caller/test dựng path bằng tay vẫn xếp hạng đúng.
+    """
+    order: dict = {}
+    for i, p in enumerate(paths):
+        idx = p.get("paint_index") if hasattr(p, "get") else None
+        order[id(p)] = int(idx) if isinstance(idx, int) else i
+    return order
+
+
+def _die_layer_key(path, die_colors, die_color_tol):
+    """Khoá "lớp bế" của một path: theo kênh spot, hoặc theo màu bế, hoặc chính nó.
+
+    Cùng khoá = cùng một lớp trong cây đối tượng (vd viền ngoài + vòng trong của
+    cùng khuôn). Dùng để so THỨ TỰ TÔ giữa các LỚP thay vì giữa từng path lẻ.
+    """
+    spot_key = _die_group_key_spot(path.get("spot_name"))
+    if spot_key is not None:
+        return ("spot", spot_key)
+    color = path.get("color")
+    if _color_matches_die(color, die_colors, die_color_tol):
+        try:
+            return ("color", tuple(float(x) for x in color))
+        except (TypeError, ValueError):
+            pass
+    return ("path", id(path))
+
+
 def _select_from_paths(paths, page_rect, die_channel_names=(),
                        die_colors=(), die_color_tol=0.06):
     """Lõi chọn đường khuôn (thuần, KHÔNG IO) — dùng chung (R3.1, R3.2, R3.6, R3.10).
@@ -610,7 +741,11 @@ def _select_from_paths(paths, page_rect, die_channel_names=(),
     Không có → (None, False, False): caller dùng khổ trang (MediaBox), KHÔNG
     lấy mảng màu / path tô lớn nhất.
 
-    Xếp hạng: strong ↓, weak ↓, area ↓.
+    Xếp hạng 2 tầng:
+      - Có path khớp TÊN kênh bế → chỉ xét nhóm đó (tên là tín hiệu tin cậy nhất,
+        thắng cả vị trí: khuôn vẫn nhận đúng dù nằm dưới lớp phủ UV).
+      - Không có tên → chọn LỚP TRÊN CÙNG theo thứ tự tô ([DIE-ZORDER]).
+    Trong nhóm đã chọn: strong ↓, weak ↓, area ↓, thứ tự tô ↓.
     Trả (path_dict, matched_by_spot, is_fallback).
     """
     if not paths:
@@ -633,8 +768,9 @@ def _select_from_paths(paths, page_rect, die_channel_names=(),
     candidates = filtered if filtered else stroke_only
 
     names_lower = frozenset(n.strip().lower() for n in (die_channel_names or ()))
+    order = _paint_order_map(paths)
 
-    best = None  # (strong, weak, area, by_spot, path)
+    scored = []  # (strong, weak, area, paint_order, by_spot, path)
     for p in candidates:
         strong, weak, by_spot = _score_die_candidate(
             p, page_rect, names_lower, die_colors, die_color_tol
@@ -642,13 +778,35 @@ def _select_from_paths(paths, page_rect, die_channel_names=(),
         if strong <= 0:
             continue
         area = p["rect"].width * p["rect"].height
-        cand = (strong, weak, area, by_spot, p)
-        if best is None or (strong, weak, area) > (best[0], best[1], best[2]):
-            best = cand
+        scored.append((strong, weak, area, order[id(p)], by_spot, p))
 
-    if best is None:
+    if not scored:
         return None, False, False
-    return best[4], best[3], False
+
+    named = [c for c in scored if c[0] >= _NAME_MATCH_SCORE]
+    if named:
+        pool = named
+    else:
+        # [DIE-ZORDER 2026-07-28] Không có kênh nào mang tên bế → dựa vào quy ước
+        # chế bản: bế là khâu SAU CÙNG nên thợ đặt lớp bế TRÊN CÙNG cây đối tượng.
+        # So theo LỚP (không theo path lẻ) rồi lấy lớp có path tô muộn nhất; trong
+        # lớp vẫn để diện tích quyết định, nếu không khuôn nhiều vòng sẽ lấy vòng
+        # TRONG (vẽ sau) làm khổ thành phẩm → trim thiếu.
+        layer_top: dict = {}
+        for c in scored:
+            key = _die_layer_key(c[5], die_colors, die_color_tol)
+            if key not in layer_top or c[3] > layer_top[key]:
+                layer_top[key] = c[3]
+        best_layer = max(layer_top, key=lambda k: layer_top[k])
+        pool = [
+            c for c in scored
+            if _die_layer_key(c[5], die_colors, die_color_tol) == best_layer
+        ]
+
+    # Hoà điểm thì lấy path TÔ SAU (nằm trên). Trước đây so '>' thuần nên path gặp
+    # trước — tức DƯỚI CÙNG — thắng, ngược hẳn quy ước đặt lớp bế trên cùng.
+    best = max(pool, key=lambda c: (c[0], c[1], c[2], c[3]))
+    return best[5], best[4], False
 
 
 def _die_group_key_spot(spot_name):
@@ -687,11 +845,20 @@ def _collect_die_group(paths, anchor, page_rect, die_colors=(), die_color_tol=0.
             return True
         if not _is_stroke_only_path(p):
             return False
+        # [DIE-SPOT-DENY 2026-07-28] Nét lớp gia công không được gộp vào khuôn —
+        # nhánh gộp theo MÀU chỉ so màu + kề nhau, nên nét trắng/phủ UV trùng màu
+        # bế sẽ phình bbox khuôn nếu không chặn ở đây.
+        if _is_non_die_spot(p.get("spot_name")):
+            return False
         r = p["rect"]
         if r.width <= 5 or r.height <= 5 or _is_background(p, page_rect):
             return False
         if anchor_spot_key is not None:
             return _die_group_key_spot(p.get("spot_name")) == anchor_spot_key
+        # [DIE-TINT 2026-07-28] Nhóm theo MÀU chỉ gồm nét KHÔNG spot — cùng lý do như
+        # lúc chấm điểm: `color` của nét spot là tint, tint 0 trùng đen (0,0,0).
+        if p.get("spot_name") is not None:
+            return False
         return _color_matches_die(p.get("color"), die_colors, die_color_tol)
 
     candidates = [p for p in paths if _is_member_candidate(p)]

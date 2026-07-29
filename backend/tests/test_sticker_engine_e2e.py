@@ -30,6 +30,11 @@ from app.workers.sticker_engine import (
     StickerEngine,
     _PRESERVE_CORNER_QUAD_SEGS,
     _PRESERVE_CORNER_RADIUS_MM,
+    _build_adaptive_edge_color_source_mask,
+    _build_feathered_bleed_join_mask,
+    _compose_sticker_warning,
+    _edge_color_instability_metrics,
+    _edge_color_sampling_warning,
     _round_preserved_corners,
 )
 
@@ -44,6 +49,44 @@ def _make_simple_pdf(path: str) -> None:
     )
     page.Contents = pdf.make_stream(content)
     pdf.save(path)
+
+
+def _make_radial_halo_pdf(path: str) -> None:
+    """Fixture 300 DPI mô phỏng logo tròn có halo cyan sát mép."""
+    import io
+    import numpy as np
+    from PIL import Image
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+
+    height = width = 260
+    center_y = center_x = 130
+    yy, xx = np.ogrid[:height, :width]
+    radius = np.sqrt((xx - center_x) ** 2 + (yy - center_y) ** 2)
+    angle = (np.arctan2(yy - center_y, xx - center_x) + 2 * np.pi) % (2 * np.pi)
+    blue = np.array([55, 126, 200], np.uint8)
+    pale_cyan = np.array([210, 245, 250], np.uint8)
+    image = np.full((height, width, 3), 255, np.uint8)
+    image[radius <= 80] = blue
+    fringe = (radius > 77) & (radius <= 80)
+    alternating = ((angle * 24 / (2 * np.pi)).astype(int) % 2) == 0
+    image[fringe & alternating] = pale_cyan
+
+    png = io.BytesIO()
+    Image.fromarray(image).save(png, format="PNG")
+    png.seek(0)
+    page_pts = width * 72.0 / 300.0
+    pdf = canvas.Canvas(path, pagesize=(page_pts, page_pts), pageCompression=0)
+    pdf.drawImage(
+        ImageReader(png),
+        0,
+        0,
+        width=page_pts,
+        height=page_pts,
+        mask="auto",
+    )
+    pdf.showPage()
+    pdf.save()
 
 
 def _read_all_content(page) -> bytes:
@@ -290,6 +333,93 @@ def test_sampled_bleed_stays_lossless_icc_rgb(src_pdf, tmp_path, bleed_color_typ
         assert all(str(img.get("/Filter")) == "/FlateDecode" for img in color_images)
 
 
+def test_process_pdf_image_bleed_removes_radial_halo(tmp_path):
+    """Quality oracle PDF→raster: bleed ngoài phải bám xanh, không còn nan cyan."""
+    import numpy as np
+    import pypdfium2 as pdfium
+
+    source = str(tmp_path / "radial_halo.pdf")
+    output = str(tmp_path / "radial_halo_bleed.pdf")
+    _make_radial_halo_pdf(source)
+
+    success, meta = StickerEngine(dpi=300).process_pdf(
+        input_path=source,
+        output_path=output,
+        cut_mode="original",
+        offset_mm=0.0,
+        corner_style="round",
+        bleed_mm=3.0,
+        fill_holes=True,
+        remove_white_bg=True,
+        bleed_color_type="image",
+        draw_cut_contour=False,
+        rectangle_mode=False,
+    )
+    assert success is True
+    assert meta.get("warning") is None
+
+    document = pdfium.PdfDocument(output)
+    try:
+        rendered = np.array(
+            document[0].render(scale=300 / 72).to_pil().convert("RGB")
+        )
+    finally:
+        document.close()
+
+    height, width = rendered.shape[:2]
+    yy, xx = np.ogrid[:height, :width]
+    radius = np.sqrt((xx - width / 2) ** 2 + (yy - height / 2) ** 2)
+    outer_bleed = (radius > 92) & (radius < 108)
+    blue = np.array([55, 126, 200], np.int16)
+    pale_cyan = np.array([210, 245, 250], np.int16)
+    colors = rendered[outer_bleed].astype(np.int16)
+    blue_share = float(np.mean(np.max(np.abs(colors - blue), axis=1) < 12))
+    pale_share = float(np.mean(np.max(np.abs(colors - pale_cyan), axis=1) < 12))
+    assert blue_share > 0.95
+    assert pale_share < 0.01
+
+    # SMask phải có alpha trung gian ở mép trong; mask nhị phân 0/255 tạo bậc
+    # thang nhìn thành răng cưa/sợi sáng khi viewer nội suy đường cong.
+    with pikepdf.Pdf.open(output) as pdf:
+        xobjects = pdf.pages[0].Resources.get("/XObject", {})
+        soft_masks = [
+            xobjects[name].get("/SMask")
+            for name in xobjects.keys()
+            if str(xobjects[name].get("/Subtype")) == "/Image"
+            and xobjects[name].get("/SMask") is not None
+        ]
+        assert len(soft_masks) == 1
+        alpha = np.frombuffer(soft_masks[0].read_bytes(), dtype=np.uint8)
+        assert np.count_nonzero((alpha > 0) & (alpha < 255)) > 0
+
+
+def test_feathered_bleed_join_mask_is_opaque_then_smooth():
+    """Mép ngoài đục, chồng mí kín halo, rồi alpha giảm đều vào nền tem."""
+    import cv2
+    import numpy as np
+
+    size = 180
+    center = size // 2
+    bleed = np.zeros((size, size), np.uint8)
+    footprint = np.zeros((size, size), np.uint8)
+    cv2.circle(bleed, (center, center), 70, 255, -1)
+    cv2.circle(footprint, (center, center), 55, 255, -1)
+    alpha = _build_feathered_bleed_join_mask(
+        bleed,
+        footprint,
+        solid_overlap_px=4,
+        feather_px=3,
+    )
+
+    assert alpha[center, center + 60] == 255
+    assert alpha[center, center + 52] == 255
+    assert 0 < alpha[center, center + 49] < 255
+    assert alpha[center, center + 46] == 0
+    assert np.count_nonzero((alpha > 0) & (alpha < 255)) > 0
+    radial = alpha[center, center:center + 61].astype(np.int16)
+    assert np.all(np.diff(radial) >= 0)
+
+
 def test_nearest_color_fill_propagates_and_keeps_shape():
     """_nearest_color_fill: lấp màu từ vùng có màu ra nền, giữ đúng kích thước —
     cả đường thường (f=1) lẫn đường HẠ MẪU (f>1) cho ROI lớn."""
@@ -401,6 +531,112 @@ def test_edge_color_source_skips_near_white_aa():
     rim = img[csm > 0]
     assert float(rim.min(axis=1).mean()) < 240, "nguồn vẫn toàn pixel trắng/AA"
     assert float(rim[:, 0].mean()) > 100
+
+
+def test_edge_color_warning_detects_radial_halo_but_keeps_long_color_segments():
+    """Dò sâu qua halo nhưng giữ shell đầu tiên cho mảng màu dài có chủ đích."""
+    import cv2
+    import numpy as np
+    from app.workers.sticker_engine import (
+        _build_edge_color_source_mask,
+        _nearest_color_fill,
+    )
+
+    height = width = 240
+    center_y = center_x = 120
+    yy, xx = np.ogrid[:height, :width]
+    radius = np.sqrt((xx - center_x) ** 2 + (yy - center_y) ** 2)
+    angle = (np.arctan2(yy - center_y, xx - center_x) + 2 * np.pi) % (2 * np.pi)
+    silhouette = np.zeros((height, width), np.uint8)
+    silhouette[radius <= 80] = 255
+    blue = np.array([55, 126, 200], np.uint8)
+    red = np.array([220, 30, 30], np.uint8)
+    pale_cyan = np.array([210, 245, 250], np.uint8)
+
+    halo = np.full((height, width, 3), 255, np.uint8)
+    halo[radius <= 80] = blue
+    fringe = (radius > 77) & (radius <= 80)
+    alternating = ((angle * 24 / (2 * np.pi)).astype(int) % 2) == 0
+    halo[fringe & alternating] = pale_cyan
+    halo_source = _build_edge_color_source_mask(
+        silhouette,
+        halo,
+        band_px=3,
+        peel_px=1,
+        kernel_type=cv2.MORPH_ELLIPSE,
+    )
+    halo_metrics = _edge_color_instability_metrics(halo_source, halo)
+    assert halo_metrics["transition_ratio"] > 0.10
+    assert halo_metrics["luma_span"] > 100
+    assert _edge_color_sampling_warning(halo_source, halo, 1) is not None
+
+    adaptive_source, selected_peel = _build_adaptive_edge_color_source_mask(
+        silhouette,
+        halo,
+        band_px=3,
+        peel_px=1,
+        max_peel_px=7,
+        kernel_type=cv2.MORPH_ELLIPSE,
+    )
+    assert selected_peel >= 4
+    assert _edge_color_sampling_warning(adaptive_source, halo, 1) is None
+    filled = _nearest_color_fill(adaptive_source, halo)
+    outer_bleed = (radius > 84) & (radius <= 90)
+    outer_colors = filled[outer_bleed].astype(np.int16)
+    mean_error = float(np.abs(outer_colors - blue.astype(np.int16)).mean())
+    pale_share = float(np.mean(np.all(outer_colors == pale_cyan, axis=1)))
+    assert mean_error < 1.0
+    assert pale_share < 0.01
+
+    long_segments = np.full((height, width, 3), 255, np.uint8)
+    long_segments[(radius <= 80) & (xx < center_x)] = red
+    long_segments[(radius <= 80) & (xx >= center_x)] = blue
+    segment_source = _build_edge_color_source_mask(
+        silhouette,
+        long_segments,
+        band_px=3,
+        peel_px=1,
+        kernel_type=cv2.MORPH_ELLIPSE,
+    )
+    adaptive_segments, segment_peel = _build_adaptive_edge_color_source_mask(
+        silhouette,
+        long_segments,
+        band_px=3,
+        peel_px=1,
+        max_peel_px=7,
+        kernel_type=cv2.MORPH_ELLIPSE,
+    )
+    segment_metrics = _edge_color_instability_metrics(segment_source, long_segments)
+    assert segment_metrics["transition_ratio"] < 0.01
+    assert segment_peel == 1
+    assert np.array_equal(adaptive_segments, segment_source)
+
+    # Nếu nhiễu kéo dài xuyên vào ruột, không tự đoán màu: giữ cảnh báo fail-loud.
+    noisy = np.full((height, width, 3), 255, np.uint8)
+    checker = ((xx + yy) % 2) == 0
+    noisy[(radius <= 80) & checker] = red
+    noisy[(radius <= 80) & ~checker] = blue
+    noisy_source, _ = _build_adaptive_edge_color_source_mask(
+        silhouette,
+        noisy,
+        band_px=3,
+        peel_px=1,
+        max_peel_px=7,
+        kernel_type=cv2.MORPH_ELLIPSE,
+    )
+    assert _edge_color_sampling_warning(noisy_source, noisy, 1) is not None
+
+
+def test_sticker_warning_combines_bleed_quality_and_missing_dieline():
+    quality_warning = "Trang 1: màu viền không ổn định."
+    warning = _compose_sticker_warning(
+        [{"bleed_warning": quality_warning}, {}, {"bleed_warning": quality_warning}],
+        [4, 2],
+    )
+    assert warning == (
+        quality_warning
+        + " Một số trang không dò được hình để tạo đường cắt: 2, 4"
+    )
 
 
 def test_near_white_background_does_not_classify_light_neutral_gray_as_white():
@@ -812,7 +1048,10 @@ def test_sticker_endpoint_uses_local_pdf_without_deleting_source(tmp_path, monke
 
         def process_pdf(self, input_path, output_path, **kwargs):
             shutil.copyfile(input_path, output_path)
-            return True, {"pages": [{"page": 1}]}
+            return True, {
+                "pages": [{"page": 1}],
+                "warning": "Màu viền lấy mẫu không ổn định.",
+            }
 
     class FakeRequest:
         async def form(self):
@@ -832,6 +1071,9 @@ def test_sticker_endpoint_uses_local_pdf_without_deleting_source(tmp_path, monke
 
     assert source.exists()
     assert response.headers["X-Sticker-Output-Path"].lower().endswith(".pdf")
+    assert response.headers["X-Sticker-Warning"] == (
+        "M%C3%A0u%20vi%E1%BB%81n%20l%E1%BA%A5y%20m%E1%BA%ABu%20kh%C3%B4ng%20%E1%BB%95n%20%C4%91%E1%BB%8Bnh."
+    )
     assert os.path.exists(response.path)
 
 

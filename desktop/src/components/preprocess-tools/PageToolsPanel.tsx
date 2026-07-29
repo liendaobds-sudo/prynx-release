@@ -4,7 +4,19 @@ import { useTranslation } from 'react-i18next';
 
 export type PageToolsTab = 'duplicate' | 'move' | 'delete' | 'rotate' | 'insert' | 'extract';
 
-export default function PageToolsPanel() {
+interface PageToolsPanelProps {
+    tabId: string;
+}
+
+// Hàm thuần xuất riêng để kiểm thử; không ảnh hưởng trạng thái Fast Refresh của component.
+// eslint-disable-next-line react-refresh/only-export-components
+export function createPageToolsActionEvent(tabId: string, action: string, payload: unknown) {
+    return new CustomEvent('prynx-pagetools-action', {
+        detail: { tabId, action, payload },
+    });
+}
+
+export default function PageToolsPanel({ tabId }: PageToolsPanelProps) {
   const { t } = useTranslation();
     const { viewerNumPages, viewerActivePage } = useWorkspaceStore();
     const numPages = viewerNumPages || 1;
@@ -43,7 +55,7 @@ export default function PageToolsPanel() {
     const [extractDeleteAfter, setExtractDeleteAfter] = useState(false);
 
     const dispatchAction = (action: string, payload: any) => {
-        window.dispatchEvent(new CustomEvent('prynx-pagetools-action', { detail: { action, payload } }));
+        window.dispatchEvent(createPageToolsActionEvent(tabId, action, payload));
     };
 
     const handleSubmit = () => {

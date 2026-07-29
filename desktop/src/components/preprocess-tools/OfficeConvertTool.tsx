@@ -203,18 +203,6 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
     }, [officeSourceFile, officeSourceFiles, stageFile, t]);
 
     // ── Event bus (drop cửa sổ / legacy) ──────────────────────────
-    useEffect(() => {
-        const onEvt = (e: Event) => {
-            const file = (e as CustomEvent).detail?.file as File | undefined;
-            if (!file || !isOfficePathOrName(file.name)) return;
-            const key = `${(file as any).path || ''}|${file.name}|${file.size}`;
-            if (key === lastSourceKeyRef.current && convertingRef.current) return;
-            lastSourceKeyRef.current = key;
-            stageFile(file);
-        };
-        window.addEventListener('prynx-office-source-file', onEvt);
-        return () => window.removeEventListener('prynx-office-source-file', onEvt);
-    }, [stageFile]);
 
     // ── Tauri native open dialog (primary pick) ──────────────────
     const pickWithDialog = useCallback(async () => {

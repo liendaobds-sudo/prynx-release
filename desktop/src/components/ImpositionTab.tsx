@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useEffect, useRef, useState, useContext } from 'react';
 import { createPortal } from 'react-dom';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { localFileUrl } from '../lib/localFileTransport';
 import { TOOL_REGISTRY, TOOL_CATEGORIES, getToolsByCategory } from '../lib/toolRegistry';
 
 import PDFUploader from './PDFUploader';
@@ -8,10 +8,9 @@ import AcrobatViewer from './AcrobatViewer';
 import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
 import { useEditSession } from '../hooks/useEditSession';
 import { ImpositionMode, type ProcessingSettings } from '../lib/pdfImposer';
-import { planCatalog, verifyCatalogPlan, type PlanConfig, type PlateJob } from '../lib/imposerEngine/CatalogPlanner';
 import { Button } from './Button';
 import { Printer, Scissors, Settings, Star } from 'lucide-react';
-import { PDFDocument, PDFName, PDFString, degrees } from 'pdf-lib';
+import { PDFDocument, degrees } from 'pdf-lib';
 import { imageBytesToPdfDoc } from '../lib/imageNormalizer';
 import ImposerDashboard from './imposition-tools/ImposerDashboard';
 import CutExportModal from './imposition-tools/cut-export/CutExportModal';
@@ -21,17 +20,14 @@ import { ImposerSettingsContext, createImposerSettingsStore, useImposerSettingsS
 import { resolveEffectiveSeparateCut } from './imposition-tools/pageSheetPolicy';
 import { disposeImposerPersistScope } from './imposition-tools/store/persist';
 import { generateBindingMap } from '../lib/imposerEngine/VirtualMap';
-import { applyRule, executeShuffle, getPresetById, parseRule, reversePages, shuffleEvenOdd } from '../lib/preprocessEngine/ShuffleEngine';
-import { resizePages } from '../lib/preprocessEngine/PageResizer';
-import { splitPdf, parseRanges } from '../lib/preprocessEngine/PdfSplitter';
-import { mergePdf } from '../lib/preprocessEngine/PdfMerger';
-import { getApiUrl, uploadPDF, startVdpJobBackend, pollVdpJob, authenticatedFetch } from '../lib/api';
+import { getApiUrl, uploadPDF, authenticatedFetch } from '../lib/api';
 import { recipeRecorder } from '../lib/recipe/RecipeRecorder';
 import { isOutputFile, isImposedOutputFile } from '../lib/constants';
 import { writeSnapshot, deleteSnapshot } from '../lib/recovery';
 import { getFileArrayBuffer, detectColorSpace, stripBytesIfOnDisk } from '../lib/utils';
+import { beginOptionalContentTransfer, finishOptionalContentTransfer } from '../lib/pdfOptionalContent';
 import { saveVdpTemplate, loadVdpTemplate } from '../lib/vdpTemplate';
-import OutputPreviewTab, { type PlateOverlay } from './OutputPreviewTab';
+import OutputPreviewTab from './OutputPreviewTab';
 import RecipeRecordControl from './recipe/RecipeRecordControl';
 import RecipePanel from './recipe/RecipePanel';
 import { toast } from './ui/Toast';
@@ -56,6 +52,8 @@ import { BgRemoverPreview } from './preprocess-tools/BgRemoverTool';
 import { UpscalePreview } from './preprocess-tools/UpscaleTool';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../i18n';
+import { canToolRunWithoutPdf, resolveDedicatedInitialTool } from './imposition-tools/sections/preprocessRouterTools';
+import { registerActiveTabFeature } from '../lib/tabNavigation';
 
 // Phase type is now defined in useWorkspaceStore
 
@@ -83,22 +81,22 @@ interface Props {
 }
 
 export default function ImpositionTab(props: Props) {
-    const storeRef = useRef<ReturnType<typeof createWorkspaceStore> | null>(null);
-    const imposerStoreRef = useRef<ReturnType<typeof createImposerSettingsStore> | null>(null);
+    const [store] = useState(createWorkspaceStore);
     const imposerScope = props.tabId ? `tab:${props.tabId}` : undefined;
-    if (!storeRef.current) {
-        storeRef.current = createWorkspaceStore();
-    }
-    if (!imposerStoreRef.current) {
-        imposerStoreRef.current = createImposerSettingsStore(imposerScope);
-    }
+    const [imposerStore] = useState(() => {
+        const nextStore = createImposerSettingsStore(imposerScope);
+        const launchTool = props.lockedMode || props.initialRecovery?.feature || props.initialFeature;
+        if (launchTool) nextStore.getState().setActiveDashboardTool(launchTool);
+        return nextStore;
+    });
+    const imposerStoreRef = useRef(imposerStore);
     useEffect(() => () => {
         if (imposerScope) disposeImposerPersistScope(imposerScope);
     }, [imposerScope]);
 
     return (
-        <ImposerSettingsContext.Provider value={imposerStoreRef.current}>
-            <WorkspaceContext.Provider value={storeRef.current}>
+        <ImposerSettingsContext.Provider value={imposerStore}>
+            <WorkspaceContext.Provider value={store}>
                 <ImpositionTabInner {...props} imposerStoreRef={imposerStoreRef} />
             </WorkspaceContext.Provider>
         </ImposerSettingsContext.Provider>
@@ -200,12 +198,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // catalogPreview/capacities/fetchEpoch... → re-render cả cây nhiều lần × jsxDEV nặng
     // = góp phần "đơ ~3-4s lúc mở" (đo được trong Performance profile).
     const {
-        activeDashboardTool, setActiveDashboardTool,
+        activeDashboardTool, setActiveDashboardTool, setIsPresetOpen,
         batchOutput, setBatchOutput,
         confirmBookletSettings, setConfirmBookletSettings,
         impositionUnit, separateCutPage,
     } = useImposerSettingsStore(useShallow(s => ({
-        activeDashboardTool: s.activeDashboardTool, setActiveDashboardTool: s.setActiveDashboardTool,
+        activeDashboardTool: s.activeDashboardTool, setActiveDashboardTool: s.setActiveDashboardTool, setIsPresetOpen: s.setIsPresetOpen,
         batchOutput: s.batchOutput, setBatchOutput: s.setBatchOutput,
         confirmBookletSettings: s.confirmBookletSettings, setConfirmBookletSettings: s.setConfirmBookletSettings,
         impositionUnit: s.impositionUnit,
@@ -221,7 +219,17 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const setIsSidebarOpen = useAppSettingsStore(state => state.setWorkspaceSidebarOpen);
     const sidebarWidth = useAppSettingsStore(state => state.toolMenuWidth);
     const setSidebarWidth = useAppSettingsStore(state => state.setToolMenuWidth);
+    const dedicatedInitialTool = resolveDedicatedInitialTool(initialFeature);
     const previousDashboardToolRef = useRef<string | null>(null);
+
+    // NAV (fix 2026-07-29): bao trang thai cong cu THUC TE cua tung tab cho lop nhan file native.
+    // payload.focusFeature chi mo ta luc mo tab va se cu khi user doi cong cu.
+    useEffect(() => {
+        if (!tabId) return;
+        return registerActiveTabFeature(tabId, activeDashboardTool);
+    }, [tabId, activeDashboardTool]);
+
+
 
     const [isMiniToolbarExpanded, setIsMiniToolbarExpanded] = useState(false);
     const [showSavePrintModal, setShowSavePrintModal] = useState(false);
@@ -407,7 +415,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 if (pdfUrl) URL.revokeObjectURL(pdfUrl);
                 let objUrl = '';
                 if ((window as any).__TAURI_INTERNALS__ && (_f as any).path) {
-                    objUrl = convertFileSrc((_f as any).path);
+                    objUrl = localFileUrl((_f as any).path);
                 } else {
                     objUrl = URL.createObjectURL(_f);
                 }
@@ -470,13 +478,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     useEffect(() => {
         if (initialFeature) {
             // Only auto-bypass upload for standalone tools
-            if (initialFeature === 'bgremover' || initialFeature === 'upscale' || initialFeature === 'office_convert') {
+            if (dedicatedInitialTool) {
                 setPhase('workspace');
             }
             setActiveDashboardTool(initialFeature);
             // Home/tool-registry opens a new tab with the requested tool. Ensure the
             // tool panel is visible even when the user previously collapsed it.
-            if (initialFeature === 'office_convert' || initialFeature === 'crop') {
+            // UIUX (fix 2026-07-28): các công cụ độc lập phải luôn mở lại bảng
+            // thiết lập khi tạo tab mới, kể cả khi người dùng đã thu gọn panel ở tab trước.
+            if (dedicatedInitialTool || initialFeature === 'crop') {
                 if (sidebarWidth < 280) setSidebarWidth(390);
                 setIsSidebarOpen(true);
             }
@@ -496,7 +506,16 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 onTitleChange?.(names[initialFeature]);
             }
         }
-    }, [initialFeature]);
+    }, [initialFeature, dedicatedInitialTool]);
+
+    // UIUX (fix 2026-07-28): tab chuyên dụng không được rơi về workspace PDF trống
+    // khi nút Quay lại chung đặt tool = none. Kết quả batch vẫn được giữ nguyên.
+    useEffect(() => {
+        if (!dedicatedInitialTool || activeDashboardTool !== 'none') return;
+        setActiveDashboardTool(dedicatedInitialTool);
+        if (sidebarWidth < 280) setSidebarWidth(390);
+        setIsSidebarOpen(true);
+    }, [dedicatedInitialTool, activeDashboardTool, setActiveDashboardTool, sidebarWidth, setSidebarWidth, setIsSidebarOpen]);
 
     // Async physical path polyfill (non-blocking via HTTP)
     useEffect(() => {
@@ -627,15 +646,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 savedAt: new Date().toISOString(),
                 originalPath: fpath,
                 originalName: file?.name || originalFileName || 'document.pdf',
-                feature: initialFeature,
-                lockedMode,
+                feature: activeDashboardTool !== 'none' ? activeDashboardTool : undefined,
+                lockedMode: lockedMode && activeDashboardTool === lockedMode ? lockedMode : undefined,
                 viewerPageOrder: viewerPageOrder || undefined,
                 viewerPageRotations: viewerPageRotations || undefined,
                 vdpFields: (vdpFields && vdpFields.length) ? vdpFields : undefined,
             });
         }, 8000);
         return () => clearTimeout(snapTimer);
-    }, [tabId, isDirty, file, originalFileName, viewerPageOrder, viewerPageRotations, vdpFields, initialFeature, lockedMode]);
+    }, [tabId, isDirty, file, originalFileName, viewerPageOrder, viewerPageRotations, vdpFields, activeDashboardTool, lockedMode]);
 
     // Áp KHÔI PHỤC một lần khi mở tab từ snapshot: dựng lại thao tác sửa trên file gốc.
     useEffect(() => {
@@ -687,7 +706,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         const displayName = newName;
         setOriginalFileName(newName);
         
-        let newFile = new File([newBlob as any], displayName, { type: 'application/pdf' });
+        const newFile = new File([newBlob as any], displayName, { type: 'application/pdf' });
         
         try {
             if ((window as any).__TAURI_INTERNALS__) {
@@ -862,7 +881,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     useEffect(() => {
         let cancelled = false;
 
-        const handleRefreshLayers = async () => {
+        const handleRefreshLayers = async (event?: Event) => {
+            if (event && (event as CustomEvent).detail?.tabId !== tabId) return;
             const fid = selectionFileId;
             if (!fid) {
                 setPdfOcgLayers([]);
@@ -899,7 +919,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             cancelled = true;
             window.removeEventListener('refresh-ocg-layers', handleRefreshLayers);
         };
-    }, [selectionFileId, setPdfOcgLayers, setHiddenOcgLayerIds, setLockedOcgLayerIds]);
+    }, [selectionFileId, setPdfOcgLayers, setHiddenOcgLayerIds, setLockedOcgLayerIds, tabId]);
 
 
     const handleDeleteObjects = useCallback(async (objs: any[], pageNum: number) => {
@@ -988,7 +1008,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 // File rỗng/nhẹ chỉ mang tên + path; PDFium render qua `path`, react-pdf qua pdfUrl.
                 newFile = new File([], displayName, { type: 'application/pdf' });
                 Object.defineProperty(newFile, 'path', { value: outputPath });
-                newPdfUrl = convertFileSrc(outputPath);
+                newPdfUrl = localFileUrl(outputPath);
                 // Kích thước file: stat cục bộ (rẻ); lỗi thì bỏ qua, giữ size cũ.
                 try {
                     const { stat } = (await import('@tauri-apps/plugin-fs')) as any;
@@ -1024,7 +1044,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             // → thao tác edit kế tiếp + effect /edit/objects dùng fid mới ngay.
             if (outputFid) setSelectionFileId(outputFid);
 
-            // Dọn pdfUrl cũ (chỉ revoke nếu là blob — convertFileSrc/https là no-op không cần).
+            // Dọn pdfUrl cũ (chỉ revoke nếu là blob — localfile/https là no-op không cần).
             if (prevPdfUrl && prevPdfUrl.startsWith('blob:') && prevPdfUrl !== newPdfUrl) {
                 URL.revokeObjectURL(prevPdfUrl);
             }
@@ -1040,6 +1060,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // tại chỗ (KHÔNG reload file mỗi op). Debounce-commit ngầm ~1.5s → onCommit đổi
     // pdfUrl sang tile thật MỘT lần (nền). Session lỗi/410 → BÁO LỖI, không fallback.
     const editSession = useEditSession({
+        eventScopeId: tabId,
         onCommit: (result) => {
             if (result?.success && result.output_url) {
                 void handleEditCommit(
@@ -1076,7 +1097,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         if (pdfUrl && !pdfUrl.startsWith('https://')) URL.revokeObjectURL(pdfUrl);
         let objUrl = '';
         if ((window as any).__TAURI_INTERNALS__ && (prevFile as any).path) {
-            objUrl = convertFileSrc((prevFile as any).path);
+            objUrl = localFileUrl((prevFile as any).path);
         } else {
             objUrl = URL.createObjectURL(prevFile);
         }
@@ -1180,7 +1201,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         if (pdfUrl && !pdfUrl.startsWith('https://')) URL.revokeObjectURL(pdfUrl);
         let objUrl = '';
         if ((window as any).__TAURI_INTERNALS__ && (selectedFile as any).path) {
-            objUrl = convertFileSrc((selectedFile as any).path);
+            // FILEIO (audit 2026-07-28 §FL.03): không phụ thuộc asset scope cố định.
+            objUrl = localFileUrl((selectedFile as any).path);
         } else {
             objUrl = URL.createObjectURL(selectedFile);
         }
@@ -1698,27 +1720,37 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         const srcDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
         const newDoc = await PDFDocument.create();
 
+        // [OCG FIX 2026-07-28] copyPages KHÔNG mang theo /OCProperties ở catalog, trong khi
+        // content stream vẫn giữ /OC … BDC → layer thợ đã ẩn trong Illustrator hiện lại hết
+        // và lọt vào bản in. Đóng dấu OCG trước khi copy, dựng lại catalog sau khi copy.
+        const ocTransfer = beginOptionalContentTransfer([srcDoc]);
+
         // rotations là number[] THEO VỊ TRÍ (per-instance rotation) — đọc theo index vòng
         // lặp, KHÔNG theo số trang pIdx. Fallback dữ liệu cũ Record<pageNum,deg>.
         const rotAt = (i: number, pIdx: number): number => {
             if (Array.isArray(rotations)) return rotations[i] || 0;
             return (rotations as Record<number, number>)[pIdx] || 0;
         };
-        for (let i = 0; i < viewerPageOrder.length; i++) {
-            const pIdx = viewerPageOrder[i];
-            if (pIdx === -1) {
-                const firstPage = srcDoc.getPages()[0];
-                const defaultDim = firstPage ? { w: firstPage.getSize().width, h: firstPage.getSize().height } : { w: 595.28, h: 841.89 };
-                newDoc.addPage([defaultDim.w, defaultDim.h]);
-            } else {
-                const [copiedPage] = await newDoc.copyPages(srcDoc, [pIdx - 1]);
-                const rot = rotAt(i, pIdx);
-                if (rot) {
-                    const currentRot = copiedPage.getRotation().angle;
-                    copiedPage.setRotation(degrees(currentRot + rot));
+        try {
+            for (let i = 0; i < viewerPageOrder.length; i++) {
+                const pIdx = viewerPageOrder[i];
+                if (pIdx === -1) {
+                    const firstPage = srcDoc.getPages()[0];
+                    const defaultDim = firstPage ? { w: firstPage.getSize().width, h: firstPage.getSize().height } : { w: 595.28, h: 841.89 };
+                    newDoc.addPage([defaultDim.w, defaultDim.h]);
+                } else {
+                    const [copiedPage] = await newDoc.copyPages(srcDoc, [pIdx - 1]);
+                    const rot = rotAt(i, pIdx);
+                    if (rot) {
+                        const currentRot = copiedPage.getRotation().angle;
+                        copiedPage.setRotation(degrees(currentRot + rot));
+                    }
+                    newDoc.addPage(copiedPage);
                 }
-                newDoc.addPage(copiedPage);
             }
+        } finally {
+            // Chạy cả khi vòng copy lỗi giữa đường: bắt buộc xoá dấu tạm khỏi srcDoc.
+            finishOptionalContentTransfer(ocTransfer, newDoc);
         }
 
         const pdfBytes = await newDoc.save();
@@ -1738,7 +1770,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 if (bakedBlob) return new Uint8Array(await bakedBlob.arrayBuffer());
             }
         }
-        // getFileArrayBuffer đọc từ path (convertFileSrc) nếu file đã strip bytes sau undo,
+        // getFileArrayBuffer đọc từ path (protocol localfile) nếu file đã strip bytes sau undo,
         // fallback file.arrayBuffer() khi có bytes — tránh trả 0 byte (audit RAM #2).
         return new Uint8Array(await getFileArrayBuffer(file!));
     };
@@ -2005,6 +2037,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             // Menu Ctrl+S: chỉ tab đang xem. Luồng thoát app (có requestId) cho phép
             // lưu cả khi vừa setActive (tránh race isActive chưa kịp true).
             if (!isActive && !requestId) return;
+            // UIUX (audit menu 2026-07-28 §MB.2b): chưa nạp file thì handleSaveFile
+            // return false ở `if (!targetBlob)` — im lặng hoàn toàn. Bắt sớm ở đây và
+            // nói rõ, tránh bấm Lưu / mở hộp Lưu thành rồi không đi đến đâu.
+            if (!(store?.getState().file || file)) {
+                toast.info(t('tabs.imposition:chua_co_file_de_luu', 'Chưa có file nào để lưu — mở hoặc kéo file PDF vào đã.'));
+                reply('failed');
+                return;
+            }
             if (e.detail.saveAs) {
                 setShowSaveAsModal(true);
                 // Save As modal không await → báo cancelled cho luồng thoát tuần tự
@@ -2013,6 +2053,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 return;
             }
             if (!(isDirty || viewerDirty)) {
+                // UIUX (audit menu 2026-07-28 §MB.2b): trước đây thoát êm, user bấm Lưu
+                // mà không thấy gì nên tưởng menu chết. Nói rõ là KHÔNG có gì cần lưu.
+                // Luồng thoát app (có requestId) vẫn im lặng — nó chỉ cần kết quả 'saved'.
+                if (!requestId) toast.info(t('tabs.imposition:khong_co_thay_doi_nao_can_luu', 'File chưa có thay đổi nào cần lưu.'));
                 reply('saved');
                 return;
             }
@@ -2025,7 +2069,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         };
         window.addEventListener('app-trigger-save', handleTriggerSave);
         return () => window.removeEventListener('app-trigger-save', handleTriggerSave);
-    }, [isActive, tabId, isDirty, viewerDirty, handleSaveFile]);
+    }, [isActive, tabId, isDirty, viewerDirty, handleSaveFile, file, store, t]);
 
     // Ctrl+P → in PDF ĐANG XEM qua hộp thoại máy in Windows (lệnh Rust print_pdf).
     // KHÔNG dùng window.print() của WebView2 (chỉ in DOM giao diện). Resolve path
@@ -2150,6 +2194,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     // Derive tool info for upload phase
     const effectiveTool = initialFeature || lockedMode;
+    const canSkipInitialUpload = !effectiveTool || canToolRunWithoutPdf(effectiveTool);
     const toolInfo = effectiveTool ? TOOL_REGISTRY.find(t => 
         t.defaultPayload?.focusFeature === effectiveTool || 
         t.defaultPayload?.lockedMode === effectiveTool || 
@@ -2206,12 +2251,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             uploadedName=""
                             accentColor="#10b981"
                         />
-                        <button 
+                        {canSkipInitialUpload && <button
                             onClick={() => setPhase('workspace')}
                             className="mt-6 w-full py-2.5 rounded-lg border-2 border-dashed border-slate-300 dark:border-zinc-700 bg-transparent text-slate-500 dark:text-zinc-400 font-medium hover:bg-slate-100 dark:hover:bg-zinc-800 hover:text-slate-700 dark:hover:text-zinc-300 transition-all text-[13px]"
                         >
                             {t('tabs.imposition:bo_qua_tai_file_vao_khong_gian_lam_viec')}
-                        </button>
+                        </button>}
                     </div>
                 </div>
             )}
@@ -2354,27 +2399,25 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                 onClose={() => { setShowOutputPreview(false); setSeparationPlates([]); }}
                                 onPlatesChange={setSeparationPlates}
                                 onFileFixed={(blob: Blob, name: string) => {
-                                    window.dispatchEvent(new CustomEvent('preflight-fixed', { detail: { blob, name } }));
+                                    void commitWorkingFile(blob, name);
                                 }}
                             />
                         )}
 
                         {activeDashboardTool === 'bgremover' && (
                             <div className="absolute top-0 left-0 bottom-0 z-40" style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}>
-                                <BgRemoverPreview tabId={tabId || ''} />
+                                <BgRemoverPreview tabId={tabId || ''} isActive={isActive === true} />
                             </div>
                         )}
 
                         {activeDashboardTool === 'upscale' && (
                             <div className="absolute top-0 left-0 bottom-0 z-40" style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}>
-                                <UpscalePreview tabId={tabId || ''} />
+                                <UpscalePreview tabId={tabId || ''} isActive={isActive === true} />
                             </div>
                         )}
 
                         {/* Empty State Overlay — ẩn khi tool không cần PDF sẵn (AI / office convert / util) */}
-                        {!pdfUrl && activeDashboardTool !== 'bgremover' && activeDashboardTool !== 'upscale'
-                            && activeDashboardTool !== 'office_convert' && activeDashboardTool !== 'encrypt'
-                            && activeDashboardTool !== 'metadata' && (
+                        {!pdfUrl && !canToolRunWithoutPdf(activeDashboardTool) && (
                             <div className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none" style={{ right: isSidebarOpen ? sidebarWidth : 0 }}>
                                 <div className="pointer-events-auto max-w-2xl w-full px-6">
                                     <div 
@@ -2485,10 +2528,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                 {/* Sidebar Header */}
                                                 <div className="px-4 h-12 flex items-center justify-between border-b border-black/5 dark:border-white/5 bg-slate-100 dark:bg-[#1a1a1a] shrink-0 shadow-sm relative z-10">
                                                     <h2 className="text-[13px] font-bold text-slate-800 dark:text-zinc-200 flex items-center gap-1.5 uppercase tracking-wide">
-                                                        {/* UIUX (audit 2026-07-27 §B-11): nút ‹ Quay lại cho MỌI tool (trước chỉ bgremover/upscale) — cùng hàng với tiêu đề */}
-                                                        {activeDashboardTool !== 'none' && (
+                                                        {/* UIUX (fix 2026-07-28): tab chuyên dụng không hiện nút thoát nhầm về workspace PDF trống. */}
+                                                        {activeDashboardTool !== 'none' && activeDashboardTool !== dedicatedInitialTool && (
                                                             <button
-                                                                onClick={() => setActiveDashboardTool('none')}
+                                                                onClick={() => setActiveDashboardTool(dedicatedInitialTool || 'none')}
                                                                 className="flex items-center gap-1.5 text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300 transition-colors"
                                                                 title={t('tabs.imposition:quay_lai_danh_sach_cong_cu')}
                                                             >
@@ -2527,7 +2570,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                         )}
                                                         {(activeDashboardTool === 'booklet' || activeDashboardTool === 'nup' || activeDashboardTool === 'sticker_imposer') && (
                                                             <button
-                                                                onClick={() => window.dispatchEvent(new CustomEvent('open-preset-modal'))}
+                                                                onClick={() => setIsPresetOpen(true)}
                                                                 className="w-7 h-7 flex items-center justify-center hover:bg-amber-100 dark:hover:bg-amber-900/40 text-amber-600 dark:text-amber-500 rounded transition-colors"
                                                                 title={t('tabs.imposition:tai_preset_san_pham')}
                                                                 aria-label={t('tabs.imposition:tai_preset_san_pham')}
@@ -2564,6 +2607,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                 <div className="p-4 overflow-y-auto flex-1 flex flex-col text-sm text-slate-800 dark:text-zinc-200 scroller-thin relative bg-[#f8fafc] dark:bg-zinc-900 border-t border-black/5 dark:border-white/5">
                                                     {rightPanelKind === 'edit' ? (
                                                         <EditLayersPanel
+                                                            tabId={tabId}
                                                             // Unified OCG + Components panel for Edit PDF upgrade
                                                             handleDeleteObjects={handleDeleteObjects}
                                                             editObjects={currentEditObjects || []}
@@ -2580,12 +2624,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             onSelectField={(ids) => setSelectedVdpFieldIds(ids)}
                                                             isActive={isActive}
                                                             onBack={() => setActiveDashboardTool('none')}
-                                                            onApplyResult={(blob: Blob, name: string, path?: string) => {
+                                                            onApplyResult={async (blob: Blob, name: string, path?: string) => {
                                                                 recipeRecorder.noteNonRecordable('datamerge');
-                                                                commitWorkingFile(blob, name, path);
+                                                                await commitWorkingFile(blob, name, path);
                                                                 setVdpFields([]);
                                                                 setSelectedVdpFieldIds([]);
-                                                                setActiveDashboardTool('none');
                                                             }}
                                                             onSpawnTab={(blob: Blob, name: string, path?: string) => {
                                                                 const newFile = new File([blob], name, { type: 'application/pdf' });
@@ -2608,12 +2651,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             onSelectField={(ids) => setSelectedVdpFieldIds(ids)}
                                                             isActive={isActive}
                                                             onBack={() => setActiveDashboardTool('none')}
-                                                            onApplyResult={(blob: Blob, name: string, path?: string) => {
+                                                            onApplyResult={async (blob: Blob, name: string, path?: string) => {
                                                                 recipeRecorder.noteNonRecordable('numbering');
-                                                                commitWorkingFile(blob, name, path);
+                                                                await commitWorkingFile(blob, name, path);
                                                                 setVdpFields([]);
                                                                 setSelectedVdpFieldIds([]);
-                                                                setActiveDashboardTool('none');
                                                             }}
                                                             onSpawnTab={(blob: Blob, name: string, path?: string) => {
                                                                 const newFile = new File([blob], name, { type: 'application/pdf' });
@@ -2636,12 +2678,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             onSelectField={(ids) => setSelectedVdpFieldIds(ids)}
                                                             isActive={isActive}
                                                             onBack={() => setActiveDashboardTool('none')}
-                                                            onApplyResult={(blob: Blob, name: string, path?: string) => {
+                                                            onApplyResult={async (blob: Blob, name: string, path?: string) => {
                                                                 recipeRecorder.noteNonRecordable('cover_numbering');
-                                                                commitWorkingFile(blob, name, path);
+                                                                await commitWorkingFile(blob, name, path);
                                                                 setVdpFields([]);
                                                                 setSelectedVdpFieldIds([]);
-                                                                setActiveDashboardTool('none');
                                                             }}
                                                             onSpawnTab={(blob: Blob, name: string, path?: string) => {
                                                                 const newFile = new File([blob], name, { type: 'application/pdf' });

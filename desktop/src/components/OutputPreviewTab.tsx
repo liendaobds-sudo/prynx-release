@@ -1,5 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { authenticatedFetch, getApiUrl } from '../lib/api';
+import { buildPagePlateOverlays, type PlateOverlay } from '../lib/outputPreviewOverlay';
+import {
+    clampOutputPreviewPanelOffset,
+    OUTPUT_PREVIEW_WORKSPACE_GAP_PX,
+} from '../lib/outputPreviewPanelLayout';
 import pako from 'pako';
 import { useWorkspaceStore } from '../stores/useWorkspaceStore';
 import SoftProofPanel from './SoftProofPanel';
@@ -34,12 +39,8 @@ interface SeparationsData {
     blending_color_space?: string;
 }
 
-export interface PlateOverlay {
-    name: string;
-    color: number[];
-    dataUrl: string;
-    visible: boolean;
-}
+export type { PlateOverlay } from '../lib/outputPreviewOverlay';
+
 
 interface OutputPreviewTabProps {
     fileId: string;
@@ -75,7 +76,15 @@ function reconstructPlateDataUrl(plate: PlateInfo, width: number, height: number
 
 export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPages = 1, onClose, onPlatesChange, onFileFixed }: OutputPreviewTabProps) {
   const { t } = useTranslation();
-    const [pageNum, setPageNum] = useState(initialPageNum);
+    const viewerActivePage = useWorkspaceStore(s => s.viewerActivePage);
+    const viewerPageOrder = useWorkspaceStore(s => s.viewerPageOrder);
+    const setTacHeatmapUrl = useWorkspaceStore(s => s.setTacHeatmapUrl);
+    const setSoftProofImageUrl = useWorkspaceStore(s => s.setSoftProofImageUrl);
+    const setGamutWarningUrl = useWorkspaceStore(s => s.setGamutWarningUrl);
+    const setSoftProofActive = useWorkspaceStore(s => s.setSoftProofActive);
+    const setOverprintPreviewUrl = useWorkspaceStore(s => s.setOverprintPreviewUrl);
+    const initialViewerPage = Math.min(totalPages, Math.max(1, viewerActivePage || initialPageNum));
+    const [pageNum, setPageNum] = useState(initialViewerPage);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
     // UIUX (audit 2026-07-28 §GS.3): PPE là engine chính; tên query cũ chỉ giữ để tương thích API.
@@ -105,11 +114,53 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
         ? 'PrynX PPE'
         : engineUsed === 'ghostscript' ? 'RIP legacy' : engineUsed;
 
-    const setTacHeatmapUrl = useWorkspaceStore(s => s.setTacHeatmapUrl);
 
     const plateDataRef = React.useRef<{ width: number, height: number, arrays: Record<string, Uint8ClampedArray> } | null>(null);
     const pctRefs = React.useRef<Record<string, HTMLSpanElement | null>>({});
     const tacRef = React.useRef<HTMLSpanElement | null>(null);
+    const mappedSourcePage = viewerPageOrder?.[pageNum - 1];
+    const sourcePageNum = typeof mappedSourcePage === 'number' && mappedSourcePage > 0
+        ? mappedSourcePage
+        : pageNum;
+
+    // UIUX (fix preview đa kích thước 2026-07-28): khi đổi trang phải bỏ mọi
+    // bitmap của trang cũ trước khi viewer nhận trang mới, tránh một frame nháy sai tỷ lệ.
+    const clearPagePreview = useCallback(() => {
+        plateDataRef.current = null;
+        setPlateList([]);
+        setVisiblePlates(new Set());
+        onPlatesChange?.([]);
+        setTacHeatmapUrl(null);
+        setSoftProofImageUrl(null);
+        setGamutWarningUrl(null);
+        setSoftProofActive(false);
+        setOverprintPreviewUrl(null);
+    }, [
+        onPlatesChange,
+        setGamutWarningUrl,
+        setOverprintPreviewUrl,
+        setSoftProofActive,
+        setSoftProofImageUrl,
+        setTacHeatmapUrl,
+    ]);
+
+    const navigatePreviewPage = useCallback((requestedPage: number) => {
+        const nextPage = Math.min(totalPages, Math.max(1, requestedPage));
+        if (nextPage === pageNum) return;
+        clearPagePreview();
+        setPageNum(nextPage);
+        window.dispatchEvent(new CustomEvent('prynx-menu-command', {
+            detail: { cmd: 'go-to-page', page: nextPage },
+        }));
+    }, [clearPagePreview, pageNum, totalPages]);
+
+    // Cuộn/chuyển trang từ viewer cũng phải kéo Output Preview theo cùng một trang.
+    useEffect(() => {
+        const nextPage = Math.min(totalPages, Math.max(1, viewerActivePage));
+        if (nextPage === pageNum) return;
+        clearPagePreview();
+        setPageNum(nextPage);
+    }, [clearPagePreview, pageNum, totalPages, viewerActivePage]);
 
     // ── TAC Heatmap Generation (client-side Canvas) ──
     useEffect(() => {
@@ -160,10 +211,10 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
 
     const handlePointerMove = (e: React.PointerEvent) => {
         if (!dragRef.current.isDragging) return;
-        setPos({
+        setPos(clampOutputPreviewPanelOffset({
             x: dragRef.current.initialX + (e.clientX - dragRef.current.startX),
             y: dragRef.current.initialY + (e.clientY - dragRef.current.startY)
-        });
+        }));
     };
 
     const handlePointerUp = (e: React.PointerEvent) => {
@@ -182,6 +233,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
     useEffect(() => {
         let isMounted = true;
         const fetchSeparations = async () => {
+            clearPagePreview();
             setLoading(true);
             setError('');
             setSoloPlate(null);
@@ -189,7 +241,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                 // true → precise RIP path (PPE first); false → approximate RGB→CMYK.
                 const ripParam = useRipPreview ? '&use_gs=true' : '&use_gs=false';
                 const res = await authenticatedFetch(
-                    `${getApiUrl()}/preflight/separations/${fileId}/${pageNum}?dpi=150${ripParam}&profile_id=fogra39`
+                    `${getApiUrl()}/preflight/separations/${fileId}/${sourcePageNum}?dpi=150${ripParam}&profile_id=fogra39`
                 );
                 if (!res.ok) throw new Error(t('tabs.outputPreview:khong_the_phan_tach_kem'));
                 const result: SeparationsData = await res.json();
@@ -218,12 +270,12 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
         };
         fetchSeparations();
         return () => { isMounted = false; };
-    }, [fileId, pageNum, useRipPreview]);
+    }, [clearPagePreview, fileId, sourcePageNum, useRipPreview]);
 
     useEffect(() => {
         const handlePdfHover = (e: any) => {
             const pos = e.detail;
-            if (!pos || pos.pageNum !== pageNum || !plateDataRef.current) return;
+            if (!pos || pos.pageNum !== sourcePageNum || !plateDataRef.current) return;
             
             const { x, y } = pos;
             const { width, height, arrays } = plateDataRef.current;
@@ -252,18 +304,27 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
 
         window.addEventListener('pdf-hover', handlePdfHover);
         return () => window.removeEventListener('pdf-hover', handlePdfHover);
-    }, [pageNum, tacThreshold, showTacWarning]);
+    }, [sourcePageNum, tacThreshold, showTacWarning]);
 
     useEffect(() => {
         if (!onPlatesChange) return;
-        const effectiveVisible = soloPlate
-            ? new Set([soloPlate])
-            : visiblePlates;
-        onPlatesChange(plateList.map(p => ({
-            name: p.name, color: p.color, dataUrl: p.dataUrl,
-            visible: effectiveVisible.has(p.name),
-        })));
-    }, [plateList, visiblePlates, soloPlate, onPlatesChange]);
+        const pageData = plateDataRef.current;
+        if (!pageData || plateList.length === 0) {
+            onPlatesChange([]);
+            return;
+        }
+        onPlatesChange(buildPagePlateOverlays(
+            plateList,
+            visiblePlates,
+            soloPlate,
+            {
+                viewerPageNum: pageNum,
+                sourcePageNum,
+                pixelWidth: pageData.width,
+                pixelHeight: pageData.height,
+            },
+        ));
+    }, [onPlatesChange, pageNum, plateList, soloPlate, sourcePageNum, visiblePlates]);
 
     useEffect(() => { return () => { onPlatesChange?.([]); setTacHeatmapUrl(null); }; }, []);
 
@@ -323,9 +384,14 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
 
     return (
         <div
-            className="fixed z-[9999] rounded-2xl overflow-hidden select-none flex flex-col bg-white dark:bg-zinc-900 border border-slate-200/80 dark:border-zinc-700/80"
+            // UIUX (fix panel xem trước 2026-07-28): bám vào vùng làm việc thay vì viewport;
+            // nếu dùng fixed, panel nằm dưới stacking context của tab và bị chrome ứng dụng che.
+            className="absolute z-[9999] rounded-2xl overflow-hidden select-none flex flex-col bg-white dark:bg-zinc-900 border border-slate-200/80 dark:border-zinc-700/80"
             style={{
-                top: 50, right: 60, width: 380,
+                top: OUTPUT_PREVIEW_WORKSPACE_GAP_PX,
+                right: 60,
+                width: 380,
+                maxHeight: `calc(100% - ${OUTPUT_PREVIEW_WORKSPACE_GAP_PX * 2}px)`,
                 transform: `translate(${pos.x}px, ${pos.y}px)`,
                 boxShadow: '0 20px 40px -10px rgba(0,0,0,0.15), 0 0 10px rgba(0,0,0,0.05)',
                 fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif",
@@ -357,7 +423,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                 </div>
             </div>
 
-            <div className="overflow-y-auto max-h-[calc(100vh-140px)]" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div className="min-h-0 flex-1 overflow-y-auto" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                 
                 {/* ─── Mode + Engine ─── */}
                 <div className="flex items-center justify-between">
@@ -380,7 +446,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                 {totalPages > 1 && (
                     <div className="flex items-center justify-center gap-3">
                         <button
-                            onClick={() => setPageNum(p => Math.max(1, p - 1))}
+                            onClick={() => navigatePreviewPage(pageNum - 1)}
                             disabled={pageNum <= 1 || loading}
                             className="w-7 h-7 flex items-center justify-center rounded-lg border border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-30 transition-colors text-slate-500 text-[14px]"
                         >←</button>
@@ -388,7 +454,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                             Trang {pageNum} / {totalPages}
                         </span>
                         <button
-                            onClick={() => setPageNum(p => Math.min(totalPages, p + 1))}
+                            onClick={() => navigatePreviewPage(pageNum + 1)}
                             disabled={pageNum >= totalPages || loading}
                             className="w-7 h-7 flex items-center justify-center rounded-lg border border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-30 transition-colors text-slate-500 text-[14px]"
                         >→</button>
@@ -604,7 +670,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                 </div>
 
                 {/* ─── Overprint Preview ─── */}
-                <OverprintPreviewToggle fileId={fileId} pageNum={pageNum} />
+                <OverprintPreviewToggle fileId={fileId} pageNum={sourcePageNum} />
 
                 {/* ─── Spot Convert All ─── */}
                 {hasSpotInks && (

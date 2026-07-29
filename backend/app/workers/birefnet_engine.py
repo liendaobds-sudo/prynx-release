@@ -13,14 +13,15 @@ import os
 import logging
 import threading
 
-import httpx
 import onnxruntime as ort
 import numpy as np
 from PIL import Image
 
+from app.workers.model_cache import ensure_model
+
 logger = logging.getLogger(__name__)
 
-_DATA_MODELS = os.path.join(os.path.dirname(__file__), "..", "..", "data", "models")
+_BUNDLED_MODELS = os.path.join(os.path.dirname(__file__), "..", "data", "models")
 _U2NET_HOME = os.path.expanduser(os.path.join("~", ".u2net"))
 
 # variant -> (url, local_path)
@@ -37,9 +38,14 @@ MODELS = {
         os.path.join(_U2NET_HOME, "birefnet-general-lite.onnx"),
     ),
 }
+MODEL_SHA256 = {
+    "full": "58f621f00f5d756097615970a88a791584600dcf7c45b18a0a6267535a1ebd3c",
+    "lite": "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333",
+}
 
 _sessions: dict = {}
 _session_lock = threading.Lock()
+_run_locks = {variant: threading.Lock() for variant in MODELS}
 # Ép CPU ngay từ đầu bằng env PRYNX_BG_FORCE_CPU=1 (bỏ qua GPU; tránh OOM/treo máy yếu).
 _force_cpu = os.environ.get('PRYNX_BG_FORCE_CPU', '').lower() in ('1', 'true', 'yes')
 
@@ -57,17 +63,24 @@ def _build_providers():
     return providers
 
 
+def _create_session(path: str, providers: list[str]):
+    """Tạo session đúng hợp đồng của DirectML."""
+    options = ort.SessionOptions()
+    if 'DmlExecutionProvider' in providers:
+        options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        options.enable_mem_pattern = False
+    return ort.InferenceSession(path, sess_options=options, providers=providers)
+
+
 def _download_model_if_needed(variant: str):
     url, path = MODELS[variant]
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    if not os.path.exists(path):
-        logger.info("Downloading BiRefNet[%s] from %s ...", variant, url)
-        with httpx.stream("GET", url, follow_redirects=True) as r:
-            r.raise_for_status()
-            with open(path, "wb") as f:
-                for chunk in r.iter_bytes(chunk_size=8192):
-                    f.write(chunk)
-        logger.info("BiRefNet[%s] download complete.", variant)
+    return ensure_model(
+        filename=os.path.basename(path),
+        url=url,
+        expected_sha256=MODEL_SHA256[variant],
+        cache_dir=_U2NET_HOME,
+        bundled_dir=_BUNDLED_MODELS,
+    )
 
 
 def _get_session(variant: str = "full"):
@@ -76,10 +89,10 @@ def _get_session(variant: str = "full"):
         return s
     with _session_lock:
         if _sessions.get(variant) is None:
-            _download_model_if_needed(variant)
-            _, path = MODELS[variant]
+            path = _download_model_if_needed(variant)
             logger.info("Loading BiRefNet[%s] session (force_cpu=%s)...", variant, _force_cpu)
-            _sessions[variant] = ort.InferenceSession(path, providers=_build_providers())
+            providers = _build_providers()
+            _sessions[variant] = _create_session(path, providers)
             logger.info("BiRefNet[%s] ready (providers=%s)", variant, _sessions[variant].get_providers())
     return _sessions[variant]
 
@@ -90,9 +103,9 @@ def _switch_to_cpu(variant: str):
     global _force_cpu
     with _session_lock:
         _force_cpu = True
-        _, path = MODELS[variant]
+        path = _download_model_if_needed(variant)
         logger.warning("Rebuilding BiRefNet[%s] on CPU only (GPU không ổn định).", variant)
-        _sessions[variant] = ort.InferenceSession(path, providers=['CPUExecutionProvider'])
+        _sessions[variant] = _create_session(path, ['CPUExecutionProvider'])
     return _sessions[variant]
 
 
@@ -113,20 +126,29 @@ def remove_background(image: Image.Image, variant: str = "full") -> Image.Image:
     if variant not in MODELS:
         variant = "full"
     orig_w, orig_h = image.size
-    session = _get_session(variant)
-    input_name = session.get_inputs()[0].name
     input_tensor = preprocess(image)
 
-    try:
-        outputs = session.run(None, {input_name: input_tensor})
-    except Exception as e:
-        if not _force_cpu:
-            logger.warning("BiRefNet[%s] GPU lỗi (%s) → rớt về CPU.", variant, e)
-            session = _switch_to_cpu(variant)
-            input_name = session.get_inputs()[0].name
-            outputs = session.run(None, {input_name: input_tensor})
-        else:
+    def _run_with_fallback():
+        session = _get_session(variant)
+        input_name = session.get_inputs()[0].name
+        try:
+            return session.run(None, {input_name: input_tensor})
+        except Exception as e:
+            if not _force_cpu:
+                logger.warning("BiRefNet[%s] GPU lỗi (%s) → rớt về CPU.", variant, e)
+                session = _switch_to_cpu(variant)
+                input_name = session.get_inputs()[0].name
+                return session.run(None, {input_name: input_tensor})
             raise
+
+    session = _get_session(variant)
+    if 'DmlExecutionProvider' in session.get_providers():
+        # PERF (audit 2026-07-28 §BG.01): chỉ tuần tự hoá cùng một DirectML
+        # session. Variant khác và CPU/CUDA vẫn chạy song song trên máy mạnh.
+        with _run_locks[variant]:
+            outputs = _run_with_fallback()
+    else:
+        outputs = _run_with_fallback()
 
     # Raw logits [1,1,1024,1024] → sigmoid → mask
     mask_logits = outputs[-1]
@@ -144,9 +166,11 @@ def remove_background(image: Image.Image, variant: str = "full") -> Image.Image:
 
 
 def warmup(variant: str = "lite") -> bool:
-    """Nạp sẵn + 1 suy luận nhỏ (tự rớt CPU nếu GPU lỗi). Mặc định warm biến thể 'lite'."""
+    """Nạp sẵn session của biến thể; không chạy inference giả khi mở công cụ."""
     try:
-        remove_background(Image.new("RGB", (32, 32), (255, 255, 255)), variant=variant)
+        # PERF (audit 2026-07-28 §BG.08): warmup cũ resize ảnh giả lên
+        # 1024×1024 rồi chạy trọn model, làm UI chờ lâu trước cả khi bấm xử lý.
+        _get_session(variant)
         return True
     except Exception as e:
         logger.warning("BiRefNet[%s] warmup failed: %s", variant, e)

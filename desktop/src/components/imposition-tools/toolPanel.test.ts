@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { WORKSPACE_TOOL_PANEL, resolveRightPanel, type WorkspacePanelKind } from './types';
-import { PREPROCESS_ROUTER_TOOLS } from './sections/preprocessRouterTools';
+import { WORKSPACE_TOOL_PANEL, isWorkspaceTool, resolveRightPanel, type WorkspacePanelKind } from './types';
+import { canToolRunWithoutPdf, PREPROCESS_ROUTER_TOOLS, resolveDedicatedInitialTool } from './sections/preprocessRouterTools';
 
 /**
  * Chốt routing workspace bình bài (Bước C — refactor).
@@ -91,5 +91,31 @@ describe('Sticker object-selection panel routing', () => {
     it('keeps the normal Edit PDF panel for other workspace contexts', () => {
         expect(resolveRightPanel('none', true)).toBe('edit');
         expect(resolveRightPanel('preflight', true)).toBe('edit');
+    });
+});
+
+describe('điều hướng tab công cụ độc lập', () => {
+    it('giữ đúng công cụ gốc thay vì rơi về workspace PDF trống', () => {
+        expect(resolveDedicatedInitialTool('upscale')).toBe('upscale');
+        expect(resolveDedicatedInitialTool('bgremover')).toBe('bgremover');
+        expect(resolveDedicatedInitialTool('office_convert')).toBe('office_convert');
+        expect(resolveDedicatedInitialTool('font_tools')).toBeNull();
+        expect(resolveDedicatedInitialTool()).toBeNull();
+    });
+});
+
+describe('capability điều hướng workspace', () => {
+    it('chỉ ba công cụ tự nhận nguồn được phép chạy không cần PDF', () => {
+        expect(canToolRunWithoutPdf('bgremover')).toBe(true);
+        expect(canToolRunWithoutPdf('upscale')).toBe(true);
+        expect(canToolRunWithoutPdf('office_convert')).toBe(true);
+        expect(canToolRunWithoutPdf('encrypt')).toBe(false);
+        expect(canToolRunWithoutPdf('metadata')).toBe(false);
+    });
+
+    it('nhận diện tool từ đúng map routing duy nhất', () => {
+        expect(isWorkspaceTool('crop')).toBe(true);
+        expect(isWorkspaceTool('cover_numbering')).toBe(true);
+        expect(isWorkspaceTool('khong-ton-tai')).toBe(false);
     });
 });

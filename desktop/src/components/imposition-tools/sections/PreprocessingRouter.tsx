@@ -61,7 +61,7 @@ const TOOL_HEADERS: Record<string, { icon: React.ReactNode; title: string; desc:
     numbering: { icon: '🔢', title: 'Nhảy số tự động', desc: 'Vui lòng sử dụng Không gian thiết kế ở màn hình bên phải để cấu hình số nhảy.' },
     stick_text_number: { icon: '🔠', title: 'Header & Footer', desc: 'Vui lòng sử dụng Không gian thiết kế ở màn hình bên phải để đóng dấu cố định trang.' },
     watermark: { icon: '©️', title: 'Chèn Nền & Đóng Dấu', desc: 'Chèn phôi nền (Background), logo chìm, text mờ (Watermark).' },
-    upscale: { icon: '🪄', title: 'Phóng to Ảnh', desc: 'Phóng to ảnh nhưng vẫn giữ được độ sắc nét, không bị vỡ hạt.' },
+    upscale: { icon: '🪄', title: 'Phóng to Ảnh', desc: 'Cải thiện độ nét cảm nhận khi phóng to; AI có thể suy đoán chi tiết.' },
     pages: { icon: '📄', title: 'Quản lý trang', desc: 'Nhân bản, xóa, xoay, và di chuyển trang PDF.' },
     encrypt: { icon: '🔐', title: 'Khóa / Mở khóa PDF', desc: 'Đặt mật khẩu, hạn chế in/copy, hoặc gỡ khóa khi biết mật khẩu.' },
     metadata: { icon: '🏷️', title: 'Metadata PDF', desc: 'Xem / sửa Title, Author, Subject… hoặc xóa metadata.' },
@@ -129,7 +129,7 @@ export default function PreprocessingRouter({
 
             {/* ═══ CONTENT ═══ */}
             {activeTool === 'crop' && ensureCropFileId && onCropApplied && (
-                <CropDialog embedded ensureFileId={ensureCropFileId} onApplied={onCropApplied} onClose={onCropClose || (() => undefined)} />
+                <CropDialog tabId={tabId} embedded ensureFileId={ensureCropFileId} onApplied={onCropApplied} onClose={onCropClose || (() => undefined)} />
             )}
 
             {activeTool === 'shuffle' && (
@@ -197,7 +197,7 @@ export default function PreprocessingRouter({
             )}
 
             {activeTool === 'pages' && (
-                <PageToolsPanel />
+                <PageToolsPanel tabId={tabId} />
             )}
 
 
@@ -209,8 +209,6 @@ export default function PreprocessingRouter({
                     onOpenOutputPreview={onOpenOutputPreview}
                     onOpenFontTools={() => onOpenTool?.('font_tools')}
                     onFileFixed={(blob, name) => {
-                        (window as any).__preflightFixedBlob = blob;
-                        (window as any).__preflightFixedName = name;
                         if (onFileFixed) onFileFixed(blob, name);
                     }}
                 />

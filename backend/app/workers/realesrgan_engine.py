@@ -5,11 +5,10 @@ Thay cho Anime4K (WebGPU client-side, gốc cho VIDEO anime — làm sắc mép 
 tái tạo texture). Real-ESRGAN được huấn luyện trên "suy biến ảnh thật" (nhiễu, nén
 JPEG, mờ) nên phục hồi chi tiết ảnh chụp/sản phẩm in tốt hơn hẳn.
 
-MỘT model duy nhất (scale x4, input RGB [0,1] NCHW, output RGB 4x): SRVGGNetCompact
-(~5MB) — nhẹ, hợp ảnh chụp/sản phẩm, chạy tốt cả GPU lẫn CPU. Bản export mặc định là
-x4v3 THUẦN (giữ chi tiết tối đa; blend khử nhiễu wdn làm bệt texture ảnh in nên tắt —
-xem --alpha trong convert script nếu ảnh nguồn nhiễu nặng cần khử bớt).
-Biến thể RRDBNet 'plus' đã bỏ: nặng ~25× (127s/ô 512px trên CPU) → phi thực tế.
+Hai model scale x4, input RGB [0,1] NCHW:
+  - general: SRVGGNetCompact x4v3 (~5 MB), nhanh, phù hợp máy yếu.
+  - quality: RealESRGAN_x4plus RRDBNet 23 khối (~67 MB), chi tiết tốt hơn cho ảnh
+    chụp/sản phẩm; ưu tiên GPU và chậm đáng kể khi phải chạy CPU.
 
 Model .onnx KHÔNG tải từ mạng: repo gốc (xinntao) chỉ phát hành .pth. Bản .onnx do
 scripts/convert_realesrgan_onnx.py sinh ở BƯỚC BUILD (torch chỉ ở máy build, không
@@ -21,10 +20,14 @@ fallback (DirectML có thể OOM/treo) + env PRYNX_UPSCALE_FORCE_CPU=1 ép CPU.
 import os
 import logging
 import threading
+import hashlib
+import functools
+import time
+from contextlib import nullcontext
 
 import onnxruntime as ort
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageChops, ImageFilter
 
 logger = logging.getLogger(__name__)
 
@@ -36,19 +39,152 @@ _BUNDLED_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "models")
 
 SCALE = 4  # model x4
 
-# variant -> tên file .onnx. Chỉ còn 'general' (bản DNI-blend khử nhiễu). Giữ dạng
+# variant -> tên file .onnx. Giữ dạng
 # dict để hàm cũ (variant not in MODELS → general) và chỗ gọi không phải đổi chữ ký.
 MODELS = {
     "general": "realesr-general-x4v3.onnx",
+    "quality": "realesrgan-x4plus.onnx",
+}
+
+# UPSCALE (audit 2026-07-28 §UP-05/11): khóa đúng artifact đã benchmark và khai
+# trong NOTICE. File cùng tên nhưng khác trọng số không được lọt vào dev/release.
+MODEL_SHA256 = {
+    "general": "027319ffe4f00ec2550957c0957d44969638a03d2ed2f0329af9fd6cd44a457a",
+    "quality": "c1b85fae35947577b4c4b7d310af54546c6e7971f14a0862a769e83689ddc003",
 }
 
 _sessions: dict = {}
 _session_lock = threading.Lock()
-_force_cpu = os.environ.get('PRYNX_UPSCALE_FORCE_CPU', '').lower() in ('1', 'true', 'yes')
+# PERF (audit 2026-07-28 §UP-14): DirectML cấm nhiều thread gọi Run đồng thời
+# trên CÙNG session. Khóa tách theo model để warmup không đua với job thật, nhưng
+# general/quality vẫn có thể chạy song song và CPU không bị giới hạn vô điều kiện.
+_session_run_locks = {variant: threading.RLock() for variant in MODELS}
+_force_cpu_by_env = os.environ.get('PRYNX_UPSCALE_FORCE_CPU', '').lower() in ('1', 'true', 'yes')
+_cpu_only_variants: set[str] = set()
 
 
-def _build_providers():
-    if _force_cpu:
+class UpscaleUnavailable(RuntimeError):
+    """Không thể chạy cấu hình upscale này — thông điệp đã sẵn sàng cho người dùng.
+
+    Route dịch thành HTTP 422 kèm nguyên văn `str(exc)`, khác với lỗi kỹ thuật (500).
+    """
+
+
+# UPSCALE (audit treo 2026-07-28 §1.1): ngưỡng phân biệt "có tăng tốc GPU thật" —
+# đo trên ô 256×256, RRDBNet: DirectML ~0,49 s còn CPU ~6,40 s, cách nhau 13 lần nên
+# mốc 3 s tách sạch hai ca. Không dùng tên provider để quyết định: `get_providers()`
+# trả về provider ĐÃ ĐĂNG KÝ, không phải provider thực thi từng node — máy có
+# DirectML luôn trả ['DmlExecutionProvider', 'CPUExecutionProvider'] kể cả khi ORT
+# rơi toàn bộ node về CPU, nên phép kiểm theo tên không bao giờ bắt được ca đó.
+_PROBE_SIDE = 256
+_GPU_TILE_BUDGET_S = 3.0
+_MAX_JOB_SECONDS = 300.0
+
+# Ước lượng tuyến tính theo số pixel underestimate vì có overhead cố định mỗi ô.
+# Đo được (RRDBNet): 256→0,49 s; 384→1,99 s; 592→4,03 s. Hệ số 1,5 cho ước lượng
+# hơi bảo thủ — đủ dùng vì mục đích là cảnh báo ca hàng chục phút, không phải đo chính xác.
+_ESTIMATE_SAFETY = 1.5
+
+_probe_seconds: dict[str, float] = {}
+_probe_lock = threading.Lock()
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("Bỏ qua %s không hợp lệ: %s", name, raw)
+        return default
+    return value if value > 0 else default
+
+
+def probe_tile_seconds(variant: str) -> float:
+    """Đo thời gian suy luận MỘT ô 256×256 của `variant`, cache theo tiến trình.
+
+    Lần chạy đầu bị loại khỏi phép đo: DirectML biên dịch graph ở lần đầu nên đắt
+    bất thường (đo được model nhẹ: 0,63 s lần đầu rồi 0,04 s khi đã nóng).
+    """
+    cached = _probe_seconds.get(variant)
+    if cached is not None:
+        return cached
+    with _probe_lock:
+        cached = _probe_seconds.get(variant)
+        if cached is not None:
+            return cached
+        session = _get_session(variant)
+        run_guard = (
+            _session_run_locks[variant]
+            if 'DmlExecutionProvider' in session.get_providers()
+            else nullcontext()
+        )
+        with run_guard:
+            # Lấy lại session sau khi chờ khóa: lượt trước có thể vừa rớt GPU→CPU.
+            session = _get_session(variant)
+            input_name = session.get_inputs()[0].name
+            tile = np.zeros((1, 3, _PROBE_SIDE, _PROBE_SIDE), dtype=np.float32)
+            session.run(None, {input_name: tile})          # làm nóng, KHÔNG tính
+            started = time.perf_counter()
+            session.run(None, {input_name: tile})
+            elapsed = time.perf_counter() - started
+        _probe_seconds[variant] = elapsed
+        logger.info(
+            "Real-ESRGAN[%s] probe ô %d×%d = %.2fs (providers=%s)",
+            variant, _PROBE_SIDE, _PROBE_SIDE, elapsed, session.get_providers(),
+        )
+        return elapsed
+
+
+def estimate_seconds(width: int, height: int, variant: str,
+                     tile: int | None = None, tile_pad: int = 40) -> float:
+    """Ước lượng thời gian chạy cả ảnh, dựa trên phép đo một ô."""
+    if variant == "balanced":
+        variant = "general"
+    if tile is None:
+        tile = _default_tile_size()
+    per_tile = probe_tile_seconds(variant)
+    if tile <= 0:
+        tiles = 1
+        side_px = max(width, height) ** 2
+    else:
+        tiles = ((width + tile - 1) // tile) * ((height + tile - 1) // tile)
+        side_px = (min(tile, width) + 2 * tile_pad) * (min(tile, height) + 2 * tile_pad)
+    scale = max(1.0, side_px / float(_PROBE_SIDE * _PROBE_SIDE))
+    return tiles * per_tile * scale * _ESTIMATE_SAFETY
+
+
+def _guard_runtime(width: int, height: int, variant: str,
+                   tile: int | None, tile_pad: int) -> None:
+    """Chặn TRƯỚC khi chạy nếu cấu hình sẽ mất hàng chục phút (§1.1, §1.2).
+
+    Người vận hành vẫn ép được bằng PRYNX_UPSCALE_FORCE_CPU=1 (bỏ kiểm GPU) và
+    PRYNX_UPSCALE_MAX_SECONDS (nới trần thời gian).
+    """
+    if variant == "quality" and not _force_cpu_by_env:
+        budget = _env_float("PRYNX_UPSCALE_GPU_TILE_BUDGET_S", _GPU_TILE_BUDGET_S)
+        measured = probe_tile_seconds(variant)
+        if measured > budget:
+            raise UpscaleUnavailable(
+                f"Máy này không có tăng tốc GPU dùng được cho chế độ Chất lượng "
+                f"(đo {measured:.1f}s cho một ô {_PROBE_SIDE}×{_PROBE_SIDE}, cần dưới "
+                f"{budget:.0f}s). Chạy bằng CPU sẽ mất hàng chục phút mỗi ảnh — "
+                f"hãy chọn chế độ Nhanh."
+            )
+
+    limit = _env_float("PRYNX_UPSCALE_MAX_SECONDS", _MAX_JOB_SECONDS)
+    predicted = estimate_seconds(width, height, variant, tile, tile_pad)
+    if predicted > limit:
+        raise UpscaleUnavailable(
+            f"Ảnh {width}×{height} px ở chế độ này cần khoảng {predicted / 60:.0f} phút "
+            f"(trần hiện tại {limit / 60:.0f} phút). Hãy chọn chế độ Nhanh, giảm kích "
+            f"thước ảnh, hoặc nới trần bằng biến môi trường PRYNX_UPSCALE_MAX_SECONDS."
+        )
+
+
+def _build_providers(variant: str):
+    if _force_cpu_by_env or variant in _cpu_only_variants:
         return ['CPUExecutionProvider']
     available = ort.get_available_providers()
     providers = []
@@ -81,31 +217,81 @@ def _get_session(variant: str = "general"):
     with _session_lock:
         if _sessions.get(variant) is None:
             path = _resolve_model_path(variant)
-            logger.info("Loading Real-ESRGAN[%s] session (force_cpu=%s)...", variant, _force_cpu)
-            _sessions[variant] = ort.InferenceSession(path, providers=_build_providers())
+            digest = hashlib.sha256()
+            with open(path, "rb") as model_file:
+                for chunk in iter(lambda: model_file.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            actual_hash = digest.hexdigest()
+            if actual_hash != MODEL_SHA256[variant]:
+                raise RuntimeError(
+                    f"Model Real-ESRGAN '{os.path.basename(path)}' sai SHA-256 "
+                    f"(nhận {actual_hash}, cần {MODEL_SHA256[variant]})."
+                )
+            logger.info(
+                "Loading Real-ESRGAN[%s] session (force_cpu=%s)...",
+                variant,
+                _force_cpu_by_env or variant in _cpu_only_variants,
+            )
+            _sessions[variant] = ort.InferenceSession(path, providers=_build_providers(variant))
             logger.info("Real-ESRGAN[%s] ready (providers=%s)", variant, _sessions[variant].get_providers())
     return _sessions[variant]
 
 
 def _switch_to_cpu(variant: str):
     """Dựng lại session CPU sau khi GPU lỗi (OOM/device-hung). Sticky để tránh treo lặp."""
-    global _force_cpu
     with _session_lock:
-        _force_cpu = True
+        _cpu_only_variants.add(variant)
         path = _resolve_model_path(variant)
         logger.warning("Rebuilding Real-ESRGAN[%s] on CPU only (GPU không ổn định).", variant)
         _sessions[variant] = ort.InferenceSession(path, providers=['CPUExecutionProvider'])
     return _sessions[variant]
 
 
+def _serialize_directml_run(function):
+    """Tuần tự hóa Run trên cùng DirectML session theo hợp đồng ONNX Runtime."""
+    @functools.wraps(function)
+    def wrapped(variant: str, *args, **kwargs):
+        session = _get_session(variant)
+        run_guard = (
+            _session_run_locks[variant]
+            if 'DmlExecutionProvider' in session.get_providers()
+            else nullcontext()
+        )
+        with run_guard:
+            return function(variant, *args, **kwargs)
+
+    return wrapped
+
+
+@_serialize_directml_run
 def _run_session(variant: str, tile_nchw: np.ndarray) -> np.ndarray:
     """Chạy 1 ô qua model; nếu GPU lỗi thì rớt CPU rồi chạy lại (giống isnet/birefnet)."""
     session = _get_session(variant)
     input_name = session.get_inputs()[0].name
+    # PERF (audit 2026-07-28 §UP-12): RRDBNet trên CPU có thể mất hàng phút cho
+    # mỗi ô. Không âm thầm biến một job GPU thành job CPU kéo dài không kiểm soát.
+    # Người vận hành vẫn có thể chủ động ép CPU bằng PRYNX_UPSCALE_FORCE_CPU=1.
+    if (
+        variant == "quality"
+        and not _force_cpu_by_env
+        and session.get_providers() == ["CPUExecutionProvider"]
+    ):
+        raise RuntimeError(
+            "Chế độ Chất lượng cần GPU DirectML/CUDA tương thích. "
+            "Hãy chọn chế độ Nhanh để xử lý bằng CPU."
+        )
     try:
         out = session.run(None, {input_name: tile_nchw})[0]
     except Exception as e:
-        if not _force_cpu:
+        if variant == "quality" and not _force_cpu_by_env:
+            # Xóa session lỗi để lần sau có thể thử lại GPU sau khi giải phóng VRAM.
+            with _session_lock:
+                _sessions.pop(variant, None)
+            raise RuntimeError(
+                "GPU không xử lý được chế độ Chất lượng. "
+                "Hãy đóng ứng dụng dùng GPU hoặc chọn chế độ Nhanh."
+            ) from e
+        if not (_force_cpu_by_env or variant in _cpu_only_variants):
             logger.warning("Real-ESRGAN[%s] GPU lỗi (%s) → rớt về CPU.", variant, e)
             session = _switch_to_cpu(variant)
             input_name = session.get_inputs()[0].name
@@ -156,14 +342,53 @@ def _upscale_rgb(rgb: np.ndarray, variant: str, tile: int, tile_pad: int) -> np.
     return output
 
 
-def upscale(image: Image.Image, variant: str = "general", tile: int = 512, tile_pad: int = 16) -> Image.Image:
+def _default_tile_size() -> int:
+    """Chọn tile theo RAM; máy mạnh giữ nguyên 512, máy yếu mới giảm."""
+    override = os.environ.get("PRYNX_UPSCALE_TILE", "").strip()
+    if override:
+        try:
+            return max(64, int(override))
+        except ValueError:
+            logger.warning("Bỏ qua PRYNX_UPSCALE_TILE không hợp lệ: %s", override)
+    from app.core.system_memory import read_memory_status_mb
+    total_mb, _available_mb = read_memory_status_mb()
+    if total_mb is not None and total_mb < 8 * 1024:
+        return 256
+    if total_mb is not None and total_mb < 16 * 1024:
+        return 384
+    return 512
+
+
+def _restore_source_texture(result: Image.Image, source: Image.Image) -> Image.Image:
+    """Bổ sung chi tiết tần số cao từ ảnh nguồn, tránh model nhẹ làm bệt texture."""
+    source_rgb = source.convert("RGB").resize(result.size, Image.Resampling.LANCZOS)
+    low_frequency = source_rgb.filter(ImageFilter.GaussianBlur(radius=1.2))
+    high_frequency = ImageChops.subtract(source_rgb, low_frequency, offset=128)
+    neutral = Image.new("RGB", result.size, (128, 128, 128))
+    restrained_detail = Image.blend(neutral, high_frequency, 0.35)
+    restored_rgb = ImageChops.add(result.convert("RGB"), restrained_detail, offset=-128)
+    if result.mode == "RGBA":
+        restored_rgb = restored_rgb.convert("RGBA")
+        restored_rgb.putalpha(result.getchannel("A"))
+    return restored_rgb
+
+
+def upscale(image: Image.Image, variant: str = "general", tile: int | None = None, tile_pad: int = 40) -> Image.Image:
     """Phóng to ảnh 4x bằng Real-ESRGAN. Giữ alpha (nếu có) bằng resize chất lượng cao.
 
     Alpha KHÔNG chạy qua model SR (model huấn luyện cho RGB): alpha thường là mask
     tách nền, phóng to bằng LANCZOS đủ mượt và không sinh artefact màu.
     """
-    if variant not in MODELS:
+    preserve_texture = variant == "balanced"
+    if preserve_texture:
         variant = "general"
+    elif variant not in MODELS:
+        variant = "general"
+
+    # PERF (audit 2026-07-28 §UP-06/07): pad 40 loại sai khác đường ghép trong
+    # corpus audit; tile chỉ giảm trên máy <16 GB, máy mạnh giữ 512.
+    if tile is None:
+        tile = _default_tile_size()
 
     has_alpha = image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info)
     src = image.convert("RGBA") if has_alpha else image.convert("RGB")
@@ -178,6 +403,11 @@ def upscale(image: Image.Image, variant: str = "general", tile: int = 512, tile_
         alpha_up = alpha.resize((result.width, result.height), Image.LANCZOS)
         result = result.convert("RGBA")
         result.putalpha(alpha_up)
+
+    # PERF (audit 2026-07-28 §UP-13): chế độ Cân bằng giữ tốc độ của model nhẹ,
+    # chỉ bổ sung detail có kiểm soát từ nguồn thay vì chạy RRDBNet 23 khối.
+    if preserve_texture:
+        result = _restore_source_texture(result, src)
 
     return result
 

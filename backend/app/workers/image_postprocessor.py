@@ -36,6 +36,11 @@ def refine_foreground_rgba(image: Image.Image, mask: Image.Image, r: int = 90) -
     F, _ = _fb_blur_fusion(img, F, blur_B, alpha, max(1, min(6, r1)))
 
     fg = (F * 255.0).astype(np.uint8)
+    # BG (audit 2026-07-28 §BG.04): ảnh nguồn đã có alpha thì mask AI không
+    # được làm sống lại vùng vốn trong suốt.
+    if "A" in image.getbands():
+        source_alpha = np.asarray(image.getchannel("A"), dtype=np.float32) / 255.0
+        alpha = alpha * source_alpha
     out = np.dstack([fg, (alpha * 255.0).astype(np.uint8)])
     return Image.fromarray(out, "RGBA")
 

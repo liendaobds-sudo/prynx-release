@@ -408,6 +408,13 @@ def _parse_stream(raw_bytes: bytes, page_height: float, drawings: list,
             fill_spot = _resolve_spot_name(last_name, resources, pdf)
             num_stack.clear()
 
+        # [DIE-TINT 2026-07-28] Một toán hạng của SCN/scn là TINT khi colorspace là
+        # Separation/DeviceN (0 = không mực, 1 = đủ mực) — KHÔNG mang thông tin sắc
+        # màu. Ở đây vẫn ghi thành (g, g, g) để giữ nguyên hợp đồng "màu 3 hoặc 4
+        # thành phần" mà các module vẽ đang dựa vào (pdf_ops.Shape.finish index
+        # color[1]/color[2], cnc_render._resolve_die_color). Việc phân biệt tint với
+        # màu thật được làm ở tầng nhận diện: die_detection bỏ qua so-khớp-màu khi
+        # path nằm trên kênh spot, vì (0,0,0) ở đây chỉ là tint 0 chứ không phải đen.
         elif tok in ('SC', 'SCN'):
             if len(num_stack) >= 4:
                 stroke_color = tuple(num_stack[-4:])
@@ -494,15 +501,90 @@ def parse_content_stream(raw_bytes: bytes, page_height: float,
       - 'type': 's' (stroke), 'f' (fill), 'sf' (both)
       - 'closePath': bool
       - 'spot_name': tên kênh Separation/DeviceN nếu có, ngược lại None
+      - 'paint_index': thứ tự TÔ trong trang (0 = tô trước nhất = dưới cùng)
 
     `resources`/`pdf` (tuỳ chọn) cho phép nhận spot name + đệ quy Form XObject.
     Khi không truyền (gọi cũ), hành vi tương thích ngược (không spot, không đệ quy).
+
+    ── HỆ TOẠ ĐỘ CỦA `rect` VÀ `items` — ĐỌC TRƯỚC KHI DÙNG ────────────────────
+    KHÔNG phải PDF-native (gốc dưới-trái), cũng KHÔNG phải tương đối gốc trang.
+    Đây là hệ RIÊNG của parser: y bị LẬT (y0 nhỏ = phía TRÊN trang), pivot lật là
+    `page_height` mà caller truyền vào — `extract_vector_paths` truyền
+    `mb[3] - mb[1]`; còn x giữ nguyên giá trị RAW trong content stream.
+
+    Hệ quả: khi MediaBox có gốc khác (0,0), toạ độ trả về bị DỊCH so với hệ tương
+    đối gốc trang, đúng một lượng KHÔNG phụ thuộc điểm:
+
+        Δ = (+mb[0], −mb[1])
+
+    Đúng ra phải là `tx - mb[0]` cho x và `mb[3] - ty` cho y. Ví dụ đo được: trang
+    MediaBox [50,30,250,130], nét tại raw y=40 → parser trả y=60, tương đối gốc
+    trang phải là 90.
+
+    Vì sao KHÔNG sửa: xem docs/BAO_CAO_AUDIT_HE_TOA_DO_PARSER_2026-07-28.md.
+    Tóm lại — Δ là phép dịch thuần và gần như mọi consumer bất biến với dịch (chỉ
+    dùng width/height, hoặc tự trừ bbox của chính nó). Hai chỗ KHÔNG bất biến:
+      * `sticker_homogeneous.artwork_bbox` trả Rect tuyệt đối rồi dùng làm `clip=`
+        của `show_pdf_page` — an toàn nhờ `nup_engine._canonicalize_page_space`.
+      * `action_engine._action_fix_hairlines` đọc bằng parser rồi vẽ lại bằng
+        `pdf_ops.ShapeBuilder`, mà ShapeBuilder dùng ĐÚNG cùng pivot sai
+        (`page_height() = mb[3] - mb[1]`) nên round-trip TỰ TRIỆT TIÊU. Đã đo:
+        raw 40 → parser 60 → ghi lại 40.
+
+    ⚠ Nếu đổi quy ước ở đây thì PHẢI sửa `pdf_ops.ShapeBuilder` (và
+    `pdf_ops.page_rect`) trong CÙNG commit, nếu không nét hairline sửa dày sẽ bị
+    vẽ lệch `Δ` một cách im lặng. Test bất biến dịch:
+    `backend/tests/test_parser_translation_invariance.py`.
+
+    Consumer MỚI: đừng trộn toạ độ ở đây với toạ độ hệ trang. Hoặc chỉ dùng
+    width/height, hoặc quy về gốc riêng bằng cách trừ bbox (xem
+    `die_detection._poly_to_trim_coords`, `nup_artwork.transform_die_point`).
     """
     drawings: list = []
     _parse_stream(raw_bytes, page_height, drawings,
                   resources=resources, pdf=pdf, ctm0=None,
                   depth=0, max_depth=max_depth)
+    # [DIE-ZORDER 2026-07-28] Gắn thứ tự TÔ (z-order) — dùng để nhận lớp bế.
+    # Thợ chế bản đặt lớp bế TRÊN CÙNG cây đối tượng (bế là khâu sau cùng), nên
+    # path tô SAU = nằm trên. Thứ tự append của `drawings` đã đúng thứ tự tô kể cả
+    # sau khi đệ quy Form XObject (_recurse_xobject append TẠI CHỖ vào cùng list),
+    # nên chỉ cần đánh số một lần ở đây — không phải luồn counter qua từng nhánh.
+    for _i, _d in enumerate(drawings):
+        _d['paint_index'] = _i
     return drawings
+
+
+# [WATERMARK-STRIP 2026-07-28] Dấu vết bản quyền do app/core/watermark.py đóng vào
+# file xuất: một khối chữ VÔ HÌNH (render mode 3) mang tag PX_<lid>_<hid>_<ts>.
+# Khớp đúng định dạng tag như hàm kiểm tra trong watermark.py, KHÔNG dùng phép
+# `b"PX_" in chunk` — mã sản phẩm của khách in trên tem (vd 'PX_1234') từng đủ để
+# kích hoạt bộ lọc cũ.
+_WATERMARK_TAG_RE = re.compile(rb"\(PX_[0-9a-f]+_[0-9a-f]+_\d+\)")
+
+# Cả khối watermark, y theo thứ tự toán tử watermark.py ghi ra.
+_WATERMARK_BLOCK_RE = re.compile(
+    rb"q\s+BT\s+3\s+Tr\s+/[^\s/]+\s+[\d.]+\s+Tf\s+"
+    rb"-?[\d.]+\s+-?[\d.]+\s+Td\s+"
+    rb"\(PX_[0-9a-f]+_[0-9a-f]+_\d+\)\s*Tj\s+ET\s+Q"
+)
+
+
+def _strip_prynx_watermark(chunk: bytes) -> bytes:
+    """Cắt khối watermark PrynX khỏi content stream, GIỮ NGUYÊN phần còn lại.
+
+    Trước đây stream có watermark bị loại cả khối bytes. Với trang chỉ có MỘT
+    content stream (mọi bước gọi `contents_coalesce` đều gộp về dạng này) thì
+    artwork và đường bế nằm chung stream đó, nên loại cả stream = mất sạch path
+    vector của trang → không nhận được khuôn, âm thầm lùi về khổ trang.
+
+    Nếu regex không khớp (vd file đã bị Ghostscript dựng lại, đổi thứ tự toán tử),
+    hàm trả nguyên chunk. Đó là fallback an toàn: khối watermark chỉ gồm toán tử
+    CHỮ (BT/Tr/Tf/Td/Tj/ET) trong cặp q…Q cân bằng, không có toán tử path nào, nên
+    để lại cũng không sinh ra drawing rác.
+    """
+    if not _WATERMARK_TAG_RE.search(chunk):
+        return chunk
+    return _WATERMARK_BLOCK_RE.sub(b"\n", chunk)
 
 
 def extract_vector_paths(pike_page: pikepdf.Page, pdf: pikepdf.Pdf) -> list:
@@ -518,23 +600,26 @@ def extract_vector_paths(pike_page: pikepdf.Page, pdf: pikepdf.Pdf) -> list:
         contents = pike_page.get("/Contents")
         if contents is None:
             return []
+        # Gom chunk rồi xử lý CHUNG một đường cho cả hai dạng /Contents (một stream
+        # hoặc mảng stream) — trước đây hai nhánh lọc watermark ở mức khác nhau:
+        # nhánh mảng bỏ đúng chunk, nhánh stream đơn bỏ cả trang.
+        chunks: list[bytes] = []
         if isinstance(contents, pikepdf.Array):
             for ref in contents:
                 try:
                     stream_obj = pdf.get_object(ref.objgen)
-                    chunk = stream_obj.read_bytes()
-                    if b"PX_" in chunk and b"Tj" in chunk:
-                        continue
-                    raw_bytes += chunk
+                    chunks.append(stream_obj.read_bytes())
                 except Exception:
                     pass
         else:
             try:
-                chunk = contents.read_bytes()
-                if b"PX_" not in chunk or b"Tj" not in chunk:
-                    raw_bytes = chunk
+                chunks.append(contents.read_bytes())
             except Exception:
                 pass
+        # Nối bằng '\n': theo spec, mảng content stream được ghép như một stream duy
+        # nhất và giữa các phần phải có khoảng trắng, nếu không token cuối chunk này
+        # dính token đầu chunk kế. Trước đây cộng bytes trực tiếp, không có dấu ngăn.
+        raw_bytes = b"\n".join(_strip_prynx_watermark(c) for c in chunks)
     except Exception:
         return []
 

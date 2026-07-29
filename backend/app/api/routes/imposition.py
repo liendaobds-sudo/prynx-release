@@ -2,6 +2,7 @@ import os
 import shutil
 import tempfile
 import logging
+import contextlib
 import re
 import time
 import asyncio
@@ -252,84 +253,11 @@ async def execute_plan_json(body: dict, license_info: dict = Depends(require_fea
     except Exception as e:
         raise_http(e, "Thực thi kế hoạch bình thất bại")
 
-@router.post("/viewer-preview/page")
-async def viewer_page_preview(body: dict):
-    """Return a disposable fast preview; PDFium still paints the final sharp layer."""
-    from app.core.viewer_preview import ViewerPreviewError, render_page_preview
-
-    pdf_path = _validate_file_path(body.get("path"))
-    try:
-        page = int(body.get("page", 1))
-        dpi = int(body.get("dpi", 96))
-        result = await asyncio.to_thread(render_page_preview, pdf_path, page, dpi)
-        logger.info(
-            "[PAGE_TIMING] page=%s dpi=%s cache_hit=%s render_ms=%s",
-            page, dpi, result.cache_hit, result.render_ms,
-        )
-        return FileResponse(
-            path=result.path,
-            media_type="image/jpeg",
-            headers={
-                "Cache-Control": "private, max-age=31536000, immutable",
-                "X-PrynX-Preview-Cache": "hit" if result.cache_hit else "miss",
-                "X-PrynX-Preview-Ms": str(result.render_ms),
-            },
-        )
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="Invalid page preview parameters.")
-    except ViewerPreviewError as exc:
-        logger.info("Fast page preview unavailable: %s", exc)
-        raise HTTPException(status_code=503, detail=str(exc))
-
-
-@router.post("/viewer-preview/thumbnails")
-async def viewer_thumbnail_batch(body: dict):
-    """Prepare one visible thumbnail block in a single Ghostscript process."""
-    from app.core.viewer_preview import ViewerPreviewError, prepare_thumbnail_batch
-
-    pdf_path = _validate_file_path(body.get("path"))
-    try:
-        page_count = int(body.get("page_count", 0))
-        start_page = int(body.get("start_page", 1))
-        batch_size = int(body.get("batch_size", 8))
-        result = await asyncio.to_thread(
-            prepare_thumbnail_batch, pdf_path, page_count, start_page, batch_size
-        )
-        logger.info(
-            "[THUMB_TIMING] pages=%d-%d (%d) cache_hit=%s render_ms=%d",
-            result.start_page, result.end_page,
-            result.end_page - result.start_page + 1,
-            result.cache_hit, result.render_ms,
-        )
-        return {
-            "cache_key": result.cache_key,
-            "pages": result.pages,
-            "start_page": result.start_page,
-            "end_page": result.end_page,
-            "cache_hit": result.cache_hit,
-            "render_ms": result.render_ms,
-        }
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="Invalid thumbnail parameters.")
-    except ViewerPreviewError as exc:
-        logger.info("Fast thumbnail preview unavailable: %s", exc)
-        raise HTTPException(status_code=503, detail=str(exc))
-
-
-@router.get("/viewer-preview/thumbnail/{cache_key}/{page}")
-async def viewer_thumbnail(cache_key: str, page: int):
-    """Serve one authenticated thumbnail from the opaque sidecar cache."""
-    from app.core.viewer_preview import ViewerPreviewError, thumbnail_path
-
-    try:
-        path = thumbnail_path(cache_key, page)
-        return FileResponse(
-            path=path,
-            media_type="image/jpeg",
-            headers={"Cache-Control": "private, max-age=31536000, immutable"},
-        )
-    except ViewerPreviewError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+# GS-SUNSET (2026-07-28): ba route `/viewer-preview/*` đã được CÁCH LY sang
+# `attic/gs-sunset-2026-07-28/`. Chúng dựng preview tạm bằng Ghostscript, mà GS bị chặn
+# vô điều kiện ở `subprocess_utils._guard_ghostscript` → luôn trả 503 → frontend lùi về
+# PDFium. Bên gọi duy nhất (`desktop/src/lib/viewerPreview.ts`) cũng không được import ở
+# đâu. Muốn có lại lớp preview tạm thì viết bằng PPE/pdfium, đừng khôi phục đường GS.
 
 @router.post("/quick-color-space")
 async def quick_color_space(body: dict):
@@ -807,14 +735,29 @@ def _raster_fallback_budget(
 async def _compute_detect_response(file_path, config, detect_logger):
     """Run vector detection plus raster fallback and return the legacy response."""
     import time as _t
-    from app.workers import pdf_wrapper as pdf_lib
-    from app.workers.die_detection import detect_die_shapes, to_legacy_response
-    from app.core.separations import SeparationEngine
+    from app.workers.nup_engine import canonical_page_space
     from app.utils.preview_perf_log import log as _perf, mark as _pmark
 
     _t0 = _t.perf_counter()
     _fname = os.path.basename(file_path)
     _perf("DETECT", "compute_start", file=_fname)
+
+    # [AUDIT §2.1 2026-07-28] Nhận diện phải đọc CÙNG hệ quy chiếu với export.
+    # `run_nup_engine` chuẩn hoá /Rotate + gốc MediaBox trước khi layout, còn route này
+    # trước đây mở file thô → trang /Rotate=90 khổ 200×100 báo trim 200×100 trong khi
+    # export dựng theo 100×200 (đo được: hoán w/h). Nay dùng chung chốt đó.
+    with canonical_page_space(file_path) as _canon_path:
+        return await _detect_on_canonical(
+            _canon_path, config, detect_logger, _t0, _fname, _perf, _pmark
+        )
+
+
+async def _detect_on_canonical(file_path, config, detect_logger,
+                               _t0, _fname, _perf, _pmark):
+    """Phần thân nhận diện, chạy trên trang ĐÃ chuẩn hoá (xem _compute_detect_response)."""
+    from app.workers import pdf_wrapper as pdf_lib
+    from app.workers.die_detection import detect_die_shapes, to_legacy_response
+    from app.core.separations import SeparationEngine
 
     doc = pdf_lib.open(file_path)
     _pmark("DETECT", "open_doc", _t0, file=_fname, pages=getattr(doc, "page_count", "?"))
@@ -1765,7 +1708,14 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
     if req.file_id or req.path:
         # ═══ SINGLE SOURCE OF TRUTH PATH ═══
         # Uses compute_sticker_layout_for_page() — identical to nup_engine
-        if True:
+        #
+        # [AUDIT §2.1 2026-07-28] ExitStack là ĐIỂM DỌN DUY NHẤT cho bản trang đã
+        # chuẩn hoá (xem `_canon_stack.enter_context` bên dưới). Thân hàm này thoát ở
+        # ~15 nhánh `return` khác nhau và không có try/finally bao ngoài, nên nếu tự
+        # quản file tạm thì chắc chắn rò rỉ ở nhánh ngoại lệ. ExitStack dọn ở MỌI
+        # đường ra, kể cả khi ném exception. Đổi từ `if True:` nên thân hàm giữ NGUYÊN
+        # mức thụt lề — không có thay đổi logic nào kèm theo.
+        with contextlib.ExitStack() as _canon_stack:
             from app.workers import pdf_wrapper as pdf_lib
             from app.database import SessionLocal
             from app.models.job import UploadedFile as UploadedFileModel
@@ -1838,7 +1788,22 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
             logger.debug("   file_path=%s", file_path)
             
             _plog("resolve+validate path")
-            doc = pdf_lib.open(file_path)
+            # [AUDIT §2.1 2026-07-28] Preview phải đọc CÙNG hệ quy chiếu với export.
+            # `run_nup_engine` chuẩn hoá /Rotate + gốc MediaBox trước khi layout; preview
+            # trước đây mở file thô nên trang /Rotate=90 khổ 200×100 dựng lưới theo
+            # 200×100 trong khi export dựng theo 100×200 (đo được: hoán w/h).
+            # File đã chuẩn → hàm trả về CHÍNH đường dẫn đó, không tạo file tạm.
+            #
+            # KHÔNG gán lại `file_path`: nó là thành phần khoá của _NEST_A_CACHE và cache
+            # zone (kèm os.path.getmtime). Đường chuẩn hoá là file tạm mang uuid + mtime
+            # MỚI mỗi request → cache sẽ không bao giờ hit, phá hiệu năng preview nesting.
+            # Dùng đường GỐC làm khoá vẫn đúng vì cùng một file luôn chuẩn hoá ra cùng
+            # hình học.
+            from app.workers.nup_engine import canonical_page_space
+            _doc_path = _canon_stack.enter_context(canonical_page_space(file_path))
+            if _doc_path != file_path:
+                _plog("canonicalize page space")
+            doc = pdf_lib.open(_doc_path)
             _plog(f"open doc ({file_path.split(chr(92))[-1]}, {doc.page_count}p)")
             src_page_count = doc.page_count
             # SSOT số mẫu đang có trên dải thumbnail. PDF vật lý có thể vẫn chỉ

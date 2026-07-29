@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useLayoutEffect, useRef, Suspense } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef, Suspense } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import HomeTab from './components/HomeTab';
 import { ThemeToggle } from './components/ThemeToggle';
@@ -15,8 +15,9 @@ import { isOfficePathOrName } from './lib/officeFileTypes';
 import { MenuBar, type MenuDef } from './components/MenuBar';
 import AboutModal, { SUPPORT } from './components/AboutModal';
 import { useAppSettingsStore } from './stores/appSettingsStore';
+import { useActiveViewerStore } from './stores/useActiveViewerStore'; // UIUX (audit menu 2026-07-28 §MB.5)
 import { useTheme } from './hooks/useTheme';
-import { useRecentFiles } from './lib/useRecentFiles';
+import { useRecentFiles, statRecentFile } from './lib/useRecentFiles';
 import { FileProvider, useFileContext } from './lib/fileContext';
 import { isOutputFile } from './lib/constants';
 import { useAuthStore } from './stores/useAuthStore';
@@ -34,13 +35,45 @@ import { ZoomIn, ZoomOut, Maximize, MoveHorizontal, FileText, ScrollText, Column
 import { useTranslation } from 'react-i18next';
 import { tv } from './i18n';
 import { canUse, featureIdForFocus, FEATURE_CATALOG } from './lib/license/features';
-import { getShortcutLabel } from './lib/keyboardShortcuts';
+import { getShortcutLabel, matchesShortcut } from './lib/keyboardShortcuts';
+import { buildResultTabPayload, resolveActiveImageBatchReceiver } from './lib/tabNavigation';
 
 type AppTabType = 'home' | AppToolId;
 
+// ── BẢNG NĂNG LỰC TAB (audit menu 2026-07-28 §MB.1/§MB.2) ──────────────────
+// Menu bar phát lệnh bằng sự kiện window; tab nào KHÔNG có listener thì bấm menu
+// hoàn toàn im lặng. Trước đây menu chỉ gate bằng "khác tab Home" nên 17 mục sáng
+// giả trên tab Khuôn bế / Ghép & Trộn / So sánh. Ba Set dưới đây là danh sách tab
+// THỰC SỰ xử lý được từng nhóm lệnh — sửa listener thì phải sửa Set tương ứng.
+
+/** Tab có listener `app-trigger-print` + luồng in native. */
 const NATIVE_PRINT_TOOL_TYPES = new Set<AppToolId>([
   'imposition', 'nup', 'diecut', 'cnc', 'preflight', 'combine_pdf', 'dieline',
   'compare_pdf',
+]);
+
+/**
+ * Tab xử lý `prynx-menu-command` (toàn bộ menu Sửa + Xem).
+ * Listener duy nhất trong dự án là AcrobatViewer, mà AcrobatViewer chỉ mount
+ * trong ImpositionTab → đúng bằng họ tab bình bài.
+ */
+const VIEWER_COMMAND_TOOL_TYPES = new Set<AppToolId>([
+  'imposition', 'nup', 'diecut', 'cnc', 'preflight',
+]);
+
+/** Tab có listener `app-trigger-save` (Lưu / Lưu thành…) — hiện chỉ ImpositionTab. */
+const SAVE_TOOL_TYPES = new Set<AppToolId>([
+  'imposition', 'nup', 'diecut', 'cnc', 'preflight',
+]);
+
+/**
+ * Tab xử lý riêng nhóm lệnh ZOOM/FIT của menu Xem.
+ * Rộng hơn VIEWER_COMMAND_TOOL_TYPES vì Khuôn bế có canvas zoom/pan riêng
+ * (DielineCanvas2D + NestingCanvas) nhưng KHÔNG có khái niệm trang, hoàn tác trang,
+ * chế độ xem một/hai trang — nên các nhóm đó vẫn phải mờ trên tab Khuôn bế.
+ */
+const ZOOM_COMMAND_TOOL_TYPES = new Set<AppToolId>([
+  'imposition', 'nup', 'diecut', 'cnc', 'preflight', 'dieline',
 ]);
 
 interface AppTab {
@@ -257,10 +290,20 @@ function AppInner() {
   ]);
   const [activeTabId, setActiveTabId] = useState<string>('home');
   const [tabToConfirmClose, setTabToConfirmClose] = useState<string | null>(null);
-  /** Thoát app: hỏi TỪNG file dirty (như Acrobat), không gộp 1 popup tất cả. */
-  const [quitDirtyQueue, setQuitDirtyQueue] = useState<string[]>([]);
+  /**
+   * Hàng đợi hỏi-lưu: hỏi TỪNG file dirty (như Acrobat), không gộp 1 popup tất cả.
+   *
+   * UIUX (audit menu 2026-07-28 §MB.13b): dùng cho HAI việc, phân biệt bằng `mode`:
+   *  - `'quit'`      thoát app → hết hàng đợi thì destroy() cửa sổ.
+   *  - `'close-all'` menu Cửa sổ > Đóng tất cả tab → hết hàng đợi thì chỉ dọn state,
+   *                  KHÔNG đụng cửa sổ. Mỗi tab được quyết định là đóng ngay tab đó
+   *                  (giống Acrobat đóng nhiều tài liệu), Huỷ = dừng, giữ phần còn lại.
+   */
+  const [dirtyQueue, setDirtyQueue] = useState<string[]>([]);
+  const [dirtyQueueMode, setDirtyQueueMode] = useState<'quit' | 'close-all'>('quit');
   const [quitBusy, setQuitBusy] = useState(false);
-  const quitQueueRef = useRef<string[]>([]);
+  const dirtyQueueRef = useRef<string[]>([]);
+  const dirtyQueueModeRef = useRef<'quit' | 'close-all'>('quit');
   const [recoverySnaps, setRecoverySnaps] = useState<RecoverySnapshot[] | null>(null);
   const [isGlobalSettingsOpen, setIsGlobalSettingsOpen] = useState(false);
   const [isNewDocOpen, setIsNewDocOpen] = useState(false);
@@ -506,9 +549,17 @@ function AppInner() {
     }
 
     // payload.title: tab Combine theo nhóm kích thước, recovery, v.v.
+    // UIUX (audit menu 2026-07-28 §WT.1): mở tool KHÔNG kèm file thì lấy tên CHÍNH tool
+    // đó ("Cắt khổ (Crop)", "Bình tem bế") thay vì tiêu đề chung "Bình bài (Chưa có
+    // file)" — trước đây mở 5 tool khác nhau ra 5 tab trùng y tên, thanh tab và menu
+    // Cửa sổ không phân biệt được cái nào. Mở kèm file thì giữ nguyên đường cũ: tool
+    // tự đổi tiêu đề thành tên file qua onTitleChange.
+    const variantTool = toolKey !== appId
+      ? TOOL_REGISTRY.find(tool => tool.isEnabled && getToolUniqueKey(tool) === toolKey)
+      : undefined;
     const title = (payload && typeof payload.title === 'string' && payload.title.trim())
       ? payload.title.trim()
-      : getTabTitle(appId);
+      : (variantTool && !payload?.file ? tv(variantTool.title) : getTabTitle(appId));
 
     // Add random suffix to allow extremely fast consecutive spawns
     const newId = appId + '-' + Date.now() + '-' + Math.random().toString(36).substring(2, 5);
@@ -664,48 +715,68 @@ function AppInner() {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, []);
 
-  /** Bắt đầu / chạy tiếp hàng đợi file dirty khi thoát app (mỗi file 1 dialog). */
-  const beginQuitWithDirtyPrompt = useCallback(() => {
-    const dirtyIds = tabsRef.current.filter(t => t.isDirty).map(t => t.id);
-    if (dirtyIds.length === 0) {
-      forceCloseRef.current = true;
-      clearAllSnapshots().finally(() => {
-        // UIUX (audit 2026-07-27 §D-13) fix-verify: destroy() đóng ỨNG DỤNG, không phải tab → sửa câu lỗi
-        getCurrentWindow().destroy().catch((e: any) => toast.error(formatError(e, t('shell:khong_dong_duoc_ung_dung', 'Không đóng được ứng dụng'))));
-      });
-      return;
-    }
-    quitQueueRef.current = dirtyIds;
-    setQuitDirtyQueue(dirtyIds);
-  }, []);
-
-  const finishAppQuit = useCallback(() => {
+  /** Đóng thật ứng dụng — dùng chung cho mọi đường kết thúc hàng đợi mode 'quit'. */
+  const destroyAppWindow = useCallback(() => {
     forceCloseRef.current = true;
-    setQuitDirtyQueue([]);
-    quitQueueRef.current = [];
-    setQuitBusy(false);
     clearAllSnapshots().finally(() => {
       // UIUX (audit 2026-07-27 §D-13) fix-verify: destroy() đóng ỨNG DỤNG, không phải tab → sửa câu lỗi
       getCurrentWindow().destroy().catch((e: any) => toast.error(formatError(e, t('shell:khong_dong_duoc_ung_dung', 'Không đóng được ứng dụng'))));
     });
+  }, [t]);
+
+  /** Mở hàng đợi hỏi-lưu cho danh sách tab dirty. Rỗng → gọi ngay onEmpty. */
+  const beginDirtyQueue = useCallback((ids: string[], mode: 'quit' | 'close-all') => {
+    dirtyQueueModeRef.current = mode;
+    setDirtyQueueMode(mode);
+    dirtyQueueRef.current = ids;
+    setDirtyQueue(ids);
   }, []);
 
-  const advanceQuitQueue = useCallback(() => {
-    const next = quitQueueRef.current.slice(1);
-    quitQueueRef.current = next;
-    setQuitDirtyQueue(next);
-    if (next.length === 0) finishAppQuit();
-  }, [finishAppQuit]);
+  /** Bắt đầu / chạy tiếp hàng đợi file dirty khi thoát app (mỗi file 1 dialog). */
+  const beginQuitWithDirtyPrompt = useCallback(() => {
+    const dirtyIds = tabsRef.current.filter(t => t.isDirty).map(t => t.id);
+    if (dirtyIds.length === 0) {
+      destroyAppWindow();
+      return;
+    }
+    beginDirtyQueue(dirtyIds, 'quit');
+  }, [beginDirtyQueue, destroyAppWindow]);
 
-  const cancelQuitFlow = useCallback(() => {
-    setQuitDirtyQueue([]);
-    quitQueueRef.current = [];
+  /** Hết hàng đợi: 'quit' thì đóng app, 'close-all' thì chỉ dọn state. */
+  const finishDirtyQueue = useCallback(() => {
+    const mode = dirtyQueueModeRef.current;
+    setDirtyQueue([]);
+    dirtyQueueRef.current = [];
+    setQuitBusy(false);
+    if (mode === 'quit') destroyAppWindow();
+  }, [destroyAppWindow]);
+
+  const advanceDirtyQueue = useCallback(() => {
+    const next = dirtyQueueRef.current.slice(1);
+    dirtyQueueRef.current = next;
+    setDirtyQueue(next);
+    if (next.length === 0) finishDirtyQueue();
+  }, [finishDirtyQueue]);
+
+  const cancelDirtyQueue = useCallback(() => {
+    setDirtyQueue([]);
+    dirtyQueueRef.current = [];
     setQuitBusy(false);
   }, []);
 
-  /** Lưu tab hiện tại trong hàng đợi thoát (chờ app-save-result từ ImpositionTab). */
-  const quitSaveCurrent = useCallback(async () => {
-    const tabId = quitQueueRef.current[0];
+  /**
+   * Xử lý xong một tab trong hàng đợi. Mode 'close-all' thì đóng luôn tab đó — dù user
+   * chọn Lưu hay Không lưu, ý định của họ là ĐÓNG. Mode 'quit' chỉ đi tiếp (cửa sổ sẽ
+   * đóng cả ở cuối, không cần gỡ tab lẻ).
+   */
+  const resolveQueueTab = useCallback((tabId: string) => {
+    if (dirtyQueueModeRef.current === 'close-all') commitCloseTab(tabId);
+    advanceDirtyQueue();
+  }, [advanceDirtyQueue, commitCloseTab]);
+
+  /** Lưu tab đầu hàng đợi (chờ app-save-result từ ImpositionTab). */
+  const saveCurrentQueueTab = useCallback(async () => {
+    const tabId = dirtyQueueRef.current[0];
     if (!tabId || quitBusy) return;
     setQuitBusy(true);
     setActiveTabId(tabId);
@@ -733,13 +804,13 @@ function AppInner() {
 
     setQuitBusy(false);
     if (result === 'saved') {
-      // Tab đã lưu → coi như hết dirty; sang file tiếp theo
-      advanceQuitQueue();
+      // Tab đã lưu → coi như hết dirty; đóng (nếu đang Đóng tất cả) rồi sang file tiếp.
+      resolveQueueTab(tabId);
     } else if (result === 'failed') {
       toast.info(tv('Không lưu được file này — hãy lưu thủ công (Ctrl+S) hoặc chọn Không lưu.'));
     }
     // cancelled: giữ dialog cùng file (user huỷ hộp thoại lưu)
-  }, [quitBusy, advanceQuitQueue]);
+  }, [quitBusy, resolveQueueTab]);
 
   // CHẶN ĐÓNG CỬA SỔ TAURI khi còn tab CHƯA LƯU. beforeunload KHÔNG bắt được nút X
   // native (Tauri đóng cửa sổ qua sự kiện riêng `close-requested`, không qua DOM
@@ -866,9 +937,17 @@ function AppInner() {
       }
       if (e.ctrlKey && e.key.toLowerCase() === 's') {
         e.preventDefault();
-        window.dispatchEvent(new CustomEvent('app-trigger-save', {
-          detail: { tabId: activeTabIdRef.current, saveAs: e.shiftKey }
-        }));
+        // UIUX (audit menu 2026-07-28 §MB.2): chỉ họ tab bình bài có listener
+        // app-trigger-save. Trước đây Ctrl+S ở tab Khuôn bế/Ghép/So sánh phát sự
+        // kiện vào hư không — user tưởng đã lưu. Nay nói rõ tab chưa hỗ trợ.
+        const saveTab = tabsRef.current.find(tab => tab.id === activeTabIdRef.current);
+        if (saveTab && saveTab.type !== 'home' && SAVE_TOOL_TYPES.has(saveTab.type)) {
+          window.dispatchEvent(new CustomEvent('app-trigger-save', {
+            detail: { tabId: activeTabIdRef.current, saveAs: e.shiftKey }
+          }));
+        } else if (saveTab && saveTab.type !== 'home') {
+          toast.info(t('shell:tab_nay_chua_ho_tro_luu_bang_ctrl_s'));
+        }
       }
       if (e.ctrlKey && e.key.toLowerCase() === 'k') {
         e.preventDefault();
@@ -881,6 +960,25 @@ function AppInner() {
       if (e.ctrlKey && e.key.toLowerCase() === 'o') {
         e.preventDefault();
         handleOpenFile();
+      }
+      // UIUX (audit menu 2026-07-28 §MB.13): Ctrl+Tab / Ctrl+Shift+Tab chuyển tab.
+      if (matchesShortcut(e, 'global.next_tab') || matchesShortcut(e, 'global.prev_tab')) {
+        e.preventDefault();
+        const list = tabsRef.current;
+        if (list.length > 1) {
+          const cur = list.findIndex(tab => tab.id === activeTabIdRef.current);
+          const step = matchesShortcut(e, 'global.prev_tab') ? -1 : 1;
+          const next = ((cur < 0 ? 0 : cur) + step + list.length) % list.length;
+          setActiveTabId(list[next].id);
+        }
+        return;
+      }
+      // UIUX (audit menu 2026-07-28 §MB.14): F1 = trợ giúp → mở bảng phím tắt.
+      if (matchesShortcut(e, 'global.help')) {
+        e.preventDefault();
+        setSettingsInitialTab('shortcuts');
+        setIsGlobalSettingsOpen(true);
+        return;
       }
       // Ctrl+P: in PDF đang xem qua hộp thoại máy in Windows (Rust print_pdf).
       // preventDefault() cũng chặn hành vi in DOM mặc định của WebView2 (in nguyên UI).
@@ -956,25 +1054,30 @@ function AppInner() {
               // KỂ CẢ 1 file (khác luồng mặc định đẩy 1 file vào imposition).
               // CombineTab đã có sẵn logic ảnh→trang PDF; convert = combine 1 ảnh.
               handleOpenApp('combine_pdf' as AppToolId, { files: filesForOtherTools });
-            } else if (filesForOtherTools.length > 1) {
-              if ((window as any).__isBgRemoverActive) {
-                  window.dispatchEvent(new CustomEvent('prynx-bgremover-add-files', { detail: { files: filesForOtherTools } }));
-              } else {
-                  handleOpenApp('combine_pdf' as AppToolId, {
-                    files: filesForOtherTools
-                  });
-              }
-            } else if ((window as any).__isBgRemoverActive) {
-              window.dispatchEvent(new CustomEvent('prynx-bgremover-add-files', { detail: { files: filesForOtherTools } }));
             } else {
+              // NAV (audit điều hướng tab 2026-07-28 §DROP.01): chỉ công cụ ảnh
+              // chuyên dụng ĐANG XEM mới nhận file native; tab nền không được hút file.
+              const imageBatchReceiver = resolveActiveImageBatchReceiver(
+                tabsRef.current,
+                activeTabIdRef.current,
+              );
+
+              if (imageBatchReceiver) {
+                window.dispatchEvent(new CustomEvent(imageBatchReceiver.eventName, {
+                  detail: { tabId: imageBatchReceiver.tabId, files: filesForOtherTools },
+                }));
+              } else if (filesForOtherTools.length > 1) {
+                handleOpenApp('combine_pdf' as AppToolId, { files: filesForOtherTools });
+              } else {
               // LUÔN mở tab MỚI (kiểu Acrobat). Trước đây khi tab hiện tại đã mở file thì
               // phát `send-file-to-tab-${id}` để "gửi vào tab đang xem" — NHƯNG không có
               // listener nào nhận sự kiện đó (ImpositionTab chỉ nạp qua prop initialFile,
               // mà prop này bị bỏ qua khi tab đã có file). Hệ quả: double-click / Open with
               // một file khi Prynx đang mở sẵn file → file rơi vào hư không, không mở được.
-              handleOpenApp('imposition', {
-                file: filesForOtherTools[0],
-              });
+                handleOpenApp('imposition', {
+                  file: filesForOtherTools[0],
+                });
+              }
             }
           }
         }, 50); // Reduced delay for drag-and-drop snappiness
@@ -987,9 +1090,42 @@ function AppInner() {
   // ── MENU BAR (kiểu Acrobat) — lệnh viewer đi qua sự kiện 'prynx-menu-command'
   //    (chỉ tab active xử lý); lệnh app-level gọi handler trực tiếp. ─────────────
   const recentFiles = useRecentFiles((s) => s.files);
+  const recentMissingPaths = useRecentFiles((s) => s.missingPaths); // §RF.1
+  // UIUX (audit menu 2026-07-28 §MB.5/§MB.6): đọc TỪNG TRƯỜNG bằng selector riêng —
+  // viewer publish lại cùng giá trị (vd zoom liên tục set fitMode='custom') sẽ không
+  // làm shell render lại, tránh hồi quy hiệu năng khi cuộn file nhiều trang.
+  const activeViewerPageDisplayMode = useActiveViewerStore((s) => s.pageDisplayMode);
+  const activeViewerFitMode = useActiveViewerStore((s) => s.fitMode);
+  const activeViewerNumPages = useActiveViewerStore((s) => s.numPages);
   const viewerCmd = useCallback((cmd: string) => {
     window.dispatchEvent(new CustomEvent('prynx-menu-command', { detail: { cmd } }));
   }, []);
+
+  // UIUX (audit menu 2026-07-28 §MB.13): chuyển tab vòng tròn — dùng chung cho menu
+  // Cửa sổ và phím Ctrl+Tab (một chỗ tính, không lệch hành vi).
+  const stepActiveTab = useCallback((step: 1 | -1) => {
+    const list = tabsRef.current;
+    if (list.length < 2) return;
+    const cur = list.findIndex(tab => tab.id === activeTabIdRef.current);
+    const next = ((cur < 0 ? 0 : cur) + step + list.length) % list.length;
+    setActiveTabId(list[next].id);
+  }, []);
+
+  /**
+   * Đóng mọi tab công cụ. Tab sạch đóng ngay; tab chưa lưu đi qua **hàng đợi hỏi-lưu
+   * dùng chung với luồng thoát app** (mode 'close-all') — mỗi file một hộp thoại
+   * Lưu / Không lưu / Huỷ, quyết định xong là đóng luôn tab đó.
+   *
+   * UIUX (audit menu 2026-07-28 §MB.13b): bản đầu chỉ đóng tab sạch rồi báo còn mấy
+   * tab dirty, vì hàng đợi lúc đó dính chặt với destroy() cửa sổ. Đã tách ra nên giờ
+   * hỏi được từng file như Acrobat.
+   */
+  const closeAllTabs = useCallback(() => {
+    const closable = tabsRef.current.filter(tab => tab.id !== 'home' && tab.isClosable);
+    closable.filter(tab => !tab.isDirty).forEach(tab => commitCloseTab(tab.id));
+    const dirtyIds = closable.filter(tab => tab.isDirty).map(tab => tab.id);
+    if (dirtyIds.length > 0) beginDirtyQueue(dirtyIds, 'close-all');
+  }, [commitCloseTab, beginDirtyQueue]);
   const isToolActive = activeTabId !== 'home';
   const activeTabType = tabs.find(t => t.id === activeTabId)?.type;
   const canNativePrint = !!(
@@ -997,20 +1133,46 @@ function AppInner() {
     && activeTabType !== 'home'
     && NATIVE_PRINT_TOOL_TYPES.has(activeTabType as AppToolId)
   );
+  // UIUX (audit menu 2026-07-28 §MB.1/§MB.2): gate menu theo NĂNG LỰC THẬT của tab
+  // đang xem, không phải "khác Home". Tab không có listener thì mục menu phải mờ
+  // hẳn — thà thấy mờ còn hơn bấm vào không có gì xảy ra mà không hiểu vì sao.
+  const canViewerCommand = !!(
+    activeTabType
+    && activeTabType !== 'home'
+    && VIEWER_COMMAND_TOOL_TYPES.has(activeTabType as AppToolId)
+  );
+  const canSaveActiveTab = !!(
+    activeTabType
+    && activeTabType !== 'home'
+    && SAVE_TOOL_TYPES.has(activeTabType as AppToolId)
+  );
+  const canZoomCommand = !!(
+    activeTabType
+    && activeTabType !== 'home'
+    && ZOOM_COMMAND_TOOL_TYPES.has(activeTabType as AppToolId)
+  );
 
+  // UIUX (audit menu 2026-07-28 §MB.3): trước đây mở thẳng theo đường dẫn đã lưu —
+  // file bị xóa/đổi tên thì tab mở ra rỗng, im lặng, chỉ có console.error. Nay stat()
+  // trước như RecentFilesGrid (§D-13): còn thì lấy DUNG LƯỢNG THẬT (size lưu trong
+  // store có thể cũ), mất thì báo tiếng Việt kèm đường dẫn và gỡ khỏi danh sách.
   const openRecentFile = useCallback(async (rf: { path: string; name: string; size: number }) => {
     if (!(window as any).__TAURI_INTERNALS__) return;
-    try {
-      const lower = rf.name.toLowerCase();
-      const type = lower.endsWith('.pdf') ? 'application/pdf' : lower.endsWith('.png') ? 'image/png' : 'image/jpeg';
-      const fileObj = new File([], rf.name, { type });
-      Object.defineProperty(fileObj, 'path', { value: rf.path });
-      Object.defineProperty(fileObj, 'size', { value: rf.size });
-      handleOpenApp('imposition', { file: fileObj });
-    } catch (err) {
-      console.error(err);
+    // §RF.1: kiểm tồn tại qua helper dùng chung — nó tự đánh dấu/bỏ dấu "file đã mất"
+    // trong store nên lưới Home và thumbnail thấy cùng một sự thật.
+    const info = await statRecentFile(rf.path);
+    if (!info) {
+      toast.error(t('misc.recentFilesGrid:file_da_di_chuyen') + '\n' + rf.path);
+      useRecentFiles.getState().removeFile(rf.path);
+      return;
     }
-  }, [handleOpenApp]);
+    const lower = rf.name.toLowerCase();
+    const type = lower.endsWith('.pdf') ? 'application/pdf' : lower.endsWith('.png') ? 'image/png' : 'image/jpeg';
+    const fileObj = new File([], rf.name, { type });
+    Object.defineProperty(fileObj, 'path', { value: rf.path });
+    Object.defineProperty(fileObj, 'size', { value: info.size || rf.size });
+    handleOpenApp('imposition', { file: fileObj });
+  }, [handleOpenApp, t]);
 
   const openExternal = useCallback(async (url: string) => {
     try {
@@ -1025,99 +1187,185 @@ function AppInner() {
     }
   }, []);
 
+  // UIUX (audit menu 2026-07-28 §WT.1): danh sách tab trong menu Cửa sổ. Hai tab vẫn có
+  // thể trùng tên (mở cùng một tool hai lần, hay cùng một file) → đánh số (1)(2) cho
+  // NHÓM trùng để bấm đúng cái mình muốn; đánh dấu * cho tab chưa lưu (giống thanh tab)
+  // để lúc Đóng tất cả biết trước cái nào sẽ hỏi.
+  const windowTabItems = useMemo(() => {
+    const total = new Map<string, number>();
+    for (const tab of tabs) total.set(tab.title, (total.get(tab.title) ?? 0) + 1);
+    const seen = new Map<string, number>();
+    return tabs.map((tab) => {
+      const n = (seen.get(tab.title) ?? 0) + 1;
+      seen.set(tab.title, n);
+      const suffix = (total.get(tab.title) ?? 0) > 1 ? ` (${n})` : '';
+      return {
+        label: `${tab.isDirty ? '* ' : ''}${tab.title}${suffix}`,
+        title: tab.title,
+        checked: tab.id === activeTabId,
+        onClick: () => setActiveTabId(tab.id),
+      };
+    });
+  }, [tabs, activeTabId]);
+
+  // UIUX (audit menu 2026-07-28 §MB.8/§MB.11): nhóm "Công cụ" là phần đắt nhất của
+  // thanh menu (~30 entry × lọc × tạo icon JSX) và trước đây dựng lại MỖI lần shell
+  // render. Memo theo đúng những thứ nó phụ thuộc. Đồng thời gắn nhãn PRO/🔒 giống
+  // HomeTab — trước đây menu không hé một dấu hiệu nào, bấm mới nhận toast từ chối.
+  const licensePlan = useAuthStore((s) => s.licensePlan);
+  const licenseFeatures = useAuthStore((s) => s.licenseFeatures);
+  // Đổi ngôn ngữ vẫn dựng lại đúng: react-i18next tạo `t` MỚI mỗi lần đổi lng
+  // (useTranslation → getSnapshot sinh snapshot mới), nên `t` trong deps là đủ —
+  // không cần thêm i18n.language.
+  const toolMenuItems = useMemo(() => TOOL_CATEGORIES.flatMap((cat) => {
+    const tools = getToolsByCategory(cat.id).filter((tool) => tool.isEnabled && !hiddenTools.includes(getToolUniqueKey(tool)));
+    if (tools.length === 0) return [];
+    return [{
+      label: tv(cat.title),
+      submenu: tools.map((tool) => {
+        const featureId = featureIdForFocus(getToolUniqueKey(tool));
+        const locked = !!featureId && !canUse(featureId, licensePlan, licenseFeatures);
+        return {
+          label: locked ? `${tv(tool.title)}  🔒 PRO` : tv(tool.title),
+          title: locked ? t('shell:can_key_prynx_pro', 'Cần key PrynX Pro') : tv(tool.title),
+          icon: tool.icon,
+          onClick: () => handleOpenApp(tool.id, tool.defaultPayload),
+        };
+      }),
+    }];
+  }), [hiddenTools, licensePlan, licenseFeatures, handleOpenApp, t]);
+
   const menus: MenuDef[] = [
     {
       label: t('shell:menu_file', 'Tệp'), // UIUX (audit 2026-07-27 §A-12)
       items: [
-        { label: tv('Tài liệu mới'), shortcut: 'Ctrl+N', onClick: () => setIsNewDocOpen(true) },
-        { label: tv('Mở file…'), shortcut: 'Ctrl+O', onClick: handleOpenFile },
+        // UIUX (audit menu 2026-07-28 §MB.12): nhãn phím tắt lấy từ bảng trung tâm,
+        // không hardcode — đổi binding trong keyboardShortcuts là menu đổi theo.
+        { label: tv('Tài liệu mới'), shortcut: getShortcutLabel('global.new_document'), onClick: () => setIsNewDocOpen(true) },
+        { label: tv('Mở file…'), shortcut: getShortcutLabel('global.open'), onClick: handleOpenFile },
+        // UIUX (audit menu 2026-07-28 §MB.15): thêm mục dọn danh sách (giữ file gắn sao)
+        // — trước đây chỉ dọn được ở lưới Home.
         { label: tv('Mở gần đây'), disabled: recentFiles.length === 0,
-          submenu: recentFiles.slice(0, 12).map((rf) => ({ label: rf.name, onClick: () => openRecentFile(rf) })) },
+          submenu: [
+            // title = đường dẫn đầy đủ: hai file trùng tên khác thư mục phân biệt được khi hover.
+            // §RF.1: file đã bị xác nhận mất (bởi bất kỳ UI nào) hiện dấu ⚠ ngay trong menu.
+            ...recentFiles.slice(0, 12).map((rf) => {
+              const missing = recentMissingPaths.includes(rf.path);
+              return {
+                label: missing ? `⚠ ${rf.name}` : rf.name,
+                title: missing ? `${t('misc.recentFilesGrid:file_da_di_chuyen')} ${rf.path}` : rf.path,
+                onClick: () => openRecentFile(rf),
+              };
+            }),
+            { separator: true },
+            { label: t('shell:menu_xoa_danh_sach_gan_day'), onClick: () => useRecentFiles.getState().clearUnstarred() },
+          ] },
         { separator: true },
-        { label: tv('Lưu'), shortcut: 'Ctrl+S', disabled: !isToolActive,
+        // UIUX (audit menu 2026-07-28 §MB.2): chỉ tab có listener app-trigger-save mới bật.
+        // §MB.2b: và phải ĐANG CÓ trang trong viewer — tab bình bài chưa nạp file thì
+        // handleSaveFile dừng ở `if (!targetBlob) return false`, bấm vào không có gì.
+        { label: tv('Lưu'), shortcut: getShortcutLabel('global.save'), disabled: !canSaveActiveTab || activeViewerNumPages === 0,
           onClick: () => window.dispatchEvent(new CustomEvent('app-trigger-save', { detail: { tabId: activeTabId, saveAs: false } })) },
-        { label: tv('Lưu thành…'), shortcut: 'Ctrl+Shift+S', disabled: !isToolActive,
+        { label: tv('Lưu thành…'), shortcut: getShortcutLabel('global.save_as'), disabled: !canSaveActiveTab || activeViewerNumPages === 0,
           onClick: () => window.dispatchEvent(new CustomEvent('app-trigger-save', { detail: { tabId: activeTabId, saveAs: true } })) },
         { separator: true },
         {
-          label: tv('In…'),
-          shortcut: 'Ctrl+P',
+          // UIUX (audit menu 2026-07-28 §MB.10): bỏ nhánh else báo lỗi — item đã disabled
+          // khi tab không in được nên nhánh đó là code chết (toast chỉ còn dùng cho Ctrl+P).
+          // UIUX (audit menu 2026-07-28 §MB.4): 'In…' chưa có trong locale nên tv() trả
+          // nguyên tiếng Việt ở bản English → dùng key shell:menu_in.
+          label: t('shell:menu_in', 'In…'),
+          shortcut: getShortcutLabel('global.print'),
           disabled: !canNativePrint,
-          onClick: () => {
-            if (canNativePrint) {
-              window.dispatchEvent(new CustomEvent('app-trigger-print', { detail: { tabId: activeTabId } }));
-            } else {
-              toast.info(t('shell:ctrl_p_chi_ho_tro_trinh_xem_pdf'));
-            }
-          },
+          onClick: () => window.dispatchEvent(new CustomEvent('app-trigger-print', { detail: { tabId: activeTabId } })),
         },
         { separator: true },
-        { label: tv('Đóng tab'), shortcut: 'Ctrl+W', disabled: !isToolActive, onClick: () => handleCloseTab(activeTabId) },
-        { label: tv('Thoát'), shortcut: 'Alt+F4', onClick: () => window.dispatchEvent(new CustomEvent('prynx-request-quit')) },
+        { label: tv('Đóng tab'), shortcut: getShortcutLabel('global.close_tab'), disabled: !isToolActive, onClick: () => handleCloseTab(activeTabId) },
+        { label: tv('Thoát'), shortcut: getShortcutLabel('global.quit'), onClick: () => window.dispatchEvent(new CustomEvent('prynx-request-quit')) },
       ],
     },
     {
       label: t('shell:menu_edit', 'Sửa'), // UIUX (audit 2026-07-27 §A-12)
+      // UIUX (audit menu 2026-07-28 §MB.1): mọi mục ở đây đi qua prynx-menu-command →
+      // chỉ tab có AcrobatViewer xử lý được, gate bằng canViewerCommand.
       items: [
-        { label: tv('Hoàn tác'), shortcut: 'Ctrl+Z', disabled: !isToolActive, onClick: () => viewerCmd('undo') },
-        { label: tv('Làm lại'), shortcut: 'Ctrl+Y', disabled: !isToolActive, onClick: () => viewerCmd('redo') },
+        { label: tv('Hoàn tác'), shortcut: getShortcutLabel('viewer.undo'), disabled: !canViewerCommand, onClick: () => viewerCmd('undo') },
+        { label: tv('Làm lại'), shortcut: getShortcutLabel('viewer.redo'), disabled: !canViewerCommand, onClick: () => viewerCmd('redo') },
         { separator: true },
-        { label: tv('Chỉnh sửa đối tượng'), shortcut: getShortcutLabel('viewer.object_edit'), disabled: !isToolActive, onClick: () => viewerCmd('toggle-object-edit') },
-        { label: tv('Cắt khổ (Crop)'), shortcut: getShortcutLabel('viewer.crop'), disabled: !isToolActive, onClick: () => viewerCmd('crop') },
-        { label: tv('Xóa trang…'), shortcut: getShortcutLabel('viewer.delete_pages'), disabled: !isToolActive, onClick: () => viewerCmd('delete-pages') },
+        { label: tv('Chỉnh sửa đối tượng'), shortcut: getShortcutLabel('viewer.object_edit'), disabled: !canViewerCommand, onClick: () => viewerCmd('toggle-object-edit') },
+        { label: tv('Cắt khổ (Crop)'), shortcut: getShortcutLabel('viewer.crop'), disabled: !canViewerCommand, onClick: () => viewerCmd('crop') },
+        { separator: true },
+        // UIUX (audit menu 2026-07-28 §MB.6): các thao tác trang trước đây CHỈ có phím tắt
+        // (R / Shift+R / Ctrl+A / E) — khách dùng chuột không có đường nào tới.
+        { label: t('shell:menu_chon_tat_ca_trang'), shortcut: getShortcutLabel('pages.select_all'), disabled: !canViewerCommand || activeViewerNumPages === 0, onClick: () => viewerCmd('select-all-pages') },
+        { label: t('shell:menu_bo_chon_trang'), shortcut: getShortcutLabel('pages.clear_selection'), disabled: !canViewerCommand || activeViewerNumPages === 0, onClick: () => viewerCmd('clear-page-selection') },
+        { label: t('shell:menu_xoay_phai'), shortcut: getShortcutLabel('pages.rotate_right'), disabled: !canViewerCommand || activeViewerNumPages === 0, onClick: () => viewerCmd('rotate-right') },
+        { label: t('shell:menu_xoay_trai'), shortcut: getShortcutLabel('pages.rotate_left'), disabled: !canViewerCommand || activeViewerNumPages === 0, onClick: () => viewerCmd('rotate-left') },
+        { separator: true },
+        { label: t('shell:menu_trich_xuat_trang'), shortcut: getShortcutLabel('viewer.extract_pages'), disabled: !canViewerCommand || activeViewerNumPages === 0, onClick: () => viewerCmd('extract-pages') },
+        { label: tv('Xóa trang…'), shortcut: getShortcutLabel('viewer.delete_pages'), disabled: !canViewerCommand || activeViewerNumPages === 0, onClick: () => viewerCmd('delete-pages') },
+        { separator: true },
+        // UIUX (audit menu 2026-07-28 §MB.14): "Cài đặt & Cấu hình" chuyển từ Trợ giúp
+        // sang cuối menu Sửa — đúng chỗ Preferences của Acrobat và chuẩn Windows. Mục
+        // "Phím tắt" GIỮ ở Trợ giúp vì đó là nội dung tra cứu, không phải thiết lập.
+        { label: t('shell:menu_tuy_chon'), shortcut: getShortcutLabel('global.settings'), onClick: () => { setSettingsInitialTab('tools'); setIsGlobalSettingsOpen(true); } },
       ],
     },
     {
       label: t('shell:menu_view', 'Xem'), // UIUX (audit 2026-07-27 §A-12)
       items: [
-        { label: t('shell:phong_to'), shortcut: getShortcutLabel('view.zoom_in'), icon: <ZoomIn className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-in') },
-        { label: t('shell:thu_nho'), shortcut: getShortcutLabel('view.zoom_out'), icon: <ZoomOut className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-out') },
-        { label: tv('Về 100%'), shortcut: getShortcutLabel('view.actual_size'), icon: <Maximize className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-100') },
+        // UIUX (audit menu 2026-07-28 §MB.1): nhóm lệnh viewer gate theo canViewerCommand;
+        // riêng "Giao diện Tối" là cấp ứng dụng nên luôn bật (kể cả ở tab Home).
+        // Nhóm zoom/fit dùng canZoomCommand → chạy cả trên tab Khuôn bế (canvas riêng).
+        { label: t('shell:phong_to'), shortcut: getShortcutLabel('view.zoom_in'), icon: <ZoomIn className="w-3.5 h-3.5" />, disabled: !canZoomCommand, onClick: () => viewerCmd('zoom-in') },
+        { label: t('shell:thu_nho'), shortcut: getShortcutLabel('view.zoom_out'), icon: <ZoomOut className="w-3.5 h-3.5" />, disabled: !canZoomCommand, onClick: () => viewerCmd('zoom-out') },
+        { label: tv('Về 100%'), shortcut: getShortcutLabel('view.actual_size'), icon: <Maximize className="w-3.5 h-3.5" />, disabled: !canZoomCommand, onClick: () => viewerCmd('zoom-100') },
         { separator: true },
-        { label: tv('Vừa chiều ngang'), shortcut: getShortcutLabel('view.fit_width'), icon: <MoveHorizontal className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('fit-width') },
-        { label: tv('Vừa trọn trang'), shortcut: getShortcutLabel('view.fit_page'), icon: <Maximize className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('fit-page') },
+        // UIUX (audit menu 2026-07-28 §MB.5): tick chế độ fit / chế độ trang ĐANG dùng
+        // (đọc từ useActiveViewerStore — bản sao toàn cục của viewer đang xem). Dấu ✓ chỉ
+        // có nghĩa với viewer PDF; tab Khuôn bế fit theo khuôn nên không tick.
+        { label: tv('Vừa chiều ngang'), shortcut: getShortcutLabel('view.fit_width'), icon: <MoveHorizontal className="w-3.5 h-3.5" />, checked: canViewerCommand && activeViewerFitMode === 'width', disabled: !canZoomCommand, onClick: () => viewerCmd('fit-width') },
+        { label: tv('Vừa trọn trang'), shortcut: getShortcutLabel('view.fit_page'), icon: <Maximize className="w-3.5 h-3.5" />, checked: canViewerCommand && activeViewerFitMode === 'page', disabled: !canZoomCommand, onClick: () => viewerCmd('fit-page') },
         { separator: true },
-        { label: tv('Xem một trang'), icon: <FileText className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-single-fit') },
-        { label: tv('Cuộn trang dọc'), icon: <ScrollText className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-single-scroll') },
-        { label: tv('Xem hai trang'), icon: <Columns2 className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-two-fit') },
-        { label: tv('Cuộn hai trang'), icon: <Rows2 className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-two-scroll') },
+        // UIUX (audit menu 2026-07-28 §MB.6): điều hướng trang — AcrobatViewer đã xử lý
+        // sẵn 4 lệnh này từ trước, chỉ chưa có mục menu nào phát ra.
+        { label: t('shell:menu_trang_dau'), shortcut: getShortcutLabel('pages.first'), disabled: !canViewerCommand || activeViewerNumPages === 0, onClick: () => viewerCmd('first-page') },
+        { label: t('shell:menu_trang_truoc'), shortcut: getShortcutLabel('pages.previous'), disabled: !canViewerCommand || activeViewerNumPages === 0, onClick: () => viewerCmd('prev-page') },
+        { label: t('shell:menu_trang_sau'), shortcut: getShortcutLabel('pages.next'), disabled: !canViewerCommand || activeViewerNumPages === 0, onClick: () => viewerCmd('next-page') },
+        { label: t('shell:menu_trang_cuoi'), shortcut: getShortcutLabel('pages.last'), disabled: !canViewerCommand || activeViewerNumPages === 0, onClick: () => viewerCmd('last-page') },
         { separator: true },
-        { label: tv('Thước đo (Rulers)'), shortcut: getShortcutLabel('viewer.toggle_rulers'), icon: <Ruler className="w-3.5 h-3.5" />, checked: showRulers, disabled: !isToolActive, onClick: () => viewerCmd('toggle-rulers') },
+        { label: tv('Xem một trang'), icon: <FileText className="w-3.5 h-3.5" />, checked: canViewerCommand && activeViewerPageDisplayMode === 'single_fit', disabled: !canViewerCommand, onClick: () => viewerCmd('layout-single-fit') },
+        { label: tv('Cuộn trang dọc'), icon: <ScrollText className="w-3.5 h-3.5" />, checked: canViewerCommand && activeViewerPageDisplayMode === 'single_scroll', disabled: !canViewerCommand, onClick: () => viewerCmd('layout-single-scroll') },
+        { label: tv('Xem hai trang'), icon: <Columns2 className="w-3.5 h-3.5" />, checked: canViewerCommand && activeViewerPageDisplayMode === 'two_fit', disabled: !canViewerCommand, onClick: () => viewerCmd('layout-two-fit') },
+        { label: tv('Cuộn hai trang'), icon: <Rows2 className="w-3.5 h-3.5" />, checked: canViewerCommand && activeViewerPageDisplayMode === 'two_scroll', disabled: !canViewerCommand, onClick: () => viewerCmd('layout-two-scroll') },
+        { separator: true },
+        { label: tv('Thước đo (Rulers)'), shortcut: getShortcutLabel('viewer.toggle_rulers'), icon: <Ruler className="w-3.5 h-3.5" />, checked: showRulers, disabled: !canViewerCommand, onClick: () => viewerCmd('toggle-rulers') },
         { label: tv('Giao diện Tối'), icon: <Moon className="w-3.5 h-3.5" />, checked: theme === 'dark', onClick: toggleTheme },
       ],
     },
     {
       label: t('shell:menu_tools', 'Công cụ'), // UIUX (audit 2026-07-27 §A-12)
       // Mỗi category = 1 mục cha có ▶, rê chuột xổ ra tool con (tránh đổ hết ~25 tool ra 1 cột).
-      items: TOOL_CATEGORIES.flatMap((cat) => {
-        const tools = getToolsByCategory(cat.id).filter((t) => t.isEnabled && !hiddenTools.includes(getToolUniqueKey(t)));
-        if (tools.length === 0) return [];
-        return [{
-          label: tv(cat.title),
-          submenu: tools.map((t) => ({
-            label: tv(t.title),
-            icon: t.icon,
-            onClick: () => handleOpenApp(t.id, t.defaultPayload),
-          })),
-        }];
-      }),
+      items: toolMenuItems,
     },
     {
       label: t('shell:menu_window', 'Cửa sổ'), // UIUX (audit 2026-07-27 §A-12)
-      items: tabs.length > 1
-        ? tabs.map((t) => ({
-            label: t.title,
-            checked: t.id === activeTabId,
-            onClick: () => setActiveTabId(t.id),
-          }))
-        : [{ label: tv('Chỉ có tab Home'), disabled: true }],
+      items: [
+        ...(tabs.length > 1 ? windowTabItems : [{ label: tv('Chỉ có tab Home'), disabled: true }]),
+        // UIUX (audit menu 2026-07-28 §MB.13): trước đây menu Cửa sổ chỉ là danh sách tab.
+        { separator: true },
+        { label: t('shell:menu_tab_ke_tiep'), shortcut: getShortcutLabel('global.next_tab'), disabled: tabs.length < 2, onClick: () => stepActiveTab(1) },
+        { label: t('shell:menu_tab_truoc'), shortcut: getShortcutLabel('global.prev_tab'), disabled: tabs.length < 2, onClick: () => stepActiveTab(-1) },
+        { label: t('shell:menu_dong_tat_ca_tab'), disabled: tabs.length < 2, onClick: closeAllTabs },
+      ],
     },
     {
       label: t('shell:menu_help', 'Trợ giúp'), // UIUX (audit 2026-07-27 §A-12)
       items: [
-        { label: tv('Cài đặt & Cấu hình'), shortcut: 'Ctrl+K', onClick: () => { setSettingsInitialTab('tools'); setIsGlobalSettingsOpen(true); } },
-        { label: tv('Phím tắt'), onClick: () => { setSettingsInitialTab('shortcuts'); setIsGlobalSettingsOpen(true); } },
+        { label: tv('Phím tắt'), shortcut: getShortcutLabel('global.help'), onClick: () => { setSettingsInitialTab('shortcuts'); setIsGlobalSettingsOpen(true); } },
         { separator: true },
+        // UIUX (audit menu 2026-07-28 §MB.14): thêm mục hướng dẫn + phím F1 cho "Phím tắt".
+        { label: t('shell:menu_huong_dan_su_dung'), onClick: () => openExternal(SUPPORT.product) },
         { label: tv('Trang chủ PrintSolutions.vn'), onClick: () => openExternal(SUPPORT.website) },
         { label: tv('Liên hệ hỗ trợ'), submenu: [
           { label: `Email: ${SUPPORT.email}`, onClick: () => openExternal(`mailto:${SUPPORT.email}`) },
@@ -1269,7 +1517,7 @@ function AppInner() {
                       systemMergeFiles={tab.payload?.systemMergeFiles}
                       officeSourceFile={tab.payload?.officeSourceFile}
                       officeSourceFiles={tab.payload?.officeSourceFiles}
-                      onSpawnTab={(file: any, extraPayload?: any) => handleOpenApp('imposition', { file, lockedMode: tab.payload?.lockedMode, ...extraPayload })}
+                      onSpawnTab={(file: any, extraPayload?: any) => handleOpenApp('imposition', buildResultTabPayload(file, extraPayload))}
                     />
                   </Suspense>
                 );
@@ -1283,7 +1531,7 @@ function AppInner() {
                       onTitleChange={(title: string) => updateTabTitle(tab.id, title)}
                       onDirtyChange={(isDirty: boolean) => updateTabDirty(tab.id, isDirty)}
                       initialFiles={tab.payload?.files}
-                      onSpawnTab={(file: any, extraPayload?: any) => handleOpenApp('imposition', { file, ...extraPayload })}
+                      onSpawnTab={(file: any, extraPayload?: any) => handleOpenApp('imposition', buildResultTabPayload(file, extraPayload))}
                       onSpawnCombineTabs={(results: { file: File; title: string }[]) => {
                         // Mỗi nhóm kích thước → 1 tab Combine riêng (file đã ghép).
                         // Stagger timestamp nhẹ để id tab không trùng trong cùng ms.
@@ -1324,17 +1572,25 @@ function AppInner() {
         onCancel={() => setTabToConfirmClose(null)}
       />
 
-      {/* Thoát app: 1 dialog / 1 file dirty (Acrobat-style), không gộp tất cả. */}
+      {/* Hàng đợi hỏi-lưu: 1 dialog / 1 file dirty (Acrobat-style), không gộp tất cả.
+          Dùng chung cho thoát app và Đóng tất cả tab — chỉ khác tiêu đề và việc cuối. */}
       {(() => {
-        const quitTab = tabs.find(t => t.id === quitDirtyQueue[0]);
-        const canSave = !!(quitTab && ['imposition', 'nup', 'diecut', 'cnc'].includes(quitTab.type));
-        const name = quitTab?.title || tv('Chưa rõ tên');
-        const remain = quitDirtyQueue.length;
+        const queueTabId = dirtyQueue[0];
+        const queueTab = tabs.find(t => t.id === queueTabId);
+        // UIUX (audit menu 2026-07-28 §MB.13b): trước đây danh sách tab được chào "Lưu"
+        // hardcode ['imposition','nup','diecut','cnc'] — THIẾU 'preflight' dù tab đó có
+        // listener save thật → tab Preflight dirty chỉ được chọn Không lưu. Dùng chung
+        // SAVE_TOOL_TYPES để không bao giờ lệch nữa.
+        const canSave = !!(queueTab && queueTab.type !== 'home' && SAVE_TOOL_TYPES.has(queueTab.type));
+        const name = queueTab?.title || tv('Chưa rõ tên');
+        const remain = dirtyQueue.length;
         return (
           <ConfirmCloseModal
-            isOpen={quitDirtyQueue.length > 0}
+            isOpen={remain > 0}
             fileName={name}
-            title={t('shell:luu_thay_doi_truoc_khi_thoat')}
+            title={dirtyQueueMode === 'close-all'
+              ? t('shell:luu_thay_doi_truoc_khi_dong_tab')
+              : t('shell:luu_thay_doi_truoc_khi_thoat')}
             body={(<>
               {t('shell:file_label')}{' '}
               <span className="text-rose-500 font-bold px-1 break-all">{name}</span>{' '}
@@ -1350,12 +1606,12 @@ function AppInner() {
             </>)}
             confirmText={t('shell:khong_luu')}
             secondaryText={canSave ? t('shell:luu') : undefined}
-            onSecondary={canSave && !quitBusy ? () => { void quitSaveCurrent(); } : undefined}
+            onSecondary={canSave && !quitBusy ? () => { void saveCurrentQueueTab(); } : undefined}
             onConfirm={() => {
-              if (quitBusy) return;
-              advanceQuitQueue();
+              if (quitBusy || !queueTabId) return;
+              resolveQueueTab(queueTabId);
             }}
-            onCancel={cancelQuitFlow}
+            onCancel={cancelDirtyQueue}
             busy={quitBusy}
           />
         );

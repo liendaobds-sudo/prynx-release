@@ -33,7 +33,7 @@ def register_local_pdf(
     license_info: dict = Depends(require_license),
 ):
     """Register a desktop-local PDF without moving its bytes through WebView RAM."""
-    if not settings.IS_DESKTOP_APP:
+    if not (settings.IS_DESKTOP_APP or settings.DEV_MODE):
         raise HTTPException(status_code=403, detail="Ch\u1ec9 kh\u1ea3 d\u1ee5ng trong \u1ee9ng d\u1ee5ng desktop")
 
     raw_path = Path(request.file_path)

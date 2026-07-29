@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { getSystemFonts } from '@/lib/api';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { localFileUrl } from '@/lib/localFileTransport';
 import { useTranslation } from 'react-i18next';
 
 interface FontSelectorProps {
@@ -49,7 +49,7 @@ export const FontSelector = ({ value, fontFile, onChange }: FontSelectorProps) =
                 <style>{`
                     @font-face {
                         font-family: "${value}_local";
-                        src: url("${convertFileSrc(fontFile)}");
+                        src: url("${localFileUrl(fontFile)}");
                     }
                 `}</style>
             )}
@@ -87,7 +87,7 @@ export const FontSelector = ({ value, fontFile, onChange }: FontSelectorProps) =
                                     <style>{`
                                         @font-face {
                                             font-family: "${font.name}_preview";
-                                            src: url("${convertFileSrc(font.path)}");
+                                            src: url("${localFileUrl(font.path)}");
                                         }
                                     `}</style>
                                 )}

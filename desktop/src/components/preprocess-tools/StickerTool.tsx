@@ -8,6 +8,7 @@ import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
+import { computeStickerBleedGeometry, formatSignedMm } from '../../lib/stickerBleedGeometry';
 
 interface Props {
     pdfFile: File | null;
@@ -142,6 +143,8 @@ function writeStickerPreference(key: string, value: unknown): void {
     }
 }
 
+// Error boundary dùng hàm thuần này để tự phục hồi cấu hình lỗi.
+// eslint-disable-next-line react-refresh/only-export-components
 export function resetStickerPreferences(): boolean {
     const storage = getStickerStorage();
     if (!storage) return false;
@@ -415,6 +418,10 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         // Removing the aggressive override when switching to rectangle to preserve user choice
     };
 
+    // UIUX (audit 2026-07-28 §BX.6): cho thấy rõ bleed được đo từ đường cắt,
+    // không đổi công thức backend đã chốt.
+    const bleedGeometry = computeStickerBleedGeometry(cutMode, offsetMm, bleedMm);
+
     return (
         <div className="flex flex-col gap-4">
             {/* TABS SELECTOR */}
@@ -649,14 +656,16 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                         <ToolSectionLabel>{t('preprocess.sticker:2_tran_le_dac_ruot')}</ToolSectionLabel>
                         <div className="flex gap-2 mb-4 items-end">
                             <ToolNumberInput
-                                label={t('preprocess.sticker:tran_mau')}
+                                label={cutMode === 'original'
+                                    ? t('preprocess.sticker:bu_xen_ngoai_duong_cat')
+                                    : t('preprocess.sticker:tran_mau')}
                                 value={bleedMm}
                                 onChange={setBleedMm}
                                 suffix="mm"
                                 step={0.5}
                                 min={0}
                                 max={10}
-                                className="w-[90px] shrink-0"
+                                className="w-[145px] shrink-0"
                             />
                             <div className="flex gap-1.5 flex-1">
                                 <button
@@ -685,6 +694,20 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 </button>
                             </div>
                         </div>
+
+                        {cutMode === 'original' && bleedMm > 0 && (
+                            <div
+                                role="note"
+                                data-testid="sticker-bleed-geometry-summary"
+                                className="-mt-2 mb-4 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-2 text-[10px] leading-relaxed text-sky-800 dark:border-sky-800/60 dark:bg-sky-950/30 dark:text-sky-200"
+                            >
+                                ℹ️ {t('preprocess.sticker:tom_tat_hinh_hoc_bu_xen', {
+                                    cut: formatSignedMm(bleedGeometry.cutOffsetMm ?? 0),
+                                    outer: formatSignedMm(bleedGeometry.outerOffsetMm),
+                                    bleed: Number((bleedGeometry.bleedOutsideCutMm ?? 0).toFixed(2)),
+                                })}
+                            </div>
+                        )}
                         
                         {(cutMode === 'bleed' || cutMode === 'none' || bleedMm > 0) && (
                             <div className="mt-6 p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-xl border border-slate-200 dark:border-zinc-700/50">

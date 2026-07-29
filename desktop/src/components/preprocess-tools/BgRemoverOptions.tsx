@@ -1,5 +1,5 @@
 import React from 'react';
-import { ToolSectionLabel, ToolCardOption, ToolCheckboxOption, ToolNumberInput } from './ToolUI';
+import { ToolSectionLabel, ToolCheckboxOption } from './ToolUI';
 import { useTranslation } from 'react-i18next';
 
 export interface BgRemoverOptionsState {
@@ -13,39 +13,37 @@ export interface BgRemoverOptionsState {
 interface Props {
     options: BgRemoverOptionsState;
     onChange: (opts: BgRemoverOptionsState) => void;
+    disabled?: boolean;
 }
 
-export default function BgRemoverOptions({ options, onChange }: Props) {
+export default function BgRemoverOptions({ options, onChange, disabled = false }: Props) {
   const { t } = useTranslation();
-    const update = (key: keyof BgRemoverOptionsState, val: any) => {
+    const update = <K extends keyof BgRemoverOptionsState>(key: K, val: BgRemoverOptionsState[K]) => {
         onChange({ ...options, [key]: val });
     };
+    const engineDescription = options.aiEngine === 'fast'
+        ? t('preprocess.bgRemoverOptions:tach_gan_nhu_tuc_thi_nhe_chat_luong_kha')
+        : options.aiEngine === 'hair'
+            ? t('preprocess.bgRemoverOptions:chat_luong_cao_nhat_cho_toc_roi_long')
+            : t('preprocess.bgRemoverOptions:vien_sac_net_bam_chi_tiet_tot_can_bang');
 
     return (
-        <div className="flex flex-col gap-4 mt-2">
+        <fieldset disabled={disabled} className={"flex flex-col gap-4 mt-2 " + (disabled ? "opacity-60" : "") }>
             {/* AI Engine Selection */}
             <div>
                 <ToolSectionLabel>{t('preprocess.bgRemoverOptions:mo_hinh_phan_tich')}</ToolSectionLabel>
-                <div className="grid grid-cols-1 gap-1.5">
-                    <ToolCardOption
-                        label={t('preprocess.bgRemoverOptions:chat_luong_cao_khuyen_dung')}
-                        desc={t('preprocess.bgRemoverOptions:vien_sac_net_bam_chi_tiet_tot_can_bang')}
-                        selected={options.aiEngine === 'general'}
-                        onClick={() => update('aiEngine', 'general')}
-                    />
-                    <ToolCardOption
-                        label={t('preprocess.bgRemoverOptions:nhanh_xu_ly_hang_loat')}
-                        desc={t('preprocess.bgRemoverOptions:tach_gan_nhu_tuc_thi_nhe_chat_luong_kha')}
-                        selected={options.aiEngine === 'fast'}
-                        onClick={() => update('aiEngine', 'fast')}
-                    />
-                    <ToolCardOption
-                        label={t('preprocess.bgRemoverOptions:toi_da_long_toc_kinh')}
-                        desc={t('preprocess.bgRemoverOptions:chat_luong_cao_nhat_cho_toc_roi_long')}
-                        selected={options.aiEngine === 'hair'}
-                        onClick={() => update('aiEngine', 'hair')}
-                    />
-                </div>
+                <select
+                    value={options.aiEngine}
+                    onChange={(event) => update('aiEngine', event.target.value as BgRemoverOptionsState['aiEngine'])}
+                    className="w-full h-10 bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-lg px-3 text-[13px] font-semibold text-slate-800 dark:text-zinc-100"
+                >
+                    <option value="general">{t('preprocess.bgRemoverOptions:chat_luong_cao_khuyen_dung')}</option>
+                    <option value="fast">{t('preprocess.bgRemoverOptions:nhanh_xu_ly_hang_loat')}</option>
+                    <option value="hair">{t('preprocess.bgRemoverOptions:toi_da_long_toc_kinh')}</option>
+                </select>
+                <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500 dark:text-zinc-400">
+                    {engineDescription}
+                </p>
             </div>
 
             {/* Edge Shift */}
@@ -70,6 +68,32 @@ export default function BgRemoverOptions({ options, onChange }: Props) {
                 </p>
             </div>
 
+            {/* Màu nền */}
+            <div>
+                <ToolSectionLabel>{t('preprocess.bgRemoverOptions:mau_nen', { defaultValue: 'Màu nền đầu ra' })}</ToolSectionLabel>
+                <select
+                    value={options.bgColor}
+                    onChange={(event) => update('bgColor', event.target.value as BgRemoverOptionsState['bgColor'])}
+                    className="w-full h-10 bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-lg px-3 text-[13px]"
+                >
+                    <option value="transparent">{t('preprocess.bgRemoverOptions:trong_suot', { defaultValue: 'Trong suốt' })}</option>
+                    <option value="white">{t('preprocess.bgRemoverOptions:trang', { defaultValue: 'Trắng' })}</option>
+                    <option value="black">{t('preprocess.bgRemoverOptions:den', { defaultValue: 'Đen' })}</option>
+                    <option value="custom">{t('preprocess.bgRemoverOptions:tuy_chon', { defaultValue: 'Tùy chọn' })}</option>
+                </select>
+                {options.bgColor === 'custom' && (
+                    <div className="mt-2 flex items-center gap-2">
+                        <input
+                            type="color"
+                            value={options.customHex}
+                            onChange={(event) => update('customHex', event.target.value.toUpperCase())}
+                            className="w-12 h-9 rounded border border-slate-300 dark:border-white/20 bg-transparent"
+                        />
+                        <span className="text-[12px] font-mono text-slate-600 dark:text-zinc-300">{options.customHex}</span>
+                    </div>
+                )}
+            </div>
+
             {/* Auto Crop */}
             <div>
                 <ToolSectionLabel>{t('preprocess.bgRemoverOptions:tuy_chon_khung_anh')}</ToolSectionLabel>
@@ -80,6 +104,6 @@ export default function BgRemoverOptions({ options, onChange }: Props) {
                     onClick={() => update('autoCrop', !options.autoCrop)}
                 />
             </div>
-        </div>
+        </fieldset>
     );
 }

@@ -2,12 +2,22 @@ import { PDFDocument } from 'pdf-lib';
 import { MergeSettings } from '../../components/preprocess-tools/MergeTool';
 import { imageBytesToPdfDoc, addImagePageToDoc } from '../imageNormalizer';
 import { tv } from '../../i18n';
+import {
+    addOptionalContentSource,
+    createOptionalContentTransfer,
+    finishOptionalContentTransfer,
+} from '../pdfOptionalContent';
 
 export async function mergePdf(
     mainPdfBytes: Uint8Array | null,
     settings: MergeSettings
 ): Promise<Uint8Array> {
     const newPdf = await PDFDocument.create();
+
+    // [OCG FIX 2026-07-28] copyPages bỏ /OCProperties → file ghép mất trạng thái layer,
+    // lớp đã ẩn của TỪNG file nguồn hiện lại hết. Cộng dồn từng nguồn ngay trước khi copy
+    // nguồn đó (mỗi nguồn có tiền tố dấu riêng nên không tráo layer của nhau).
+    const ocTransfer = createOptionalContentTransfer();
 
     if (settings.mode === 'merge_files') {
         if (!mainPdfBytes && (!settings.filesToMerge || settings.filesToMerge.length === 0)) {
@@ -16,6 +26,7 @@ export async function mergePdf(
 
         if (mainPdfBytes) {
             const mainPdf = await PDFDocument.load(mainPdfBytes);
+            addOptionalContentSource(ocTransfer, mainPdf);
             const copied = await newPdf.copyPages(mainPdf, mainPdf.getPageIndices());
             for (const page of copied) {
                 newPdf.addPage(page);
@@ -31,6 +42,7 @@ export async function mergePdf(
                     await addImagePageToDoc(newPdf, bytes, file.name);
                 } else {
                     const srcPdf = await PDFDocument.load(bytes);
+                    addOptionalContentSource(ocTransfer, srcPdf);
                     const copied = await newPdf.copyPages(srcPdf, srcPdf.getPageIndices());
                     for (const page of copied) {
                         newPdf.addPage(page);
@@ -57,7 +69,9 @@ export async function mergePdf(
         const evenPdf = await loadOrConvert(settings.evenFile, evenBytes);
         
         const maxPages = Math.max(oddPdf.getPageCount(), evenPdf.getPageCount());
-        
+
+        addOptionalContentSource(ocTransfer, oddPdf);
+        addOptionalContentSource(ocTransfer, evenPdf);
         const copiedOdd = await newPdf.copyPages(oddPdf, oddPdf.getPageIndices());
         const copiedEven = await newPdf.copyPages(evenPdf, evenPdf.getPageIndices());
         
@@ -101,6 +115,8 @@ export async function mergePdf(
             throw new Error(tv("Dải trang chèn không hợp lệ hoặc file rỗng."));
         }
 
+        addOptionalContentSource(ocTransfer, mainPdf);
+        addOptionalContentSource(ocTransfer, insertPdf);
         const copiedMain = await newPdf.copyPages(mainPdf, mainPdf.getPageIndices());
         const copiedInsert = await newPdf.copyPages(insertPdf, insertIndices);
 
@@ -156,6 +172,7 @@ export async function mergePdf(
         }
     }
 
+    finishOptionalContentTransfer(ocTransfer, newPdf);
     return newPdf.save();
 }
 

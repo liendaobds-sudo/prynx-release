@@ -1,7 +1,7 @@
 {
   "catalog": {
-    "ai_sieu_phan_giai_phong_to_anh_2x_4x": "AI super-resolution upscaling 2x, 4x — restores photo/product detail and removes noise without pixelation. Runs entirely on-device.",
-    "anh_do_phan_giai_thap_can_phong_to_ma": "Low-resolution images that need upscaling without pixelation.",
+    "ai_sieu_phan_giai_phong_to_anh_2x_4x": "Real-ESRGAN improves perceived sharpness at 2x and 4x. AI may infer detail; inspect text and logos at 100% zoom.",
+    "anh_do_phan_giai_thap_can_phong_to_ma": "Low-resolution images that need enlargement; always inspect text and logos at 100% zoom.",
     "artwork_lech_kho_can_fit_khit_a4_a3": "Off-size artwork that needs to fit A4/A3 or a custom size.",
     "ban_ve_ky_thuat_bieu_mau_khung_vien": "Technical drawings, forms, borders with many thin lines.",
     "bao_ve_ban_quyen_bang_watermark": "Protect copyright with a watermark.",
@@ -400,6 +400,9 @@
     "xoa_label": "Delete {{label}}",
     "mat_na_se_duoc_co_gian": "The {{iw}}×{{ih}}px mask will be scaled to the {{sw}}×{{sh}}px surface.",
     "kich_thuoc_mat_na_phai_khop": "Mask size must match the surface {{w}}×{{h}} px."
+  ,
+    "anh_khay": "Tray image",
+    "anh_vo_hop": "Box shell image"
   },
   "dieline.mockupCanvas": {
     "dang_kiem_tra_ho_tro_do_hoa": "Checking graphics support…"
@@ -843,6 +846,9 @@
     "moi_loai_nam_1_coc_rieng_coc_rong_hep": "Each type goes in its own stack, stack width scaled by quantity, with its own trim marks.",
     "xem_truoc_se_in_o": "📋 Preview — will print at {{pos}}",
     "xong": "Done"
+  ,
+    "dao_cat_reset_moi_phien": "The cutter resets to the safe default each session — select another cutter again if needed",
+    "giai_thich": "Explanation"
   },
   "imposition.api": {
     "khong_tai_duoc_danh_sach_may_be_res": "Could not load cutter list (${res.status})",
@@ -931,6 +937,8 @@
     "tu_chon_so_do_gap_phu_hop_nhat_cho_tung": "Automatically pick the best fold scheme for each signature (4p/8p/16p).",
     "tu_dong_theo_tay_sach": "Auto by signature",
     "tu_dong_xoay_nguoc_coc_phai_180_giup_2": "Automatically rotate the right stack 180°. Keeps the two halves margin-symmetric when placed together."
+  ,
+    "tay_sach_boi_4_da_lam_tron": "Signature size must be a multiple of 4 — rounded to {{n}}"
   },
   "imposition.cutExport": {
     "an_tuy_chon_nang_cao": "▾ Hide advanced options",
@@ -975,6 +983,9 @@
     "to_k_loi": "Sheet {{k}} failed",
     "to_x_y": "Sheet {{x}} / {{y}}",
     "xong_ok_total_to": "Done: {{ok}}/{{total}} sheets."
+  ,
+    "khong_gui_duoc_lenh_cat": "Could not send the cutting command",
+    "khong_tai_duoc_cau_hinh_may_cat": "Could not load cutter configuration"
   },
   "imposition.cutterMachines": {
     "chon": "Select",
@@ -1078,6 +1089,10 @@
     "n_loai_tron_theo_ty_le_in_to": "{{n}} types mixed by quantity ratio · print {{sheets}} sheets",
     "khong_du_cho_tren_to_cho_trang_tach": "Not enough room on the sheet for page {{pages}} — should split into another print job.",
     "tem_thanh_pham": "Finished label:"
+  ,
+    "goi_y_qua_kho": " — try fewer rows/columns, a larger sheet, or smaller margins.",
+    "khong_dung_duoc_preview_bo_cuc": "Could not build the layout preview",
+    "khong_the_tinh_bo_cuc_preview": "Could not calculate the layout preview."
   },
   "imposition.gridSettings": {
     "0_xep_toi_da_tren_1_to": "0 = Max fit on 1 sheet",
@@ -1182,6 +1197,14 @@
     "sp_n_trang_m": "Item {{n}} (page {{m}})",
     "sp_n_mat_a_b": "Item {{n}} (side {{a}}–{{b}})",
     "trang_n": "Page {{n}}"
+  ,
+    "chu_thich_0_tu_lap_day": "(0 = fill the sheet automatically)",
+    "giai_thich": "Explanation",
+    "khoang_ho": "Gap",
+    "khong_ap_dung_cho_xep_chong": "Not applicable to Stack mode",
+    "tran_le_bleed": "Bleed",
+    "tu_lap_day_placeholder": "Auto-fill",
+    "xep_chong_moi_trang_mot_lan": "Stack mode uses each PDF page exactly once; quantities do not apply."
   },
   "imposition.imposerDashboard": {
     "binh_2_mat_bat_buoc_so_trang_chan_file": "Double-sided imposition requires an even page count. The file currently has ${sourceTotalPages} pages (odd) — add/remove 1 page in the thumbnails, or select 1 Side.",
@@ -1229,6 +1252,8 @@
     "xem_bai_in": "🖨️ View Print Sheet",
     "xem_thanh_pham": "📖 View Finished Product",
     "binh_2_mat_bat_buoc_so_trang_chan_file_hien_le": "Double-sided imposition requires an even page count. File currently has {{n}} pages (odd) — add/remove 1 page in the thumbnails, or choose Single-sided."
+  ,
+    "mo_file_pdf_truoc_khi_binh": "Open a PDF before imposing"
   },
   "imposition.marksSettingsDialog": {
     "ap_dung": "Apply",
@@ -1260,7 +1285,7 @@
   "imposition.outputSettings": {
     "duong_cat": "CUT LINE",
     "kc_cum_phu": "FILLER CLUSTER GAP",
-    "khoang_cach_giua_cum_chinh_va_cum_phu": "Distance between the main cluster and the filler cluster.&#10;Only applies when using Optimal packing + Single-blade die.&#10;Set > 0 so the single-blade die line has safe overhang room,&#10;without cutting into another cluster’s labels.",
+    "khoang_cach_giua_cum_chinh_va_cum_phu": "Distance between the main cluster and the filler cluster.\nOnly applies when using Optimal packing + Single-blade die.\nSet > 0 so the single-blade die line has safe overhang room,\nwithout cutting into another cluster’s labels.",
     "mac_dinh": "Default"
   },
   "imposition.paperSettingsUI": {
@@ -1294,6 +1319,8 @@
     "vung_an_toan_vung_in_le_mm": "Safe Area / Print Area (Margin mm)",
     "xoa_preset": "Delete Preset",
     "ten_kho_giay_label": "Paper Size Name"
+  ,
+    "kho_giay_toi_thieu_10mm": "Invalid paper size — minimum width and height are 10 mm."
   },
   "imposition.pontSettingsDialog": {
     "boong_may_graphtec": "Graphtec machine marks",
@@ -1362,7 +1389,7 @@
     "overprint_text_den_chong_loi_knockout": "Overprint black text to prevent knockout errors.",
     "phat_hien_tang_do_day_net_qua_manh": "Detect & thicken hairline strokes that are too thin.",
     "phong_to_anh": "Upscale Image",
-    "phong_to_anh_nhung_van_giu_duoc_do_sac": "Upscale images while keeping sharpness, without pixelation.",
+    "phong_to_anh_nhung_van_giu_duoc_do_sac": "Improves perceived sharpness while upscaling; AI may infer detail.",
     "preflight_kiem_tra_chuan_in": "Preflight (print standard check)",
     "quan_ly_trang": "Page management",
     "quet_hinh_anh_tu_dong_offset_vien_va": "Scan artwork, auto-offset the contour and add bleed for labels.",
@@ -1858,6 +1885,18 @@
     "quy_tac_trong_hoac_khong_hop_le": "Rule is empty or invalid.",
     "resize_pdf_lib_that_bai_fallback": "[resize] pdf-lib failed, falling back to backend:",
     "thao_tac_tach_khong_tao_ra_file_nao": "The split operation produced no files."
+  ,
+    "binh_xong_nhung_luu_file_in_loi": "Imposition finished, but automatic saving failed",
+    "da_luu_file_in": "Automatically saved {{ok}} print files",
+    "file_lon_co_the_mat_vai_phut": "… (large files may take a few minutes — do not close the tab)",
+    "khong_binh_duoc_trang": "Could not impose pages",
+    "khong_cat_xen_doi_duoc": "Could not trim or shift the content",
+    "khong_doi_duoc_kho_trang": "Could not resize the pages",
+    "khong_ghep_duoc_pdf": "Could not merge the PDFs",
+    "khong_tach_duoc_pdf": "Could not split the PDF",
+    "khong_xao_tron_duoc_trang": "Could not shuffle the pages",
+    "khong_xu_ly_duoc_catalog": "Could not process the catalog",
+    "mo_thu_muc": "Open folder"
   },
   "lib.productAdvisor": {
     "1_to_sheetlabel_n_cuon_to": "1 ${sheetLabel} sheet = ${n} books/sheet",
@@ -2106,6 +2145,8 @@
     "xoa_trang": "Delete Pages",
     "xoa_trang_quick_delete": "Delete Pages (Quick Delete)",
     "xem_hai_trang": "Two-page view"
+  ,
+    "kich_thuoc_that_100": "Actual size 100%"
   },
   "misc.acrobatViewer": {
     "chua_co_file_de_cat_kho": "No file to crop",
@@ -2131,7 +2172,16 @@
     "loi_tai_pdf": "PDF load error",
     "tai_lai_trang": "Reload page",
     "xuat_anh": "Export images",
-    "xuat_anh_png_jpeg_tiff": "Export images (PNG/JPEG/TIFF)"
+    "xuat_anh_png_jpeg_tiff": "Export images (PNG/JPEG/TIFF)",
+    "chon_trang_truoc_khi_xoay": "Select pages in the thumbnail bar first, then rotate (Ctrl+A = select all)"
+  ,
+    "bam_de_xoa_dim": "Click to remove this measurement",
+    "da_xoa_dim": "Removed measurement {{label}}",
+    "status_doi_don_vi": "Change measurement unit (mm → cm → inch)",
+    "status_toa_do_chuot": "Mouse coordinates — origin is the current page edge",
+    "status_trang": "Page",
+    "status_zoom": "Zoom",
+    "thuoc_don_vi_doi": "Ruler: {{unit}}"
   },
   "misc.barcodeEngine": {
     "can_len_chu_so_hoac_len_1_de_tu_tinh": "Requires ${len} digits (or ${len - 1} to auto-calculate the check digit)",
@@ -2408,6 +2458,8 @@
     "thay_anh": "Replace image",
     "xoa_doi_tuong": "Delete object",
     "xoay_khung": "Rotate frame"
+  ,
+    "dang_dung_hinh": "RENDERING"
   },
   "misc.login": {
     "dang_xuat": "Sign out",
@@ -2439,6 +2491,9 @@
     "tao_tai_lieu_trang_moi": "Create a new blank document",
     "ten_tai_lieu": "Document name",
     "tuy_chinh": "Custom..."
+  ,
+    "cao_mm": "Height (mm)",
+    "ngang": "Landscape"
   },
   "misc.pDFUploader": {
     "click_de_chon_file_khac": "Click to choose another file",
@@ -2455,6 +2510,8 @@
     "co_loi_xay_ra": "An error occurred",
     "dang_so_sanh": "Comparing...",
     "hoan_thanh": "Done!"
+  ,
+    "trang_x_y": "Page {{current}}/{{total}}"
   },
   "misc.qrEngine": {
     "bo_tron": "Rounded",
@@ -2541,7 +2598,8 @@
     "thoi_gian_mo": "Opened at",
     "xoa_da_chon": "Delete selected",
     "xoa_lich_su_giu_lai_sao": "Clear history (keep starred)",
-    "da_chon_n_muc": "{{n}} items selected"
+    "da_chon_n_muc": "{{n}} items selected",
+    "file_da_di_chuyen": "This file is no longer at its previous location (it may have been moved or deleted):"
   },
   "misc.report": {
     "ban_sao_bi_loi": "Faulty copies",
@@ -2650,6 +2708,9 @@
     "da_luu_ok_file_vao": "✅ Saved {{ok}} files to: {{folder}}",
     "cnc_moi_don_vi_tach_ra_file_rieng": "CNC: each unit splits {{mode}} into a separate file.",
     "n_loai_tong_to_file": "⇒ {{types}} types · {{sheets}} sheets total · {{files}} files"
+  ,
+    "trang_1": "Page 1",
+    "trang_n": "Page {{n}}"
   },
   "misc.selectionLayers": {
     "2x_click_doi_ten": "2× Click = Rename",
@@ -2773,6 +2834,13 @@
     "xoay_trai_rotate_ccw": "Rotate left (Rotate CCW)",
     "trang_kich_thuoc_tooltip": "Page {{page}}\nSize: {{w}} x {{h}} mm",
     "dang_an_n_thumbnails_con_lai": "Hiding the remaining {{n}} thumbnails to avoid freezing."
+  ,
+    "chon_trang_truoc_hint": "Select pages first (click / Shift+click / Ctrl+A)",
+    "chon_trang_truoc_roi_nhan_r": "Select pages in the thumbnail bar, then press R to rotate (Ctrl+A = select all)",
+    "dang_uu_tien_trang_chinh": "Prioritizing the current page...",
+    "phong_to_thumbnail_hint": "Enlarge thumbnails (Ctrl+wheel over the list also works)",
+    "shift_ctrl_click_chon_nhieu": "Shift/Ctrl+click to select multiple pages",
+    "thu_nho_thumbnail_hint": "Shrink thumbnails (Ctrl+wheel over the list also works)"
   },
   "misc.toast": {
     "dong": "Close",
@@ -2917,6 +2985,15 @@
   },
   "preprocess.bgRemover": {
     "anh_goc": "👁 ORIGINAL IMAGE",
+    "che_do_ai": "AI mode",
+    "model_chat_luong": "Quality — RealESRGAN_x4plus",
+    "model_can_bang": "Balanced — preserve texture (recommended)",
+    "model_nhanh": "Fast — Real-ESRGAN x4v3",
+    "model_chat_luong_goi_y": "Better detail; requires a compatible GPU and runs only when explicitly selected.",
+    "model_can_bang_goi_y": "Nearly as fast as Fast mode while retaining more source grain and texture.",
+    "model_nhanh_goi_y": "Compact model for low-memory devices or faster jobs.",
+    "canh_bao_cmyk_srgb": "The CMYK image was converted to sRGB for AI processing.",
+    "canh_bao_16_bit": "The 16-bit image is processed at 8-bit; check gradients before printing.",
     "bat_dau_tach_nen": "🚀 Start Background Removal",
     "da_luu_thanh_cong_saved_anh": "✅ Successfully saved ${saved} images!",
     "da_tach_nen": "✨ BACKGROUND REMOVED",
@@ -2925,9 +3002,14 @@
     "dang_xu_ly": "⏳ Processing...",
     "ho_tro_jpg_png_tiff_webp_bmp": "Supports JPG, PNG, TIFF, WebP, BMP.",
     "hoan_tac": "Undo",
+    "huy_xu_ly": "Cancel",
+    "loi_phong_to": "Image upscaling failed",
+    "model_chua_san_sang": "The Upscale model is not ready; the first job may fail.",
+    "khong_kiem_tra_duoc_model": "Could not check the Upscale model; verify the sidecar.",
     "hoan_tac_de_chinh_sua_lai": "Undo to edit again",
     "keo_tha_anh_vao_day_hoac_bam_de_chon": "Drag & drop images here or click to select files.",
     "khong_tim_thay_file_goc": "Source file not found",
+    "gif_khong_ho_tro": "Animated GIF is not supported; convert it to PNG, TIFF, or static WebP.",
     "loi_khi_luu_file": "Error saving file.",
     "loi_server_res_status_errortext": "Server error (${res.status}): ${errorText}",
     "tach_nen_ai": "AI Background Removal",
@@ -2949,10 +3031,15 @@
     "toi_da_long_toc_kinh": "Maximum — Fur, Hair & Glass",
     "tu_dong_cat_cup_auto_crop": "Auto-Crop",
     "tuy_chon_khung_anh": "Image framing options",
+    "mau_nen": "Output background",
+    "trong_suot": "Transparent",
+    "trang": "White",
+    "den": "Black",
+    "tuy_chon": "Custom",
     "vien_sac_net_bam_chi_tiet_tot_can_bang": "Sharp edges, good detail retention. A nice balance of quality/speed (~a few seconds). Good for most products, stickers, people, objects."
   },
   "preprocess.common": {
-    "run": "RUN"
+    "run": "Run"
   },
   "preprocess.convertColors": {
     "bat_doi_luon_mau_pha_cmyk_neu_muon_gop": "Enable \"Also convert spot colors → CMYK\" to merge Pantone/HKS into the 4 process colors (standard 4-color printing).",
@@ -2960,7 +3047,7 @@
     "bo_mau_in_1_mau_den_grayscale": "Remove color, print single black (Grayscale).",
     "cho_in_offset_in_4_mau_rgb_cmyk": "For offset / 4-color printing (RGB → CMYK).",
     "chua_co_file_pdf": "No PDF file",
-    "chua_ro_xem_huong_dan_amp_giai_thich": "Not sure? See guide &amp; explanation",
+    "chua_ro_xem_huong_dan_amp_giai_thich": "Not sure? See guide & explanation",
     "chuyen_cmyk_quan_trong_nhat_cho_in": "CMYK conversion is most important for OFFSET printing. Digital (quick print) machines often accept RGB, so it may not be needed.",
     "chuyen_doi_mau_huong_dan": "Color conversion — Guide",
     "chuyen_sang_cmyk": "Convert to CMYK",
@@ -3049,6 +3136,9 @@
     "file_co_n_trang": "File has {{n}} pages.",
     "se_dung_n_trang_bia": "Will use {{n}} cover pages: {{list}}. Remaining pages are inner (use Numbering).",
     "tao_bia_n_cuon": "Create covers ({{n}} booklets)"
+  ,
+    "da_huy": "Cancelled",
+    "khong_chay_duoc_vdp": "Could not run VDP"
   },
   "preprocess.dataMerge": {
     "1_chon_cot": "1. Choose column",
@@ -3416,6 +3506,20 @@
     "danh_sach_file_csv": "CSV file list ({{n}})",
     "dang_doc_n_file": "Reading {{n}} files…",
     "ban_ghi_2": "records"
+  ,
+    "bam_xem_de_tao_ban_xem_truoc_record": "Click \"Preview\" to generate a preview for this record.",
+    "cac_file_sau_co_canh_bao_vd_anh_thieu": "The following files have warnings (for example, missing images); related records may have missing content:",
+    "da_huy": "Cancelled",
+    "dong_file_co_canh_bao": "• {{name}}: {{n}} warnings",
+    "du_lieu_co_canh_bao": "Data warnings",
+    "khong_chay_duoc_vdp": "Could not run VDP",
+    "n_field_loi_o_record_nay": "{{n}} invalid fields in this record:",
+    "nguon_moi_thieu_cot_can_map_lai": "The new source is missing columns: {{cols}} — these fields must be mapped again",
+    "nut_xem": "Preview",
+    "van_chay": "Continue",
+    "vi_tri_x": "X position",
+    "vi_tri_y": "Y position",
+    "xem_lai": "Review"
   },
   "preprocess.fontSelector": {
     "go_de_tim_font": "Type to search fonts...",
@@ -3584,6 +3688,9 @@
     "help_phanbo_linear": "Numbers run in order on each sheet: sheet 1 carries 1,2,3…; sheet 2 carries the next numbers. After printing, stack in sheet order and it reads correctly right away.",
     "help_phanbo_stack": "For cut & stack machines: numbers jump across sheets so that after printing, when you cut the paper stack and pile the halves, the numbers run continuously within each pile. Choosing this mode wrongly will make the numbers jump around after cutting.",
     "help_ghi_chu": "Tip: check the Preview panel below to verify the first few sheets before creating the file. Enable Random shuffle for raffle tickets."
+  ,
+    "da_huy": "Cancelled",
+    "khong_chay_duoc_vdp": "Could not run VDP"
   },
   "preprocess.ocr": {
     "bat_cho_file_scan_tu_giay_tat_neu_file": "Enable for paper-scanned files. Disable if the file is already clean (exported from Photoshop/AI).",
@@ -4107,6 +4214,9 @@
     "tu_hoan_doi_le_trai_phai_o_trang_chan": "Auto-swap Left/Right margins on even pages so the inner margin always sits at the spine.",
     "tuy_chon": "Options...",
     "meo_go_trang_page_total": "Tip: type \"Page [page]/[total]\" to get \"Page 1/20\". Roman/letter styles ignore \"Number length\"."
+  ,
+    "khong_nap_duoc_font_tuy_chinh": "Could not load the custom font — using a fallback font",
+    "khong_nap_duoc_font_unicode": "Could not load the bundled Unicode font — using a fallback font"
   },
   "preprocess.sticker": {
     "1_duong_cat_dieline": "1. Cut line (Dieline)",
@@ -4139,6 +4249,8 @@
     "chi_mo_nen_tran_mau": "Extend background only (color bleed).",
     "chi_nen_dung_cho_nen_truu_tuong_hoa_van": ". Only recommended for abstract/patterned backgrounds. For images with text/details, choose",
     "co_gian_vien": "Shrink/Grow border",
+    "bu_xen_ngoai_duong_cat": "Bleed outside cut line",
+    "tom_tat_hinh_hoc_bu_xen": "Cut line {{cut}} mm · Color edge {{outer}} mm · Bleed outside cut line {{bleed}} mm",
     "da_tao_bu_xen_thanh_cong": "Bleed created successfully!",
     "da_xay_ra_loi_khong_xac_dinh": "An unknown error occurred.",
     "dac_ruot": "✅ Solid fill",
@@ -4260,6 +4372,15 @@
   },
   "preprocess.upscale": {
     "anh_goc": "👁 ORIGINAL IMAGE",
+    "che_do_ai": "AI mode",
+    "model_chat_luong": "Quality — RealESRGAN_x4plus",
+    "model_can_bang": "Balanced — preserve texture (recommended)",
+    "model_nhanh": "Fast — Real-ESRGAN x4v3",
+    "model_chat_luong_goi_y": "Better detail; requires a compatible GPU and runs only when explicitly selected.",
+    "model_can_bang_goi_y": "Nearly as fast as Fast mode while retaining more source grain and texture.",
+    "model_nhanh_goi_y": "Compact model for low-memory devices or faster jobs.",
+    "canh_bao_cmyk_srgb": "The CMYK image was converted to sRGB for AI processing.",
+    "canh_bao_16_bit": "The 16-bit image is processed at 8-bit; check gradients before printing.",
     "bat_dau_phong_to_anh": "🚀 Start Upscaling",
     "da_luu_thanh_cong_saved_anh": "✅ Successfully saved ${saved} images!",
     "da_phong_to": "🪄 UPSCALED",
@@ -4270,9 +4391,14 @@
     "gap_4_lan_4x": "4× (4x)",
     "ho_tro_jpg_png_tiff_webp_bmp": "Supports JPG, PNG, TIFF, WebP, BMP.",
     "hoan_tac": "Undo",
+    "huy_xu_ly": "Cancel",
+    "loi_phong_to": "Image upscaling failed",
+    "model_chua_san_sang": "The Upscale model is not ready; the first job may fail.",
+    "khong_kiem_tra_duoc_model": "Could not check the Upscale model; verify the sidecar.",
     "hoan_tac_de_chinh_sua_lai": "Undo to edit again",
     "keo_tha_anh_vao_day_hoac_bam_de_chon": "Drag & drop images here or click to select files.",
     "khong_tim_thay_file_goc": "Source file not found",
+    "gif_khong_ho_tro": "Animated GIF is not supported; convert it to PNG, TIFF, or static WebP.",
     "loi_doc_anh_ket_qua": "Error reading result image",
     "loi_khi_luu_file": "Error saving file.",
     "loi_server_res_status_errortext": "Server error (${res.status}): ${errorText}",
@@ -4553,6 +4679,9 @@
     "shortcut_rotate_left": "Rotate selected pages left by 90\u00b0",
     "shortcut_select_all_pages": "Select all pages",
     "shortcut_clear_page_selection": "Clear the page selection",
+    "shortcut_next_tab": "Switch to the next tab",
+    "shortcut_prev_tab": "Switch to the previous tab",
+    "shortcut_help": "Open the shortcut reference (help)",
     "bang_tra_cuu_nhanh_cac_phim_tat_lam": "Quick reference for PrynX keyboard shortcuts. Custom key remapping is coming in a future update.",
     "bat_tat_cac_cong_cu_khong_su_dung_de": "Toggle unused tools on/off to keep your workspace tidy.",
     "bo_yeu_thich": "Remove from favorites",
@@ -4717,7 +4846,50 @@
     "trang_chu_printsolutions": "PrintSolutions.vn homepage",
     "xem_hai_trang": "Two-page view",
     "khong_khoi_phuc_duoc": "Could not restore \"{{title}}\": source file no longer exists.",
-    "ctrl_p_chi_ho_tro_trinh_xem_pdf": "Ctrl+P is available while viewing a PDF in Imposition, N-Up, Die-cut Imposition, or CNC."
+    "ctrl_p_chi_ho_tro_trinh_xem_pdf": "Ctrl+P is available while viewing a PDF in Imposition, N-Up, Die-cut Imposition, or CNC.",
+    "tab_nay_chua_ho_tro_luu_bang_ctrl_s": "This tab does not support Save — use the tool's own export button.",
+    "menu_file": "File",
+    "menu_edit": "Edit",
+    "menu_view": "View",
+    "menu_tools": "Tools",
+    "menu_window": "Window",
+    "menu_help": "Help",
+    "menu_in": "Print…",
+    "menu_trang_dau": "First page",
+    "menu_trang_truoc": "Previous page",
+    "menu_trang_sau": "Next page",
+    "menu_trang_cuoi": "Last page",
+    "menu_xoay_phai": "Rotate right 90°",
+    "menu_xoay_trai": "Rotate left 90°",
+    "menu_chon_tat_ca_trang": "Select all pages",
+    "menu_bo_chon_trang": "Clear page selection",
+    "menu_trich_xuat_trang": "Extract pages…",
+    "menu_xoa_danh_sach_gan_day": "Clear recent list",
+    "menu_tab_ke_tiep": "Next tab",
+    "menu_tab_truoc": "Previous tab",
+    "menu_dong_tat_ca_tab": "Close all tabs",
+    "menu_huong_dan_su_dung": "User guide",
+    "menu_tuy_chon": "Settings & Configuration",
+    "luu_thay_doi_truoc_khi_dong_tab": "Save changes before closing the tab?",
+    "can_key_prynx_pro": "A PrynX Pro key is required"
+  ,
+    "err_backend_down": "could not connect to the PrynX processor",
+    "err_backend_down_hint": "The background processor may still be starting or may have stopped. Wait a few seconds and try again; if it still fails, restart PrynX.",
+    "err_canceled": "The operation was cancelled.",
+    "err_notfound": "could not find the file",
+    "err_notfound_hint": "The file may have been moved, renamed, or deleted. Open it again from its current location.",
+    "err_oom": "there is not enough memory to process this file",
+    "err_oom_hint": "Close unused tabs or applications and try again. For very large files, split the file or lower the export resolution.",
+    "err_permission": "does not have permission to access the file or folder",
+    "err_permission_hint": "The file may be open in another application, stored in a read-only folder, or blocked by antivirus software. Close it elsewhere and try again, or choose another output folder.",
+    "err_raw_detail": "Details",
+    "err_server": "the processor encountered an error while running this task",
+    "err_server_hint": "Try once more. If it still fails, the source file may be damaged or use a PDF feature that PrynX does not yet support.",
+    "err_unknown": "an unknown error occurred",
+    "huy": "Cancel",
+    "khong_dong_duoc_ung_dung": "Could not close the application",
+    "khong_phong_to_duoc_cua_so": "Could not maximize the window",
+    "khong_thu_nho_duoc_cua_so": "Could not minimize the window"
   },
   "tabs.aiQc": {
     "bao_cao_cua_ai_proofreader_se_hien_thi": "The AI Proofreader report will appear here.",
@@ -4797,6 +4969,10 @@
     "da_ghep_n_nhom_tab_combine": "Combined {{n}} groups → this tab + {{rest}} Combine tabs",
     "nhom_n_trang": "Group of {{n}} pages",
     "xoay_90_rotate": "Rotate 90°"
+  ,
+    "ghep_file": "Merge files",
+    "hoac_keo_tha_file_pdf_vao_day": "or drag and drop PDF files here",
+    "them_file": "+ Add files..."
   },
   "tabs.compare": {
     "300_dpi_chinh_xac": "300 DPI — Accurate",
@@ -4829,6 +5005,8 @@
     "upload_that_bai": "Upload failed",
     "xem_bao_cao": "📋 View Report",
     "xep_long_khop": "Aligned overlay"
+  ,
+    "can_file_de_in": "A PDF is required to print"
   },
   "tabs.home": {
     "bo_khoi_yeu_thich": "Remove from Favorites",
@@ -4953,7 +5131,11 @@
     "trang": "pages",
     "can_them_n_trang_trang_lam_tron": "(Need to add {{add}} blank pages to round up to {{total}} even pages per booklet folding rule).",
     "dat_n_trang_trang_o_dau": "Where to place {{n}} blank pages?",
-    "thong_so": "PARAMETERS"
+    "thong_so": "PARAMETERS",
+    "chua_co_file_de_luu": "No file to save yet — open or drag a PDF in first.",
+    "khong_co_thay_doi_nao_can_luu": "This file has no changes to save."
+  ,
+    "dang_mo_bam_de_thu_gon_panel": "Open — click to collapse the panel"
   },
   "tabs.outputPreview": {
     "ban_kem": "Plate",
@@ -5030,5 +5212,11 @@
   "misc.languageToggle": {
     "chuyen_sang_tieng_viet": "Switch to Vietnamese",
     "chuyen_sang_english": "Switch to English"
+  },
+  "imposition.bookReport": {
+    "title": "BOOK / MAGAZINE INFORMATION (REPORT)"
+  },
+  "lib.combineAssembly": {
+    "chi_nhan_file_pdf": "Backend merge accepts PDF files only"
   }
 }

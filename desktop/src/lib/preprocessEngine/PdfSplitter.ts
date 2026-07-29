@@ -5,6 +5,8 @@
 
 import { PDFDocument } from 'pdf-lib';
 
+import { beginOptionalContentTransfer, finishOptionalContentTransfer } from '../pdfOptionalContent';
+
 export type SplitMode = 'by_range' | 'by_count' | 'extract_pages';
 
 export interface SplitResult {
@@ -50,9 +52,15 @@ export function parseRanges(rangeStr: string, maxPage: number): [number, number]
  */
 async function extractPages(srcPdf: PDFDocument, pages: number[]): Promise<Uint8Array> {
     const newPdf = await PDFDocument.create();
-    const copied = await newPdf.copyPages(srcPdf, pages);
-    for (const page of copied) {
-        newPdf.addPage(page);
+    // [OCG FIX 2026-07-28] copyPages bỏ /OCProperties → layer đã ẩn hiện lại ở file tách ra.
+    const ocTransfer = beginOptionalContentTransfer([srcPdf]);
+    try {
+        const copied = await newPdf.copyPages(srcPdf, pages);
+        for (const page of copied) {
+            newPdf.addPage(page);
+        }
+    } finally {
+        finishOptionalContentTransfer(ocTransfer, newPdf);
     }
     return newPdf.save();
 }

@@ -12,7 +12,7 @@ fontTools, lạc hậu ngay khi engine đổi.
 # Cách đo
 
 Chặn Ghostscript ở mức **cấu hình sản phẩm** (`PRYNX_NO_GS_BUILD=1` ⇒
-`GHOSTSCRIPT_PATH` rỗng, `PRYNX_ALLOW_GS_FALLBACK=False`) rồi chạy từng đường sản
+`GHOSTSCRIPT_PATH` rỗng; cấu hình fallback GS đã bị xoá) rồi chạy từng đường sản
 xuất trên từng file. Bốn kết quả có thể:
 
 * `OK`      — chạy xong bằng engine nội bộ.
@@ -379,7 +379,9 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    if settings.PRYNX_ALLOW_GS_FALLBACK:
+    # GS-SUNSET (audit 2026-07-28 §FL.4): thuộc tính fallback đã bị xoá khỏi Settings.
+    # getattr giữ cổng audit tương thích và không crash với hợp đồng no-GS cố định.
+    if getattr(settings, "PRYNX_ALLOW_GS_FALLBACK", False):
         print("DỪNG: PRYNX_ALLOW_GS_FALLBACK vẫn bật.", file=sys.stderr)
         return 2
 

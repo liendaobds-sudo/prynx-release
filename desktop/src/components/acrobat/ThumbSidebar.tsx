@@ -68,8 +68,24 @@ const MemoThumbItem = React.memo((props: any) => {
     const footprintH = isRotated ? imgW : imgH;
 
     // Stable revision key: a committed edit gets a new pdfUrl even if its disk path is reused.
-    const baseW = localDim?.w || 595;
-    const optimalZoom = Math.max(0.1, Math.min(1.5, (thumbBaseWidth * 1.3) / baseW));
+    // NÉT (audit độ nét 2026-07-28 §R.7): `localDim.w` là px@96 (usePdfLoader dựng bằng
+    // `widthPt * 96/72`) → fallback phải cùng đơn vị, không phải 595 point của A4. Trước đây
+    // lệch 1.333× khi dims chưa về, vừa render dư pixel vừa sinh cacheKey khác bản sau khi
+    // dims về → cùng một thumbnail render hai lần.
+    const baseW = localDim?.w || (595 * 96 / 72);
+    // Rust render bitmap rộng = width_pt × (96/72) × zoom = baseW × zoom, nên xin theo SỐ
+    // PIXEL muốn có rồi chia baseW là ra zoom cần — tự tài liệu hoá, không còn hệ số ma thuật.
+    //
+    // Hệ số cũ `1.3` KHÔNG tính devicePixelRatio: bitmap luôn = thumbBaseWidth × 1.3 bất kể
+    // màn hình. Trên Windows scale 150% (dpr=1.5) cần 1.5× mà chỉ có 1.3× → thiếu 13%, ở 200%
+    // thiếu 35% → thumbnail mờ. Nay lấy đúng dpr + 15% dư cho sai số làm tròn của objectFit
+    // 'contain'. Đổi lại ở dpr=1 số pixel GIẢM (1.3× → 1.15×): render thumbnail nhẹ hơn, mà
+    // thumbnail xếp hàng cùng RENDER_LOCK với trang chính nên đó là lợi kép.
+    // Trần đặt theo PIXEL THẬT (chi phí render tỉ lệ với pixel) thay vì theo hệ số zoom như cũ.
+    const thumbDpr = window.devicePixelRatio || 1;
+    const THUMB_MAX_PX = 1400;
+    const wantThumbPx = Math.min(THUMB_MAX_PX, Math.ceil(thumbBaseWidth * thumbDpr * 1.15));
+    const optimalZoom = Math.max(0.1, wantThumbPx / baseW);
     const revToken = thumbRev || pdfUrl || '';
     const cacheKey = `${revToken}_${originalPageNum}_0_${Math.round(optimalZoom * 1000)}`;
     const cachedSrc = thumbCacheRef.current.get(cacheKey);
@@ -82,8 +98,11 @@ const MemoThumbItem = React.memo((props: any) => {
     let finalSrc: string | undefined = cachedSrc;
     if (!finalSrc && isImage) finalSrc = pdfUrl || undefined;
     if (!finalSrc && nativePreview?.key === nativeRequestKey) finalSrc = nativePreview.url;
-    const dimW = localDim ? (localDim.w * 25.4 / 72).toFixed(1) : 0;
-    const dimH = localDim ? (localDim.h * 25.4 / 72).toFixed(1) : 0;
+    // FIX (audit độ nét 2026-07-28 §R.13): `localDim.w/h` là **px@96**, không phải point →
+    // phải chia 96. Dùng /72 làm tooltip báo SAI 1.333×: A4 hiện "280.0 × 396.0 mm" thay vì
+    // "210.0 × 297.0". Cùng quy ước với StatusBar (`PX_TO_MM = 25.4/96`).
+    const dimW = localDim ? (localDim.w * 25.4 / 96).toFixed(1) : 0;
+    const dimH = localDim ? (localDim.h * 25.4 / 96).toFixed(1) : 0;
     const tooltipText = originalPageNum !== -1 ? t('misc.thumbSidebar:trang_kich_thuoc_tooltip', { page: logicalPageLabel, w: dimW, h: dimH }) : t('misc.thumbSidebar:trang_trong');
     // Luôn contain: giữ tỉ lệ trang, không kéo giãn ảnh preview (tránh méo khi
     // tỉ lệ khung lệch nhẹ so với ảnh GS do làm tròn pixel, và không phóng đại mờ).

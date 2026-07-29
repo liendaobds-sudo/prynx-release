@@ -207,6 +207,21 @@ export const KEYBOARD_SHORTCUTS = [
         id: 'pages.thumb_marquee_select', group: 'pages', keys: ['Kéo khung'],
         descriptionKey: 'shortcut_marquee_select', bindings: [],
     },
+    // UIUX (audit menu 2026-07-28 §MB.13/§MB.14): app trước đây KHÔNG có phím chuyển tab —
+    // mở 5-6 tab bình bài phải với chuột lên thanh tab. Ctrl+Tab / Ctrl+Shift+Tab là quy
+    // ước chung của trình duyệt và IDE nên không cần dạy lại. F1 = trợ giúp (mở bảng phím tắt).
+    {
+        id: 'global.next_tab', group: 'general', keys: ['Ctrl', 'Tab'],
+        descriptionKey: 'shortcut_next_tab', bindings: [{ code: 'Tab', primary: true }],
+    },
+    {
+        id: 'global.prev_tab', group: 'general', keys: ['Ctrl', 'Shift', 'Tab'],
+        descriptionKey: 'shortcut_prev_tab', bindings: [{ code: 'Tab', primary: true, shift: true }],
+    },
+    {
+        id: 'global.help', group: 'general', keys: ['F1'],
+        descriptionKey: 'shortcut_help', bindings: [{ key: 'F1' }],
+    },
 ] as const satisfies ReadonlyArray<KeyboardShortcutDefinition>;
 
 export type KeyboardShortcutId = typeof KEYBOARD_SHORTCUTS[number]['id'];

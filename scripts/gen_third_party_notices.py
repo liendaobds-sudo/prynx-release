@@ -378,6 +378,15 @@ def render(include_ghostscript: bool) -> str:
             add(f"- Mã nguồn: {c['source']}")
         if c.get("notes"):
             add(f"- Ghi chú: {c['notes']}")
+        if c.get("license_text"):
+            license_text = c["license_text"]
+            if isinstance(license_text, list):
+                license_text = "\n".join(license_text)
+            add("- Toàn văn giấy phép đi kèm bản phân phối:")
+            add("")
+            add("```text")
+            add(str(license_text))
+            add("```")
         add("")
 
     # ── Danh sách phụ thuộc ───────────────────────────────────────────────

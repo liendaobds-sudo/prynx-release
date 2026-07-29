@@ -4,6 +4,7 @@ import { shouldDelegateLargePdfJob } from '../lib/combineDelegation';
 import { PDFDocument, degrees } from 'pdf-lib';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { getFileArrayBuffer } from '../lib/utils';
+import { localFileUrl } from '../lib/localFileTransport';
 import { imageBytesToPdfDoc } from '../lib/imageNormalizer';
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
@@ -80,11 +81,14 @@ const PdfThumbnail = React.memo(({ file, pageIndex }: { file: string | File; pag
   useEffect(() => {
     let isActive = true;
     if (typeof file !== 'string' && (window as any).__TAURI_INTERNALS__ && (file as any).path) {
-      import('@tauri-apps/api/core').then(({ convertFileSrc }) => {
-        if (isActive) setDocFile(convertFileSrc((file as any).path));
+      // FILEIO (audit 2026-07-28 §FL.03): preview ngoài scope qua protocol Rust.
+      Promise.resolve(localFileUrl((file as any).path)).then((url) => {
+        if (isActive) setDocFile(url);
       });
     } else {
-      setDocFile(file);
+      Promise.resolve(file).then((nextFile) => {
+        if (isActive) setDocFile(nextFile);
+      });
     }
     return () => { isActive = false; };
   }, [file]);
@@ -104,11 +108,13 @@ const ImageThumbnail = React.memo(({ file, rotation }: { file: File; rotation?: 
   useEffect(() => {
     let isActive = true;
     if ((window as any).__TAURI_INTERNALS__ && (file as any).path) {
-      import('@tauri-apps/api/core').then(({ convertFileSrc }) => {
-        if (isActive) setSrc(convertFileSrc((file as any).path));
+      Promise.resolve(localFileUrl((file as any).path)).then((url) => {
+        if (isActive) setSrc(url);
       });
     } else {
-      setSrc(URL.createObjectURL(file));
+      Promise.resolve(URL.createObjectURL(file)).then((url) => {
+        if (isActive) setSrc(url);
+      });
     }
     return () => { isActive = false; };
   }, [file]);

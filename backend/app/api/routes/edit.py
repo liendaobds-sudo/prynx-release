@@ -175,6 +175,10 @@ class EditResponse(BaseModel):
             "tải-về-rồi-upload-lại trên desktop)."
         )
     )
+    warning: str | None = Field(
+        default=None,
+        description="Cảnh báo suy giảm chất lượng cần hiển thị rõ cho người vận hành",
+    )
     result: dict | list = Field(default_factory=dict, description="Tóm tắt op_result")
 
 
@@ -1373,12 +1377,15 @@ async def session_flatten(req: SessionCommitReq, license_info: dict = Depends(re
         session = edit_session.get_session(req.session_id)
         result = edit_session.flatten(session)
         _invalidate_object_cache(session.source_fid)
+        # GS-SUNSET (audit 2026-07-28 §FL.2): giữ cảnh báo raster hóa xuyên qua API;
+        # không để response_model âm thầm loại bỏ thông tin mà thợ in cần biết.
         return EditResponse(
             success=bool(result.get("success", True)),
             output_filename=result["output_filename"],
             output_url=result["output_url"],
             output_path=result["output_path"],
             output_fid=result["output_fid"],
+            warning=result.get("warning"),
         )
 
     return await _execute_session(_do, timeout_seconds=FLATTEN_TIMEOUT_SECONDS)

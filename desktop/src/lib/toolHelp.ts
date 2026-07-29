@@ -332,10 +332,10 @@ export const TOOL_HELP: Record<string, ToolHelp> = {
   },
   upscale: {
     title: 'AI Upscale',
-    tagline: 'Phóng to ảnh nét căng (2x, 4x) bằng siêu phân giải.',
+    tagline: 'Phóng to đúng 2x, 4x bằng Real-ESRGAN chạy trên máy.',
     sections: [
       { heading: 'Khi nào dùng', items: [
-        'Ảnh độ phân giải thấp cần phóng to mà không vỡ hạt.',
+        'Ảnh độ phân giải thấp cần tăng kích thước; luôn kiểm tra chữ và logo ở mức zoom 100%.',
       ]},
     ],
   },

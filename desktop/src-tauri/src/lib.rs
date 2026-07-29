@@ -1093,7 +1093,8 @@ fn read_system_file(path: String) -> Result<Response, String> {
         .to_lowercase();
     let allowed = [
         "pdf", "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "icc", "icm", "svg", "ttf",
-        "otf", "ttc",
+        "otf", "ttc", "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "csv", "ppt", "pptx",
+        "odp", "json", "txt",
     ];
     if !allowed.contains(&ext.as_str()) {
         return Err(format!("File type .{} not allowed", ext));
@@ -2044,6 +2045,166 @@ pub fn run() {
             }
 
             Ok(())
+        })
+        .register_asynchronous_uri_scheme_protocol("localfile", |_ctx, request, responder| {
+            // FILEIO (audit 2026-07-28 §FL.01-§FL.04): protocol đọc file có Range,
+            // không phụ thuộc asset scope và không chuyển file lớn qua IPC.
+            let url = request.uri().to_string();
+            let method = request.method().as_str().to_string();
+            let range_header = request
+                .headers()
+                .get("range")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
+
+            tauri::async_runtime::spawn(async move {
+                let result = tauri::async_runtime::spawn_blocking(move || {
+                    if method.eq_ignore_ascii_case("OPTIONS") {
+                        return http::Response::builder()
+                            .status(204)
+                            .header("Access-Control-Allow-Origin", "*")
+                            .header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+                            .header("Access-Control-Allow-Headers", "Range")
+                            .body(Vec::new())
+                            .map_err(|e| e.to_string());
+                    }
+
+                    let mut encoded_path = url.as_str();
+                    for prefix in [
+                        "http://localfile.localhost/",
+                        "https://localfile.localhost/",
+                        "localfile://localhost/",
+                        "localfile://",
+                    ] {
+                        if encoded_path.starts_with(prefix) {
+                            encoded_path = &encoded_path[prefix.len()..];
+                            break;
+                        }
+                    }
+                    let encoded_path = encoded_path.split('?').next().unwrap_or(encoded_path);
+                    let file_path = urlencoding::decode(encoded_path)
+                        .map_err(|_| "Đường dẫn file không hợp lệ".to_string())?
+                        .to_string();
+
+                    let ext = std::path::Path::new(&file_path)
+                        .extension()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("")
+                        .to_ascii_lowercase();
+                    let allowed = [
+                        "pdf", "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "icc", "icm",
+                        "svg", "ttf", "otf", "ttc", "doc", "docx", "odt", "rtf", "xls", "xlsx",
+                        "ods", "csv", "ppt", "pptx", "odp", "json", "txt",
+                    ];
+                    if !allowed.contains(&ext.as_str()) || is_sensitive_path(&file_path) {
+                        return Err("Không được phép đọc đường dẫn file này".to_string());
+                    }
+
+                    let metadata = std::fs::metadata(&file_path)
+                        .map_err(|_| "Không tìm thấy file cục bộ".to_string())?;
+                    if !metadata.is_file() {
+                        return Err("Đường dẫn không phải file".to_string());
+                    }
+                    let total = metadata.len();
+                    let mut start = 0_u64;
+                    let mut end = total.saturating_sub(1);
+                    let mut partial = false;
+
+                    if let Some(header) = range_header.as_deref() {
+                        let raw = header
+                            .strip_prefix("bytes=")
+                            .ok_or_else(|| "Range không hợp lệ".to_string())?;
+                        if raw.contains(',') {
+                            return Err("Chỉ hỗ trợ một byte range".to_string());
+                        }
+                        let (start_raw, end_raw) = raw
+                            .split_once('-')
+                            .ok_or_else(|| "Range không hợp lệ".to_string())?;
+                        start = start_raw
+                            .parse::<u64>()
+                            .map_err(|_| "Range không hợp lệ".to_string())?;
+                        if !end_raw.is_empty() {
+                            end = end_raw
+                                .parse::<u64>()
+                                .map_err(|_| "Range không hợp lệ".to_string())?;
+                        }
+                        if total == 0 || start >= total || end < start {
+                            return Err("Range nằm ngoài file".to_string());
+                        }
+                        end = end.min(total - 1);
+                        partial = true;
+                    }
+
+                    let requested_len = if total == 0 { 0 } else { end - start + 1 };
+                    let body = if method.eq_ignore_ascii_case("HEAD") || requested_len == 0 {
+                        Vec::new()
+                    } else {
+                        let body_len = usize::try_from(requested_len)
+                            .map_err(|_| "File quá lớn để đọc trên hệ thống này".to_string())?;
+                        let mut file = std::fs::File::open(&file_path)
+                            .map_err(|_| "Không mở được file cục bộ".to_string())?;
+                        std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(start))
+                            .map_err(|_| "Không đặt được vị trí đọc file".to_string())?;
+                        let mut bytes = vec![0_u8; body_len];
+                        std::io::Read::read_exact(&mut file, &mut bytes)
+                            .map_err(|_| "Không đọc đủ dữ liệu file".to_string())?;
+                        bytes
+                    };
+
+                    let content_type = match ext.as_str() {
+                        "pdf" => "application/pdf",
+                        "png" => "image/png",
+                        "jpg" | "jpeg" => "image/jpeg",
+                        "tif" | "tiff" => "image/tiff",
+                        "bmp" => "image/bmp",
+                        "webp" => "image/webp",
+                        "svg" => "image/svg+xml",
+                        "ttf" | "ttc" => "font/ttf",
+                        "otf" => "font/otf",
+                        "json" => "application/json",
+                        "txt" | "csv" => "text/plain; charset=utf-8",
+                        _ => "application/octet-stream",
+                    };
+                    let mut builder = http::Response::builder()
+                        .status(if partial { 206 } else { 200 })
+                        .header("Content-Type", content_type)
+                        .header("Content-Length", requested_len.to_string())
+                        .header("Accept-Ranges", "bytes")
+                        .header("Access-Control-Allow-Origin", "*")
+                        .header("Access-Control-Expose-Headers", "Accept-Ranges, Content-Length, Content-Range")
+                        .header("Cache-Control", "no-store")
+                        .header("X-Content-Type-Options", "nosniff");
+                    if partial {
+                        builder = builder.header(
+                            "Content-Range",
+                            format!("bytes {}-{}/{}", start, end, total),
+                        );
+                    }
+                    builder.body(body).map_err(|e| e.to_string())
+                })
+                .await;
+
+                match result {
+                    Ok(Ok(response)) => responder.respond(response),
+                    Ok(Err(message)) => {
+                        let response = http::Response::builder()
+                            .status(403)
+                            .header("Access-Control-Allow-Origin", "*")
+                            .header("Content-Type", "text/plain; charset=utf-8")
+                            .body(message.into_bytes())
+                            .unwrap_or_else(|_| http::Response::new(Vec::new()));
+                        responder.respond(response);
+                    }
+                    Err(error) => {
+                        let response = http::Response::builder()
+                            .status(500)
+                            .header("Access-Control-Allow-Origin", "*")
+                            .body(format!("Lỗi đọc file: {}", error).into_bytes())
+                            .unwrap_or_else(|_| http::Response::new(Vec::new()));
+                        responder.respond(response);
+                    }
+                }
+            });
         })
         .register_asynchronous_uri_scheme_protocol("tile", |_ctx, request, responder| {
             // tile://localhost/{encoded_filepath}/{page}/{zoom}/{rot}/{cx}/{cy}/{cw}/{ch}

@@ -7,6 +7,7 @@
  * → tránh phân kỳ logic.
  */
 import { buildSavePlan, type SaveTypeInfo, type SavePlanConfig } from './printFileNaming';
+import { beginOptionalContentTransfer, finishOptionalContentTransfer } from './pdfOptionalContent';
 
 export interface SavePrintOptions {
     /** Danh sách loại (label + số tờ). Nếu rỗng, tự suy từ số trang PDF. */
@@ -62,8 +63,15 @@ export async function savePrintFilesToFolder(
     for (const it of plan) {
         if (it.pageIndex >= srcDoc.getPageCount()) continue;
         const out = await PDFDocument.create();
-        const [pg] = await out.copyPages(srcDoc, [it.pageIndex]);
-        out.addPage(pg);
+        // [OCG FIX 2026-07-28] copyPages bỏ /OCProperties → file in tách ra mất lớp
+        // (kể cả lớp dao cắt do bình bản sinh, máy bế dò theo tên lớp) và lộ lớp đã ẩn.
+        const ocTransfer = beginOptionalContentTransfer([srcDoc]);
+        try {
+            const [pg] = await out.copyPages(srcDoc, [it.pageIndex]);
+            out.addPage(pg);
+        } finally {
+            finishOptionalContentTransfer(ocTransfer, out);
+        }
         const bytes = await out.save();
 
         let name = it.filename;
