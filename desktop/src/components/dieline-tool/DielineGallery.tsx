@@ -1,136 +1,161 @@
 // ============================================================
-// DielineGallery — Landing page to pick box type
-// Layout giống printsolutions: Text trên, Ảnh dưới
+// DielineGallery — Thư viện biến thể khuôn bế
+// [VARIANT 2026-07-29]
+//
+// Trước đây: 11 card cứng theo `boxType`, mỗi card kèm một form dài đầy công
+// tắc — người dùng phải BIẾT TRƯỚC mình cần tích gì mới ra hộp đúng.
+// Nay: card lấy từ catalog biến thể (`lib/dieline/variants.ts`), mỗi card là
+// một bộ thuộc tính đã chốt. Chọn hình giống cái hộp cần là xong.
+//
+// Bố cục: sidebar nhóm (có đếm số) + ô tìm kiếm + lưới card.
+// Nhóm CHỒNG LẤN nên tổng các nhóm lớn hơn tổng "Tất cả" — đó là đúng.
 // ============================================================
 
 import React from 'react';
-import { BoxParams } from '../../lib/dieline/types';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
+import {
+    BOX_GROUPS,
+    BOX_VARIANTS,
+    BoxGroup,
+    BoxVariant,
+    countByGroup,
+    variantDielineSvg,
+    variantMatchesQuery,
+} from '../../lib/dieline/variants';
+import { variantThumbOverride } from './variantThumbs';
 
-interface BoxTypeCard {
-    type: BoxParams['boxType'];
-    name: string;
-    desc: string;
-    image: string;
-}
+/** Namespace i18n của tên/mô tả biến thể và tên nhóm. Ép namespace tường minh vì
+ *  vài chuỗi (vd "Hộp treo có cửa sổ") còn tồn tại ở namespace gallery cũ —
+ *  `tv()` không có ns sẽ chọn theo thứ tự namespace, không đơn định. */
+const VARIANT_NS = 'dieline.variant';
 
-const BOX_TYPES: BoxTypeCard[] = [
-    {
-        type: 'rte',
-        name: 'Tạo khuôn hộp nắp cài sole',
-        desc: 'Reverse Tuck End — khuôn hộp phổ biến',
-        image: '/images/dieline/rte.png',
-    },
-    {
-        type: 'slb',
-        name: 'Tạo khuôn hộp đáy gài',
-        desc: 'Snap-Lock Bottom — đáy tự khoá chắc chắn',
-        image: '/images/dieline/slb.png',
-    },
-    {
-        type: 'auto_bottom',
-        name: 'Tạo khuôn hộp đáy dán',
-        desc: 'Auto-Bottom — đáy dán keo sẵn, tự bung khi dựng',
-        image: '/images/dieline/auto_bottom.png',
-    },
-    {
-        type: 'paper_bag',
-        name: 'Tạo khuôn túi giấy',
-        desc: 'Tạo khuôn túi giấy nhiều quy cách',
-        image: '/images/dieline/paper_bag.png',
-    },
-    {
-        type: 'gable',
-        name: 'Tạo khuôn hộp quai xách',
-        desc: 'Gable Box — hộp có quai xách tiện lợi',
-        image: '/images/dieline/gable.png',
-    },
-    {
-        type: 'cup_sleeve',
-        name: 'Bọc Ly',
-        desc: 'Cup Sleeve — bao giấy bọc ly cà phê',
-        image: '/images/dieline/cup_sleeve.png',
-    },
-    {
-        type: 'pizza',
-        name: 'Hộp Pizza',
-        desc: 'Hộp pizza nắp lật',
-        image: '/images/dieline/pizza.png',
-    },
-    {
-        type: 'envelope',
-        name: 'Vẽ khuôn bì thư/bì lì xì',
-        desc: 'Tạo khuôn bế bì thư với các kiểu nắp khác nhau',
-        image: '/images/dieline/envelope.png',
-    },
-    {
-        type: 'tray',
-        name: 'Hộp Diêm / Khay',
-        desc: 'hộp khay 4 góc dán, đựng thực phẩm',
-        image: '/images/dieline/tray.png',
-    },
-    {
-        // [DOUBLE-TRAY 2026-07-26]
-        type: 'double_tray',
-        name: 'Hộp Âm Dương (Khay + Nắp)',
-        desc: 'Khay thành kép + nắp chụp rời',
-        image: '/images/dieline/double_tray.png',
-    },
-    {
-        // [HANGING-WINDOW 2026-07-27] Ảnh minh hoạ: public/images/dieline/hanging_window.png
-        // (nguồn: test/"hop guong.png", 1896×986 — cùng quy cách các thumbnail khác).
-        type: 'hanging_window',
-        name: 'Hộp treo có cửa sổ',
-        desc: 'HANGING-WINDOW — hộp treo hàng điện tử, phụ kiện, treo kệ siêu thị',
-        image: '/images/dieline/hanging_window.png',
-    },
-];
-
-// ─── Gallery Card — Text trên, Ảnh dưới ────────────────────
+// ─── Card ────────────────────────────────────────────────────
 
 function GalleryCard({
-    card,
+    variant,
     onSelect,
 }: {
-    card: BoxTypeCard;
-    onSelect: (type: BoxParams['boxType']) => void;
+    variant: BoxVariant;
+    onSelect: (id: string) => void;
 }) {
+    // MỘT ảnh cho mỗi card. Bộ ảnh sẵn có theo boxType đã gồm CẢ nét khuôn lẫn hộp
+    // 3D cạnh nhau, nên KHÔNG vẽ thêm dải khuôn riêng — làm vậy là hiện nét khuôn
+    // hai lần trên cùng một card (đã thử và bị loại 2026-07-29).
+    //
+    // Ưu tiên ảnh THAY THỦ CÔNG trong `src/assets/dieline/variants/<mã>.png` nếu có
+    // (Vite biết trước tệp nào tồn tại ⇒ KHÔNG có request 404, không nháy ảnh);
+    // chưa có thì dùng khuôn 2D SVG sinh tự động — nhẹ và luôn tồn tại.
+    const [imgFailed, setImgFailed] = React.useState(false);
+    const src = imgFailed
+        ? null
+        : variantThumbOverride(variant.code) ?? variantDielineSvg(variant);
+
     return (
         <button
             className="dt-gallery-card"
-            onClick={() => onSelect(card.type)}
+            onClick={() => onSelect(variant.id)}
+            title={`${tv(variant.nameVi, VARIANT_NS)} — ${variant.code}`}
         >
-            {/* Header: text + description */}
             <div className="dt-gallery-card-header">
-                <h3 className="dt-gallery-card-title">{tv(card.name)}</h3>
-                <p className="dt-gallery-card-desc">{tv(card.desc)}</p>
+                <h3 className="dt-gallery-card-title">{tv(variant.nameVi, VARIANT_NS)}</h3>
+                <p className="dt-gallery-card-desc">{tv(variant.descVi, VARIANT_NS)}</p>
             </div>
 
-            {/* Image preview — fills remaining space */}
             <div className="dt-gallery-card-preview">
-                <img
-                    src={card.image}
-                    alt={tv(card.name)}
-                    className="dt-gallery-card-img"
-                    draggable={false}
-                    loading="lazy"
-                />
-                {/* Hover overlay gradient */}
+                {src === null ? (
+                    <div className="dt-gallery-card-placeholder">
+                        <span className="dt-gallery-card-placeholder-icon" aria-hidden="true">📦</span>
+                        <span className="dt-gallery-card-placeholder-code">{variant.code}</span>
+                    </div>
+                ) : (
+                    <img
+                        key={src}
+                        src={src}
+                        alt={tv(variant.nameVi, VARIANT_NS)}
+                        className="dt-gallery-card-img"
+                        draggable={false}
+                        loading="lazy"
+                        onError={() => setImgFailed(true)}
+                    />
+                )}
                 <div className="dt-gallery-card-overlay" />
             </div>
+
+            <span className="dt-gallery-card-code">{variant.code}</span>
         </button>
     );
 }
 
-// ─── Gallery Main ──────────────────────────────────────────
+// ─── Sidebar nhóm ────────────────────────────────────────────
+
+function GroupSidebar({
+    active,
+    counts,
+    total,
+    onPick,
+}: {
+    active: BoxGroup | 'all';
+    counts: Record<BoxGroup, number>;
+    total: number;
+    onPick: (g: BoxGroup | 'all') => void;
+}) {
+    const { t } = useTranslation();
+    return (
+        <nav className="dt-gallery-sidebar" aria-label={t('dieline.dielineGallery:nhom_khuon')}>
+            <p className="dt-gallery-sidebar-label">{t('dieline.dielineGallery:nhom_khuon')}</p>
+            <ul className="dt-gallery-group-list">
+                <li>
+                    <button
+                        className={`dt-gallery-group-btn ${active === 'all' ? 'active' : ''}`}
+                        onClick={() => onPick('all')}
+                        aria-current={active === 'all'}
+                    >
+                        <span>{t('dieline.dielineGallery:tat_ca')}</span>
+                        <span className="dt-gallery-group-count">{total}</span>
+                    </button>
+                </li>
+                {BOX_GROUPS.map((g) => (
+                    <li key={g.id}>
+                        <button
+                            className={`dt-gallery-group-btn ${active === g.id ? 'active' : ''}`}
+                            onClick={() => onPick(g.id)}
+                            aria-current={active === g.id}
+                            title={g.nameEn}
+                        >
+                            <span>{tv(g.nameVi, VARIANT_NS)}</span>
+                            <span className="dt-gallery-group-count">{counts[g.id]}</span>
+                        </button>
+                    </li>
+                ))}
+            </ul>
+        </nav>
+    );
+}
+
+// ─── Gallery ─────────────────────────────────────────────────
 
 interface DielineGalleryProps {
-    onSelect: (type: BoxParams['boxType']) => void;
+    /** Nhận `variant.id` — KHÔNG phải boxType. Store tự suy boxType từ biến thể. */
+    onSelect: (variantId: string) => void;
 }
 
 export default function DielineGallery({ onSelect }: DielineGalleryProps) {
-  const { t } = useTranslation();
+    const { t } = useTranslation();
+    const [group, setGroup] = React.useState<BoxGroup | 'all'>('all');
+    const [query, setQuery] = React.useState('');
+
+    // Catalog ~21 mục: lọc thẳng, không cần memo hoá phức tạp hay virtual list.
+    const counts = countByGroup();
+    const visible = BOX_VARIANTS.filter(
+        (v) => (group === 'all' || v.groups.includes(group)) && variantMatchesQuery(v, query),
+    );
+
+    const resetFilters = () => {
+        setGroup('all');
+        setQuery('');
+    };
+
     return (
         <div className="dt-gallery">
             <header className="dt-gallery-header">
@@ -143,12 +168,43 @@ export default function DielineGallery({ onSelect }: DielineGalleryProps) {
                         {t('dieline.dielineGallery:chon_loai_khuon_bao_bi_de_bat_dau_thiet')}
                     </p>
                 </div>
+                <div className="dt-gallery-search">
+                    <span className="dt-gallery-search-icon" aria-hidden="true">🔍</span>
+                    <input
+                        type="search"
+                        className="dt-gallery-search-input"
+                        placeholder={t('dieline.dielineGallery:tim_theo_ten_ma_khuon_hoac_nhom')}
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        aria-label={t('dieline.dielineGallery:tim_theo_ten_ma_khuon_hoac_nhom')}
+                    />
+                </div>
             </header>
 
-            <div className="dt-gallery-grid">
-                {BOX_TYPES.map((card) => (
-                    <GalleryCard key={card.type} card={card} onSelect={onSelect} />
-                ))}
+            <div className="dt-gallery-body">
+                <GroupSidebar
+                    active={group}
+                    counts={counts}
+                    total={BOX_VARIANTS.length}
+                    onPick={setGroup}
+                />
+
+                {visible.length === 0 ? (
+                    <div className="dt-gallery-empty">
+                        <p className="dt-gallery-empty-text">
+                            {t('dieline.dielineGallery:khong_tim_thay_khuon_nao_phu_hop')}
+                        </p>
+                        <button className="dt-gallery-empty-btn" onClick={resetFilters}>
+                            {t('dieline.dielineGallery:xem_tat_ca')}
+                        </button>
+                    </div>
+                ) : (
+                    <div className="dt-gallery-grid">
+                        {visible.map((v) => (
+                            <GalleryCard key={v.id} variant={v} onSelect={onSelect} />
+                        ))}
+                    </div>
+                )}
             </div>
         </div>
     );

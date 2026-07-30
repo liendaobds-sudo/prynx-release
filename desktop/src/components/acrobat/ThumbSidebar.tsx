@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useThumbSidebar } from './useThumbSidebar';
 import { thumbCacheRef } from '../workspace/ViewerHelpers';
+import { nativeTileRenderScheduler } from '../../hooks/viewer/tileRenderScheduler';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
 
@@ -42,6 +43,7 @@ interface ThumbSidebarProps {
     // File info
     file: any;
     pdfUrl: string | null;
+    isViewerActive?: boolean;
     onCrossFileCopy?: (sourcePdfUrl: string, sourcePageNum: number, targetIndex: number) => void;
 }
 
@@ -50,7 +52,7 @@ const MemoThumbItem = React.memo((props: any) => {
         index, originalPageNum, logicalPageLabel,
         isSelected, isActive, isDragged, showCopyBadge, showCopyDropBadge, hoverTargetState,
         rot, localDim, thumbBaseWidth,
-        pdfUrl, file, thumbRev, pageCount, isLoadable, registerRef,
+        pdfUrl, file, thumbRev, pageCount, isLoadable, isViewerActive, registerRef,
         handleThumbClick, handlePointerDown, onContextMenu
     } = props;
     const { t } = useTranslation();
@@ -92,7 +94,8 @@ const MemoThumbItem = React.memo((props: any) => {
     const isImage = !!(file?.type?.startsWith('image/') || file?.name?.match(/\.(jpg|jpeg|png|webp|gif)$/i));
     const nativeRequestKey = `${cacheKey}_${pageCount}`;
     const [nativePreview, setNativePreview] = useState<{ key: string; url: string } | null>(null);
-    const needsNativeRender = !cachedSrc && !isImage && isLoadable
+    const thumbRenderOwnerId = `thumbnail:${useId()}`;
+    const needsNativeRender = isViewerActive !== false && !cachedSrc && !isImage && isLoadable
         && !!(window as any).__TAURI_INTERNALS__ && !!file?.path && originalPageNum > 0;
 
     let finalSrc: string | undefined = cachedSrc;
@@ -121,12 +124,23 @@ const MemoThumbItem = React.memo((props: any) => {
         (async () => {
             let src: string | null = null;
             try {
-                const { invoke } = await import('@tauri-apps/api/core');
-                const bytes: ArrayBuffer = await invoke('render_pdf_page', {
-                    filePath: file.path, page: originalPageNum, zoom: optimalZoom, rotation: 0,
-                    clipX: null, clipY: null, clipW: null, clipH: null,
+                // PERF (audit 2026-07-29 ?R.10): thumbnail ph?i ?i chung scheduler v?i
+                // trang ch?nh; g?i invoke tr?c ti?p t?ng gi? RENDER_LOCK t?i v?i gi?y v?
+                // l?m tile/trang ?ang xem m?c k?t d? frontend ?? x?p ??ng ?u ti?n.
+                const bytes = await nativeTileRenderScheduler.enqueue({
+                    ownerId: thumbRenderOwnerId,
+                    groupKey: `thumbnail:${originalPageNum}`,
+                    requestKey: `${thumbRenderOwnerId}|${file.path}|${originalPageNum}|${optimalZoom.toFixed(3)}`,
+                    priority: 500,
+                    run: async () => {
+                        const { invoke } = await import('@tauri-apps/api/core');
+                        return invoke<ArrayBuffer>('render_pdf_page', {
+                            filePath: file.path, page: originalPageNum, zoom: optimalZoom, rotation: 0,
+                            clipX: null, clipY: null, clipW: null, clipH: null,
+                        });
+                    },
                 });
-                ownBlobUrl = URL.createObjectURL(new Blob([bytes as any], { type: 'image/jpeg' }));
+                ownBlobUrl = URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' }));
                 src = ownBlobUrl;
             } catch {
                 // Fallback GS (hiếm): PDFium lỗi thì thử Ghostscript.
@@ -141,9 +155,10 @@ const MemoThumbItem = React.memo((props: any) => {
         })();
         return () => {
             cancelled = true;
+            nativeTileRenderScheduler.cancelOwner(thumbRenderOwnerId);
             if (ownBlobUrl) URL.revokeObjectURL(ownBlobUrl);
         };
-    }, [needsNativeRender, nativeRequestKey, file?.path, originalPageNum, pageCount, thumbRev, pdfUrl, optimalZoom]);
+    }, [needsNativeRender, nativeRequestKey, file?.path, originalPageNum, pageCount, thumbRev, pdfUrl, optimalZoom, thumbRenderOwnerId]);
     return (
         <div
             ref={(el) => registerRef?.(el, index)}
@@ -261,6 +276,7 @@ const MemoThumbItem = React.memo((props: any) => {
         prev.localDim?.w === next.localDim?.w &&
         prev.localDim?.h === next.localDim?.h &&
         prev.isLoadable === next.isLoadable &&
+        prev.isViewerActive === next.isViewerActive &&
         prev.pdfUrl === next.pdfUrl &&
         prev.thumbRev === next.thumbRev &&
         prev.pageCount === next.pageCount;
@@ -301,7 +317,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
         commitSnapshot, handleQuickRotate,
         setActiveDashboardTool, setIsSidebarOpen,
         setContextMenu, sidebarRef, mainVirtuosoRef, internalScrollRef,
-        file, pdfUrl, onCrossFileCopy,
+        file, pdfUrl, isViewerActive, onCrossFileCopy,
         setIsDeleteModalOpen, navigatePage,
     } = props;
 
@@ -544,6 +560,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                                         pageCount={numPages}
                                         file={file}
                                         isLoadable={thumbsGateOpen && visibleThumbs.has(index)}
+                                        isViewerActive={isViewerActive}
                                         registerRef={registerThumbRef}
                                         handleThumbClick={handleThumbClick}
                                         handlePointerDown={handlePointerDown}

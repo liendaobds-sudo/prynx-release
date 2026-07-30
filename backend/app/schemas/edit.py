@@ -15,7 +15,7 @@ Quy ước:
 _Requirements: 1.4 (định danh ổn định / data model ánh xạ), 6.5 (từ chối resize ≤ 0)._
 """
 import math
-from typing import Literal
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -338,3 +338,237 @@ class OpSpan(BaseModel):
         if self.end < self.start:
             raise ValueError("OpSpan không hợp lệ: end phải >= start")
         return self
+
+
+# ── Response contract (KIENTRUC audit 2026-07-29 §A.2, lô 13) ────────────────
+# Cùng nguyên tắc với `schemas/imposition.py`: model MÔ TẢ endpoint đang chạy, field lỏng
+# để `Optional`/`Any`, và ghi rõ ai đọc field đó ở phía desktop.
+
+
+class PageObjectsPayload(BaseModel):
+    """`GET /api/edit/objects/{fid}/{page}` — danh sách object của một trang.
+
+    Desktop đọc (`components/workspace/LivePageFrame.tsx`): `objects` để vẽ khung chọn,
+    `pageBox` để quy đổi toạ độ, `hiddenObjectIds` để biết object nào đang bị ẩn.
+
+    `objects` để `Any` vì phần tử là `ObjMeta.model_dump()` — đã có model riêng, validate
+    hai lần chỉ thêm chi phí. `pageBox` là metadata best-effort (có thể `None`).
+    """
+
+    objects: list[Any] = Field(default_factory=list)
+    pageBox: Optional[Any] = Field(
+        default=None, description="Page_Box của trang (CropBox/MediaBox) để quy đổi toạ độ"
+    )
+    hiddenObjectIds: list[Any] = Field(
+        default_factory=list, description="Id object đang ẩn trong phiên sửa (best-effort)"
+    )
+
+
+class TextObjectPropsResponse(BaseModel):
+    """`GET /api/edit/text-props/{fid}/{page}/{index}` — nội dung/màu/font của MỘT text-object.
+
+    Nguồn: `core/geometry_reader.get_text_object_props`, lấy LAZY khi người dùng bấm vào
+    chữ. Cả ba field có thể `None` khi object không phải text hoặc font không đọc được —
+    đó là kết quả hợp lệ, không phải lỗi.
+    """
+
+    content: Optional[str] = None
+    color: Optional[list[int]] = Field(default=None, description="RGB 0..255")
+    fontName: Optional[str] = Field(default=None, description="BaseFont, đã bỏ tiền tố subset")
+
+
+class OcgVisibilityResponse(BaseModel):
+    """`POST /api/edit/ocg/visibility` — đổi hiển thị OCG layer trên Live_Document.
+
+    Route trả `{"success": True, **result}` với `result` từ
+    `edit_session.set_ocg_visibility` (`layer_id`, `visible`, `success`).
+    """
+
+    success: bool
+    layer_id: Optional[int] = None
+    visible: Optional[bool] = None
+    changed: Optional[bool] = None
+
+
+class OcgActionResponse(BaseModel):
+    """`POST /api/edit/session/ocg-action` và `/session/ocg-visibility` (đường tương thích).
+
+    `edit_session.apply_ocg_action` trả nhiều hình dạng tuỳ action (đổi tên / khoá / ẩn /
+    xoá / gộp), nên model là hợp của các nhánh. `removed_instructions = -1` nghĩa là "đã
+    xoá cả trang" chứ không phải lỗi.
+    """
+
+    success: bool
+    action: Optional[str] = None
+    layer_id: Optional[int] = None
+    changed: Optional[bool] = None
+    visible: Optional[bool] = None
+    removed_instructions: Optional[int] = None
+
+
+class DiscardWorkingFileResponse(BaseModel):
+    """`DELETE /api/edit/working/{fid}` — bỏ một Working_File của phiên sửa.
+
+    `deleted=False` KHÔNG phải lỗi: `reason` cho biết vì sao (không tìm thấy, không phải
+    working file, hoặc lỗi khi xoá). Cố tình không raise để UI dọn dẹp được mà không phải
+    bắt exception.
+    """
+
+    deleted: bool
+    reason: Optional[str] = Field(
+        default=None, description="not_found | not_working_file | error"
+    )
+
+
+class SessionCloseResponse(BaseModel):
+    """`DELETE /api/edit/session/{sid}` — đóng Edit_Session.
+
+    `closed=False` nghĩa là phiên không tồn tại (đã hết TTL hoặc đóng rồi) — an toàn khi
+    gọi lại nhiều lần.
+    """
+
+    closed: bool
+
+
+# ── Model gom từ app/api/routes/edit.py (audit 2026-07-29 §A.2 lô 13) ──
+
+class EditRequest(BaseModel):
+    """
+    Bọc một `EditOp` cùng `fid` (id file đã upload) để định tuyến thao tác sửa.
+
+    Cùng một schema dùng cho mọi endpoint POST (/delete, /transform, /text, /add);
+    mỗi endpoint kiểm tra `op.kind` có thuộc tập hợp lệ của nó hay không.
+    """
+
+    fid: str = Field(description="ID file PDF đã upload (UploadedFile.id)")
+    op: EditOp
+
+class PreviewHideReq(BaseModel):
+    """
+    Yêu cầu render preview TRANG SAU KHI ẨN (xóa hình thật) một tập object.
+
+    Dùng cho tính năng "Ẩn đối tượng" (tắt mắt) ở chế độ Edit: backend áp một thao
+    tác delete IN-MEMORY (pikepdf) rồi render trang read-only → FE đắp ảnh này làm
+    overlay để hình thật của object biến mất (không chỉ ẩn ô chọn). KHÔNG ghi file,
+    KHÔNG mutate file gốc.
+    """
+
+    fid: str = Field(description="ID file PDF đã upload (UploadedFile.id)")
+    page: int = Field(ge=0, description="Chỉ số trang 0-based cần render")
+    targetIds: list[str] = Field(
+        default_factory=list, description="Danh sách id object cần ẩn (xóa khỏi ảnh preview)"
+    )
+
+class EditResponse(BaseModel):
+    """Kết quả một thao tác edit + tham chiếu Working_File mới."""
+
+    success: bool
+    output_filename: str
+    output_url: str = Field(description="URL tĩnh tương đối phục vụ qua /results")
+    output_path: str = Field(description="Đường dẫn tuyệt đối Working_File mới")
+    output_fid: str = Field(
+        description=(
+            "ID bản ghi UploadedFile trỏ tới Working_File mới — dùng làm fid cho "
+            "thao tác edit kế tiếp (thao tác trực tiếp trên kết quả mới, KHÔNG cần "
+            "tải-về-rồi-upload-lại trên desktop)."
+        )
+    )
+    warning: str | None = Field(
+        default=None,
+        description="Cảnh báo suy giảm chất lượng cần hiển thị rõ cho người vận hành",
+    )
+    result: dict | list = Field(default_factory=dict, description="Tóm tắt op_result")
+
+class PreviewResponse(BaseModel):
+    """
+    Ảnh preview (PNG base64) của một trang SAU khi áp thao tác EditOp.
+
+    Ảnh được render READ-ONLY bằng PDFium từ BYTES mà pikepdf vừa ghi in-memory
+    (KHÔNG lưu file vĩnh viễn, KHÔNG dùng PDFium để ghi — Yêu cầu 12.2). Hình học
+    của ảnh khớp với kết quả lưu pikepdf (Yêu cầu 12.1, 12.3).
+    """
+
+    success: bool
+    image: str = Field(description="Data URI 'data:image/png;base64,...'")
+    width: int = Field(description="Chiều rộng ảnh render (px)")
+    height: int = Field(description="Chiều cao ảnh render (px)")
+    page: int = Field(description="Chỉ số trang 0-based đã render")
+
+class SessionOpenReq(BaseModel):
+    """Mở một Edit_Session từ `fid` (file đã upload)."""
+
+    fid: str = Field(description="ID file PDF đã upload (UploadedFile.id)")
+
+class SessionOpenResp(BaseModel):
+    """Kết quả mở phiên: Session_Id duy nhất + số trang của Live_Document."""
+
+    session_id: str = Field(description="Session_Id duy nhất do backend cấp")
+    page_count: int = Field(description="Số trang của Live_Document")
+
+class SessionOpReq(BaseModel):
+    """
+    Áp một `EditOp` in-memory lên Live_Document của phiên + render clip.
+
+    `render_scale` (px/point ≈ zoom×dpr) và `clip_pad_pt` (lề an toàn quanh
+    Clip_Region, point) điều khiển Incremental_Render.
+    """
+
+    session_id: str = Field(description="Session_Id của Edit_Session đang sống")
+    op: EditOp
+    render_scale: float = Field(default=2.0, description="px/point để render preview (≈ zoom×dpr)")
+    clip_pad_pt: float = Field(default=8.0, description="lề an toàn quanh clip (point)")
+
+class SessionRefReq(BaseModel):
+    """
+    Tham chiếu phiên cho thao tác KHÔNG kèm EditOp (undo/redo) — vẫn cần tham số
+    render để dựng Preview_Image của vùng bị thay đổi sau khi hoàn tác/làm lại.
+    """
+
+    session_id: str = Field(description="Session_Id của Edit_Session đang sống")
+    render_scale: float = Field(default=2.0, description="px/point để render preview (≈ zoom×dpr)")
+    clip_pad_pt: float = Field(default=8.0, description="lề an toàn quanh clip (point)")
+
+class SessionOcgActionReq(BaseModel):
+    session_id: str
+    action: str
+    layer_id: int | None = None
+    name: str | None = None
+    locked: bool | None = None
+    new_order: list[int] | None = None
+
+class SessionOcgVisibilityReq(BaseModel):
+    session_id: str = Field(description="Session_Id của Edit_Session đang sống")
+    layer_id: int
+    visible: bool
+
+class SessionCommitReq(BaseModel):
+    """Yêu cầu Commit Live_Document hiện tại ra một Working_File mới."""
+
+    session_id: str = Field(description="Session_Id của Edit_Session đang sống")
+
+class SessionOpResp(BaseModel):
+    """
+    Kết quả một thao tác phiên (op / undo / redo): Preview_Image (vùng clip hoặc
+    toàn trang) + tọa độ Clip_Region + opResult (gồm BBox MỚI để FE cập nhật overlay
+    tại chỗ) + trạng thái Undo/Redo.
+    """
+
+    success: bool
+    preview: str | None = Field(
+        default=None,
+        description="data:image/png;base64,... (vùng clip hoặc toàn trang); None nếu no-op",
+    )
+    clipRect: list[float] | None = Field(
+        default=None,
+        description="[x0,y0,x1,y1] POINT gốc Page_Box-relative; None = toàn trang/no-op",
+    )
+    full: bool = Field(default=False, description="True nếu render toàn trang (fallback)")
+    page: int | None = Field(default=None, description="Chỉ số trang 0-based bị tác động")
+    opResult: dict = Field(default_factory=dict, description="Gồm BBox MỚI để FE cập nhật overlay")
+    canUndo: bool = Field(default=False, description="Còn op để hoàn tác?")
+    canRedo: bool = Field(default=False, description="Còn op để làm lại?")
+
+class OcgVisibilityRequest(BaseModel):
+    fid: str
+    layer_id: int
+    visible: bool

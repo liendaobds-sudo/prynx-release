@@ -16,8 +16,8 @@
 
 import React, { useMemo } from 'react';
 import { Html } from '@react-three/drei';
-import { useBoxStore } from '../../store/useBoxStore';
-import { useMockupStore } from '../../store/useMockupStore';
+import { useBoxStore } from '../../stores/useBoxStore';
+import { useMockupStore } from '../../stores/useMockupStore';
 import { formatDimensions } from '../../lib/mockup3d/dimensionFormat';
 import type { BoxDimensions } from '../../lib/mockup3d/dimensionFormat';
 

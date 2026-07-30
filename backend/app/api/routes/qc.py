@@ -11,15 +11,18 @@ from app.utils.errors import raise_http
 # import cv2 ở top-level nên chỉ lazy `import cv2` là chưa đủ — phải hoãn cả cụm.
 
 logger = logging.getLogger(__name__)
+
+# KIENTRUC (audit 2026-07-29 §A.2 lô 13): model đã gom về app/schemas/qc.py;
+# import lại ở đây để mọi đường import cũ (kể cả test) vẫn dùng được.
+from app.schemas.qc import (  # noqa: F401
+    ExtractTextResponse,
+    TextQcRequest,
+    TextQcResponse,
+)
+
 router = APIRouter()
 
-class TextQcRequest(BaseModel):
-    text: str
-    llm_mode: str
-    api_key: str
 
-class TextQcResponse(BaseModel):
-    errors: List[str]
 
 @router.post("/qc/check-text", response_model=TextQcResponse)
 async def check_text(request: TextQcRequest, license_info: dict = Depends(require_license)):
@@ -51,8 +54,6 @@ async def check_text(request: TextQcRequest, license_info: dict = Depends(requir
     except Exception as e:
         raise_http(e, "Kiểm tra AI thất bại")
 
-class ExtractTextResponse(BaseModel):
-    text: str
 
 @router.post("/qc/extract-text", response_model=ExtractTextResponse)
 async def extract_text(file: UploadFile = File(...), license_info: dict = Depends(require_license)):

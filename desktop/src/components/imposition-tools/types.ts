@@ -117,7 +117,8 @@ export interface BookletSettings {
 }
 
 export interface NupSettings {
-    layoutType: 'repeat' | 'sequential' | 'cut_stacks' | 'ratio_stack';
+    // MIXED-GUILLOTINE (audit 2026-07-30 §MG.8/§MG.9): mode riêng, không thay đổi hành vi các mode cũ.
+    layoutType: 'repeat' | 'sequential' | 'cut_stacks' | 'ratio_stack' | 'mixed_guillotine';
     formsize: string;
     customSheetWidth: number;
     customSheetHeight: number;
@@ -153,6 +154,8 @@ export interface NupSettings {
     marginMode: 'labels_only' | 'include_marks';
     gripperMargin?: number;
     duplexFlow: 'normal' | 'double';
+    /** Optional để preset cũ không có field này vẫn nạp với mặc định từ store. */
+    duplexFlipEdge?: 'long' | 'short';
     align: 'top-left' | 'top-center' | 'top-right' | 'center-left' | 'center' | 'center-right' | 'bottom-left' | 'bottom-center' | 'bottom-right';
     mirrorAlign: boolean;
     markType: 'none' | 'corners' | 'guillotine';
@@ -338,7 +341,7 @@ export const DEFAULT_BOOK_REPORT_CONFIG: BookReportDisplayConfig = {
 
 export type TaskMode = 'booklet' | 'nup' | 'step_repeat' | 'offset' | 'sticker_imposer' | 'cnc_imposer';
 
-export type ActiveToolType = 'none' | 'booklet' | 'nup' | 'shuffle' | 'resize' | 'split' | 'merge' | 'preflight' | 'font_tools' | 'hairlines' | 'convertcolors' | 'trapping' | 'pdfx' | 'datamerge' | 'numbering' | 'cover_numbering' | 'stick_text_number' | 'ocr' | 'optimize' | 'sticker' | 'sticker_imposer' | 'cnc_imposer' | 'bgremover' | 'watermark' | 'upscale' | 'pages' | 'trim_shift' | 'encrypt' | 'metadata' | 'office_convert' | 'crop';
+export type ActiveToolType = 'none' | 'booklet' | 'nup' | 'shuffle' | 'resize' | 'split' | 'merge' | 'preflight' | 'font_tools' | 'hairlines' | 'convertcolors' | 'trapping' | 'pdfx' | 'datamerge' | 'numbering' | 'cover_numbering' | 'stick_text_number' | 'ocr' | 'optimize' | 'sticker' | 'sticker_imposer' | 'cnc_imposer' | 'bgremover' | 'watermark' | 'upscale' | 'logo_rebuild' | 'pages' | 'trim_shift' | 'encrypt' | 'metadata' | 'office_convert' | 'crop';
 
 /**
  * Loại panel mà một công cụ hiển thị trong workspace bình bài.
@@ -389,6 +392,7 @@ export const WORKSPACE_TOOL_PANEL: Record<ActiveToolType, WorkspacePanelKind> = 
     bgremover: 'preprocess',
     watermark: 'preprocess',
     upscale: 'preprocess',
+    logo_rebuild: 'preprocess',
     trim_shift: 'preprocess',
     encrypt: 'preprocess',
     metadata: 'preprocess',

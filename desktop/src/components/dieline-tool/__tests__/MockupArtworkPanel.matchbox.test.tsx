@@ -3,8 +3,8 @@ import React from 'react';
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import MockupArtworkPanel from '../MockupArtworkPanel';
-import { useBoxStore } from '../../../store/useBoxStore';
-import { useMockupStore } from '../../../store/useMockupStore';
+import { useBoxStore } from '../../../stores/useBoxStore';
+import { useMockupStore } from '../../../stores/useMockupStore';
 import { generateDieline } from '../../../lib/dieline/engine';
 import { DEFAULT_PARAMS } from '../../../lib/dieline/types';
 

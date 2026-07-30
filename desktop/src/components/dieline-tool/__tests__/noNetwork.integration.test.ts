@@ -26,7 +26,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
-import { useMockupStore } from '../../../store/useMockupStore';
+import { useMockupStore } from '../../../stores/useMockupStore';
 import {
     buildPanelSolid,
     clampThickness,

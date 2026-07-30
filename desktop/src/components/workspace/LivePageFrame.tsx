@@ -8,6 +8,7 @@ import { getVisiblePlateOverlaysForPage } from '../../lib/outputPreviewOverlay';
 import { useCropPointerDrawing } from '../../hooks/useCropPointerDrawing';
 import { VdpPreviewImage } from './ViewerHelpers';
 import { useViewerHotkeys } from '../../hooks/viewer/useViewerHotkeys';
+import { nativeTileRenderScheduler } from '../../hooks/viewer/tileRenderScheduler';
 import { globalPdfObjectCache } from '../../stores/pdfObjectCache';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
@@ -207,9 +208,14 @@ function clearEditObjectsCache() {
     _editCropOriginCache.clear();
 }
 
-const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible }: any) => {
-    const tileRef = useRef<HTMLDivElement>(null);
+interface LoadableTileElement extends HTMLDivElement {
+    _loadTile?: () => void;
+}
+
+const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible, renderOwnerId, renderPriority = 100, renderEnabled = true }: any) => {
+    const tileRef = useRef<LoadableTileElement>(null);
     const imgRef = useRef<HTMLImageElement>(null);
+    const renderGroupKey = `${renderOwnerId || fileKey}:${pageNum}:${clipW && clipH ? 'tile' : 'page'}`;
     // NÉT (audit độ nét 2026-07-28 §R.4): ép ảnh vẽ ở ĐÚNG kích thước pixel gốc để tỉ lệ
     // scale = 1.0 (map 1:1 device pixel) — đó là điều kiện DUY NHẤT để chữ nét như Acrobat.
     //
@@ -260,6 +266,7 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
     const loadedParamsRef = useRef('');
     const preloadRef = useRef<HTMLImageElement|null>(null);
     const hasLoadedOnce = useRef(false);
+    const displayedScaleRef = useRef(0);
     
     const currentParams = `${fileKey}_${pageNum}_${zoom}_${rot}_${clipX}_${clipY}_${clipW}_${clipH}`;
     
@@ -270,6 +277,7 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
             imgRef.current.src = cachedUrl;
             loadedParamsRef.current = currentParams;
             hasLoadedOnce.current = true;
+            displayedScaleRef.current = zoom;
             // Show immediately if cached
             if (tileRef.current) tileRef.current.style.opacity = '1';
             // Trang chính đã hiển thị (từ cache) → mở cổng cho thumbnail tải.
@@ -280,8 +288,19 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
     useEffect(() => {
         const el = tileRef.current;
         if (!el) return;
+        if (!renderEnabled) {
+            el._loadTile = undefined;
+            loadedParamsRef.current = '';
+            if (renderOwnerId) {
+                nativeTileRenderScheduler.cancelGroup(renderOwnerId, renderGroupKey);
+            }
+            return;
+        }
         
-        if (loadedParamsRef.current === currentParams) return;
+        // Trang prefetch đã có ảnh thì giữ nguyên; không hạ ảnh sharp cũ xuống coarse.
+        // Khi nó thành active, priority đổi và luồng sharp tiếp tục trên ảnh đang hiển thị.
+        if (renderPriority >= 100 && hasLoadedOnce.current) return;
+        if (loadedParamsRef.current === currentParams && hasLoadedOnce.current) return;
         
         // Check cache before scheduling network load
         const cachedUrl = getCachedTileUrl(currentParams);
@@ -289,15 +308,17 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
             imgRef.current.src = cachedUrl;
             loadedParamsRef.current = currentParams;
             hasLoadedOnce.current = true;
+            displayedScaleRef.current = zoom;
             if (tileRef.current) tileRef.current.style.opacity = '1';
             return;
         }
         
-        (el as any)._loadTile = () => {
-            if (loadedParamsRef.current === currentParams) return;
+        el._loadTile = () => {
+            if (loadedParamsRef.current === currentParams && hasLoadedOnce.current) return;
             if (!getTileUrl) return;
             const paramsAtRequest = currentParams;
             loadedParamsRef.current = paramsAtRequest;
+            displayedScaleRef.current = 0;
             
             // Cancel previous preload
             if (preloadRef.current) {
@@ -306,10 +327,14 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
                 preloadRef.current = null;
             }
 
-            // Tải tile ở 'scale'. cache=true mới lưu cache. onDone gọi sau khi hiện xong
-            // (dùng để nối pha sharp sau pha coarse — TUẦN TỰ, tránh tranh chấp mutex pdfium).
-            const loadAt = (scale: number, cache: boolean, onDone?: () => void) => {
-                getTileUrl(pageNum, rot, scale, clipX, clipY, clipW, clipH)
+            // Tải tile ở 'scale'. onReady chạy ngay khi bytes thành blob URL, trước decode ảnh,
+            // để sharp kịp vào scheduler trước coarse prefetch của trang kế bên.
+            const loadAt = (scale: number, cache: boolean, onReady?: () => void) => {
+                getTileUrl(pageNum, rot, scale, clipX, clipY, clipW, clipH, {
+                    ownerId: renderOwnerId,
+                    groupKey: renderGroupKey,
+                    priority: renderPriority,
+                })
                     .then((url: string) => {
                         if (loadedParamsRef.current !== paramsAtRequest) {
                             if (url && url.startsWith('blob:') && !url.includes('#keep')) URL.revokeObjectURL(url);
@@ -318,7 +343,16 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
                         const preImg = new Image();
                         preloadRef.current = preImg;
                         preImg.onload = () => {
-                            if (loadedParamsRef.current !== paramsAtRequest) return;
+                            if (loadedParamsRef.current !== paramsAtRequest || scale < displayedScaleRef.current) {
+                                if (url && url.startsWith('blob:') && !url.includes('#keep')) {
+                                    URL.revokeObjectURL(url);
+                                }
+                                if (preloadRef.current === preImg) preloadRef.current = null;
+                                return;
+                            }
+                            // Sharp có thể decode trước coarse vì được enqueue ngay khi coarse có URL.
+                            // Chỉ cho chất lượng bằng hoặc cao hơn ảnh đang hiển thị ghi vào <img>.
+                            displayedScaleRef.current = scale;
                             const imgEl = imgRef.current;
                             if (imgEl) {
                                 const oldSrc = imgEl.src;
@@ -337,23 +371,23 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
                                 // (tránh thumbnail tranh chấp pdfium handle với trang chính).
                                 window.dispatchEvent(new CustomEvent('prynx-main-tile-ready'));
                             }
-                            preloadRef.current = null;
-                            if (onDone) onDone();
+                            if (preloadRef.current === preImg) preloadRef.current = null;
                         };
                         preImg.onerror = () => {
-                            preloadRef.current = null;
-                            if (onDone) { onDone(); return; }  // coarse lỗi → vẫn thử sharp
+                            if (preloadRef.current === preImg) preloadRef.current = null;
+                            if (onReady) return; // sharp đã được nối ngay sau khi gán src
                             if (loadedParamsRef.current === paramsAtRequest) loadedParamsRef.current = '';
                         };
                         preImg.src = url;
+                        if (onReady) onReady();
                     })
                     .catch(() => {
-                        if (onDone) { onDone(); return; }
+                        if (onReady) { onReady(); return; }
                         if (loadedParamsRef.current === paramsAtRequest) loadedParamsRef.current = '';
                     });
             };
 
-            if (typeof coarseZoom === 'number' && coarseZoom < zoom - 0.05) {
+            if (!hasLoadedOnce.current && typeof coarseZoom === 'number' && coarseZoom < zoom - 0.05) {
                 // Pha 1: coarse (nhanh) hiện trước → Pha 2: sharp nối sau (tuần tự).
                 loadAt(coarseZoom, false, () => {
                     if (loadedParamsRef.current === paramsAtRequest) loadAt(zoom, true);
@@ -369,11 +403,12 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
         // Gọi _loadTile() ĐỒNG BỘ ngay trong effect (không phụ thuộc observer/paint)
         // để tile luôn được nạp tức thì. Observer vẫn giữ làm dự phòng cho tile cuộn xa;
         // _loadTile có guard nên gọi 2 lần là vô hại.
-        (el as any)._loadTile?.();
+        el._loadTile?.();
         return () => {
+            el._loadTile = undefined;
             onVisible(el, true, eager);
         };
-    }, [currentParams, getTileUrl, onVisible]);
+    }, [currentParams, coarseZoom, eager, getTileUrl, onVisible, renderEnabled, renderGroupKey, renderOwnerId, renderPriority, zoom]);
     
     // Cleanup on unmount — DON'T revoke blob URLs, they're in the cache now!
     useEffect(() => {
@@ -425,7 +460,7 @@ const TILE_PAD = 256;   // device px phủ thêm quanh viewport → pan nhỏ v�
 const TILE_SNAP = 256;  // bo origin/extent về bội số này → pan nhỏ tái dùng cache
 const TILE_MAX = 4000;  // trần set_fixed_size của native (an toàn OOM)
 
-const TileLayer = React.memo(({ fileKey, pageNum, zoom, dpr, displayWidth, displayHeight, containerRef, getTileUrl, onVisible }: any) => {
+const TileLayer = React.memo(({ fileKey, pageNum, zoom, dpr, displayWidth, displayHeight, containerRef, getTileUrl, onVisible, renderOwnerId }: any) => {
     // Vùng nhìn (CSS px, gốc = góc trên-trái trang) — tính lại khi cuộn/zoom/resize.
     const [visRect, setVisRect] = useState<{ left: number; top: number; right: number; bottom: number } | null>(null);
 
@@ -525,6 +560,8 @@ const TileLayer = React.memo(({ fileKey, pageNum, zoom, dpr, displayWidth, displ
             cssLeft={cssLeft} cssTop={cssTop} cssW={cssW} cssH={cssH}
             getTileUrl={getTileUrl}
             onVisible={onVisible}
+            renderOwnerId={renderOwnerId}
+            renderPriority={0}
         />
     );
 });
@@ -681,7 +718,7 @@ export const LivePageFrame = (props: any) => {
         getTileUrl, textBlocks, isVdpMode, onVdpBoxCreate, onVdpBoxSelect, onVdpFieldsChange,
         setHoveredPdfPosition, detectedDimension, isBlankDoc, onEditCommit, isActivePage,
         isImageFile: isImage, nativeFilePath, previewRevision,
-        editSession, totalPages, tabId, isViewerActive
+        editSession, totalPages, tabId, isViewerActive, renderOwnerId, prefetchPage
     } = props;
     // Trang ĐANG xem (active) trong danh sách ảo (Virtuoso). Chỉ frame active mới
     // đẩy editObjects của mình lên store `currentEditObjects` → panel "Thành phần"
@@ -689,8 +726,8 @@ export const LivePageFrame = (props: any) => {
     // currentEditObjects (frame chạy sau cùng thắng) nên panel có thể liệt kê object
     // của TRANG KHÁC → tắt mắt một thành phần lại nhắm id không có trên trang active
     // → /edit/preview-hide trả về trang nguyên vẹn → "không có gì thay đổi".
-    // Nếu prop không được truyền (consumer cũ) → coi như active để giữ hành vi cũ.
-    const isActiveFrame = isActivePage !== false;
+    // Chỉ giá trị true mới là active; undefined không được phép kích hoạt mọi frame ảo.
+    const isActiveFrame = isActivePage === true;
 
     const {
         isObjectEditMode, setCurrentEditObjects, selectionFileId, hiddenObjectIds, setHiddenObjectIds, lockedObjectIds, hiddenOcgLayerIds,
@@ -734,6 +771,14 @@ export const LivePageFrame = (props: any) => {
     })));
 
     const previewFramePage = typeof viewerPageNum === 'number' ? viewerPageNum : originalPageNum;
+    const viewerIsActive = isViewerActive !== false;
+    const effectiveRenderOwnerId = renderOwnerId || `${tabId || 'viewer'}:${pdfUrl || nativeFilePath || 'memory'}`;
+    const pageRenderPriority = viewerIsActive ? (isActiveFrame ? 10 : 100) : 1000;
+    // PERF (audit 2026-07-29 §R.10): trang active ưu tiên 10, hai trang kề prefetch
+    // cùng chất lượng ở ưu tiên 100; trang xa bị hủy khỏi hàng đợi. Không dùng coarse
+    // vì đo thực tế cho thấy decode trang chiếm thời gian và zoom 0.35 tạo cache-miss mới.
+    const shouldRenderBasePage = viewerIsActive && (isActiveFrame || prefetchPage === true);
+
     const separationPreviewBelongsToFrame = separationPlates.some(
         plate => plate.pageNum === previewFramePage,
     );
@@ -2698,7 +2743,7 @@ export const LivePageFrame = (props: any) => {
                 // (Virtuoso giữ ~9 trang) đều render tile sắc dù người dùng chỉ nhìn 1 → 9× công
                 // thừa xếp hàng tuần tự. Trang khác giữ nền single-tile là đủ (audit tốc độ).
                 const dpr = window.devicePixelRatio || 1;
-                const needsTiling = isActiveFrame && !isImage && (rotation || 0) % 360 === 0
+                const needsTiling = viewerIsActive && isActiveFrame && !isImage && (rotation || 0) % 360 === 0
                     && renderZoom < zoom * dpr * 0.95;
                 // PERF (audit độ nét 2026-07-28 §R.1): TRẦN zoom cho nền của trang KHÔNG
                 // đang xem. Virtuoso giữ ~9 trang mounted và LiveTile gọi _loadTile() ĐỒNG BỘ
@@ -2723,12 +2768,12 @@ export const LivePageFrame = (props: any) => {
                         <div className="absolute inset-0 flex items-center justify-center bg-slate-50/50 z-0">
                             <div className="flex flex-col items-center opacity-50">
                                 <div className="w-8 h-8 border-4 border-slate-300 border-t-slate-500 rounded-full animate-spin mb-2" />
-                                {/* UIUX (audit 2026-07-27 §C-14): 'RENDERING' hardcode → tiếng Việt qua i18n */}
-                                <span className="text-xs font-semibold text-slate-500 tracking-wider">{t('misc.livePageFrame:dang_dung_hinh', 'ĐANG DỰNG HÌNH')}</span>
+                                {/* UIUX (feedback 2026-07-29): trạng thái tải trang dùng chuỗi ngắn, dễ đọc */}
+                                <span className="text-xs font-semibold text-slate-500 tracking-wider">{t('misc.livePageFrame:dang_dung_hinh', 'Loading...')}</span>
                             </div>
                         </div>
                         <div className="absolute inset-0 z-10">
-                            <LiveTile fileKey={pdfUrl || 'unknown'} key="full" pageNum={originalPageNum} zoom={bgZoom} rot={0} clipX={0} clipY={0} clipW={0} clipH={0} cssW={Math.ceil(displayWidth)} cssH={Math.ceil(displayHeight)} getTileUrl={getTileUrl} onVisible={handleTileVisibility} />
+                            <LiveTile fileKey={pdfUrl || 'unknown'} key="full" pageNum={originalPageNum} zoom={bgZoom} rot={0} clipX={0} clipY={0} clipW={0} clipH={0} cssW={Math.ceil(displayWidth)} cssH={Math.ceil(displayHeight)} getTileUrl={getTileUrl} onVisible={handleTileVisibility} renderOwnerId={effectiveRenderOwnerId} renderPriority={pageRenderPriority} renderEnabled={shouldRenderBasePage} />
                         </div>
                         {needsTiling && (
                             <div className="absolute inset-0 z-[11]">
@@ -2742,6 +2787,7 @@ export const LivePageFrame = (props: any) => {
                                     containerRef={containerRef}
                                     getTileUrl={getTileUrl}
                                     onVisible={handleTileVisibility}
+                                    renderOwnerId={effectiveRenderOwnerId}
                                 />
                             </div>
                         )}

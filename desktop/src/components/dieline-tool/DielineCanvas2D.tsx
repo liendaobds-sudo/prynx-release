@@ -4,8 +4,8 @@
 // ============================================================
 
 import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
-import { useBoxStore } from '../../store/useBoxStore';
-import { useMockupStore } from '../../store/useMockupStore';
+import { useBoxStore } from '../../stores/useBoxStore';
+import { useMockupStore } from '../../stores/useMockupStore';
 import { DielineModel, PathSegment, Panel } from '../../lib/dieline/types';
 import { buildChains, chainToSvgD, computeEnvelopeDims, deriveLegendTags } from '../../lib/dieline/sharedGeometry';
 import { tracePerimeter } from '../../lib/dieline/tracePerimeter';

@@ -41,20 +41,28 @@ class PDFProcessor:
         """
         logger.info(f"Converting PDF to images: {pdf_path} @ {dpi} DPI")
 
-        pdf = pdfium.PdfDocument(pdf_path)
-        
+        # KIENTRUC (audit 2026-07-29 §C.1): khóa THEO TỪNG TRANG. `np.array(...)` copy
+        # pixel ra khỏi bộ đệm bitmap nên phải nằm trong khóa; phần so ảnh phía sau thì
+        # không. So sánh nhiều trang mà giữ khóa cả lượt sẽ chặn mọi preview khác.
+        from app.core.pdfium_lock import pdfium_guard
+
+        with pdfium_guard("pdf_processor_open_rgb"):
+            pdf = pdfium.PdfDocument(pdf_path)
+            n_pages = len(pdf)
+
         start_idx = 0 if first_page is None else max(0, first_page - 1)
-        end_idx = len(pdf) if last_page is None else min(len(pdf), last_page)
+        end_idx = n_pages if last_page is None else min(n_pages, last_page)
 
         scale = dpi / 72.0
-        
+
         def render_page(i):
-            page = pdf[i]
-            # rev_byteorder=True ensures RGB output format instead of default BGR
-            bitmap = page.render(scale=scale, rev_byteorder=True)
-            pil_img = bitmap.to_pil()
-            # Ensure it is standard 3-channel RGB for OpenCV compatibility
-            return np.array(pil_img.convert("RGB"))
+            with pdfium_guard("pdf_processor_render_rgb"):
+                page = pdf[i]
+                # rev_byteorder=True ensures RGB output format instead of default BGR
+                bitmap = page.render(scale=scale, rev_byteorder=True)
+                pil_img = bitmap.to_pil()
+                # Ensure it is standard 3-channel RGB for OpenCV compatibility
+                return np.array(pil_img.convert("RGB"))
 
         images = [render_page(i) for i in range(start_idx, end_idx)]
 
@@ -72,18 +80,24 @@ class PDFProcessor:
         """
         logger.info(f"Converting PDF to CMYK images: {pdf_path} @ {dpi} DPI")
 
-        pdf = pdfium.PdfDocument(pdf_path)
-        scale = dpi / 72.0
-        
-        def render_page_cmyk(i):
-            page = pdf[i]
-            bitmap = page.render(scale=scale, rev_byteorder=True)
-            pil_img = bitmap.to_pil()
-            if pil_img.mode != "CMYK":
-                pil_img = pil_img.convert("CMYK")
-            return np.array(pil_img)  # Shape: (H, W, 4)
+        # KIENTRUC (audit 2026-07-29 §C.1): khóa theo từng trang, như convert_to_images.
+        from app.core.pdfium_lock import pdfium_guard
 
-        cmyk_images = [render_page_cmyk(i) for i in range(len(pdf))]
+        with pdfium_guard("pdf_processor_open_cmyk"):
+            pdf = pdfium.PdfDocument(pdf_path)
+            n_pages = len(pdf)
+        scale = dpi / 72.0
+
+        def render_page_cmyk(i):
+            with pdfium_guard("pdf_processor_render_cmyk"):
+                page = pdf[i]
+                bitmap = page.render(scale=scale, rev_byteorder=True)
+                pil_img = bitmap.to_pil()
+                if pil_img.mode != "CMYK":
+                    pil_img = pil_img.convert("CMYK")
+                return np.array(pil_img)  # Shape: (H, W, 4)
+
+        cmyk_images = [render_page_cmyk(i) for i in range(n_pages)]
 
         logger.info(f"Converted {len(cmyk_images)} CMYK pages")
         return cmyk_images
@@ -322,12 +336,21 @@ class PDFDocumentReader:
         self._pdf = None
 
     def __enter__(self):
-        self._pdf = pdfium.PdfDocument(self.pdf_path)
+        # KIENTRUC (audit 2026-07-29 §C.1): mở/đóng tài liệu và mỗi lần render đều nằm
+        # trong `pdfium_guard`. Reader này được dùng cho so sánh trang-theo-trang, có thể
+        # chạy trong thread cùng lúc với preview của tab khác.
+        from app.core.pdfium_lock import pdfium_guard
+
+        with pdfium_guard("pdf_reader_open"):
+            self._pdf = pdfium.PdfDocument(self.pdf_path)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        from app.core.pdfium_lock import pdfium_guard
+
         if self._pdf is not None:
-            self._pdf.close()
+            with pdfium_guard("pdf_reader_close"):
+                self._pdf.close()
             self._pdf = None
         return False
 
@@ -350,10 +373,13 @@ class PDFDocumentReader:
         if page_index < 0 or page_index >= len(self._pdf):
             raise IndexError(f"Page index {page_index} out of range (0-{len(self._pdf)-1})")
 
-        page = self._pdf[page_index]
-        bitmap = page.render(scale=self.scale, rev_byteorder=True)
-        pil_img = bitmap.to_pil()
-        return np.array(pil_img.convert("RGB"))
+        from app.core.pdfium_lock import pdfium_guard
+
+        with pdfium_guard("pdf_reader_render_rgb"):
+            page = self._pdf[page_index]
+            bitmap = page.render(scale=self.scale, rev_byteorder=True)
+            pil_img = bitmap.to_pil()
+            return np.array(pil_img.convert("RGB"))
 
     def render_page_cmyk(self, page_index: int) -> np.ndarray:
         """Render a single page (0-indexed) to CMYK numpy array."""
@@ -362,9 +388,12 @@ class PDFDocumentReader:
         if page_index < 0 or page_index >= len(self._pdf):
             raise IndexError(f"Page index {page_index} out of range (0-{len(self._pdf)-1})")
 
-        page = self._pdf[page_index]
-        bitmap = page.render(scale=self.scale, rev_byteorder=True)
-        pil_img = bitmap.to_pil()
-        if pil_img.mode != "CMYK":
-            pil_img = pil_img.convert("CMYK")
-        return np.array(pil_img)  # Shape: (H, W, 4)
+        from app.core.pdfium_lock import pdfium_guard
+
+        with pdfium_guard("pdf_reader_render_cmyk"):
+            page = self._pdf[page_index]
+            bitmap = page.render(scale=self.scale, rev_byteorder=True)
+            pil_img = bitmap.to_pil()
+            if pil_img.mode != "CMYK":
+                pil_img = pil_img.convert("CMYK")
+            return np.array(pil_img)  # Shape: (H, W, 4)

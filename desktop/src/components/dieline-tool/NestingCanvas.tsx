@@ -4,7 +4,7 @@
 // ============================================================
 
 import React, { useRef, useCallback, useEffect, useState, useMemo } from 'react';
-import { useBoxStore } from '../../store/useBoxStore';
+import { useBoxStore } from '../../stores/useBoxStore';
 import { PathSegment } from '../../lib/dieline/types';
 import { svgPlacementTransform } from '../../lib/dieline/placementTransform';
 

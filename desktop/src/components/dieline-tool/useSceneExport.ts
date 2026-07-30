@@ -25,11 +25,11 @@ import { useThree } from '@react-three/fiber';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import * as THREE from 'three';
 import { toast } from 'sonner';
-import { useMockupStore } from '../../store/useMockupStore';
+import { useMockupStore } from '../../stores/useMockupStore';
 import { computeExportSize, flipWebGlPixelRows, MAX_EXPORT_PX } from '../../lib/mockup3d/exportSizing';
 import type { ExportScale } from '../../lib/mockup3d/types';
 import { computeTargetPose } from './CameraRig';
-import type { CameraPreset } from '../../store/useMockupStore';
+import type { CameraPreset } from '../../stores/useMockupStore';
 import { useTranslation } from 'react-i18next';
 
 // ─── Tùy chọn & kiểu trả về ─────────────────────────────────────────────────

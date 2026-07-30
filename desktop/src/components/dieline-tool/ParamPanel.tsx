@@ -4,8 +4,17 @@
 // ============================================================
 
 import React from 'react';
-import { useBoxStore } from '../../store/useBoxStore';
+import { useBoxStore } from '../../stores/useBoxStore';
 import { BoxParams } from '../../lib/dieline/types';
+// [VARIANT 2026-07-29] Lớp biến thể: quyết định tham số nào bị CHỐT (ẩn khỏi form)
+import {
+    BOX_GROUPS,
+    BOX_VARIANTS,
+    getVariant,
+    isDeviated,
+    isParamLocked,
+    isSectionLocked,
+} from '../../lib/dieline/variants';
 import MockupArtworkPanel from './MockupArtworkPanel';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
@@ -40,9 +49,22 @@ const ADVANCED_PARAMS: ParamConfig[] = [
 
 export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
   const { t } = useTranslation();
-    const { params, setParam, setParams, dieline, clampVersion } = useBoxStore();
+    const {
+        params, setParam, setParams, dieline, clampVersion,
+        // [VARIANT 2026-07-29]
+        variantId, setVariant, isAdvancedMode, setAdvancedMode,
+    } = useBoxStore();
     const [showAdvanced, setShowAdvanced] = React.useState(false);
     const [showExtra, setShowExtra] = React.useState(false);
+
+    // [VARIANT 2026-07-29] Biến thể đang chọn quyết định control nào ẩn.
+    // `show(key)`: hiện khi ở chế độ chuyên gia HOẶC khoá không bị biến thể chốt.
+    // `showSection(keys)`: cả cụm bị chốt thì ẩn luôn tiêu đề, tránh nhãn rỗng.
+    const variant = variantId ? getVariant(variantId) : undefined;
+    const show = (key: keyof BoxParams) => isAdvancedMode || !isParamLocked(variantId, key);
+    const showSection = (keys: (keyof BoxParams)[]) =>
+        isAdvancedMode || !isSectionLocked(variantId, keys);
+    const deviated = isDeviated(variantId, params);
 
     // Cảnh báo hiển thị được dẫn xuất DUY NHẤT từ model.warnings (Requirement 3.4)
     const snapLockWarning = dieline?.warnings && dieline.warnings.length > 0
@@ -90,24 +112,41 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                         </button>
                     )}
                 </label>
+                {/* [VARIANT 2026-07-29] Chọn BIẾN THỂ (không phải boxType nữa) —
+                    gom theo nhóm đầu tiên của biến thể để danh sách dễ đọc. */}
                 <select
                     className="dt-param-select"
-                    value={params.boxType}
-                    onChange={(e) => setParam('boxType', e.target.value as BoxParams['boxType'])}
+                    value={variantId ?? ''}
+                    onChange={(e) => setVariant(e.target.value)}
                 >
-                    <option value="rte">{t('dieline.param:hop_nap_cai_sole')}</option>
-                    <option value="slb">{t('dieline.param:hop_day_gai')}</option>
-                    <option value="auto_bottom">{t('dieline.param:hop_day_dan')}</option>
-                    <option value="gable">{t('dieline.param:hop_quai_xach')}</option>
-                    <option value="paper_bag">{t('dieline.param:tui_giay')}</option>
-                    <option value="cup_sleeve">{t('dieline.param:boc_ly')}</option>
-                    <option value="pizza">{t('dieline.param:hop_pizza')}</option>
-                    <option value="envelope">{t('dieline.param:bi_thu')}</option>
-                    <option value="tray">{t('dieline.param:hop_diem_khay')}</option>
-                    <option value="double_tray">{t('dieline.param:hop_am_duong_khay_nap')}</option>
-                    {/* [HANGING-WINDOW 2026-07-27] */}
-                    <option value="hanging_window">{t('dieline.param:hop_treo_cua_so')}</option>
+                    {variantId === null && (
+                        <option value="">{t('dieline.param:chua_chon_mau_khuon')}</option>
+                    )}
+                    {BOX_GROUPS.map((g) => {
+                        const items = BOX_VARIANTS.filter((v) => v.groups[0] === g.id);
+                        if (items.length === 0) return null;
+                        return (
+                            <optgroup key={g.id} label={tv(g.nameVi, 'dieline.variant')}>
+                                {items.map((v) => (
+                                    <option key={v.id} value={v.id}>{tv(v.nameVi, 'dieline.variant')}</option>
+                                ))}
+                            </optgroup>
+                        );
+                    })}
                 </select>
+                {variant && (
+                    <p className="dt-variant-meta">
+                        <span className="dt-variant-code">{variant.code}</span>
+                        {deviated && (
+                            <span
+                                className="dt-variant-deviated"
+                                title={t('dieline.param:hop_da_lech_khoi_mau_khuon_chuan')}
+                            >
+                                {t('dieline.param:da_tuy_chinh')}
+                            </span>
+                        )}
+                    </p>
+                )}
             </div>
 
             {/* Cảnh báo kích thước snap-lock */}
@@ -249,6 +288,9 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                             </button>
                         </div>
                     </div>
+                    {/* [VARIANT 2026-07-29] Vị trí vạt dán do biến thể chốt (bọc ly
+                        dán vòng vs bọc ly rời) — ẩn khi đã chốt. */}
+                    {show('cupFlapPosition') && (
                     <div className="dt-param-slider" style={{ marginTop: '0.5rem' }}>
                         <div className="dt-param-header">
                             <label className="dt-param-label">{t('dieline.param:vi_tri_vat_dan')}</label>
@@ -274,6 +316,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                             </button>
                         </div>
                     </div>
+                    )}
                 </div>
             )}
 
@@ -368,7 +411,8 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                         })()}
                     </div>
 
-                    {/* Flap Shape */}
+                    {/* Flap Shape — [VARIANT 2026-07-29] biến thể "nắp nhọn"/"nắp thẳng" chốt sẵn */}
+                    {show('envFlapShape') && (
                     <div className="dt-param-slider" style={{ marginTop: '0.5rem' }}>
                         <div className="dt-param-header">
                             <label className="dt-param-label">{t('dieline.param:dang_nap_dan')}</label>
@@ -394,8 +438,10 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                             </button>
                         </div>
                     </div>
+                    )}
 
-                    {/* Envelope Style */}
+                    {/* Envelope Style — [VARIANT 2026-07-29] bì ngang/dọc là hai card riêng */}
+                    {show('envStyle') && (
                     <div className="dt-param-slider" style={{ marginTop: '0.5rem' }}>
                         <div className="dt-param-header">
                             <label className="dt-param-label">{t('dieline.param:kieu_bi_thu')}</label>
@@ -416,14 +462,18 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                         </div>
                         <p className="dt-param-desc">{t('dieline.param:ngang_pho_bien_hoac_doc_mat_truoc_sau')}</p>
                     </div>
+                    )}
 
-                    {/* Window Toggle */}
+                    {/* Window Toggle — [VARIANT 2026-07-29] "Bì thư có cửa sổ" là card riêng.
+                        Số đo cửa sổ bên dưới VẪN hiện, chỉ ẩn công tắc bật/tắt. */}
+                    {show('envWindow') && (
                     <div className="dt-param-slider" style={{ marginTop: '0.5rem' }}>
                         <div className="dt-param-cell" style={{ cursor: 'pointer' }} onClick={() => setParam('envWindow', !params.envWindow)}>
                             <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>{t('dieline.param:cua_so_trong_suot')}</label>
                             <input type="checkbox" checked={params.envWindow as boolean} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
                         </div>
                     </div>
+                    )}
 
                     {/* Window Dimensions */}
                     {
@@ -614,6 +664,8 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                 return (
                     <div className="dt-params-section">
                         <label className="dt-section-label">{t('dieline.param:kieu_nap_quai_xach')}</label>
+                        {/* [VARIANT 2026-07-29] Mái dốc / mái bằng là hai card riêng */}
+                        {show('gableStyle') && (
                         <div className="dt-param-slider">
                             <div className="dt-param-header"><label className="dt-param-label">{t('dieline.param:kieu_mai')}</label></div>
                             <div className="dt-glue-side-toggle">
@@ -621,6 +673,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                                 <button className={`dt-glue-side-btn ${params.gableStyle === 'pitched' ? 'active' : ''}`} onClick={() => setParam('gableStyle', 'pitched')}>{t('dieline.param:mai_doc')}</button>
                             </div>
                         </div>
+                        )}
                         <div className="dt-param-grid" style={{ marginTop: '0.5rem' }}>
                             {designNums.map((gp) => (
                                 <div key={gp.key} className="dt-param-cell">
@@ -657,14 +710,19 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
             })()}
 
             {/* ─── Pizza: tính năng riêng (luôn hiện khi chọn hộp pizza) ─── */}
-            {isPizza && (
+            {/* [VARIANT 2026-07-29] Hai card pizza chốt cả GÓI 3 công tắc ⇒ cả cụm bị
+                chốt thì ẩn luôn tiêu đề section, không để lại nhãn rỗng. Đường kính
+                lỗ thông hơi vẫn hiện khi lỗ đang bật (đó là số đo, không phải công tắc). */}
+            {isPizza && showSection(['pizzaVent', 'pizzaFrontLock', 'pizzaCornerLock']) && (
                 <div className="dt-params-section">
                     <label className="dt-section-label">{t('dieline.param:tinh_nang_hop_pizza')}</label>
                     <div className="dt-param-grid">
+                        {show('pizzaVent') && (
                         <div className="dt-param-cell" style={{ cursor: 'pointer' }} onClick={() => setParam('pizzaVent', !params.pizzaVent)}>
                             <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>{t('dieline.param:lo_thong_hoi')}</label>
                             <input type="checkbox" checked={params.pizzaVent as boolean} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
                         </div>
+                        )}
                         {params.pizzaVent && (
                             <div className="dt-param-cell">
                                 <label className="dt-param-cell-label">{t('dieline.param:lo_thong_hoi_2')}</label>
@@ -680,14 +738,18 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                                 <span className="dt-param-cell-unit">{params.pizzaVentD === 0 ? 'Auto' : 'mm'}</span>
                             </div>
                         )}
+                        {show('pizzaFrontLock') && (
                         <div className="dt-param-cell" style={{ cursor: 'pointer' }} onClick={() => setParam('pizzaFrontLock', !params.pizzaFrontLock)}>
                             <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>{t('dieline.param:luoi_gai_khoa_nap')}</label>
                             <input type="checkbox" checked={params.pizzaFrontLock as boolean} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
                         </div>
+                        )}
+                        {show('pizzaCornerLock') && (
                         <div className="dt-param-cell" style={{ cursor: 'pointer' }} onClick={() => setParam('pizzaCornerLock', !params.pizzaCornerLock)}>
                             <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>{t('dieline.param:khoa_goc_xep_chong')}</label>
                             <input type="checkbox" checked={params.pizzaCornerLock as boolean} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
                         </div>
+                        )}
                     </div>
                 </div>
             )}
@@ -710,11 +772,15 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                     <div className="dt-params-section">
                         <label className="dt-section-label">{t('dieline.param:thong_so_hop_treo')}</label>
                         <div className="dt-param-grid">
-                            {/* Công tắc cửa sổ — theo khuôn envWindow của bì thư */}
+                            {/* Công tắc cửa sổ — theo khuôn envWindow của bì thư.
+                                [VARIANT 2026-07-29] "Hộp treo có cửa sổ" và "Hộp treo kín"
+                                là hai card riêng ⇒ ẩn công tắc khi đã chốt. */}
+                            {show('hgbWindow') && (
                             <div className="dt-param-cell" style={{ cursor: 'pointer' }} onClick={() => setParam('hgbWindow', !params.hgbWindow)}>
                                 <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>{t('dieline.param:cua_so_mat_truoc')}</label>
                                 <input type="checkbox" checked={params.hgbWindow as boolean} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
                             </div>
+                            )}
                             {hgbParams.map((hp) => (
                                 <div key={hp.key} className="dt-param-cell">
                                     <label className="dt-param-cell-label">{tv(hp.label)}</label>
@@ -904,8 +970,10 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                                 <span className="dt-param-cell-unit">{params.SLP === 0 ? 'Auto' : ''}</span>
                             </div>)}
 
-                            {/* Lock Tab Toggle + Params — đáy gài & đáy dán */}
-                            {(isSLB || isAutoBottom) && (
+                            {/* Lock Tab Toggle + Params — đáy gài & đáy dán.
+                                [VARIANT 2026-07-29] "có lưỡi khoá nắp" đã là card riêng ⇒ ẩn
+                                công tắc; hai ô số đo lưỡi khoá bên dưới vẫn hiện. */}
+                            {(isSLB || isAutoBottom) && show('lockTab') && (
                                 <div className="dt-param-cell" style={{ cursor: 'pointer' }} onClick={() => setParam('lockTab', !params.lockTab)}>
                                     <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>{t('dieline.param:luoi_khoa_nap')}</label>
                                     <input type="checkbox" checked={params.lockTab as boolean} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
@@ -1004,11 +1072,14 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                 {showExtra && (
                     <div className="dt-params-section">
                         <div className="dt-param-grid">
-                            {/* Handle Holes Toggle */}
+                            {/* Handle Holes Toggle — [VARIANT 2026-07-29] túi có quai /
+                                túi trơn là hai card riêng ⇒ ẩn công tắc khi đã chốt */}
+                            {show('handleHoles') && (
                             <div className="dt-param-cell" style={{ cursor: 'pointer' }} onClick={() => setParam('handleHoles', !params.handleHoles)}>
                                 <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>{t('dieline.param:lo_xo_day')}</label>
                                 <input type="checkbox" checked={params.handleHoles as boolean} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
                             </div>
+                            )}
 
                             {/* BF */}
                             <div className="dt-param-cell">
@@ -1128,6 +1199,33 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                 </p>
                 <MockupArtworkPanel />
             </div>
+
+            {/* ─── [VARIANT 2026-07-29] Chế độ chuyên gia ───
+                Mẫu khuôn chốt sẵn một số thuộc tính và ẩn chúng khỏi form để người
+                dùng không phải mò. Công tắc này mở khoá lại TẤT CẢ — đường lùi để
+                không tính năng nào bị mất so với bản trước, và để xử lý ca hiếm. */}
+            {variant && Object.keys(variant.lockedParams).length > 0 && (
+                <div className="dt-params-section" style={{ marginTop: '0.75rem' }}>
+                    <div
+                        className="dt-param-cell"
+                        style={{ cursor: 'pointer' }}
+                        onClick={() => setAdvancedMode(!isAdvancedMode)}
+                    >
+                        <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>
+                            {t('dieline.param:tuy_chinh_nang_cao')}
+                        </label>
+                        <input
+                            type="checkbox"
+                            checked={isAdvancedMode}
+                            readOnly
+                            style={{ accentColor: 'var(--dt-accent)' }}
+                        />
+                    </div>
+                    <p className="dt-param-desc">
+                        {t('dieline.param:mo_khoa_thuoc_tinh_da_chot_cua_mau_khuon')}
+                    </p>
+                </div>
+            )}
         </div>
     );
 }

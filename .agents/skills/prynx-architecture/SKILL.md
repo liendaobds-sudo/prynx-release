@@ -23,8 +23,8 @@ Frontend gọi backend qua `desktop/src/lib/**/api.ts`; backend route mỏng, en
 ## Bản đồ thư mục
 
 **Backend** (`backend/app/`):
-- `api/routes/`: `compare.py`, `dieline.py`, `dieline_validation.py`, `edit.py`, `export.py`, `imposition.py`, `pdf_tools.py`, `preflight.py`, `qc.py`, `report.py`, `results.py`, `system.py`, `upload.py`, `vdp.py`, `ws.py`.
-- `core/`: engine thật — `imposition_engine.py`, `comparison_engine.py`, `heavy_job_scheduler.py` (hàng đợi việc nặng), `rust_bridge.py` (+ `PDFIUM_PY_LOCK`), `gpu_accelerator.py`, `geometry_reader.py`, `icc_profiles.py`, `ink_manager.py`, `action_engine.py`…
+- `api/routes/`: `compare.py`, `dieline.py`, `dieline_validation.py` (helper cho `dieline.py`, không phải router), `edit.py`, `export.py`, `imposition.py`, `pdf_tools.py`, `preflight.py`, `qc.py`, `results.py`, `system.py`, `upload.py`, `vdp.py`, `ws.py` + `workers/cut_export/api.py`. Router được đăng ký ở `main.py` — file nào không có `include_router` ở đó là **không chạy** (đã xoá `report.py` vì vậy, audit 2026-07-29 §C.2).
+- `core/`: engine thật — `imposition_engine.py`, `comparison_engine.py`, `heavy_job_scheduler.py` (hàng đợi việc nặng, `max_active_heavy_jobs()` dùng để chia ngân sách RAM theo slot), `pdfium_lock.py` (`PDFIUM_PY_LOCK` / `pdfium_guard()` — khóa PDFium duy nhất, re-export qua `rust_bridge.py`), `gpu_accelerator.py`, `geometry_reader.py`, `icc_profiles.py`, `ink_manager.py`, `action_engine.py`…
 - `workers/`, `models/`, `schemas/`, `utils/`; test: `backend/tests/` (pytest, có `golden/`).
 
 **Desktop** (`desktop/src/`):

@@ -75,7 +75,10 @@ export default defineConfig({
     format: 'es',
   },
   optimizeDeps: {
-    include: ['pdf-lib', 'pdfjs-dist', 'papaparse', '@pdfme/common', '@pdfme/generator'],
+    // KIENTRUC (audit 2026-07-29 §B.3): đã bỏ '@pdfme/common' + '@pdfme/generator'.
+    // Hai package đó KHÔNG được import ở bất kỳ file source nào — chỉ còn tên ở đây và
+    // trong package.json, tức là một engine sinh PDF thứ hai được cài mà không ai dùng.
+    include: ['pdf-lib', 'pdfjs-dist', 'papaparse'],
     entries: ['index.html']
   }
 })

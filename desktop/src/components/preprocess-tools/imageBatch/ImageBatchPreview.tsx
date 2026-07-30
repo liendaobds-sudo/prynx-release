@@ -55,11 +55,49 @@ export function ImageBatchPreview<O>({ tabId, isActive, store, labels }: Props<O
     const imageRef = useRef<HTMLImageElement>(null);
     const spaceHeld = useRef(false);
 
+    // UIUX (audit 2026-07-29 §NET.06): ảnh kết quả ×4 bị `object-contain` thu về
+    // đúng khung preview, nên ở "zoom 100%" người dùng thực chất đang xem ở ~18%
+    // và không thấy được chi tiết AI. Cần biết kích thước pixel thật của kết quả
+    // và kích thước khung để quy đổi ra tỉ lệ pixel thật + cung cấp chế độ 1:1.
+    const [resultNatural, setResultNatural] = useState<{ w: number; h: number } | null>(null);
+    const [frameSize, setFrameSize] = useState<{ w: number; h: number } | null>(null);
+
     const selectedItem = batchItems.find(i => i.id === selectedId) || batchItems[0] || null;
     const hasResult = !!(selectedItem?.resultUrl);
 
     // Reset on image change
     React.useEffect(() => { setZoom(1); setPan({ x: 0, y: 0 }); setSliderPos(50); }, [selectedId]);
+
+    // Kích thước pixel thật của kết quả chỉ biết được sau khi ảnh tải xong.
+    React.useEffect(() => { setResultNatural(null); }, [selectedItem?.resultUrl]);
+
+    React.useEffect(() => {
+        const node = containerRef.current;
+        if (!node || typeof ResizeObserver === 'undefined') return;
+        const observer = new ResizeObserver(entries => {
+            const box = entries[0]?.contentRect;
+            if (box) setFrameSize({ w: box.width, h: box.height });
+        });
+        observer.observe(node);
+        setFrameSize({ w: node.clientWidth, h: node.clientHeight });
+        return () => observer.disconnect();
+    }, []);
+
+    // `object-contain` fit ảnh vào khung: đây là tỉ lệ nền, zoom nhân thêm lên nó.
+    const baseScale = resultNatural && frameSize && resultNatural.w > 0 && resultNatural.h > 0
+        ? Math.min(frameSize.w / resultNatural.w, frameSize.h / resultNatural.h)
+        : null;
+    // Tỉ lệ pixel THẬT: 1,0 = một pixel ảnh kết quả trên một pixel CSS.
+    const pixelRatio = baseScale !== null ? baseScale * zoom : null;
+    const canShowActualSize = hasResult && baseScale !== null && baseScale > 0;
+
+    // Hàm thường (không useCallback) — cùng kiểu với handleDrop bên dưới, để React
+    // Compiler tự lo memoization thay vì thêm nợ preserve-manual-memoization.
+    const showActualSize = () => {
+        if (baseScale === null || baseScale <= 0) return;
+        setZoom(1 / baseScale);
+        setPan({ x: 0, y: 0 });
+    };
 
     // Track Space key for hand-tool panning
     React.useEffect(() => {
@@ -114,11 +152,15 @@ export function ImageBatchPreview<O>({ tabId, isActive, store, labels }: Props<O
         return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
     }, [isPanning]);
 
-    // Zoom with wheel
+    // Zoom with wheel. UIUX (audit 2026-07-29 §NET.06): trần zoom phải đủ để vượt
+    // mốc 1:1 của ảnh kết quả — ảnh ×4 lớn trong khung nhỏ cần zoom >10 mới tới 1:1.
+    const maxZoom = baseScale !== null && baseScale > 0
+        ? Math.max(10, (1 / baseScale) * 2)
+        : 10;
     const handleWheel = useCallback((e: React.WheelEvent) => {
         e.stopPropagation();
-        setZoom(prev => Math.max(0.2, Math.min(10, prev * (e.deltaY < 0 ? 1.15 : 0.87))));
-    }, []);
+        setZoom(prev => Math.max(0.2, Math.min(maxZoom, prev * (e.deltaY < 0 ? 1.15 : 0.87))));
+    }, [maxZoom]);
 
     // Space+click, Middle-click, or Ctrl+click to pan
     const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -141,6 +183,11 @@ export function ImageBatchPreview<O>({ tabId, isActive, store, labels }: Props<O
     const imgTransform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
     const imgClass = "max-w-[90vw] max-h-[85vh] pointer-events-none";
     const compareImgClass = "absolute inset-0 w-full h-full object-contain pointer-events-none";
+    // UIUX (audit 2026-07-29 §NET.06): từ 1:1 trở lên phải hiện pixel thật, không
+    // để WebView nội suy mượt — nếu không thì zoom vào chỉ làm mờ thêm.
+    const compareImgStyle: React.CSSProperties = {
+        imageRendering: pixelRatio !== null && pixelRatio >= 1 ? 'pixelated' : 'auto',
+    };
     const imgTransition = isPanning ? 'none' : 'transform 0.1s ease-out';
 
     return (
@@ -178,7 +225,12 @@ export function ImageBatchPreview<O>({ tabId, isActive, store, labels }: Props<O
                             {/* Result layer (full, below) */}
                             <div className="absolute inset-0"
                                 style={{ transform: imgTransform, transition: imgTransition, transformOrigin: 'center center' }}>
-                                <img src={selectedItem.resultUrl!} alt={t('preprocess.imageBatchPreview:ket_qua')} className={compareImgClass} draggable={false} />
+                                <img src={selectedItem.resultUrl!} alt={t('preprocess.imageBatchPreview:ket_qua')} className={compareImgClass}
+                                    draggable={false} style={compareImgStyle}
+                                    onLoad={e => {
+                                        const img = e.currentTarget;
+                                        if (img.naturalWidth > 0) setResultNatural({ w: img.naturalWidth, h: img.naturalHeight });
+                                    }} />
                             </div>
 
                             {/* Original layer (clipped from the right side of slider) */}
@@ -186,7 +238,8 @@ export function ImageBatchPreview<O>({ tabId, isActive, store, labels }: Props<O
                                 style={{ clipPath: `inset(0 0 0 ${sliderPos}%)` }}>
                                 <div className="absolute inset-0"
                                     style={{ transform: imgTransform, transition: imgTransition, transformOrigin: 'center center' }}>
-                                    <img src={selectedItem.originalUrl} alt={t('preprocess.imageBatchPreview:anh_goc')} className={compareImgClass} draggable={false} />
+                                    <img src={selectedItem.originalUrl} alt={t('preprocess.imageBatchPreview:anh_goc')} className={compareImgClass}
+                                        draggable={false} style={compareImgStyle} />
                                 </div>
                             </div>
 
@@ -229,8 +282,28 @@ export function ImageBatchPreview<O>({ tabId, isActive, store, labels }: Props<O
                 </div>
             )}
 
-            {/* Zoom indicator */}
-            {zoom !== 1 && (
+            {/* Chỉ báo tỉ lệ + nút 1:1. UIUX (audit 2026-07-29 §NET.06): khi có kết
+                quả thì hiện TỈ LỆ PIXEL THẬT của ảnh kết quả, không phải hệ số CSS —
+                ảnh ×4 trong khung nhỏ ở "zoom 100%" thực chất chỉ đang xem ~18%. */}
+            {canShowActualSize ? (
+                <div className="absolute bottom-12 left-1/2 -translate-x-1/2 flex items-center gap-2 z-10">
+                    <span className="bg-black/50 backdrop-blur-sm text-white text-[11px] font-mono px-3 py-1 rounded-full"
+                        title={t('preprocess.imageBatchPreview:ti_le_pixel_thuc_cua_ket_qua')}>
+                        {Math.round((pixelRatio ?? 0) * 100)}%
+                        {resultNatural && (
+                            <span className="text-white/60 ml-1.5">{resultNatural.w}×{resultNatural.h}</span>
+                        )}
+                    </span>
+                    <button onClick={e => { e.stopPropagation(); showActualSize(); }}
+                        title={t('preprocess.imageBatchPreview:xem_dung_pixel_that_de_danh_gia_do_net')}
+                        className={`text-[11px] font-mono font-bold px-2.5 py-1 rounded-full backdrop-blur-sm transition-colors ${
+                            pixelRatio !== null && Math.abs(pixelRatio - 1) < 0.01
+                                ? 'bg-indigo-600 text-white'
+                                : 'bg-black/50 text-white hover:bg-black/70'}`}>
+                        1:1
+                    </button>
+                </div>
+            ) : zoom !== 1 && (
                 <span className="absolute bottom-12 left-1/2 -translate-x-1/2 bg-black/50 backdrop-blur-sm text-white text-[11px] font-mono px-3 py-1 rounded-full z-10">
                     {Math.round(zoom * 100)}%
                 </span>

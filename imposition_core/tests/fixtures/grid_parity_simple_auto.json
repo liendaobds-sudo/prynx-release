@@ -1,0 +1,206 @@
+[
+  {
+    "name": "A4 doc tren SRA3 ngang",
+    "usable_w": 1247.24,
+    "usable_h": 892.91,
+    "orig_w": 595.28,
+    "orig_h": 841.89,
+    "gap_x": 0.0,
+    "gap_y": 0.0,
+    "expected": {
+      "total_items": 2,
+      "cols": 2,
+      "rows": 1,
+      "is_rotated": false,
+      "overall_width": 1190.56,
+      "overall_height": 841.89
+    }
+  },
+  {
+    "name": "tem 50x30mm tren to 320x450mm",
+    "usable_w": 907.09,
+    "usable_h": 1275.59,
+    "orig_w": 141.73,
+    "orig_h": 85.04,
+    "gap_x": 0.0,
+    "gap_y": 0.0,
+    "expected": {
+      "total_items": 90,
+      "cols": 10,
+      "rows": 9,
+      "is_rotated": true,
+      "overall_width": 850.4,
+      "overall_height": 1275.57
+    }
+  },
+  {
+    "name": "tem 50x30mm co gap 3mm",
+    "usable_w": 907.09,
+    "usable_h": 1275.59,
+    "orig_w": 141.73,
+    "orig_h": 85.04,
+    "gap_x": 8.5,
+    "gap_y": 8.5,
+    "expected": {
+      "total_items": 78,
+      "cols": 6,
+      "rows": 13,
+      "is_rotated": false,
+      "overall_width": 892.88,
+      "overall_height": 1207.52
+    }
+  },
+  {
+    "name": "card 90x54mm tren A3",
+    "usable_w": 841.89,
+    "usable_h": 1190.55,
+    "orig_w": 255.12,
+    "orig_h": 153.07,
+    "gap_x": 0.0,
+    "gap_y": 0.0,
+    "expected": {
+      "total_items": 21,
+      "cols": 3,
+      "rows": 7,
+      "is_rotated": false,
+      "overall_width": 765.36,
+      "overall_height": 1071.49
+    }
+  },
+  {
+    "name": "xoay moi an duoc nhieu hon",
+    "usable_w": 400.0,
+    "usable_h": 100.0,
+    "orig_w": 90.0,
+    "orig_h": 45.0,
+    "gap_x": 0.0,
+    "gap_y": 0.0,
+    "expected": {
+      "total_items": 8,
+      "cols": 4,
+      "rows": 2,
+      "is_rotated": false,
+      "overall_width": 360.0,
+      "overall_height": 90.0
+    }
+  },
+  {
+    "name": "vua khit khong con du",
+    "usable_w": 300.0,
+    "usable_h": 200.0,
+    "orig_w": 100.0,
+    "orig_h": 100.0,
+    "gap_x": 0.0,
+    "gap_y": 0.0,
+    "expected": {
+      "total_items": 6,
+      "cols": 3,
+      "rows": 2,
+      "is_rotated": false,
+      "overall_width": 300.0,
+      "overall_height": 200.0
+    }
+  },
+  {
+    "name": "vua khit co gap lam mat mot cot",
+    "usable_w": 300.0,
+    "usable_h": 200.0,
+    "orig_w": 100.0,
+    "orig_h": 100.0,
+    "gap_x": 5.0,
+    "gap_y": 0.0,
+    "expected": {
+      "total_items": 4,
+      "cols": 2,
+      "rows": 2,
+      "is_rotated": false,
+      "overall_width": 205.0,
+      "overall_height": 200.0
+    }
+  },
+  {
+    "name": "con lon hon to - khong lot noi",
+    "usable_w": 100.0,
+    "usable_h": 100.0,
+    "orig_w": 150.0,
+    "orig_h": 150.0,
+    "gap_x": 0.0,
+    "gap_y": 0.0,
+    "expected": {
+      "total_items": 0,
+      "cols": 0,
+      "rows": 0,
+      "is_rotated": false,
+      "overall_width": 0.0,
+      "overall_height": 0.0
+    }
+  },
+  {
+    "name": "dung mot con duy nhat",
+    "usable_w": 150.0,
+    "usable_h": 150.0,
+    "orig_w": 149.9,
+    "orig_h": 149.9,
+    "gap_x": 0.0,
+    "gap_y": 0.0,
+    "expected": {
+      "total_items": 1,
+      "cols": 1,
+      "rows": 1,
+      "is_rotated": false,
+      "overall_width": 149.9,
+      "overall_height": 149.9
+    }
+  },
+  {
+    "name": "to dai hep - bang decal",
+    "usable_w": 2834.65,
+    "usable_h": 141.73,
+    "orig_w": 85.04,
+    "orig_h": 85.04,
+    "gap_x": 2.83,
+    "gap_y": 2.83,
+    "expected": {
+      "total_items": 32,
+      "cols": 32,
+      "rows": 1,
+      "is_rotated": false,
+      "overall_width": 2809.01,
+      "overall_height": 85.04
+    }
+  },
+  {
+    "name": "gap lon hon con",
+    "usable_w": 500.0,
+    "usable_h": 500.0,
+    "orig_w": 40.0,
+    "orig_h": 40.0,
+    "gap_x": 60.0,
+    "gap_y": 60.0,
+    "expected": {
+      "total_items": 25,
+      "cols": 5,
+      "rows": 5,
+      "is_rotated": false,
+      "overall_width": 440.0,
+      "overall_height": 440.0
+    }
+  },
+  {
+    "name": "hinh vuong - xoay khong doi gi",
+    "usable_w": 600.0,
+    "usable_h": 400.0,
+    "orig_w": 70.0,
+    "orig_h": 70.0,
+    "gap_x": 3.0,
+    "gap_y": 7.0,
+    "expected": {
+      "total_items": 40,
+      "cols": 8,
+      "rows": 5,
+      "is_rotated": false,
+      "overall_width": 581.0,
+      "overall_height": 378.0
+    }
+  }
+]

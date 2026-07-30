@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+﻿// @vitest-environment jsdom
 import React from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -6,9 +6,10 @@ import DielineTool from '../DielineTool';
 
 const mocks = vi.hoisted(() => ({ regenerate: vi.fn() }));
 
+// [VARIANT 2026-07-29] onSelect nhận `variant.id` (không phải boxType nữa)
 vi.mock('../DielineGallery', () => ({
-    default: ({ onSelect }: { onSelect: (type: string) => void }) => (
-        <button type="button" onClick={() => onSelect('rte')}>Mở trình sửa</button>
+    default: ({ onSelect }: { onSelect: (variantId: string) => void }) => (
+        <button type="button" onClick={() => onSelect('rte_std')}>Mở trình sửa</button>
     ),
 }));
 
@@ -31,13 +32,15 @@ vi.mock('../NestingPanel', () => ({ default: () => <div>Nesting panel</div> }));
 vi.mock('../NestingCanvas', () => ({ default: () => <div>Nesting canvas</div> }));
 vi.mock('../DielineScene3D', () => ({ default: () => <div>Canvas 3D</div> }));
 
-vi.mock('../../../store/useBoxStore', () => ({
+vi.mock('../../../stores/useBoxStore', () => ({
     useBoxStore: () => ({
         dieline: null,
         nestingResult: null,
         sleeveNestingResult: null,
         nestingConfig: {},
         setParam: vi.fn(),
+        // [VARIANT 2026-07-29] DielineTool chọn biến thể qua setVariant
+        setVariant: vi.fn(),
         regenerate: mocks.regenerate,
         isGenerating: false,
         isModelCurrent: true,

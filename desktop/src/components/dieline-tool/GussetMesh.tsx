@@ -16,7 +16,7 @@
 import React from 'react';
 import * as THREE from 'three';
 
-import { useMockupStore } from '../../store/useMockupStore';
+import { useMockupStore } from '../../stores/useMockupStore';
 import type { Panel } from '../../lib/mockup3d/types';
 import { composeAppearance, substrateInnerFaceColor } from '../../lib/mockup3d/materialLibrary';
 import { computeGussetQuad } from '../../lib/mockup3d/gussetFold';

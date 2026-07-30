@@ -1,5 +1,12 @@
 """
 Application configuration loaded from environment variables.
+
+KIENTRUC (audit 2026-07-29 §D.2): file này CHỈ giữ các field cấu hình đi qua
+`pydantic_settings`. Phần lớn núm điều chỉnh của backend (trần đồng thời, ngân sách RAM,
+cờ chẩn đoán) được đọc trực tiếp bằng `os.environ` ở gần chỗ dùng — cố ý, để trần nằm
+cạnh code áp trần. Danh mục ĐẦY ĐỦ kèm mặc định và "khi nào nên đụng tới":
+`docs/CAU_HINH_ENV.md`. Thêm biến môi trường mới thì thêm dòng vào tài liệu đó trong
+CÙNG PR, dù biến đó không khai ở đây.
 """
 import os
 import shutil

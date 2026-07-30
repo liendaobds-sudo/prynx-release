@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { useMockupStore } from './useMockupStore';
+import { useMockupStore } from '../stores/useMockupStore';
 
 describe('useMockupStore blob resource lifecycle', () => {
     const revoke = vi.fn();

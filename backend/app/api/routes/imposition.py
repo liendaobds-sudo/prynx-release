@@ -11,7 +11,11 @@ from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Depends
 from fastapi.responses import FileResponse
 from app.core.license_guard import require_license, require_feature, enforce_feature
 from app.core.heavy_job_scheduler import scheduled_job
-from app.schemas.imposition import ImpositionResponse
+from app.schemas.imposition import (
+    ImposeJobStartResponse,
+    NupJobCancelResponse,
+    NupJobStatusResponse,
+)
 import uuid
 
 from app.config import settings
@@ -139,22 +143,27 @@ async def unlock_pdf(file: UploadFile = File(...), license_info: dict = Depends(
         from fastapi import Response
         
         contents = await file.read()
-        
-        # Load PDF using pdfium (bypasses owner pass automatically usually, or allows interaction)
-        pdf = pdfium.PdfDocument(contents)
-        
-        # Flatten all pages to ensure annotations (visual signatures, stamps) are baked into vector paths
-        for i in range(len(pdf)):
-            page = pdf[i]
-            # FPDFPage_Flatten: 0 = FLAT_NORMALDISPLAY
-            pdfium.raw.FPDFPage_Flatten(page, 0)
-        
-        # Save to buffer
+
+        # KIENTRUC (audit 2026-07-29 §C.1): flatten + save đều là lời gọi PDFium ghi dữ
+        # liệu, phải nằm trong khóa. Đây là trường hợp DUY NHẤT trong repo dùng PDFium để
+        # GHI (FPDF_REMOVE_SECURITY) nên càng không được để chạy song song.
+        from app.core.pdfium_lock import pdfium_guard
         import io
         out_buffer = io.BytesIO()
-        # flags=3 corresponds to FPDF_REMOVE_SECURITY, ensuring the output is perfectly clean and decoded
-        pdf.save(out_buffer, flags=3)
-        pdf.close()
+        with pdfium_guard("imposition_unlock_pdf"):
+            # Load PDF using pdfium (bypasses owner pass automatically usually, or allows interaction)
+            pdf = pdfium.PdfDocument(contents)
+
+            # Flatten all pages to ensure annotations (visual signatures, stamps) are baked into vector paths
+            for i in range(len(pdf)):
+                page = pdf[i]
+                # FPDFPage_Flatten: 0 = FLAT_NORMALDISPLAY
+                pdfium.raw.FPDFPage_Flatten(page, 0)
+
+            # flags=3 corresponds to FPDF_REMOVE_SECURITY, ensuring the output is perfectly clean and decoded
+            pdf.save(out_buffer, flags=3)
+            pdf.close()
+
         
         return Response(content=out_buffer.getvalue(), media_type="application/pdf")
         
@@ -994,6 +1003,12 @@ from concurrent.futures import ThreadPoolExecutor
 # In-memory job store for N-Up jobs
 nup_jobs = {}
 _NUP_JOBS_LOCK = threading.RLock()
+# PERF (audit 2026-07-29 §C.3): trần = 1 là CỐ Ý, không phải hard-cap kìm máy mạnh.
+# Một job N-Up đã tự trải hết lõi bên trong (`nup_engine` mở ProcessPoolExecutor theo
+# `plan_worker_count`, tới `cpu_count-1` process). Cho 2 job chạy song song nghĩa là
+# ~2×(cpu-1) process pikepdf cùng giữ tờ in trong RAM → oversubscribe cả CPU lẫn RAM và
+# TỔNG thông lượng giảm. Muốn máy mạnh nhanh hơn thì tăng worker TRONG job
+# (`PRYNX_NUP_WORKERS`), không phải tăng số job.
 _NUP_MAX_CONCURRENT_JOBS = max(1, int(os.environ.get('PRYNX_MAX_NUP_JOBS', '1') or '1'))
 _NUP_MAX_QUEUED_JOBS = max(0, int(os.environ.get('PRYNX_MAX_NUP_QUEUE', '8') or '8'))
 _NUP_EXECUTOR = ThreadPoolExecutor(max_workers=_NUP_MAX_CONCURRENT_JOBS, thread_name_prefix='prynx-nup')
@@ -1271,7 +1286,7 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
     return {"job_id": job_id}
 
 
-@router.post("/impose-start")
+@router.post("/impose-start", response_model=ImposeJobStartResponse)
 async def start_impose_job(body: dict, license_info: dict = Depends(require_license)):
     """
     Endpoint hợp nhất N-Up & Bế Tem. Tiền tố tên file theo settings.isDieCutMode.
@@ -1283,19 +1298,19 @@ async def start_impose_job(body: dict, license_info: dict = Depends(require_lice
     return _launch_impose_job(body, "sticker" if (is_diecut or is_page_sheet) else "nup", license_info)
 
 
-@router.post("/nup-start")
+@router.post("/nup-start", response_model=ImposeJobStartResponse)
 async def start_nup_job(body: dict, license_info: dict = Depends(require_license)):
     """Alias tương thích ngược — dùng /impose-start. (Task 18)"""
     return _launch_impose_job(body, "nup", license_info)
 
 
-@router.post("/sticker-start")
+@router.post("/sticker-start", response_model=ImposeJobStartResponse)
 async def start_sticker_job(body: dict, license_info: dict = Depends(require_license)):
     """Alias tương thích ngược — dùng /impose-start. (Task 18)"""
     return _launch_impose_job(body, "sticker", license_info)
 
 
-@router.get("/nup-status/{job_id}")
+@router.get("/nup-status/{job_id}", response_model=NupJobStatusResponse)
 async def get_nup_status(job_id: str, _: dict = Depends(require_license)):
     """Poll N-Up job progress."""
     job = nup_jobs.get(job_id)
@@ -1342,7 +1357,7 @@ async def get_nup_status(job_id: str, _: dict = Depends(require_license)):
     }
 
 
-@router.post("/nup-cancel/{job_id}")
+@router.post("/nup-cancel/{job_id}", response_model=NupJobCancelResponse)
 async def cancel_nup_job(job_id: str, _: dict = Depends(require_license)):
     """Cancel a queued/running N-Up job. Repeated and terminal calls are safe."""
     terminal_state = _read_nup_state(job_id)
@@ -1458,6 +1473,10 @@ class PreviewLayoutRequest(BaseModel):
     total_pages: int = Field(default=0, ge=0, le=200000)
     # N-Up 2 mặt: 'double' | 'normal' (sequential ghép cặp trang trước/sau).
     duplex_flow: Optional[str] = "normal"
+    # MIXED-GUILLOTINE (audit 2026-07-30 §MG.4/§MG.8): mode mới materialize
+    # mặt sau trong plan; field này không dùng chung tên CNC để tránh lệch contract.
+    duplex_flip_edge: str = "long"
+    mixed_guillotine_strategy: str = "auto_zone"
     split_gap: Optional[float] = 0
     target_quantity: Optional[int] = Field(default=0, ge=0, le=1000000)
     target_quantities_by_page: Optional[Dict[str, int]] = Field(default_factory=dict)
@@ -1659,6 +1678,198 @@ def apply_preview_collisions(items: List[Dict[str, Any]], item_w: float, item_h:
 MAX_PREVIEW_CELLS = 100_000
 MAX_PREVIEW_PAGE_MAP = 200_000
 
+
+def _build_mixed_guillotine_preview(doc: Any, req: PreviewLayoutRequest) -> dict[str, Any]:
+    """Dựng response preview từ đúng MixedGuillotinePlan mà export sử dụng."""
+
+    from app.workers.mixed_guillotine import (
+        MixedGuillotineError,
+        MixedGuillotineSettings,
+        Rect,
+        build_mixed_guillotine_plan,
+    )
+    from app.workers.mixed_guillotine_adapter import (
+        build_product_specs,
+        full_span_cut_coordinates,
+        materialize_plan_for_renderer,
+        resolve_guillotine_trim,
+    )
+
+    strategy = str(getattr(req, "mixed_guillotine_strategy", "auto_zone") or "auto_zone")
+    if strategy != "auto_zone":
+        raise MixedGuillotineError(
+            "Dàn nhiều kích thước hiện chỉ hỗ trợ chế độ tự chia vùng."
+        )
+
+    duplex_flow = str(getattr(req, "duplex_flow", "normal") or "normal")
+    if duplex_flow not in ("normal", "double"):
+        raise MixedGuillotineError("Chế độ mặt in phải là một mặt hoặc hai mặt.")
+    duplex = duplex_flow == "double"
+    flip_edge = str(getattr(req, "duplex_flip_edge", "long") or "long")
+
+    bleed_pt = float(getattr(req, "bleed", 0.0) or 0.0)
+    trim_sizes = [
+        resolve_guillotine_trim(doc[page_idx], bleed_pt)
+        for page_idx in range(int(doc.page_count))
+    ]
+    products = build_product_specs(
+        trim_sizes,
+        target_quantity=int(getattr(req, "target_quantity", 0) or 0),
+        target_quantities_by_page=(
+            getattr(req, "target_quantities_by_page", None) or {}
+        ),
+        duplex=duplex,
+    )
+
+    margin_left = float(getattr(req, "margin_left", 0.0) or 0.0)
+    margin_right = float(getattr(req, "margin_right", 0.0) or 0.0)
+    margin_top = float(getattr(req, "margin_top", 0.0) or 0.0)
+    margin_bottom = float(getattr(req, "margin_bottom", 0.0) or 0.0)
+    sheet_width = float(getattr(req, "sheet_w", 0.0) or 0.0)
+    sheet_height = float(getattr(req, "sheet_h", 0.0) or 0.0)
+    if sheet_width <= 0:
+        sheet_width = margin_left + float(req.usable_w) + margin_right
+    if sheet_height <= 0:
+        sheet_height = margin_top + float(req.usable_h) + margin_bottom
+
+    plan = build_mixed_guillotine_plan(
+        products,
+        MixedGuillotineSettings(
+            sheet_width=sheet_width,
+            sheet_height=sheet_height,
+            usable_rect=Rect(
+                margin_left,
+                margin_top,
+                float(req.usable_w),
+                float(req.usable_h),
+            ),
+            gap_x=float(req.gap_x),
+            gap_y=float(req.gap_y),
+            duplex=duplex,
+            flip_edge=flip_edge,
+        ),
+    )
+
+    # Không mở rộng runCount: 100.000 lần in vẫn chỉ trả các mặt của tờ mẫu duy nhất.
+    placements_by_face, metadata_by_face = materialize_plan_for_renderer(
+        plan, expand_run_count=False
+    )
+    templates_by_id = {
+        str(template["templateId"]): template for template in plan["templates"]
+    }
+    sheets: list[dict[str, Any]] = []
+    for face_index in sorted(placements_by_face):
+        placements = placements_by_face[face_index]
+        metadata = metadata_by_face[face_index]
+        template = templates_by_id[str(metadata["templateId"])]
+        cells: list[dict[str, Any]] = []
+        placed_by_page: dict[str, int] = {}
+        overall_width = 0.0
+        overall_height = 0.0
+        for placement in placements:
+            source_cell = placement["cell"]
+            page_idx = int(placement["src_page_idx"])
+            rotated = bool(source_cell.get("isRotated", False))
+            rotated_180 = bool(source_cell.get("isRotated180", False))
+            rotation = (
+                270 if rotated and rotated_180
+                else 180 if rotated_180
+                else 90 if rotated
+                else 0
+            )
+            cell = {
+                "x": float(source_cell.get("x", 0.0)),
+                "y": float(source_cell.get("y", 0.0)),
+                "absX": float(placement["abs_x"]),
+                "absY": float(placement["abs_y"]),
+                "width": float(placement["width"]),
+                "height": float(placement["height"]),
+                "isRotated": rotated,
+                "isRotated180": rotated_180,
+                "rotation": rotation,
+                "blockId": int(source_cell.get("blockId", 0)),
+                "pageIdx": page_idx,
+            }
+            cells.append(cell)
+            placed_by_page[str(page_idx)] = placed_by_page.get(str(page_idx), 0) + 1
+            overall_width = max(overall_width, cell["absX"] + cell["width"])
+            overall_height = max(overall_height, cell["absY"] + cell["height"])
+
+        full_span = full_span_cut_coordinates(
+            metadata,
+            sheet_width=sheet_width,
+            sheet_height=sheet_height,
+            usable_rect=metadata["cutTree"]["rect"],
+        )
+        # cutLines cũ dùng gốc dưới-trái; cutSegments/cutTree mới giữ nguyên canonical
+        # top-left và công bố coordinateSpace để frontend không tự suy lại hình học.
+        legacy_cut_lines = {
+            "v": sorted(float(value) for value in full_span["v"]),
+            "h": sorted(
+                round(sheet_height - float(value), 2)
+                for value in full_span["h"]
+            ),
+        }
+        sheets.append(
+            {
+                "cells": cells,
+                "overallWidth": overall_width,
+                "overallHeight": overall_height,
+                "totalItems": len(cells),
+                "placedByPage": placed_by_page,
+                "cutLines": legacy_cut_lines,
+                "cutSegments": metadata["cutLines"],
+                "cutTree": metadata["cutTree"],
+                "coordinateSpace": plan["coordinateSpace"],
+                "templateId": str(metadata["templateId"]),
+                "runCount": int(template["runCount"]),
+                "side": str(metadata["side"]),
+                "physicalSheetIndex": int(metadata["physicalSheetIndex"]),
+                "planHash": plan["planHash"],
+                "planVersion": plan["version"],
+            }
+        )
+
+    empty_sheet = {
+        "cells": [],
+        "overallWidth": 0.0,
+        "overallHeight": 0.0,
+        "totalItems": 0,
+        "placedByPage": {},
+        "cutLines": {"v": [], "h": []},
+        "cutSegments": [],
+        "cutTree": None,
+    }
+    first = sheets[0] if sheets else empty_sheet
+    physical_sheets = sum(int(template["runCount"]) for template in plan["templates"])
+    return {
+        "success": True,
+        "cells": first["cells"],
+        "overallWidth": first["overallWidth"],
+        "overallHeight": first["overallHeight"],
+        "totalItems": first["totalItems"],
+        "placedByPage": first["placedByPage"],
+        "strategyUsed": "mixed_guillotine",
+        "isMixedPreview": True,
+        "absPlacement": True,
+        "cutLines": first["cutLines"],
+        "cutSegments": first["cutSegments"],
+        "cutTree": first["cutTree"],
+        "sheets": sheets,
+        "sheetsNeeded": physical_sheets,
+        "outputPagesNeeded": physical_sheets * (2 if duplex else 1),
+        "templateCount": len(plan["templates"]),
+        "totalsByProduct": plan["totalsByProduct"],
+        "products": plan["products"],
+        "duplex": duplex,
+        "flipEdge": plan["flipEdge"],
+        "coordinateSpace": plan["coordinateSpace"],
+        "planHash": plan["planHash"],
+        "planVersion": plan["version"],
+        "version": plan["version"],
+    }
+
+
 @router.post("/preview-layout")
 def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(require_license)):
     """
@@ -1847,6 +2058,26 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
             # LƯỚI ĐỀU (solve_optimal_layout) để preview KHỚP output (render guillotine
             # cũng dùng solve_optimal_layout). KHÔNG đi nhánh bin-pack trộn ở đây.
             
+            if _lt == "mixed_guillotine":
+                _plog("ENTER mixed_guillotine branch")
+                from app.workers.mixed_guillotine import MixedGuillotineError
+
+                try:
+                    if bool(getattr(req, "is_die_cut", False)):
+                        raise MixedGuillotineError(
+                            "Dàn nhiều kích thước chỉ áp dụng cho Bình cắt xén."
+                        )
+                    if bool(getattr(req, "page_sheet_mode", False)):
+                        raise MixedGuillotineError(
+                            "Dàn nhiều kích thước không áp dụng cho Bình nguyên tấm."
+                        )
+                    result = _build_mixed_guillotine_preview(doc, req)
+                except MixedGuillotineError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+                finally:
+                    doc.close()
+                return result
+
             if _is_cluster_req:
                 _plog("ENTER cluster branch")
                 # ══ CHIA CỤM (cluster_tile) PREVIEW — DÙNG CHUNG SSOT với export ══
@@ -2739,8 +2970,8 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 # super-grid ≤ usable (không tràn lề). Band tối đa = số loại SL>0.
                 _n_bands_est = sum(1 for _q in _qtys_ct if _q > 0) or _nu_ct
                 _gutter_total = max(0, _n_bands_est - 1) * _cgap_ct
-                _uw_ct = max(_trim_w_ct, req.usable_w - _gutter_total) if cluster_mode == 'column' else req.usable_w
-                _uh_ct = max(_trim_h_ct, req.usable_h - _gutter_total) if cluster_mode == 'row' else req.usable_h
+                _uw_ct = max(_trim_w_ct, req.usable_w - _gutter_total) if _cmode_mp == 'column' else req.usable_w
+                _uh_ct = max(_trim_h_ct, req.usable_h - _gutter_total) if _cmode_mp == 'row' else req.usable_h
                 if req.strategy == 'manual' and getattr(req, 'cols', 0) > 0 and getattr(req, 'rows', 0) > 0:
                     _lay_ct = _sm_ct(_trim_w_ct, _trim_h_ct, req.gap_x, req.gap_y, req.cols, req.rows)
                 else:
@@ -2889,6 +3120,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 _uw_ce = max(_trim_w_ce, _uw_ce)
                 _uh_ce = max(_trim_h_ce, _uh_ce)
                 if req.strategy == 'manual' and getattr(req, 'cols', 0) > 0 and getattr(req, 'rows', 0) > 0:
+                    _lay_ce = _sm_ce(_trim_w_ce, _trim_h_ce, req.gap_x, req.gap_y, req.cols, req.rows)
                     if (_lay_ce.get('overallWidth', 0) > _uw_ce + 0.01
                             or _lay_ce.get('overallHeight', 0) > _uh_ce + 0.01):
                         doc.close()
@@ -2896,7 +3128,6 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                             status_code=422,
                             detail="L\u01b0\u1edbi th\u1ee7 c\u00f4ng v\u01b0\u1ee3t v\u00f9ng gi\u1ea5y s\u1eed d\u1ee5ng.",
                         )
-                    _lay_ce = _sm_ce(_trim_w_ce, _trim_h_ce, req.gap_x, req.gap_y, req.cols, req.rows)
                 else:
                     _lay_ce = _sol_ce(
                         usable_w=_uw_ce, usable_h=_uh_ce,

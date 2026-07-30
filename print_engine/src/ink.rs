@@ -1668,6 +1668,68 @@ impl InkBuffer {
         Some(out)
     }
 
+    /// Xuất buffer mực ra CMYK composite 8 bit (4 byte/pixel) — đường **export production**.
+    ///
+    /// Gộp kênh spot vào process CMYK theo cùng logic với [`to_srgb`], nhưng trả
+    /// dữ liệu CMYK thẳng thay vì quy sang RGB. Không cần `ColorManager` vì dữ
+    /// liệu đã nằm trong không gian mực — caller tự nhúng profile ICC (FOGRA39/SWOP)
+    /// khi ghi file.
+    ///
+    /// Thứ tự byte: `[C, M, Y, K, C, M, Y, K, ...]` (interleaved), mỗi kênh 0..255
+    /// với 255 = 100% mực. Khớp convention TIFF CMYK (PhotometricInterpretation=5,
+    /// InkSet=1) và Pillow mode "CMYK".
+    pub fn to_process_cmyk(&self) -> Vec<u8> {
+        let px = self.alpha.len();
+        // Gộp spot vào process — cùng logic to_srgb.
+        let mut cmyk: Vec<[f32; 4]> = Vec::with_capacity(px);
+        for i in 0..px {
+            cmyk.push([
+                self.planes[0][i].clamp(0.0, 1.0),
+                self.planes[1][i].clamp(0.0, 1.0),
+                self.planes[2][i].clamp(0.0, 1.0),
+                self.planes[3][i].clamp(0.0, 1.0),
+            ]);
+        }
+        for ch in 4..self.planes.len() {
+            if !self.space.colorants()[ch].is_spot() {
+                continue;
+            }
+            let plane = &self.planes[ch];
+            match self.space.spot_alternate(ch) {
+                Some(alt) => {
+                    for i in 0..px {
+                        let t = plane[i].clamp(0.0, 1.0);
+                        if t <= 0.0 {
+                            continue;
+                        }
+                        let add = alt.cmyk_at(t);
+                        for c in 0..4 {
+                            cmyk[i][c] = (cmyk[i][c] + add[c]).min(1.0);
+                        }
+                    }
+                }
+                None => {
+                    // Spot không có tint transform → hiện như mực đen (cùng to_srgb).
+                    for i in 0..px {
+                        let t = plane[i].clamp(0.0, 1.0);
+                        if t > 0.0 {
+                            cmyk[i][3] = (cmyk[i][3] + t).min(1.0);
+                        }
+                    }
+                }
+            }
+        }
+        // Trả interleaved CMYK u8: 4 byte/pixel.
+        let mut out = Vec::with_capacity(px * 4);
+        for p in cmyk {
+            out.push((p[0] * 255.0 + 0.5) as u8);
+            out.push((p[1] * 255.0 + 0.5) as u8);
+            out.push((p[2] * 255.0 + 0.5) as u8);
+            out.push((p[3] * 255.0 + 0.5) as u8);
+        }
+        out
+    }
+
     /// Độ phủ của một kẽm theo % diện tích có mực (ngưỡng > 2%).
     pub fn plate_coverage_pct(&self, channel: usize) -> f32 {
         let plane = &self.planes[channel];

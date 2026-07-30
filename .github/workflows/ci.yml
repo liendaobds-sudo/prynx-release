@@ -130,6 +130,15 @@ jobs:
           done
           exit $status
 
+      # KIENTRUC (audit 2026-07-29 §D.1): bốn lockfile độc lập nghĩa là hai đồ thị build
+      # (native→backend và src-tauri→shell) tự resolve dependency riêng, nên cùng một crate
+      # lõi có thể được build trên hai nền phiên bản khác nhau. Đã xảy ra thật với serde.
+      # Với crate HÌNH HỌC (geo, imposition_core, pdfium-render) thì lệch minor là preview
+      # và tờ in tính khác nhau. Chốt này canh đúng rủi ro đó mà không phải gộp workspace
+      # (gộp sẽ dồn target/ về gốc và phá đường phát hành — xem docstring của script).
+      - name: Lệch phiên bản crate dùng chung giữa 4 lockfile
+        run: python3 scripts/check_cargo_lock_skew.py
+
       - name: cargo test (crate thuần Rust)
         run: |
           cargo test --manifest-path imposition_core/Cargo.toml --locked

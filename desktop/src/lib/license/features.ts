@@ -35,6 +35,7 @@ export const FEATURE_CATALOG = {
   'packaging.dieline': { minPlan: 'pro', label: 'Khuôn bế bao bì' },
   'util.bgremover': { minPlan: 'pro', label: 'Tách nền' },
   'util.upscale': { minPlan: 'pro', label: 'AI Upscale' },
+  'util.logo_rebuild': { minPlan: 'pro', label: 'Phục hồi & Vector hóa Logo' },
   'qc.compare_pdf': { minPlan: 'pro', label: 'So sánh PDF in ấn' },
 } as const satisfies Record<string, { minPlan: LicensePlan; label: string }>;
 
@@ -81,7 +82,7 @@ export function featureIdForFocus(key: string): FeatureId | null {
     trapping: 'prepress.trapping', sticker: 'prepress.cutline', pdfx: 'prepress.pdfx',
     datamerge: 'vdp.datamerge', numbering: 'vdp.numbering', cover_numbering: 'vdp.cover_numbering',
     booklet: 'impo.booklet', nup: 'impo.nup', sticker_imposer: 'impo.diecut', cnc_imposer: 'impo.cnc',
-    dieline: 'packaging.dieline', bgremover: 'util.bgremover', upscale: 'util.upscale',
+    dieline: 'packaging.dieline', bgremover: 'util.bgremover', upscale: 'util.upscale', logo_rebuild: 'util.logo_rebuild',
     compare_pdf: 'qc.compare_pdf', compare_text: 'qc.compare_text',
   };
   return map[key] ?? null;

@@ -163,6 +163,50 @@ def build_shapely_polygon_from_paths(paths, page_rect=None) -> Polygon:
         pass
     return None
 
+
+def build_collision_base_polygon(page, shape_type: str, item_w: float, item_h: float,
+                                 *, is_rect_cell: bool = False):
+    """Dựng contour một con tem dùng chung cho bước né boong.
+
+    Hàm này là SSOT giữa tiến trình lập kế hoạch (`nup_engine`) và tiến trình dựng
+    PDF (`nup_process_chunk`). Trước đây hai nơi tự suy contour khác nhau sẽ làm
+    `SL/tờ` ở report lệch số tem thực tế sau khi né boong.
+    """
+    base_poly = None
+    item_w = float(item_w or 0.0)
+    item_h = float(item_h or 0.0)
+    base_rect_pts = (0.0, 0.0, item_w, item_h)
+    normalized_shape = str(shape_type or "CUSTOM").upper()
+
+    if normalized_shape == "CIRCLE_ELLIPSE" and not is_rect_cell:
+        from shapely.affinity import scale
+        from shapely.geometry import Point
+
+        rx = item_w / 2.0
+        ry = item_h / 2.0
+        if rx > 0 and ry > 0:
+            base_poly = scale(
+                Point(0, 0).buffer(1.0, resolution=64),
+                xfact=rx,
+                yfact=ry,
+            )
+            base_rect_pts = (-rx, -ry, rx, ry)
+    elif is_rect_cell and item_w > 0 and item_h > 0:
+        base_poly = box(0.0, 0.0, item_w, item_h)
+    elif page is not None:
+        paths = page.extract_vector_paths()
+        if paths:
+            base_poly = build_shapely_polygon_from_paths(paths, page.rect)
+            if base_poly is not None:
+                base_rect_pts = base_poly.bounds
+
+    # Giữ đúng fallback đã ship: nếu không đọc được contour thì dùng hình chữ nhật ô.
+    if base_poly is None and item_w > 0 and item_h > 0:
+        base_poly = box(0.0, 0.0, item_w, item_h)
+        base_rect_pts = (0.0, 0.0, item_w, item_h)
+
+    return base_poly, base_rect_pts
+
 def get_item_polygon(item: Dict, base_poly: Polygon, skip_transform: bool = False) -> Polygon:
     # P4 (đã kiểm): CỐ Ý không xử lý mirror. Đường render live (nup_artwork.place_one_artwork)
     # luôn nhận mirror_x=mirror_y=False; duplex mặt sau được xử lý bằng mirror abs_x + TOGGLE
@@ -769,9 +813,44 @@ def smart_resolve_collisions(placements: List[Dict], zones: List[box], base_poly
             return block_shift
         # 3) Xóa tối thiểu + dồn-căn theo TRỤC AN TOÀN (song song trục lồng).
         if il_vertical and not il_horizontal:
-            out = _resolve_by_columns(local, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
-            if out is None:
-                out = _resolve_one_orientation(local, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
+            by_columns = _resolve_by_columns(
+                local, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins,
+            )
+            # [PONT TRIANGLE FIX 2026-07-29] Tam giác lồng có pitch nhỏ hơn chiều cao
+            # bbox. `_resolve_by_columns` dùng bbox-height nên có thể xóa oan cả dải
+            # (ca thật: 96 → 82), trong khi dồn theo hàng chỉ bỏ đúng 2 tem chạm boong
+            # (96 → 94). Khi có polygon thật, thử cả hai và chỉ nhận phương án đã qua
+            # hai chốt toàn cục: hết va boong + không tem nào đè nhau. Nếu cùng hợp lệ,
+            # lấy phương án giữ nhiều tem hơn; hòa thì giữ ưu tiên dồn cột hiện tại.
+            if base_poly is not None:
+                by_rows = _resolve_one_orientation(
+                    local, zones, base_poly, base_rect_pts,
+                    sheet_w, sheet_h, margins,
+                )
+                valid_candidates = []
+                for candidate in (by_columns, by_rows):
+                    if candidate is None:
+                        continue
+                    if detect_collisions(
+                        candidate, zones, base_poly, base_rect_pts, sheet_h,
+                    ):
+                        continue
+                    if _has_any_sticker_overlap(candidate, base_poly):
+                        continue
+                    valid_candidates.append(candidate)
+                if valid_candidates:
+                    out = max(valid_candidates, key=len)
+                else:
+                    out = by_columns if by_columns is not None else by_rows
+            else:
+                # Không có contour thật thì không thể dùng AABB để kết luận layout
+                # lồng có đè hay không; giữ nguyên đường xử lý đã ship.
+                out = by_columns
+                if out is None:
+                    out = _resolve_one_orientation(
+                        local, zones, base_poly, base_rect_pts,
+                        sheet_w, sheet_h, margins,
+                    )
         else:
             out = _resolve_one_orientation(local, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
         return out

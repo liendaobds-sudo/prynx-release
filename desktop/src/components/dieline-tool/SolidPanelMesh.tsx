@@ -47,7 +47,7 @@ import { Line } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import type { ThreeEvent } from '@react-three/fiber';
 
-import { useMockupStore } from '../../store/useMockupStore';
+import { useMockupStore } from '../../stores/useMockupStore';
 import type { BBox, Panel, Point2D } from '../../lib/mockup3d/types';
 import { buildPanelSolid, buildFoldFilletGeometry, clampThickness, normalizeEdgeColor } from '../../lib/mockup3d/panelSolid';
 import { buildConeFrustumGeometry, buildConeGluePatchGeometry, buildConeOutlineGeometries, type ConeWarpParams } from '../../lib/mockup3d/cupSleeveCone';

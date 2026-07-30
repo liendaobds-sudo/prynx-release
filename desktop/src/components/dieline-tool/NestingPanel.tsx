@@ -4,7 +4,7 @@
 // ============================================================
 
 import React from 'react';
-import { useBoxStore } from '../../store/useBoxStore';
+import { useBoxStore } from '../../stores/useBoxStore';
 import { SHEET_PRESETS, RotationMode, TrayNestingMode } from '../../lib/dieline/nestingTypes';
 import { useTranslation } from 'react-i18next';
 

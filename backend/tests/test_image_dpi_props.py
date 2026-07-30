@@ -4,7 +4,7 @@ Feature: preflight-depth-upgrade
 """
 import math
 
-from hypothesis import given, settings, strategies as st
+from hypothesis import HealthCheck, given, settings, strategies as st
 
 from app.core.preflight_rules.images import (
     MIN_PLACED_PT,
@@ -16,8 +16,22 @@ _placed = st.floats(min_value=MIN_PLACED_PT, max_value=5000.0,
                     allow_nan=False, allow_infinity=False)
 
 
+# KIENTRUC (audit 2026-07-29): tắt health check `too_slow`.
+#
+# `too_slow` đo THỜI GIAN THỰC khi sinh dữ liệu, nên nó fail khi MÁY đang tải nặng chứ
+# không phải khi test chậm thật. Hai strategy dưới đây là `integers`/`floats` thuần, không
+# `assume`, không filter — sinh dữ liệu không thể chậm vì lý do nội tại (chạy riêng: 1,7s
+# cho cả file). Nhưng chốt QA của `build_production.ps1` gọi bộ test này NGAY SAU các bước
+# build ngốn CPU, và đã làm đứt một lượt đóng gói với đúng lỗi này ("only generated 8 valid
+# inputs after 2.57 seconds"). Một cổng phát hành fail theo tải máy là cổng không dùng được.
+#
+# Chỉ tắt `too_slow`. Mọi health check khác giữ nguyên, và `max_examples` không đổi nên độ
+# phủ không giảm.
+_SETTINGS = settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+
+
 # Feature: preflight-depth-upgrade, Property 1: Effective DPI đúng công thức và lấy min
-@settings(max_examples=100)
+@_SETTINGS
 @given(pixel_w=_pixels, pixel_h=_pixels, placed_w=_placed, placed_h=_placed)
 def test_effective_dpi_formula_and_min(pixel_w, pixel_h, placed_w, placed_h):
     res = compute_effective_dpi(pixel_w, pixel_h, placed_w, placed_h)
@@ -31,7 +45,7 @@ def test_effective_dpi_formula_and_min(pixel_w, pixel_h, placed_w, placed_h):
 
 
 # Feature: preflight-depth-upgrade, Property 4: Placement suy biến bị bỏ qua (trả None)
-@settings(max_examples=100)
+@_SETTINGS
 @given(
     pixel_w=st.integers(min_value=-5, max_value=20000),
     pixel_h=st.integers(min_value=-5, max_value=20000),

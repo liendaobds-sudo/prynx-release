@@ -1,0 +1,76 @@
+diff --git a/backend/app/workers/sticker_engine.py b/backend/app/workers/sticker_engine.py
+--- a/backend/app/workers/sticker_engine.py
++++ b/backend/app/workers/sticker_engine.py
+@@ -2342,7 +2342,12 @@ class StickerEngine:
+                         # footprint) → bịt khe hở subpixel ở mối nối raster(SMask)↔clip-vector,
+                         # tránh hở nền tạo sợi mảnh. Phần nới nằm dưới artwork nên vô hình.
+-                        _tuck_px = max(1, int(0.2 * px_per_mm))
++                        _seam_clean_px = (
++                            selected_peel_px
++                            if bleed_color_type == "image" and not rectangle_mode
++                            else 0
++                        )
++                        _tuck_px = max(1, int(0.2 * px_per_mm), _seam_clean_px)
+                         _fp_inner = cv2.erode(sticker_footprint, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_tuck_px*2+1, _tuck_px*2+1)))
+                         bleed_ring = cv2.subtract(bleed_mask, _fp_inner)
+                         
+@@ -2464,6 +2469,7 @@ class StickerEngine:
+                     src_xobj_name = page_out.add_resource(src_xobj, pikepdf.Name.XObject)
+ 
+                 page_content_stream = []
++                sampled_bleed_overlay_stream = []
+                 vector_bite_x = 0.0
+                 vector_bite_y = 0.0
+                 if use_vector_rectangle_bleed:
+@@ -2491,6 +2497,7 @@ class StickerEngine:
+                     mask_obj.ColorSpace = pikepdf.Name.DeviceGray
+                     mask_obj.BitsPerComponent = 8
+                     mask_obj.Filter = pikepdf.Name.FlateDecode
++                    mask_obj.Interpolate = True
+                     
+                     img_obj = pikepdf.Stream(doc_out, bleed_stream_data)
+                     img_obj.Type = pikepdf.Name.XObject
+@@ -2508,6 +2515,7 @@ class StickerEngine:
+                     # Cả 2 nhánh nay đều zlib (lossless) → FlateDecode. Trước RGB là DCTDecode (JPEG).
+                     img_obj.Filter = pikepdf.Name.FlateDecode
+                     img_obj.SMask = mask_obj
++                    img_obj.Interpolate = True
+                     
+                     img_name = page_out.add_resource(img_obj, pikepdf.Name.XObject)
+                     
+@@ -2531,10 +2539,21 @@ class StickerEngine:
+                             img_w_pt, shift_x, shift_y, max_expansion_pts, pad_b,
+                         )
+ 
+-                    page_content_stream.append("q")
+-                    page_content_stream.append(f"{img_w_pt:.4f} 0 0 {img_h_pt:.4f} {shift_x:.4f} {shift_y:.4f} cm")
+-                    page_content_stream.append(f"{str(img_name)} Do")
+-                    page_content_stream.append("Q")
++                    bleed_draw_ops = [
++                        "q",
++                        f"{img_w_pt:.4f} 0 0 {img_h_pt:.4f} {shift_x:.4f} {shift_y:.4f} cm",
++                        f"{str(img_name)} Do",
++                        "Q",
++                    ]
++                    if (
++                        bleed_color_type in ("image", "inpaint")
++                        and not rectangle_mode
++                        and not selection_page_mode
++                    ):
++                        sampled_bleed_overlay_stream.extend(bleed_draw_ops)
++                    else:
++                        page_content_stream.extend(bleed_draw_ops)
+ 
+                 selection_bleed_content_stream = []
+                 if selection_page_mode:
+@@ -2594,6 +2613,11 @@ class StickerEngine:
+                     # was copied intact. Drop the legacy re-draw layer to avoid
+                     # changing transparency/overprint by painting it twice.
+                     del page_content_stream[artwork_ops_start:]
++                elif sampled_bleed_overlay_stream:
++                    # QUALITY (audit 2026-07-28 §BX.5): phủ choke màu lấy mẫu lên
++                    # dải mép rất hẹp sau artwork để che halo/AA trắng của nguồn.
++                    page_content_stream.extend(sampled_bleed_overlay_stream)
+ 
+ 
+ 

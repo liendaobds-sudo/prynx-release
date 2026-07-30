@@ -319,6 +319,114 @@ pub fn ppe_softproof(
     Ok(out.into())
 }
 
+/// Export CMYK production: render trang trong không gian mực, gộp spot vào
+/// process CMYK, trả dữ liệu 4 kênh 8 bit (interleaved).
+///
+/// Khác `ppe_softproof` ở chỗ KHÔNG quy sang RGB — giữ nguyên CMYK cho
+/// downstream (TIFF CMYK, imposition, RIP). Caller tự nhúng ICC profile
+/// (FOGRA39/SWOP) khi ghi file.
+///
+/// `cmyk_profile` vẫn bắt buộc: PPE cần profile CMYK để phân giải ICC-based
+/// color space trong PDF (CalCMYK, ICCBased 4-channel). Nếu PDF chỉ dùng
+/// DeviceCMYK thuần thì profile không ảnh hưởng giá trị kênh.
+#[pyfunction]
+#[pyo3(signature = (
+    pdf_path,
+    page = 1,
+    dpi = 300.0,
+    cmyk_profile = "",
+    render_intent = 1,
+    page_box = "crop",
+    fallback_font = None,
+    simulate_overprint = true,
+    memory_budget_mb = 512,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn ppe_export_cmyk(
+    py: Python<'_>,
+    pdf_path: &str,
+    page: usize,
+    dpi: f32,
+    cmyk_profile: &str,
+    render_intent: i32,
+    page_box: &str,
+    fallback_font: Option<&str>,
+    simulate_overprint: bool,
+    memory_budget_mb: usize,
+) -> PyResult<Py<PyDict>> {
+    if page == 0 {
+        return Err(PyValueError::new_err(
+            "page là chỉ số 1-based, không nhận 0",
+        ));
+    }
+    if cmyk_profile.is_empty() {
+        return Err(PyValueError::new_err(
+            "export CMYK cần cmyk_profile để phân giải ICC color space trong PDF",
+        ));
+    }
+    let which_box = match page_box {
+        "media" => PageBox::Media,
+        "crop" => PageBox::Crop,
+        "trim" => PageBox::Trim,
+        "bleed" => PageBox::Bleed,
+        "art" => PageBox::Art,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "page_box không hợp lệ: {other}"
+            )))
+        }
+    };
+    let memory_budget_bytes = memory_budget_mb
+        .checked_mul(1024 * 1024)
+        .filter(|bytes| *bytes > 0)
+        .ok_or_else(|| PyValueError::new_err("memory_budget_mb must be greater than zero"))?;
+    // PERF (audit 2026-07-30 lô 4): production CMYK không cần anti-alias (RIP xử lý),
+    // dùng ink_accurate() (AA tắt) + flatten_spots thay vì softproof() (AA bật).
+    // Tiết kiệm ~30-50% thời gian render.
+    let mut base_opts = RenderOptions::ink_accurate()
+        .with_overprint_simulation(simulate_overprint)
+        .with_memory_budget_bytes(memory_budget_bytes);
+    base_opts.flatten_spots = true;
+    let opts = match fallback_font {
+        Some(path) => {
+            let data = std::fs::read(path).map_err(|e| {
+                PyRuntimeError::new_err(format!("không đọc được fallback_font {path}: {e}"))
+            })?;
+            base_opts.with_fallback_font(std::sync::Arc::new(data))
+        }
+        None => base_opts,
+    };
+    let intent = RenderIntent::from_pdf(render_intent);
+
+    let (width, height, cmyk_bytes, degraded, ink_unsound) = py
+        .detach(|| -> print_engine::error::PpeResult<_> {
+            let manager = ColorManager::from_profiles(
+                Path::new(cmyk_profile),
+                None::<&Path>,  // Không cần RGB profile — giữ CMYK
+                intent,
+            )?;
+            let doc = ppe_open(pdf_path)?;
+            let rendered = render_page_managed(&doc, page, dpi, which_box, opts, Some(&manager))?;
+            let cmyk = rendered.buffer.to_process_cmyk();
+            Ok((
+                rendered.buffer.width(),
+                rendered.buffer.height(),
+                cmyk,
+                rendered.warnings.degrades_accuracy(),
+                rendered.warnings.ink_unsound(),
+            ))
+        })
+        .map_err(|e| PyRuntimeError::new_err(format!("PPE: {e}")))?;
+
+    let out = PyDict::new(py);
+    out.set_item("width", width)?;
+    out.set_item("height", height)?;
+    out.set_item("cmyk", PyBytes::new(py, &cmyk_bytes))?;
+    out.set_item("degraded", degraded)?;
+    out.set_item("ink_unsound", ink_unsound)?;
+    Ok(out.into())
+}
+
 /// Để ở Rust (cạnh code thật) thay vì hardcode trong Python: khi một tính năng
 /// được hoàn thiện, cờ đổi cùng lúc với code, không thể quên cập nhật.
 /// Lấy đường viền chữ của một trang để Python ghi lại thành PDF (`OUTLINE_FONTS`).

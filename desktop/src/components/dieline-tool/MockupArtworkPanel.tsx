@@ -15,8 +15,8 @@
 // ============================================================
 
 import React from 'react';
-import { useMockupStore } from '../../store/useMockupStore';
-import { useBoxStore } from '../../store/useBoxStore';
+import { useMockupStore } from '../../stores/useMockupStore';
+import { useBoxStore } from '../../stores/useBoxStore';
 import CollapsibleSection from './CollapsibleSection';
 import {
     validateMask,

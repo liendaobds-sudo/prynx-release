@@ -27,7 +27,7 @@ import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
 
 import type { Panel, Point2D } from '../../lib/dieline/types';
-import { useMockupStore } from '../../store/useMockupStore';
+import { useMockupStore } from '../../stores/useMockupStore';
 import { applyFoldCompensation, type FoldCompensationScratch } from '../../lib/mockup3d/foldCompensation';
 import { applyExplodedOffset } from '../../lib/mockup3d/explodedView';
 import { foldLive, seedFoldLiveFromStore } from '../../lib/mockup3d/foldLive';

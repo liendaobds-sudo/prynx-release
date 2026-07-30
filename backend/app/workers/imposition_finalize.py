@@ -102,7 +102,8 @@ def finalize_placements(
 
 
 def resolve_pont_collisions_on_placements(placements: List[Dict[str, Any]], req: Any,
-                                          base_poly=None) -> List[Dict[str, Any]]:
+                                          base_poly=None, *,
+                                          mark_resolved: bool = False) -> List[Dict[str, Any]]:
     """Giải va chạm boong TRÊN placements TUYỆT ĐỐI (abs_x/abs_y) — SAO Y nup_process_chunk
     (L459-522) để preview == output.
 
@@ -111,6 +112,8 @@ def resolve_pont_collisions_on_placements(placements: List[Dict[str, Any]], req:
     không còn mất các chỉnh-vị-trí mà resolver chỉ ghi vào abs_*.
 
     `req` chỉ cần các thuộc tính: pont_config, sheet_w, sheet_h, margin_left, margin_bottom.
+    `mark_resolved=True` gắn cờ nội bộ sau khi xác minh hết va chạm, để worker không
+    trích contour và chạy cùng phép tính lần thứ hai.
     """
     pc = getattr(req, 'pont_config', None)
     if (not placements or not pc or pc.get('disableCollision', False)
@@ -118,7 +121,8 @@ def resolve_pont_collisions_on_placements(placements: List[Dict[str, Any]], req:
         return placements
     try:
         from app.workers.pont_collision import (
-            calculate_forbidden_zones, smart_resolve_collisions, detect_collisions, MM_TO_PTS,
+            MM_TO_PTS, _has_any_sticker_overlap, calculate_forbidden_zones,
+            detect_collisions, smart_resolve_collisions,
         )
         sheet_w = req.sheet_w
         sheet_h = req.sheet_h
@@ -152,6 +156,9 @@ def resolve_pont_collisions_on_placements(placements: List[Dict[str, Any]], req:
         except Exception:
             pass
         if not _has_col:
+            if mark_resolved and not _has_any_sticker_overlap(placements, base_poly):
+                for placement in placements:
+                    placement['_pont_collision_resolved'] = True
             return placements
         resolved = smart_resolve_collisions(placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
         try:
@@ -162,7 +169,15 @@ def resolve_pont_collisions_on_placements(placements: List[Dict[str, Any]], req:
             )
         except Exception:
             pass
-        return resolved or placements
+        result = resolved or placements
+        if (
+            mark_resolved
+            and not detect_collisions(result, zones, base_poly, base_rect_pts, sheet_h)
+            and not _has_any_sticker_overlap(result, base_poly)
+        ):
+            for placement in result:
+                placement['_pont_collision_resolved'] = True
+        return result
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"Preview pont collision (abs) failed: {e}")

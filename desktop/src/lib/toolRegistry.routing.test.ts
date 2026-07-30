@@ -39,4 +39,7 @@ describe('TOOL_REGISTRY — routing công cụ vào workspace chung', () => {
       expect(tool.component, tool.title + ' bị tách sang component riêng').toBe(impositionComponent);
     }
   });
+  it('ẩn công cụ Logo Rebuild trong thời gian tạm khóa chất lượng', () => {
+    expect(TOOL_REGISTRY.find((tool) => tool.defaultPayload?.focusFeature === 'logo_rebuild')).toBeUndefined();
+  });
 });

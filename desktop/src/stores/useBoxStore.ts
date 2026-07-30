@@ -3,6 +3,8 @@ import { generateDielineRemote } from '../lib/dieline/api';
 import { BoxParams, DEFAULT_PARAMS, DielineModel } from '../lib/dieline/types';
 import { NestingConfig, NestingResult, DEFAULT_NESTING_CONFIG } from '../lib/dieline/nestingTypes';
 import { normalizeNestingUpdates } from '../lib/dieline/runtimeValidation';
+// [VARIANT 2026-07-29] Lớp biến thể khuôn bế — dữ liệu thuần, không hình học
+import { BoxVariant, defaultVariantFor, getVariant } from '../lib/dieline/variants';
 
 interface BoxStore {
     params: BoxParams;
@@ -19,8 +21,18 @@ interface BoxStore {
     isModelCurrent: boolean;
     generationError: string | null;
 
+    /** [VARIANT 2026-07-29] Biến thể đang chọn trong thư viện khuôn.
+     *  null = chưa/không có biến thể nào phủ boxType hiện tại ⇒ form không ẩn
+     *  control nào (catalog đang được phủ dần theo lô). */
+    variantId: string | null;
+    /** [VARIANT 2026-07-29] Chế độ chuyên gia: mở khoá mọi tham số bị biến thể
+     *  chốt. Đường lùi để không tính năng nào bị mất so với bản trước. */
+    isAdvancedMode: boolean;
+
     setParam: (key: keyof BoxParams, value: BoxParams[keyof BoxParams]) => void;
     setParams: (updates: Partial<BoxParams>) => void;
+    setVariant: (id: string) => void;
+    setAdvancedMode: (v: boolean) => void;
     regenerate: (includeNesting?: boolean) => void;
     setFoldProgress: (value: number) => void;
     setViewMode: (mode: '2d' | '3d' | 'split') => void;
@@ -170,6 +182,35 @@ function applyBoxTypeDefaults(prev: BoxParams, value: BoxParams[keyof BoxParams]
     return next;
 }
 
+/**
+ * [VARIANT 2026-07-29] Áp một biến thể lên bộ tham số hiện tại.
+ *
+ * Thứ tự BẮT BUỘC (hợp đồng ở Requirement 2.1):
+ *   (a) mặc định theo boxType — tái dùng `applyBoxTypeDefaults`, KHÔNG viết lại
+ *   (b) `preset` — số đo khởi đầu của biến thể
+ *   (c) `lockedParams` — thuộc tính đã chốt, luôn thắng
+ *
+ * Bước (a) và (b) CHỈ chạy khi thật sự bước sang HỌ HỘP KHÁC. Đổi giữa hai biến
+ * thể cùng `boxType` (vd hộp treo có/không cửa sổ) thì giữ nguyên số đo người
+ * dùng đang gõ — xoá số đo họ vừa nhập chỉ vì bấm sang card bên cạnh là hành vi
+ * gây khó chịu, trong khi `lockedParams` vẫn được áp đủ nên hình vẫn đúng biến thể.
+ *
+ * Lưu ý vì sao phải bỏ CẢ bước (a), không chỉ bước (b): `applyBoxTypeDefaults`
+ * nhúng sẵn preset số đo của một số loại (pizza, tray, double_tray,
+ * hanging_window) và áp VÔ ĐIỀU KIỆN khi `value` trùng loại đó — gọi nó với
+ * boxType không đổi sẽ tự xoá số đo người dùng. Khi không đổi họ hộp thì cũng
+ * chẳng có "mặc định theo boxType" nào cần áp.
+ */
+function applyVariant(prev: BoxParams, variant: BoxVariant): BoxParams {
+    const enteringNewType = prev.boxType !== variant.boxType;
+    if (!enteringNewType) return { ...prev, ...variant.lockedParams };
+    return {
+        ...applyBoxTypeDefaults(prev, variant.boxType),
+        ...variant.preset,
+        ...variant.lockedParams,
+    };
+}
+
 export const useBoxStore = create<BoxStore>((set, get) => ({
     params: { ...DEFAULT_PARAMS },
     dieline: null,
@@ -185,16 +226,45 @@ export const useBoxStore = create<BoxStore>((set, get) => ({
     isGenerating: false,
     isModelCurrent: false,
     generationError: null,
+    // [VARIANT 2026-07-29] Biến thể mặc định của boxType khởi tạo (null nếu
+    // catalog chưa phủ loại đó — đang phủ dần theo lô).
+    variantId: defaultVariantFor(DEFAULT_PARAMS.boxType)?.id ?? null,
+    isAdvancedMode: false,
 
     setIsStanding: (v) => set({ isStanding: v }),
     setParam: (key, value) => {
         const prev = get().params;
-        const params = key === 'boxType'
-            ? applyBoxTypeDefaults(prev, value)
-            : { ...prev, [key]: value };
-        set({ params });
+        if (key === 'boxType') {
+            // [VARIANT 2026-07-29] Đổi boxType phải đồng bộ biến thể, nếu không
+            // state sẽ ở trạng thái boxType và variantId trỏ hai nơi khác nhau —
+            // form sẽ ẩn/hiện control theo biến thể của LOẠI HỘP CŨ.
+            const variant = defaultVariantFor(value as BoxParams['boxType']);
+            set({
+                params: variant ? applyVariant(prev, variant) : applyBoxTypeDefaults(prev, value),
+                variantId: variant?.id ?? null,
+            });
+        } else {
+            set({ params: { ...prev, [key]: value } });
+        }
         scheduleGeneration(set, get, { changedKey: key });
     },
+    setVariant: (id) => {
+        const prev = get().params;
+        // Req 2.5: id rác → rơi về biến thể mặc định của boxType hiện tại
+        const variant = getVariant(id) ?? defaultVariantFor(prev.boxType);
+        if (!variant) {
+            // Catalog chưa phủ boxType này: giữ nguyên tham số, bỏ chọn biến thể
+            // để form KHÔNG ẩn oan control nào. Không throw, không sinh lại.
+            set({ variantId: null });
+            return;
+        }
+        set({ variantId: variant.id, params: applyVariant(prev, variant) });
+        // changedKey: 'boxType' để scheduleGeneration bật forceRerender ⇒ clampVersion
+        // tăng ⇒ ô nhập remount lấy giá trị mới. BẮT BUỘC kể cả khi boxType KHÔNG
+        // đổi (Req 2.2): hai biến thể cùng loại vẫn phải làm mới ô nhập.
+        scheduleGeneration(set, get, { changedKey: 'boxType' });
+    },
+    setAdvancedMode: (v) => set({ isAdvancedMode: v }),
     setParams: (updates) => {
         set({ params: { ...get().params, ...updates } });
         scheduleGeneration(set, get);

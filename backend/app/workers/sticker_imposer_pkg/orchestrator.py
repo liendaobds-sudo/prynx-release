@@ -38,8 +38,39 @@ from .asymmetric_layouts import (
 
 logger = logging.getLogger(__name__)
 
-def _solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item_w: float, item_h: float, gap_x: float, gap_y: float, strategy: str = 'grid', p5_params: Dict[str, float] = None, p6_params: Dict[str, float] = None, p5_row_params: Dict = None, p6_row_params: Dict = None, p5_col_params: Dict = None, p6_col_params: Dict = None, shape_type: str = 'CUSTOM', shape_props: Dict[str, Any] = None, base_poly: Any = None, secondary_gap: float = None) -> Dict[str, Any]:
+
+class LazyNfpParams:
+    """Tải bộ tham số NFP tối đa một lần khi solver thật sự cần."""
+
+    def __init__(self, loader):
+        self._loader = loader
+        self._loaded = False
+        self._values = None
+
+    def get(self):
+        if not self._loaded:
+            self._values = self._loader()
+            self._loaded = True
+        return self._values
+
+    def peek(self):
+        return self._values if self._loaded else None
+
+
+def _solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item_w: float, item_h: float, gap_x: float, gap_y: float, strategy: str = 'grid', p5_params: Dict[str, float] = None, p6_params: Dict[str, float] = None, p5_row_params: Dict = None, p6_row_params: Dict = None, p5_col_params: Dict = None, p6_col_params: Dict = None, shape_type: str = 'CUSTOM', shape_props: Dict[str, Any] = None, base_poly: Any = None, secondary_gap: float = None, nfp_context: LazyNfpParams = None) -> Dict[str, Any]:
     """Determine best layout for stickers"""
+
+    def _ensure_nfp_params():
+        nonlocal p5_params, p6_params, p5_row_params, p6_row_params
+        nonlocal p5_col_params, p6_col_params, base_poly
+        if nfp_context is None:
+            return (p5_params, p6_params, p5_row_params, p6_row_params, p5_col_params, p6_col_params)
+        values = nfp_context.get()
+        if values:
+            p5_params, p6_params, p5_row_params, p6_row_params, p5_col_params, p6_col_params = values[:6]
+            if len(values) > 8 and values[8] is not None:
+                base_poly = values[8]
+        return (p5_params, p6_params, p5_row_params, p6_row_params, p5_col_params, p6_col_params)
     
     if strategy == 'optimal_auto':
         # --- SHAPE-SPECIFIC OVERRIDES (100% Illustrator Logic Port) ---
@@ -58,6 +89,7 @@ def _solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item_w:
                 (p_grid2, True, 'grid'),
             ]
             
+            _ensure_nfp_params()
             # Head-to-tail với NFP params (lồng ghép chính xác, đã tính bằng binary search)
             if p5_params and p5_params.get('dx_outer', 0) > 0:
                 p5 = solve_cluster_grid_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y, p5_params, False)
@@ -225,6 +257,7 @@ def _solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item_w:
             
             # If user explicitly chooses CUSTOM, they want strict straight grids (no flipping/alternating)
             if shape_type != 'CUSTOM':
+                _ensure_nfp_params()
                 p5 = solve_cluster_grid_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y, p5_params, False)
                 p6 = solve_cluster_grid_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y, p6_params, True)
                 p8 = solve_row_alternating_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y, p5_row_params, False)
@@ -317,13 +350,13 @@ def _solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item_w:
         right_items_a = []
         _logger.debug(f"[FILL_DEBUG] right_avail_w={right_avail_w:.1f} bottom_avail_h={bottom_avail_h:.1f} min_dim={min(item_w, item_h):.1f}")
         if right_avail_w >= min(item_w, item_h) - 0.01:
-            fr = _best_fill_layout(item_w, item_h, right_avail_w, usable_h, gap_x, gap_y, p5_params, p6_params, p5_row_params, p6_row_params, p5_col_params, p6_col_params, shape_type, shape_props)
+            fr = _best_fill_layout(item_w, item_h, right_avail_w, usable_h, gap_x, gap_y, p5_params, p6_params, p5_row_params, p6_row_params, p5_col_params, p6_col_params, shape_type, shape_props, nfp_provider=_ensure_nfp_params if nfp_context is not None else None)
             _logger.debug(f"[FILL_DEBUG] right_items_a generated: {fr['totalItems']} items, rot={fr.get('items', [{}])[0].get('isRotated') if fr['items'] else None}")
             for it in fr['items']:
                 right_items_a.append({**it, 'x': it['x'] + right_x})
         bottom_items_a = []
         if bottom_avail_h >= min(item_w, item_h) - 0.01:
-            fb = _best_fill_layout(item_w, item_h, best_w, bottom_avail_h, gap_x, gap_y, p5_params, p6_params, p5_row_params, p6_row_params, p5_col_params, p6_col_params, shape_type, shape_props)
+            fb = _best_fill_layout(item_w, item_h, best_w, bottom_avail_h, gap_x, gap_y, p5_params, p6_params, p5_row_params, p6_row_params, p5_col_params, p6_col_params, shape_type, shape_props, nfp_provider=_ensure_nfp_params if nfp_context is not None else None)
             for it in fb['items']:
                 bottom_items_a.append({**it, 'y': it['y'] + bottom_y})
         config_a = right_items_a + bottom_items_a
@@ -331,12 +364,12 @@ def _solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item_w:
         # Config B: bottom fill spans full usable width, right fill spans only main block height
         bottom_items_b = []
         if bottom_avail_h >= min(item_w, item_h) - 0.01:
-            fb = _best_fill_layout(item_w, item_h, usable_w, bottom_avail_h, gap_x, gap_y, p5_params, p6_params, p5_row_params, p6_row_params, p5_col_params, p6_col_params, shape_type, shape_props)
+            fb = _best_fill_layout(item_w, item_h, usable_w, bottom_avail_h, gap_x, gap_y, p5_params, p6_params, p5_row_params, p6_row_params, p5_col_params, p6_col_params, shape_type, shape_props, nfp_provider=_ensure_nfp_params if nfp_context is not None else None)
             for it in fb['items']:
                 bottom_items_b.append({**it, 'y': it['y'] + bottom_y})
         right_items_b = []
         if right_avail_w >= min(item_w, item_h) - 0.01:
-            fr = _best_fill_layout(item_w, item_h, right_avail_w, best_h, gap_x, gap_y, p5_params, p6_params, p5_row_params, p6_row_params, p5_col_params, p6_col_params, shape_type, shape_props)
+            fr = _best_fill_layout(item_w, item_h, right_avail_w, best_h, gap_x, gap_y, p5_params, p6_params, p5_row_params, p6_row_params, p5_col_params, p6_col_params, shape_type, shape_props, nfp_provider=_ensure_nfp_params if nfp_context is not None else None)
             for it in fr['items']:
                 right_items_b.append({**it, 'x': it['x'] + right_x})
         config_b = right_items_b + bottom_items_b
@@ -443,6 +476,7 @@ def solve_optimal_sticker_layout(*args, **kwargs) -> Dict[str, Any]:
     require_rust("sticker layout")
     # Extract base_poly from kwargs if present, otherwise try positional arguments (which is the 16th argument)
     base_poly = kwargs.get('base_poly', None)
+    nfp_context = kwargs.get('nfp_context', None)
     if base_poly is None and len(args) >= 16:
         base_poly = args[15]
         
@@ -454,6 +488,11 @@ def solve_optimal_sticker_layout(*args, **kwargs) -> Dict[str, Any]:
     
     # Run the original solver implementation
     best_config = _solve_optimal_sticker_layout_impl(*args, secondary_gap=secondary_gap, **kwargs)
+
+    # Nếu lazy NFP đã được dùng, final collision phải dùng đúng polygon của đường cũ.
+    loaded_nfp = nfp_context.peek() if nfp_context is not None else None
+    if loaded_nfp and len(loaded_nfp) > 8 and loaded_nfp[8] is not None:
+        base_poly = loaded_nfp[8]
     
     # Clean up collisions one final time using true shape geometry
     # Skip for hex_tiling/staggered — deterministic formulas guarantee non-overlap

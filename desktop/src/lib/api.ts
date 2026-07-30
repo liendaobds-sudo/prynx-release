@@ -167,6 +167,38 @@ export function installBackendFetchAuth(): void {
     }
   };
 
+
+  // NET (audit 2026-07-29): hot-reload/sidecar restart ngắt socket khoảng một giây.
+  // Chỉ retry request đọc an toàn; tuyệt đối không lặp POST tạo file/job.
+  const SAFE_RETRY_POST_PATHS = new Set([
+    '/api/imposition/pdf-text',
+    '/api/imposition/pdf-meta',
+  ]);
+  const RETRY_DELAYS_MS = [150, 350, 700];
+
+
+  const canRetryBackendRequest = (request: Request): boolean => {
+    const method = request.method.toUpperCase();
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return true;
+    return method === 'POST' && SAFE_RETRY_POST_PATHS.has(new URL(request.url).pathname);
+  };
+
+  const fetchBackend = async (request: Request): Promise<Response> => {
+    const canRetry = canRetryBackendRequest(request);
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await origFetch(request.clone());
+      } catch (error) {
+        const aborted =
+          request.signal.aborted ||
+          (error instanceof Error && error.name === 'AbortError');
+        if (!canRetry || aborted || attempt >= RETRY_DELAYS_MS.length) {
+          throw error;
+        }
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
+      }
+    }
+  };
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     try {
       let url = '';
@@ -183,9 +215,9 @@ export function installBackendFetchAuth(): void {
             const auth = await getLicenseHeaders(url, outgoing.method);
             const merged = new Headers(outgoing.headers);
             for (const k in auth) merged.set(k, auth[k]);
-            return origFetch(new Request(outgoing, { headers: merged }));
+            return fetchBackend(new Request(outgoing, { headers: merged }));
           }
-          return origFetch(outgoing);
+          return fetchBackend(outgoing);
         } else {
           const merged = new Headers((init?.headers as HeadersInit) || undefined);
           // SEC (audit 2026-07-26 F10): khong cho caller tu dat header auth. Xoa moi
@@ -199,11 +231,11 @@ export function installBackendFetchAuth(): void {
           }
           const auth = await getLicenseHeaders(url, init?.method || 'GET');
           for (const k in auth) merged.set(k, auth[k]);
-          return origFetch(url, { ...init, headers: merged });
+          return fetchBackend(new Request(url, { ...init, headers: merged }));
         }
       }
     } catch {
-      /* bất kỳ lỗi nào → dùng fetch gốc, không chặn request */
+      // Chỉ lỗi chuẩn bị/ký mới tới đây; Promise transport được return nên không fallback unsigned.
     }
     return origFetch(input, init);
   };
@@ -313,11 +345,12 @@ export async function exportImages(params: {
   outputDir: string;
   format: 'png' | 'jpeg' | 'tiff';
   dpi: number;
-  colorMode: 'rgb' | 'gray';
+  colorMode: 'rgb' | 'gray' | 'cmyk';
   pages?: number[] | null;
   multipageTiff?: boolean;
   jpegQuality?: number;
   baseName?: string;
+  signal?: AbortSignal;
 }): Promise<{ ok: boolean; count: number; output_dir: string; files: string[] }> {
   const res = await authenticatedFetch(`${API_BASE}/api/export/images`, {
     method: 'POST',
@@ -334,6 +367,7 @@ export async function exportImages(params: {
       jpeg_quality: params.jpegQuality ?? 90,
       base_name: params.baseName ?? null,
     }),
+    signal: params.signal,
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Xuất ảnh thất bại' }));
@@ -412,29 +446,13 @@ export function getResultImageUrl(path: string) {
   return `${API_BASE}${path}`;
 }
 
-export async function getAiStatus() {
-  const res = await authenticatedFetch(`${API_BASE}/api/system/ai/status`);
-  if (!res.ok) throw new Error(tv('Không thể lấy trạng thái hệ thống'));
-  return res.json();
-}
-
-export async function installLocalAi() {
-  const res = await authenticatedFetch(`${API_BASE}/api/system/ai/install`, { method: 'POST' });
-  if (!res.ok) throw new Error(tv('Lỗi khi cài đặt AI Local'));
-  return res.json();
-}
-
-export async function pullAiModel() {
-  const res = await authenticatedFetch(`${API_BASE}/api/system/ai/pull`, { method: 'POST' });
-  if (!res.ok) throw new Error(tv('Lỗi tải dữ liệu AI'));
-  return res.json();
-}
-
-export async function getPullProgress() {
-  const res = await authenticatedFetch(`${API_BASE}/api/system/ai/pull-progress`);
-  if (!res.ok) throw new Error(tv('Lỗi lấy tiến trình tải'));
-  return res.json();
-}
+// KIENTRUC (audit 2026-07-29 §A.2): đã XOÁ 4 hàm gọi `/api/system/ai/*`
+// (getAiStatus / installLocalAi / pullAiModel / getPullProgress). Backend KHÔNG có
+// endpoint nào khớp — grep `system/ai` trong `backend/app` trả 0 kết quả — nên mọi lời
+// gọi sẽ là 404 và `!res.ok` ném lỗi. Không component nào import chúng, tức đây là code
+// client chết còn lại sau khi endpoint bị bỏ. Đúng minh chứng cho lý do §A.2 tồn tại:
+// hai đầu không có codegen chung nên endpoint mất đi mà client không hề biết.
+// Cần lại tính năng AI cục bộ thì thêm route ở backend TRƯỚC, rồi mới thêm hàm ở đây.
 
 export async function startVdpJobBackend(pdfFile: File, vdpFields: readonly unknown[], csvData: readonly unknown[], dataFile?: File, dataFileHasHeader = true): Promise<string> {
   const formData = new FormData();

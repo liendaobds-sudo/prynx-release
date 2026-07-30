@@ -1,5 +1,6 @@
 import React, { useRef } from 'react';
 import { getApiUrl, authenticatedFetch } from '../../lib/api';
+import { formatError } from '../../lib/errorMessages';
 import { ToolSectionLabel } from './ToolUI';
 import { defaultUpscaleTabState, useUpscaleStore } from './useUpscaleStore';
 import { normalizeAndAddFiles, openFilePicker, saveBatch } from './imageBatch/helpers';
@@ -20,6 +21,15 @@ interface Props {
 // ─── Process batch (riêng cho upscale — gọi /upscale) ─────────────────────────
 const upscaleControllers = new Map<string, AbortController>();
 let warmupWarningShown = false;
+
+// UIUX (audit 2026-07-29 §NET.10): nhãn kết quả chỉ nói TÊN CHẾ ĐỘ, không nêu tên
+// model/kiến trúc. Tên model chỉ còn trong THIRD_PARTY_NOTICES.md — chỗ đó là nghĩa
+// vụ ghi công của giấy phép BSD-3-Clause, không được bỏ.
+function modeLabel(model: 'quality' | 'balanced' | 'general'): string {
+    if (model === 'quality') return tv('Chất lượng');
+    if (model === 'balanced') return tv('Cân bằng');
+    return tv('Nhanh');
+}
 
 async function processBatch(tabId: string) {
     const store = useUpscaleStore.getState();
@@ -60,7 +70,16 @@ async function processBatch(tabId: string) {
                 if (!res.ok) {
                     const errorText = await res.text();
                     console.error('[Upscale] Server error:', errorText);
-                    throw new Error(tv('Lỗi Server') + ' (' + res.status + '): ' + errorText);
+                    // UIUX (audit 2026-07-29 §NET.04): backend trả 422 kèm thông điệp
+                    // tiếng Việt đã soạn cho người dùng (thiếu GPU, vượt trần thời
+                    // gian, thiếu RAM). Hiện nguyên văn thay vì dán cả JSON thô.
+                    let detail = '';
+                    try {
+                        const parsed = JSON.parse(errorText) as { detail?: unknown };
+                        if (typeof parsed.detail === 'string') detail = parsed.detail;
+                    } catch { /* không phải JSON — dùng nguyên văn bên dưới */ }
+                    if (res.status === 422 && detail) throw new Error(detail);
+                    throw new Error(tv('Lỗi Server') + ' (' + res.status + '): ' + (detail || errorText));
                 }
                 const warningCodes = (res.headers.get('X-Upscale-Warnings') || '').split(',');
                 if (warningCodes.includes('color-converted-to-srgb')) {
@@ -77,9 +96,8 @@ async function processBatch(tabId: string) {
                     status: 'success',
                     resultBlob: outBlob,
                     resultUrl: outUrl,
-                    resultInfo: outputSize
-                        ? outputSize.replace('x', ' × ') + ' px · ×' + options.scaleFactor + ' · ' + (options.model === 'quality' ? 'RealESRGAN_x4plus' : options.model === 'balanced' ? 'Real-ESRGAN · giữ texture' : 'Real-ESRGAN x4v3')
-                        : '×' + options.scaleFactor + ' · ' + (options.model === 'quality' ? 'RealESRGAN_x4plus' : options.model === 'balanced' ? 'Real-ESRGAN · giữ texture' : 'Real-ESRGAN x4v3'),
+                    resultInfo: (outputSize ? outputSize.replace('x', ' × ') + ' px · ' : '')
+                        + '×' + options.scaleFactor + ' · ' + modeLabel(options.model),
                 };
             } catch (error: unknown) {
                 if (controller.signal.aborted) {
@@ -93,8 +111,15 @@ async function processBatch(tabId: string) {
                     break;
                 }
                 console.error('[Upscale] Error:', error);
-                const message = error instanceof Error ? error.message : tv('Phóng to ảnh thất bại');
-                items[i] = { ...items[i], status: 'error', error: message };
+                // UIUX (audit 2026-07-29 §NET.09): trước đây ném nguyên chuỗi của
+                // trình duyệt ra giao diện, nên sidecar chưa lên xong hoặc vừa
+                // restart thì người dùng chỉ thấy "Failed to fetch (localhost:8321)".
+                // formatError dịch thành câu tiếng Việt kèm việc cần làm tiếp.
+                items[i] = {
+                    ...items[i],
+                    status: 'error',
+                    error: formatError(error, tv('Phóng to ảnh thất bại')),
+                };
             }
             store.setBatchItems(tabId, [...items]);
         }

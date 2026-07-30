@@ -1,0 +1,27 @@
+[package]
+name = "logo_vectorizer_probe"
+version = "0.1.0"
+edition = "2021"
+description = "Crate THỬ NGHIỆM: đo khả năng gắn vtracer 1.0 vào một cdylib PyO3 giống pdfcompare_native"
+
+# Cố ý KHÔNG nằm trong workspace của native/ và KHÔNG được thêm vào
+# native/Cargo.toml ở giai đoạn spike. Mục đích duy nhất: chứng minh (hoặc phủ
+# định) rằng crate vtracer biên dịch và liên kết được vào đúng cấu hình mà
+# pdfcompare_native đang dùng — cùng crate-type, cùng phiên bản pyo3 — mà không
+# làm bẩn cây sản phẩm. Nếu cổng G1 duyệt GO thì mới chuyển vào native/.
+[workspace]
+
+[lib]
+name = "logo_vectorizer_probe"
+crate-type = ["cdylib"]
+
+[dependencies]
+# Khớp ĐÚNG phiên bản pyo3 của native/Cargo.toml. Lệch phiên bản thì phép thử
+# này không nói được gì về khả năng tích hợp thật.
+pyo3 = { version = "0.29", features = ["extension-module"] }
+# Ghim chính xác bản alpha. Bản alpha đổi API giữa các bản phát hành nên
+# KHÔNG dùng dải "1.0" hay "^1.0.0-alpha".
+vtracer = "=1.0.0-alpha.2"
+
+# KHÔNG đặt [profile.release] ở đây — cùng quy tắc với mọi Cargo.toml trong dự án.
+# LTO/codegen-units chỉ bật qua biến môi trường CARGO_PROFILE_RELEASE_* lúc đóng gói.

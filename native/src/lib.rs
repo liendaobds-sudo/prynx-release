@@ -10,6 +10,7 @@ mod dieline_engine;
 mod dieline_license;
 mod dieline_request;
 mod print_engine_py;
+mod logo_vectorizer;
 
 use pyo3::prelude::*;
 
@@ -28,8 +29,14 @@ fn pdfcompare_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // PrynX Print Engine (PPE) — tách kẽm / TAC trong không gian mực, không GS.
     m.add_function(wrap_pyfunction!(print_engine_py::ppe_separations, m)?)?;
     m.add_function(wrap_pyfunction!(print_engine_py::ppe_softproof, m)?)?;
+    m.add_function(wrap_pyfunction!(print_engine_py::ppe_export_cmyk, m)?)?;
     m.add_function(wrap_pyfunction!(print_engine_py::ppe_text_outlines, m)?)?;
     m.add_function(wrap_pyfunction!(print_engine_py::ppe_capabilities, m)?)?;
+
+    // Phục hồi & Vector hóa Logo — chỉ hai mode đã qua audit MVP.
+    m.add_class::<logo_vectorizer::LogoVectorizerCancel>()?;
+    m.add_function(wrap_pyfunction!(logo_vectorizer::logo_vectorize_rgba, m)?)?;
+    m.add_function(wrap_pyfunction!(logo_vectorizer::logo_vectorizer_info, m)?)?;
 
     // Imposition grid solver
     m.add_function(wrap_pyfunction!(imposition::grid_solver::solve_grid, m)?)?;

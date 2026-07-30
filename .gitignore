@@ -147,6 +147,9 @@ tmp/research/
 # Never commit customer artwork or generated corpus reports.
 /private_test_corpus/
 
+# Cargo output của Rust probe trong spike logo (tái sinh được, không phải mã nguồn).
+/tools/logo_rebuild_spike/rust_probe/target/
+
 # Scratch patch files from experimental Codex sessions (never source-of-truth).
 .codex_*.patch
 
@@ -155,3 +158,14 @@ supabase/.temp/
 
 # Release env scripts (chua secret — KHONG commit ban da dien)
 scripts/set_release_env.ps1
+
+# ─── KIENTRUC (audit 2026-07-29 §F): thư mục rác cục bộ còn sót ───────────────
+# Đã kiểm `git ls-files`: các mục dưới đây KHÔNG được theo dõi, nhưng cũng chưa
+# được ignore nên `git status` vẫn kêu và mọi lệnh grep/quét của người + của AI
+# đều phải lội qua chúng. Ignore để cây làm việc sạch; xoá đĩa thì tự quyết.
+backend/_atm2/
+backend/_atm4/
+backend/_audit_tmp2/
+backend/logs/
+logs/
+uploads/

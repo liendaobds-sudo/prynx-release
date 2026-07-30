@@ -24,6 +24,7 @@ import { useViewerHotkeys } from '../hooks/viewer/useViewerHotkeys';
 import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
 import { useViewerZoom } from '../hooks/viewer/useViewerZoom';
 import { useVdpHistory } from '../hooks/useVdpHistory';
+import { useWorkingPdf } from '../hooks/useWorkingPdf'; // EXPORT (audit 2026-07-30 §IMG-04)
 import type { UseEditSession } from '../hooks/useEditSession';
 import { useTranslation } from 'react-i18next';
 import { capturePageViewportAnchor, restorePageViewportAnchor, type PageViewportAnchor } from '../lib/pageViewport';
@@ -180,6 +181,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     const [isExportImageOpen, setIsExportImageOpen] = useState(false);
     const [exportFileId, setExportFileId] = useState<string | undefined>(undefined);
     const [exportFilePath, setExportFilePath] = useState<string | undefined>(undefined);
+    // EXPORT (audit 2026-07-30 §IMG-04): bake page-order/rotation/delete trước khi xuất
+    const getWorkingFile = useWorkingPdf();
     const openExportImage = useCallback(async () => {
         if (!file) { toast.info(t('misc.acrobatViewer:chua_co_file_de_xuat_anh')); return; }
         try {
@@ -261,8 +264,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     // Việc kiểm tra loadError được dời xuống SAU TẤT CẢ hook (ngay trước RENDER).
 
     // ═══ Hook: Tile Renderer ═══
-    const { getTileUrl, getTextBlocksForPage } = useTileRenderer({
-        file, pdfRef, pdfUrl, zoom, activePage,
+    const { getTileUrl, getTextBlocksForPage, renderOwnerId } = useTileRenderer({
+        file, pdfRef, pdfUrl, activePage, tabId, isActive,
     });
 
     // ═══ Edit-session lifecycle (COMMIT-ON-EXIT) ═══
@@ -1298,6 +1301,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     const handleMainScroll = useCallback((e: any) => {
         const scrollSource = (e.currentTarget || e.target) as HTMLElement | null;
+        if (!isActive) return;
         if (scrollSource?.dataset.isNavigating === 'true') return;
         if (syncing.current || pageDisplayMode.includes('_fit') || isZoomingRef.current) return;
         if ((mainVirtuosoRef.current as any)?.__thumbClickActive) return;
@@ -1332,7 +1336,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 });
             }
         }, 150);
-    }, [numPages, pageDisplayMode, pageOrder, setSelectedIndices, setLastSelectedIndex]);
+    }, [isActive, numPages, pageDisplayMode, pageOrder, setSelectedIndices, setLastSelectedIndex]);
 
     // Virtuoso components PHẢI ổn định identity. Trước đây Scroller/List định nghĩa inline
     // bằng forwardRef trong JSX → mỗi render tạo component type MỚI → Virtuoso thay Scroller,
@@ -1411,6 +1415,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         // trắng xoay ĐỘC LẬP. flatIndex = vị trí trong pageOrder → tra id. Fallback về 0
         // khi thiếu index (không nên xảy ra ở luồng render rows).
         const instId = flatIndex !== undefined ? pageInstanceIds[flatIndex] : undefined;
+        const viewerPagePosition = (flatIndex ?? (originalPageNum - 1)) + 1;
         const rot = instId ? (pageRotations[instId] || 0) : 0;
         const localDim = allPageDims[originalPageNum] || pageDim;
         const localWidth100 = localDim ? localDim.w : actualWidth100;
@@ -1426,7 +1431,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                         tabId={tabId}
                         isViewerActive={isActive}
                         originalPageNum={originalPageNum}
-                        viewerPageNum={(flatIndex ?? (originalPageNum - 1)) + 1}
+                        viewerPageNum={viewerPagePosition}
                         pageInstanceId={instId || `page-${originalPageNum}-${flatIndex ?? 0}`}
                         actualWidth100={localWidth100}
                         zoom={zoom}
@@ -1442,6 +1447,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                         onVdpBoxSelect={onVdpBoxSelect}
                         onVdpFieldsChange={onVdpFieldsChange}
                         getTileUrl={getTileUrl}
+                        renderOwnerId={renderOwnerId}
                         textBlocks={nativeTextBlocks[originalPageNum]}
                         setHoveredPdfPosition={setHoveredPdfPosition}
                         isBlankDoc={!!(file as any)?.isBlank}
@@ -1450,13 +1456,14 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                         previewRevision={pdfUrl}
                         detectedDimension={activeDashboardTool === 'sticker_imposer' && !file?.name.startsWith('Imposed_') ? detectedDimensionsByPage[originalPageNum - 1] : undefined}
                         editSession={editSession} totalPages={numPages}
-                        isActivePage={originalPageNum === activePage}
+                        isActivePage={viewerPagePosition === activePage}
+                        prefetchPage={Math.abs(viewerPagePosition - activePage) <= 1}
                     />
                     {showOcgOverlay && <OcgPreviewOverlay url={ocgPreviewUrl} />}
                 </div>
             </div>
         );
-    }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, zoom, bleedView, highlightBoxes, isVdpMode, getTileUrl, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage, tabId, isActive]);
+    }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, zoom, bleedView, highlightBoxes, isVdpMode, getTileUrl, renderOwnerId, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage, tabId, isActive]);
 
     // Kiểm tra loadError SAU khi mọi hook đã được gọi (xem ghi chú ở đầu component).
     if (loadError) {
@@ -1549,7 +1556,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                             setIsDeleteModalOpen={setIsDeleteModalOpen}
                             navigatePage={navigatePage}
                             sidebarRef={sidebarRef} mainVirtuosoRef={mainVirtuosoRef} internalScrollRef={internalScrollRef}
-                            file={file} pdfUrl={pdfUrl}
+                             file={file} pdfUrl={pdfUrl} isViewerActive={isActive}
                         />
                     )}
 
@@ -1697,9 +1704,12 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 onClose={() => setIsExportImageOpen(false)}
                 fileId={exportFileId}
                 filePath={exportFilePath}
-                numPages={numPages}
+                numPages={pageOrder.length || numPages}
                 currentPage={activePage}
                 baseName={file?.name?.replace(/\.[^.]+$/, '') || 'page'}
+                getWorkingFile={getWorkingFile}
+                pageWidthPt={pageDim?.w}
+                pageHeightPt={pageDim?.h}
             />
 
             {/* Context Menu */}

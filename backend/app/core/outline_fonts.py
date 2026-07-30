@@ -54,6 +54,16 @@ def flatten_annotations_and_forms(input_path: str, output_path: str) -> int:
     import pypdfium2 as pdfium
     import pypdfium2.raw as pdfium_c
 
+    from app.core.pdfium_lock import pdfium_guard
+
+    # KIENTRUC (audit 2026-07-29 §C.1): flatten + GenerateContent + save là PDFium GHI dữ
+    # liệu, chạy trong threadpool qua action_engine → phải serialize. Bao cả hàm vì mọi
+    # bước đều là lời gọi PDFium (không có phần tính toán nào để tách ra ngoài khóa).
+    with pdfium_guard("outline_flatten_annots"):
+        return _flatten_annotations_and_forms_locked(input_path, output_path, pdfium, pdfium_c)
+
+
+def _flatten_annotations_and_forms_locked(input_path, output_path, pdfium, pdfium_c) -> int:
     pdf = pdfium.PdfDocument(input_path)
     flattened = 0
     try:
@@ -98,6 +108,16 @@ def count_live_text(pdf_path: str) -> dict:
     import pypdfium2 as pdfium
     import pypdfium2.raw as pdfium_c
 
+    from app.core.pdfium_lock import pdfium_guard
+
+    # KIENTRUC (audit 2026-07-29 §C.1): hậu kiểm outline chạy qua `asyncio.to_thread`
+    # trong action_engine. Toàn thân là đọc textpage/annotation bằng PDFium nên bao cả
+    # hàm; dùng wrapper để không phải thụt lề lại thân hàm dài.
+    with pdfium_guard("outline_count_live_text"):
+        return _count_live_text_locked(pdf_path, pdfium, pdfium_c)
+
+
+def _count_live_text_locked(pdf_path: str, pdfium, pdfium_c) -> dict:
     non_text_subtypes = _init_non_text_annot_subtypes()
     content_chars = 0
     annot_text_pages: list[int] = []

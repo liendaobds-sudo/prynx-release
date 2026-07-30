@@ -32,9 +32,20 @@ def _fake_upscale(image: Image.Image, variant: str = "general") -> Image.Image:
     return image.resize((image.width * 4, image.height * 4), Image.Resampling.NEAREST)
 
 
+def _bypass_route_guards(monkeypatch) -> None:
+    """Bỏ hai chốt policy của route để test tập trung vào hợp đồng đầu ra.
+
+    UPSCALE (audit 2026-07-29 §NET.04): `guard_runtime` nay được route gọi thật.
+    Không bỏ qua ở đây thì test sẽ nạp ONNX thật và phụ thuộc máy chạy test có GPU
+    hay không — ca `quality` trên máy CPU sẽ bị chặn bằng 422 và fail giả.
+    """
+    monkeypatch.setattr("app.api.routes.pdf_tools._validate_upscale_memory", lambda _w, _h: None)
+    monkeypatch.setattr("app.workers.realesrgan_engine.guard_runtime", lambda *_a, **_k: None)
+
+
 def test_upscale_returns_exact_requested_factor(monkeypatch):
     monkeypatch.setattr("app.workers.realesrgan_engine.upscale", _fake_upscale)
-    monkeypatch.setattr("app.api.routes.pdf_tools._validate_upscale_memory", lambda _w, _h: None)
+    _bypass_route_guards(monkeypatch)
 
     with TestClient(app) as client:
         for factor, expected in ((2, (14, 10)), (4, (28, 20))):
@@ -85,9 +96,87 @@ def test_memory_guard_reports_instead_of_silently_resizing(monkeypatch):
         raise AssertionError("Ảnh vượt RAM phải bị từ chối minh bạch")
 
 
-def test_upscale_normalizes_exif_orientation(monkeypatch):
+def test_route_calls_runtime_guard_before_inference(monkeypatch):
+    """§NET.04: `guard_runtime` từng là code chết — chốt lại là route PHẢI gọi nó."""
+    calls: list[tuple[int, int, str]] = []
+
+    def _spy(width: int, height: int, variant: str, tile=None, tile_pad: int = 40) -> None:
+        del tile, tile_pad
+        calls.append((width, height, variant))
+
     monkeypatch.setattr("app.workers.realesrgan_engine.upscale", _fake_upscale)
     monkeypatch.setattr("app.api.routes.pdf_tools._validate_upscale_memory", lambda _w, _h: None)
+    monkeypatch.setattr("app.workers.realesrgan_engine.guard_runtime", _spy)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/pdf-tools/upscale",
+            files={"file": ("anh.png", _png_bytes(), "image/png")},
+            data={"engine": "quality", "scale_factor": "4"},
+        )
+
+    assert response.status_code == 200, response.text
+    assert calls == [(7, 5, "quality")]
+
+
+def test_runtime_guard_message_reaches_client_as_422(monkeypatch):
+    """§NET.04: thông điệp của engine phải ra 422 nguyên văn, không phải 500 chung."""
+    from app.workers.realesrgan_engine import UpscaleUnavailable
+
+    def _refuse(*_args, **_kwargs):
+        raise UpscaleUnavailable(
+            "Máy này không có tăng tốc GPU dùng được cho chế độ Chất lượng."
+        )
+
+    def _must_not_run(*_args, **_kwargs):
+        raise AssertionError("Bị chặn rồi thì không được chạy model")
+
+    monkeypatch.setattr("app.api.routes.pdf_tools._validate_upscale_memory", lambda _w, _h: None)
+    monkeypatch.setattr("app.workers.realesrgan_engine.guard_runtime", _refuse)
+    monkeypatch.setattr("app.workers.realesrgan_engine.upscale", _must_not_run)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/pdf-tools/upscale",
+            files={"file": ("anh.png", _png_bytes(), "image/png")},
+            data={"engine": "quality", "scale_factor": "4"},
+        )
+
+    assert response.status_code == 422, response.text
+    assert "tăng tốc GPU" in response.json()["detail"]
+
+
+def test_duration_message_never_says_zero_minutes():
+    """§NET.04: bản cũ chia 60 rồi `.0f` nên mọi giá trị dưới 30 giây ra '0 phút'."""
+    from app.workers.realesrgan_engine import _format_duration, _format_seconds
+
+    assert "0 phút" not in _format_duration(0.03)
+    assert "0 phút" not in _format_duration(25)
+    assert _format_duration(600) == "10 phút"
+    assert _format_duration(2400) == "40 phút"
+    assert _format_seconds(3.0) == "3.0s"
+    assert _format_seconds(0.0001) == "0.0001s"
+
+
+def test_general_model_uses_upstream_default_denoise_blend():
+    """§NET.02: 'general' phải là bản DNI alpha 0,5, không phải bản khử nhiễu tối đa.
+
+    Khoá theo SHA-256 để một bản .onnx khác trọng số không lặng lẽ lọt vào.
+    Hash của bản alpha 1,0 cũ: 027319ff…4457a.
+    """
+    from app.workers.realesrgan_engine import MODEL_SHA256
+
+    assert MODEL_SHA256["general"] == (
+        "3ae50bb3a9131697d62ac79f934e57c2ef9cd3b8762993ca0d1fabd8a36a343f"
+    )
+    assert MODEL_SHA256["general"] != (
+        "027319ffe4f00ec2550957c0957d44969638a03d2ed2f0329af9fd6cd44a457a"
+    )
+
+
+def test_upscale_normalizes_exif_orientation(monkeypatch):
+    monkeypatch.setattr("app.workers.realesrgan_engine.upscale", _fake_upscale)
+    _bypass_route_guards(monkeypatch)
     exif = Image.Exif()
     exif[274] = 6
 
@@ -105,7 +194,7 @@ def test_upscale_normalizes_exif_orientation(monkeypatch):
 
 def test_upscale_preserves_rgba_icc_and_dpi(monkeypatch):
     monkeypatch.setattr("app.workers.realesrgan_engine.upscale", _fake_upscale)
-    monkeypatch.setattr("app.api.routes.pdf_tools._validate_upscale_memory", lambda _w, _h: None)
+    _bypass_route_guards(monkeypatch)
     icc = b"prynx-test-icc-profile"
 
     with TestClient(app) as client:
@@ -125,7 +214,7 @@ def test_upscale_preserves_rgba_icc_and_dpi(monkeypatch):
 
 def test_upscale_warns_when_cmyk_is_converted(monkeypatch):
     monkeypatch.setattr("app.workers.realesrgan_engine.upscale", _fake_upscale)
-    monkeypatch.setattr("app.api.routes.pdf_tools._validate_upscale_memory", lambda _w, _h: None)
+    _bypass_route_guards(monkeypatch)
 
     with TestClient(app) as client:
         response = client.post(
@@ -162,7 +251,7 @@ def test_upscale_routes_quality_model(monkeypatch):
         return image.resize((image.width * 4, image.height * 4), Image.Resampling.NEAREST)
 
     monkeypatch.setattr("app.workers.realesrgan_engine.upscale", _capture)
-    monkeypatch.setattr("app.api.routes.pdf_tools._validate_upscale_memory", lambda _w, _h: None)
+    _bypass_route_guards(monkeypatch)
     with TestClient(app) as client:
         response = client.post(
             "/api/pdf-tools/upscale",
@@ -197,7 +286,7 @@ def test_quality_model_does_not_fall_back_silently_to_cpu(monkeypatch):
     tile = __import__("numpy").zeros((1, 3, 8, 8), dtype="float32")
     try:
         engine._run_session("quality", tile)
-    except RuntimeError as exc:
+    except engine.UpscaleUnavailable as exc:
         assert "chế độ Nhanh" in str(exc)
     else:
         raise AssertionError("GPU lỗi phải được báo ngay cho chế độ Chất lượng")
@@ -219,7 +308,7 @@ def test_quality_model_rejects_implicit_cpu_session(monkeypatch):
 
     try:
         engine._run_session("quality", tile)
-    except RuntimeError as exc:
+    except engine.UpscaleUnavailable as exc:
         assert "cần GPU" in str(exc)
     else:
         raise AssertionError("Không được chạy RRDBNet âm thầm trên CPU")
@@ -232,7 +321,7 @@ def test_upscale_routes_balanced_without_quality_model(monkeypatch):
         return image.resize((image.width * 4, image.height * 4), Image.Resampling.NEAREST)
 
     monkeypatch.setattr("app.workers.realesrgan_engine.upscale", _capture)
-    monkeypatch.setattr("app.api.routes.pdf_tools._validate_upscale_memory", lambda _w, _h: None)
+    _bypass_route_guards(monkeypatch)
     with TestClient(app) as client:
         response = client.post(
             "/api/pdf-tools/upscale",
@@ -244,25 +333,79 @@ def test_upscale_routes_balanced_without_quality_model(monkeypatch):
     assert variants == ["balanced"]
 
 
-def test_balanced_mode_preserves_more_source_texture(monkeypatch):
+def test_detail_strength_ladder_is_monotonic(monkeypatch):
+    """§NET.01: ba chế độ phải là một thang thật, Chất lượng mạnh nhất."""
+    from app.workers import realesrgan_engine as engine
+
+    for mode in ("general", "balanced", "quality"):
+        monkeypatch.delenv(f"PRYNX_UPSCALE_DETAIL_{mode.upper()}", raising=False)
+
+    assert engine._detail_strength("general") == 0.0
+    assert 0.0 < engine._detail_strength("balanced") < engine._detail_strength("quality")
+
+    # 0 là giá trị hợp lệ (tắt hẳn), không được bị coi là "không hợp lệ" rồi rơi về mặc định.
+    monkeypatch.setenv("PRYNX_UPSCALE_DETAIL_QUALITY", "0")
+    assert engine._detail_strength("quality") == 0.0
+    monkeypatch.setenv("PRYNX_UPSCALE_DETAIL_QUALITY", "0.8")
+    assert engine._detail_strength("quality") == 0.8
+    monkeypatch.setenv("PRYNX_UPSCALE_DETAIL_QUALITY", "khong-phai-so")
+    assert engine._detail_strength("quality") == engine._DETAIL_BY_MODE["quality"]
+
+
+def test_upscale_passes_mode_detail_into_tiling(monkeypatch):
+    """§NET.03: cường độ chi tiết phải tới được vòng lặp ô, theo đúng chế độ UI."""
     from app.workers import realesrgan_engine as engine
 
     np = __import__("numpy")
-    monkeypatch.setattr(
-        engine,
-        "_upscale_rgb",
-        lambda rgb, *_args: np.full(
-            (rgb.shape[0] * 4, rgb.shape[1] * 4, 3),
-            0.5,
-            dtype="float32",
-        ),
-    )
+    seen: list[float] = []
+
+    def _fake_tiling(rgb, variant, tile, tile_pad, detail=0.0):
+        del variant, tile, tile_pad
+        seen.append(detail)
+        return np.full((rgb.shape[0] * 4, rgb.shape[1] * 4, 3), 0.5, dtype="float32")
+
+    monkeypatch.setattr(engine, "_upscale_rgb", _fake_tiling)
     source = Image.new("RGB", (8, 8), "black")
-    for x in range(0, 8, 2):
-        for y in range(8):
-            source.putpixel((x, y), (255, 255, 255))
 
-    fast = engine.upscale(source, variant="general", tile=0)
-    balanced = engine.upscale(source, variant="balanced", tile=0)
+    for mode in ("general", "balanced", "quality"):
+        engine.upscale(source, variant=mode, tile=0)
 
-    assert np.asarray(balanced).std() > np.asarray(fast).std()
+    assert seen == [
+        engine._DETAIL_BY_MODE["general"],
+        engine._DETAIL_BY_MODE["balanced"],
+        engine._DETAIL_BY_MODE["quality"],
+    ]
+
+
+def test_amplify_ai_detail_boosts_only_what_model_added():
+    """§NET.03: khuếch đại phần AI thêm vào so với nền Lanczos, không phải gợn nguồn."""
+    from app.workers.realesrgan_engine import SCALE, _amplify_ai_detail
+
+    np = __import__("numpy")
+    rng = np.random.default_rng(7)
+    patch = rng.random((8, 8, 3)).astype("float32")
+
+    baseline = np.asarray(
+        Image.fromarray((patch * 255.0 + 0.5).astype("uint8"), "RGB").resize(
+            (8 * SCALE, 8 * SCALE), Image.Resampling.LANCZOS
+        ),
+        dtype="float32",
+    ) / 255.0
+
+    # Nền Lanczos y nguyên → model không thêm gì → không được tự sinh chi tiết.
+    unchanged = _amplify_ai_detail(baseline.copy(), patch, 0.45)
+    assert np.abs(unchanged - baseline).max() < 2e-3
+
+    # Model thêm chi tiết → tương phản cục bộ phải tăng theo cường độ.
+    sr = np.clip(baseline + rng.normal(0, 0.05, baseline.shape).astype("float32"), 0.0, 1.0)
+    weak = _amplify_ai_detail(sr, patch, 0.12)
+    strong = _amplify_ai_detail(sr, patch, 0.45)
+    assert strong.std() > weak.std() > 0.0
+
+
+def test_quality_tile_pad_is_wider_than_light_model():
+    """§NET.08: RRDBNet có receptive field lớn hơn, pad 40 còn lệch 5 mức màu."""
+    from app.workers.realesrgan_engine import _default_tile_pad
+
+    assert _default_tile_pad("quality") > _default_tile_pad("general")
+    assert _default_tile_pad("general") == 40

@@ -1,4 +1,4 @@
-﻿"""Free/Pro entitlement behavior."""
+"""Free/Pro entitlement behavior."""
 import pytest
 import app.core.feature_entitlements as entitlements
 from app.core.feature_entitlements import assert_feature, can_use_feature, normalize_plan
@@ -17,6 +17,9 @@ def test_gate_on_free_and_pro(monkeypatch):
     assert can_use_feature("impo.cnc", "free") is False
     assert can_use_feature("impo.cnc", "free", ["impo.cnc"]) is True
     assert can_use_feature("impo.cnc", "pro") is True
+    assert can_use_feature("util.logo_rebuild", "free") is False
+    assert can_use_feature("util.logo_rebuild", "free", ["util.logo_rebuild"]) is True
+    assert can_use_feature("util.logo_rebuild", "pro") is True
     with pytest.raises(PermissionError):
         assert_feature("impo.cnc", {"plan": "free"})
 

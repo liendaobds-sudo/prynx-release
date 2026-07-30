@@ -1,0 +1,21 @@
+Thư mục ảnh thumb THAY THỦ CÔNG cho thư viện khuôn bế.  [VARIANT 2026-07-29]
+
+Bỏ ảnh vào đây, đặt tên đúng MÃ KHUÔN hiện trên card:
+
+    PRYNX-RTE-01.png      PRYNX-CS-01.png      PRYNX-EV-01.png
+    PRYNX-SLB-01.png      PRYNX-CS-02.png      PRYNX-EV-02.png
+    PRYNX-SLB-02.png      PRYNX-PZ-01.png      PRYNX-EV-03.png
+    PRYNX-AB-01.png       PRYNX-PZ-02.png      PRYNX-EV-04.png
+    PRYNX-AB-02.png       PRYNX-GB-01.png      PRYNX-TR-01.png
+    PRYNX-PB-01.png       PRYNX-GB-02.png      PRYNX-DT-01.png
+    PRYNX-PB-02.png       PRYNX-HW-01.png      PRYNX-HW-02.png
+
+Nhận .png / .jpg / .jpeg / .webp / .avif. Không phân biệt hoa thường ở phần mã.
+
+Không cần sửa code, không cần chạy lệnh: Vite quét thư mục này lúc build và lúc
+chạy dev, nên kéo tệp vào là card dùng ngay.
+
+Mã nào chưa có ảnh ở đây thì card hiện nét khuôn 2D sinh tự động
+(public/images/dieline/variants/<mã>.svg, tạo bởi `npm run gen:variant-thumbs`).
+
+Tỉ lệ khung card ~ 4:3, cỡ đề xuất 640×480 trở lên.

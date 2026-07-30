@@ -57,6 +57,8 @@ export function useViewerZoom(props: UseViewerZoomProps) {
     const currentZoomRef = useRef(zoom);
     useEffect(() => { currentZoomRef.current = zoom; }, [zoom]);
 
+    const activePageRef = useRef(activePage);
+    useEffect(() => { activePageRef.current = activePage; }, [activePage]);
     const zoomTargetRef = useRef<{ mouseX: number, mouseY: number, ratio: number } | null>(null);
     const isZoomingRef = useRef(false);
     const zoomTimeoutRef = useRef<any>(null);
@@ -163,12 +165,14 @@ export function useViewerZoom(props: UseViewerZoomProps) {
     // GIỮA tài liệu. Căn theo anchor thì đúng mọi chế độ; thiếu anchor → chỉ căn
     // ngang, tuyệt đối không đụng scrollTop.
     useLayoutEffect(() => {
+        // Không phụ thuộc activePage: cuộn làm đổi trang active không được tự ghi scrollTop
+        // rồi phát sinh vòng phản hồi scroll → activePage → scroll.
         if (fitMode !== 'width' && fitMode !== 'page' && fitMode !== 'smart') return;
         const el = internalScrollRef.current;
         if (!el) return;
         // Đợi layout áp dụng width trang sau setZoom
         const id = requestAnimationFrame(() => {
-            const anchor = el.querySelector<HTMLElement>(`#pdf-page-container-${activePage}`);
+            const anchor = el.querySelector<HTMLElement>(`#pdf-page-container-${activePageRef.current}`);
             if (anchor) {
                 const er = el.getBoundingClientRect();
                 const ar = anchor.getBoundingClientRect();
@@ -180,7 +184,7 @@ export function useViewerZoom(props: UseViewerZoomProps) {
             }
         });
         return () => cancelAnimationFrame(id);
-    }, [zoom, fitMode, internalScrollRef, activePage]);
+    }, [zoom, fitMode, internalScrollRef]);
 
     // ═══ Fallback measurement when numPages changes ═══
     useEffect(() => {

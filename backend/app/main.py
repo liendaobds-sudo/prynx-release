@@ -17,7 +17,7 @@ from fastapi.responses import PlainTextResponse
 
 from app.config import settings
 from app.database import engine, Base
-from app.api.routes import upload, compare, results, ws, qc
+from app.api.routes import upload, compare, results, ws, qc, logo_rebuild
 from app.core.license_guard import verify_result_access
 
 # ── Logging ──
@@ -215,6 +215,7 @@ app.include_router(upload.router, prefix="/api", tags=["Upload"])
 app.include_router(compare.router, prefix="/api", tags=["Compare"])
 app.include_router(results.router, prefix="/api", tags=["Results"])
 app.include_router(qc.router, prefix="/api", tags=["QC"])
+app.include_router(logo_rebuild.router, prefix="/api", tags=["Logo Rebuild"])
 from app.api.routes import system, imposition, preflight, vdp, pdf_tools, edit, export, dieline
 app.include_router(system.router, prefix="/api", tags=["System"])
 app.include_router(imposition.router, prefix="/api", tags=["Imposition"])

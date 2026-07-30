@@ -2,7 +2,7 @@
 Pydantic schemas for API request/response validation.
 """
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ── Upload ──────────────────────────────────────────────
@@ -46,8 +46,9 @@ class JobResponse(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
 
-    class Config:
-        from_attributes = True
+    # KIENTRUC (audit 2026-07-29 §A.2): `class Config` là API Pydantic v1, sẽ bị bỏ ở v3
+    # và mỗi lần chạy test đều in DeprecationWarning. `ConfigDict` là dạng v2 tương đương.
+    model_config = ConfigDict(from_attributes=True)
 
 
 class JobCreateResponse(BaseModel):
@@ -79,8 +80,7 @@ class PageResultResponse(BaseModel):
     is_imposition_mode: bool = False
     matched_b_page: int | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ── Full Results ────────────────────────────────────────
@@ -100,3 +100,14 @@ class ProgressUpdate(BaseModel):
     current_page: int | None = None
     total_pages: int | None = None
     message: str = ""
+
+
+# ── KIENTRUC (audit 2026-07-29 §A.2, lô 13) ─────────────────────
+class DeleteJobResponse(BaseModel):
+    """`DELETE /api/jobs/{job_id}` — xoá job so sánh + kết quả kèm theo.
+
+    Chỉ có `message` (đã bản địa hoá) để UI hiển thị. Không trả `success` vì lỗi đã đi
+    bằng HTTP status; thêm cờ nữa chỉ tạo hai nguồn chân lý.
+    """
+
+    message: str

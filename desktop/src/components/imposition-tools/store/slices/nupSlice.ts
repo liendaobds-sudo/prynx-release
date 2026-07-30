@@ -6,8 +6,9 @@ export type ImpositionUnit = 'sticker' | 'page_sheet';
 export interface NupSlice {
     impositionUnit: ImpositionUnit;
     setImpositionUnit: (v: ImpositionUnit) => void;
-    layoutType: 'repeat' | 'sequential' | 'cut_stacks' | 'ratio_stack';
-    setLayoutType: (v: 'repeat' | 'sequential' | 'cut_stacks' | 'ratio_stack') => void;
+    // MIXED-GUILLOTINE (audit 2026-07-30 §MG.8/§MG.9): dùng chung hợp đồng layout với payload N-up.
+    layoutType: NupSettings['layoutType'];
+    setLayoutType: (v: NupSettings['layoutType']) => void;
     columns: number;
     setColumns: (v: number) => void;
     rows: number;
@@ -38,6 +39,8 @@ export interface NupSlice {
     setShowGapSettings: (v: boolean) => void;
     duplexFlow: 'normal' | 'double';
     setDuplexFlow: (v: 'normal' | 'double') => void;
+    duplexFlipEdge: 'long' | 'short';
+    setDuplexFlipEdge: (v: 'long' | 'short') => void;
     align: NupSettings['align'];
     setAlign: (v: NupSettings['align']) => void;
     clusterMode: 'none' | 'row' | 'column';
@@ -71,7 +74,7 @@ export const NUP_PERSIST_KEYS = [
     'layoutType', 'columns', 'rows', 'gridStrategy', 'groupingStrategy',
     'clusterCombineMode',
     'clusterTileW', 'clusterTileH', 'clusterSizingMode', 'clusterCols', 'clusterRows',
-    'tileGapX', 'tileGapY', 'clusterNesting', 'duplexFlow', 'align',
+    'tileGapX', 'tileGapY', 'clusterNesting', 'duplexFlow', 'duplexFlipEdge', 'align',
     'clusterMode', 'clusterCount', 'clusterGap', 'clusterGapMode', 'clusterDistribution',
     'clusterBorder',
 ] as const;
@@ -127,6 +130,8 @@ export const createNupSlice: ImposerSlice<NupSlice> = (set) => ({
     setShowGapSettings: (v) => set({ showGapSettings: v }),
     duplexFlow: 'normal',
     setDuplexFlow: (v) => set({ duplexFlow: v }),
+    duplexFlipEdge: 'long',
+    setDuplexFlipEdge: (v) => set({ duplexFlipEdge: v }),
     align: 'center',
     setAlign: (v) => set({ align: v }),
     clusterMode: 'none',

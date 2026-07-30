@@ -45,11 +45,41 @@ const BLEED_COLOR_MODES_RECTANGLE = [
     { value: 'solid', title: '🎨 Đổ màu trơn', desc: 'Bo viền nền bằng hệ màu in ấn chuyên nghiệp (CMYK).' },
 ];
 
+// Cạnh nào được bù xén (chỉ tab XÉN VUÔNG GÓC). Bế tem nhãn bù xén quanh đường
+// contour nên "trên/dưới/trái/phải" không có nghĩa hình học ở đó.
+type BleedSideKey = 'top' | 'right' | 'bottom' | 'left';
+type BleedSides = Record<BleedSideKey, boolean>;
+const BLEED_SIDE_KEYS: readonly BleedSideKey[] = ['top', 'right', 'bottom', 'left'];
+const ALL_BLEED_SIDES: BleedSides = { top: true, right: true, bottom: true, left: true };
+
+/** Một nút bật/tắt bù xén cho MỘT cạnh, đặt quanh ô khổ thành phẩm ở giữa. */
+const BleedSideToggle = ({ active, label, arrow, lockHint, onToggle }: {
+    active: boolean;
+    label: string;
+    arrow: string;
+    lockHint?: string;
+    onToggle: () => void;
+}) => (
+    <button
+        type="button"
+        onClick={onToggle}
+        aria-pressed={active}
+        title={lockHint}
+        className={`h-9 px-1 rounded-lg border text-[11.5px] font-bold flex items-center justify-center gap-1 transition-all
+            ${active
+                ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
+                : 'border-dashed border-slate-300 dark:border-zinc-600 text-slate-400 dark:text-zinc-500 hover:bg-slate-100 dark:hover:bg-zinc-800'}`}
+    >
+        <span aria-hidden="true">{arrow}</span>
+        <span className="truncate">{label}</span>
+    </button>
+);
+
 const STICKER_STORAGE_PREFIX = 'ps_sticker_';
 const STICKER_PREFERENCE_KEYS = [
     'cutMode', 'offsetMm', 'cornerStyle', 'fillHoles', 'bleedMm',
     'removeWhiteBg', 'trimWhiteEdge', 'bleedColorType', 'bleedColorHex',
-    'edgeBiteMm', 'edgeBiteVersion', 'cutFirstPageOnly',
+    'edgeBiteMm', 'edgeBiteVersion', 'cutFirstPageOnly', 'bleedSides',
 ] as const;
 let warnedAboutStickerStorage = false;
 
@@ -133,6 +163,28 @@ function readStickerColor(): string {
     }
     removeStickerPreference('bleedColorHex');
     return '#FFFFFF';
+}
+
+function readStickerBleedSides(): BleedSides {
+    const value = readStickerJson('bleedSides');
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+        if (value !== undefined) removeStickerPreference('bleedSides');
+        return { ...ALL_BLEED_SIDES };
+    }
+    const raw = value as Record<string, unknown>;
+    const resolved = { ...ALL_BLEED_SIDES };
+    for (const key of BLEED_SIDE_KEYS) {
+        if (typeof raw[key] === 'boolean') resolved[key] = raw[key] as boolean;
+    }
+    // Bỏ hết 4 cạnh = không bù xén; việc đó đã có ô "Bù xén = 0". Cấu hình rỗng
+    // (build cũ, sửa tay) coi như hỏng → về mặc định nở đều thay vì âm thầm bỏ bù xén.
+    if (!BLEED_SIDE_KEYS.some(side => resolved[side])) return { ...ALL_BLEED_SIDES };
+    return resolved;
+}
+
+// Payload backend: danh sách cạnh ĐANG bật. Thiếu field = nở đều 4 cạnh.
+function bleedSidesToParam(sides: BleedSides): string {
+    return BLEED_SIDE_KEYS.filter(side => sides[side]).join(',') || 'none';
 }
 
 function writeStickerPreference(key: string, value: unknown): void {
@@ -226,6 +278,21 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     // "Lẹm mép" (rectangle): hút màu sâu vào trong để doa viền trắng mảnh của file không tràn lề.
     // Con dao 2 lưỡi — lẹm quá ăn vào nội dung sát mép → default nhỏ, cho chỉnh/tắt (0).
     const [edgeBiteMm, setEdgeBiteMm] = useState<number>(getSavedEdgeBite);
+    // Cạnh được bù xén (chỉ Xén vuông góc). Mặc định cả 4 cạnh = hành vi cũ.
+    // Dùng khi bài đã có sẵn lề một phía: tem cắt cuộn (chỉ bù trái/phải), mép dán
+    // hộp, gáy sách — bù thêm cạnh đó là lệch khổ thành phẩm.
+    const [bleedSides, setBleedSides] = useState<BleedSides>(readStickerBleedSides);
+    const activeBleedSideCount = BLEED_SIDE_KEYS.filter(side => bleedSides[side]).length;
+
+    const toggleBleedSide = (side: BleedSideKey) => {
+        setBleedSides(prev => {
+            const next = { ...prev, [side]: !prev[side] };
+            // Chặn trạng thái 0 cạnh: người dùng muốn tắt hẳn bù xén thì đặt Bù xén = 0,
+            // như vậy khổ trang và các nhánh màu đều đi đúng đường "không bù xén".
+            if (!BLEED_SIDE_KEYS.some(key => next[key])) return prev;
+            return next;
+        });
+    };
 
     // Đổi kiểu màu nền: khi chọn "Đổ màu trơn" mà giá trị hiện tại chưa ở dạng CMYK
     // ("C,M,Y,K"), khởi tạo về "0,0,0,0" để khung CMYK và giá trị gửi backend khớp
@@ -251,7 +318,8 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         writeStickerPreference('edgeBiteMm', edgeBiteMm);
         try { getStickerStorage()?.setItem(`${STICKER_STORAGE_PREFIX}edgeBiteVersion`, '2'); } catch (error) { warnStickerStorage(error); }
         writeStickerPreference('cutFirstPageOnly', cutFirstPageOnly);
-    }, [cutMode, offsetMm, cornerStyle, fillHoles, bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm, cutFirstPageOnly]);
+        writeStickerPreference('bleedSides', bleedSides);
+    }, [cutMode, offsetMm, cornerStyle, fillHoles, bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm, cutFirstPageOnly, bleedSides]);
     
     // Process state
     const [isProcessing, setIsProcessing] = useState(false);
@@ -268,7 +336,12 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         // bù xén vì vùng trắng sát mép có thể là một phần hợp lệ của thiết kế.
         const bleedRes = await authenticatedFetch(`${getApiUrl()}/preflight/mirror-bleed`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ file_id: currentFid, bleed_mm: bleedMm, pages: null }),
+            body: JSON.stringify({
+                file_id: currentFid,
+                bleed_mm: bleedMm,
+                pages: null,
+                bleed_sides: BLEED_SIDE_KEYS.filter(side => bleedSides[side]),
+            }),
         });
         const bleedData = await bleedRes.json();
         if (!bleedData.success) throw new Error(bleedData.detail || t('preprocess.sticker:loi_tao_bu_xen_vector'));
@@ -308,6 +381,9 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         // Lẹm mép CHỈ tab Xén vuông (không có “Bỏ nền trắng” dò mask).
         // Tab Bế tem: một nút “Bỏ nền trắng” + sample viền (shell/AA) — không thêm ô lẹm.
         formData.append('edge_bite_mm', productType === 'rectangle' ? String(edgeBiteMm) : '0');
+        // Chọn cạnh bù xén CHỈ có nghĩa với Xén vuông góc; Bế tem nhãn bù quanh
+        // đường contour nên luôn gửi "all" để backend nở đều như trước.
+        formData.append('bleed_sides', productType === 'rectangle' ? bleedSidesToParam(bleedSides) : 'all');
         // "Tạo đường cắt cho trang đầu": chỉ tab Bế tem nhãn. Trang 1 mang khuôn
         // CutContour, trang 2+ chỉ bù xén → bước đệm cho Bình tem bế/CNC đồng nhất.
         formData.append('cut_first_page_only', productType === 'sticker' && cutFirstPageOnly ? 'true' : 'false');
@@ -379,6 +455,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                 productType, cutMode, offsetMm, cornerStyle: requestedCornerStyle, fillHoles,
                 bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm,
                 cutFirstPageOnly,
+                bleedSides: { ...bleedSides },
                 shapeMode: (requestedCornerStyle === 'preserve' || requestedForceContour) ? 'contour' : 'auto_safe',
             });
         }
@@ -778,6 +855,66 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 />
                             )}
                         </div>
+
+                        {/* Cạnh bù xén: bài đã có sẵn lề một phía (tem cắt cuộn, mép dán
+                            hộp, gáy sách) thì bù thêm cạnh đó là lệch khổ thành phẩm.
+                            Chỉ hiện khi thực sự có bù xén để không làm rối panel. */}
+                        {bleedMm > 0 && (
+                            <div className="mb-4 p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-xl border border-slate-200 dark:border-zinc-700/50">
+                                <div className="flex items-center justify-between gap-2 mb-1">
+                                    <label className="text-xs font-bold text-slate-700 dark:text-zinc-300">{t('preprocess.sticker:canh_bu_xen')}</label>
+                                    <button
+                                        type="button"
+                                        onClick={() => setBleedSides({ ...ALL_BLEED_SIDES })}
+                                        disabled={activeBleedSideCount === 4}
+                                        className="text-[10.5px] font-bold text-teal-600 dark:text-teal-400 hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-default"
+                                    >
+                                        {t('preprocess.sticker:canh_bu_xen_ca_4')}
+                                    </button>
+                                </div>
+                                <p className="text-[10.5px] text-slate-500 dark:text-zinc-400 leading-snug mb-2.5">
+                                    {t('preprocess.sticker:canh_bu_xen_mo_ta')}
+                                </p>
+                                <div className="grid grid-cols-3 gap-1.5 w-full max-w-[250px] mx-auto">
+                                    <span />
+                                    <BleedSideToggle
+                                        active={bleedSides.top}
+                                        label={t('preprocess.sticker:canh_tren')}
+                                        arrow="↑"
+                                        lockHint={activeBleedSideCount === 1 && bleedSides.top ? t('preprocess.sticker:canh_bu_xen_giu_it_nhat_mot') : undefined}
+                                        onToggle={() => toggleBleedSide('top')}
+                                    />
+                                    <span />
+                                    <BleedSideToggle
+                                        active={bleedSides.left}
+                                        label={t('preprocess.sticker:canh_trai')}
+                                        arrow="←"
+                                        lockHint={activeBleedSideCount === 1 && bleedSides.left ? t('preprocess.sticker:canh_bu_xen_giu_it_nhat_mot') : undefined}
+                                        onToggle={() => toggleBleedSide('left')}
+                                    />
+                                    <div className="h-9 rounded-lg bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex flex-col items-center justify-center leading-none">
+                                        <span className="text-[12px] font-bold text-slate-700 dark:text-zinc-200">{bleedMm} mm</span>
+                                        <span className="text-[9.5px] text-slate-400 dark:text-zinc-500">{activeBleedSideCount}/4</span>
+                                    </div>
+                                    <BleedSideToggle
+                                        active={bleedSides.right}
+                                        label={t('preprocess.sticker:canh_phai')}
+                                        arrow="→"
+                                        lockHint={activeBleedSideCount === 1 && bleedSides.right ? t('preprocess.sticker:canh_bu_xen_giu_it_nhat_mot') : undefined}
+                                        onToggle={() => toggleBleedSide('right')}
+                                    />
+                                    <span />
+                                    <BleedSideToggle
+                                        active={bleedSides.bottom}
+                                        label={t('preprocess.sticker:canh_duoi')}
+                                        arrow="↓"
+                                        lockHint={activeBleedSideCount === 1 && bleedSides.bottom ? t('preprocess.sticker:canh_bu_xen_giu_it_nhat_mot') : undefined}
+                                        onToggle={() => toggleBleedSide('bottom')}
+                                    />
+                                    <span />
+                                </div>
+                            </div>
+                        )}
 
                         <div className="p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-xl border border-slate-200 dark:border-zinc-700/50">
                             <label className="block text-xs font-bold text-slate-700 dark:text-zinc-300 mb-2">{t('preprocess.sticker:mau_nen_bu_xen')}</label>

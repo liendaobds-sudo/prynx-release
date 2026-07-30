@@ -15,6 +15,11 @@ from concurrent.futures.process import BrokenProcessPool
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import unary_union
 import logging
+from app.core.bleed_sides import (
+    ALL_BLEED_SIDES,
+    bleed_sides_to_names,
+    normalize_bleed_sides,
+)
 from app.workers.shape_analyzer import ShapeType
 import json
 
@@ -685,6 +690,48 @@ def _render_page_rgb_ghostscript(
         return None
 
 
+# BX-03/BX-08 (audit bù xén lần 2, 2026-07-30): TRẦN ĐỘ DỐC của quỹ đạo. 1.25 ≈ 51°,
+# tức nét được phép đi chéo tối đa 51° so với phương vuông góc mép.
+#
+# Đo trên hoa văn tổng hợp có ground truth (sai số dốc nội vùng, mép 1200px, dải 35px):
+#
+#   trần   d=0.2  d=0.4  d=0.6  d=0.8  d=1.0  d=1.25
+#   1.00   0.058  0.081  0.102  0.082  0.178   0.298
+#   1.25   0.058  0.081  0.102  0.082  0.178   0.090
+#   2.00   0.058  0.081  0.102  0.082  0.178   0.090
+#
+# Đọc bảng: nới 1.00 → 1.25 chỉ ảnh hưởng hoa văn dốc hơn 45° (0.298 → 0.090) và KHÔNG
+# đổi một số nào ở dốc thấp — ở đó trần không phải ràng buộc. Nới tiếp lên 2.00 không
+# lợi thêm, nên 1.25 là điểm dừng. Sai số 0.178 còn lại ở d=1.0 KHÔNG do trần (giữ
+# nguyên ở cả ba trần) mà do làm trơn hướng — xem BX-10, thuộc lô B.
+_TRAJ_MAX_SLOPE = 1.25
+
+# BX-07/BX-08 — tầm với tối đa của quỹ đạo, tính theo BỀ RỘNG DẢI bù xén: màu bù xén
+# chỉ được lấy lệch tối đa ``factor × amount`` theo phương dọc mép. Đây là bảo hiểm
+# chống HƯỚNG ƯỚC LƯỢNG SAI, khác bản chất với trần dốc ở trên (hình học thật của nét)
+# — lần 1 gộp lẫn hai khái niệm này nên vô tình kẹp trần dốc xuống 0.6.
+#
+# BX-09 — hằng này phải áp lên ``slopes`` MỘT LẦN (trước vòng lặp), KHÔNG áp lên
+# ``offset`` theo từng ``step``. Clip theo bước biến quỹ đạo thành đường HAI ĐOẠN: đi
+# đúng dốc tới bước ``factor/|slope|`` rồi BẺ NGANG song song mép cho hết dải — đo
+# được khuỷu 31° và tới 48.6% bề rộng dải đi ngang ở hoa văn dốc 1.25. Clip một lần
+# giữ quỹ đạo THẲNG mà tầm với vẫn bị chặn đúng ``factor × amount``.
+_TRAJ_MAX_REACH_FACTOR = 1.25
+
+# BX-07 — hệ số sigma làm trơn hướng theo bề rộng dải. Sai hướng bị nhân lên theo
+# ``step`` nên dải càng rộng càng phải trơn; 0.35×amount dập được dao động hàng-kề-hàng
+# mà vẫn giữ được phân kỳ tổng thể (tia tỏa vẫn loe, chỉ không còn xé đoạn).
+_TRAJ_SMOOTH_PER_AMOUNT = 0.35
+
+# BX-07 — mép DÀI cần sigma lớn hơn: đo trên mép trên 1738px, sigma 12 vẫn để quỹ đạo
+# xé thành 26 đoạn (gãy 19px), sigma ~24 hạ còn 10 đoạn và gãy 2,5px. Trần cũ 24 chính
+# là nút thắt nên nới lên 64. Hệ số 0.03 là điểm ngọt đo được: gãy về ~1-2px và số đoạn
+# giảm mạnh (mép phải 6→4, mép trên 10→2) mà tầm với vẫn giữ 0.51-0.60 (còn phân kỳ);
+# nới tiếp lên 0.05-0.08 gần như không lợi thêm mà bắt đầu làm phẳng quỹ đạo.
+_TRAJ_SMOOTH_PER_EDGE = 0.03
+_TRAJ_SMOOTH_MAX_SIGMA = 64.0
+
+
 def _trajectory_right_strip(
     img: np.ndarray,
     amount: int,
@@ -752,16 +799,52 @@ def _trajectory_right_strip(
     valid_rows = np.flatnonzero(valid)
     if valid_rows.size:
         valid_slopes = np.clip(
-            -direction_x[valid] / direction_y[valid], -1.25, 1.25
+            -direction_x[valid] / direction_y[valid],
+            -_TRAJ_MAX_SLOPE, _TRAJ_MAX_SLOPE,
         )
         slopes = np.interp(
             np.arange(h), valid_rows, valid_slopes
         ).astype(np.float32)
-        slopes = cv2.GaussianBlur(
-            slopes[:, None], (1, 0),
-            max(0.8, min(4.0, 0.18 * max(0.1, px_per_mm))),
-        ).ravel()
-        slopes = np.clip(slopes, -1.25, 1.25)
+        # BX-07 (audit bù xén 2026-07-30) — điểm 2: làm trơn hướng theo BỀ RỘNG DẢI
+        # VÀ chiều dài mép, không chỉ theo DPI. Đo trên file hoa văn tỏa thật: sigma cũ
+        # (0.18×px_per_mm ≈ 2.1px @300DPI, trần 4) quá yếu — structure tensor dao động
+        # giữa các hàng lân cận → trường dịch đổi dấu 7-26 lần, gãy 19px/hàng. Sai hướng
+        # bị nhân lên theo ``step`` nên dải càng rộng càng phải trơn; mép DÀI cũng cần
+        # sigma lớn hơn (mép 1738px mà sigma 12 vẫn xé thành 26 đoạn).
+        sigma = max(
+            0.8,
+            min(
+                _TRAJ_SMOOTH_MAX_SIGMA,
+                max(
+                    0.18 * max(0.1, px_per_mm),
+                    _TRAJ_SMOOTH_PER_AMOUNT * amount,
+                    _TRAJ_SMOOTH_PER_EDGE * h,
+                ),
+            ),
+        )
+        # Dập BẬC RỜI RẠC trước: nét dọc cắt ngang mép (chữ, viền, khung) tạo vài hàng
+        # có hướng lệch hẳn so với lân cận. Gaussian chỉ trải bậc đó ra, còn median cắt
+        # hẳn — và vì median bảo toàn xu thế đơn điệu, phân kỳ tổng thể của tia vẫn còn.
+        med_k = int(min(31, max(3, round(sigma)))) | 1
+        if h >= med_k:
+            # cv2.medianBlur chỉ nhận uint8 khi ksize>5 → dùng scipy cho float32.
+            from scipy.ndimage import median_filter
+            slopes = median_filter(slopes, size=med_k, mode="nearest").astype(np.float32)
+        slopes = cv2.GaussianBlur(slopes[:, None], (1, 0), sigma).ravel()
+
+        # BX-07 — điểm 3: hàng KHÔNG valid (nền trơn, coherence thấp) trước đây được
+        # ``np.interp`` bắc cầu tuyến tính qua khoảng trống lớn, tạo bậc giả giữa hai
+        # cụm nét rời nhau. Sau khi làm trơn, kéo các hàng đó về 0 (đi thẳng) theo mức
+        # độ "xa vùng có nét" để chúng không thừa hưởng độ dốc của cụm nét ở xa.
+        if valid_rows.size < h:
+            trust = np.zeros(h, dtype=np.float32)
+            trust[valid_rows] = 1.0
+            trust = cv2.GaussianBlur(trust[:, None], (1, 0), sigma).ravel()
+            peak = float(trust.max())
+            if peak > 1e-6:
+                slopes *= np.clip(trust / peak, 0.0, 1.0)
+
+        slopes = np.clip(slopes, -_TRAJ_MAX_SLOPE, _TRAJ_MAX_SLOPE)
 
     source_y = np.arange(h, dtype=np.float32)
     output_y = source_y.copy()
@@ -770,6 +853,14 @@ def _trajectory_right_strip(
     # so batching the maps does not alter output colours.
     map_x = np.zeros((h, amount), dtype=np.float32)
     map_y_all = np.empty((h, amount), dtype=np.float32)
+    # BX-09 (audit bù xén lần 2, 2026-07-30) — chặn TẦM VỚI bằng cách kẹp ``slopes``
+    # MỘT LẦN ở đây, không kẹp ``offset`` trong vòng lặp. Tầm với xa nhất của một hàng
+    # là ``|slope| × amount``, nên điều kiện "không lấy màu xa hơn factor×amount" tương
+    # đương "|slope| ≤ factor". Kẹp một lần ⇒ quỹ đạo là đường THẲNG suốt dải; kẹp theo
+    # từng bước (bản cũ) làm nó gập khuỷu rồi chạy song song mép — chính là "gãy khúc"
+    # người dùng thấy.
+    slope_limit = min(_TRAJ_MAX_SLOPE, _TRAJ_MAX_REACH_FACTOR)
+    slopes = np.clip(slopes, -slope_limit, slope_limit)
     for step in range(1, amount + 1):
         # Forward-warp source rows, enforce a monotone mapping to prevent local
         # trajectory crossings, then invert it for cv2.remap. This avoids pointed
@@ -817,8 +908,13 @@ def _rectangle_smooth_color_fill(
     pad_px: int,
     edge_bite_px: int,
     px_per_mm: float,
+    pads: tuple[int, int, int, int] | None = None,
 ) -> np.ndarray:
-    """Continue local edge trajectories into all four rectangular bleed sides.
+    """Continue local edge trajectories into the rectangular bleed sides.
+
+    ``pads`` (trái, phải, dưới, trên, tính bằng px) cho phép bù xén KHÔNG đều —
+    dùng khi người dùng chỉ chọn một vài cạnh. Để ``None`` giữ nguyên hành vi cũ:
+    cả 4 cạnh nở đúng ``pad_px``.
 
     Each side estimates a structure-tensor direction from the real artwork just
     inside the trim edge, then advects the edge colours along that tangent. This
@@ -831,6 +927,10 @@ def _rectangle_smooth_color_fill(
 
     h, w = img.shape[:2]
     pad = max(0, int(pad_px))
+    if pads is None:
+        pad_left = pad_right = pad_bottom = pad_top = pad
+    else:
+        pad_left, pad_right, pad_bottom, pad_top = (max(0, int(p)) for p in pads)
     bite_x = min(max(0, int(edge_bite_px)), max(0, (w - 1) // 2))
     bite_y = min(max(0, int(edge_bite_px)), max(0, (h - 1) // 2))
     core = img[bite_y:h - bite_y if bite_y else h,
@@ -839,8 +939,10 @@ def _rectangle_smooth_color_fill(
         core = img
         bite_x = bite_y = 0
 
-    top = bottom = pad + bite_y
-    left = right = pad + bite_x
+    top = pad_top + bite_y
+    bottom = pad_bottom + bite_y
+    left = pad_left + bite_x
+    right = pad_right + bite_x
 
     # Continue left/right first. Transposing turns top/bottom into the same edge
     # problem while letting corner pixels inherit the side trajectories.
@@ -1222,29 +1324,56 @@ def _rectangle_vector_bleed_commands(
     bleed_pts: float,
     edge_bite_pts: float,
     sample_depth_pts: float,
-) -> tuple[list[str], float, float]:
-    """Stretch eight vector edge/corner strips around a rectangular page.
+    sides=None,
+) -> tuple[list[str], float, float, float, float]:
+    """Stretch vector edge/corner strips around a rectangular page.
 
     Unlike the contour/sticker path, this never filters white pixels and never
     converts process/ICC/spot colors to RGB. ``edge_bite_pts`` intentionally
     moves the sampled strip inward; the default is zero for exact edge color.
-    Returned bite values are clamped independently for X/Y and are also used to
+    Returned bite values are clamped independently per side and are also used to
     clip the original artwork when the user explicitly requests edge bite.
+
+    ``sides`` chọn cạnh nào được bù xén (mặc định cả 4, xem
+    ``app.core.bleed_sides``). Cạnh TẮT không nở khổ, không lẹm mép và không
+    sinh dải kéo giãn; góc chỉ được vẽ khi CẢ HAI cạnh kề đều bật — nếu không,
+    dải cạnh còn lại đã tự phủ hết chiều dài nên vẽ góc sẽ đè chồng sai màu.
+    Trả về: ``(commands, bite_trái, bite_phải, bite_dưới, bite_trên)``.
     """
+    side_l, side_r, side_b, side_t = normalize_bleed_sides(sides)
     if bleed_pts <= 0 or page_width <= 0 or page_height <= 0:
-        return [], 0.0, 0.0
+        return [], 0.0, 0.0, 0.0, 0.0
+    if not (side_l or side_r or side_b or side_t):
+        return [], 0.0, 0.0, 0.0, 0.0
 
     depth_x = min(max(0.01, sample_depth_pts), max(0.01, page_width / 2.0))
     depth_y = min(max(0.01, sample_depth_pts), max(0.01, page_height / 2.0))
     bite_x = min(max(0.0, edge_bite_pts), max(0.0, page_width / 2.0 - depth_x))
     bite_y = min(max(0.0, edge_bite_pts), max(0.0, page_height / 2.0 - depth_y))
 
-    out_w = page_width + 2.0 * bleed_pts
-    out_h = page_height + 2.0 * bleed_pts
-    ext_x = bleed_pts + bite_x
-    ext_y = bleed_pts + bite_y
-    sx = ext_x / depth_x
-    sy = ext_y / depth_y
+    # Lẹm mép chỉ có nghĩa ở cạnh ĐANG bù xén: cạnh không bù mà vẫn lẹm thì
+    # artwork bị cắt bớt mà không có gì kéo ra bù lại → mất nội dung sát mép.
+    bite_left = bite_x if side_l else 0.0
+    bite_right = bite_x if side_r else 0.0
+    bite_bottom = bite_y if side_b else 0.0
+    bite_top = bite_y if side_t else 0.0
+
+    bleed_left = bleed_pts if side_l else 0.0
+    bleed_right = bleed_pts if side_r else 0.0
+    bleed_bottom = bleed_pts if side_b else 0.0
+    bleed_top = bleed_pts if side_t else 0.0
+
+    out_w = page_width + bleed_left + bleed_right
+    out_h = page_height + bleed_bottom + bleed_top
+    # ext = bề rộng dải phải lấp ở mỗi cạnh = phần nở ra ngoài + phần lẹm vào trong.
+    ext_left = bleed_left + bite_left
+    ext_right = bleed_right + bite_right
+    ext_bottom = bleed_bottom + bite_bottom
+    ext_top = bleed_top + bite_top
+    sx_left = ext_left / depth_x
+    sx_right = ext_right / depth_x
+    sy_bottom = ext_bottom / depth_y
+    sy_top = ext_top / depth_y
     name = str(xobject_name)
     commands: list[str] = []
 
@@ -1260,36 +1389,39 @@ def _rectangle_vector_bleed_commands(
             "Q",
         ])
 
-    src_left = crop_x0 + bite_x
-    src_right = crop_x0 + page_width - bite_x - depth_x
-    src_bottom = crop_y0 + bite_y
-    src_top = crop_y0 + page_height - bite_y - depth_y
-    x_identity_shift = bleed_pts - crop_x0
-    y_identity_shift = bleed_pts - crop_y0
-    dst_right = out_w - ext_x
-    dst_top = out_h - ext_y
+    src_left = crop_x0 + bite_left
+    src_right = crop_x0 + page_width - bite_right - depth_x
+    src_bottom = crop_y0 + bite_bottom
+    src_top = crop_y0 + page_height - bite_top - depth_y
+    # Artwork được đặt ở gốc (bleed_left, bleed_bottom) trên khổ mới, nên phép
+    # dịch "giữ nguyên tỉ lệ" của trục còn lại phải theo đúng 2 số này.
+    x_identity_shift = bleed_left - crop_x0
+    y_identity_shift = bleed_bottom - crop_y0
+    dst_right = out_w - ext_right
+    dst_top = out_h - ext_top
 
     # Four sides, excluding corner squares.
-    place(0.0, ext_y, ext_x, out_h - 2.0 * ext_y,
-          sx, 1.0, -sx * src_left, y_identity_shift)
-    place(dst_right, ext_y, ext_x, out_h - 2.0 * ext_y,
-          sx, 1.0, dst_right - sx * src_right, y_identity_shift)
-    place(ext_x, 0.0, out_w - 2.0 * ext_x, ext_y,
-          1.0, sy, x_identity_shift, -sy * src_bottom)
-    place(ext_x, dst_top, out_w - 2.0 * ext_x, ext_y,
-          1.0, sy, x_identity_shift, dst_top - sy * src_top)
+    place(0.0, ext_bottom, ext_left, out_h - ext_bottom - ext_top,
+          sx_left, 1.0, -sx_left * src_left, y_identity_shift)
+    place(dst_right, ext_bottom, ext_right, out_h - ext_bottom - ext_top,
+          sx_right, 1.0, dst_right - sx_right * src_right, y_identity_shift)
+    place(ext_left, 0.0, out_w - ext_left - ext_right, ext_bottom,
+          1.0, sy_bottom, x_identity_shift, -sy_bottom * src_bottom)
+    place(ext_left, dst_top, out_w - ext_left - ext_right, ext_top,
+          1.0, sy_top, x_identity_shift, dst_top - sy_top * src_top)
 
     # Four corners. Keeping them as vector form draws preserves ICC/spot color.
-    place(0.0, 0.0, ext_x, ext_y,
-          sx, sy, -sx * src_left, -sy * src_bottom)
-    place(dst_right, 0.0, ext_x, ext_y,
-          sx, sy, dst_right - sx * src_right, -sy * src_bottom)
-    place(0.0, dst_top, ext_x, ext_y,
-          sx, sy, -sx * src_left, dst_top - sy * src_top)
-    place(dst_right, dst_top, ext_x, ext_y,
-          sx, sy, dst_right - sx * src_right, dst_top - sy * src_top)
+    # ``place`` tự bỏ qua khi w/h <= 0 → cạnh tắt (ext = 0) không sinh góc.
+    place(0.0, 0.0, ext_left, ext_bottom,
+          sx_left, sy_bottom, -sx_left * src_left, -sy_bottom * src_bottom)
+    place(dst_right, 0.0, ext_right, ext_bottom,
+          sx_right, sy_bottom, dst_right - sx_right * src_right, -sy_bottom * src_bottom)
+    place(0.0, dst_top, ext_left, ext_top,
+          sx_left, sy_top, -sx_left * src_left, dst_top - sy_top * src_top)
+    place(dst_right, dst_top, ext_right, ext_top,
+          sx_right, sy_top, dst_right - sx_right * src_right, dst_top - sy_top * src_top)
 
-    return commands, bite_x, bite_y
+    return commands, bite_left, bite_right, bite_bottom, bite_top
 
 
 # ── Ngưỡng song song ─────────────────────────────────────────────────────
@@ -1671,6 +1803,7 @@ def _process_sticker_chunk(args: dict):
             edge_bite_mm=args["edge_bite_mm"],
             cut_first_page_only=args["cut_first_page_only"],
             shape_mode=args.get("shape_mode", "auto_safe"),
+            bleed_sides=args.get("bleed_sides"),
             _page_subset=args["page_indices"],
         )
         # result = (bytes, metas, pages_no_dieline, any_dieline)
@@ -1714,6 +1847,7 @@ class StickerEngine:
         edge_bite_mm: float = 0.0,
         cut_first_page_only: bool = False,
         shape_mode: str = "auto_safe",
+        bleed_sides=None,
         selected_objects_by_page: dict | None = None,
         _page_subset: list = None,
     ) -> tuple:
@@ -1736,6 +1870,29 @@ class StickerEngine:
         selection_mode = bool(selection_targets)
         if selection_mode and rectangle_mode:
             raise ValueError("Selection object chỉ hỗ trợ chế độ Bế tem nhãn.")
+
+        # ── Cạnh bù xén (chỉ Xén vuông góc) ────────────────────────────────
+        # Bế tem nhãn bù xén quanh ĐƯỜNG CONTOUR nên "cạnh trên/dưới/trái/phải"
+        # không có nghĩa hình học ở đó → chỉ rectangle_mode mới áp lựa chọn cạnh,
+        # nhánh tem luôn nở đều như trước (không hồi quy).
+        if rectangle_mode:
+            bleed_sides_resolved = normalize_bleed_sides(bleed_sides)
+            if not any(bleed_sides_resolved):
+                # Không chọn cạnh nào = không bù xén. Hạ bleed về 0 NGAY tại đây để
+                # mọi nhánh dưới (vector/raster/pad/page box) tự bỏ qua, thay vì
+                # sinh canvas y hệt khổ gốc kèm một lớp ảnh ring vô hình.
+                if bleed_mm > 0:
+                    # Log để truy vết: client gửi giá trị lạ cũng rơi vào đây, và khi
+                    # đó người dùng sẽ thấy file KHÔNG có bù xén dù đã nhập số mm.
+                    logger.warning(
+                        "[STICKER] bleed_sides=%r không chọn cạnh nào → bỏ bù xén "
+                        "(bleed_mm=%.2f bị hạ về 0)",
+                        bleed_sides, bleed_mm,
+                    )
+                bleed_mm = 0.0
+        else:
+            bleed_sides_resolved = ALL_BLEED_SIDES
+        bleed_side_l, bleed_side_r, bleed_side_b, bleed_side_t = bleed_sides_resolved
 
         corner_style = str(corner_style or "round").strip().lower()
         preserve_contour = corner_style in {"preserve", "original"}
@@ -1791,6 +1948,7 @@ class StickerEngine:
                     rectangle_mode=rectangle_mode, edge_bite_mm=edge_bite_mm,
                     cut_first_page_only=cut_first_page_only,
                     shape_mode=shape_mode,
+                    bleed_sides=bleed_sides_resolved,
                 )
 
             debug_step = "Create Output PDF"
@@ -2036,8 +2194,21 @@ class StickerEngine:
                         cut_mode, bleed_pts, offset_pts
                     )
                     max_expansion_pts = max(0.0, _cut_edge, _outer_edge)
-                new_width = page_in_width + 2 * max_expansion_pts
-                new_height = page_in_height + 2 * max_expansion_pts
+
+                # Nở theo TỪNG cạnh. Xén vuông góc cho người dùng chọn cạnh nào
+                # được bù xén; mọi nhánh khác (bế tem, selection) nở đều như cũ.
+                # Từ đây trở xuống KHÔNG dùng max_expansion_pts làm gốc toạ độ —
+                # gốc artwork là (exp_left, exp_bottom), còn max_expansion_pts chỉ
+                # còn dùng cho các phép tính "cạnh nở nhiều nhất" (pad an toàn).
+                if rectangle_mode:
+                    exp_left = max_expansion_pts if bleed_side_l else 0.0
+                    exp_right = max_expansion_pts if bleed_side_r else 0.0
+                    exp_bottom = max_expansion_pts if bleed_side_b else 0.0
+                    exp_top = max_expansion_pts if bleed_side_t else 0.0
+                else:
+                    exp_left = exp_right = exp_bottom = exp_top = max_expansion_pts
+                new_width = page_in_width + exp_left + exp_right
+                new_height = page_in_height + exp_bottom + exp_top
                 
                 if selection_page_mode:
                     doc_out.pages.append(page_in_pike)
@@ -2077,11 +2248,26 @@ class StickerEngine:
                     any_dieline_found = True
                     if bleed_pts > 0:
                         bleed_outer_offset = bleed_pts
-                        bleed_outer_poly = rect_poly.buffer(bleed_pts, join_style=2)  # miter
+                        # KHÔNG dùng rect_poly.buffer(): buffer nở ĐỀU cả 4 cạnh.
+                        # Dựng thẳng hình chữ nhật mép ngoài theo từng cạnh.
+                        # LƯU Ý hệ trục: poly ở "image space" (y hướng XUỐNG, y=0 là
+                        # MÉP TRÊN của trang) — vì bên dưới quy đổi bằng
+                        # pdf_y = page_in_height - poly_y. Nên cạnh TRÊN của trang
+                        # nở về phía y ÂM, cạnh DƯỚI nở về phía y lớn hơn.
+                        bleed_outer_poly = Polygon([
+                            (-exp_left, -exp_top),
+                            (page_in_width + exp_right, -exp_top),
+                            (page_in_width + exp_right, page_in_height + exp_bottom),
+                            (-exp_left, page_in_height + exp_bottom),
+                        ])
                     else:
                         bleed_outer_poly = rect_poly
                     if self.debug:
-                        logger.warning(">>> RECTANGLE MODE: page %.1fx%.1f pt, bleed_pts=%.2f", page_in_width, page_in_height, bleed_pts)
+                        logger.warning(
+                            ">>> RECTANGLE MODE: page %.1fx%.1f pt, bleed_pts=%.2f, sides=%s",
+                            page_in_width, page_in_height, bleed_pts,
+                            ",".join(bleed_sides_to_names(bleed_sides_resolved)) or "none",
+                        )
                 
                 elif cut_mode != "none" and len(contours) > 0:
                     debug_step = f"Process Contours Page {page_idx}"
@@ -2255,18 +2441,33 @@ class StickerEngine:
                             pad_b = bleed_px
                         # Ensure pad_b is at least bleed_px
                         pad_b = max(pad_b, bleed_px)
-                        
+
+                        # Pad THEO TỪNG CẠNH: cạnh không bù xén thì không nới canvas
+                        # đệm, nhờ vậy khổ ảnh bleed khớp đúng khổ trang mới và không
+                        # tốn RAM/thời gian cho dải sẽ không bao giờ được dùng.
+                        # np.pad với ảnh: trục 0 là HÀNG, hàng 0 = mép TRÊN trang.
+                        if rectangle_mode:
+                            pad_left = pad_b if bleed_side_l else 0
+                            pad_right = pad_b if bleed_side_r else 0
+                            pad_bottom = pad_b if bleed_side_b else 0
+                            pad_top = pad_b if bleed_side_t else 0
+                        else:
+                            pad_left = pad_right = pad_bottom = pad_top = pad_b
+                        pad_rows = (pad_top, pad_bottom)
+                        pad_cols = (pad_left, pad_right)
+                        pad_max = max(pad_left, pad_right, pad_bottom, pad_top)
+
                         _, aa_mask_bin = cv2.threshold(aa_mask, 127, 255, cv2.THRESH_BINARY)
-                        padded_mask = np.pad(aa_mask_bin, pad_width=pad_b, mode='constant', constant_values=0)
+                        padded_mask = np.pad(aa_mask_bin, pad_width=(pad_rows, pad_cols), mode='constant', constant_values=0)
                         
                         # Original (unsmoothed) mask for bleed_ring inner boundary
                         # Prevents bleed from entering artwork at smoothing-shrunken edges
-                        padded_original_mask = np.pad(mask, pad_width=pad_b, mode='constant', constant_values=0)
+                        padded_original_mask = np.pad(mask, pad_width=(pad_rows, pad_cols), mode='constant', constant_values=0)
                         
                         _, raw_mask_bin = cv2.threshold(raw_mask, 10, 255, cv2.THRESH_BINARY)
-                        padded_raw_mask = np.pad(raw_mask_bin, pad_width=pad_b, mode='constant', constant_values=0)
+                        padded_raw_mask = np.pad(raw_mask_bin, pad_width=(pad_rows, pad_cols), mode='constant', constant_values=0)
                         
-                        padded_img = np.pad(img_native, pad_width=((pad_b, pad_b), (pad_b, pad_b), (0, 0)), mode='constant', constant_values=255)
+                        padded_img = np.pad(img_native, pad_width=(pad_rows, pad_cols, (0, 0)), mode='constant', constant_values=255)
                         
                         # Nguồn màu tách khỏi mask hình học đường cắt. Với mode image,
                         # shell cao tần được dò sâu dần để bỏ halo AA/JPEG; các mảng
@@ -2324,26 +2525,29 @@ class StickerEngine:
                             mask_h, mask_w = padded_mask.shape
                             bleed_mask = np.zeros((mask_h, mask_w), dtype=np.uint8)
                             
-                            def _rasterize_poly(poly_geom, target_mask, scale, pad):
+                            # pad_x/pad_y RIÊNG: poly nằm ở toạ độ trang gốc (có thể
+                            # âm khi cạnh đó được bù xén), canvas đệm lệch đúng
+                            # pad_left theo cột và pad_top theo hàng.
+                            def _rasterize_poly(poly_geom, target_mask, scale, pad_x, pad_y):
                                 if isinstance(poly_geom, MultiPolygon):
                                     for p in poly_geom.geoms:
-                                        _rasterize_poly(p, target_mask, scale, pad)
+                                        _rasterize_poly(p, target_mask, scale, pad_x, pad_y)
                                     return
                                 ext = np.array(poly_geom.exterior.coords)
                                 ext_px = np.column_stack([
-                                    ext[:, 0] * scale + pad,
-                                    ext[:, 1] * scale + pad
+                                    ext[:, 0] * scale + pad_x,
+                                    ext[:, 1] * scale + pad_y
                                 ]).astype(np.int32)
                                 cv2.fillPoly(target_mask, [ext_px], 255)
                                 for interior in poly_geom.interiors:
                                     int_coords = np.array(interior.coords)
                                     int_px = np.column_stack([
-                                        int_coords[:, 0] * scale + pad,
-                                        int_coords[:, 1] * scale + pad
+                                        int_coords[:, 0] * scale + pad_x,
+                                        int_coords[:, 1] * scale + pad_y
                                     ]).astype(np.int32)
                                     cv2.fillPoly(target_mask, [int_px], 0)
                             
-                            _rasterize_poly(bleed_outer_poly, bleed_mask, self.scale, pad_b)
+                            _rasterize_poly(bleed_outer_poly, bleed_mask, self.scale, pad_left, pad_top)
                             # 1px safety dilate to cover sub-pixel rounding at polygon edges
                             raster_safety = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
                             bleed_mask = cv2.dilate(bleed_mask, raster_safety)
@@ -2460,7 +2664,8 @@ class StickerEngine:
                         elif bleed_color_type == "inpaint" and rectangle_mode:
                             smooth_started = time.perf_counter()
                             bleed_colors = _rectangle_smooth_color_fill(
-                                img_native, pad_b, edge_bite_px, px_per_mm
+                                img_native, pad_b, edge_bite_px, px_per_mm,
+                                pads=(pad_left, pad_right, pad_bottom, pad_top),
                             )
                             smooth_seconds = time.perf_counter() - smooth_started
                         elif bleed_color_type == "inpaint":
@@ -2513,7 +2718,7 @@ class StickerEngine:
                             # Keep the same full-size image and CTM. Only deep,
                             # fully transparent centre RGB is zeroed so Flate can
                             # skip it without changing any visible colour.
-                            perimeter_px = pad_b + edge_bite_px + _tuck_px + 2
+                            perimeter_px = pad_max + edge_bite_px + _tuck_px + 2
                             bleed_rgb_for_storage = _sparsify_rectangle_bleed(
                                 bleed_rgb, bleed_ring, perimeter_px
                             )
@@ -2553,10 +2758,18 @@ class StickerEngine:
 
                 page_content_stream = []
                 sampled_bleed_overlay_stream = []
-                vector_bite_x = 0.0
-                vector_bite_y = 0.0
+                vector_bite_left = 0.0
+                vector_bite_right = 0.0
+                vector_bite_bottom = 0.0
+                vector_bite_top = 0.0
                 if use_vector_rectangle_bleed:
-                    vector_ops, vector_bite_x, vector_bite_y = _rectangle_vector_bleed_commands(
+                    (
+                        vector_ops,
+                        vector_bite_left,
+                        vector_bite_right,
+                        vector_bite_bottom,
+                        vector_bite_top,
+                    ) = _rectangle_vector_bleed_commands(
                         src_xobj_name,
                         crop_x0=crop_x0,
                         crop_y0=crop_y0,
@@ -2565,6 +2778,7 @@ class StickerEngine:
                         bleed_pts=bleed_pts,
                         edge_bite_pts=max(0.0, edge_bite_mm * mm_to_pts),
                         sample_depth_pts=72.0 / max(1, self.dpi),
+                        sides=bleed_sides_resolved,
                     )
                     page_content_stream.extend(vector_ops)
 
@@ -2602,24 +2816,29 @@ class StickerEngine:
                     
                     img_name = page_out.add_resource(img_obj, pikepdf.Name.XObject)
                     
-                    content_origin_x = crop_x0 if selection_page_mode else max_expansion_pts
-                    content_origin_y = crop_y0 if selection_page_mode else max_expansion_pts
-                    shift_x = content_origin_x - (pad_b / self.scale)
-                    shift_y = content_origin_y - (pad_b / self.scale)
+                    content_origin_x = crop_x0 if selection_page_mode else exp_left
+                    content_origin_y = crop_y0 if selection_page_mode else exp_bottom
+                    # Ảnh bleed neo theo pad TRÁI (trục x) và pad DƯỚI (trục y):
+                    # PDF đặt ảnh từ góc dưới-trái nên mép dưới ảnh = gốc artwork
+                    # trừ đúng phần đã đệm phía dưới.
+                    shift_x = content_origin_x - (pad_left / self.scale)
+                    shift_y = content_origin_y - (pad_bottom / self.scale)
 
                     if self.debug:
                         # So khớp 2 layer: bleed (raster, neo self.scale) vs artwork
                         # (vector 1:1, neo crop_x0). artwork phải rộng ĐÚNG page_in_width;
                         # bleed artwork-portion rộng img_native_px/self.scale. Lệch ⇒ pdfium
                         # render khác box ta giả định (CropBox) hoặc self.scale sai.
-                        _art_px_w = img_w - 2 * pad_b
-                        _art_px_h = img_h - 2 * pad_b
+                        _art_px_w = img_w - pad_left - pad_right
+                        _art_px_h = img_h - pad_top - pad_bottom
                         logger.warning(
-                            ">>> ALIGN p%d: page_in=%.3fx%.3f pt | render_px=%dx%d → /scale=%.3fx%.3f pt | scale=%.5f (base=%.5f) | crop0=(%.3f,%.3f) | img_w_pt=%.3f shift=(%.3f,%.3f) max_exp=%.3f pad_b=%d",
+                            ">>> ALIGN p%d: page_in=%.3fx%.3f pt | render_px=%dx%d → /scale=%.3fx%.3f pt | scale=%.5f (base=%.5f) | crop0=(%.3f,%.3f) | img_w_pt=%.3f shift=(%.3f,%.3f) exp=(l%.3f r%.3f b%.3f t%.3f) pad=(l%d r%d b%d t%d)",
                             page_idx, page_in_width, page_in_height,
                             _art_px_w, _art_px_h, _art_px_w / self.scale, _art_px_h / self.scale,
                             self.scale, base_scale, crop_x0, crop_y0,
-                            img_w_pt, shift_x, shift_y, max_expansion_pts, pad_b,
+                            img_w_pt, shift_x, shift_y,
+                            exp_left, exp_right, exp_bottom, exp_top,
+                            pad_left, pad_right, pad_bottom, pad_top,
                         )
 
                     bleed_draw_ops = [
@@ -2650,11 +2869,14 @@ class StickerEngine:
                 # phần ngoài footprint để lộ bleed bên dưới.
 
                 page_content_stream.append("q")
-                if use_vector_rectangle_bleed and (vector_bite_x > 0 or vector_bite_y > 0):
-                    clip_x = bleed_pts + vector_bite_x
-                    clip_y = bleed_pts + vector_bite_y
-                    clip_w = max(0.01, page_in_width - 2.0 * vector_bite_x)
-                    clip_h = max(0.01, page_in_height - 2.0 * vector_bite_y)
+                if use_vector_rectangle_bleed and (
+                    vector_bite_left > 0 or vector_bite_right > 0
+                    or vector_bite_bottom > 0 or vector_bite_top > 0
+                ):
+                    clip_x = exp_left + vector_bite_left
+                    clip_y = exp_bottom + vector_bite_bottom
+                    clip_w = max(0.01, page_in_width - vector_bite_left - vector_bite_right)
+                    clip_h = max(0.01, page_in_height - vector_bite_bottom - vector_bite_top)
                     page_content_stream.append(
                         f"{clip_x:.4f} {clip_y:.4f} {clip_w:.4f} {clip_h:.4f} re W n"
                     )
@@ -2686,8 +2908,8 @@ class StickerEngine:
                 # crop_x0/crop_y0), trong khi bleed + contour ở "local crop space"
                 # (gốc 0,0). Phải dịch thêm -crop_x0/-crop_y0 để artwork khớp bleed;
                 # nếu không artwork lệch đúng bằng gốc CropBox và bị footprint clip cắt.
-                art_shift_x = max_expansion_pts - crop_x0
-                art_shift_y = max_expansion_pts - crop_y0
+                art_shift_x = exp_left - crop_x0
+                art_shift_y = exp_bottom - crop_y0
                 page_content_stream.append(f"1 0 0 1 {art_shift_x:.4f} {art_shift_y:.4f} cm")
                 page_content_stream.append(f"{str(src_xobj_name)} Do")
                 page_content_stream.append("Q")
@@ -2711,8 +2933,8 @@ class StickerEngine:
                     debug_step = "Draw Cut Contour"
                     
                     page_content_stream.append("q")
-                    cut_origin_x = crop_x0 if selection_page_mode else max_expansion_pts
-                    cut_origin_y = crop_y0 if selection_page_mode else max_expansion_pts
+                    cut_origin_x = crop_x0 if selection_page_mode else exp_left
+                    cut_origin_y = crop_y0 if selection_page_mode else exp_bottom
                     page_content_stream.append(f"1 0 0 1 {cut_origin_x:.4f} {cut_origin_y:.4f} cm")
                     
                     page_content_stream.append("/CutContour CS")
@@ -2775,10 +2997,10 @@ class StickerEngine:
                     pdf_miny = page_in_height - maxy
                     pdf_maxy = page_in_height - miny
                     
-                    minx += max_expansion_pts
-                    pdf_miny += max_expansion_pts
-                    maxx += max_expansion_pts
-                    pdf_maxy += max_expansion_pts
+                    minx += exp_left
+                    pdf_miny += exp_bottom
+                    maxx += exp_left
+                    pdf_maxy += exp_bottom
                     
                     box_arr = pikepdf.Array([minx, pdf_miny, maxx, pdf_maxy])
                     if not selection_page_mode:
@@ -2800,10 +3022,10 @@ class StickerEngine:
                     # để không bị CropBox cắt cụt khi đường bế cũng là mép ngoài cùng.
                     crop_guard = 0.55 if draw_cut_contour and cut_mode != "none" else 0.0
                     crop_box = [
-                        max(0.0, vis_minx + max_expansion_pts - crop_guard),
-                        max(0.0, page_in_height - vis_maxy + max_expansion_pts - crop_guard),
-                        min(new_width, vis_maxx + max_expansion_pts + crop_guard),
-                        min(new_height, page_in_height - vis_miny + max_expansion_pts + crop_guard),
+                        max(0.0, vis_minx + exp_left - crop_guard),
+                        max(0.0, page_in_height - vis_maxy + exp_bottom - crop_guard),
+                        min(new_width, vis_maxx + exp_left + crop_guard),
+                        min(new_height, page_in_height - vis_miny + exp_bottom + crop_guard),
                     ]
                     if (
                         not selection_page_mode
@@ -3128,6 +3350,8 @@ class StickerEngine:
                 "edge_bite_mm": kw["edge_bite_mm"],
                 "cut_first_page_only": kw["cut_first_page_only"],
                 "shape_mode": kw.get("shape_mode", "auto_safe"),
+                # Tuple 4 bool — picklable, worker không phải parse lại chuỗi.
+                "bleed_sides": kw.get("bleed_sides"),
             })
 
         # 1 chunk / n_workers=1 → in-process. Nhiều chunk → pool; crash → fallback tuần tự.

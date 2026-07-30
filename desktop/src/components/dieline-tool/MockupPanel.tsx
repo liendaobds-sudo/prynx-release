@@ -16,9 +16,9 @@
 // ============================================================
 
 import React from 'react';
-import { useMockupStore, type CameraPreset, type MockupQualityTier } from '../../store/useMockupStore';
+import { useMockupStore, type CameraPreset, type MockupQualityTier } from '../../stores/useMockupStore';
 // [HANGING-WINDOW 2026-07-27] Cần biết khuôn hiện tại có lỗ cửa sổ hay không.
-import { useBoxStore } from '../../store/useBoxStore';
+import { useBoxStore } from '../../stores/useBoxStore';
 import {
     SUBSTRATE_LIBRARY,
     SURFACE_FINISH_LIBRARY,

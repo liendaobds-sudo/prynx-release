@@ -202,6 +202,19 @@ def _extract_ocg_names(obj) -> list[str]:
     return names
 
 def list_objects(pdf_path: str, page_index: int, include_text_props: bool = True) -> list[ObjMeta]:
+    """Bọc `_list_objects_locked` trong `pdfium_guard` (audit 2026-07-29 §C.1).
+
+    Toàn thân hàm là FFI PDFium thô và được gọi từ đường chạy trong thread
+    (`/edit/objects`, `/preflight/objects`), nên khóa bao cả hàm thay vì bọc lẻ từng
+    lời gọi. Dùng wrapper để không phải thụt lề lại thân hàm dài — dễ soi diff hơn.
+    """
+    from app.core.pdfium_lock import pdfium_guard
+
+    with pdfium_guard("geometry_list_objects"):
+        return _list_objects_locked(pdf_path, page_index, include_text_props)
+
+
+def _list_objects_locked(pdf_path: str, page_index: int, include_text_props: bool = True) -> list[ObjMeta]:
     """
     Liệt kê tất cả PDF_Object của một trang kèm type + bbox chính xác (read-only).
 
@@ -355,6 +368,14 @@ def list_objects(pdf_path: str, page_index: int, include_text_props: bool = True
 
 
 def get_text_object_props(pdf_path: str, page_index: int, draw_index: int) -> dict:
+    """Bọc `_get_text_object_props_locked` trong `pdfium_guard` (audit 2026-07-29 §C.1)."""
+    from app.core.pdfium_lock import pdfium_guard
+
+    with pdfium_guard("geometry_text_props"):
+        return _get_text_object_props_locked(pdf_path, page_index, draw_index)
+
+
+def _get_text_object_props_locked(pdf_path: str, page_index: int, draw_index: int) -> dict:
     """
     Lấy LAZY (on-demand) nội dung/màu/font của MỘT text-object theo `draw_index`
     (chỉ số thứ tự vẽ PDFium). Dùng khi mở editor sửa text — tránh trích cho MỌI
@@ -404,6 +425,14 @@ def get_text_object_props(pdf_path: str, page_index: int, draw_index: int) -> di
 
 
 def list_image_placements(pdf_path: str, page_index: int) -> list[dict]:
+    """Bọc `_list_image_placements_locked` trong `pdfium_guard` (audit 2026-07-29 §C.1)."""
+    from app.core.pdfium_lock import pdfium_guard
+
+    with pdfium_guard("geometry_image_placements"):
+        return _list_image_placements_locked(pdf_path, page_index)
+
+
+def _list_image_placements_locked(pdf_path: str, page_index: int) -> list[dict]:
     """
     Liệt kê tất cả PLACEMENT ẢNH của một trang (read-only, PDFium).
 

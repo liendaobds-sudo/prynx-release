@@ -35,8 +35,61 @@ from app.config import settings
 from app.core.license_guard import require_license, require_feature
 from app.database import SessionLocal
 from app.models.job import UploadedFile
+# KIENTRUC (audit 2026-07-29 §A.2): response model dùng chung của nhóm preflight.
+# Model request vẫn khai inline bên dưới (chưa gom, xem nhật ký lô 8).
+from app.schemas.preflight import (
+    CropRegionsResponse,
+    ExportPdfxResponse,
+    FixFileResponse,
+    FixFileWithLogResponse,
+    FlattenLayersResponse,
+    IccProfilesResponse,
+    InksResponse,
+    OcgLayerTreeResponse,
+    OverprintPreviewResponse,
+    PageBoxesResponse,
+    PageObjectsResponse,
+    PdfxComplianceResponse,
+    PreviewImageResponse,
+)
 
 logger = logging.getLogger(__name__)
+
+# KIENTRUC (audit 2026-07-29 §A.2 lô 13): model đã gom về app/schemas/preflight.py;
+# import lại ở đây để mọi đường import cũ (kể cả test) vẫn dùng được.
+from app.schemas.preflight import (  # noqa: F401
+    ActionLogResponse,
+    AddBleedRequest,
+    AutoTrimRequest,
+    ChannelReportResponse,
+    ConvertColorsRequest,
+    ConvertSpotRequest,
+    CropRegionsRequest,
+    DeleteLayerRequest,
+    DeleteObjectRequest,
+    ExportPdfxRequest,
+    FixHairlinesRequest,
+    FixRequest,
+    FixResponse,
+    FlattenLayersRequest,
+    InspectByIdRequest,
+    ObjectToDelete,
+    OverprintPreviewRequest,
+    PdfObjectResponse,
+    PipelineAction,
+    PipelineRequest,
+    PreflightIssueResponse,
+    PreflightReportResponse,
+    PreviewLayersRequest,
+    RenameLayerRequest,
+    ReorderLayersRequest,
+    SeparationsPathRequest,
+    SetPageBoxesRequest,
+    SetVisibilityRequest,
+    SoftProofRequest,
+    ToggleLockRequest,
+)
+
 router = APIRouter(dependencies=[Depends(require_feature("prepress.preflight"))])
 
 
@@ -64,80 +117,22 @@ def _validate_local_pdf_path(file_path: str) -> str:
 
 # ── Request/Response Schemas ──
 
-class InspectByIdRequest(BaseModel):
-    file_id: str
-    rules: Optional[List[str]] = None
-    tac_threshold: Optional[int] = 300
 
 
-class PreflightIssueResponse(BaseModel):
-    rule_id: str
-    severity: str
-    page: Optional[int]
-    object_ref: str
-    description: str
-    auto_fixable: bool
-    bbox: Optional[List[float]] = None
-    bboxes: Optional[List[List[float]]] = None
 
 
-class PreflightReportResponse(BaseModel):
-    file_name: str
-    total_pages: int
-    issues: List[PreflightIssueResponse]
-    summary: dict
-    color_summary: dict
-    font_summary: dict
-    image_summary: dict
 
 
-class FixRequest(BaseModel):
-    file_id: str
-    action_id: str
-    params: Optional[dict] = None
 
 
-class PipelineAction(BaseModel):
-    id: str
-    params: Optional[dict] = None
 
 
-class PipelineRequest(BaseModel):
-    file_id: str
-    actions: List[PipelineAction]
 
 
-class ChannelReportResponse(BaseModel):
-    """Báo cáo bổ sung cho action sinh dữ liệu ΔE (vd REMOVE_CHANNELS).
-
-    Cho phép UI hiển thị cảnh báo vùng ngoài gamut và thống kê ΔE (Req 4.1, 4.2).
-    Mọi trường đều optional để các action không sinh report vẫn hoạt động.
-    """
-    max_delta_e: Optional[float] = None
-    avg_delta_e: Optional[float] = None
-    out_of_gamut_count: Optional[int] = None
-    total_colors: Optional[int] = None
-    warnings: List[str] = []
-    identical_to_original: Optional[bool] = None
 
 
-class ActionLogResponse(BaseModel):
-    action_id: str
-    status: str
-    message: str
-    duration_ms: int
-    # Report bổ sung của riêng step này (None nếu action không sinh report).
-    report: Optional[ChannelReportResponse] = None
 
 
-class FixResponse(BaseModel):
-    success: bool
-    output_filename: Optional[str] = None
-    log: List[ActionLogResponse]
-    error: Optional[str] = None
-    # Report tổng hợp (lấy từ step gần nhất có report) để UI hiển thị cảnh báo
-    # ngoài gamut và thống kê ΔE mà không phải dò trong log (Req 4.1, 4.2).
-    report: Optional[ChannelReportResponse] = None
 
 
 def _report_dict_to_response(report: Optional[dict]) -> Optional[ChannelReportResponse]:
@@ -355,12 +350,6 @@ async def download_fixed_pdf(filename: str):
     )
 
 
-class PdfObjectResponse(BaseModel):
-    id: str
-    type: str  # 'text', 'image', 'drawing'
-    bbox: List[float]  # [x0, y0, x1, y1]
-    content: Optional[str] = None
-    xref: Optional[int] = None
 
 from app.core.pdf_object_ops import merge_rects as _merge_rects, expand_bbox as _expand_bbox, remove_text_from_stream as _remove_text_from_stream
 
@@ -376,15 +365,20 @@ async def get_page_svg(file_id: str, page: int):
             raise HTTPException(status_code=404, detail="File không tồn tại.")
         
         import pypdfium2 as pdfium
-        pdf_doc = pdfium.PdfDocument(uploaded.file_path)
-        if page < 1 or page > len(pdf_doc):
-            raise HTTPException(status_code=400, detail="Trang không hợp lệ.")
-            
-        p = pdf_doc[page - 1]
-        bitmap = p.render(scale=200/72)
-        img = bitmap.to_pil()
-        pdf_doc.close()
-        
+        from app.core.pdfium_lock import pdfium_guard
+        # KIENTRUC (audit 2026-07-29 §C.1): endpoint async nhưng PDFium là code C đồng bộ —
+        # nhiều request preview cùng lúc vẫn chạm PDFium song song qua event loop + threadpool.
+        with pdfium_guard("preflight_page_svg"):
+            pdf_doc = pdfium.PdfDocument(uploaded.file_path)
+            if page < 1 or page > len(pdf_doc):
+                pdf_doc.close()
+                raise HTTPException(status_code=400, detail="Trang không hợp lệ.")
+
+            p = pdf_doc[page - 1]
+            bitmap = p.render(scale=200/72)
+            img = bitmap.to_pil()
+            pdf_doc.close()
+
         # Convert to PNG base64 (SVG replacement - raster preview)
         import io as _io
         buf = _io.BytesIO()
@@ -414,15 +408,19 @@ async def get_page_svg_by_path(file_path: str, page: int):
         file_path = _validate_local_pdf_path(file_path)
 
         import pypdfium2 as pdfium
-        pdf_doc = pdfium.PdfDocument(file_path)
-        if page < 1 or page > len(pdf_doc):
-            raise HTTPException(status_code=400, detail="Trang không hợp lệ.")
-            
-        p = pdf_doc[page - 1]
-        bitmap = p.render(scale=200/72)
-        img = bitmap.to_pil()
-        pdf_doc.close()
-        
+        from app.core.pdfium_lock import pdfium_guard
+        # KIENTRUC (audit 2026-07-29 §C.1) — như get_page_svg ở trên.
+        with pdfium_guard("preflight_svg_by_path"):
+            pdf_doc = pdfium.PdfDocument(file_path)
+            if page < 1 or page > len(pdf_doc):
+                pdf_doc.close()
+                raise HTTPException(status_code=400, detail="Trang không hợp lệ.")
+
+            p = pdf_doc[page - 1]
+            bitmap = p.render(scale=200/72)
+            img = bitmap.to_pil()
+            pdf_doc.close()
+
         import io as _io
         buf = _io.BytesIO()
         img.save(buf, format='PNG')
@@ -439,7 +437,7 @@ async def get_page_svg_by_path(file_path: str, page: int):
     except Exception as e:
         raise_http(e, "Lỗi render SVG by path")
 
-@router.get("/preflight/objects/{file_id}/{page}")
+@router.get("/preflight/objects/{file_id}/{page}", response_model=PageObjectsResponse)
 async def get_page_objects(file_id: str, page: int):
     """Trích xuất toàn bộ object (Text, Image, Drawing) của một trang cụ thể."""
     db = SessionLocal()
@@ -527,10 +525,6 @@ async def get_page_objects(file_id: str, page: int):
         db.close()
 
 
-class ObjectToDelete(BaseModel):
-    type: str
-    bbox: List[float]
-    xref: Optional[int] = None
 
 
 def _delete_images_by_ref(page, image_objs) -> int:
@@ -569,14 +563,8 @@ def _delete_images_by_ref(page, image_objs) -> int:
             pass
     return removed
 
-class DeleteObjectRequest(BaseModel):
-    file_id: str
-    page: int
-    preview_dpi: float = 200.0
-    preview_max_pixels: Optional[int] = None
-    objects: List[ObjectToDelete]
 
-@router.post("/preflight/delete-object")
+@router.post("/preflight/delete-object", response_model=FixFileResponse)
 async def delete_pdf_object(req: DeleteObjectRequest):
     """Xóa nhiều objects khỏi PDF sử dụng Redaction thông minh."""
     db = SessionLocal()
@@ -632,7 +620,7 @@ async def delete_pdf_object(req: DeleteObjectRequest):
         db.close()
 
 
-@router.post("/preflight/preview-hide")
+@router.post("/preflight/preview-hide", response_model=PreviewImageResponse)
 async def preview_hide_pdf_object(req: DeleteObjectRequest):
     """Tạo ảnh preview Base64 của trang với các objects đã bị xóa tạm (tắt mắt)."""
     import io as _io
@@ -686,22 +674,27 @@ async def preview_hide_pdf_object(req: DeleteObjectRequest):
             doc.save(render_tmp.name)
             doc.close()
             
-            pdf_render = pdfium.PdfDocument(render_tmp.name)
-            render_page = pdf_render[req.page - 1]
-            requested_dpi = max(36.0, min(200.0, float(req.preview_dpi)))
-            render_scale = requested_dpi / 72.0
-            if req.preview_max_pixels and req.preview_max_pixels > 0:
-                page_width, page_height = render_page.get_size()
-                projected_pixels = page_width * page_height * render_scale * render_scale
-                if projected_pixels > req.preview_max_pixels:
-                    render_scale *= (req.preview_max_pixels / projected_pixels) ** 0.5
-            bitmap = render_page.render(scale=render_scale)
-            img = bitmap.to_pil()
-            pdf_render.close()
-            
-            buf = _io.BytesIO()
-            img.save(buf, format='JPEG', quality=92)
-            b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+            # KIENTRUC (audit 2026-07-29 §C.1): encode JPEG nằm TRONG khóa là cố ý —
+            # `bitmap.to_pil()` có thể tham chiếu bộ đệm bitmap nên không đổi thứ tự
+            # "dùng ảnh xong mới đóng tài liệu".
+            from app.core.pdfium_lock import pdfium_guard
+            with pdfium_guard("preflight_preview_hide_render"):
+                pdf_render = pdfium.PdfDocument(render_tmp.name)
+                render_page = pdf_render[req.page - 1]
+                requested_dpi = max(36.0, min(200.0, float(req.preview_dpi)))
+                render_scale = requested_dpi / 72.0
+                if req.preview_max_pixels and req.preview_max_pixels > 0:
+                    page_width, page_height = render_page.get_size()
+                    projected_pixels = page_width * page_height * render_scale * render_scale
+                    if projected_pixels > req.preview_max_pixels:
+                        render_scale *= (req.preview_max_pixels / projected_pixels) ** 0.5
+                bitmap = render_page.render(scale=render_scale)
+                img = bitmap.to_pil()
+                pdf_render.close()
+
+                buf = _io.BytesIO()
+                img.save(buf, format='JPEG', quality=92)
+                b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
         finally:
             try:
                 os.unlink(render_tmp.name)
@@ -722,7 +715,7 @@ async def preview_hide_pdf_object(req: DeleteObjectRequest):
     finally:
         db.close()
 
-@router.get("/preflight/layers/{file_id}")
+@router.get("/preflight/layers/{file_id}", response_model=OcgLayerTreeResponse)
 async def get_ocg_layers(file_id: str, original_only: bool = False):
     """Đọc cây OCG từ live session nếu đang sửa, nếu không đọc file đã upload."""
     from app.core.layer_engine import LayerEngine
@@ -749,10 +742,6 @@ async def get_ocg_layers(file_id: str, original_only: bool = False):
     except Exception as exc:
         raise_http(exc, "Lỗi khi trích xuất OCG layers")
 
-class PreviewLayersRequest(BaseModel):
-    file_id: str
-    page: int
-    hidden_layer_ids: List[int] = []
 
 @router.post("/preflight/preview-layers")
 async def preview_layers_pdf(req: PreviewLayersRequest):
@@ -783,12 +772,8 @@ async def preview_layers_pdf(req: PreviewLayersRequest):
     except Exception as exc:
         raise_http(exc, "Lỗi khi tạo ảnh preview layers")
 
-class RenameLayerRequest(BaseModel):
-    file_id: str
-    layer_id: int
-    new_name: str
 
-@router.post("/preflight/layers/rename")
+@router.post("/preflight/layers/rename", response_model=FixFileResponse)
 async def rename_layer(req: RenameLayerRequest):
     """Đổi tên OCG layer."""
     from app.core.layer_engine import LayerEngine
@@ -801,12 +786,8 @@ async def rename_layer(req: RenameLayerRequest):
         raise_http(e, "Lỗi khi đổi tên layer")
 
 
-class ToggleLockRequest(BaseModel):
-    file_id: str
-    layer_id: int
-    locked: bool
 
-@router.post("/preflight/layers/toggle-lock")
+@router.post("/preflight/layers/toggle-lock", response_model=FixFileResponse)
 async def toggle_layer_lock(req: ToggleLockRequest):
     """Khóa/mở khóa OCG layer."""
     from app.core.layer_engine import LayerEngine
@@ -819,12 +800,8 @@ async def toggle_layer_lock(req: ToggleLockRequest):
         raise_http(e, "Lỗi khi khóa/mở khóa layer")
 
 
-class SetVisibilityRequest(BaseModel):
-    file_id: str
-    layer_id: int
-    visible: bool
 
-@router.post("/preflight/layers/set-visibility")
+@router.post("/preflight/layers/set-visibility", response_model=FixFileResponse)
 async def set_layer_visibility(req: SetVisibilityRequest):
     """Đặt visibility (ẩn/hiện) cho OCG layer và lưu vào PDF."""
     from app.core.layer_engine import LayerEngine
@@ -837,11 +814,8 @@ async def set_layer_visibility(req: SetVisibilityRequest):
         raise_http(e, "Lỗi khi đặt visibility layer")
 
 
-class DeleteLayerRequest(BaseModel):
-    file_id: str
-    layer_id: int
 
-@router.post("/preflight/layers/delete")
+@router.post("/preflight/layers/delete", response_model=FixFileResponse)
 async def delete_layer(req: DeleteLayerRequest):
     """Xóa OCG layer khỏi PDF."""
     from app.core.layer_engine import LayerEngine
@@ -854,11 +828,8 @@ async def delete_layer(req: DeleteLayerRequest):
         raise_http(e, "Lỗi khi xóa layer")
 
 
-class ReorderLayersRequest(BaseModel):
-    file_id: str
-    new_order: List[int]
 
-@router.post("/preflight/layers/reorder")
+@router.post("/preflight/layers/reorder", response_model=FixFileResponse)
 async def reorder_layers(req: ReorderLayersRequest):
     """Sắp xếp lại thứ tự OCG layers."""
     from app.core.layer_engine import LayerEngine
@@ -871,10 +842,8 @@ async def reorder_layers(req: ReorderLayersRequest):
         raise_http(e, "Lỗi khi sắp xếp lại layers")
 
 
-class FlattenLayersRequest(BaseModel):
-    file_id: str
 
-@router.post("/preflight/layers/flatten")
+@router.post("/preflight/layers/flatten", response_model=FlattenLayersResponse)
 async def flatten_layers(req: FlattenLayersRequest):
     """Flatten visible layers — gộp tất cả layer hiện tại thành 1 (không có OCG)."""
     from app.core.layer_engine import LayerEngine
@@ -923,13 +892,6 @@ async def get_separations(
         raise_http(e, "Lỗi khi tạo Separations")
 
 
-class SeparationsPathRequest(BaseModel):
-    file_path: str
-    page: int = 1
-    dpi: int = 150
-    # Tên legacy: None/True = PPE chính xác; False = buộc đường xấp xỉ.
-    use_gs: bool | None = None
-    profile_id: str = "fogra39"
 
 @router.post("/preflight/separations-by-path")
 async def get_separations_by_path(req: SeparationsPathRequest):
@@ -955,7 +917,7 @@ async def get_separations_by_path(req: SeparationsPathRequest):
 #  PAGE BOXES (Set Page Boxes)
 # ══════════════════════════════════════════════════════════════
 
-@router.get("/preflight/page-boxes/{file_id}/{page}")
+@router.get("/preflight/page-boxes/{file_id}/{page}", response_model=PageBoxesResponse)
 async def get_page_boxes(file_id: str, page: int):
     """Lấy thông tin 5 box của 1 trang."""
     file_path = _get_file_path(file_id)
@@ -967,14 +929,9 @@ async def get_page_boxes(file_id: str, page: int):
         raise_http(e, "Không lấy được thông tin page boxes")
 
 
-class SetPageBoxesRequest(BaseModel):
-    file_id: str
-    box_type: str  # mediabox|cropbox|trimbox|bleedbox|artbox
-    rect_mm: dict  # {x0, y0, x1, y1}
-    pages: Optional[List[int]] = None  # None = all
 
 
-@router.post("/preflight/set-page-boxes")
+@router.post("/preflight/set-page-boxes", response_model=FixFileResponse)
 async def set_page_boxes(req: SetPageBoxesRequest):
     """Cập nhật 1 loại box cho danh sách trang."""
     file_path = _get_file_path(req.file_id)
@@ -987,14 +944,6 @@ async def set_page_boxes(req: SetPageBoxesRequest):
         raise_http(e, "Không cập nhật được page boxes")
 
 
-class CropRegionsRequest(BaseModel):
-    """Crop nhiều vùng trên 1 trang → PDF nhiều trang (mỗi vùng = 1 page)."""
-    file_id: str
-    page: int  # 1-indexed
-    rects_mm: List[dict]  # [{x0,y0,x1,y1}, ...] mm theo CropBox đang hiển thị
-    keep_other_pages: bool = False  # True = thay trang nguồn bằng N vùng, giữ phần còn lại
-
-    pages: Optional[List[int]] = None  # None = chỉ page; danh sách = áp dụng cùng vùng cho các trang này
 
 class DetectCropRegionsRequest(CropRegionsRequest):
     """Dò bốn cạnh thành phẩm nằm gần bên trong các vùng quét rộng."""
@@ -1032,7 +981,7 @@ async def detect_crop_regions(req: DetectCropRegionsRequest, request: Request):
         cancel_event.set()
         disconnect_task.cancel()
 
-@router.post("/preflight/crop-regions")
+@router.post("/preflight/crop-regions", response_model=CropRegionsResponse)
 async def crop_regions(req: CropRegionsRequest):
     """Mỗi vùng quét → 1 trang trong PDF kết quả (thứ tự giữ nguyên)."""
     file_path = _get_file_path(req.file_id)
@@ -1056,13 +1005,9 @@ async def crop_regions(req: CropRegionsRequest):
         raise_http(e, "Không crop được nhiều vùng")
 
 
-class AutoTrimRequest(BaseModel):
-    file_id: str
-    pages: Optional[List[int]] = None
-    margin_mm: float = 0
 
 
-@router.post("/preflight/auto-trim")
+@router.post("/preflight/auto-trim", response_model=FixFileResponse)
 async def auto_trim(req: AutoTrimRequest):
     """Xóa lề trắng tự động."""
     file_path = _get_file_path(req.file_id)
@@ -1075,20 +1020,18 @@ async def auto_trim(req: AutoTrimRequest):
         raise_http(e, "Không tự động xóa lề trắng được")
 
 
-class AddBleedRequest(BaseModel):
-    file_id: str
-    bleed_mm: float = 3
-    pages: Optional[List[int]] = None
 
 
-@router.post("/preflight/add-bleed")
+@router.post("/preflight/add-bleed", response_model=FixFileResponse)
 async def add_bleed(req: AddBleedRequest):
     """Tự động set BleedBox = TrimBox + bleed."""
     file_path = _get_file_path(req.file_id)
     from app.core.page_boxes import PageBoxesEngine
     engine = PageBoxesEngine()
     try:
-        output = engine.add_bleed_from_trim(file_path, req.bleed_mm, req.pages)
+        output = engine.add_bleed_from_trim(
+            file_path, req.bleed_mm, req.pages, sides=req.bleed_sides,
+        )
         return {"success": True, "output_filename": Path(output).name}
     except Exception as e:
         raise_http(e, "Không thêm được vùng bleed")
@@ -1125,14 +1068,16 @@ def _safe_watermark_preflight(pdf_path: str, license_info: dict | None) -> None:
                 pass
 
 
-@router.post("/preflight/mirror-bleed")
+@router.post("/preflight/mirror-bleed", response_model=FixFileResponse)
 async def mirror_bleed(req: AddBleedRequest, license_info: dict = Depends(require_license)):
     """Tạo bù xén bằng cách LẬT GƯƠNG nội dung mép ra vùng bleed (giữ vector)."""
     file_path = _get_file_path(req.file_id)
     from app.core.page_boxes import PageBoxesEngine
     engine = PageBoxesEngine()
     try:
-        output = engine.add_mirror_bleed(file_path, req.bleed_mm, req.pages)
+        output = engine.add_mirror_bleed(
+            file_path, req.bleed_mm, req.pages, sides=req.bleed_sides,
+        )
         _safe_watermark_preflight(output, license_info)
         return {"success": True, "output_filename": Path(output).name}
     except Exception as e:
@@ -1143,14 +1088,9 @@ async def mirror_bleed(req: AddBleedRequest, license_info: dict = Depends(requir
 #  FIX HAIRLINES
 # ══════════════════════════════════════════════════════════════
 
-class FixHairlinesRequest(BaseModel):
-    file_id: str
-    threshold_pt: float = 0.1
-    replace_pt: float = 0.25
-    pages: Optional[List[int]] = None
 
 
-@router.post("/preflight/fix-hairlines")
+@router.post("/preflight/fix-hairlines", response_model=FixFileWithLogResponse)
 async def fix_hairlines(req: FixHairlinesRequest):
     """Quét & sửa nét mảnh trên PDF."""
     file_path = _get_file_path(req.file_id)
@@ -1171,7 +1111,7 @@ async def fix_hairlines(req: FixHairlinesRequest):
 #  INK MANAGER
 # ══════════════════════════════════════════════════════════════
 
-@router.get("/preflight/inks/{file_id}")
+@router.get("/preflight/inks/{file_id}", response_model=InksResponse)
 async def list_inks(file_id: str):
     """Liệt kê toàn bộ kênh mực trong PDF."""
     file_path = _get_file_path(file_id)
@@ -1183,12 +1123,9 @@ async def list_inks(file_id: str):
         raise_http(e, "Không liệt kê được kênh mực")
 
 
-class ConvertSpotRequest(BaseModel):
-    file_id: str
-    spot_name: Optional[str] = None  # None = convert ALL
 
 
-@router.post("/preflight/convert-spot")
+@router.post("/preflight/convert-spot", response_model=FixFileResponse)
 async def convert_spot(req: ConvertSpotRequest):
     """Chuyển Spot Color → CMYK."""
     file_path = _get_file_path(req.file_id)
@@ -1205,7 +1142,7 @@ async def convert_spot(req: ConvertSpotRequest):
 #  TRAP / OVERPRINT
 # ══════════════════════════════════════════════════════════════
 
-@router.post("/preflight/set-overprint")
+@router.post("/preflight/set-overprint", response_model=FixFileWithLogResponse)
 async def set_overprint(req: FixRequest):
     """Đặt overprint cho text/nét đen."""
     file_path = _get_file_path(req.file_id)
@@ -1223,7 +1160,7 @@ async def set_overprint(req: FixRequest):
 #  PDF/X EXPORT
 # ══════════════════════════════════════════════════════════════
 
-@router.get("/preflight/check-pdfx/{file_id}/{standard}")
+@router.get("/preflight/check-pdfx/{file_id}/{standard}", response_model=PdfxComplianceResponse)
 async def check_pdfx_compliance(file_id: str, standard: str):
     """Kiểm tra compliance PDF/X."""
     file_path = _get_file_path(file_id)
@@ -1235,12 +1172,9 @@ async def check_pdfx_compliance(file_id: str, standard: str):
         raise_http(e, "Kiểm tra compliance PDF/X thất bại")
 
 
-class ExportPdfxRequest(BaseModel):
-    file_id: str
-    standard: str = "x4"  # "x1a" | "x4"
 
 
-@router.post("/preflight/export-pdfx")
+@router.post("/preflight/export-pdfx", response_model=ExportPdfxResponse)
 async def export_pdfx(req: ExportPdfxRequest):
     """Xuất file chuẩn PDF/X."""
     file_path = _get_file_path(req.file_id)
@@ -1283,12 +1217,6 @@ async def export_pdfx(req: ExportPdfxRequest):
 #  CONVERT COLORS (RGB→CMYK, Gray→K, Spot→CMYK)
 # ══════════════════════════════════════════════════════════════
 
-class ConvertColorsRequest(BaseModel):
-    file_id: str
-    conversions: list[str] = ["rgb_to_cmyk"]  # "rgb_to_cmyk" | "gray_to_cmyk" | "spot_to_cmyk"
-    icc_profile: str = "auto"  # "auto" | "fogra39" | "swop" | "japan_color"
-    rendering_intent: str = "relative"  # "relative" | "perceptual" | "saturation" | "absolute"
-    preserve_black: bool = True
 
 
 # Map UI key → bundle filename; resolve_cmyk_profile_path() is preferred (bundle + OS).
@@ -1301,7 +1229,7 @@ ICC_FILE_MAP = {
 }
 
 
-@router.post("/preflight/convert-colors")
+@router.post("/preflight/convert-colors", response_model=FixFileWithLogResponse)
 async def convert_colors(req: ConvertColorsRequest):
     """Chuyển đổi không gian màu toàn bộ file PDF."""
     import time
@@ -1477,16 +1405,9 @@ async def convert_colors(req: ConvertColorsRequest):
     }
 
 
-class SoftProofRequest(BaseModel):
-    file_id: str
-    page: int = 1
-    profile_id: str = "fogra39"
-    intent: str = "relative"
-    show_gamut_warning: bool = False
-    dpi: int = 150
 
 
-@router.get("/preflight/icc-profiles")
+@router.get("/preflight/icc-profiles", response_model=IccProfilesResponse)
 async def list_icc_profiles():
     """Danh sách ICC output (soft-proof / convert) — bundle FOGRA39 + OS."""
     from app.core.icc_profiles import list_output_profiles
@@ -1524,10 +1445,6 @@ async def render_softproof(req: SoftProofRequest):
         return {"success": False, "error": str(e)}
 
 
-class OverprintPreviewRequest(BaseModel):
-    file_id: str
-    page: int = 1
-    dpi: int = 150
 
 
 def _render_ppe_overprint_pair(pdf_path: str, page: int, dpi: int) -> tuple[dict, dict]:
@@ -1555,7 +1472,7 @@ def _render_ppe_overprint_pair(pdf_path: str, page: int, dpi: int) -> tuple[dict
     return knockout, simulated
 
 
-@router.post("/preflight/overprint-preview")
+@router.post("/preflight/overprint-preview", response_model=OverprintPreviewResponse)
 async def render_overprint_preview(req: OverprintPreviewRequest):
     """
     Render a page with Overprint Simulation ON, and produce a diff overlay

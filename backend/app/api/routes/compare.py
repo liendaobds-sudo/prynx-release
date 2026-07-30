@@ -23,6 +23,10 @@ router = APIRouter()
 # Giới hạn job SO SÁNH ở DEV/Desktop. Fixed executor giữ số OS thread ổn định;
 # submission slots chặn cả số job chạy và số job chờ để tránh tăng RAM vô hạn.
 # Cấu hình qua PRYNX_MAX_COMPARE_JOBS và PRYNX_MAX_COMPARE_QUEUE.
+# PERF (audit 2026-07-29 §C.3): trần = 1 là CỐ Ý. So sánh PDF là việc render + so ảnh
+# rất tốn RAM theo kích thước trang (xem `_MAX_COMPARE_PAGE_PIXELS` bên dưới) và đi qua
+# PDFium — nay đã serialize bằng `pdfium_guard`, nên job thứ hai chạy song song chỉ thêm
+# tranh chấp chứ không thêm thông lượng. Nới trần phải đo trước, không nới theo cảm giác.
 _MAX_CONCURRENT_COMPARES = max(1, int(os.environ.get("PRYNX_MAX_COMPARE_JOBS", "1") or "1"))
 _MAX_QUEUED_COMPARES = max(0, int(os.environ.get("PRYNX_MAX_COMPARE_QUEUE", "8") or "8"))
 _COMPARE_EXECUTOR = ThreadPoolExecutor(

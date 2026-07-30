@@ -1,65 +1,38 @@
-import { useRef, useEffect, useCallback } from 'react';
+import { useRef, useEffect, useCallback, useState } from 'react';
+import { nativeTileRenderScheduler } from './tileRenderScheduler';
 
 interface UseTileRendererProps {
     file: any;
     pdfRef: any;
     pdfUrl: string | null;
-    zoom: number;
     activePage: number;
+    tabId?: string;
+    isActive?: boolean;
 }
 
-export function useTileRenderer({ file, pdfRef, pdfUrl, zoom, activePage }: UseTileRendererProps) {
-    const tileQueueRef = useRef<{ args: any, resolve: any, reject: any }[]>([]);
-    const isProcessingTileRef = useRef(false);
+interface TileRenderRequestOptions {
+    ownerId?: string;
+    groupKey?: string;
+    priority?: number;
+}
 
-    const currentZoomRef = useRef(zoom);
-    useEffect(() => { currentZoomRef.current = zoom; }, [zoom]);
+let nextTileRendererId = 1;
 
+export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isActive }: UseTileRendererProps) {
     const activePageRef = useRef(activePage);
     useEffect(() => { activePageRef.current = activePage; }, [activePage]);
 
-    const processTileQueue = useCallback(async () => {
-        if (isProcessingTileRef.current || tileQueueRef.current.length === 0) return;
-        isProcessingTileRef.current = true;
-        const { invoke } = await import('@tauri-apps/api/core');
+    const [rendererInstanceId] = useState(() => `viewer:${tabId || 'local'}:${nextTileRendererId++}`);
+    const fileIdentity = (file as { path?: string } | null)?.path || pdfUrl || 'memory';
+    const renderOwnerId = `${rendererInstanceId}:${fileIdentity}`;
+    useEffect(() => () => {
+        nativeTileRenderScheduler.cancelOwner(renderOwnerId);
+    }, [renderOwnerId]);
+    useEffect(() => {
+        if (isActive === false) nativeTileRenderScheduler.cancelOwner(renderOwnerId);
+    }, [isActive, renderOwnerId]);
 
-        const MAX_CONCURRENT = 4;
-
-        while (tileQueueRef.current.length > 0) {
-            const ap = activePageRef.current || 1;
-            tileQueueRef.current.sort((a, b) =>
-                Math.abs(a.args.page - ap) - Math.abs(b.args.page - ap)
-            );
-
-            const batch = tileQueueRef.current.splice(0, MAX_CONCURRENT);
-
-            await Promise.all(batch.map(async (item) => {
-                if (!item) return;
-
-                if (Math.abs(item.args.zoom - currentZoomRef.current) > 0.05) {
-                    item.resolve('');
-                    return;
-                }
-
-                try {
-                    const _t0 = performance.now();
-                    const bytes: Uint8Array = await invoke('render_pdf_page', item.args);
-                    const _ms = Math.round(performance.now() - _t0);
-                    if (_ms >= 30) console.info(`[TilePerf] via=queue page=${item.args.page} zoom=${(item.args.zoom ?? 0).toFixed?.(2) ?? item.args.zoom} invoke=${_ms}ms bytes=${(bytes as any).byteLength ?? bytes.length ?? 0}`);
-                    const blob = new Blob([bytes as any], { type: 'image/jpeg' });
-                    const url = URL.createObjectURL(blob);
-                    item.resolve(url);
-                } catch (err) {
-                    console.error(`[Queue] Failed tile:`, err);
-                    item.reject(err);
-                }
-            }));
-        }
-
-        isProcessingTileRef.current = false;
-    }, []);
-
-    const getTileUrl = useCallback((pageNum: number, rotation: number, zoomScale: number, clipX?: number, clipY?: number, clipW?: number, clipH?: number): Promise<string> => {
+    const getTileUrl = useCallback((pageNum: number, rotation: number, zoomScale: number, clipX?: number, clipY?: number, clipW?: number, clipH?: number, requestOptions?: TileRenderRequestOptions): Promise<string> => {
         const isImage = file?.type?.startsWith('image/') || file?.name?.match(/\.(jpg|jpeg|png|webp|gif)$/i);
         if (isImage) {
             return Promise.resolve(pdfUrl ? pdfUrl + '#keep' : '');
@@ -69,32 +42,55 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, zoom, activePage }: UseT
         // fetch) ĐỀU không hiển thị được — chỉ cache cũ mới hiện. Cách đáng tin duy nhất:
         // lấy bytes JPEG qua IPC `invoke('render_pdf_page')` (giống tách nền dùng invoke→blob,
         // đã chạy ở release) rồi tạo blob:. LiveTile tự cache + revoke blob.
-        if ((file as any)?.path) {
+        const nativeFilePath = (file as { path?: string } | null)?.path;
+        if (nativeFilePath) {
             // Tile thật khi clipW/clipH > 0. Lúc đó clipX/clipY PHẢI truyền nguyên
             // giá trị (kể cả 0 — ô góc trên-trái) để backend nhận đủ 4 Some → vào
             // nhánh clip. Trước đây `clipX && clipX!==0 ? clipX : null` biến clipX=0
             // thành null → ô góc rơi nhầm vào nhánh render full-page.
             const isTile = !!(clipW && clipW > 0 && clipH && clipH > 0);
+            const layer = isTile ? 'tile' : 'page';
+            const ownerId = requestOptions?.ownerId || renderOwnerId;
+            const groupKey = requestOptions?.groupKey || `${layer}:${pageNum}`;
+            const priority = requestOptions?.priority ?? (isTile ? 0 : 100 + Math.abs(pageNum - (activePageRef.current || 1)));
+            const requestKey = [
+                ownerId,
+                nativeFilePath,
+                pageNum,
+                zoomScale.toFixed(3),
+                rotation || 0,
+                isTile ? (clipX ?? 0) : 0,
+                isTile ? (clipY ?? 0) : 0,
+                isTile ? clipW : 0,
+                isTile ? clipH : 0,
+            ].join('|');
+            const queuedAt = performance.now();
             return (async () => {
-                const { invoke } = await import('@tauri-apps/api/core');
-                // Đo thật: thời gian FE chờ 1 lần invoke render_pdf_page (gồm hàng đợi
-                // spawn_blocking + RENDER_LOCK + render + encode + IPC). So với perf_log
-                // Rust (render/encode thuần) sẽ lộ overhead hàng đợi/khóa. layer=tile khi
-                // có clip (zoom sâu), =page khi full-page.
-                const _t0 = performance.now();
-                const bytes: ArrayBuffer = await invoke('render_pdf_page', {
-                    filePath: (file as any).path,
-                    page: pageNum,
-                    zoom: zoomScale,
-                    rotation: rotation || 0,
-                    clipX: isTile ? (clipX ?? 0) : null,
-                    clipY: isTile ? (clipY ?? 0) : null,
-                    clipW: isTile ? clipW : null,
-                    clipH: isTile ? clipH : null,
+                const bytes = await nativeTileRenderScheduler.enqueue({
+                    requestKey,
+                    groupKey,
+                    ownerId,
+                    priority,
+                    run: async () => {
+                        const { invoke } = await import('@tauri-apps/api/core');
+                        const queueMs = Math.round(performance.now() - queuedAt);
+                        const invokeStartedAt = performance.now();
+                        const renderedBytes = await invoke<ArrayBuffer>('render_pdf_page', {
+                            filePath: nativeFilePath,
+                            page: pageNum,
+                            zoom: zoomScale,
+                            rotation: rotation || 0,
+                            clipX: isTile ? (clipX ?? 0) : null,
+                            clipY: isTile ? (clipY ?? 0) : null,
+                            clipW: isTile ? clipW : null,
+                            clipH: isTile ? clipH : null,
+                        });
+                        const invokeMs = Math.round(performance.now() - invokeStartedAt);
+                        if (queueMs + invokeMs >= 30) console.info(`[TilePerf] layer=${layer} page=${pageNum} zoom=${zoomScale.toFixed(2)} queue=${queueMs}ms invoke=${invokeMs}ms bytes=${renderedBytes.byteLength}`);
+                        return renderedBytes;
+                    },
                 });
-                const _ms = Math.round(performance.now() - _t0);
-                if (_ms >= 30) console.info(`[TilePerf] layer=${isTile ? 'tile' : 'page'} page=${pageNum} zoom=${zoomScale.toFixed(2)} invoke=${_ms}ms bytes=${(bytes as any).byteLength ?? 0}`);
-                const blob = new Blob([bytes as any], { type: 'image/jpeg' });
+                const blob = new Blob([bytes], { type: 'image/jpeg' });
                 return URL.createObjectURL(blob);
             })();
         }
@@ -128,7 +124,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, zoom, activePage }: UseT
                 reject(e);
             }
         });
-    }, [file, pdfRef, pdfUrl]);
+    }, [activePageRef, file, pdfRef, pdfUrl, renderOwnerId]);
 
     // Text extraction via pdfjs
     const getTextBlocksForPage = useCallback(async (pageNum: number, existingBlocks: Record<number, any[]>) => {
@@ -152,5 +148,5 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, zoom, activePage }: UseT
         } catch { return null; }
     }, [pdfRef]);
 
-    return { getTileUrl, getTextBlocksForPage, processTileQueue };
+    return { getTileUrl, getTextBlocksForPage, renderOwnerId };
 }

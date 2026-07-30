@@ -9,6 +9,8 @@
 
 // UIUX (audit 2026-07-27 §A-04): bỏ createElement/CropIcon — icon Crop quy về emoji cùng hệ với dàn icon menu công cụ
 import { lazy, type LazyExoticComponent, type ComponentType, type ReactNode } from 'react';
+// [VARIANT 2026-07-29] Hàm chuẩn hoá tìm kiếm ở module thuần (không React)
+import { normalizeSearch } from './textSearch';
 
 // ─── Tool Category IDs ───
 export type ToolCategoryId = 'file' | 'print' | 'vdp' | 'impo' | 'packaging' | 'util' | 'qc';
@@ -610,7 +612,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     tabTitle: 'Bình bài (Chưa có file)',
     icon: '🪄',
     description: 'Phóng to ảnh AI đúng kích thước (2x, 4x)',
-    longDescription: 'Real-ESRGAN cải thiện độ nét cảm nhận khi phóng to 2x, 4x. AI có thể suy đoán chi tiết; cần kiểm tra chữ và logo ở mức zoom 100%.',
+    longDescription: 'Cải thiện độ nét cảm nhận khi phóng to 2x, 4x, xử lý hoàn toàn trên máy. AI có thể suy đoán chi tiết; cần kiểm tra chữ và logo ở mức zoom 1:1.',
     category: 'util',
     component: ImpositionTab,
     isEnabled: true,
@@ -621,6 +623,8 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     bgIcon: 'bg-violet-100 dark:bg-violet-500/10',
     textIcon: 'text-violet-600',
   },
+  // UIUX (audit 2026-07-29 §LR.HOLD): tạm ẩn Logo Rebuild khỏi mọi menu.
+  // Workspace/backend được giữ nguyên để bật lại sau khi màu và hình học đạt nghiệm thu.
   {
     id: 'combine_pdf',
     title: 'Ghép & Trộn PDF',
@@ -731,14 +735,10 @@ export function getExistingInstance(appId: AppToolId, currentTabs: { id: string;
 
 // ─── Tool Search Helpers ───
 
-/** Chuẩn hoá chuỗi để tìm kiếm: thường hoá + BỎ DẤU tiếng Việt (kể cả đ→d). */
-export function normalizeSearch(s: string): string {
-  return (s || '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/đ/g, 'd');
-}
+// [VARIANT 2026-07-29] `normalizeSearch` đã chuyển sang `lib/textSearch.ts` để
+// module không thuộc app shell (vd lib/dieline, bundle vào sidecar Boa không có
+// DOM) dùng được mà không kéo React theo. Re-export để mọi chỗ gọi cũ giữ nguyên.
+export { normalizeSearch };
 
 /**
  * Khớp công cụ theo từ khoá: bỏ dấu + tách nhiều từ rời (mọi từ đều phải xuất

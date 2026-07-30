@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 120" width="320" height="120">
+  <rect width="320" height="120" fill="#ffffff"/>
+  <g transform="translate(95.623, 114) scale(0.384, -0.384)">
+    <path d="M 0,9 L 0,272 L 15,281 L 335,281" fill="none" stroke="#111827" stroke-width="2.862" stroke-linecap="round"/>
+    <path d="M 15,0 L 0,9" fill="none" stroke="#111827" stroke-width="2.862" stroke-linecap="round"/>
+    <path d="M 15,0 L 15,281" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 0,251 L 15,251" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 0,51 L 15,51 L 75,51 L 75,251 L 15,251" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 75,51 L 175,51 L 175,251 L 75,251 L 75,281" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 175,51 L 235,51 L 235,251 L 175,251 L 175,281" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 235,51 L 335,51 L 284,0" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 335,51 L 335,251 L 335,281" fill="none" stroke="#111827" stroke-width="2.862" stroke-linecap="round"/>
+    <path d="M 335,251 L 235,251 L 235,281" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 0,251 L 335,251" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 0,51 L 335,51" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 15,0 L 335,0" fill="none" stroke="#111827" stroke-width="2.862" stroke-linecap="round"/>
+    <path d="M 335,51 L 335,0" fill="none" stroke="#111827" stroke-width="2.862" stroke-linecap="round"/>
+    <path d="M 75,51 L 75,0" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 175,51 L 175,0" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 235,51 L 235,0" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 45,281 L 45,0" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 45,81 L 0,36" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 45,81 L 126,0" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 205,281 L 205,0" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 205,81 L 124,0" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 205,81 L 286,0" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 45,81 L 0,81" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 205,81 L 335,81" fill="none" stroke="#dc2626" stroke-width="2.342" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+  </g>
+</svg>

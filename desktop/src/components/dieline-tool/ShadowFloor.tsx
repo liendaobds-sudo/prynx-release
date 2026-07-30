@@ -17,7 +17,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { ContactShadows } from '@react-three/drei';
 import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import { useMockupStore } from '../../store/useMockupStore';
+import { useMockupStore } from '../../stores/useMockupStore';
 import { MOCKUP_VISUAL_ONLY_LAYER, moveToMockupVisualOnlyLayer } from './renderLayers';
 
 // ─── Định nghĩa preset nền/sàn ──────────────────────────────────────────────

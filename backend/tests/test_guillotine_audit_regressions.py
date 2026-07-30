@@ -154,3 +154,136 @@ def test_manual_grid_that_exceeds_sheet_is_rejected(tmp_path):
             ),
             job_id="manual-overflow",
         )
+
+@pytest.mark.parametrize(
+    "quantities",
+    [
+        {"0": 10},
+        {"0": 10, "1": 1},
+    ],
+)
+def test_repeat_duplex_uses_front_quantity_for_both_faces(
+    monkeypatch, tmp_path, quantities
+):
+    """Số lượng của sản phẩm hai mặt nằm ở trang chẵn và áp dụng cho cả cặp."""
+    source = str(tmp_path / "repeat-duplex.pdf")
+    output = str(tmp_path / "repeat-duplex-out.pdf")
+    _make_pdf(source, [(100.0, 100.0), (100.0, 100.0)])
+    monkeypatch.setenv("PRYNX_NUP_WORKERS", "1")
+
+    nup_engine.run_nup_engine(
+        source,
+        output,
+        _settings(
+            sheetWidth=300.0 / 2.83465,
+            sheetHeight=300.0 / 2.83465,
+            duplexFlow="double",
+            targetQuantitiesByPage=quantities,
+        ),
+        job_id="repeat-duplex-quantity",
+    )
+
+    with pikepdf.open(output) as pdf:
+        assert len(pdf.pages) == 4
+        placed_counts = []
+        for page in pdf.pages:
+            instructions = pikepdf.parse_content_stream(page)
+            placed_counts.append(
+                sum(str(instruction.operator) == "Do" for instruction in instructions)
+            )
+    assert placed_counts == [9, 9, 1, 1]
+
+
+def test_repeat_duplex_rejects_mismatched_face_sizes(tmp_path):
+    source = str(tmp_path / "repeat-duplex-mixed.pdf")
+    output = str(tmp_path / "repeat-duplex-mixed-out.pdf")
+    _make_pdf(source, [(100.0, 100.0), (200.0, 200.0)])
+
+    with pytest.raises(ValueError, match="mặt trước/sau.*cùng kích thước"):
+        nup_engine.run_nup_engine(
+            source,
+            output,
+            _settings(
+                sheetWidth=300.0 / 2.83465,
+                sheetHeight=300.0 / 2.83465,
+                duplexFlow="double",
+                targetQuantitiesByPage={"0": 10},
+            ),
+            job_id="repeat-duplex-mixed-size",
+        )
+
+
+def test_cluster_duplex_report_counts_physical_sheets(monkeypatch, tmp_path):
+    """Hai trang PDF trước/sau chỉ là một tờ giấy vật lý trong report."""
+    from app.workers import cluster_tile_engine, nup_report
+
+    source = str(tmp_path / "cluster-duplex.pdf")
+    output = str(tmp_path / "cluster-duplex-out.pdf")
+    _make_pdf(source, [(100.0, 100.0), (100.0, 100.0)])
+    monkeypatch.setenv("PRYNX_NUP_WORKERS", "1")
+
+    placement = {
+        "cluster_idx": 0,
+        "cell": {
+            "x": 0.0,
+            "y": 0.0,
+            "width": 100.0,
+            "height": 100.0,
+            "isRotated": False,
+        },
+        "src_page_idx": 0,
+        "abs_x": 0.0,
+        "abs_y": 0.0,
+        "width": 100.0,
+        "height": 100.0,
+    }
+    monkeypatch.setattr(
+        cluster_tile_engine,
+        "compute_cluster_sheets",
+        lambda **_kwargs: [([placement], {"v": set(), "h": set()})],
+    )
+    captured = {}
+
+    def capture_reports(_input_path, _output_path, reports, **_kwargs):
+        captured.update(reports)
+
+    monkeypatch.setattr(nup_report, "stamp_reports_on_pdf", capture_reports)
+
+    message = nup_engine.run_nup_engine(
+        source,
+        output,
+        _settings(
+            layoutType="sequential",
+            groupingStrategy="cluster_tile",
+            clusterCombineMode="replicate_mixed",
+            duplexFlow="double",
+            targetQuantitiesByPage={"0": 1},
+            reportDisplay={"enabled": True},
+        ),
+        job_id="cluster-duplex-report",
+    )
+
+    assert set(captured) == {0}
+    report = captured[0]
+    assert "SL/tờ: 1" in report
+    assert "SL thực: 1" in report
+    assert "Số tờ: 1" in report
+    assert "Số tờ: 2" not in report
+    assert "in 1 tờ" in message
+    assert "Tổng số tờ cần in: 1" in message
+
+@pytest.mark.parametrize(
+    ("total_sheets", "available_workers", "expected"),
+    [
+        (2, 15, (2, 1)),
+        (13, 15, (5, 1)),
+        (16, 15, (2, 15)),
+        (50, 15, (4, 15)),
+        (500, 15, (5, 15)),
+        (10, 1, (5, 1)),
+    ],
+)
+def test_small_nup_jobs_run_inline_without_limiting_large_jobs(
+    total_sheets, available_workers, expected
+):
+    assert nup_engine._plan_nup_chunking(total_sheets, available_workers) == expected

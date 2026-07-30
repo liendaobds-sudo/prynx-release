@@ -24,7 +24,7 @@ import type { CameraProps } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useWebGLSupport } from './useWebGLSupport';
 import WebGLFallback from './WebGLFallback';
-import { useMockupStore } from '../../store/useMockupStore';
+import { useMockupStore } from '../../stores/useMockupStore';
 import { DEFAULT_TONE_EXPOSURE } from '../../lib/mockup3d/materialLibrary';
 import { useTranslation } from 'react-i18next';
 

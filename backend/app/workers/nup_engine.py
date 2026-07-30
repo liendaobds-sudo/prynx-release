@@ -89,6 +89,17 @@ def _build_repeat_sheet_metadata(sheet_mapping):
     return metadata
 
 
+def _plan_nup_chunking(total_sheets: int, available_workers: int) -> tuple[int, int]:
+    """Chọn kích thước chunk và số worker thật sự cho một job N-Up."""
+    sheets = max(0, int(total_sheets or 0))
+    workers = max(1, int(available_workers or 1))
+    if sheets <= workers:
+        # PERF (audit 2026-07-30 §G.1): job nhỏ hơn số lõi bị chậm vì mỗi tờ
+        # mở một process riêng. Chạy nội tuyến; job lớn hơn vẫn dùng đủ worker.
+        return max(1, min(5, sheets)), 1
+    return min(5, max(1, math.ceil(sheets / workers))), workers
+
+
 def _canonicalize_page_space(source_path: str, job_id: str = None) -> tuple:
     """Bake /Rotate ≠ 0 VÀ gốc MediaBox ≠ (0,0) vào content stream, để mọi bước hạ
     nguồn (die detection, trim, layout, placement) thấy trang không xoay, gốc (0,0).
@@ -349,6 +360,23 @@ def _run_nup_engine_impl(
     import pypdfium2 as pdfium
 
     page_sheet_mode = settings.get("page_sheet_mode", False) is True
+    _mixed_mode_requested = settings.get("layoutType") == "mixed_guillotine"
+    if _mixed_mode_requested:
+        # MIXED-GUILLOTINE (audit 2026-07-30 §MG.1): mode mới là Bình cắt xén
+        # chữ nhật độc lập; không để preset của Tem bế/CNC/nguyên tấm chảy nhầm vào.
+        _mixed_incompatible = (
+            page_sheet_mode
+            or bool(settings.get("isDieCutMode", False))
+            or str(settings.get("imposerMode", "") or "").lower() == "cnc"
+        )
+        if _mixed_incompatible:
+            raise ValueError(
+                "Dàn nhiều kích thước chỉ dùng cho Bình cắt xén hình chữ nhật."
+            )
+        if settings.get("mixedGuillotineStrategy", "auto_zone") != "auto_zone":
+            raise ValueError(
+                "Cách dàn nhiều kích thước hiện tại chỉ hỗ trợ Tự động — dễ cắt xén."
+            )
 
     # ── Fix A (audit bảo toàn nội dung 2026-07-07): canonicalize /Rotate ≠ 0 MỘT LẦN,
     # TRƯỚC cả route CNC, để cả hai nhánh (nup + CNC) nhận file đã chuẩn hoá — mọi bước
@@ -483,6 +511,9 @@ def _run_nup_engine_impl(
 
     base_poly = None
 
+    # Polygon contour theo từng loại tem, dùng để né boong trước khi chốt SL/tờ.
+    _repeat_collision_poly_by_page = {}
+
     p5_params = p6_params = p5_row_params = p6_row_params = p5_col_params = p6_col_params = None
 
     src_doc.close()
@@ -582,6 +613,13 @@ def _run_nup_engine_impl(
     secondary_gap = None
 
     layout_type = settings.get('layoutType', 'sequential')
+    if layout_type == 'mixed_guillotine' and cluster_mode != 'none':
+        # MIXED-GUILLOTINE (audit 2026-07-30 §MG.7): solver tự chia vùng; state
+        # chia cọc cũ không được làm co vùng giấy hoặc lộ cluster_tile vào mode mới.
+        logger.info(
+            "[MIXED-GUILLOTINE] bỏ qua clusterMode=%r của preset cũ", cluster_mode
+        )
+        cluster_mode = 'none'
     is_die_cut = settings.get('isDieCutMode', False)
     # CNC cũng đi nhánh die-cut (imposerMode='cnc' + isDieCutMode).
     imposer_mode = (settings.get('imposerMode') or '').lower()
@@ -1025,6 +1063,51 @@ def _run_nup_engine_impl(
                 except Exception as e:
                     logger.warning(f"   [ZONE] Layout engine failed for page {p_idx}: {e}")
                     full_layouts[p_idx] = None
+
+        # [PONT TRIANGLE FIX 2026-07-29] Nhánh repeat phải biết số tem SAU né boong
+        # trước khi tính report/số tờ. Dựng contour ngay khi tài liệu còn mở để không
+        # mở lại PDF; process_chunk sẽ nhận placements đã resolve và không tính lặp.
+        _repeat_pont_cfg = (
+            settings.get('pontConfig')
+            if settings.get('pontType', 'none') != 'none' else None
+        )
+        if (
+            layout_type == 'repeat'
+            and _repeat_pont_cfg
+            and not _repeat_pont_cfg.get('disableCollision', False)
+        ):
+            from app.workers.pont_collision import build_collision_base_polygon
+
+            for _p_idx, _qty, _tw, _th in page_infos:
+                _fl_repeat = full_layouts.get(_p_idx)
+                _items_repeat = (_fl_repeat or {}).get('items') or []
+                if not _items_repeat:
+                    continue
+                _first_item = _items_repeat[0]
+                _shape_repeat = (
+                    detected_shapes_by_page.get(str(_p_idx))
+                    or detected_shapes_by_page.get(_p_idx, 'CUSTOM')
+                )
+                _is_rect_repeat = (
+                    page_sheet_mode
+                    or cut_type == 'one_dao'
+                    or str(_shape_repeat).upper() == 'RECTANGLE'
+                )
+                try:
+                    _poly_repeat, _ = build_collision_base_polygon(
+                        tmp_doc[_p_idx],
+                        _shape_repeat,
+                        _first_item.get('width', _tw),
+                        _first_item.get('height', _th),
+                        is_rect_cell=_is_rect_repeat,
+                    )
+                    _repeat_collision_poly_by_page[_p_idx] = _poly_repeat
+                except Exception as _e_poly:
+                    logger.warning(
+                        "[PONT] Không dựng được contour trang %s trước report: %s",
+                        _p_idx + 1,
+                        _e_poly,
+                    )
 
         tmp_doc.close()  # Close after both Step 1 and Step 3 are done
         _tlog("Step3 nest full_layouts xong (skip=%s, n=%d, single_mold=%s)" % (
@@ -1845,6 +1928,22 @@ def _run_nup_engine_impl(
             _rep_paper = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
             _PT_MM = 1.0 / MM_TO_PTS
 
+            from copy import deepcopy as _deepcopy
+            from app.workers.imposition_finalize import resolve_pont_collisions_on_placements
+
+            class _RepeatPontRequest:
+                pass
+
+            _repeat_pont_req = _RepeatPontRequest()
+            _repeat_pont_req.pont_config = (
+                settings.get('pontConfig')
+                if settings.get('pontType', 'none') != 'none' else None
+            )
+            _repeat_pont_req.sheet_w = sheet_w
+            _repeat_pont_req.sheet_h = sheet_h
+            _repeat_pont_req.margin_left = margin_left
+            _repeat_pont_req.margin_bottom = margin_bottom
+
             def _make_type_report(p_idx, tw, th, items_per_sheet, qty):
                 """Tính + build chuỗi report cho 1 loại tem (1 tờ duy nhất)."""
                 label = _report_cfg.get('labelNameText') or f"Trang {p_idx + 1}"
@@ -1871,17 +1970,26 @@ def _run_nup_engine_impl(
 
                 # cluster_tile được xử lý ở ARM ĐẦU TIÊN (compute_cluster_placements),
                 # không còn nhánh cluster riêng ở đây.
-                items_per_sheet = len(fl['items'])
+                # Chốt một template đã né boong rồi mới tính report và số tờ.
+                # Đây cũng là chính placements được chuyển sang process_chunk.
+                _template_placements = finalize_placements(
+                    fl['items'], usable_w, usable_h,
+                    margin_left, margin_bottom, margin_top, p_idx,
+                )
+                _template_placements = resolve_pont_collisions_on_placements(
+                    _template_placements,
+                    _repeat_pont_req,
+                    base_poly=_repeat_collision_poly_by_page.get(p_idx),
+                    mark_resolved=True,
+                )
+                items_per_sheet = len(_template_placements)
                 sheets_needed = math.ceil(qty / items_per_sheet) if items_per_sheet > 0 else 1
                 repeat_count = 1 if _export_unique else sheets_needed
                 _type_report_str = _make_type_report(p_idx, tw, th, items_per_sheet, qty) if _report_enabled else None
 
-                # SSOT căn giữa: dùng CHUNG finalize_placements với preview + cnc_render.
+                # Mỗi tờ cần bản sao riêng vì worker có thể cập nhật cờ xoay khi dựng.
                 for _ in range(repeat_count):
-                    precalculated_placements[sheet_idx] = finalize_placements(
-                        fl['items'], usable_w, usable_h,
-                        margin_left, margin_bottom, margin_top, p_idx,
-                    )
+                    precalculated_placements[sheet_idx] = _deepcopy(_template_placements)
                     if _type_report_str:
                         _reports_by_sheet[sheet_idx] = _type_report_str
                     sheet_idx += 1
@@ -2201,7 +2309,11 @@ def _run_nup_engine_impl(
         cols_manual = int(settings.get('cols', 0) or 0)
         rows_manual = int(settings.get('rows', 0) or 0)
 
-        if strategy == 'manual' and (cols_manual <= 0 or rows_manual <= 0):
+        if (
+            layout_type != 'mixed_guillotine'
+            and strategy == 'manual'
+            and (cols_manual <= 0 or rows_manual <= 0)
+        ):
             raise ValueError(
                 "L\u01b0\u1edbi th\u1ee7 c\u00f4ng c\u1ea7n s\u1ed1 c\u1ed9t v\u00e0 s\u1ed1 d\u00f2ng l\u1edbn h\u01a1n 0."
             )
@@ -2215,7 +2327,12 @@ def _run_nup_engine_impl(
             try:
                 for _pi_dims in range(_gdoc_dims.page_count):
                     _pg_dims = _gdoc_dims[_pi_dims]
-                    if page_sheet_mode:
+                    if layout_type == 'mixed_guillotine':
+                        from app.workers.mixed_guillotine_adapter import (
+                            resolve_guillotine_trim,
+                        )
+                        _tw_dims, _th_dims = resolve_guillotine_trim(_pg_dims, bleed_pt)
+                    elif page_sheet_mode:
                         from app.workers.page_sheet_geometry import resolve_page_sheet_geometry
                         _geo_dims = resolve_page_sheet_geometry(
                             _pg_dims.rect.width, _pg_dims.rect.height, bleed_pt,
@@ -2258,7 +2375,133 @@ def _run_nup_engine_impl(
                     f"gripperMargin={settings.get('gripperMargin')}")
 
         _gui_cluster = (grouping_strategy == 'cluster_tile')
-        if _gui_cluster:
+        if layout_type == 'mixed_guillotine':
+            # MIXED-GUILLOTINE (audit 2026-07-30 §MG.3–§MG.5): planner thuần là
+            # nguồn sự thật duy nhất; renderer chỉ chuyển đúng plan sang PDF.
+            from app.workers.mixed_guillotine import (
+                MixedGuillotineSettings,
+                Rect as MixedGuillotineRect,
+                build_mixed_guillotine_plan,
+            )
+            from app.workers.mixed_guillotine_adapter import (
+                build_product_specs,
+                full_span_cut_coordinates,
+                materialize_plan_for_renderer,
+            )
+
+            _mixed_duplex = settings.get('duplexFlow', 'single') == 'double'
+            _mixed_products = build_product_specs(
+                [
+                    _guillotine_trim_by_page[_page_index]
+                    for _page_index in range(page_count)
+                ],
+                target_quantity=target_quantity,
+                target_quantities_by_page=target_quantities_by_page,
+                duplex=_mixed_duplex,
+            )
+            _mixed_plan = build_mixed_guillotine_plan(
+                _mixed_products,
+                MixedGuillotineSettings(
+                    sheet_width=sheet_w,
+                    sheet_height=sheet_h,
+                    usable_rect=MixedGuillotineRect(
+                        margin_left, margin_top, usable_w, usable_h
+                    ),
+                    gap_x=gap_x,
+                    gap_y=gap_y,
+                    duplex=_mixed_duplex,
+                    flip_edge=str(settings.get('duplexFlipEdge', 'long') or 'long'),
+                ),
+            )
+            _mixed_export_unique = bool(settings.get('exportUniqueSheets', True))
+            precalculated_placements, _mixed_face_metadata = materialize_plan_for_renderer(
+                _mixed_plan,
+                expand_run_count=not _mixed_export_unique,
+            )
+
+            # Marks vùng dùng đúng cutLines của từng mặt. Root mặt sau có thể đổi vị
+            # trí khi lề bất đối xứng, nên lấy bounds từ cutTree đã materialize.
+            for _output_page_index, _face_meta in _mixed_face_metadata.items():
+                _face_root = _face_meta['cutTree']['rect']
+                _face_cuts = full_span_cut_coordinates(
+                    _face_meta,
+                    sheet_width=sheet_w,
+                    sheet_height=sheet_h,
+                    usable_rect=_face_root,
+                )
+                _face_cuts['v'].update({
+                    round(float(_face_root['x']), 2),
+                    round(float(_face_root['x']) + float(_face_root['width']), 2),
+                })
+                _face_cuts['h'].update({
+                    round(float(_face_root['y']), 2),
+                    round(float(_face_root['y']) + float(_face_root['height']), 2),
+                })
+                cluster_tile_cuts[_output_page_index] = _face_cuts
+
+            _mixed_capacity = max(
+                (len(_placements) for _placements in precalculated_placements.values()),
+                default=0,
+            )
+            total_items_placed = sum(
+                len(_placements) for _placements in precalculated_placements.values()
+            )
+            _mixed_required_runs = sum(
+                int(_template['runCount']) for _template in _mixed_plan['templates']
+            )
+            layout = {
+                'totalItems': _mixed_capacity,
+                'overallWidth': usable_w,
+                'overallHeight': usable_h,
+                'cells': [],
+                'strategyUsed': 'Mixed Guillotine Auto Zone',
+            }
+
+            _mixed_report_cfg = settings.get('reportDisplay') or {}
+            if _mixed_report_cfg.get('enabled') and _mixed_capacity > 0:
+                from app.workers import nup_report as _mixed_report
+
+                _mixed_requested = sum(
+                    int(_item['requestedQuantity'])
+                    for _item in _mixed_plan['totalsByProduct']
+                )
+                _mixed_actual = sum(
+                    int(_item['actualQuantity'])
+                    for _item in _mixed_plan['totalsByProduct']
+                )
+                _mixed_report_data = _mixed_report.compute_report_data(
+                    label_name=_mixed_report_cfg.get('labelNameText') or '',
+                    paper_size=f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm",
+                    items_per_sheet=_mixed_capacity,
+                    requested_qty=_mixed_requested,
+                    material=settings.get('reportMaterial', '') or '',
+                    lamination_type=settings.get('reportLamination', 0) or 0,
+                    lamination_sides=settings.get('reportLaminationSides', 1) or 1,
+                    mode_label='Cắt xén',
+                    order_code=settings.get('reportOrderCode', '') or '',
+                    identifier='Dàn nhiều kích thước',
+                    gang_count=len(_mixed_products),
+                    sheet_count_override=_mixed_required_runs,
+                )
+                _mixed_report_data['actualQty'] = f"SL thực: {_mixed_actual}"
+                _mixed_report_text = _mixed_report.build_report_string(
+                    _mixed_report_cfg, _mixed_report_data
+                )
+                for _output_page_index, _face_meta in _mixed_face_metadata.items():
+                    if _face_meta['side'] == 'front':
+                        _reports_by_sheet[_output_page_index] = _mixed_report_text
+                _report_rows.append({
+                    'label': _mixed_report_cfg.get('labelNameText') or 'Dàn nhiều kích thước',
+                    'items_per_sheet': _mixed_capacity,
+                    'requested_qty': _mixed_requested,
+                    'sheet_count': _mixed_required_runs,
+                })
+            logger.info(
+                "[MIXED-GUILLOTINE] plan=%s output_pages=%d physical_runs=%d duplex=%s",
+                _mixed_plan['planHash'], len(precalculated_placements),
+                _mixed_required_runs, _mixed_duplex,
+            )
+        elif _gui_cluster:
             # ══ CHIA CỤM (cluster_tile) cho BÌNH CẮT XÉN (guillotine) ══
             # Tái dùng SSOT compute_cluster_sheets như die-cut, nhưng nest trong VÙNG
             # bằng grid solver (solve_optimal_layout) thay vì NFP shape-aware → nhanh,
@@ -2473,8 +2716,11 @@ def _run_nup_engine_impl(
                 if _rcfg_g.get('enabled') and total_items_placed > 0:
                     _paper_g = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
                     _label_g = _rcfg_g.get('labelNameText') or ""
-                    _n_sheets_g = len(precalculated_placements)
-                    _ips_g = total_items_placed // max(1, _n_sheets_g)
+                    _n_output_pages_g = len(precalculated_placements)
+                    _n_physical_sheets_g = (
+                        _n_output_pages_g // 2 if _gui_duplex else _n_output_pages_g
+                    )
+                    _ips_g = total_items_placed // max(1, _n_output_pages_g)
                     _ps_report_g = (
                         _page_sheet_report_fields()
                         if page_sheet_mode else {}
@@ -2497,16 +2743,19 @@ def _run_nup_engine_impl(
                             else f"{len(_gui_page_infos)} mẫu · {combine_mode}"
                         ),
                         gang_count=_ps_report_g.get("gang_count", 0),
-                        sheet_count_override=_n_sheets_g,
+                        sheet_count_override=_n_physical_sheets_g,
                     )
                     _rep_str_g = _nr_g.build_report_string(_rcfg_g, _data_g)
-                    for _si in range(_n_sheets_g):
-                        _reports_by_sheet[_si] = _rep_str_g
+                    for _physical_idx in range(_n_physical_sheets_g):
+                        _report_page_idx = (
+                            _physical_idx * 2 if _gui_duplex else _physical_idx
+                        )
+                        _reports_by_sheet[_report_page_idx] = _rep_str_g
                     _report_rows.append({
                         'label': _label_g or f"{len(_gui_page_infos)} mẫu",
                         'items_per_sheet': _ips_g,
                         'requested_qty': _ps_report_g.get("requested_qty", 0),
-                        'sheet_count': _n_sheets_g,
+                        'sheet_count': _n_physical_sheets_g,
                     })
             except Exception as _e_g:
                 logger.warning(f"[REPORT] guillotine cluster report lỗi: {_e_g}")
@@ -2626,31 +2875,88 @@ def _run_nup_engine_impl(
 
     elif layout_type == 'repeat':
 
-        for p in range(page_count):
+        _repeat_duplex = (
+            settings.get('duplexFlow') == 'double'
+            and not is_die_cut
+            and page_count >= 2
+        )
 
-            str_p = str(p)
+        if _repeat_duplex:
+            # Bình cắt xén hai mặt: UI lưu số lượng theo trang CHẴN (mặt trước).
+            # Chuẩn hóa cùng số lượng cho cả cặp để worker cắt tờ cuối hai mặt giống nhau.
+            _normalized_repeat_quantities = dict(target_quantities_by_page or {})
+            for _front_idx in range(0, page_count, 2):
+                _back_idx = _front_idx + 1
+                _front_w, _front_h = _guillotine_trim_by_page.get(
+                    _front_idx, (trim_w, trim_h)
+                )
+                _back_w, _back_h = _guillotine_trim_by_page.get(
+                    _back_idx, (trim_w, trim_h)
+                )
+                if (
+                    abs(_front_w - _back_w) > 0.5
+                    or abs(_front_h - _back_h) > 0.5
+                ):
+                    raise ValueError(
+                        "Bình 2 mặt yêu cầu mặt trước/sau của cùng một sản phẩm "
+                        "có cùng kích thước thành phẩm. "
+                        f"Cặp trang {_front_idx + 1}–{_back_idx + 1} hiện khác kích thước."
+                    )
 
-            if str_p in target_quantities_by_page:
+                _pair_qty_raw = target_quantities_by_page.get(
+                    str(_front_idx),
+                    target_quantities_by_page.get(_front_idx, target_quantity),
+                )
+                try:
+                    _pair_qty = max(0, int(_pair_qty_raw or 0))
+                except (TypeError, ValueError):
+                    _pair_qty = 0
 
-                qty = target_quantities_by_page[str_p]
+                _pair_capacity = max(
+                    1,
+                    min(
+                        _repeat_capacity_by_page.get(_front_idx, total_capacity),
+                        _repeat_capacity_by_page.get(_back_idx, total_capacity),
+                    ),
+                )
+                _pair_sheets = (
+                    math.ceil(_pair_qty / _pair_capacity)
+                    if _pair_qty > 0
+                    else 1
+                )
+                _normalized_repeat_quantities[str(_front_idx)] = _pair_qty
+                _normalized_repeat_quantities[str(_back_idx)] = _pair_qty
+                for _ in range(_pair_sheets):
+                    sheet_mapping.extend([_front_idx, _back_idx])
 
-            elif p in target_quantities_by_page:
+            target_quantities_by_page = _normalized_repeat_quantities
 
-                qty = target_quantities_by_page[p]
+        else:
+            for p in range(page_count):
 
-            else:
+                str_p = str(p)
 
-                qty = target_quantity
+                if str_p in target_quantities_by_page:
 
-            if qty > 0:
+                    qty = target_quantities_by_page[str_p]
 
-                sheets = math.ceil(qty / max(1, _repeat_capacity_by_page.get(p, total_capacity)))
+                elif p in target_quantities_by_page:
 
-            else:
+                    qty = target_quantities_by_page[p]
 
-                sheets = 1
+                else:
 
-            sheet_mapping.extend([p] * sheets)
+                    qty = target_quantity
+
+                if qty > 0:
+
+                    sheets = math.ceil(qty / max(1, _repeat_capacity_by_page.get(p, total_capacity)))
+
+                else:
+
+                    sheets = 1
+
+                sheet_mapping.extend([p] * sheets)
 
         total_sheets = len(sheet_mapping)
 
@@ -3159,7 +3465,7 @@ def _run_nup_engine_impl(
         settings.get('duplexFlow', 'single') == 'double'
         and page_count >= 2
         and page_count % 2 == 0
-        and layout_type not in ('sequential', 'cut_stacks', 'ratio_stack')
+        and layout_type not in ('sequential', 'cut_stacks', 'ratio_stack', 'mixed_guillotine')
         and grouping_strategy != 'cluster_tile'  # guillotine cluster tự đan front/back trong arm
     ):
         # Chế độ 'repeat': sheet_mapping là list page-idx, nhóm theo trang rồi đan từng cặp.
@@ -3168,8 +3474,14 @@ def _run_nup_engine_impl(
             _counts = _Counter(sheet_mapping)
             interleaved = []
             for p in range(0, page_count, 2):
-                n = min(_counts.get(p, 0), _counts.get(p + 1, 0))
-                for _s in range(n):
+                _front_count = _counts.get(p, 0)
+                _back_count = _counts.get(p + 1, 0)
+                if _front_count != _back_count:
+                    raise ValueError(
+                        "Bình 2 mặt tạo số tờ mặt trước/sau không khớp. "
+                        "Hãy kiểm tra lại số lượng của cặp sản phẩm."
+                    )
+                for _s in range(_front_count):
                     interleaved.append(p)
                     interleaved.append(p + 1)
             if interleaved:
@@ -3214,23 +3526,24 @@ def _run_nup_engine_impl(
 
     prog_file = os.path.join(tempfile.gettempdir(), f"nup_prog_{job_id}.txt") if job_id else None
 
-    available_cores = max(1, (os.cpu_count() or 1) - 1)
-    try:
-        configured_workers = int(os.environ.get("PRYNX_NUP_WORKERS", "0") or "0")
-    except (TypeError, ValueError):
-        configured_workers = 0
-    if configured_workers > 0:
-        available_cores = min(available_cores, configured_workers)
+    # PERF (audit 2026-07-29 §C.3): trước đây chỉ `cpu_count - 1`, KHÔNG đọc RAM — mỗi
+    # worker là một process pikepdf giữ tờ in trong bộ nhớ nên máy 8 GB nhiều lõi dễ OOM.
+    # `plan_worker_count` gate theo cả CPU và RAM; máy >=16 GB KHÔNG bị hạ theo hằng số.
+    # `PRYNX_NUP_WORKERS` vẫn ghi đè được (nay ép cả chiều tăng, không chỉ giảm).
+    from app.core.system_memory import plan_worker_count
 
-    # Adaptive chunk sizing: distribute work evenly across cores
+    available_cores, _worker_reason = plan_worker_count(
+        kind="nup",
+        per_worker_mb=1024.0,  # 1 chunk = 1 process pikepdf + XObject của vài tờ
+        env_override="PRYNX_NUP_WORKERS",
+    )
+    logger.info("[NUP] %s", _worker_reason)
 
-    # For small jobs: ensure at least 2 chunks if possible to utilize multiprocessing
-
-    # For large jobs: cap at 5 sheets/chunk to avoid O(N^2) XObject resource deduplication freeze
-    if total_sheets <= available_cores:
-        CHUNK_SIZE = 1  # 1 sheet per core for very small jobs
-    else:
-        CHUNK_SIZE = min(5, max(1, math.ceil(total_sheets / available_cores)))
+    # Tối đa 5 tờ/chunk để tránh QPDF khử trùng XObject tăng bậc hai.
+    # Job nhỏ chạy nội tuyến; job lớn vẫn dùng đủ ngân sách worker theo RAM/CPU.
+    CHUNK_SIZE, planned_worker_count = _plan_nup_chunking(
+        total_sheets, available_cores
+    )
 
     args_list = []
 
@@ -3316,9 +3629,9 @@ def _run_nup_engine_impl(
 
     if len(args_list) > 0:
 
-        if len(args_list) == 1:
+        if len(args_list) == 1 or planned_worker_count <= 1:
 
-            # Sequential for small jobs
+            # Job nhỏ chạy nội tuyến để tránh chi phí khởi tạo ProcessPool.
 
             for args in args_list:
 
@@ -3328,7 +3641,7 @@ def _run_nup_engine_impl(
 
             # Parallel processing across multiple CPU cores
 
-            num_workers = min(len(args_list), available_cores)
+            num_workers = min(len(args_list), planned_worker_count)
 
             with ProcessPoolExecutor(max_workers=num_workers) as pool:
 

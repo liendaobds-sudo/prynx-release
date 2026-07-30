@@ -124,6 +124,8 @@ export default function GridSettingsSection(props: GridSettingsProps) {
       setBleed: state.setBleed,
       showBleedView: state.showBleedView,
       setShowBleedView: state.setShowBleedView,
+      duplexFlipEdge: state.duplexFlipEdge,
+      setDuplexFlipEdge: state.setDuplexFlipEdge,
     })),
   );
   const quantityApplies = !(taskMode === "nup" && s.layoutType === "cut_stacks");
@@ -335,6 +337,9 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                   <option value="sequential">{t('imposition.gridSettings:xep_lan_luot')}</option>
                   <option value="cut_stacks">{t('imposition.gridSettings:xep_chong_up_xap_dung_thu_tu')}</option>
                   <option value="ratio_stack">{t('imposition.gridSettings:chia_ty_le_xep_chong_nhieu_mau_sl_rieng')}</option>
+                  {activeTool === "nup" && !pageSheetMode && (
+                    <option value="mixed_guillotine">{t('imposition.gridSettings:dan_nhieu_kich_thuoc')}</option>
+                  )}
                 </select>
                 {/* UIUX (audit 2026-07-27 §B-17): div onClick → button có aria-label + focus-visible */}
                 <button
@@ -374,6 +379,14 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                             </h4>
                             <p className="text-slate-600 dark:text-zinc-300">
                               {t('imposition.gridSettings:nhieu_mau_cung_co_so_luong_khac_nhau_moi')}
+                            </p>
+                          </div>
+                          <div className="space-y-1">
+                            <h4 className="font-bold text-slate-800 dark:text-white">
+                              {t('imposition.gridSettings:dan_nhieu_kich_thuoc')}
+                            </h4>
+                            <p className="text-slate-600 dark:text-zinc-300">
+                              {t('imposition.gridSettings:dan_nhieu_kich_thuoc_mo_ta')}
                             </p>
                           </div>
                         </div>
@@ -582,12 +595,12 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 {/* UIUX (2026-07-27): gộp 2 ô Hở ngang / Hở dọc về 1 ô dùng chung — 1 thông số
                     áp cho cả 2 phương (ghi đồng thời gapX + gapY) */}
                 <div className="flex-1 min-w-0">
-                    <label className="text-[10px] text-slate-500 block mb-0.5 font-medium truncate" title={t('imposition.gridSettings:khoang_ho_giua_cac_nhan_gap')}>
-                        {t('imposition.gridSettings:khoang_ho', 'Khoảng hở')}
-                    </label>
                     <div className="relative min-w-0">
                         <input
                             type="number" step="1" min="0"
+                            aria-label={pageSheetMode
+                                ? t('imposition.gridSettings:khoang_cach_tam')
+                                : t('imposition.gridSettings:ho_tem')}
                             value={gapX}
                             // UIUX (audit 2026-07-27 §B-04): clamp không âm
                             onChange={(e) => {
@@ -686,6 +699,23 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                   </select>
                 </div>
               </div>
+              {duplexFlow === "double" && taskMode === "nup" && s.layoutType === "mixed_guillotine" && (
+                <div className="flex items-center gap-3">
+                  <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">
+                    {t('imposition.gridSettings:lat_mat_sau')}
+                  </label>
+                  <div className="flex flex-1 items-center gap-3 min-w-0">
+                    <select
+                      value={s.duplexFlipEdge}
+                      onChange={(e) => s.setDuplexFlipEdge(e.target.value as 'long' | 'short')}
+                      className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+                    >
+                      <option value="long">{t('imposition.gridSettings:theo_canh_dai')}</option>
+                      <option value="short">{t('imposition.gridSettings:theo_canh_ngan')}</option>
+                    </select>
+                  </div>
+                </div>
+              )}
               {duplexFlow === "double" && sourceTotalPages > 0 && sourceTotalPages % 2 !== 0 && (
                 <div className="text-[11px] text-red-600 dark:text-red-400 pl-[107px] leading-snug">
                   {t('imposition.gridSettings:binh_2_mat_bat_buoc_so_trang')} <strong>{t('imposition.gridSettings:chan')}</strong>. {t('imposition.gridSettings:file_hien_n_trang_le_them_xoa_1_trang', { n: sourceTotalPages })}
@@ -715,12 +745,6 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 : taskMode === "nup" || taskMode === "sticker_imposer"
                   ? t('imposition.gridSettings:sl_moi_loai')
                   : t('imposition.gridSettings:so_luong')}
-              {/* UIUX (audit 2026-07-27 \§B-10): chú thích 0 = tự lấp đầy ngay trong label */}
-              {quantityApplies && (
-                <span className="block font-normal normal-case tracking-normal text-[9px] text-slate-400">
-                  {t('imposition.gridSettings:chu_thich_0_tu_lap_day', '(0 = tự lấp đầy tờ)')}
-                </span>
-              )}
             </label>
             <div className="flex flex-1 items-center gap-2 min-w-0">
               <input
@@ -744,8 +768,8 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                   !quantityApplies
                     // UIUX (audit 2026-07-27 \§B-08): bỏ chuỗi unicode-escape \→ tiếng Việt có dấu qua i18n
                     ? t('imposition.gridSettings:khong_ap_dung_cho_xep_chong', 'Không áp dụng cho Xếp chồng')
-                    // UIUX (audit 2026-07-27 \§B-10): placeholder rút gọn (chú thích đã nằm trong label)
-                    : t('imposition.gridSettings:tu_lap_day_placeholder', 'Tự lấp đầy')
+                    // UIUX (audit 2026-07-29): hướng dẫn 0 = tự lấp đầy chuyển vào placeholder.
+                    : t('imposition.gridSettings:chu_thich_0_tu_lap_day', '(0 = tự lấp đầy tờ)')
                 }
               />
               {sourceTotalPages > 1 && quantityApplies ? (

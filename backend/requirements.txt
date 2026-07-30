@@ -35,6 +35,10 @@ scikit-image==0.24.0
 # trong PDF / ảnh người dùng nạp (tách nền, upscale, OCR) → đường chạy thật.
 Pillow==12.3.0
 python-multipart==0.0.31
+# reportlab: GIỮ. (kiến trúc audit 2026-07-29 §C.2 — đính chính) Ban đầu tưởng chỉ
+# `api/routes/report.py` dùng nên định bỏ, nhưng người dùng thật gồm
+# `workers/vdp_engine.py`, `workers/nup_report.py`, `workers/cut_export/emitters/pdf_spot.py`,
+# `core/layer_engine.py`, `core/stream_editor.py` + ~18 file test. Bỏ là vỡ VDP/báo cáo.
 reportlab==4.2.0
 fonttools==4.60.2
 uharfbuzz==0.55.0

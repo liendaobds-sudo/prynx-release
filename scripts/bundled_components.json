@@ -98,7 +98,7 @@
       "linkage": "Trọng số ONNX nạp cục bộ qua ONNX Runtime",
       "used_for": "Phóng to và phục hồi chi tiết ảnh bằng AI",
       "bundled": true,
-      "notes": "Chuyển từ trọng số .pth chính thức bằng backend/scripts/convert_realesrgan_onnx.py; SHA-256 x4v3: 027319ffe4f00ec2550957c0957d44969638a03d2ed2f0329af9fd6cd44a457a; x4plus: c1b85fae35947577b4c4b7d310af54546c6e7971f14a0862a769e83689ddc003.",
+      "notes": "Chuyển từ trọng số .pth chính thức bằng backend/scripts/convert_realesrgan_onnx.py. Bản x4v3 là DNI blend realesr-general-x4v3 + realesr-general-wdn-x4v3 ở alpha 0,5 (mặc định denoise_strength của upstream). SHA-256 x4v3: 3ae50bb3a9131697d62ac79f934e57c2ef9cd3b8762993ca0d1fabd8a36a343f; x4plus: c1b85fae35947577b4c4b7d310af54546c6e7971f14a0862a769e83689ddc003.",
       "license_text": [
         "BSD 3-Clause License",
         "",

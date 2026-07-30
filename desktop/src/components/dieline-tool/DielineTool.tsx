@@ -10,10 +10,9 @@ import MockupPanel from './MockupPanel';
 import DielineCanvas2D from './DielineCanvas2D';
 import NestingPanel from './NestingPanel';
 import NestingCanvas from './NestingCanvas';
-import { useBoxStore } from '../../store/useBoxStore';
+import { useBoxStore } from '../../stores/useBoxStore';
 import { downloadPDF, buildDielinePdfBlob } from '../../lib/dieline/exportPDF';
 import { downloadNestingPDF, buildNestingPdfBlob, buildTrayNestingPdfBlob, downloadTrayNestingPDF } from '../../lib/dieline/exportNestingPDF';
-import { BoxParams } from '../../lib/dieline/types';
 import { downloadProductionDielinePDF, downloadProductionNestingPDF, downloadProductionTrayNestingPDF } from '../../lib/dieline/productionPDF';
 import '../../styles/dieline-tool.css';
 import { useTranslation } from 'react-i18next';
@@ -80,12 +79,13 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
     const toolRef = useRef<HTMLElement>(null);
     const interactionCleanupRef = useRef<(() => void) | null>(null);
     const sidebarWidthRef = useRef(sidebarWidth);
-    const { dieline, nestingResult, sleeveNestingResult, nestingConfig, setParam, regenerate, isGenerating, isModelCurrent, generationError } = useBoxStore();
+    const { dieline, nestingResult, sleeveNestingResult, nestingConfig, setVariant, regenerate, isGenerating, isModelCurrent, generationError } = useBoxStore();
     const canExport = Boolean(dieline && isModelCurrent && !isGenerating && !generationError);
 
-    // User selects a box type from the gallery → switch to editor
-    const handleSelectType = (type: BoxParams['boxType']) => {
-        setParam('boxType', type);
+    // [VARIANT 2026-07-29] Người dùng chọn một BIẾN THỂ trong thư viện → vào editor.
+    // Store tự suy boxType từ biến thể và áp thuộc tính đã chốt.
+    const handleSelectVariant = (variantId: string) => {
+        setVariant(variantId);
         setView('editor');
     };
 
@@ -220,7 +220,7 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
     if (view === 'gallery') {
         return (
             <main className="dieline-tool">
-                <DielineGallery onSelect={handleSelectType} />
+                <DielineGallery onSelect={handleSelectVariant} />
             </main>
         );
     }

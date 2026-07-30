@@ -3,7 +3,7 @@
 PrynX sử dụng các thành phần mã nguồn mở dưới đây. Bản quyền thuộc về các
 tác giả tương ứng; mỗi thành phần được phân phối theo giấy phép của nó.
 
-*Sinh tự động ngày 2026-07-28 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
+*Sinh tự động ngày 2026-07-29 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
 
 > Đây không phải tư vấn pháp lý. Tài liệu này liệt kê thành phần và giấy
 > phép để phục vụ nghĩa vụ ghi công; việc đánh giá tuân thủ là việc riêng.
@@ -101,7 +101,7 @@ PrynX dùng nguyên bản, không sửa.
 - Giấy phép: **BSD-3-Clause**
 - Liên kết: Trọng số ONNX nạp cục bộ qua ONNX Runtime
 - Mã nguồn: https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.3.0
-- Ghi chú: Chuyển từ trọng số .pth chính thức bằng backend/scripts/convert_realesrgan_onnx.py; SHA-256 x4v3: 027319ffe4f00ec2550957c0957d44969638a03d2ed2f0329af9fd6cd44a457a; x4plus: c1b85fae35947577b4c4b7d310af54546c6e7971f14a0862a769e83689ddc003.
+- Ghi chú: Chuyển từ trọng số .pth chính thức bằng backend/scripts/convert_realesrgan_onnx.py. Bản x4v3 là DNI blend realesr-general-x4v3 + realesr-general-wdn-x4v3 ở alpha 0,5 (mặc định denoise_strength của upstream). SHA-256 x4v3: 3ae50bb3a9131697d62ac79f934e57c2ef9cd3b8762993ca0d1fabd8a36a343f; x4plus: c1b85fae35947577b4c4b7d310af54546c6e7971f14a0862a769e83689ddc003.
 - Toàn văn giấy phép đi kèm bản phân phối:
 
 ```text
@@ -159,6 +159,7 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | [filelock](https://github.com/tox-dev/py-filelock) | 3.32.0 | MIT | build/test |
 | [flatbuffers](https://google.github.io/flatbuffers/) | 25.12.19 | Apache 2.0 | build/test |
 | [fonttools](http://github.com/fonttools/fonttools) | 4.60.2 | MIT | phát hành |
+| [fsspec](https://github.com/fsspec/filesystem_spec) | 2026.4.0 | BSD-3-Clause | build/test |
 | [greenlet](https://greenlet.readthedocs.io) | 3.5.3 | MIT AND PSF-2.0 | build/test |
 | [h11](https://github.com/python-hyper/h11) | 0.16.0 | MIT | build/test |
 | [httpcore](https://www.encode.io/httpcore/) | 1.0.9 | BSD-3-Clause | build/test |
@@ -172,6 +173,7 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | [kombu](https://kombu.readthedocs.io) | 5.6.2 | BSD-3-Clause | build/test |
 | [lazy-loader](https://github.com/scientific-python/lazy-loader) | 0.5 | BSD-3-Clause | build/test |
 | [license-expression](https://github.com/aboutcode-org/license-expression) | 30.4.4 | Apache-2.0 | build/test |
+| logo_vectorizer_probe | 0.1.0 | CHƯA XÁC ĐỊNH | build/test |
 | [lxml](https://lxml.de/) | 6.1.1 | BSD-3-Clause | build/test |
 | [Mako](https://www.makotemplates.org/) | 1.3.12 | MIT | build/test |
 | [markdown-it-py](https://github.com/executablebooks/markdown-it-py) | 4.2.0 | MIT License | build/test |
@@ -183,6 +185,7 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | [networkx](https://networkx.org/) | 3.6.1 | BSD-3-Clause | build/test |
 | [Nuitka](https://nuitka.net) | 4.1.2 | GNU Affero General Public License v3 | phát hành |
 | [numpy](https://numpy.org) | 1.26.4 | BSD License | build/test |
+| [onnx](https://onnx.ai/) | 1.17.0 | Apache License v2.0 | build/test |
 | [onnxruntime-directml](https://onnxruntime.ai) | 1.24.4 | MIT License | phát hành |
 | [opencv-python-headless](https://github.com/opencv/opencv-python) | 4.10.0.84 | Apache 2.0 | phát hành |
 | [openpyxl](https://openpyxl.readthedocs.io) | 3.1.5 | MIT | phát hành |
@@ -233,6 +236,7 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | [scipy](https://scipy.org/) | 1.12.0 | BSD License | phát hành |
 | [segno](https://github.com/heuer/segno/) | 1.6.6 | BSD License | phát hành |
 | [sentry-sdk](https://github.com/getsentry/sentry-python) | 2.66.0 | MIT | build/test |
+| [setuptools](https://github.com/pypa/setuptools) | 78.1.0 | MIT License | build/test |
 | [shapely](https://github.com/shapely/shapely) | 2.0.6 | BSD 3-Clause | phát hành |
 | [shellingham](https://github.com/sarugaku/shellingham) | 1.5.4 | ISC License | build/test |
 | [six](https://github.com/benjaminp/six) | 1.17.0 | MIT | build/test |
@@ -240,10 +244,11 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | [sortedcontainers](http://www.grantjenks.com/docs/sortedcontainers/) | 2.4.0 | Apache 2.0 | build/test |
 | [SQLAlchemy](https://www.sqlalchemy.org) | 2.0.35 | MIT | phát hành |
 | [starlette](https://github.com/Kludex/starlette) | 1.3.1 | BSD-3-Clause | phát hành |
-| [sympy](https://sympy.org) | 1.14.0 | BSD | build/test |
+| [sympy](https://sympy.org) | 1.13.1 | BSD | build/test |
 | [tifffile](https://www.cgohlke.com) | 2026.3.3 | BSD-3-Clause | build/test |
 | [tomli](https://github.com/hukkin/tomli) | 2.4.1 | MIT | build/test |
 | [tomli_w](https://github.com/hukkin/tomli-w) | 1.2.0 | MIT License | build/test |
+| [torch](https://pytorch.org/) | 2.6.0+cpu | BSD-3-Clause | build/test |
 | [typer](https://github.com/fastapi/typer) | 0.27.0 | MIT | build/test |
 | [typing-inspection](https://github.com/pydantic/typing-inspection) | 0.4.2 | MIT | build/test |
 | [typing_extensions](https://github.com/python/typing_extensions) | 4.16.0 | PSF-2.0 | build/test |
@@ -252,6 +257,7 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | urllib3 | 2.7.0 | MIT | build/test |
 | [uvicorn](https://www.uvicorn.org/) | 0.30.0 | BSD-3-Clause | phát hành |
 | [vine](https://github.com/celery/vine) | 5.1.0 | BSD | build/test |
+| [vtracer](http://www.visioncortex.org/vtracer) | 0.6.15 | MIT | build/test |
 | [watchfiles](https://github.com/samuelcolvin/watchfiles) | 1.2.0 | MIT | build/test |
 | [wcwidth](https://github.com/jquast/wcwidth) | 0.8.2 | MIT | build/test |
 | [websockets](https://github.com/python-websockets/websockets) | 13.0 | BSD-3-Clause | phát hành |
@@ -272,6 +278,7 @@ là có trong bản phát hành.
 | [aes-gcm](https://github.com/RustCrypto/AEADs) | 0.10.3 | Apache-2.0 OR MIT |
 | [ahash](https://github.com/tkaitchuck/ahash) | 0.7.8 | MIT OR Apache-2.0 |
 | [aho-corasick](https://github.com/BurntSushi/aho-corasick) | 1.1.4 | Unlicense OR MIT |
+| [aliasable](https://github.com/avitex/rust-aliasable) | 0.1.3 | MIT |
 | [aligned-vec](https://github.com/sarah-ek/aligned-vec/) | 0.6.4 | MIT |
 | [alloc-no-stdlib](https://github.com/dropbox/rust-alloc-no-stdlib) | 2.0.4 | BSD-3-Clause |
 | [alloc-stdlib](https://github.com/dropbox/rust-alloc-no-stdlib) | 0.2.2 | BSD-3-Clause |
@@ -303,6 +310,7 @@ là có trong bản phát hành.
 | [base64](https://github.com/marshallpierce/rust-base64) | 0.22.1 | MIT OR Apache-2.0 |
 | [base64ct](https://github.com/RustCrypto/formats) | 1.8.3 | Apache-2.0 OR MIT |
 | [bit-set](https://github.com/contain-rs/bit-set) | 0.8.0 | Apache-2.0 OR MIT |
+| [bit-vec](https://github.com/contain-rs/bit-vec) | 0.6.3 | MIT/Apache-2.0 |
 | [bit-vec](https://github.com/contain-rs/bit-vec) | 0.8.0 | Apache-2.0 OR MIT |
 | [bitflags](https://github.com/bitflags/bitflags) | 1.3.2 | MIT/Apache-2.0 |
 | [bitflags](https://github.com/bitflags/bitflags) | 2.11.1 | MIT OR Apache-2.0 |
@@ -451,6 +459,8 @@ là có trong bản phát hành.
 | [find-msvc-tools](https://github.com/rust-lang/cc-rs) | 0.1.9 | MIT OR Apache-2.0 |
 | [fixedbitset](https://github.com/petgraph/fixedbitset) | 0.5.7 | MIT OR Apache-2.0 |
 | [flate2](https://github.com/rust-lang/flate2-rs) | 1.1.9 | MIT OR Apache-2.0 |
+| [flo_curves](https://github.com/Logicalshift/flo_curves) | 0.3.1 | Apache-2.0 |
+| [flo_curves](https://github.com/Logicalshift/flo_curves) | 0.8.0 | Apache-2.0 |
 | [float_next_after](https://gitlab.com/bronsonbdevost/next_afterf) | 1.0.0 | MIT |
 | [fnv](https://github.com/servo/rust-fnv) | 1.0.7 | Apache-2.0 / MIT |
 | [foldhash](https://github.com/orlp/foldhash) | 0.1.5 | Zlib |
@@ -560,6 +570,7 @@ là có trong bản phát hành.
 | [itertools](https://github.com/rust-itertools/itertools) | 0.11.0 | MIT OR Apache-2.0 |
 | [itertools](https://github.com/rust-itertools/itertools) | 0.14.0 | MIT OR Apache-2.0 |
 | [itertools](https://github.com/rust-itertools/itertools) | 0.15.0 | MIT OR Apache-2.0 |
+| [itertools](https://github.com/bluss/rust-itertools) | 0.8.2 | MIT/Apache-2.0 |
 | [itoa](https://github.com/dtolnay/itoa) | 1.0.18 | MIT OR Apache-2.0 |
 | [javascriptcore-rs](https://github.com/tauri-apps/javascriptcore-rs) | 1.1.2 | MIT |
 | [javascriptcore-rs-sys](https://github.com/tauri-apps/javascriptcore-rs) | 1.1.1 | MIT |
@@ -649,6 +660,8 @@ là có trong bản phát hành.
 | [ordered-stream](https://github.com/danieldg/ordered-stream) | 0.2.0 | MIT OR Apache-2.0 |
 | [os_pipe](https://github.com/oconnor663/os_pipe.rs) | 1.2.3 | MIT |
 | [osakit](https://github.com/mdevils/rust-osakit) | 0.3.1 | MIT OR Apache-2.0 |
+| [ouroboros](https://github.com/joshua-maros/ouroboros) | 0.17.2 | MIT OR Apache-2.0 |
+| [ouroboros_macro](https://github.com/joshua-maros/ouroboros) | 0.17.2 | MIT OR Apache-2.0 |
 | [pango](https://github.com/gtk-rs/gtk-rs-core) | 0.18.3 | MIT |
 | [pango-sys](https://github.com/gtk-rs/gtk-rs-core) | 0.18.0 | MIT |
 | [parking](https://github.com/smol-rs/parking) | 2.2.1 | Apache-2.0 OR MIT |
@@ -733,6 +746,8 @@ là có trong bản phát hành.
 | [rkyv](https://github.com/rkyv/rkyv) | 0.7.46 | MIT |
 | [rkyv_derive](https://github.com/rkyv/rkyv) | 0.7.46 | MIT |
 | [robust](https://github.com/georust/robust) | 1.2.0 | MIT OR Apache-2.0 |
+| [roots](https://github.com/vorot/roots) | 0.0.6 | BSD-2-Clause |
+| [roots](https://github.com/vorot/roots) | 0.0.8 | BSD-2-Clause |
 | [rstar](https://github.com/georust/rstar) | 0.12.2 | MIT OR Apache-2.0 |
 | [rust-ini](https://github.com/zonyitoo/rust-ini) | 0.21.3 | MIT |
 | [rust_decimal](https://github.com/paupino/rust-decimal) | 1.42.0 | MIT |
@@ -921,8 +936,10 @@ là có trong bản phát hành.
 | [vecmath](https://github.com/pistondevelopers/vecmath) | 1.0.0 | MIT |
 | [version-compare](https://gitlab.com/timvisee/version-compare) | 0.2.1 | MIT |
 | [version_check](https://github.com/SergioBenitez/version_check) | 0.9.5 | MIT/Apache-2.0 |
+| [visioncortex](https://github.com/visioncortex/visioncortex/) | 0.9.1 | MIT OR Apache-2.0 |
 | [vswhom](https://github.com/nabijaczleweli/vswhom.rs) | 0.1.0 | MIT |
 | [vswhom-sys](https://github.com/nabijaczleweli/vswhom-sys.rs) | 0.1.3 | MIT |
+| [vtracer](https://github.com/visioncortex/vtracer/) | 1.0.0-alpha.2 | MIT OR Apache-2.0 |
 | [walkdir](https://github.com/BurntSushi/walkdir) | 2.5.0 | Unlicense/MIT |
 | [want](https://github.com/seanmonstar/want) | 0.3.1 | MIT |
 | [wasi](https://github.com/bytecodealliance/wasi) | 0.11.1+wasi-snapshot-preview1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
@@ -1114,10 +1131,6 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | @pdf-lib/fontkit | 1.1.1 | MIT | phát hành |
 | @pdf-lib/standard-fonts | 1.0.0 | MIT | phát hành |
 | @pdf-lib/upng | 1.0.1 | MIT | phát hành |
-| @pdfme/common | 6.1.1 | MIT | phát hành |
-| @pdfme/generator | 6.1.1 | MIT | phát hành |
-| @pdfme/pdf-lib | 6.1.1 | MIT | phát hành |
-| @pdfme/schemas | 6.1.1 | MIT | phát hành |
 | @react-three/drei | 10.7.7 | MIT | phát hành |
 | @react-three/fiber | 9.6.1 | MIT | phát hành |
 | @rolldown/binding-android-arm64 | 1.0.3 | MIT | phát hành |
@@ -1152,7 +1165,6 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | @supabase/realtime-js | 2.106.2 | MIT | phát hành |
 | @supabase/storage-js | 2.106.2 | MIT | phát hành |
 | @supabase/supabase-js | 2.106.2 | MIT | phát hành |
-| @swc/helpers | 0.5.21 | Apache-2.0 | phát hành |
 | @tailwindcss/node | 4.2.2 | MIT | phát hành |
 | @tailwindcss/oxide | 4.2.2 | MIT | phát hành |
 | @tailwindcss/oxide-android-arm64 | 4.2.2 | MIT | phát hành |
@@ -1189,14 +1201,8 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | @tauri-apps/plugin-updater | 2.10.1 | MIT OR Apache-2.0 | phát hành |
 | @testing-library/dom | 10.4.1 | MIT | build/test |
 | @testing-library/react | 16.3.2 | MIT | build/test |
-| @turf/bbox | 7.3.5 | MIT | phát hành |
-| @turf/bbox-polygon | 7.3.5 | MIT | phát hành |
-| @turf/boolean-point-in-polygon | 7.3.5 | MIT | phát hành |
-| @turf/envelope | 7.3.5 | MIT | phát hành |
 | @turf/helpers | 7.3.5 | MIT | phát hành |
-| @turf/invariant | 7.3.5 | MIT | phát hành |
 | @turf/meta | 7.3.5 | MIT | phát hành |
-| @turf/polygonize | 7.3.5 | MIT | phát hành |
 | @turf/union | 7.3.5 | MIT | phát hành |
 | @tweenjs/tween.js | 23.1.3 | MIT | phát hành |
 | @tybys/wasm-util | 0.10.2 | MIT | phát hành |
@@ -1242,11 +1248,10 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | @vitest/spy | 4.1.6 | MIT | build/test |
 | @vitest/utils | 4.1.6 | MIT | build/test |
 | @webgpu/types | 0.1.70 | BSD-3-Clause | build/test |
-| acorn | 8.16.0 | MIT | phát hành |
+| acorn | 8.16.0 | MIT | build/test |
 | acorn-jsx | 5.3.2 | MIT | build/test |
 | agent-base | 6.0.2 | MIT | build/test |
 | agent-base | 7.1.4 | MIT | build/test |
-| air-datepicker | 3.6.0 | MIT | phát hành |
 | ajv | 6.14.0 | MIT | build/test |
 | ansi-regex | 5.0.1 | MIT | build/test |
 | ansi-styles | 4.3.0 | MIT | build/test |
@@ -1263,7 +1268,6 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | bignumber.js | 9.3.1 | MIT | phát hành |
 | bl | 4.1.0 | MIT | phát hành |
 | brace-expansion | 5.0.8 | MIT | build/test |
-| brotli | 1.3.3 | MIT | phát hành |
 | browserslist | 4.28.2 | MIT | build/test |
 | buffer | 5.7.1 | MIT | phát hành |
 | buffer | 6.0.3 | MIT | phát hành |
@@ -1281,14 +1285,9 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | chownr | 1.1.4 | ISC | phát hành |
 | class-variance-authority | 0.7.1 | Apache-2.0 | phát hành |
 | clipper-lib | 6.4.2 | BSL | phát hành |
-| clone | 2.1.2 | MIT | phát hành |
 | clsx | 2.1.1 | MIT | phát hành |
-| color | 5.0.3 | MIT | phát hành |
 | color-convert | 2.0.1 | MIT | build/test |
-| color-convert | 3.1.3 | MIT | phát hành |
 | color-name | 1.1.4 | MIT | build/test |
-| color-name | 2.1.0 | MIT | phát hành |
-| color-string | 2.1.4 | MIT | phát hành |
 | combined-stream | 1.0.8 | MIT | build/test |
 | concat-stream | 2.0.0 | MIT | build/test |
 | convert-source-map | 2.0.0 | MIT | build/test |
@@ -1300,7 +1299,6 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | cssstyle | 4.6.0 | MIT | build/test |
 | csstype | 3.2.3 | MIT | phát hành |
 | data-urls | 5.0.0 | MIT | build/test |
-| date-fns | 4.1.0 | MIT | phát hành |
 | debug | 4.4.3 | MIT | build/test |
 | decimal.js | 10.6.0 | MIT | build/test |
 | decompress-response | 6.0.0 | MIT | phát hành |
@@ -1310,7 +1308,6 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | dequal | 2.0.3 | MIT | phát hành |
 | detect-gpu | 5.0.70 | MIT | phát hành |
 | detect-libc | 2.1.2 | Apache-2.0 | phát hành |
-| dfa | 1.2.0 | MIT | phát hành |
 | diff | 8.0.4 | BSD-3-Clause | phát hành |
 | dom-accessibility-api | 0.5.16 | MIT | build/test |
 | dompurify | 3.4.12 | (MPL-2.0 OR Apache-2.0) | phát hành |
@@ -1344,7 +1341,7 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | expand-template | 2.0.3 | (MIT OR WTFPL) | phát hành |
 | expect-type | 1.3.0 | Apache-2.0 | build/test |
 | fast-check | 4.8.0 | MIT | build/test |
-| fast-deep-equal | 3.1.3 | MIT | phát hành |
+| fast-deep-equal | 3.1.3 | MIT | build/test |
 | fast-json-stable-stringify | 2.1.0 | MIT | build/test |
 | fast-levenshtein | 2.0.6 | MIT | build/test |
 | fast-png | 6.4.0 | MIT | phát hành |
@@ -1357,7 +1354,6 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | flat-cache | 4.0.1 | MIT | build/test |
 | flatted | 3.4.2 | ISC | build/test |
 | font-family-papandreou | 0.2.0-patch2 | MIT | phát hành |
-| fontkit | 2.0.4 | MIT | phát hành |
 | form-data | 4.0.6 | MIT | build/test |
 | fs-constants | 1.0.0 | MIT | phát hành |
 | fsevents | 2.3.2 | MIT | build/test |
@@ -1382,7 +1378,6 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | hermes-parser | 0.25.1 | MIT | build/test |
 | hls.js | 1.6.16 | Apache-2.0 | phát hành |
 | html-encoding-sniffer | 4.0.0 | MIT | build/test |
-| html-entities | 2.6.0 | MIT | phát hành |
 | html-parse-stringify | 3.0.1 | MIT | phát hành |
 | html2canvas | 1.4.1 | MIT | phát hành |
 | http-proxy-agent | 7.0.2 | MIT | build/test |
@@ -1437,7 +1432,6 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | loose-envify | 1.4.0 | MIT | phát hành |
 | lru-cache | 10.4.3 | ISC | build/test |
 | lru-cache | 5.1.1 | ISC | build/test |
-| lucide | 1.14.0 | ISC | phát hành |
 | lucide-react | 1.14.0 | ISC | phát hành |
 | lz-string | 1.5.0 | MIT | build/test |
 | maath | 0.10.8 | MIT | phát hành |
@@ -1460,7 +1454,6 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | natural-compare | 1.4.0 | MIT | build/test |
 | node-abi | 3.92.0 | MIT | phát hành |
 | node-addon-api | 7.1.1 | MIT | phát hành |
-| node-html-better-parser | 1.5.8 | MIT | phát hành |
 | node-releases | 2.0.48 | MIT | build/test |
 | nwsapi | 2.2.24 | MIT | build/test |
 | obug | 2.1.1 | MIT | build/test |
@@ -1469,7 +1462,6 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | p-limit | 3.1.0 | MIT | build/test |
 | p-locate | 5.0.0 | MIT | build/test |
 | page-flip | 2.0.7 | MIT | phát hành |
-| pako | 0.2.9 | MIT | phát hành |
 | pako | 1.0.11 | (MIT AND Zlib) | phát hành |
 | pako | 2.1.0 | (MIT AND Zlib) | phát hành |
 | papaparse | 5.5.3 | MIT | phát hành |
@@ -1487,7 +1479,6 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | picomatch | 4.0.4 | MIT | phát hành |
 | playwright | 1.61.1 | Apache-2.0 | build/test |
 | playwright-core | 1.61.1 | Apache-2.0 | build/test |
-| point-in-polygon-hao | 1.2.4 | MIT | phát hành |
 | polyclip-ts | 0.16.8 | MIT | phát hành |
 | postcss | 8.5.23 | MIT | phát hành |
 | potpack | 1.0.2 | ISC | phát hành |
@@ -1515,9 +1506,7 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | regenerator-runtime | 0.13.11 | MIT | phát hành |
 | require-from-string | 2.0.2 | MIT | phát hành |
 | resolve-from | 4.0.0 | MIT | build/test |
-| restructure | 3.0.2 | MIT | phát hành |
 | rgbcolor | 1.0.1 | MIT OR SEE LICENSE IN FEEL-FREE.md | phát hành |
-| robust-predicates | 3.0.3 | Unlicense | phát hành |
 | rolldown | 1.0.3 | MIT | phát hành |
 | rrweb-cssom | 0.7.1 | MIT | build/test |
 | rrweb-cssom | 0.8.0 | MIT | build/test |
@@ -1531,7 +1520,6 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | shebang-command | 2.0.0 | MIT | phát hành |
 | shebang-regex | 3.0.0 | MIT | phát hành |
 | siginfo | 2.0.0 | ISC | build/test |
-| signature_pad | 5.1.3 | MIT | phát hành |
 | simple-concat | 1.0.1 | MIT | phát hành |
 | simple-get | 4.0.1 | MIT | phát hành |
 | sonner | 2.0.7 | MIT | phát hành |
@@ -1562,7 +1550,6 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | three | 0.184.0 | MIT | phát hành |
 | three-mesh-bvh | 0.8.3 | MIT | phát hành |
 | three-stdlib | 2.36.1 | MIT | phát hành |
-| tiny-inflate | 1.0.3 | MIT | phát hành |
 | tiny-invariant | 1.3.3 | MIT | phát hành |
 | tinybench | 2.9.0 | MIT | build/test |
 | tinyexec | 1.1.2 | MIT | build/test |
@@ -1585,8 +1572,6 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | typescript | 5.9.3 | Apache-2.0 | build/test |
 | typescript-eslint | 8.57.2 | MIT | build/test |
 | undici-types | 7.16.0 | MIT | build/test |
-| unicode-properties | 1.4.1 | MIT | phát hành |
-| unicode-trie | 2.0.0 | MIT | phát hành |
 | update-browserslist-db | 1.2.3 | MIT | build/test |
 | uri-js | 4.4.1 | BSD-2-Clause | build/test |
 | use-sync-external-store | 1.6.0 | MIT | phát hành |
@@ -1613,7 +1598,7 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | xmlchars | 2.2.0 | MIT | build/test |
 | yallist | 3.1.1 | ISC | build/test |
 | yocto-queue | 0.1.0 | MIT | build/test |
-| zod | 4.3.6 | MIT | phát hành |
+| zod | 4.3.6 | MIT | build/test |
 | zod-validation-error | 4.0.2 | MIT | build/test |
 | zustand | 4.5.7 | MIT | phát hành |
 | zustand | 5.0.12 | MIT | phát hành |
@@ -1621,27 +1606,27 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 ## 6. Thống kê
 
 - Nhị phân đóng gói: 6
-- Thư viện Python: 132
-- Crate Rust: 786
-- Gói npm: 558
+- Thư viện Python: 138
+- Crate Rust: 797
+- Gói npm: 526
 
 | Giấy phép | Số thành phần |
 |---|---|
-| MIT | 652 |
-| MIT OR Apache-2.0 | 378 |
+| MIT | 625 |
+| MIT OR Apache-2.0 | 382 |
 | Apache-2.0 OR MIT | 90 |
-| Apache-2.0 | 46 |
-| BSD-3-Clause | 33 |
-| MIT/Apache-2.0 | 32 |
-| ISC | 29 |
+| Apache-2.0 | 47 |
+| BSD-3-Clause | 35 |
+| MIT/Apache-2.0 | 34 |
+| ISC | 28 |
 | Unicode-3.0 | 24 |
 | Zlib OR Apache-2.0 OR MIT | 21 |
 | MPL-2.0 | 20 |
+| BSD-2-Clause | 17 |
 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | 16 |
-| BSD-2-Clause | 15 |
 | Unlicense OR MIT | 15 |
 | BSD License | 8 |
-| MIT License | 7 |
+| MIT License | 8 |
 
-3 thành phần không khai giấy phép trong metadata — cần tra thủ công trước khi phát hành.
+4 thành phần không khai giấy phép trong metadata — cần tra thủ công trước khi phát hành.
 

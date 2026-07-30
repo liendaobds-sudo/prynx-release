@@ -1,4 +1,4 @@
-﻿import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   FEATURE_CATALOG,
   FEATURE_MIN_PLAN,
@@ -58,7 +58,7 @@ describe('license feature catalog', () => {
       'datamerge', 'numbering', 'cover_numbering', 'stick_text_number',
       'booklet', 'nup', 'sticker_imposer', 'cnc_imposer', 'dieline',
       'bgremover', 'watermark', 'optimize', 'encrypt', 'metadata',
-      'office_convert', 'pdfx', 'upscale', 'compare_pdf', 'compare_text',
+      'office_convert', 'pdfx', 'upscale', 'logo_rebuild', 'compare_pdf', 'compare_text',
     ];
     for (const key of keys) expect(featureIdForFocus(key), key).not.toBeNull();
     expect(featureIdForFocus('unknown_xyz')).toBeNull();

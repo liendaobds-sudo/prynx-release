@@ -202,15 +202,24 @@ class PreflightEngine(ColorRulesMixin, FontRulesMixin, ImageRulesMixin, Structur
                 doc = None
 
                 from concurrent.futures import ProcessPoolExecutor
-                import multiprocessing
 
                 chunks = []
                 for i in range(0, total_pages, CHUNK_SIZE):
                     chunks.append(list(range(i + 1, min(i + CHUNK_SIZE + 1, total_pages + 1))))
                 
-                # Leave 1 core free to keep UI responsive if possible
-                max_workers = max(1, min(multiprocessing.cpu_count() - 1, len(chunks), 8))
-                logger.info(f"Preflight: Using multiprocessing with {max_workers} workers for {len(chunks)} chunks.")
+                # PERF (audit 2026-07-29 §C.3): trần cũ chỉ theo CPU (`cpu_count-1`, tối đa 8)
+                # nên máy yếu vẫn mở tối đa 8 process quét content stream. Nay gate thêm
+                # theo RAM; máy >=16 GB giữ nguyên trần cũ (8 hoặc số chunk, tuỳ cái nào nhỏ).
+                from app.core.system_memory import plan_worker_count
+
+                max_workers, _worker_reason = plan_worker_count(
+                    kind="preflight",
+                    per_worker_mb=512.0,  # 1 worker = pikepdf mở PDF + quét content stream
+                    hard_ceiling=min(len(chunks), 8),
+                )
+                logger.info(
+                    "Preflight: multiprocessing %d chunks — %s", len(chunks), _worker_reason
+                )
 
                 with ProcessPoolExecutor(max_workers=max_workers) as executor:
                     futures = [executor.submit(_content_stream_worker, pdf_path, chunk, active_rules, tac_threshold) for chunk in chunks]

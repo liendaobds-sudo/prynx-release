@@ -202,14 +202,19 @@ class SoftProofEngine:
     # ── Render paths ──────────────────────────────────────────────────────
 
     def _render_pdfium_rgb(self, pdf_path: str, page_num: int, dpi: int) -> Image.Image:
+        # KIENTRUC (audit 2026-07-29 §C.1): hàm này được gọi qua `asyncio.to_thread`
+        # (xem `softproof.py` nhánh không có ICC) → 2 request soft-proof đồng thời là 2
+        # thread cùng gọi PDFium. Bọc guard; toàn thân là lời gọi PDFium nên khóa bao cả.
         import pypdfium2 as pdfium
-        doc = pdfium.PdfDocument(pdf_path)
-        try:
-            page = doc[page_num - 1]
-            bitmap = page.render(scale=dpi / 72.0)
-            return bitmap.to_pil().convert("RGB")
-        finally:
-            doc.close()
+        from app.core.pdfium_lock import pdfium_guard
+        with pdfium_guard("softproof_render_rgb"):
+            doc = pdfium.PdfDocument(pdf_path)
+            try:
+                page = doc[page_num - 1]
+                bitmap = page.render(scale=dpi / 72.0)
+                return bitmap.to_pil().convert("RGB")
+            finally:
+                doc.close()
 
     def _render_ppe_softproof(
         self,

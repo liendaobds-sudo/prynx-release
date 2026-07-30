@@ -19,7 +19,7 @@
 // ============================================================
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { useMockupStore } from '../../../store/useMockupStore';
+import { useMockupStore } from '../../../stores/useMockupStore';
 import {
     computeExportSize,
     MAX_EXPORT_PX,

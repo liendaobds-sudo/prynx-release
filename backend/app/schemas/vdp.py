@@ -69,3 +69,54 @@ class VdpRequest(BaseModel):
     file_id: str
     fields: List[VdpField]
     data: List[Dict[str, str]]
+
+
+# ── Response contract ────────────────────────────────────────────────────────
+# KIENTRUC (audit 2026-07-29 §A.2): desktop ↔ backend không có codegen chung nên bỏ một
+# field khỏi response là lỗi im lặng. Cùng nguyên tắc với `schemas/imposition.py`: model
+# MÔ TẢ hiện trạng (field lỏng để Optional), không siết — đừng biến dữ liệu lệch nhẹ
+# thành 500 trên máy khách. Mỗi model ghi rõ ai đọc field đó ở phía desktop.
+
+
+class VdpJobStartResponse(BaseModel):
+    """Kết quả `POST /api/vdp/generate`. Desktop đọc `data.job_id` (`lib/api.ts`)."""
+
+    job_id: str
+
+
+class VdpJobStatusResponse(BaseModel):
+    """Kết quả `GET /api/vdp/status/{job_id}`.
+
+    Desktop đọc (`lib/api.ts` → vòng poll VDP): `status`, `processed`, `total`, `result`
+    (đường dẫn file kết quả khi xong), `error`. `cancel_requested` chưa ai đọc nhưng vẫn
+    trả — bỏ đi là đổi hợp đồng mà không được gì.
+    """
+
+    status: Optional[str] = None
+    processed: int = 0
+    total: int = 0
+    result: Optional[str] = None
+    error: Optional[str] = None
+    cancel_requested: bool = False
+
+
+class VdpJobCancelResponse(BaseModel):
+    """Kết quả `POST /api/vdp/vdp-cancel/{job_id}` (và alias `/cancel/{job_id}`).
+
+    Ba nhánh như bên N-Up: không tồn tại / đã ở trạng thái cuối / hủy thành công. Riêng
+    VDP có thêm `cancelled_before_start` — hủy được khi job còn trong hàng đợi thì file
+    tạm được dọn ngay và slot hàng đợi được nhả.
+    """
+
+    job_id: str
+    status: str
+    cancelled: bool
+    message: Optional[str] = None
+    already_cancelled: Optional[bool] = None
+    cancelled_before_start: Optional[bool] = None
+
+
+class VdpUploadResponse(BaseModel):
+    """Kết quả `POST /api/vdp/upload` — desktop dùng `path` làm `source_path` cho job."""
+
+    path: str

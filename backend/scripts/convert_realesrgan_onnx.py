@@ -7,8 +7,10 @@ Hai model:
   - quality: RealESRGAN_x4plus RRDBNet 23 khối, chế độ Chất lượng.
 """
 import argparse
+import hashlib
 import os
 import sys
+import tempfile
 import urllib.request
 
 import torch
@@ -24,6 +26,11 @@ except Exception:
 URL_X4V3 = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth"
 URL_WDN = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-wdn-x4v3.pth"
 URL_X4PLUS = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth"
+CHECKPOINT_SHA256 = {
+    URL_X4V3: "8dc7edb9ac80ccdc30c3a5dca6616509367f05fbc184ad95b731f05bece96292",
+    URL_WDN: "1641f8c4464b9f097c9fdda5589273713f67cf59f3d909e0bd688f0cee269dca",
+    URL_X4PLUS: "4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1",
+}
 ONNX_NAME = "realesr-general-x4v3.onnx"
 ONNX_QUALITY_NAME = "realesrgan-x4plus.onnx"
 
@@ -105,15 +112,50 @@ class RRDBNet(nn.Module):
         return self.conv_last(self.lrelu(self.conv_hr(feat)))
 
 
+def _sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _download(url: str, dst: str):
+    expected_sha256 = CHECKPOINT_SHA256[url]
     if os.path.exists(dst):
+        if _sha256(dst) != expected_sha256:
+            raise RuntimeError(
+                f"Checkpoint cache sai SHA-256: {dst}. "
+                "Hãy xóa file này rồi chạy build lại."
+            )
         return
+
     print(f"Downloading {url} ...")
-    urllib.request.urlretrieve(url, dst)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    handle, temp_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(dst)}.",
+        suffix=".download",
+        dir=os.path.dirname(dst),
+    )
+    os.close(handle)
+    try:
+        urllib.request.urlretrieve(url, temp_path)
+        actual_sha256 = _sha256(temp_path)
+        if actual_sha256 != expected_sha256:
+            raise RuntimeError(
+                f"Checkpoint tải về sai SHA-256: {os.path.basename(dst)} "
+                f"(expected={expected_sha256}, actual={actual_sha256})"
+            )
+        os.replace(temp_path, dst)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 def _extract_state(pth_path: str) -> dict:
-    ckpt = torch.load(pth_path, map_location="cpu")
+    # SEC (audit 2026-07-30 §SEC.5): chỉ nạp tensor/state dict; không cho pickle
+    # checkpoint gọi arbitrary Python object trên máy build.
+    ckpt = torch.load(pth_path, map_location="cpu", weights_only=True)
     if isinstance(ckpt, dict):
         for key in ("params_ema", "params"):
             if key in ckpt:
@@ -122,6 +164,12 @@ def _extract_state(pth_path: str) -> dict:
 
 
 def _dni_blend(state_a: dict, state_b: dict, alpha: float) -> dict:
+    """Trộn trọng số theo DNI của upstream: state_a = x4v3, state_b = wdn.
+
+    Trùng công thức `dni_weight = [denoise_strength, 1 - denoise_strength]` với
+    `model_path = [x4v3, wdn]` trong inference_realesrgan.py, nên `alpha` ở đây
+    CHÍNH LÀ `denoise_strength` của upstream. Xem chú thích của --alpha bên dưới.
+    """
     return {key: state_a[key] * alpha + state_b[key] * (1.0 - alpha) for key in state_a}
 
 
@@ -180,11 +228,23 @@ def main():
         default=os.path.expanduser(os.path.join("~", ".u2net")),
         help="Thư mục ghi ONNX",
     )
+    # UPSCALE (audit 2026-07-29 §NET.02): dòng help cũ ghi NGƯỢC ("1 giữ chi tiết,
+    # 0 khử nhiễu mạnh"). Theo upstream, alpha ≡ denoise_strength: 0 = khử nhiễu
+    # YẾU (giữ hạt/texture), 1 = khử nhiễu MẠNH. Mặc định của upstream là 0,5.
+    #
+    # PrynX đang giữ 1.0, tức bản khử nhiễu MẠNH NHẤT — đây là nguyên nhân đo được
+    # của cảm giác "bệt / mất hạt". KHÔNG đổi số này một mình: trọng số đổi thì
+    # .onnx đổi SHA-256, phải cập nhật đồng thời realesrgan_engine.MODEL_SHA256,
+    # build_production.ps1 và THIRD_PARTY_NOTICES.md, rồi đo lại corpus.
     parser.add_argument(
         "--alpha",
         type=float,
         default=1.0,
-        help="DNI cho model Nhanh: 1 giữ chi tiết, 0 khử nhiễu mạnh",
+        help=(
+            "DNI cho model Nhanh (≡ denoise_strength của upstream): "
+            "0 = khử nhiễu yếu, giữ hạt/texture; 1 = khử nhiễu mạnh nhất. "
+            "Upstream mặc định 0.5; PrynX hiện chốt 1.0 (xem §NET.02)."
+        ),
     )
     parser.add_argument(
         "--model",

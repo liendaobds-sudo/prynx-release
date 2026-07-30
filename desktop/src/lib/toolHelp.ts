@@ -332,7 +332,7 @@ export const TOOL_HELP: Record<string, ToolHelp> = {
   },
   upscale: {
     title: 'AI Upscale',
-    tagline: 'Phóng to đúng 2x, 4x bằng Real-ESRGAN chạy trên máy.',
+    tagline: 'Phóng to đúng 2x, 4x bằng AI chạy hoàn toàn trên máy.',
     sections: [
       { heading: 'Khi nào dùng', items: [
         'Ảnh độ phân giải thấp cần tăng kích thước; luôn kiểm tra chữ và logo ở mức zoom 100%.',

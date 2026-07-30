@@ -2167,19 +2167,24 @@ def _render_page_rgb(input_path: str, page_index: int, dpi: int,
     import pypdfium2 as pdfium
     from PIL import Image
 
-    doc = pdfium.PdfDocument(input_path)
-    try:
-        n_pages = len(doc)
-        if page_index < 0 or page_index >= n_pages:
-            raise ValueError(
-                f"page_index={page_index} ngoài phạm vi (tài liệu có {n_pages} trang)."
-            )
-        page = doc[page_index]
-        scale = dpi / 72.0
-        bitmap = page.render(scale=scale)
-        img = bitmap.to_pil().convert("RGB")
-    finally:
-        doc.close()
+    from app.core.pdfium_lock import pdfium_guard
+
+    # KIENTRUC (audit 2026-07-29 §C.1): preview ΔE gọi qua threadpool. `.convert("RGB")`
+    # trả ảnh MỚI nên bước resize LANCZOS phía dưới làm được ngoài khóa.
+    with pdfium_guard("channel_remover_render"):
+        doc = pdfium.PdfDocument(input_path)
+        try:
+            n_pages = len(doc)
+            if page_index < 0 or page_index >= n_pages:
+                raise ValueError(
+                    f"page_index={page_index} ngoài phạm vi (tài liệu có {n_pages} trang)."
+                )
+            page = doc[page_index]
+            scale = dpi / 72.0
+            bitmap = page.render(scale=scale)
+            img = bitmap.to_pil().convert("RGB")
+        finally:
+            doc.close()
 
     if max_dim and max(img.size) > max_dim:
         w, h = img.size

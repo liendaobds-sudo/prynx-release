@@ -169,6 +169,19 @@ const runStickerImposition: RecipeRunner = async (ctx, params) => {
     }
 };
 
+// Recipe cũ (ghi trước khi có tính năng chọn cạnh) KHÔNG có bleedSides → phải trả
+// đủ 4 cạnh để phát lại ra đúng file như lúc ghi.
+const RECIPE_BLEED_SIDE_KEYS = ['top', 'right', 'bottom', 'left'] as const;
+
+function recipeBleedSideNames(saved: unknown): string[] {
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
+        return [...RECIPE_BLEED_SIDE_KEYS];
+    }
+    const raw = saved as Record<string, unknown>;
+    const enabled = RECIPE_BLEED_SIDE_KEYS.filter(side => raw[side] !== false);
+    return enabled.length > 0 ? enabled : [...RECIPE_BLEED_SIDE_KEYS];
+}
+
 // ─── Tạo đường cắt / bù xén tem (dò contour server-side mỗi file) ───
 const runStickerDieline: RecipeRunner = async (ctx, params) => {
     const { file, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
@@ -186,7 +199,12 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
             const up = await uploadPDF(working);
             const bleedRes = await authenticatedFetch(`${getApiUrl()}/preflight/mirror-bleed`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ file_id: up.id, bleed_mm: p.bleedMm || 0, pages: null }),
+                body: JSON.stringify({
+                    file_id: up.id,
+                    bleed_mm: p.bleedMm || 0,
+                    pages: null,
+                    bleed_sides: recipeBleedSideNames(p.bleedSides),
+                }),
             });
             const bleedData = await bleedRes.json();
             if (!bleedData.success) throw new Error(bleedData.detail || i18n.t('recipe.recipeRunners:loi_tao_bu_xen_vector'));
@@ -208,6 +226,12 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
             fd.append('bleed_color_hex', p.bleedColorHex || '#FFFFFF');
             // Lẹm mép chỉ Xén vuông. Bế tem dùng “Bỏ nền trắng” + sample viền tự động.
             fd.append('edge_bite_mm', productType === 'rectangle' ? String(p.edgeBiteMm ?? 0) : '0');
+            fd.append(
+                'bleed_sides',
+                productType === 'rectangle'
+                    ? (recipeBleedSideNames(p.bleedSides).join(',') || 'none')
+                    : 'all',
+            );
             fd.append('cut_first_page_only', productType === 'sticker' && p.cutFirstPageOnly ? 'true' : 'false');
             fd.append(
                 'shape_mode',

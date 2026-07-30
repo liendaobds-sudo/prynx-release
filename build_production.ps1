@@ -513,7 +513,14 @@ if (-not $SkipNuitka) {
         & $VENV_PYTHON -c "import torch" *> $null
         if ($LASTEXITCODE -eq 0) {
             Write-Host "  Converting Real-ESRGAN .pth -> .onnx (build-time)..." -ForegroundColor DarkGray
-            & $VENV_PYTHON "$ROOT\backend\scripts\convert_realesrgan_onnx.py" --out "$MODELS_DIR" --model all
+            # UPSCALE (audit 2026-07-29 SNET.02): truyen --alpha TUONG MINH. alpha la
+            # denoise_strength cua upstream: 0 = khu nhieu yeu (giu hat), 1 = manh nhat.
+            # Chot 0.5 = mac dinh upstream (truoc day de default 1.0 = khu nhieu manh
+            # nhat, chinh la nguyen nhan do duoc cua cam giac anh "bet").
+            # Doi so nay PHAI cap nhat EXPECTED_UPSCALE_SHA256 ben duoi,
+            # realesrgan_engine.MODEL_SHA256, scripts/bundled_components.json,
+            # THIRD_PARTY_NOTICES.md va do lai corpus.
+            & $VENV_PYTHON "$ROOT\backend\scripts\convert_realesrgan_onnx.py" --out "$MODELS_DIR" --model all --alpha 0.5
         } else {
             Write-Host "  torch not in build venv; cannot generate the required upscale model." -ForegroundColor Yellow
         }
@@ -522,7 +529,17 @@ if (-not $SkipNuitka) {
         $UPSCALE_MODELS_FLAG = "--include-data-dir=app/data/models=app/data/models"
         Write-Host "  Real-ESRGAN models bundled: $MODELS_DIR" -ForegroundColor DarkGray
         # RELEASE QA (audit 2026-07-28 §UP-05/11): khóa đúng model đã benchmark.
-        $EXPECTED_UPSCALE_SHA256 = "027319ffe4f00ec2550957c0957d44969638a03d2ed2f0329af9fd6cd44a457a"
+        # UPSCALE (audit 2026-07-29 §NET.02): hash doi vi model general chuyen sang
+        # DNI alpha 0.5. Hash cu (alpha 1.0): 027319ffe4f00ec2550957c0957d44969638a03d2ed2f0329af9fd6cd44a457a
+        #
+        # LUU Y (do duoc 2026-07-29): export .onnx KHONG byte-reproducible giua cac
+        # ban torch/onnx — convert lai dung alpha 1.0 tren torch 2.6.0+cpu / onnx
+        # 1.17.0 cho trong so GIONG HET (lech 0.0000 muc mau) nhung hash khac.
+        # Vi .onnx duoc commit vao git nen buoc convert o tren chi chay khi file
+        # BIEN MAT; neu no chay that thi hash se lech va build dung o day. Khi do
+        # phai do lai chat luong roi cap nhat hash o CA BA cho (day,
+        # realesrgan_engine.MODEL_SHA256, scripts/bundled_components.json).
+        $EXPECTED_UPSCALE_SHA256 = "3ae50bb3a9131697d62ac79f934e57c2ef9cd3b8762993ca0d1fabd8a36a343f"
         $actualUpscaleHash = (Get-FileHash -LiteralPath $GEN_ONNX -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($actualUpscaleHash -ne $EXPECTED_UPSCALE_SHA256) {
             Write-Host "ERROR: Real-ESRGAN model SHA-256 mismatch: $actualUpscaleHash" -ForegroundColor Red

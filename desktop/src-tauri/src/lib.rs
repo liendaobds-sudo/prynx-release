@@ -537,10 +537,16 @@ fn render_tile_jpeg(
         clip_h.unwrap_or(0)
     );
 
+    let kind = if clip_w.is_some() && clip_h.is_some() { "tile" } else { "page" };
     {
         let cache_lock = TILE_CACHE.get_or_init(|| Mutex::new(TileCache::new(500)));
         if let Ok(mut cache) = cache_lock.lock() {
             if let Some(data) = cache.get(&cache_key) {
+                let total_ms = _total_t0.elapsed().as_millis();
+                perf_log(&format!(
+                    "CACHE_HIT tier=ram kind={} page={} zoom={:.3} total_ms={} bytes={}",
+                    kind, page, zoom, total_ms, data.len()
+                ));
                 return Ok(data);
             }
         }
@@ -549,8 +555,15 @@ fn render_tile_jpeg(
     // Cache ĐĨA: nếu tile đã từng render (mở lại/cuộn lại/zoom cũ) → đọc thẳng, khỏi render.
     {
         let dpath = tile_disk_path(&cache_key);
+        let _disk_t0 = std::time::Instant::now();
         if let Ok(bytes) = std::fs::read(&dpath) {
             if !bytes.is_empty() {
+                let disk_read_ms = _disk_t0.elapsed().as_millis();
+                let total_ms = _total_t0.elapsed().as_millis();
+                perf_log(&format!(
+                    "CACHE_HIT tier=disk kind={} page={} zoom={:.3} disk_read_ms={} total_ms={} bytes={}",
+                    kind, page, zoom, disk_read_ms, total_ms, bytes.len()
+                ));
                 let cache_lock = TILE_CACHE.get_or_init(|| Mutex::new(TileCache::new(500)));
                 if let Ok(mut cache) = cache_lock.lock() {
                     cache.insert(cache_key.clone(), bytes.clone());
@@ -750,7 +763,6 @@ fn render_tile_jpeg(
     let cache_ms = _cache_t0.elapsed().as_millis();
     let total_ms = _total_t0.elapsed().as_millis();
     // Tag "tile" (clip) vs "page" (full-page) để tách chi phí 2 loại render.
-    let kind = if clip_w.is_some() && clip_h.is_some() { "tile" } else { "page" };
     perf_log(&format!(
         "RENDER kind={} page={} zoom={:.3} wh={}x{} lock_wait_ms={} render_ms={} encode_ms={} cache_ms={} total_ms={} bytes={}",
         kind, page, zoom, bitmap_wh.0, bitmap_wh.1,
@@ -780,15 +792,22 @@ async fn render_pdf_page(
     clip_h: Option<i32>,
 ) -> Result<tauri::ipc::Response, String> {
     let sem = RENDER_SEMAPHORE.get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4)));
+    let command_t0 = std::time::Instant::now();
+    let kind = if clip_w.is_some() && clip_h.is_some() { "tile" } else { "page" };
+    let sem_t0 = std::time::Instant::now();
     let _permit = sem
         .acquire()
         .await
         .map_err(|_| "Render semaphore closed".to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        match render_tile_jpeg(
+    let sem_wait_ms = sem_t0.elapsed().as_millis();
+    let submitted_t0 = std::time::Instant::now();
+    let (result, worker_queue_ms, core_ms) = tauri::async_runtime::spawn_blocking(move || {
+        let worker_queue_ms = submitted_t0.elapsed().as_millis();
+        let core_t0 = std::time::Instant::now();
+        let result = match render_tile_jpeg(
             &file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h,
         ) {
-            Ok(data) => Ok(tauri::ipc::Response::new(data)),
+            Ok(data) => Ok(data),
             Err(e) => {
                 // Ghi LÝ DO thật ra log (release tắt devtools → console.error phía JS biến
                 // mất). Đây là manh mối chẩn đoán "xem trước trắng" trên máy khách: pdfium
@@ -803,15 +822,29 @@ async fn render_pdf_page(
                 );
                 Err(e)
             }
-        }
+        };
+        let core_ms = core_t0.elapsed().as_millis();
+        (result, worker_queue_ms, core_ms)
     })
     .await
     .unwrap_or_else(|_| {
         // Task panic (vd STATUS_STACK_BUFFER_OVERRUN khi bitmap tờ booklet quá lớn) —
         // trước đây nuốt lý do thành "Task panicked" chung chung. Ghi lại để lần theo.
         log::error!("[RENDER] Task panicked (khả năng pdfium crash: bitmap quá lớn / OOM)");
-        Err("Task panicked".into())
-    })
+        (Err("Task panicked".into()), 0, 0)
+    });
+    let command_ms = command_t0.elapsed().as_millis();
+    match result {
+        Ok(data) => {
+            perf_log(&format!(
+                "IPC_RENDER kind={} page={} zoom={:.3} sem_wait_ms={} worker_queue_ms={} core_ms={} command_ms={} bytes={}",
+                kind, page, zoom, sem_wait_ms, worker_queue_ms, core_ms, command_ms, data.len()
+            ));
+            Ok(tauri::ipc::Response::new(data))
+        }
+        Err(error) => Err(error),
+    }
+
 }
 
 #[tauri::command]

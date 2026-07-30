@@ -1048,6 +1048,12 @@ body.dt-panel-interacting * {
   padding: 32px 40px 24px;
   border-bottom: 1px solid var(--dt-border);
   background: var(--dt-grad-gallery);
+  /* [VARIANT 2026-07-29] Tiêu đề bên trái, ô tìm kiếm bên phải */
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
 }
 
 .dt-gallery-header-text {
@@ -1076,23 +1082,189 @@ body.dt-panel-interacting * {
   line-height: 1.5;
 }
 
+/* ─── [VARIANT 2026-07-29] Ô tìm kiếm trên header ─── */
+.dt-gallery-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 260px;
+  flex: 0 1 320px;
+}
+
+.dt-gallery-search-icon {
+  position: absolute;
+  left: 12px;
+  font-size: 13px;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.dt-gallery-search-input {
+  width: 100%;
+  padding: 9px 12px 9px 34px;
+  font-size: 13px;
+  color: var(--dt-text-primary);
+  background: var(--dt-bg-secondary);
+  border: 1px solid var(--dt-border);
+  border-radius: 8px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.dt-gallery-search-input::placeholder {
+  color: var(--dt-text-secondary);
+}
+
+.dt-gallery-search-input:focus {
+  border-color: var(--dt-accent);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.18);
+}
+
+/* ─── [VARIANT 2026-07-29] Thân thư viện: sidebar nhóm + lưới card ─── */
+.dt-gallery-body {
+  display: flex;
+  align-items: flex-start;
+  min-height: 0;
+}
+
+.dt-gallery-sidebar {
+  flex: 0 0 216px;
+  padding: 28px 12px 40px 24px;
+  border-right: 1px solid var(--dt-border);
+  position: sticky;
+  top: 0;
+  align-self: stretch;
+}
+
+.dt-gallery-sidebar-label {
+  margin: 0 0 10px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dt-text-secondary);
+}
+
+.dt-gallery-group-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dt-gallery-group-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  color: var(--dt-text-secondary);
+  background: none;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.18s, color 0.18s;
+}
+
+.dt-gallery-group-btn:hover {
+  background: var(--dt-bg-secondary);
+  color: var(--dt-text-primary);
+}
+
+.dt-gallery-group-btn.active {
+  background: rgba(139, 92, 246, 0.14);
+  color: var(--dt-accent);
+  font-weight: 600;
+}
+
+.dt-gallery-group-count {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
 .dt-gallery-grid {
+  flex: 1;
+  min-width: 0;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 20px;
   padding: 28px 40px 40px;
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 1400px) {
   .dt-gallery-grid {
     grid-template-columns: repeat(3, 1fr);
   }
 }
 
-@media (max-width: 800px) {
+@media (max-width: 1100px) {
   .dt-gallery-grid {
     grid-template-columns: repeat(2, 1fr);
   }
+}
+
+@media (max-width: 800px) {
+  .dt-gallery-body {
+    flex-direction: column;
+  }
+
+  .dt-gallery-sidebar {
+    flex: 0 0 auto;
+    width: 100%;
+    position: static;
+    border-right: none;
+    border-bottom: 1px solid var(--dt-border);
+    padding: 16px 24px;
+  }
+
+  .dt-gallery-group-list {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .dt-gallery-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* Trạng thái rỗng khi tìm không ra kết quả */
+.dt-gallery-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 80px 40px;
+}
+
+.dt-gallery-empty-text {
+  margin: 0;
+  font-size: 14px;
+  color: var(--dt-text-secondary);
+}
+
+.dt-gallery-empty-btn {
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--dt-accent);
+  background: rgba(139, 92, 246, 0.12);
+  border: 1px solid rgba(139, 92, 246, 0.35);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.18s;
+}
+
+.dt-gallery-empty-btn:hover {
+  background: rgba(139, 92, 246, 0.2);
 }
 
 /* ─── Gallery Card — matches printsolutions ToolCard layout ─── */
@@ -1122,10 +1294,14 @@ body.dt-panel-interacting * {
   transform: translateY(-2px) scale(1.01);
 }
 
-/* Card header: text on top — p-5 pb-3 */
+/* Card header: text on top — p-5 pb-3
+   [VARIANT 2026-07-29] min-height để ảnh của mọi card bắt đầu ở cùng một mốc,
+   dù tên hộp dài 1 hay 2 dòng — không thì lưới trông so le. */
 .dt-gallery-card-header {
   padding: 16px 18px 10px;
+  padding-right: 96px; /* chừa chỗ cho chip mã khuôn ở góc trên phải */
   flex-shrink: 0;
+  min-height: 74px;
 }
 
 .dt-gallery-card-title {
@@ -1187,6 +1363,81 @@ body.dt-panel-interacting * {
 
 .dt-gallery-card:hover .dt-gallery-card-overlay {
   opacity: 1;
+}
+
+/* ─── [VARIANT 2026-07-29] Mã khuôn + khung giữ chỗ khi thiếu ảnh ─── */
+.dt-gallery-card-code {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--dt-text-secondary);
+  background: var(--dt-bg-primary);
+  border: 1px solid var(--dt-border);
+  border-radius: 5px;
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+/* Ảnh minh hoạ sinh tự động; chưa có thì hiện mã khuôn thay vì icon ảnh lỗi */
+.dt-gallery-card-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: repeating-linear-gradient(
+    45deg,
+    #f7f7f9,
+    #f7f7f9 10px,
+    #f0f0f4 10px,
+    #f0f0f4 20px
+  );
+}
+
+.dt-gallery-card-placeholder-icon {
+  font-size: 30px;
+  opacity: 0.45;
+}
+
+.dt-gallery-card-placeholder-code {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #6b6b78;
+}
+
+/* ─── [VARIANT 2026-07-29] Mã khuôn + chip "đã tuỳ chỉnh" dưới ô chọn mẫu ─── */
+.dt-variant-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 0;
+}
+
+.dt-variant-code {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--dt-text-secondary);
+}
+
+.dt-variant-deviated {
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.16);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: 999px;
+  cursor: help;
 }
 
 /* ─── Back Button ─── */

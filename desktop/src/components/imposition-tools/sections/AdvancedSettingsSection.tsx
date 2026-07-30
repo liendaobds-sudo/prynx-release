@@ -778,7 +778,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                             (guillotine: activeTool 'nup' + markType 'guillotine'). Chia cụm
                             zone hợp guillotine (vùng chữ nhật = nhát dao thẳng). Ẩn cho các
                             tổ hợp khác để tránh control vô tác dụng. */}
-                        {s.taskMode !== 'booklet' && (stickerLike || pageSheetMode || (activeTool === 'nup' && s.markType === 'guillotine')) && (
+                        {s.taskMode !== 'booklet' && s.layoutType !== 'mixed_guillotine' && (stickerLike || pageSheetMode || (activeTool === 'nup' && s.markType === 'guillotine')) && (
                         <div>
                             <div className="flex items-center justify-between mb-2">
                                 <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0">{t('imposition.advancedSettings:cach_chia_cum')}</label>

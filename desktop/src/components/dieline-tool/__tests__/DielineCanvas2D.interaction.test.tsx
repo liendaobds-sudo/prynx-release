@@ -3,8 +3,8 @@ import React from 'react';
 import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import DielineCanvas2D from '../DielineCanvas2D';
-import { useBoxStore } from '../../../store/useBoxStore';
-import { useMockupStore } from '../../../store/useMockupStore';
+import { useBoxStore } from '../../../stores/useBoxStore';
+import { useMockupStore } from '../../../stores/useMockupStore';
 import { generateDieline } from '../../../lib/dieline/engine';
 import { DEFAULT_PARAMS } from '../../../lib/dieline/types';
 

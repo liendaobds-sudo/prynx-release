@@ -13,7 +13,14 @@ import tempfile
 import threading
 from typing import List, Dict, Optional, Any, Tuple
 from concurrent.futures import ThreadPoolExecutor
-from app.schemas.vdp import VdpRequest, VdpField
+from app.schemas.vdp import (
+    VdpField,
+    VdpJobCancelResponse,
+    VdpJobStartResponse,
+    VdpJobStatusResponse,
+    VdpRequest,
+    VdpUploadResponse,
+)
 from app.workers.vdp_engine import VdpCancelledError, run_vdp_engine
 from app.workers.vdp_datasource import (
     DataSourceError,
@@ -51,6 +58,9 @@ _VDP_JOBS_LOCK = threading.RLock()
 VDP_JOB_TTL_SECONDS = 3600          # Dọn job + file kết quả sau 1 giờ
 MAX_VDP_ROWS = 100_000              # Chặn payload quá lớn gây OOM/đầy đĩa
 MAX_VDP_PAYLOAD_BYTES = 256 * 1024 * 1024
+# PERF (audit 2026-07-29 §C.3): trần = 1 là CỐ Ý — `vdp_engine` chia bản ghi thành chunk
+# và mở ProcessPoolExecutor theo số lõi, nên một job đã dùng hết máy. Tăng số job song
+# song = oversubscribe. Máy mạnh muốn nhanh hơn thì tăng worker trong job.
 _VDP_MAX_CONCURRENT_JOBS = max(1, int(os.environ.get('PRYNX_MAX_VDP_JOBS', '1') or '1'))
 _VDP_MAX_QUEUED_JOBS = max(0, int(os.environ.get('PRYNX_MAX_VDP_QUEUE', '8') or '8'))
 _VDP_EXECUTOR = ThreadPoolExecutor(
@@ -384,7 +394,7 @@ def vdp_background_task_spooled(
                     pass
             _VDP_SUBMISSION_SLOTS.release()
 
-@router.post("/generate")
+@router.post("/generate", response_model=VdpJobStartResponse)
 async def start_vdp_job(
     fields: str = Form(...),
     data_file: UploadFile = File(...),
@@ -502,8 +512,8 @@ async def start_vdp_job(
                     pass
             _VDP_SUBMISSION_SLOTS.release()
 
-@router.post("/vdp-cancel/{job_id}")
-@router.post("/cancel/{job_id}", include_in_schema=False)
+@router.post("/vdp-cancel/{job_id}", response_model=VdpJobCancelResponse)
+@router.post("/cancel/{job_id}", include_in_schema=False, response_model=VdpJobCancelResponse)
 def cancel_vdp_job(job_id: str, license_info: dict = Depends(require_license)):
     """Request cooperative cancellation without failing on repeated calls."""
     with _VDP_JOBS_LOCK:
@@ -558,7 +568,7 @@ def cancel_vdp_job(job_id: str, license_info: dict = Depends(require_license)):
     }
 
 
-@router.get("/status/{job_id}")
+@router.get("/status/{job_id}", response_model=VdpJobStatusResponse)
 def get_vdp_status(job_id: str, license_info: dict = Depends(require_license)):
     if job_id not in vdp_jobs:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -606,7 +616,7 @@ def download_vdp(job_id: str, license_info: dict = Depends(require_license)):
         media_type='application/pdf'
     )
 
-@router.post("/upload")
+@router.post("/upload", response_model=VdpUploadResponse)
 async def upload_file_for_processing(file: UploadFile = File(...), license_info: dict = Depends(require_license)):
     """Upload a PDF file and return its server-side path for backend processing."""
     file_id = uuid.uuid4().hex

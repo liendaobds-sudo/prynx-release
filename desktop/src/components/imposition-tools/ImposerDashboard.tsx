@@ -1119,6 +1119,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 gapX: s.gapX, gapY: s.gapY, marginTop: s.marginTop, marginBottom: effMarginBottom, marginLeft: s.marginLeft, marginRight: s.marginRight,
                 marginMode: dieGeometryMode ? 'labels_only' : s.marginMode,
                 duplexFlow: pageSheetMode ? 'normal' : s.duplexFlow, align: s.align, mirrorAlign: true,
+                duplexFlipEdge: s.duplexFlipEdge,
                 markType: getImposerCapability(pageSheetMode ? 'guillotine' : activeTool === 'sticker_imposer' ? 'diecut' : activeTool === 'cnc_imposer' ? 'cnc' : 'guillotine').supportsMarks ? s.markType : 'none',
                 markOffset: s.marksConfig.distance, markLength: s.marksConfig.length, markThickness: s.marksConfig.thickness,
                 markStyle: s.marksConfig.style === 2 ? 'japanese' : 'default',
@@ -1141,7 +1142,9 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 detectedShapeParamsByPage: dieGeometryMode ? detectedShapeParamsByPage : undefined,
                 spawnNewTab: s.spawnNewTabByTool[activeTool] ?? true,
                 // Report & xuất tờ duy nhất (spec: binh-tem-be-report) — luôn bật cho sticker & CNC
-                exportUniqueSheets: stickerProductMode,
+                exportUniqueSheets: s.layoutType === 'mixed_guillotine'
+                    ? s.exportUniqueSheets
+                    : stickerProductMode,
                 reportDisplay: s.reportDisplay,
                 reportMaterial: s.reportMaterial,
                 reportLamination: s.reportLamination,
@@ -1491,6 +1494,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                         : (s.layoutType === 'repeat' ? 'sequential' : s.layoutType)
                                 }
                                 duplexFlow={activeTool === 'sticker_imposer' ? 'normal' : s.duplexFlow}
+                                duplexFlipEdge={s.duplexFlipEdge}
                                 splitGap={splitGap}
                                 gapX={s.gapX} gapY={s.gapY}
                                 groupingStrategy={_effGroupingPv}

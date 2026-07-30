@@ -13,6 +13,7 @@ import numpy as np
 import pikepdf
 
 from app.config import settings
+from app.core.bleed_sides import normalize_bleed_sides
 
 logger = logging.getLogger(__name__)
 
@@ -183,43 +184,54 @@ def _pdfium_object_candidates(file_path: str, page_index: int) -> list[tuple[lis
     import pypdfium2 as pdfium
     import pypdfium2.raw as pdfium_c
 
-    pdf = pdfium.PdfDocument(file_path)
-    try:
-        page = pdf[page_index]
-        page_raw = page.raw
-        count = min(int(pdfium_c.FPDFPage_CountObjects(page_raw)), 20000)
-        candidates: list[tuple[list[float], int]] = []
-        painted_types = {
-            int(pdfium_c.FPDF_PAGEOBJ_PATH),
-            int(pdfium_c.FPDF_PAGEOBJ_IMAGE),
-            int(pdfium_c.FPDF_PAGEOBJ_SHADING),
-            int(pdfium_c.FPDF_PAGEOBJ_FORM),
-        }
-        for idx in range(count):
-            obj = pdfium_c.FPDFPage_GetObject(page_raw, idx)
-            if not obj:
-                continue
-            raw_type = int(pdfium_c.FPDFPageObj_GetType(obj))
-            if raw_type not in painted_types:
-                continue
-            left = ctypes.c_float()
-            bottom = ctypes.c_float()
-            right = ctypes.c_float()
-            top = ctypes.c_float()
-            if not pdfium_c.FPDFPageObj_GetBounds(
-                obj,
-                ctypes.byref(left),
-                ctypes.byref(bottom),
-                ctypes.byref(right),
-                ctypes.byref(top),
-            ):
-                continue
-            box = [float(left.value), float(bottom.value), float(right.value), float(top.value)]
-            if all(math.isfinite(value) for value in box) and box[2] > box[0] and box[3] > box[1]:
-                candidates.append((box, raw_type))
-        return candidates
-    finally:
-        pdf.close()
+    from app.core.pdfium_lock import pdfium_guard
+
+    # KIENTRUC (audit 2026-07-29 §C.1): dò khung được gọi từ đường chạy trong thread
+    # (`/preflight/detect-crop-regions`, `/preflight/page-boxes`). Toàn thân là lời gọi
+    # FFI pdfium thô (FPDFPage_*) nên khóa bao cả hàm.
+    with pdfium_guard("page_boxes_object_candidates"):
+        pdf = pdfium.PdfDocument(file_path)
+        try:
+            page = pdf[page_index]
+            page_raw = page.raw
+            count = min(int(pdfium_c.FPDFPage_CountObjects(page_raw)), 20000)
+            candidates: list[tuple[list[float], int]] = []
+            painted_types = {
+                int(pdfium_c.FPDF_PAGEOBJ_PATH),
+                int(pdfium_c.FPDF_PAGEOBJ_IMAGE),
+                int(pdfium_c.FPDF_PAGEOBJ_SHADING),
+                int(pdfium_c.FPDF_PAGEOBJ_FORM),
+            }
+            for idx in range(count):
+                obj = pdfium_c.FPDFPage_GetObject(page_raw, idx)
+                if not obj:
+                    continue
+                raw_type = int(pdfium_c.FPDFPageObj_GetType(obj))
+                if raw_type not in painted_types:
+                    continue
+                left = ctypes.c_float()
+                bottom = ctypes.c_float()
+                right = ctypes.c_float()
+                top = ctypes.c_float()
+                if not pdfium_c.FPDFPageObj_GetBounds(
+                    obj,
+                    ctypes.byref(left),
+                    ctypes.byref(bottom),
+                    ctypes.byref(right),
+                    ctypes.byref(top),
+                ):
+                    continue
+                box = [
+                    float(left.value),
+                    float(bottom.value),
+                    float(right.value),
+                    float(top.value),
+                ]
+                if all(math.isfinite(value) for value in box) and box[2] > box[0] and box[3] > box[1]:
+                    candidates.append((box, raw_type))
+            return candidates
+        finally:
+            pdf.close()
 
 
 def _choose_structural_crop_box(
@@ -725,15 +737,20 @@ class PageBoxesEngine:
                 return
             try:
                 import pypdfium2 as pdfium
+                from app.core.pdfium_lock import pdfium_guard
                 check_cancelled()
-                render_doc = pdfium.PdfDocument(file_path)
-                try:
-                    bitmap = render_doc[page_num - 1].render(scale=render_scale)
-                    image = bitmap.to_pil()
-                    image_arr = np.array(image)
-                    pix_w, pix_h = image.size
-                finally:
-                    render_doc.close()
+                # KIENTRUC (audit 2026-07-29 §C.1): `np.array(image)` nằm TRONG khóa
+                # là cố ý — nó copy pixel ra khỏi bộ đệm bitmap, phải xong trước khi
+                # đóng tài liệu (giữ đúng thứ tự bản gốc).
+                with pdfium_guard("page_boxes_crop_render"):
+                    render_doc = pdfium.PdfDocument(file_path)
+                    try:
+                        bitmap = render_doc[page_num - 1].render(scale=render_scale)
+                        image = bitmap.to_pil()
+                        image_arr = np.array(image)
+                        pix_w, pix_h = image.size
+                    finally:
+                        render_doc.close()
                 check_cancelled()
             except Exception as exc:
                 render_error = True
@@ -911,8 +928,14 @@ class PageBoxesEngine:
         import pypdfium2 as pdfium
         import cv2
 
+        from app.core.pdfium_lock import pdfium_guard
+
         doc = pikepdf.Pdf.open(file_path)
-        pdf_render = pdfium.PdfDocument(file_path)
+        # KIENTRUC (audit 2026-07-29 §C.1): khóa THEO TỪNG TRANG (mở/render/đóng), phần
+        # cv2 + numpy dò lề để ngoài khóa — auto-trim nhiều trang không được chặn các
+        # request preview khác suốt thời gian chạy.
+        with pdfium_guard("auto_trim_open"):
+            pdf_render = pdfium.PdfDocument(file_path)
 
         target_pages = pages if pages else list(range(1, len(doc.pages) + 1))
         margin_pt = margin_mm * PT_PER_MM
@@ -923,17 +946,20 @@ class PageBoxesEngine:
         for pnum in target_pages:
             if 1 <= pnum <= len(doc.pages):
                 page = doc.pages[pnum - 1]
-                render_page = pdf_render[pnum - 1]
 
                 # Hệ quy chiếu là CROPBOX (chưa xoay); pdfium render đúng vùng
                 # CropBox rồi áp /Rotate. .cropbox tự fallback về MediaBox.
                 cb = _get_page_box(page, "/CropBox", fallback=_get_page_box(page, "/MediaBox"))
                 rotate = int(page.get("/Rotate", 0) or 0) % 360
 
-                bitmap = render_page.render(scale=DETECT_SCALE)
-                img = bitmap.to_pil()
-                arr = np.array(img)
-                pix_w, pix_h = img.size
+                # `np.array(img)` copy pixel ra khỏi bộ đệm bitmap → phải trong khóa.
+                # Lấy trang (`pdf_render[...]`) cũng là lời gọi PDFium → cùng trong khóa.
+                with pdfium_guard("auto_trim_page_render"):
+                    render_page = pdf_render[pnum - 1]
+                    bitmap = render_page.render(scale=DETECT_SCALE)
+                    img = bitmap.to_pil()
+                    arr = np.array(img)
+                    pix_w, pix_h = img.size
 
                 # Nội dung = pixel KHÔNG-trắng. Ngưỡng 248 (nới nhẹ) rồi lọc noise:
                 # nền JPEG lẫn đốm 245-249 lẻ tẻ; morphology-open (erode→dilate) xoá
@@ -972,7 +998,8 @@ class PageBoxesEngine:
                 )
                 page[pikepdf.Name("/CropBox")] = pikepdf.Array(new_cb)
 
-        pdf_render.close()
+        with pdfium_guard("auto_trim_close"):
+            pdf_render.close()
 
         output_name = f"{Path(file_path).stem}_trimmed_{uuid.uuid4().hex[:6]}.pdf"
         output_path = str(self.output_dir / output_name)
@@ -982,14 +1009,28 @@ class PageBoxesEngine:
         logger.info(f"Auto-trimmed {len(target_pages)} pages → {output_path}")
         return output_path
 
-    def add_bleed_from_trim(self, file_path: str, bleed_mm: float = 3, pages: list[int] | None = None) -> str:
+    def add_bleed_from_trim(
+        self,
+        file_path: str,
+        bleed_mm: float = 3,
+        pages: list[int] | None = None,
+        sides=None,
+    ) -> str:
         """
-        Tự động set BleedBox = TrimBox mở rộng thêm bleed_mm mỗi cạnh.
+        Tự động set BleedBox = TrimBox mở rộng thêm bleed_mm ở các cạnh được chọn.
+
+        ``sides`` mặc định cả 4 cạnh (xem ``app.core.bleed_sides``); cạnh tắt giữ
+        nguyên mép TrimBox.
         """
         doc = pikepdf.Pdf.open(file_path)
 
         target_pages = pages if pages else list(range(1, len(doc.pages) + 1))
         bleed_pt = bleed_mm * PT_PER_MM
+        side_l, side_r, side_b, side_t = normalize_bleed_sides(sides)
+        b_l = bleed_pt if side_l else 0.0
+        b_r = bleed_pt if side_r else 0.0
+        b_b = bleed_pt if side_b else 0.0
+        b_t = bleed_pt if side_t else 0.0
 
         for pnum in target_pages:
             if 1 <= pnum <= len(doc.pages):
@@ -1003,10 +1044,10 @@ class PageBoxesEngine:
                 mb = _get_page_box(page, "/MediaBox")
 
                 bleed_rect = [
-                    trim[0] - bleed_pt,
-                    trim[1] - bleed_pt,
-                    trim[2] + bleed_pt,
-                    trim[3] + bleed_pt,
+                    trim[0] - b_l,
+                    trim[1] - b_b,
+                    trim[2] + b_r,
+                    trim[3] + b_t,
                 ]
 
                 # Expand MediaBox if needed
@@ -1030,14 +1071,24 @@ class PageBoxesEngine:
         logger.info(f"Added {bleed_mm}mm bleed on {len(target_pages)} pages → {output_path}")
         return output_path
 
-    def add_mirror_bleed(self, file_path: str, bleed_mm: float = 3, pages: list[int] | None = None) -> str:
+    def add_mirror_bleed(
+        self,
+        file_path: str,
+        bleed_mm: float = 3,
+        pages: list[int] | None = None,
+        sides=None,
+    ) -> str:
         """
         Tạo vùng bù xén bằng cách LẬT GƯƠNG (mirror/reflect) nội dung sát mép trang
         ra ngoài vùng bleed — giữ nguyên 100% vector, không raster hoá.
 
         Khác hẳn add_bleed_from_trim (chỉ set BleedBox). Hàm này thực sự vẽ nội dung
-        phản chiếu vào 4 dải cạnh + 4 góc quanh trim box, đúng kỹ thuật "mirror bleed"
+        phản chiếu vào các dải cạnh + góc quanh trim box, đúng kỹ thuật "mirror bleed"
         của prepress, nên vùng bleed luôn có hình (không lộ viền trắng sau khi xén).
+
+        ``sides`` chọn cạnh nào được bù xén (mặc định cả 4 — xem
+        ``app.core.bleed_sides``). Cạnh tắt giữ nguyên mép thành phẩm: không nở khổ,
+        không vẽ dải gương; góc chỉ được vẽ khi cả hai cạnh kề đều bật.
 
         Trim box lấy theo CropBox (kết quả auto_trim) → TrimBox → MediaBox.
         Lưu ý: không xử lý trang có /Rotate ≠ 0 (giữ nguyên, chỉ set bleed box).
@@ -1045,6 +1096,10 @@ class PageBoxesEngine:
         doc = pikepdf.Pdf.open(file_path)
         target_pages = pages if pages else list(range(1, len(doc.pages) + 1))
         bleed_pt = bleed_mm * PT_PER_MM
+        side_l, side_r, side_b, side_t = normalize_bleed_sides(sides)
+        if not (side_l or side_r or side_b or side_t):
+            # Không chọn cạnh nào = không bù xén → rơi vào nhánh fallback chỉ set box.
+            bleed_pt = 0.0
 
         for pnum in target_pages:
             if not (1 <= pnum <= len(doc.pages)):
@@ -1056,11 +1111,16 @@ class PageBoxesEngine:
             trim = _get_page_box(page, "/TrimBox", fallback=crop)
             x0, y0, x1, y1 = trim
             b = bleed_pt
+            # Lượng nở theo TỪNG cạnh; cạnh tắt = 0 (giữ đúng mép thành phẩm).
+            b_l = b if side_l else 0.0
+            b_r = b if side_r else 0.0
+            b_b = b if side_b else 0.0
+            b_t = b if side_t else 0.0
 
             # Trang xoay: kỹ thuật mirror theo trục thẳng sẽ sai → fallback set box.
             rotate = int(page.get("/Rotate", 0) or 0) % 360
             if rotate != 0 or bleed_pt <= 0:
-                bleed_rect = [x0 - b, y0 - b, x1 + b, y1 + b]
+                bleed_rect = [x0 - b_l, y0 - b_b, x1 + b_r, y1 + b_t]
                 new_mb = [
                     min(mb[0], bleed_rect[0]), min(mb[1], bleed_rect[1]),
                     max(mb[2], bleed_rect[2]), max(mb[3], bleed_rect[3]),
@@ -1106,6 +1166,9 @@ class PageBoxesEngine:
 
             def _draw(clip, matrix):
                 cx, cy, cw, ch = clip
+                # Cạnh/góc bị tắt cho ra dải rộng 0 → clip rỗng, bỏ hẳn cho gọn stream.
+                if cw <= 0 or ch <= 0:
+                    return []
                 a, bb, c, d, e, f = matrix
                 return [
                     "q",
@@ -1118,16 +1181,17 @@ class PageBoxesEngine:
             ops = []
             # 1) Nội dung gốc (identity), clip trong trim để không đè dải mirror.
             ops += _draw((x0, y0, x1 - x0, y1 - y0), (1, 0, 0, 1, 0, 0))
-            # 2) 4 cạnh — phản chiếu qua trục cạnh tương ứng.
-            ops += _draw((x0 - b, y0, b, y1 - y0), (-1, 0, 0, 1, 2 * x0, 0))   # trái  (x=x0)
-            ops += _draw((x1, y0, b, y1 - y0),     (-1, 0, 0, 1, 2 * x1, 0))   # phải  (x=x1)
-            ops += _draw((x0, y0 - b, x1 - x0, b), (1, 0, 0, -1, 0, 2 * y0))   # dưới  (y=y0)
-            ops += _draw((x0, y1, x1 - x0, b),     (1, 0, 0, -1, 0, 2 * y1))   # trên  (y=y1)
-            # 3) 4 góc — phản chiếu qua cả hai trục.
-            ops += _draw((x0 - b, y0 - b, b, b), (-1, 0, 0, -1, 2 * x0, 2 * y0))  # BL
-            ops += _draw((x1, y0 - b, b, b),     (-1, 0, 0, -1, 2 * x1, 2 * y0))  # BR
-            ops += _draw((x0 - b, y1, b, b),     (-1, 0, 0, -1, 2 * x0, 2 * y1))  # TL
-            ops += _draw((x1, y1, b, b),         (-1, 0, 0, -1, 2 * x1, 2 * y1))  # TR
+            # 2) Các cạnh được chọn — phản chiếu qua trục cạnh tương ứng.
+            ops += _draw((x0 - b_l, y0, b_l, y1 - y0), (-1, 0, 0, 1, 2 * x0, 0))   # trái  (x=x0)
+            ops += _draw((x1, y0, b_r, y1 - y0),       (-1, 0, 0, 1, 2 * x1, 0))   # phải  (x=x1)
+            ops += _draw((x0, y0 - b_b, x1 - x0, b_b), (1, 0, 0, -1, 0, 2 * y0))   # dưới  (y=y0)
+            ops += _draw((x0, y1, x1 - x0, b_t),       (1, 0, 0, -1, 0, 2 * y1))   # trên  (y=y1)
+            # 3) Góc — chỉ tồn tại khi CẢ HAI cạnh kề đều được bù xén (_draw tự bỏ
+            #    qua khi một trong hai chiều = 0).
+            ops += _draw((x0 - b_l, y0 - b_b, b_l, b_b), (-1, 0, 0, -1, 2 * x0, 2 * y0))  # BL
+            ops += _draw((x1, y0 - b_b, b_r, b_b),       (-1, 0, 0, -1, 2 * x1, 2 * y0))  # BR
+            ops += _draw((x0 - b_l, y1, b_l, b_t),       (-1, 0, 0, -1, 2 * x0, 2 * y1))  # TL
+            ops += _draw((x1, y1, b_r, b_t),             (-1, 0, 0, -1, 2 * x1, 2 * y1))  # TR
 
             # [MIRROR-ORIGIN 2026-07-28] Dịch toàn bộ nội dung để gốc trang về (0,0).
             #
@@ -1145,8 +1209,8 @@ class PageBoxesEngine:
             # các ma trận mirror `2*x0`, `2*y1`… vẫn đúng trong hệ toạ độ gốc, chỉ cả
             # khối được dịch. BBox của Form XObject nằm ở hệ toạ độ RIÊNG của form
             # (trước phép dịch) nên phải giữ nguyên mb gốc.
-            dx = b - x0
-            dy = b - y0
+            dx = b_l - x0
+            dy = b_b - y0
             trim_w = x1 - x0
             trim_h = y1 - y0
             shifted_ops = [
@@ -1159,8 +1223,8 @@ class PageBoxesEngine:
             new_content = pikepdf.Stream(doc, "\n".join(shifted_ops).encode("ascii"))
             page[pikepdf.Name("/Contents")] = new_content
 
-            page_box = [0.0, 0.0, trim_w + 2 * b, trim_h + 2 * b]
-            trim_box = [b, b, b + trim_w, b + trim_h]
+            page_box = [0.0, 0.0, trim_w + b_l + b_r, trim_h + b_b + b_t]
+            trim_box = [b_l, b_b, b_l + trim_w, b_b + trim_h]
             page[pikepdf.Name("/MediaBox")] = pikepdf.Array(page_box)
             page[pikepdf.Name("/CropBox")] = pikepdf.Array(page_box)
             page[pikepdf.Name("/BleedBox")] = pikepdf.Array(page_box)

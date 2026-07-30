@@ -35,6 +35,8 @@ export interface BaseSettings {
     marginRight?: number;
     marginMode?: 'labels_only' | 'include_marks';
     duplexFlow?: 'normal' | 'double';
+    // MIXED-GUILLOTINE (audit 2026-07-30 §MG.8/§MG.9): preset cũ thiếu field sẽ dùng mặc định `long` từ store.
+    duplexFlipEdge?: 'long' | 'short';
     align?: 'top-left' | 'top-center' | 'top-right' | 'center-left' | 'center' | 'center-right' | 'bottom-left' | 'bottom-center' | 'bottom-right';
     mirrorAlign?: boolean;
     interleave?: 'normal' | 'all_fronts_first' | 'reverse_backs' | 'reverse_backs_180';
@@ -55,7 +57,7 @@ export interface BaseSettings {
 // ==========================================
 export interface GuillotineSettings extends BaseSettings {
     imposerMode: 'guillotine';
-    layoutType?: 'repeat' | 'sequential' | 'cut_stacks';
+    layoutType?: 'repeat' | 'sequential' | 'cut_stacks' | 'mixed_guillotine';
     gridStrategy?: 'manual' | 'simple_auto' | 'optimal_auto' | 'staggered' | 'row_alt' | 'head_to_tail';
     cutStack?: boolean;
 

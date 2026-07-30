@@ -7,8 +7,8 @@ export interface UpscaleOptionsState {
 
 const DEFAULT_UPSCALE_OPTIONS: UpscaleOptionsState = {
     scaleFactor: 4,
-    // PERF (audit 2026-07-28 §UP-13): mặc định giữ tốc độ model nhẹ nhưng bảo
-    // toàn texture tốt hơn; RRDBNet nặng chỉ chạy khi người dùng chủ động chọn.
+    // PERF (audit 2026-07-29 §NET.01): mặc định giữ tốc độ của model nhẹ nhưng có
+    // bù chi tiết; chế độ Chất lượng nặng và cần GPU nên chỉ chạy khi chủ động chọn.
     model: 'balanced',
 };
 

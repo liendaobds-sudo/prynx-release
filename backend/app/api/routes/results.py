@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.job import ComparisonJob, PageResult, UploadedFile
 from app.schemas.job import (
-    JobResponse, PageResultResponse, ComparisonResultResponse, DiffRegion
+    JobResponse, PageResultResponse, ComparisonResultResponse, DiffRegion,
+    DeleteJobResponse,
 )
 from app.core.license_guard import require_license
 
@@ -109,7 +110,7 @@ def get_page_result(job_id: str, page_num: int, db: Session = Depends(get_db), l
     return _build_page_response(pr, job.result_summary if job else None)
 
 
-@router.delete("/jobs/{job_id}")
+@router.delete("/jobs/{job_id}", response_model=DeleteJobResponse)
 def delete_job(job_id: str, db: Session = Depends(get_db), license_info: dict = Depends(require_license)):
     """Delete a job and its results."""
     job = db.query(ComparisonJob).filter(ComparisonJob.id == job_id).first()

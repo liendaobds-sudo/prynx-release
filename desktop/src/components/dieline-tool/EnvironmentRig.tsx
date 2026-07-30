@@ -31,7 +31,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Environment, Lightformer, Html } from '@react-three/drei';
-import { useMockupStore } from '../../store/useMockupStore';
+import { useMockupStore } from '../../stores/useMockupStore';
 import { envMapResolutionForTier } from '../../lib/mockup3d/materialLibrary';
 import { useTranslation } from 'react-i18next';
 

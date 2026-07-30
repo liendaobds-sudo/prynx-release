@@ -24,7 +24,7 @@
 import { useEffect, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import { useMockupStore, type CameraPreset } from '../../store/useMockupStore';
+import { useMockupStore, type CameraPreset } from '../../stores/useMockupStore';
 
 /** Thời lượng chuyển cảnh mặc định (ms). Phải < 500ms (Yêu cầu 7.2). */
 export const DEFAULT_TRANSITION_MS = 450;

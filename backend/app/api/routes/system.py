@@ -5,19 +5,25 @@ from app.database import get_db
 from app.models.job import ComparisonJob
 from app.config import settings
 from app.core.license_guard import require_license
+from app.schemas.system import (
+    GpuStatusResponse,
+    GsUsageResponse,
+    InstallGpuPluginResponse,
+    RecoverJobsResponse,
+)
 import asyncio
 import logging
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-@router.get("/system/gpu-status")
+@router.get("/system/gpu-status", response_model=GpuStatusResponse)
 def get_gpu_status(license_info: dict = Depends(require_license)):
     """Retrieve current hardware acceleration status."""
     gpu = GPUAccelerator.get_instance()
     return gpu.get_system_status()
 
-@router.post("/system/install-gpu-plugin")
+@router.post("/system/install-gpu-plugin", response_model=InstallGpuPluginResponse)
 async def install_gpu_plugin(license_info: dict = Depends(require_license)):
     """
     [MOCK/SIMULATION] Install CuPy GPU acceleration plugin.
@@ -57,7 +63,7 @@ async def install_gpu_plugin(license_info: dict = Depends(require_license)):
         "note": "Để sử dụng GPU thật, cần cài CuPy và có card NVIDIA với CUDA Toolkit."
     }
 
-@router.post("/system/recover-jobs")
+@router.post("/system/recover-jobs", response_model=RecoverJobsResponse)
 def recover_stuck_jobs(db: Session = Depends(get_db), license_info: dict = Depends(require_license)):
     """
     Find and recover jobs that are stuck in 'processing' or 'pending' state
@@ -89,7 +95,7 @@ def recover_stuck_jobs(db: Session = Depends(get_db), license_info: dict = Depen
     return {"status": "success", "recovered_jobs_count": recovered_count}
 
 
-@router.get("/system/gs-usage")
+@router.get("/system/gs-usage", response_model=GsUsageResponse)
 def get_gs_usage(license_info: dict = Depends(require_license)):
     """Số lần Ghostscript được gọi — thiết bị đo cho gate §8.1 của kế hoạch PPE.
 

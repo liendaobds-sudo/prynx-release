@@ -152,6 +152,77 @@ def test_manual_preview_returns_exact_grid(tmp_path):
     assert len(result["cells"]) == 4
 
 
+def test_ratio_stack_cluster_preview_uses_cluster_mode(tmp_path):
+    source = str(tmp_path / "ratio-stack-cluster.pdf")
+    _make_sized_pdf(source, [(100.0, 100.0), (100.0, 100.0)])
+    req = PreviewLayoutRequest(
+        usable_w=400.0,
+        usable_h=400.0,
+        item_w=100.0,
+        item_h=100.0,
+        gap_x=0.0,
+        gap_y=0.0,
+        strategy="optimal_auto",
+        shape_type="CUSTOM",
+        sheet_w=400.0,
+        sheet_h=400.0,
+        path=source,
+        task_mode="nup",
+        layout_type="ratio_stack",
+        is_die_cut=False,
+        total_pages=2,
+        cluster_mode="column",
+        cluster_count=2,
+        cluster_gap=0.0,
+        target_quantities_by_page={"0": 100, "1": 100},
+    )
+
+    result = preview_layout(req, PRO_LICENSE)
+
+    assert result["strategyUsed"] == "cluster_type"
+    assert result["clusterTypeMode"] is True
+    assert result["totalItems"] == 16
+    assert result["sheetsNeeded"] == 13
+    assert result["placedByPage"] == {"0": 8, "1": 8}
+    assert {cell["pageIdx"] for cell in result["cells"]} == {0, 1}
+    assert result["ratioUnplaced"] == []
+
+
+def test_step_repeat_manual_cluster_preview_builds_grid_before_bounds_check(tmp_path):
+    source = str(tmp_path / "repeat-manual-cluster.pdf")
+    _make_sized_pdf(source, [(100.0, 100.0)])
+    req = PreviewLayoutRequest(
+        usable_w=400.0,
+        usable_h=400.0,
+        item_w=100.0,
+        item_h=100.0,
+        gap_x=0.0,
+        gap_y=0.0,
+        strategy="manual",
+        cols=1,
+        rows=2,
+        shape_type="CUSTOM",
+        sheet_w=400.0,
+        sheet_h=400.0,
+        path=source,
+        task_mode="step_repeat",
+        layout_type="repeat",
+        is_die_cut=False,
+        cluster_mode="column",
+        cluster_count=2,
+        cluster_gap=0.0,
+    )
+
+    result = preview_layout(req, PRO_LICENSE)
+
+    assert result["strategyUsed"] == "cluster_even_repeat"
+    assert result["absPlacement"] is True
+    assert result["totalItems"] == 4
+    assert len(result["cells"]) == 4
+    assert sorted(cell["blockId"] for cell in result["cells"]) == [0, 0, 1, 1]
+    assert sorted({cell["absX"] for cell in result["cells"]}) == [100.0, 200.0]
+
+
 def test_guillotine_cluster_forwards_nesting_and_cut_mode(tmp_path):
     source = str(tmp_path / "guillotine-cluster.pdf")
     _make_sized_pdf(source, [(100.0, 100.0), (100.0, 100.0)])

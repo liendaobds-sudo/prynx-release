@@ -1,10 +1,14 @@
 """Test xuất trang PDF ra ảnh (export.render_pdf_to_images)."""
 import io
 import os
+import asyncio
+import threading
 
 import pytest
 
+from app.api.routes import export as export_route
 from app.api.routes.export import render_pdf_to_images
+from app.schemas.export import ExportImagesRequest
 from app.workers import pdf_wrapper as pdf_lib
 
 
@@ -64,13 +68,15 @@ def test_export_multipage_tiff(tmp_path):
     from PIL import Image
     with Image.open(files[0]) as im:
         assert getattr(im, "n_frames", 1) == 3
+        assert im.tag_v2.get(259) == 8  # Deflate, không còn TIFF raw khổng lồ
 
 
-def test_dpi_clamped(tmp_path):
+def test_dpi_boundary_max_accepted(tmp_path):
+    """EXPORT (audit 2026-07-30 §IMG-08 lô 3): dpi=1200 (biên max) vẫn chạy."""
     src = _make_pdf(tmp_path, 1)
     out = str(tmp_path / "out")
-    # dpi quá lớn vẫn chạy (bị clamp), không crash
-    files = render_pdf_to_images(src, out, fmt="png", dpi=99999)
+    # dpi=1200 là biên max schema chấp nhận, render nhỏ (1 trang A4) không OOM.
+    files = render_pdf_to_images(src, out, fmt="png", dpi=1200)
     assert len(files) == 1
 
 
@@ -86,3 +92,270 @@ def test_no_valid_pages_raises(tmp_path):
     out = str(tmp_path / "out")
     with pytest.raises(ValueError):
         render_pdf_to_images(src, out, fmt="png", pages=[99])
+
+
+def test_existing_file_is_not_overwritten(tmp_path):
+    src = _make_pdf(tmp_path, 1)
+    out = tmp_path / "out"
+    out.mkdir()
+    existing = out / "src_p01.png"
+    existing.write_bytes(b"anh-cu")
+
+    files = render_pdf_to_images(src, str(out), fmt="png", dpi=72)
+
+    assert existing.read_bytes() == b"anh-cu"
+    assert files == [str(out / "src_p01_2.png")]
+    assert _is_image(files[0], "png")
+
+
+def test_base_name_cannot_escape_output_dir(tmp_path):
+    src = _make_pdf(tmp_path, 1)
+    out = tmp_path / "out"
+
+    files = render_pdf_to_images(
+        src, str(out), fmt="png", dpi=72, base_name="../ngoai-thu-muc"
+    )
+
+    root = os.path.normcase(str(out.resolve()))
+    exported = os.path.normcase(os.path.abspath(files[0]))
+    assert os.path.commonpath((root, exported)) == root
+    assert not (tmp_path / "ngoai-thu-muc_p01.png").exists()
+
+
+def test_failed_page_rolls_back_new_outputs(tmp_path, monkeypatch):
+    src = _make_pdf(tmp_path, 2)
+    out = tmp_path / "out"
+    original = export_route._save_image_atomic
+    calls = 0
+
+    def fail_on_second_page(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            # Helper thật đã giữ tên; giải phóng reservation như đường lỗi thật.
+            export_route._release_output_path(args[1])
+            raise OSError("disk full")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(export_route, "_save_image_atomic", fail_on_second_page)
+    with pytest.raises(OSError, match="disk full"):
+        render_pdf_to_images(src, str(out), fmt="png", dpi=72)
+
+    assert list(out.iterdir()) == []
+
+
+def test_async_route_offloads_render_from_event_loop(tmp_path, monkeypatch):
+    src = _make_pdf(tmp_path, 1)
+    out = tmp_path / "out"
+    event_loop_thread = threading.get_ident()
+    render_thread = None
+
+    def fake_render(*args, **kwargs):
+        nonlocal render_thread
+        render_thread = threading.get_ident()
+        return [str(out / "done.png")]
+
+    monkeypatch.setattr(export_route, "render_pdf_to_images", fake_render)
+    req = ExportImagesRequest(file_path=src, output_dir=str(out))
+    result = asyncio.run(export_route.export_images(req))
+
+    assert result["ok"] is True
+    assert render_thread is not None
+    assert render_thread != event_loop_thread
+
+
+def test_cancel_event_stops_render_and_rolls_back(tmp_path):
+    """EXPORT (audit 2026-07-30 §IMG-06): cancel_event dừng render sớm, rollback output."""
+    src = _make_pdf(tmp_path, 5)
+    out = tmp_path / "out"
+    cancel = threading.Event()
+
+    original = export_route._save_image_atomic
+    calls = 0
+
+    def cancel_after_second(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        result = original(*args, **kwargs)
+        if calls >= 2:
+            cancel.set()
+        return result
+
+    import app.api.routes.export as er
+    er_orig = er._save_image_atomic
+    er._save_image_atomic = cancel_after_second
+    try:
+        from app.api.routes.export import ExportCancelled
+        with pytest.raises(ExportCancelled):
+            render_pdf_to_images(src, str(out), fmt="png", dpi=72, cancel_event=cancel)
+        # Rollback: không file nào còn lại
+        remaining = list(out.iterdir()) if out.exists() else []
+        assert remaining == []
+    finally:
+        er._save_image_atomic = er_orig
+
+
+# ── §IMG-01 lô 3: ICC profile nhúng đúng ──────────────────────────────────────
+
+def test_png_has_srgb_icc_profile(tmp_path):
+    """EXPORT (audit 2026-07-30 §IMG-01 lô 3): PNG RGB phải nhúng sRGB ICC."""
+    src = _make_pdf(tmp_path, 1)
+    out = str(tmp_path / "out")
+    files = render_pdf_to_images(src, out, fmt="png", dpi=72)
+    from PIL import Image
+    with Image.open(files[0]) as im:
+        icc = im.info.get("icc_profile")
+        assert icc is not None, "PNG thiếu ICC profile"
+        assert len(icc) > 100, "ICC profile quá ngắn, có thể không hợp lệ"
+
+
+def test_jpeg_has_srgb_icc_profile(tmp_path):
+    """EXPORT (audit 2026-07-30 §IMG-01 lô 3): JPEG RGB phải nhúng sRGB ICC."""
+    src = _make_pdf(tmp_path, 1)
+    out = str(tmp_path / "out")
+    files = render_pdf_to_images(src, out, fmt="jpeg", dpi=72)
+    from PIL import Image
+    with Image.open(files[0]) as im:
+        icc = im.info.get("icc_profile")
+        assert icc is not None, "JPEG thiếu ICC profile"
+
+
+def test_tiff_has_srgb_icc_profile(tmp_path):
+    """EXPORT (audit 2026-07-30 §IMG-01 lô 3): TIFF RGB phải nhúng sRGB ICC."""
+    src = _make_pdf(tmp_path, 1)
+    out = str(tmp_path / "out")
+    files = render_pdf_to_images(src, out, fmt="tiff", dpi=72)
+    from PIL import Image
+    with Image.open(files[0]) as im:
+        icc = im.info.get("icc_profile")
+        assert icc is not None, "TIFF thiếu ICC profile"
+
+
+def test_grayscale_has_gray_icc_profile(tmp_path):
+    """EXPORT (audit 2026-07-30 §IMG-01 lô 3): Grayscale phải nhúng Gray Gamma 2.2."""
+    src = _make_pdf(tmp_path, 1)
+    out = str(tmp_path / "out")
+    files = render_pdf_to_images(src, out, fmt="png", dpi=72, color_mode="gray")
+    from PIL import Image
+    with Image.open(files[0]) as im:
+        assert im.mode == "L"
+        icc = im.info.get("icc_profile")
+        assert icc is not None, "Grayscale PNG thiếu ICC profile"
+
+
+def test_multipage_tiff_has_icc_profile(tmp_path):
+    """EXPORT (audit 2026-07-30 §IMG-01 lô 3): TIFF multipage cũng phải nhúng ICC."""
+    src = _make_pdf(tmp_path, 2)
+    out = str(tmp_path / "out")
+    files = render_pdf_to_images(src, out, fmt="tiff", dpi=72, multipage_tiff=True)
+    from PIL import Image
+    with Image.open(files[0]) as im:
+        icc = im.info.get("icc_profile")
+        assert icc is not None, "TIFF multipage thiếu ICC profile"
+
+
+# ── §IMG-08 lô 3: Schema validation ───────────────────────────────────────────
+
+def test_schema_rejects_invalid_format():
+    """EXPORT (audit 2026-07-30 §IMG-08 lô 3): format ngoài Literal → reject."""
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        ExportImagesRequest(output_dir="/tmp", format="bmp")
+
+
+def test_schema_rejects_dpi_out_of_range():
+    """EXPORT (audit 2026-07-30 §IMG-08 lô 3): dpi=0 hoặc 9999 → reject."""
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        ExportImagesRequest(output_dir="/tmp", dpi=0)
+    with pytest.raises(ValidationError):
+        ExportImagesRequest(output_dir="/tmp", dpi=9999)
+
+
+def test_schema_rejects_quality_out_of_range():
+    """EXPORT (audit 2026-07-30 §IMG-08 lô 3): jpeg_quality=200 → reject."""
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        ExportImagesRequest(output_dir="/tmp", jpeg_quality=200)
+    with pytest.raises(ValidationError):
+        ExportImagesRequest(output_dir="/tmp", jpeg_quality=0)
+
+
+# ── §IMG-04 lô 4: CMYK production ─────────────────────────────────────────────
+
+def test_schema_accepts_cmyk_color_mode():
+    """EXPORT (audit 2026-07-30 §IMG-04 lô 4): schema chấp nhận color_mode='cmyk'."""
+    req = ExportImagesRequest(output_dir="/tmp", color_mode="cmyk", format="tiff")
+    assert req.color_mode == "cmyk"
+
+
+def test_cmyk_png_raises(tmp_path):
+    """EXPORT (audit 2026-07-30 §IMG-04 lô 4): CMYK+PNG → ValueError."""
+    src = _make_pdf(tmp_path, 1)
+    out = str(tmp_path / "out")
+    with pytest.raises(ValueError, match="PNG"):
+        render_pdf_to_images(src, out, fmt="png", color_mode="cmyk")
+
+
+# ── §IMG-04 lô 4: CMYK end-to-end thật (yêu cầu native ppe_export_cmyk) ────────
+
+def _native_has_cmyk() -> bool:
+    """PPE native có symbol ppe_export_cmyk không (bỏ qua test nếu chưa build)."""
+    try:
+        from app.core.print_engine.facade import _native
+        return hasattr(_native(), "ppe_export_cmyk")
+    except Exception:
+        return False
+
+
+_requires_cmyk_native = pytest.mark.skipif(
+    not _native_has_cmyk(),
+    reason="pdfcompare_native chưa build ppe_export_cmyk — cần maturin develop --release",
+)
+
+
+@_requires_cmyk_native
+def test_cmyk_tiff_is_four_channel_with_icc(tmp_path):
+    """EXPORT (audit 2026-07-30 §IMG-04 lô 4): TIFF CMYK phải là 4 kênh + nhúng ICC FOGRA39.
+
+    Đây là test end-to-end THẬT: đi qua _render_cmyk_pages → facade.export_cmyk →
+    native ppe_export_cmyk (KHÔNG qua PDFium→RGB). Đóng chốt runtime cho CMYK.
+    """
+    src = _make_pdf(tmp_path, 1)
+    out = str(tmp_path / "out")
+    files = render_pdf_to_images(src, out, fmt="tiff", dpi=72, color_mode="cmyk")
+    assert len(files) == 1
+    from PIL import Image
+    with Image.open(files[0]) as im:
+        assert im.mode == "CMYK", f"kỳ vọng 4 kênh CMYK, nhận {im.mode}"
+        icc = im.info.get("icc_profile")
+        assert icc is not None and len(icc) > 100, "TIFF CMYK thiếu ICC profile"
+
+
+@_requires_cmyk_native
+def test_cmyk_jpeg_is_four_channel(tmp_path):
+    """EXPORT (audit 2026-07-30 §IMG-04 lô 4): JPEG CMYK phải là 4 kênh + có ICC."""
+    src = _make_pdf(tmp_path, 1)
+    out = str(tmp_path / "out")
+    files = render_pdf_to_images(src, out, fmt="jpeg", dpi=72, color_mode="cmyk")
+    assert len(files) == 1
+    from PIL import Image
+    with Image.open(files[0]) as im:
+        assert im.mode == "CMYK", f"kỳ vọng 4 kênh CMYK, nhận {im.mode}"
+        assert im.info.get("icc_profile") is not None, "JPEG CMYK thiếu ICC profile"
+
+
+@_requires_cmyk_native
+def test_cmyk_multipage_tiff_four_channel(tmp_path):
+    """EXPORT (audit 2026-07-30 §IMG-04 lô 4): TIFF CMYK nhiều trang — mỗi frame 4 kênh."""
+    src = _make_pdf(tmp_path, 3)
+    out = str(tmp_path / "out")
+    files = render_pdf_to_images(
+        src, out, fmt="tiff", dpi=72, color_mode="cmyk", multipage_tiff=True
+    )
+    assert len(files) == 1
+    from PIL import Image
+    with Image.open(files[0]) as im:
+        assert getattr(im, "n_frames", 1) == 3
+        assert im.mode == "CMYK"
+        assert im.tag_v2.get(259) == 8  # Deflate

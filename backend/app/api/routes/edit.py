@@ -62,9 +62,37 @@ from app.core.stream_editor import (
 )
 from app.database import SessionLocal
 from app.models.job import UploadedFile
-from app.schemas.edit import EditOp, ObjMeta
+from app.schemas.edit import (
+    DiscardWorkingFileResponse,
+    EditOp,
+    ObjMeta,
+    OcgActionResponse,
+    OcgVisibilityResponse,
+    PageObjectsPayload,
+    SessionCloseResponse,
+    TextObjectPropsResponse,
+)
 
 logger = logging.getLogger(__name__)
+
+# KIENTRUC (audit 2026-07-29 §A.2 lô 13): model đã gom về app/schemas/edit.py;
+# import lại ở đây để mọi đường import cũ (kể cả test) vẫn dùng được.
+from app.schemas.edit import (  # noqa: F401
+    EditRequest,
+    EditResponse,
+    OcgVisibilityRequest,
+    PreviewHideReq,
+    PreviewResponse,
+    SessionCommitReq,
+    SessionOcgActionReq,
+    SessionOcgVisibilityReq,
+    SessionOpReq,
+    SessionOpResp,
+    SessionOpenReq,
+    SessionOpenResp,
+    SessionRefReq,
+)
+
 router = APIRouter(dependencies=[Depends(require_license)])
 
 # ── Cấu hình ────────────────────────────────────────────────────────────────
@@ -131,152 +159,28 @@ def _invalidate_object_cache(fid: str, page: int | None = None):
 
 
 # ── Request schemas ──────────────────────────────────────────────────────────
-class EditRequest(BaseModel):
-    """
-    Bọc một `EditOp` cùng `fid` (id file đã upload) để định tuyến thao tác sửa.
-
-    Cùng một schema dùng cho mọi endpoint POST (/delete, /transform, /text, /add);
-    mỗi endpoint kiểm tra `op.kind` có thuộc tập hợp lệ của nó hay không.
-    """
-
-    fid: str = Field(description="ID file PDF đã upload (UploadedFile.id)")
-    op: EditOp
 
 
-class PreviewHideReq(BaseModel):
-    """
-    Yêu cầu render preview TRANG SAU KHI ẨN (xóa hình thật) một tập object.
-
-    Dùng cho tính năng "Ẩn đối tượng" (tắt mắt) ở chế độ Edit: backend áp một thao
-    tác delete IN-MEMORY (pikepdf) rồi render trang read-only → FE đắp ảnh này làm
-    overlay để hình thật của object biến mất (không chỉ ẩn ô chọn). KHÔNG ghi file,
-    KHÔNG mutate file gốc.
-    """
-
-    fid: str = Field(description="ID file PDF đã upload (UploadedFile.id)")
-    page: int = Field(ge=0, description="Chỉ số trang 0-based cần render")
-    targetIds: list[str] = Field(
-        default_factory=list, description="Danh sách id object cần ẩn (xóa khỏi ảnh preview)"
-    )
 
 
 # ── Response schema ──────────────────────────────────────────────────────────
-class EditResponse(BaseModel):
-    """Kết quả một thao tác edit + tham chiếu Working_File mới."""
-
-    success: bool
-    output_filename: str
-    output_url: str = Field(description="URL tĩnh tương đối phục vụ qua /results")
-    output_path: str = Field(description="Đường dẫn tuyệt đối Working_File mới")
-    output_fid: str = Field(
-        description=(
-            "ID bản ghi UploadedFile trỏ tới Working_File mới — dùng làm fid cho "
-            "thao tác edit kế tiếp (thao tác trực tiếp trên kết quả mới, KHÔNG cần "
-            "tải-về-rồi-upload-lại trên desktop)."
-        )
-    )
-    warning: str | None = Field(
-        default=None,
-        description="Cảnh báo suy giảm chất lượng cần hiển thị rõ cho người vận hành",
-    )
-    result: dict | list = Field(default_factory=dict, description="Tóm tắt op_result")
 
 
-class PreviewResponse(BaseModel):
-    """
-    Ảnh preview (PNG base64) của một trang SAU khi áp thao tác EditOp.
-
-    Ảnh được render READ-ONLY bằng PDFium từ BYTES mà pikepdf vừa ghi in-memory
-    (KHÔNG lưu file vĩnh viễn, KHÔNG dùng PDFium để ghi — Yêu cầu 12.2). Hình học
-    của ảnh khớp với kết quả lưu pikepdf (Yêu cầu 12.1, 12.3).
-    """
-
-    success: bool
-    image: str = Field(description="Data URI 'data:image/png;base64,...'")
-    width: int = Field(description="Chiều rộng ảnh render (px)")
-    height: int = Field(description="Chiều cao ảnh render (px)")
-    page: int = Field(description="Chỉ số trang 0-based đã render")
 
 
 # ── Session schemas (`pdf-edit-session`) ─────────────────────────────────────
-class SessionOpenReq(BaseModel):
-    """Mở một Edit_Session từ `fid` (file đã upload)."""
-
-    fid: str = Field(description="ID file PDF đã upload (UploadedFile.id)")
 
 
-class SessionOpenResp(BaseModel):
-    """Kết quả mở phiên: Session_Id duy nhất + số trang của Live_Document."""
-
-    session_id: str = Field(description="Session_Id duy nhất do backend cấp")
-    page_count: int = Field(description="Số trang của Live_Document")
 
 
-class SessionOpReq(BaseModel):
-    """
-    Áp một `EditOp` in-memory lên Live_Document của phiên + render clip.
-
-    `render_scale` (px/point ≈ zoom×dpr) và `clip_pad_pt` (lề an toàn quanh
-    Clip_Region, point) điều khiển Incremental_Render.
-    """
-
-    session_id: str = Field(description="Session_Id của Edit_Session đang sống")
-    op: EditOp
-    render_scale: float = Field(default=2.0, description="px/point để render preview (≈ zoom×dpr)")
-    clip_pad_pt: float = Field(default=8.0, description="lề an toàn quanh clip (point)")
 
 
-class SessionRefReq(BaseModel):
-    """
-    Tham chiếu phiên cho thao tác KHÔNG kèm EditOp (undo/redo) — vẫn cần tham số
-    render để dựng Preview_Image của vùng bị thay đổi sau khi hoàn tác/làm lại.
-    """
-
-    session_id: str = Field(description="Session_Id của Edit_Session đang sống")
-    render_scale: float = Field(default=2.0, description="px/point để render preview (≈ zoom×dpr)")
-    clip_pad_pt: float = Field(default=8.0, description="lề an toàn quanh clip (point)")
 
 
-class SessionOcgActionReq(BaseModel):
-    session_id: str
-    action: str
-    layer_id: int | None = None
-    name: str | None = None
-    locked: bool | None = None
-    new_order: list[int] | None = None
-
-class SessionOcgVisibilityReq(BaseModel):
-    session_id: str = Field(description="Session_Id của Edit_Session đang sống")
-    layer_id: int
-    visible: bool
-
-class SessionCommitReq(BaseModel):
-    """Yêu cầu Commit Live_Document hiện tại ra một Working_File mới."""
-
-    session_id: str = Field(description="Session_Id của Edit_Session đang sống")
 
 
-class SessionOpResp(BaseModel):
-    """
-    Kết quả một thao tác phiên (op / undo / redo): Preview_Image (vùng clip hoặc
-    toàn trang) + tọa độ Clip_Region + opResult (gồm BBox MỚI để FE cập nhật overlay
-    tại chỗ) + trạng thái Undo/Redo.
-    """
 
-    success: bool
-    preview: str | None = Field(
-        default=None,
-        description="data:image/png;base64,... (vùng clip hoặc toàn trang); None nếu no-op",
-    )
-    clipRect: list[float] | None = Field(
-        default=None,
-        description="[x0,y0,x1,y1] POINT gốc Page_Box-relative; None = toàn trang/no-op",
-    )
-    full: bool = Field(default=False, description="True nếu render toàn trang (fallback)")
-    page: int | None = Field(default=None, description="Chỉ số trang 0-based bị tác động")
-    opResult: dict = Field(default_factory=dict, description="Gồm BBox MỚI để FE cập nhật overlay")
-    canUndo: bool = Field(default=False, description="Còn op để hoàn tác?")
-    canRedo: bool = Field(default=False, description="Còn op để làm lại?")
+
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -572,6 +476,25 @@ def _apply_edit_op(pdf, op: EditOp, pdf_path: str):
 
 
 def _render_clip_blocking(
+    pdf_bytes: bytes,
+    page: int,
+    scale: float,
+    clip_rect: list[float] | None = None,
+) -> tuple[str, int, int]:
+    """Bọc `_render_clip_blocking_locked` trong `pdfium_guard` (audit 2026-07-29 §C.1).
+
+    Hàm này được `core/edit_session.render_clip` gọi qua threadpool cho từng thao tác
+    sửa, nên hai tab/hai thao tác liên tiếp là hai thread cùng chạm PDFium. Dùng wrapper
+    thay vì thụt lề lại thân hàm dài để diff dễ soi và thân hàm không đổi một dòng.
+    Tên hàm giữ NGUYÊN vì `edit_session` import đúng tên này.
+    """
+    from app.core.pdfium_lock import pdfium_guard
+
+    with pdfium_guard("edit_render_clip"):
+        return _render_clip_blocking_locked(pdf_bytes, page, scale, clip_rect)
+
+
+def _render_clip_blocking_locked(
     pdf_bytes: bytes,
     page: int,
     scale: float,
@@ -905,7 +828,7 @@ async def _execute_session(blocking_fn, timeout_seconds: float = EDIT_TIMEOUT_SE
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
-@router.get("/edit/objects/{fid}/{page}")
+@router.get("/edit/objects/{fid}/{page}", response_model=PageObjectsPayload)
 async def list_page_objects(fid: str, page: int):
     """
     Liệt kê object (text/image/vector) của một trang (PDFium read-only).
@@ -985,7 +908,7 @@ async def list_page_objects(fid: str, page: int):
     return payload
 
 
-@router.get("/edit/text-props/{fid}/{page}/{index}")
+@router.get("/edit/text-props/{fid}/{page}/{index}", response_model=TextObjectPropsResponse)
 async def get_text_props(fid: str, page: int, index: int):
     """
     LAZY: nội dung/màu/font của MỘT text-object (theo drawIndex) — gọi khi mở
@@ -1001,13 +924,9 @@ async def get_text_props(fid: str, page: int, index: int):
 
 
 # ── OCG visibility for Edit PDF (live session) ────────────────────────────────
-class OcgVisibilityRequest(BaseModel):
-    fid: str
-    layer_id: int
-    visible: bool
 
 
-@router.post("/edit/ocg/visibility")
+@router.post("/edit/ocg/visibility", response_model=OcgVisibilityResponse)
 async def set_edit_ocg_visibility(req: OcgVisibilityRequest, license_info: dict = Depends(require_license)):
     """
     Áp dụng ẨN/HIỆN OCG layer TRỰC TIẾP lên EditSession sống (pikepdf in-RAM).
@@ -1029,7 +948,7 @@ async def set_edit_ocg_visibility(req: OcgVisibilityRequest, license_info: dict 
         raise HTTPException(status_code=500, detail=f"Đổi hiển thị layer thất bại: {exc}")
 
 
-@router.delete("/edit/working/{fid}")
+@router.delete("/edit/working/{fid}", response_model=DiscardWorkingFileResponse)
 async def discard_working_file(fid: str):
     """
     Dọn một Working_File TRUNG GIAN không còn cần (bị loại khỏi undo/redo của
@@ -1264,7 +1183,7 @@ async def session_op(req: SessionOpReq, license_info: dict = Depends(require_lic
     return await _execute_session(_do)
 
 
-@router.post("/edit/session/ocg-action")
+@router.post("/edit/session/ocg-action", response_model=OcgActionResponse)
 async def session_ocg_action(
     req: SessionOcgActionReq,
     license_info: dict = Depends(require_license),
@@ -1278,7 +1197,7 @@ async def session_ocg_action(
 
     return await _execute_session(_do)
 
-@router.post("/edit/session/ocg-visibility")
+@router.post("/edit/session/ocg-visibility", response_model=OcgActionResponse)
 async def session_ocg_visibility(
     req: SessionOcgVisibilityReq,
     license_info: dict = Depends(require_license),
@@ -1390,7 +1309,7 @@ async def session_flatten(req: SessionCommitReq, license_info: dict = Depends(re
 
     return await _execute_session(_do, timeout_seconds=FLATTEN_TIMEOUT_SECONDS)
 
-@router.delete("/edit/session/{sid}")
+@router.delete("/edit/session/{sid}", response_model=SessionCloseResponse)
 async def session_close(sid: str, license_info: dict = Depends(require_license)):
     """
     Đóng một Edit_Session: giải phóng Live_Document khỏi RAM, GIỮ NGUYÊN file gốc +

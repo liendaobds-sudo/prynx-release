@@ -512,3 +512,58 @@ def _quality_note(
             "nhưng phần trăm diện tích phủ là xấp xỉ."
         )
     return note
+
+
+# ── Export CMYK production (audit 2026-07-30 §IMG-04 lô 4) ────────────────────
+
+def export_cmyk(
+    pdf_path: str,
+    page_num: int,
+    dpi: int = 300,
+    *,
+    cmyk_profile_id: str = "fogra39",
+    render_intent: int = 1,
+    simulate_overprint: bool = True,
+) -> dict[str, Any]:
+    """Render một trang ra CMYK composite 4 kênh 8 bit (production export).
+
+    Trả ``{"width", "height", "cmyk", "degraded", "ink_unsound"}`` với ``cmyk``
+    là bytes dài ``width * height * 4`` (interleaved C-M-Y-K).
+
+    Khác ``softproof`` ở chỗ KHÔNG quy sang RGB: giữ nguyên CMYK cho downstream
+    (TIFF CMYK, RIP). Caller nhúng ICC profile (FOGRA39/SWOP) khi ghi file.
+
+    Raises:
+        PpeUnavailable: native chưa có ppe_export_cmyk.
+        RuntimeError: thiếu CMYK profile.
+    """
+    native = _native()
+    if not hasattr(native, "ppe_export_cmyk"):
+        raise PpeUnavailable(
+            "pdfcompare_native thiếu ppe_export_cmyk — cần rebuild: "
+            "maturin develop --release --manifest-path native/Cargo.toml"
+        )
+
+    from app.core.icc_profiles import resolve_cmyk_profile_path
+
+    cmyk_profile = resolve_cmyk_profile_path(cmyk_profile_id)
+    if not cmyk_profile:
+        raise RuntimeError(f"không tìm được profile CMYK '{cmyk_profile_id}'")
+
+    def _render(candidate_path: str):
+        return native.ppe_export_cmyk(
+            candidate_path,
+            page=page_num,
+            dpi=float(dpi),
+            cmyk_profile=cmyk_profile,
+            render_intent=int(render_intent),
+            page_box="crop",
+            fallback_font=_fallback_font_path(),
+            simulate_overprint=simulate_overprint,
+            memory_budget_mb=_memory_budget_mb(),
+        )
+
+    raw, pdf_recovered = _call_native_with_pdf_recovery(pdf_path, _render)
+    result = dict(raw)
+    result["pdf_recovered"] = pdf_recovered
+    return result

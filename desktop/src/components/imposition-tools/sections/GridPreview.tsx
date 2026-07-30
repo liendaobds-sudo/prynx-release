@@ -17,6 +17,8 @@ export interface GridPreviewProps {
   layoutType?: NupSettings["layoutType"] | string;
   /** 1 mặt / 2 mặt — sequential 2 mặt ghép cặp trang trước/sau */
   duplexFlow?: string;
+  /** Cạnh lật của mặt sau khi Dàn nhiều kích thước. */
+  duplexFlipEdge?: "long" | "short";
   gridStrategy: NupSettings["gridStrategy"];
   splitGap?: number;
   columns: number;
@@ -96,6 +98,13 @@ interface BackendLayoutCell {
   /** ratio_stack / mixed: chỉ số trang nguồn gán cho ô này */
   pageIdx?: number;
 }
+interface BackendCutSegment {
+  axis: "x" | "y";
+  coordinate: number;
+  start: number;
+  end: number;
+  kind?: string;
+}
 
 interface BackendLayoutResult {
   success: boolean;
@@ -123,6 +132,12 @@ interface BackendLayoutResult {
   clusterCombineMode?: string;
   /** chia cụm: đường xén guillotine giữa các cụm/vùng (pt, cùng không gian abs với cells). */
   cutLines?: { v: number[]; h: number[] };
+  cutSegments?: BackendCutSegment[];
+  planHash?: string;
+  planVersion?: string;
+  coordinateSpace?: string;
+  duplex?: boolean;
+  flipEdge?: "long" | "short";
   /** chia cụm zone modes: MỌI tờ (mỗi tờ 1 bộ loại) để lật ◄ n/N ► không fetch lại. */
   sheets?: Array<{
     cells: BackendLayoutCell[];
@@ -130,6 +145,15 @@ interface BackendLayoutResult {
     overallHeight: number;
     totalItems: number;
     cutLines?: { v: number[]; h: number[] };
+    cutSegments?: BackendCutSegment[];
+    cutTree?: unknown;
+    side?: "front" | "back";
+    physicalSheetIndex?: number;
+    runCount?: number;
+    planHash?: string;
+    planVersion?: string;
+    coordinateSpace?: string;
+    usableRect?: { x: number; y: number; width: number; height: number };
   }>;
 }
 
@@ -738,6 +762,7 @@ export default function GridPreview(props: GridPreviewProps) {
     pageSheetMode = false,
     layoutType,
     duplexFlow = "normal",
+    duplexFlipEdge = "long",
     gridStrategy,
     splitGap = 0,
     columns,
@@ -964,6 +989,7 @@ export default function GridPreview(props: GridPreviewProps) {
   // • Multi-pack (ratio_stack / sequential / cluster / CNC) → 1 tờ xếp nhiều loại.
   // • MỖI TEM MỘT KHUÔN khác nhau + step_repeat/repeat → PHẢI tính theo trang view
   //   (die size/type khác → capacity khác). Không gộp với case 1 khuôn.
+  const _isMixedGuillotine = layoutType === "mixed_guillotine";
   const _isClusterPreview = groupingStrategy === "cluster_tile"
     && layoutType !== "repeat"
     && taskMode !== "step_repeat";
@@ -980,6 +1006,7 @@ export default function GridPreview(props: GridPreviewProps) {
   /** Xếp nhiều mẫu trên 1 (hoặc N) tờ — page view không đổi geometry layout. */
   const _multiPackLayout =
     _isClusterPreview ||
+    _isMixedGuillotine ||
     (_multiPage &&
       (layoutType === "ratio_stack" ||
         layoutType === "sequential" ||
@@ -1047,8 +1074,8 @@ export default function GridPreview(props: GridPreviewProps) {
   const _shapeParamsDep = _layoutIgnoresViewPage ? _shapeParamsByPageKey : shapeParams;
   // Guillotine layout has no die master: resized page dimensions always affect
   // grid capacity, including multi-design layouts that ignore active-page labels.
-  const _itemWDep = _layoutIgnoresViewPage && isDieCut ? 0 : itemW;
-  const _itemHDep = _layoutIgnoresViewPage && isDieCut ? 0 : itemH;
+  const _itemWDep = _layoutIgnoresViewPage && (isDieCut || _isMixedGuillotine) ? 0 : itemW;
+  const _itemHDep = _layoutIgnoresViewPage && (isDieCut || _isMixedGuillotine) ? 0 : itemH;
   const _pageIdxForRequest = _singleMoldFamily
     ? _geometryPageIdx
     : (_layoutIgnoresViewPage ? 0 : pageIdx);
@@ -1075,6 +1102,7 @@ export default function GridPreview(props: GridPreviewProps) {
       df: duplexFlow,
       die: !!isDieCut,
       psm: pageSheetMode,
+      dfe: duplexFlipEdge,
       n: sourceTotalPages || 0,
       sw: sheetWidth,
       sh: sheetHeight,
@@ -1133,6 +1161,7 @@ export default function GridPreview(props: GridPreviewProps) {
     duplexFlow,
     isDieCut,
     pageSheetMode,
+    duplexFlipEdge,
     sourceTotalPages,
     sheetWidth,
     sheetHeight,
@@ -1322,6 +1351,7 @@ export default function GridPreview(props: GridPreviewProps) {
           duplex_flow: duplexFlow || "normal",
           // Chia cọc theo loại (ratio_stack + clusterDistribution='type'): gửi để preview
           // dựng đa cọc KHỚP nup_engine. cluster_gap → points (backend không nhân lại).
+          duplex_flip_edge: duplexFlipEdge,
           cluster_mode: clusterMode || "none",
           cluster_count: clusterCount || 2,
           cluster_gap: (clusterGap || 0) * MM_TO_PT,
@@ -1452,12 +1482,28 @@ export default function GridPreview(props: GridPreviewProps) {
                     h: (data.cutLines.h || []).map((y: number) => y * PT_TO_MM),
                   }
                 : undefined,
+              cutSegments: data.cutSegments
+                ? data.cutSegments.map((line) => ({
+                    ...line,
+                    coordinate: line.coordinate * PT_TO_MM,
+                    start: line.start * PT_TO_MM,
+                    end: line.end * PT_TO_MM,
+                  }))
+                : undefined,
               // sheets (chia cụm zone modes) — convert MỌI tờ pt→mm để lật không fetch lại.
               sheets: Array.isArray((data as any).sheets)
                 ? (data as any).sheets.map((sh: any) => ({
+                    ...sh,
                     overallWidth: (sh.overallWidth || 0) * PT_TO_MM,
                     overallHeight: (sh.overallHeight || 0) * PT_TO_MM,
                     totalItems: sh.totalItems || 0,
+                    usableRect: sh.cutTree?.rect
+                      ? {
+                          x: Number(sh.cutTree.rect.x) * PT_TO_MM,
+                          y: Number(sh.cutTree.rect.y) * PT_TO_MM,
+                          width: Number(sh.cutTree.rect.width) * PT_TO_MM,
+                          height: Number(sh.cutTree.rect.height) * PT_TO_MM,
+                        } : undefined,
                     cells: (sh.cells || []).map((cell: any) => ({
                       ...cell,
                       x: cell.x * PT_TO_MM,
@@ -1478,6 +1524,14 @@ export default function GridPreview(props: GridPreviewProps) {
                           v: (sh.cutLines.v || []).map((x: number) => x * PT_TO_MM),
                           h: (sh.cutLines.h || []).map((y: number) => y * PT_TO_MM),
                         }
+                      : undefined,
+                    cutSegments: Array.isArray(sh.cutSegments)
+                      ? sh.cutSegments.map((line: BackendCutSegment) => ({
+                          ...line,
+                          coordinate: line.coordinate * PT_TO_MM,
+                          start: line.start * PT_TO_MM,
+                          end: line.end * PT_TO_MM,
+                        }))
                       : undefined,
                   }))
                 : undefined,
@@ -1569,7 +1623,7 @@ export default function GridPreview(props: GridPreviewProps) {
   const _cap = layoutResult?.totalItems ?? 0;
   const _isRatioStack = layoutType === "ratio_stack";
   const _isCutStacks = layoutType === "cut_stacks";
-  const _isNupFill = !isDieCut && taskMode === "nup" && _cap > 0 && !_isRatioStack && !_isCutStacks;
+  const _isNupFill = !isDieCut && taskMode === "nup" && _cap > 0 && !_isRatioStack && !_isCutStacks && !_isMixedGuillotine;
   const _qtyPerType = Number(targetQuantity) || 0;
   const _nupTotal = _isNupFill
     ? (() => {
@@ -1741,19 +1795,41 @@ export default function GridPreview(props: GridPreviewProps) {
   if (sheetWidth <= 0 || sheetHeight <= 0) return null;
 
   // Usable area in SVG pixels
-  const uaX = pad + marginLeft * scale;
-  const uaY = pad + marginTop * scale;
-  const uaW = usableW * scale;
-  const uaH = usableH * scale;
+  const _activeUsableRect = _isMixedGuillotine ? layoutResult?.sheets?.[activeSheet]?.usableRect : undefined;
+  const uaX = pad + (_activeUsableRect?.x ?? marginLeft) * scale;
+  const uaY = pad + (_activeUsableRect?.y ?? marginTop) * scale;
+  const uaW = (_activeUsableRect?.width ?? usableW) * scale;
+  const uaH = (_activeUsableRect?.height ?? usableH) * scale;
 
   // ── Đường xén cụm (chia cụm / zone) → pixel. cutLines (mm) gốc dưới-trái Y-up:
   //   v = hoành độ (x), h = tung độ (y). SVG: x = pad + v*scale ; y = pad + (H - y)*scale.
   const _sheetArrCuts = layoutResult?.sheets;
-  const _cutLines = ((_sheetArrCuts && _sheetArrCuts[activeSheet]?.cutLines)
-    ? _sheetArrCuts[activeSheet].cutLines
-    : (layoutResult as any)?.cutLines) as { v?: number[]; h?: number[] } | undefined;
-  const cutVpx = (_cutLines?.v || []).map((v) => pad + v * scale);
-  const cutHpx = (_cutLines?.h || []).map((h) => pad + (sheetHeight - h) * scale);
+  const _activeSheetMeta = _sheetArrCuts?.[activeSheet];
+  const _mixedBackFace = _isMixedGuillotine && _activeSheetMeta?.side === "back";
+  const _cutSegments = (_activeSheetMeta?.cutSegments
+    ? _activeSheetMeta.cutSegments
+    : layoutResult?.cutSegments) || [];
+  const cutSegmentsPx = _cutSegments.map((line) => {
+    if (line.axis === "x") {
+      return {
+        x1: pad + line.coordinate * scale,
+        y1: pad + line.start * scale,
+        x2: pad + line.coordinate * scale,
+        y2: pad + line.end * scale,
+      };
+    }
+    return {
+      x1: pad + line.start * scale,
+      y1: pad + line.coordinate * scale,
+      x2: pad + line.end * scale,
+      y2: pad + line.coordinate * scale,
+    };
+  });
+  const _cutLines = ((_activeSheetMeta?.cutLines)
+    ? _activeSheetMeta.cutLines
+    : layoutResult?.cutLines) as { v?: number[]; h?: number[] } | undefined;
+  const cutVpx = cutSegmentsPx.length === 0 ? (_cutLines?.v || []).map((v) => pad + v * scale) : [];
+  const cutHpx = cutSegmentsPx.length === 0 ? (_cutLines?.h || []).map((h) => pad + (sheetHeight - h) * scale) : [];
 
   // Lật gương Mặt sau theo cạnh lật (CNC). Mặc định long-edge = lật ngang.
   const _isCncPreview = !!(layoutResult as any)?.isCncPreview;
@@ -1777,10 +1853,13 @@ export default function GridPreview(props: GridPreviewProps) {
   // (a=mặt trước, b=mặt sau). Mỗi loại = cặp trang trước/sau; blockId là trang chẵn 2u
   // (0-based) nên loại = floor(blockId/2)+1. Không đổi → hiện số trang thô gây hiểu lầm
   // (loại 7 hiện "13" thay vì "7a"). Các mode 1 mặt giữ số trang thô.
-  const _isPairDuplex =
-    duplexFlow === "double" &&
-    (_isRatioStack || layoutType === "sequential");
+  const _isPairDuplex = duplexFlow === "double" &&
+    (_isRatioStack || layoutType === "sequential" || _isMixedGuillotine);
   const cellLabel = (blockId: number, isBack: boolean): string | number => {
+    // MIXED-GUILLOTINE: blockId ở đây là pageIdx THÔ (mặt trước=trang chẵn,
+    // mặt sau=trang lẻ) do resolvePreviewCellType ghi đè bằng pageIdx. Vì thế
+    // loại = floor(blockId/2)+1 — DÙNG CHUNG công thức cặp duplex ở dưới, không
+    // được +1 thẳng (từng làm mặt sau trang 1 hiện "2b" và sản phẩm 2 hiện "3a").
     if (_isPairDuplex)
       return `${Math.floor(blockId / 2) + 1}${isBack ? "b" : "a"}`;
     if (isBack && _isCncPreview && (layoutResult as any)?.cncTwoSided)
@@ -1788,8 +1867,19 @@ export default function GridPreview(props: GridPreviewProps) {
     return blockId + 1;
   };
 
+  // MIXED-GUILLOTINE: màu ô phải theo LOẠI SẢN PHẨM, không theo pageIdx thô —
+  // nếu không mặt trước (trang chẵn) và mặt sau (trang lẻ) của cùng sản phẩm sẽ
+  // đổi màu khi lật. CHỈ áp cho mixed_guillotine để không đổi hành vi màu của
+  // ratio_stack/sequential (giữ nguyên phân biệt mặt trước/sau như cũ).
+  const colorIndexFor = (blockId: number): number =>
+    _isMixedGuillotine && _isPairDuplex ? Math.floor(blockId / 2) : blockId;
+
   // Mặt sau dùng CHÍNH ô mặt trước — phản chiếu do backGroupTransform đảm nhiệm.
   const cncBackCells = svgCells;
+  const activeSheetLabel = _isMixedGuillotine && _activeSheetMeta
+    ? `${t('imposition.gridPreview:to')} ${(_activeSheetMeta.physicalSheetIndex ?? activeSheet) + 1} · ${t(_mixedBackFace ? 'imposition.gridPreview:mat_sau' : 'imposition.gridPreview:mat_truoc')}`
+    : `${t('imposition.gridPreview:to')} ${activeSheet + 1} / ${layoutResult?.sheets?.length || 1}`;
+
 
   // ── N-Up "Dàn nhiều mẫu": số ô vẽ trên tờ (đại diện) = min(tổng con, sức chứa). ──
   const _showCount =
@@ -1869,7 +1959,7 @@ export default function GridPreview(props: GridPreviewProps) {
             )}
             {/* Kích thước tem thành phẩm — CHỈ bình cắt xén (N-Up guillotine).
                 Ẩn tem bế + CNC (isDieCut): kích thước ô SVG không phải “tem thành phẩm” xén. */}
-            {!isDieCut && visibleCells.length > 0 && scale > 0 && (
+            {!isDieCut && !_isMixedGuillotine && visibleCells.length > 0 && scale > 0 && (
               <>
                 <div className="w-px h-4 bg-slate-300 dark:bg-zinc-700"></div>
                 <div className="text-slate-600 dark:text-zinc-400">
@@ -1893,7 +1983,7 @@ export default function GridPreview(props: GridPreviewProps) {
                 ◄
               </button>
               <span className="text-slate-700 dark:text-zinc-200 tabular-nums">
-                {t('imposition.gridPreview:to')} {activeSheet + 1} / {layoutResult.sheets.length}
+                {activeSheetLabel}
               </span>
               <button
                 type="button"
@@ -1955,7 +2045,7 @@ export default function GridPreview(props: GridPreviewProps) {
               >
                 {duplexFlow === "double" && (
                   <div className="text-center text-[11px] font-bold text-slate-500 mb-2">
-                    {t('imposition.gridPreview:mat_truoc')}
+                    {t(_mixedBackFace ? 'imposition.gridPreview:mat_sau' : 'imposition.gridPreview:mat_truoc')}
                   </div>
                 )}
                 <svg
@@ -2002,6 +2092,13 @@ export default function GridPreview(props: GridPreviewProps) {
                       ))}
                       {cutHpx.map((y, i) => (
                         <line key={`ch${i}`} x1={pad} y1={y} x2={pad + sheetWidth * scale} y2={y} />
+                      ))}
+                    </g>
+                  )}
+                  {cutSegmentsPx.length > 0 && (
+                    <g stroke="#0ea5e9" strokeWidth={0.7} strokeDasharray="5,3" opacity={0.85}>
+                      {cutSegmentsPx.map((segment, index) => (
+                        <line key={`cs${index}`} {...segment} />
                       ))}
                     </g>
                   )}
@@ -2161,7 +2258,7 @@ export default function GridPreview(props: GridPreviewProps) {
                   {/* Cells */}
                   {visibleCells.map((c) => {
                     const isMixed = !!layoutResult?.isMixedPreview;
-                    const color = BLOCK_COLORS[c.blockId % BLOCK_COLORS.length];
+                    const color = BLOCK_COLORS[colorIndexFor(c.blockId) % BLOCK_COLORS.length];
                     // Per-page shape: use pageIdx to get correct shape for this item
                     const itemShape =
                       isMixed && shapesByPage
@@ -2204,7 +2301,7 @@ export default function GridPreview(props: GridPreviewProps) {
                             c.sh,
                             c.isRotated,
                             c.is180,
-                            c.blockId,
+                            colorIndexFor(c.blockId),
                             itemShape,
                             parsedItemParams,
                             c.idx,
@@ -2222,7 +2319,7 @@ export default function GridPreview(props: GridPreviewProps) {
                             fill={color.text}
                             opacity={0.85}
                           >
-                            {cellLabel(c.blockId, false)}
+                            {cellLabel(c.blockId, _mixedBackFace)}
                           </text>
                         )}
                       </g>
@@ -2243,7 +2340,7 @@ export default function GridPreview(props: GridPreviewProps) {
               </div>
 
               {/* Back Side */}
-              {duplexFlow === "double" && (
+              {duplexFlow === "double" && !_isMixedGuillotine && (
                 <div
                   className="relative cursor-pointer group flex-shrink-0"
                   onClick={() => setExpanded(!expanded)}
@@ -2427,7 +2524,7 @@ export default function GridPreview(props: GridPreviewProps) {
                       {cncBackCells.map((c) => {
                         const isMixed = !!layoutResult?.isMixedPreview;
                         const color =
-                          BLOCK_COLORS[c.blockId % BLOCK_COLORS.length];
+                          BLOCK_COLORS[colorIndexFor(c.blockId) % BLOCK_COLORS.length];
                         const itemShape =
                           isMixed && shapesByPage
                             ? shapesByPage[c.blockId] || shapeType
@@ -2463,7 +2560,7 @@ export default function GridPreview(props: GridPreviewProps) {
                               c.sh,
                               c.isRotated,
                               c.is180,
-                              c.blockId,
+                              colorIndexFor(c.blockId),
                               itemShape,
                               parsedItemParams,
                               c.idx,

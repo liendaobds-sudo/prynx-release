@@ -153,9 +153,9 @@ import MockupCanvas from '../MockupCanvas';
 import DielineScene3D from '../DielineScene3D';
 import CameraRig from '../CameraRig';
 import { useSceneExport } from '../useSceneExport';
-import { useMockupStore } from '../../../store/useMockupStore';
+import { useMockupStore } from '../../../stores/useMockupStore';
 import { computeExportSize } from '../../../lib/mockup3d/exportSizing';
-import { useBoxStore } from '../../../store/useBoxStore';
+import { useBoxStore } from '../../../stores/useBoxStore';
 import { generateDieline } from '../../../lib/dieline/engine';
 import { DEFAULT_PARAMS } from '../../../lib/dieline/types';
 

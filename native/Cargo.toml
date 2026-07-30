@@ -28,6 +28,7 @@ boa_engine = { version = "0.21.1", default-features = false }
 numpy = "0.29"
 rayon = "1.12.0"
 geo = "0.28"
+vtracer = "=1.0.0-alpha.2"
 imposition_core = { path = "../imposition_core" }
 # PrynX Print Engine — lõi prepress ink-space thay Ghostscript.
 print_engine = { path = "../print_engine" }

@@ -100,7 +100,7 @@ def compute_sticker_layout_for_page(
 
     _logger = logging.getLogger(__name__)
 
-    from .orchestrator import solve_optimal_sticker_layout
+    from .orchestrator import LazyNfpParams, solve_optimal_sticker_layout
 
     # Fail-fast Rust cho lớp tính layout (R12.1): gọi trước mọi phép tính.
     from app.workers.imposition_rust_policy import require_rust as _require_rust
@@ -325,12 +325,55 @@ def compute_sticker_layout_for_page(
 
     base_poly = None
 
+    # PERF (audit 2026-07-29 §PERF-IMPO-01): `optimal_auto` với CUSTOM tường minh
+    # chỉ xét grid/L-shape; orchestrator không dùng bộ tham số NFP p5/p6 cho khối
+    # chính. Bỏ phép binary-search Shapely đắt tiền, nhưng vẫn trích polygon thật ở
+    # fallback bên dưới để giữ nguyên kiểm tra va chạm. `head_to_tail` vẫn phải tính.
+    _skip_unused_custom_nfp = (
+        strategy == 'optimal_auto'
+        and shape_type_override == 'CUSTOM'
+        and shape_type == 'CUSTOM'
+    )
+
+    # PERF (audit 2026-07-29 §PERF-IMPO-02): với loại hình đã được Detection
+    # xác định rõ, `optimal_auto` chỉ tải NFP khi orchestrator thật sự thử một
+    # candidate head-to-tail/fill. Auto-detect và head_to_tail vẫn tính ngay để
+    # giữ nguyên bước tinh chỉnh shape và hành vi nghiệp vụ.
+    _lazy_nfp_context = None
+    _defer_explicit_shape_nfp = (
+        not _is_one_dao
+        and strategy == 'optimal_auto'
+        and bool(shape_type_override)
+        and shape_type != 'CUSTOM'
+        and hasattr(page, 'extract_vector_paths')
+    )
+    if _defer_explicit_shape_nfp:
+        def _load_deferred_nfp():
+            try:
+                return get_optimal_head_to_tail_overlap(page, gap_x)
+            except Exception as exc:
+                logger.debug(f"   NFP: lazy computation FAILED: {exc}")
+                return (
+                    None, None, None, None, None, None,
+                    shape_type, shape_props, None,
+                )
+
+        _lazy_nfp_context = LazyNfpParams(_load_deferred_nfp)
+
     # 1 Dao: base_poly = CHỮ NHẬT trim (page hoặc die bbox), KHÔNG NFP contour cong
     # (tránh nest/khử đè theo outline tròn trong khi dao cắt thẳng).
     if _is_one_dao:
         from shapely.geometry import box as _box
         base_poly = _box(0, 0, trim_w, trim_h)
         logger.debug(f"   POLY: 1-dao rectangle {trim_w:.2f}x{trim_h:.2f}")
+    elif _skip_unused_custom_nfp:
+
+        logger.debug("   NFP: SKIPPED (explicit CUSTOM + optimal_auto; polygon fallback retained)")
+
+    elif _lazy_nfp_context is not None:
+
+        logger.debug(f"   NFP: DEFERRED (explicit {shape_type} + optimal_auto)")
+
     elif strategy in ('optimal_auto', 'head_to_tail') and hasattr(page, 'extract_vector_paths'):
 
         try:
@@ -378,6 +421,18 @@ def compute_sticker_layout_for_page(
     else:
 
         logger.debug(f"   yOLY: from NFy → {'YES' if base_poly else 'None'}")
+
+    # Nếu extractor nhẹ không lấy được polygon, tải NFP ngay để giữ đúng polygon
+    # collision của đường cũ; chỉ dùng bbox khi cả hai extractor đều thất bại.
+    if base_poly is None and _lazy_nfp_context is not None:
+        _lazy_values = _lazy_nfp_context.get()
+        if _lazy_values:
+            p5, p6, p5r, p6r, p5c, p6c = _lazy_values[:6]
+            if len(_lazy_values) > 8 and _lazy_values[8] is not None:
+                base_poly = _lazy_values[8]
+        logger.debug(
+            f"   NFP: forced because polygon fallback failed → {'YES' if base_poly else 'None'}"
+        )
 
     # If user explicitly chose CUSTOM via dropdown, force it — trừ 1 Dao (luôn RECTANGLE).
     if shape_type_override == 'CUSTOM' and not _is_one_dao:
@@ -429,7 +484,8 @@ def compute_sticker_layout_for_page(
 
         base_poly=base_poly,
 
-        secondary_gap=secondary_gap
+        secondary_gap=secondary_gap,
+        nfp_context=_lazy_nfp_context,
 
     )
 

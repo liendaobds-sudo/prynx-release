@@ -645,7 +645,15 @@ def process_chunk(args):
                 pass
 
         # --- Duplex Mirroring ---
-        if duplex_flow == 'double' and sheet_idx % 2 == 1:
+        # MIXED-GUILLOTINE (audit 2026-07-30 §MG.5): mặt sau mode mới đã được
+        # planner phản chiếu cả vị trí lẫn góc xoay. Chỉ dùng phép mirror X legacy
+        # khi placements chưa đồng loạt mang marker đó.
+        _duplex_transform_materialized = (
+            bool(placements)
+            and all(p.get('_duplex_transform_applied', False) for p in placements)
+        )
+        if (duplex_flow == 'double' and sheet_idx % 2 == 1
+                and not _duplex_transform_materialized):
             for p in placements:
                 # Mirror X coordinate across the sheet width
                 p['abs_x'] = sheet_w - (p['abs_x'] + p['width'])
@@ -659,13 +667,27 @@ def process_chunk(args):
         # --- Phase 2: Collision Detection ---
         
 
+        # Mặt sau duplex đã bị mirror ngay phía trên nên marker từ parent không còn
+        # chứng minh hình học hiện tại an toàn; bắt buộc kiểm tra lại trên tờ lẻ.
+        _pont_already_resolved = (
+            bool(placements)
+            and not (duplex_flow == 'double' and sheet_idx % 2 == 1)
+            and all(p.get('_pont_collision_resolved', False) for p in placements)
+        )
         if (
             (is_die_cut or page_sheet_mode)
             and pont_config
             and not pont_config.get('disableCollision', False)
+            and not _pont_already_resolved
         ):
 
-            from app.workers.pont_collision import calculate_forbidden_zones, smart_resolve_collisions, build_shapely_polygon_from_paths, detect_collisions, MM_TO_PTS
+            from app.workers.pont_collision import (
+                MM_TO_PTS,
+                build_collision_base_polygon,
+                calculate_forbidden_zones,
+                detect_collisions,
+                smart_resolve_collisions,
+            )
 
             # Determine margins - use pont_config values (which are in MM) if available, otherwise default to margin_bottom/margin_left (which are in PT)
 
@@ -698,10 +720,8 @@ def process_chunk(args):
                 if _bp_key in _base_poly_cache:
                     base_poly, base_rect_pts = _base_poly_cache[_bp_key]
                 else:
-                    base_poly = None
                     _iw0 = float(placements[0]['width'])
                     _ih0 = float(placements[0]['height'])
-                    base_rect_pts = (0, 0, _iw0, _ih0)
                     src_page = src_doc[first_src_idx]
 
                     # Use mathematically perfect polygon for Circle/Ellipse
@@ -714,27 +734,13 @@ def process_chunk(args):
                         or cut_type == 'one_dao'
                         or str(shape_type).upper() == 'RECTANGLE'
                     )
-                    if str(shape_type).upper() == 'CIRCLE_ELLIPSE' and not _is_rect_cell:
-                        from shapely.geometry import Point
-                        from shapely.affinity import scale
-                        rx = _iw0 / 2.0
-                        ry = _ih0 / 2.0
-                        base_poly = scale(Point(0,0).buffer(1.0, resolution=64), xfact=rx, yfact=ry)
-                        base_rect_pts = (-rx, -ry, rx, ry)
-                    elif _is_rect_cell and _iw0 > 0 and _ih0 > 0:
-                        from shapely.geometry import box as _box
-                        base_poly = _box(0.0, 0.0, _iw0, _ih0)
-                        base_rect_pts = (0.0, 0.0, _iw0, _ih0)
-                    else:
-                        paths = src_page.extract_vector_paths()
-                        if paths:
-                            base_poly = build_shapely_polygon_from_paths(paths, src_page.rect)
-                            if base_poly:
-                                minx, miny, maxx, maxy = base_poly.bounds
-                                base_rect_pts = (minx, miny, maxx, maxy)
-                        if base_poly is None and _iw0 > 0 and _ih0 > 0:
-                            from shapely.geometry import box as _box
-                            base_poly = _box(0.0, 0.0, _iw0, _ih0)
+                    base_poly, base_rect_pts = build_collision_base_polygon(
+                        src_page,
+                        shape_type,
+                        _iw0,
+                        _ih0,
+                        is_rect_cell=_is_rect_cell,
+                    )
 
                     _base_poly_cache[_bp_key] = (base_poly, base_rect_pts)
 
@@ -911,7 +917,8 @@ def process_chunk(args):
 
             shape.commit()
         # Draw cluster tile cut marks (always, regardless of mark_type)
-        if grouping_strategy == 'cluster_tile' and sheet_idx in chunk_cluster_tile_cuts:
+        # Plan mixed cũng truyền cut lines qua contract này nhưng không bật cluster_tile.
+        if sheet_idx in chunk_cluster_tile_cuts:
             _ctcl = chunk_cluster_tile_cuts[sheet_idx]
             draw_tile_cut_marks(
                 out_page, _ctcl,

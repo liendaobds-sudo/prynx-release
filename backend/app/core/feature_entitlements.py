@@ -1,4 +1,4 @@
-﻿"""Danh mục quyền Free/Pro phía sidecar, đồng bộ với desktop."""
+"""Danh mục quyền Free/Pro phía sidecar, đồng bộ với desktop."""
 from __future__ import annotations
 
 import os
@@ -25,7 +25,7 @@ PRO_FEATURES = {
     "prepress.preflight", "prepress.convert_colors", "prepress.hairlines", "prepress.trapping",
     "prepress.cutline", "prepress.pdfx", "vdp.datamerge", "vdp.numbering", "vdp.cover_numbering",
     "impo.booklet", "impo.nup", "impo.diecut", "impo.cnc", "packaging.dieline",
-    "util.bgremover", "util.upscale", "qc.compare_pdf",
+    "util.bgremover", "util.upscale", "util.logo_rebuild", "qc.compare_pdf",
 }
 FEATURE_MIN_PLAN: dict[str, str] = {
     **{feature: "free" for feature in FREE_FEATURES},

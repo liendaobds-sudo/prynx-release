@@ -217,7 +217,7 @@ def _py_solve_row_alternating_layout(usable_w: float, usable_h: float, item_w: f
         'isRotated': is_rotated_90,
     }
 
-def _best_fill_layout(fill_w: float, fill_h: float, avail_w: float, avail_h: float, gap_x: float, gap_y: float, p5_params=None, p6_params=None, p5_row=None, p6_row=None, p5_col=None, p6_col=None, shape_type: str = 'CUSTOM', shape_props: Dict[str, Any] = None) -> Dict[str, Any]:
+def _best_fill_layout(fill_w: float, fill_h: float, avail_w: float, avail_h: float, gap_x: float, gap_y: float, p5_params=None, p6_params=None, p5_row=None, p6_row=None, p5_col=None, p6_col=None, shape_type: str = 'CUSTOM', shape_props: Dict[str, Any] = None, nfp_provider=None) -> Dict[str, Any]:
     """
     Try grid, staggered, and head-to-tail strategies for a fill area,
     return the layout with the highest item count.
@@ -249,6 +249,13 @@ def _best_fill_layout(fill_w: float, fill_h: float, avail_w: float, avail_h: flo
         for it in sv2['items']:
             it['isRotated'] = True
         candidates.append(sv2)
+
+    # PERF (audit 2026-07-29 §PERF-IMPO-02): chỉ tải NFP khi thật sự có vùng
+    # fill đủ lớn và loại hình cho phép candidate lồng/so le dựa trên NFP.
+    if nfp_provider is not None and shape_type not in ('TRAPEZOID', 'PARALLELOGRAM', 'CUSTOM'):
+        loaded = nfp_provider()
+        if loaded:
+            p5_params, p6_params, p5_row, p6_row, p5_col, p6_col = loaded[:6]
 
     # 3. Head-to-tail cluster (if params available)
     # Bỏ qua các layout dị dạng NFP cho Hình Thang/Bình Hành vì chúng đã có logic riêng,

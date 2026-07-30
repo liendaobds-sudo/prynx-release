@@ -956,26 +956,34 @@ class LayerEngine:
         doc.close()
         pdf_buf.seek(0)
 
-        pdf_render = pdfium.PdfDocument(pdf_buf)
-        try:
-            if page < 1 or page > len(pdf_render):
-                raise ValueError(f"Page {page} out of range")
+        # KIENTRUC (audit 2026-07-29 §C.1): route `/preflight/preview-layers` chạy hàm
+        # này ngoài event loop (threadpool) → nhiều tab/toggle liên tiếp là nhiều thread
+        # cùng gọi PDFium. Khóa bao mở/render/close; encode JPEG + base64 để ngoài khóa.
+        from app.core.pdfium_lock import pdfium_guard
 
-            p = pdf_render[page - 1]
-            scale = dpi / 72
-            bitmap = p.render(scale=scale)
-            img = bitmap.to_pil()
+        # Encode JPEG nằm TRONG khóa là cố ý: `bitmap.to_pil()` có thể tham chiếu bộ
+        # đệm của bitmap, nên KHÔNG đổi thứ tự "dùng ảnh xong mới close" của bản gốc.
+        with pdfium_guard("layer_preview_render"):
+            pdf_render = pdfium.PdfDocument(pdf_buf)
+            try:
+                if page < 1 or page > len(pdf_render):
+                    raise ValueError(f"Page {page} out of range")
 
-            buf = io.BytesIO()
-            img.save(buf, format='JPEG', quality=92)
-            b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+                p = pdf_render[page - 1]
+                scale = dpi / 72
+                bitmap = p.render(scale=scale)
+                img = bitmap.to_pil()
 
-            result = f"data:image/jpeg;base64,{b64}"
-            if _ck is not None:
-                _preview_cache_put(_ck, result)
-            return result
-        finally:
-            pdf_render.close()
+                buf = io.BytesIO()
+                img.save(buf, format='JPEG', quality=92)
+                b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+
+                result = f"data:image/jpeg;base64,{b64}"
+                if _ck is not None:
+                    _preview_cache_put(_ck, result)
+                return result
+            finally:
+                pdf_render.close()
 
     def _strip_hidden_objects(self, doc, page_num: int, hidden_object_keys: list[str]):
         """
@@ -1510,21 +1518,31 @@ class LayerEngine:
         from reportlab.pdfgen import canvas as rl_canvas
         from PIL import Image
 
-        pdf_render = pdfium.PdfDocument(pdf_path)
+        # KIENTRUC (audit 2026-07-29 §C.1): khóa THEO TỪNG TRANG thay vì bao cả vòng —
+        # flatten raster 300 DPI nhiều trang giữ khóa cả vòng sẽ chặn mọi preview khác.
+        # Mở/đếm trang/đóng cũng là lời gọi PDFium nên đều phải trong khóa.
+        from app.core.pdfium_lock import pdfium_guard
+
+        with pdfium_guard("layer_flatten_open"):
+            pdf_render = pdfium.PdfDocument(pdf_path)
+            n_pages = len(pdf_render)
+
         pages_data = []
 
-        for i in range(len(pdf_render)):
-            p = pdf_render[i]
-            # Get page dimensions in points
-            w_pt = p.get_width()
-            h_pt = p.get_height()
-            # Render at 300 DPI
-            scale = 300 / 72
-            bitmap = p.render(scale=scale)
-            img = bitmap.to_pil()
+        for i in range(n_pages):
+            with pdfium_guard("layer_flatten_page"):
+                p = pdf_render[i]
+                # Get page dimensions in points
+                w_pt = p.get_width()
+                h_pt = p.get_height()
+                # Render at 300 DPI
+                scale = 300 / 72
+                bitmap = p.render(scale=scale)
+                img = bitmap.to_pil()
             pages_data.append({"img": img, "w": w_pt, "h": h_pt})
 
-        pdf_render.close()
+        with pdfium_guard("layer_flatten_close"):
+            pdf_render.close()
 
         # Build PDF from raster images using reportlab
         c = rl_canvas.Canvas(output_path)

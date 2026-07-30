@@ -3,7 +3,7 @@ import React from 'react';
 import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import NestingCanvas from '../NestingCanvas';
-import { useBoxStore } from '../../../store/useBoxStore';
+import { useBoxStore } from '../../../stores/useBoxStore';
 import { generateDieline } from '../../../lib/dieline/engine';
 import { DEFAULT_PARAMS } from '../../../lib/dieline/types';
 import { DEFAULT_NESTING_CONFIG, type NestingResult } from '../../../lib/dieline/nestingTypes';

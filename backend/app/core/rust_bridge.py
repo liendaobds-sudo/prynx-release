@@ -18,6 +18,11 @@ import os
 import tempfile
 import base64
 
+# KIENTRUC (audit 2026-07-29 §C.1): khóa PDFium sống ở `pdfium_lock` (module nhẹ, không
+# kéo theo extension Rust). Re-export ở đây để đường import ghi trong AGENTS.md rule #3
+# vẫn dùng được và để mọi nơi chỉ có MỘT khóa duy nhất — xem `pdfium_lock` cho lý do.
+from app.core.pdfium_lock import PDFIUM_PY_LOCK, pdfium_guard  # noqa: F401
+
 logger = logging.getLogger(__name__)
 
 # Auto-detect pdfium.dll location before importing Rust module
@@ -61,7 +66,8 @@ class RustBridge:
         """
         if RUST_AVAILABLE:
             try:
-                return _native.enumerate_page_objects(pdf_path, page)
+                with pdfium_guard("enumerate_page_objects"):
+                    return _native.enumerate_page_objects(pdf_path, page)
             except Exception as e:
                 logger.warning(f"Rust enumerate_page_objects failed: {e}, falling back to Python")
 
@@ -132,7 +138,8 @@ class RustBridge:
         """Render page as SVG string with vector paths + raster background."""
         if RUST_AVAILABLE:
             try:
-                return _native.render_page_svg(pdf_path, page, dpi)
+                with pdfium_guard("render_page_svg"):
+                    return _native.render_page_svg(pdf_path, page, dpi)
             except Exception as e:
                 logger.warning(f"Rust render_page_svg failed: {e}, falling back to Python")
 
@@ -141,12 +148,14 @@ class RustBridge:
     def _fallback_render_svg(self, pdf_path: str, page: int, dpi: int) -> str:
         """Fallback: render via pypdfium2 and wrap in SVG."""
         import pypdfium2 as pdfium
-        pdf_doc = pdfium.PdfDocument(pdf_path)
-        p = pdf_doc[page - 1]
-        scale = dpi / 72.0
-        bitmap = p.render(scale=scale)
-        img = bitmap.to_pil()
-        pdf_doc.close()
+        # Vùng khóa CHỈ bao phần PDFium; encode PNG/base64 làm ngoài khóa.
+        with pdfium_guard("fallback_render_svg"):
+            pdf_doc = pdfium.PdfDocument(pdf_path)
+            p = pdf_doc[page - 1]
+            scale = dpi / 72.0
+            bitmap = p.render(scale=scale)
+            img = bitmap.to_pil()
+            pdf_doc.close()
 
         import io
         buf = io.BytesIO()
@@ -169,7 +178,8 @@ class RustBridge:
         """
         if RUST_AVAILABLE:
             try:
-                return _native.delete_page_objects(pdf_path, page, indices)
+                with pdfium_guard("delete_page_objects"):
+                    return _native.delete_page_objects(pdf_path, page, indices)
             except Exception as e:
                 logger.warning(f"Rust delete_page_objects failed: {e}, falling back to Python")
 
@@ -209,7 +219,8 @@ class RustBridge:
         """Render page to JPEG bytes."""
         if RUST_AVAILABLE:
             try:
-                return _native.render_page_image(pdf_path, page, dpi)
+                with pdfium_guard("render_page_image"):
+                    return _native.render_page_image(pdf_path, page, dpi)
             except Exception as e:
                 logger.warning(f"Rust render_page_image failed: {e}, falling back to Python")
 
@@ -219,11 +230,13 @@ class RustBridge:
         """Fallback: render via pypdfium2."""
         try:
             import pypdfium2 as pdfium
-            pdf_doc = pdfium.PdfDocument(pdf_path)
-            p = pdf_doc[page - 1]
-            bitmap = p.render(scale=dpi / 72.0)
-            img = bitmap.to_pil()
-            pdf_doc.close()
+            # Vùng khóa CHỈ bao phần PDFium; encode JPEG làm ngoài khóa.
+            with pdfium_guard("fallback_render_image"):
+                pdf_doc = pdfium.PdfDocument(pdf_path)
+                p = pdf_doc[page - 1]
+                bitmap = p.render(scale=dpi / 72.0)
+                img = bitmap.to_pil()
+                pdf_doc.close()
 
             import io
             buf = io.BytesIO()

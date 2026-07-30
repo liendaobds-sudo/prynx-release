@@ -50,9 +50,10 @@ import { useShallow } from 'zustand/react/shallow';
 import { globalPdfObjectCache } from '../stores/pdfObjectCache';
 import { BgRemoverPreview } from './preprocess-tools/BgRemoverTool';
 import { UpscalePreview } from './preprocess-tools/UpscaleTool';
+import LogoRebuildWorkspace from './preprocess-tools/LogoRebuildWorkspace';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../i18n';
-import { canToolRunWithoutPdf, resolveDedicatedInitialTool } from './imposition-tools/sections/preprocessRouterTools';
+import { canToolRunWithoutPdf, LOGO_REBUILD_ENABLED, resolveDedicatedInitialTool } from './imposition-tools/sections/preprocessRouterTools';
 import { registerActiveTabFeature } from '../lib/tabNavigation';
 
 // Phase type is now defined in useWorkspaceStore
@@ -477,6 +478,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // Handle initial tool feature from Home screen (preprocess tools)
     useEffect(() => {
         if (initialFeature) {
+            if (initialFeature === 'logo_rebuild' && !LOGO_REBUILD_ENABLED) {
+                setActiveDashboardTool('none');
+                return;
+            }
             // Only auto-bypass upload for standalone tools
             if (dedicatedInitialTool) {
                 setPhase('workspace');
@@ -494,6 +499,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             const names: Record<string, string> = {
                 'bgremover': t('tabs.imposition:tach_nen_ai'),
                 'upscale': t('tabs.imposition:phong_to_anh'),
+                'logo_rebuild': tv('Phục hồi & Vector hóa Logo'),
                 'sticker': t('tabs.imposition:tao_vien_cat_be'),
                 'split': t('tabs.imposition:tach_file'),
                 'datamerge': t('tabs.imposition:tron_du_lieu_vdp'),
@@ -1570,6 +1576,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             marginMode: config.marginMode,
             gripperMargin: config.gripperMargin || 0,
             duplexFlow: config.duplexFlow,
+            duplexFlipEdge: config.duplexFlipEdge,
             align: config.align,
             mirrorAlign: config.mirrorAlign,
             markType: config.markType,
@@ -2413,6 +2420,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         {activeDashboardTool === 'upscale' && (
                             <div className="absolute top-0 left-0 bottom-0 z-40" style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}>
                                 <UpscalePreview tabId={tabId || ''} isActive={isActive === true} />
+                            </div>
+                        )}
+
+                        {LOGO_REBUILD_ENABLED && activeDashboardTool === 'logo_rebuild' && (
+                            <div className="absolute inset-y-0 left-0 z-40" style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}>
+                                <LogoRebuildWorkspace isActive={isActive === true} />
                             </div>
                         )}
 

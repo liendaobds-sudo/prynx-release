@@ -630,12 +630,17 @@ class SeparationEngine:
     def _run_pikepdf_fallback(self, pdf_path: str, page_num: int, dpi: int) -> dict:
         """Fallback: render page via pypdfium2 and split into pseudo-CMYK plates."""
         import pypdfium2 as pdfium
+        from app.core.pdfium_lock import pdfium_guard
 
-        pdf_doc = pdfium.PdfDocument(pdf_path)
-        page = pdf_doc[page_num - 1]
-        scale = dpi / 72.0
-        bitmap = page.render(scale=scale)
-        img = bitmap.to_pil()  # RGB PIL Image
+        # KIENTRUC (audit 2026-07-29 §C.1): tách kẽm chạy qua `asyncio.to_thread`.
+        # Khóa CHỈ bao phần PDFium (mở + render + to_pil); toán numpy phía dưới nặng
+        # nhưng thuần Python/BLAS nên để ngoài khóa cho vẫn song song được.
+        with pdfium_guard("separations_pdfium_fallback"):
+            pdf_doc = pdfium.PdfDocument(pdf_path)
+            page = pdf_doc[page_num - 1]
+            scale = dpi / 72.0
+            bitmap = page.render(scale=scale)
+            img = bitmap.to_pil()  # RGB PIL Image
         arr_rgb = np.array(img)
         width, height = img.size
 
@@ -687,7 +692,11 @@ class SeparationEngine:
         except Exception:
             pass
 
-        pdf_doc.close()
+        # KIENTRUC (audit 2026-07-29 §C.1): `close()` cũng là lời gọi PDFium → phải
+        # trong guard. Giữ nguyên thứ tự cũ (đóng SAU khi đã dùng xong `img`) vì
+        # `bitmap.to_pil()` có thể tham chiếu bộ đệm của bitmap.
+        with pdfium_guard("separations_pdfium_close"):
+            pdf_doc.close()
 
         return {
             "width": width,

@@ -152,8 +152,13 @@ export async function runProcessEngine(
                 pontsOnCutFile: pontSettingsMode ? (settings as any).pontsOnCutFile !== false : undefined,
                 hiddenOcgLayerIds: isDieCut ? (settings as any).hiddenOcgLayerIds || [] : [],
                 duplexFlow: isPageSheet ? 'normal' : (settings as any).duplexFlow,
+                // MIXED-GUILLOTINE (audit 2026-07-30 §MG.5/§MG.8): planner materialize mặt sau theo cạnh này.
+                duplexFlipEdge: isGuillotine && (settings as any).layoutType === 'mixed_guillotine'
+                    ? ((settings as any).duplexFlipEdge || 'long')
+                    : undefined,
                 // Report & xuất tờ duy nhất (spec: binh-tem-be-report) — gồm cả CNC
-                exportUniqueSheets: (isDieCut || isPageSheet) ? (settings as any).exportUniqueSheets !== false : false,
+                exportUniqueSheets: (isDieCut || isPageSheet || (isGuillotine && (settings as any).layoutType === 'mixed_guillotine'))
+                    ? (settings as any).exportUniqueSheets !== false : false,
                 reportDisplay: (isDieCut || isCnc || isGuillotine) ? (settings as any).reportDisplay : undefined,
                 reportMaterial: (isDieCut || isCnc || isGuillotine) ? (settings as any).reportMaterial : undefined,
                 reportLamination: (isDieCut || isCnc || isGuillotine) ? (settings as any).reportLamination : undefined,

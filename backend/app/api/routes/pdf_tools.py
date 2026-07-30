@@ -19,6 +19,12 @@ from fastapi import APIRouter, File, UploadFile, HTTPException, Form, Request, D
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
+from app.schemas.pdf_tools import (
+    EncryptionStatusResponse,
+    MetadataReadResponse,
+    OfficeConvertStatusResponse,
+    WarmupResponse,
+)
 from typing import List, Optional
 import json
 from app.core.license_guard import require_license, require_feature, enforce_feature
@@ -33,6 +39,9 @@ router = APIRouter(prefix="/pdf-tools", tags=["PDF Tools"], dependencies=[Depend
 # Xếp hàng job tạo viền bế / bù xén khi in liên tục. Mỗi job peak RAM cao
 # (raster 300 DPI × workers); chạy chồng chéo dễ OOM. Mặc định 1 job/lúc
 # (desktop in ấn). Override: PRYNX_MAX_STICKER_JOBS.
+# PERF (audit 2026-07-29 §C.3): trần = 1 là CỐ Ý — `sticker_engine` đã tự chọn số worker
+# theo RAM+CPU (`_auto_sticker_hw_profile`, tới 6 process trên máy ≥64GB). Trần job >1 sẽ
+# nhân đôi con số đó và phá luôn ngân sách RAM mà profile kia vừa tính.
 _MAX_CONCURRENT_STICKER = max(
     1, int(os.environ.get("PRYNX_MAX_STICKER_JOBS", "1") or "1")
 )
@@ -978,7 +987,7 @@ async def decrypt_pdf_endpoint(
             pass
 
 
-@router.post("/encryption-status")
+@router.post("/encryption-status", response_model=EncryptionStatusResponse)
 async def encryption_status_endpoint(
     file: UploadFile = File(...),
     license_info: dict = Depends(require_license),
@@ -999,7 +1008,7 @@ async def encryption_status_endpoint(
             pass
 
 
-@router.post("/metadata/read")
+@router.post("/metadata/read", response_model=MetadataReadResponse)
 async def metadata_read_endpoint(
     file: UploadFile = File(...),
     password: str = Form(""),
@@ -1083,7 +1092,7 @@ async def metadata_write_endpoint(
             pass
 
 
-@router.get("/office-convert/status")
+@router.get("/office-convert/status", response_model=OfficeConvertStatusResponse)
 async def office_convert_status(license_info: dict = Depends(require_license)):
     """Probe available Word/Excel/LibreOffice/Google converters (no side effects)."""
     from app.workers.office_convert_engine import probe_converters
@@ -1155,8 +1164,14 @@ async def office_convert_file_endpoint(
             )
 
         # COM/LibreOffice are blocking and may take minutes on complex files.
-        from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
-        await run_in_threadpool(convert_office_file, source_path, output_path, excel_layout)
+        # PERF (audit 2026-07-29 §C.3b): dùng kind "office" (KHÔNG phải "pdf-tools") để
+        # scheduler cách ly đường này còn ĐÚNG MỘT suất. Nhiều instance COM/LibreOffice
+        # cùng lúc là nguồn treo đã có lịch sử, nên việc nới trần toàn cục cho máy mạnh
+        # không được phép chạm vào đây.
+        from app.core.heavy_job_scheduler import run_scheduled_in_threadpool
+        await run_scheduled_in_threadpool(
+            "office", convert_office_file, source_path, output_path, excel_layout
+        )
         if not os.path.isfile(output_path) or os.path.getsize(output_path) < 32:
             raise HTTPException(status_code=500, detail="Chuyển đổi xong nhưng file PDF rỗng.")
 
@@ -1199,8 +1214,13 @@ async def office_convert_google_endpoint(
     try:
         kind, _fid = parse_google_url(url)
         # The engine uses a synchronous HTTP client; keep the API loop responsive.
-        from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
-        await run_in_threadpool(convert_google_link, url, output_path)
+        # PERF (audit 2026-07-29 §C.3b): cùng kind "office" — xem giải thích ở
+        # office_convert_file_endpoint.
+        from app.core.heavy_job_scheduler import (
+            run_heavy_in_threadpool as run_in_threadpool,
+            run_scheduled_in_threadpool,
+        )
+        await run_scheduled_in_threadpool("office", convert_google_link, url, output_path)
         await run_in_threadpool(_safe_watermark, output_path, license_info)
         return FileResponse(
             path=output_path,
@@ -1357,6 +1377,9 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
     draw_cut_contour = form.get("draw_cut_contour", "true")
     bleed_color_type = form.get("bleed_color_type", "image")
     bleed_color_hex = form.get("bleed_color_hex", "#FFFFFF")
+    # Cạnh nào được bù xén (chỉ Xén vuông góc). Thiếu field = nở đều 4 cạnh như
+    # các build cũ, nên client cũ và recipe cũ không đổi kết quả.
+    bleed_sides_raw = form.get("bleed_sides")
     rectangle_mode_raw = form.get("rectangle_mode", "false")
     do_rectangle_mode = rectangle_mode_raw.lower() in ("true", "1", "yes")
     cut_first_page_only_raw = form.get("cut_first_page_only", "false")
@@ -1464,6 +1487,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                 edge_bite_mm=edge_bite_mm,
                 cut_first_page_only=do_cut_first_page_only,
                 shape_mode=shape_mode,
+                bleed_sides=bleed_sides_raw,
                 selected_objects_by_page=selected_objects_by_page,
             )
         engine_seconds = time.perf_counter() - engine_started
@@ -1727,7 +1751,11 @@ async def remove_background_endpoint(
             except OSError: pass
 
 
-@router.post("/remove-background/warmup", dependencies=[Depends(require_feature("util.bgremover"))])
+@router.post(
+    "/remove-background/warmup",
+    dependencies=[Depends(require_feature("util.bgremover"))],
+    response_model=WarmupResponse,
+)
 async def remove_background_warmup(engine: str = Form("general")):
     """Nạp sẵn model tách nền (chạy nền) để lần bấm đầu không phải chờ cold-start.
     FE gọi khi mở công cụ; chạy trong threadpool nên không khoá event loop.
@@ -1800,11 +1828,15 @@ async def upscale_endpoint(
     output_meta: dict[str, object] = {"warnings": []}
 
     def _process_upscale():
-        from app.workers.realesrgan_engine import upscale as _upscale
+        from app.workers.realesrgan_engine import guard_runtime, upscale as _upscale
         with Image.open(source_path) as img:
             # PERF (audit 2026-07-28 §UP-01/07): đọc kích thước từ header và kiểm
             # RAM trước img.load(), không giải nén ảnh cực lớn rồi mới giới hạn.
             _validate_upscale_memory(img.width, img.height)
+            # UPSCALE (audit 2026-07-29 §NET.04): chốt thời gian/GPU thuộc tầng
+            # policy, cạnh chốt RAM. Trước đây hàm này là code chết nên máy thiếu
+            # GPU vẫn nhận job Chất lượng và chạy hàng chục phút không lời giải thích.
+            guard_runtime(img.width, img.height, variant)
             img.load()
             source_mode = img.mode
             source_icc = img.info.get("icc_profile")
@@ -1853,6 +1885,8 @@ async def upscale_endpoint(
             result_img.save(output_path, format="PNG", **save_kwargs)
             output_meta["size"] = result_img.size
 
+    from app.workers.realesrgan_engine import UpscaleUnavailable
+
     try:
         await run_in_threadpool(_process_upscale)
         return FileResponse(
@@ -1868,6 +1902,13 @@ async def upscale_endpoint(
     except HTTPException:
         _cleanup_file(output_path)
         raise
+    except UpscaleUnavailable as e:
+        # UPSCALE (audit 2026-07-29 §NET.04): engine đã soạn sẵn thông điệp tiếng
+        # Việt cho người dùng (thiếu GPU / vượt trần thời gian). Trước đây nó rơi
+        # vào nhánh 500 chung nên người dùng chỉ thấy "Phóng to ảnh thất bại".
+        _cleanup_file(output_path)
+        logger.info("upscale bị chặn trước khi chạy: %s", e)
+        raise HTTPException(status_code=422, detail=str(e)) from e
     except Exception as e:
         _cleanup_file(output_path)
         logger.error("upscale thất bại: %s", e, exc_info=True)
@@ -1878,7 +1919,11 @@ async def upscale_endpoint(
             except OSError: pass
 
 
-@router.post("/upscale/warmup", dependencies=[Depends(require_feature("util.upscale"))])
+@router.post(
+    "/upscale/warmup",
+    dependencies=[Depends(require_feature("util.upscale"))],
+    response_model=WarmupResponse,
+)
 async def upscale_warmup(engine: str = Form("general")):
     """Nạp sẵn model upscale (chạy nền) để lần bấm đầu không phải chờ cold-start."""
     from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
