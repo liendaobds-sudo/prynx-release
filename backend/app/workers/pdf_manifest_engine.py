@@ -80,11 +80,17 @@ class _ImageSourceInfo:
     height_pt: float
     source_bytes: int
     estimated_pdf_bytes: int
+    frame_count: int
     requires_native_lossless: bool
 
     @property
     def pixels(self) -> int:
         return self.width_px * self.height_px
+
+    @property
+    def working_pixels(self) -> int:
+        """Tổng pixel phải giải mã khi một nguồn có nhiều frame."""
+        return self.pixels * self.frame_count
 
 
 class ImageQualityGuardError(ValueError):
@@ -122,6 +128,7 @@ def _png_lossless_capability(source_path: str) -> tuple[bool, str | None]:
     has_icc_or_srgb = False
     has_gamma = False
     has_chromaticities = False
+    has_animation = False
     try:
         with open(source_path, "rb") as source:
             if source.read(8) != b"\x89PNG\r\n\x1a\n":
@@ -152,10 +159,13 @@ def _png_lossless_capability(source_path: str) -> tuple[bool, str | None]:
                 elif chunk_type == b"cICP":
                     return True, "PNG cICP/HDR chưa có không gian màu PDF tương đương"
                 if chunk_type in {b"acTL", b"fcTL", b"fdAT"}:
-                    return True, "APNG nhiều frame đang chờ đường tách frame lossless"
+                    has_animation = True
+                    requires_native = True
                 if chunk_type == b"IEND":
                     if (has_gamma or has_chromaticities) and not has_icc_or_srgb:
                         return True, "PNG gAMA/cHRM chưa có CalRGB/CalGray tương đương"
+                    if has_animation:
+                        requires_native = True
                     return requires_native, None
                 source.seek(length + 4, os.SEEK_CUR)
     except OSError:
@@ -235,12 +245,17 @@ def _read_image_dpi(source_path: str, extension: str) -> tuple[float, float]:
     return _positive_dpi(parsed[0]), _positive_dpi(parsed[1])
 
 
-def _estimate_image_pdf_bytes(extension: str, source_bytes: int, pixels: int) -> int:
+def _estimate_image_pdf_bytes(
+    extension: str,
+    source_bytes: int,
+    pixels: int,
+    frame_count: int = 1,
+) -> int:
     """Ước lượng temp PDF; JPEG giữ DCT, PNG có thể cần thêm SMask/Flate."""
     overhead = 64 * 1024
     if extension in {".jpg", ".jpeg"}:
         return max(source_bytes + overhead, math.ceil(source_bytes * 1.10))
-    return max(source_bytes * 2 + overhead, pixels * 5 + overhead)
+    return max(source_bytes * 2 + overhead, pixels * frame_count * 5 + overhead)
 
 
 def _inspect_image_source(source_path: str) -> _ImageSourceInfo:
@@ -256,8 +271,15 @@ def _inspect_image_source(source_path: str) -> _ImageSourceInfo:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(source_path) as image:
-                if image.format != expected_format or getattr(image, "n_frames", 1) != 1:
+                frame_count = int(getattr(image, "n_frames", 1) or 1)
+                if image.format != expected_format:
                     raise ValueError("Image extension and content do not match")
+                if not 1 <= frame_count <= MAX_MANIFEST_ITEMS:
+                    raise ValueError("Image frame count is outside the allowed range")
+                if extension in {".jpg", ".jpeg"} and frame_count != 1:
+                    raise ValueError("JPEG must contain exactly one frame")
+                if extension == ".png" and frame_count > 1:
+                    requires_native_lossless = True
                 if extension in {".jpg", ".jpeg"} and image.info.get("icc_profile"):
                     requires_native_lossless = True
                 width_px, height_px = image.size
@@ -273,7 +295,13 @@ def _inspect_image_source(source_path: str) -> _ImageSourceInfo:
             width_pt=width_px / dpi_x * 72.0,
             height_pt=height_px / dpi_y * 72.0,
             source_bytes=source_bytes,
-            estimated_pdf_bytes=_estimate_image_pdf_bytes(extension, source_bytes, pixels),
+            estimated_pdf_bytes=_estimate_image_pdf_bytes(
+                extension,
+                source_bytes,
+                pixels,
+                frame_count,
+            ),
+            frame_count=frame_count,
             requires_native_lossless=requires_native_lossless,
         )
     except ImageQualityGuardError:
@@ -396,7 +424,7 @@ def _estimate_manifest_resources(
         if extension in IMAGE_SOURCE_EXTENSIONS:
             info = _inspect_image_source(path)
             image_infos[file_index] = info
-            count = 1
+            count = info.frame_count
         else:
             source = sources.get(file_index)
             if source is None:
@@ -483,8 +511,8 @@ def _estimate_manifest_resources(
             info = image_infos[file_index]
             used_source_bytes += info.source_bytes
             image_pdf_bytes += info.estimated_pdf_bytes
-            unique_image_pixels += info.pixels
-            largest_image_pixels = max(largest_image_pixels, info.pixels)
+            unique_image_pixels += info.working_pixels
+            largest_image_pixels = max(largest_image_pixels, info.working_pixels)
         else:
             source_bytes = os.path.getsize(path)
             used_source_bytes += source_bytes
@@ -659,6 +687,13 @@ def _build_native_image_request(
             pages.append(page)
             continue
         original_index = int(item["file_index"])
+        info = image_infos.get(original_index)
+        if info is None:
+            return None
+        if info.frame_count > 1 and "page_index" in item:
+            # Native hiện tách toàn bộ APNG thành các trang; không được âm thầm
+            # biến yêu cầu chọn một frame thành toàn bộ animation.
+            return None
         page_index = int(item.get("page_index", 0) or 0)
         if page_index != 0:
             return None
@@ -702,7 +737,7 @@ def _try_native_image_manifest(
     request, native_to_original = built
     largest_worker_mb = max(
         64.0,
-        max(image_infos[index].pixels for index in native_to_original)
+        max(image_infos[index].working_pixels for index in native_to_original)
         * 8
         / (1024 * 1024)
         + 64,
@@ -754,7 +789,7 @@ def _try_native_image_manifest(
     except NotImplementedError as exc:
         if guarded_sources:
             raise ImageQualityGuardError(
-                "PrynX đã dừng ghép vì native chưa bảo toàn đầy đủ nguồn 16-bit/ICC. "
+                "PrynX đã dừng ghép vì native chưa bảo toàn đầy đủ nguồn ảnh lossless. "
                 "Không có file kết quả nào được tạo."
             ) from exc
         logger.info("Native image Combine fallback: %s", str(exc).splitlines()[0])

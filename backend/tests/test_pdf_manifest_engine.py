@@ -50,6 +50,19 @@ def _make_png_with_icc(path: Path) -> None:
     )
 
 
+def _make_apng(path: Path, size: tuple[int, int] = (20, 30)) -> None:
+    first = Image.new("RGBA", size, (255, 0, 0, 255))
+    second = Image.new("RGBA", size, (0, 0, 255, 128))
+    first.save(
+        path,
+        format="PNG",
+        save_all=True,
+        append_images=[second],
+        duration=[100, 100],
+        loop=0,
+    )
+
+
 def _make_jpeg_with_icc(path: Path) -> None:
     Image.new("RGB", (2, 1), (10, 20, 30)).save(
         path,
@@ -299,6 +312,7 @@ def test_merge_manifest_accepts_jpeg_preserves_jfif_dpi_and_dct(tmp_path: Path):
         ("source-16bit.png", _make_png_16bit),
         ("source-icc.png", _make_png_with_icc),
         ("source-icc.jpg", _make_jpeg_with_icc),
+        ("source-apng.png", _make_apng),
     ],
 )
 def test_merge_manifest_routes_quality_sensitive_images_to_native(
@@ -329,17 +343,92 @@ def test_merge_manifest_routes_quality_sensitive_images_to_native(
     assert captured["request"]["sources"][0]["path"] == str(source)
 
 
+@pytest.mark.parametrize(
+    ("name", "maker"),
+    [
+        ("source-16bit.png", _make_png_16bit),
+        ("source-apng.png", _make_apng),
+    ],
+)
 def test_merge_manifest_fails_closed_when_required_native_is_unavailable(
     monkeypatch,
     tmp_path: Path,
+    name: str,
+    maker,
 ):
-    source = tmp_path / "source-16bit.png"
+    source = tmp_path / name
     output = tmp_path / "must-not-exist.pdf"
-    _make_png_16bit(source)
+    maker(source)
     monkeypatch.setattr(manifest_engine, "_load_native_image_merger", lambda: None)
 
     with pytest.raises(manifest_engine.ImageQualityGuardError, match="native lossless"):
         merge_manifest([str(source)], [{"file_index": 0}], str(output))
+
+    assert not output.exists()
+
+
+def test_apng_native_expands_frames_and_uses_working_pixel_budget(
+    monkeypatch,
+    tmp_path: Path,
+):
+    source = tmp_path / "source-apng.png"
+    output = tmp_path / "apng.pdf"
+    _make_apng(source)
+    captured: dict[str, object] = {}
+
+    def fake_plan_worker_count(**kwargs):
+        captured["worker_plan"] = kwargs
+        return 8, "test"
+
+    def fake_native(request_json, output_path, workers, progress, _cancelled):
+        request = json.loads(request_json)
+        captured["request"] = request
+        captured["workers"] = workers
+        progress(0)
+        with pikepdf.Pdf.new() as pdf:
+            pdf.add_blank_page(page_size=(20, 30))
+            pdf.add_blank_page(page_size=(20, 30))
+            pdf.save(output_path)
+        return output_path
+
+    monkeypatch.setattr(manifest_engine, "plan_worker_count", fake_plan_worker_count)
+    monkeypatch.setattr(manifest_engine, "_load_native_image_merger", lambda: fake_native)
+
+    merge_manifest([str(source)], [{"file_index": 0}], str(output))
+
+    info = manifest_engine._inspect_image_source(str(source))
+    assert info.frame_count == 2
+    assert info.requires_native_lossless is True
+    assert info.working_pixels == info.pixels * 2
+    assert captured["worker_plan"]["per_worker_mb"] == pytest.approx(
+        max(64.0, info.working_pixels * 8 / (1024 * 1024) + 64)
+    )
+    assert captured["workers"] == 1
+    assert len(captured["request"]["pages"]) == 1
+    with pikepdf.Pdf.open(output) as pdf:
+        assert len(pdf.pages) == 2
+
+
+def test_apng_single_frame_selection_fails_closed(monkeypatch, tmp_path: Path):
+    source = tmp_path / "source-apng.png"
+    output = tmp_path / "must-not-exist.pdf"
+    _make_apng(source)
+
+    def should_not_call_native(*_args, **_kwargs):
+        pytest.fail("Không được gọi native với hợp đồng chọn frame sai")
+
+    monkeypatch.setattr(
+        manifest_engine,
+        "_load_native_image_merger",
+        lambda: should_not_call_native,
+    )
+
+    with pytest.raises(manifest_engine.ImageQualityGuardError, match="native lossless"):
+        merge_manifest(
+            [str(source)],
+            [{"file_index": 0, "page_index": 0}],
+            str(output),
+        )
 
     assert not output.exists()
 
@@ -507,6 +596,19 @@ def test_resource_estimate_counts_whole_file_repeats_and_image_pixels(tmp_path: 
     assert estimate.largest_image_pixels == 600
     assert estimate.estimated_output_bytes > estimate.used_source_bytes
     assert estimate.estimated_working_disk_bytes > estimate.estimated_output_bytes
+
+
+def test_resource_estimate_expands_all_apng_frames(tmp_path: Path):
+    source = tmp_path / "source-apng.png"
+    _make_apng(source, size=(20, 30))
+
+    estimate = _estimate_resources([str(source)], [{"file_index": 0}])
+
+    assert estimate.expanded_pages == 2
+    assert estimate.image_page_occurrences == 2
+    assert estimate.unique_image_pixels == 1_200
+    assert estimate.expanded_image_pixels == 1_200
+    assert estimate.largest_image_pixels == 1_200
 
 
 @pytest.mark.parametrize(
