@@ -16,9 +16,13 @@ export const PREPROCESS_ROUTER_TOOLS = [
 
 export type PreprocessRouterTool = (typeof PREPROCESS_ROUTER_TOOLS)[number];
 
-// UIUX (audit 2026-07-29 §LR.HOLD): giữ code để phát triển tiếp nhưng khóa mọi
-// đường mở cho đến khi nhận diện màu và chất lượng nét đạt yêu cầu nghiệm thu.
-export const LOGO_REBUILD_ENABLED = false;
+export function isLogoRebuildEnabled(isDevelopment: boolean): boolean {
+    return isDevelopment;
+}
+
+// UIUX (audit 2026-08-01 §LG.RUNTIME): chỉ mở trong vòng dev để nghiệm thu;
+// Vite đóng gói production với DEV=false nên mọi đường mở vẫn bị khóa.
+export const LOGO_REBUILD_ENABLED = isLogoRebuildEnabled(import.meta.env.DEV);
 
 /** Các công cụ mở thành tab chuyên dụng và không dùng workspace PDF làm màn hình gốc. */
 export const DEDICATED_STANDALONE_TOOLS = ['bgremover', 'upscale', 'logo_rebuild', 'office_convert'] as const;

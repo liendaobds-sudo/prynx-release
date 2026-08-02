@@ -10,13 +10,14 @@
 // UIUX (audit 2026-07-27 §A-04): bỏ createElement/CropIcon — icon Crop quy về emoji cùng hệ với dàn icon menu công cụ
 import { lazy, type LazyExoticComponent, type ComponentType, type ReactNode } from 'react';
 // [VARIANT 2026-07-29] Hàm chuẩn hoá tìm kiếm ở module thuần (không React)
+import { LOGO_REBUILD_ENABLED } from '../components/imposition-tools/sections/preprocessRouterTools';
 import { normalizeSearch } from './textSearch';
 
 // ─── Tool Category IDs ───
-export type ToolCategoryId = 'file' | 'print' | 'vdp' | 'impo' | 'packaging' | 'util' | 'qc';
+export type ToolCategoryId = 'file' | 'print' | 'vdp' | 'impo' | 'packaging' | 'image' | 'qc';
 
 // ─── Tool App IDs (used as tab type) ───
-export type AppToolId = 'compare_pdf' | 'compare_text' | 'ai_qc' | 'imposition' | 'preflight' | 'combine_pdf' | 'dieline' | 'nup' | 'diecut' | 'cnc' | 'booklet';
+export type AppToolId = 'compare_pdf' | 'compare_text' | 'ai_qc' | 'imposition' | 'preflight' | 'combine_pdf' | 'dieline' | 'nup' | 'diecut' | 'cnc' | 'booklet' | 'paper_library';
 
 export interface ToolDefinition {
   /** Unique tool identifier, used as tab type */
@@ -60,6 +61,7 @@ const AiQcTab = lazy(() => import('../components/AiQcTab')); // eslint-disable-l
 const ImpositionTab = lazy(() => import('../components/ImpositionTab'));
 const CombineTab = lazy(() => import('../components/CombineTab'));
 const DielineTool = lazy(() => import('../components/dieline-tool/DielineTool'));
+const PaperLibraryTool = lazy(() => import('../components/paper-library/PaperLibraryTool'));
 const IMPOSITION_FAMILY_TOOL_IDS = new Set<AppToolId>(['imposition', 'nup', 'diecut', 'cnc', 'preflight']);
 
 /** Các tab dùng chung workspace và menu công cụ của ImpositionTab. */
@@ -83,7 +85,7 @@ export const TOOL_CATEGORIES: ToolCategory[] = [
   { id: 'vdp',        title: 'DỮ LIỆU BIẾN ĐỔI (VDP)' },
   { id: 'impo',       title: 'BÌNH BÀI IN (Imposition)' },
   { id: 'packaging',   title: 'KHUÔN BAO BÌ (Packaging)' },
-  { id: 'util',       title: 'TIỆN ÍCH KHÁC (Utilities)' },
+  { id: 'image',     title: 'XỬ LÝ ẢNH (Image Tools)' },
   { id: 'qc',         title: 'KIỂM TRA CHẤT LƯỢNG (QC)' },
 ];
 
@@ -360,7 +362,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     icon: '🔠',
     description: 'Đầu/chân trang: số trang, ngày, text',
     longDescription: 'Chèn Header/Footer cố định: số trang [page], ngày [date] và text vào 6 vị trí góc trang (giống Acrobat).',
-    category: 'util',
+    category: 'file',
     component: ImpositionTab,
     isEnabled: true,
     defaultPayload: { focusFeature: 'stick_text_number' },
@@ -463,12 +465,12 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   // ── UTILITIES ──
   {
     id: 'imposition',
-    title: 'Tách nền ảnh AI',
+    title: 'Tách nền ảnh',
     tabTitle: 'Bình bài (Chưa có file)',
     icon: '✨',
-    description: 'Bóc tách nền độ nét cao bằng AI',
-    longDescription: 'Sử dụng AI tiên tiến để tự động tách nền phức tạp, giữ nguyên chi tiết mảnh như tóc hay lông chó mèo.',
-    category: 'util',
+    description: 'Bóc tách nền độ nét cao tự động',
+    longDescription: 'Tự động tách nền phức tạp, giữ nguyên chi tiết mảnh như tóc hay lông chó mèo.',
+    category: 'image',
     component: ImpositionTab,
     isEnabled: true,
     defaultPayload: { focusFeature: 'bgremover' },
@@ -485,7 +487,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     icon: '©️',
     description: 'Chèn phôi nền (Background), logo chìm (Watermark)',
     longDescription: 'Bảo vệ bản quyền hoặc chèn phôi thiết kế vector làm nền.',
-    category: 'util',
+    category: 'file',
     component: ImpositionTab,
     isEnabled: true,
     defaultPayload: { focusFeature: 'watermark' },
@@ -502,7 +504,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     icon: '📦',
     description: 'Giảm dung lượng file, nén ảnh, gỡ rác',
     longDescription: 'Downsample hình ảnh, xóa rác, gỡ profile màu thừa để tối ưu gửi nhà in.',
-    category: 'util',
+    category: 'print',
     component: ImpositionTab,
     isEnabled: true,
     defaultPayload: { focusFeature: 'optimize' },
@@ -513,13 +515,30 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     textIcon: 'text-emerald-600',
   },
   {
+    id: 'paper_library',
+    title: 'Thư viện vật tư in',
+    tabTitle: 'Thư viện vật tư in',
+    icon: '📚',
+    description: 'Tra định lượng giấy, gáy sách, màng cán, may chỉ',
+    longDescription: 'Bảng tra vật tư của xưởng: 208 loại giấy (định lượng → độ dày), tính độ dày gáy sách theo kiểu đóng (khâu chỉ, keo nhiệt, bồi liên kết) và cán màng, 15 loại màng cán, giới hạn số tờ may chỉ.',
+    category: 'print',
+    component: PaperLibraryTool,
+    isEnabled: true,
+    maxInstances: 1,
+    hoverColor: 'hover:border-teal-500 hover:text-teal-600 text-slate-800 dark:text-white',
+    hoverBorder: 'hover:border-teal-500',
+    hoverShadow: 'hover:shadow-[0_8px_30px_rgb(20,184,166,0.15)]',
+    bgIcon: 'bg-teal-100 dark:bg-teal-500/10',
+    textIcon: 'text-teal-600',
+  },
+  {
     id: 'imposition',
     title: 'Khóa / Mở khóa PDF',
     tabTitle: 'Bình bài (Chưa có file)',
     icon: '🔐',
     description: 'Mật khẩu, hạn chế in/copy, gỡ khóa',
     longDescription: 'Khóa PDF bằng mật khẩu (AES), hạn chế in/sao chép/sửa; mở khóa khi biết mật khẩu. Dùng pikepdf — không đụng pipeline bình bài.',
-    category: 'util',
+    category: 'file',
     component: ImpositionTab,
     isEnabled: true,
     defaultPayload: { focusFeature: 'encrypt' },
@@ -536,7 +555,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     icon: '🏷️',
     description: 'Sửa Title, Author, xóa metadata',
     longDescription: 'Xem và chỉnh Info dictionary (Title, Author, Subject, Keywords…). Xóa hết metadata khi cần gửi file sạch. Không đụng nén / strip của Optimize.',
-    category: 'util',
+    category: 'file',
     component: ImpositionTab,
     isEnabled: true,
     defaultPayload: { focusFeature: 'metadata' },
@@ -579,7 +598,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   //   icon: '🔍',
   //   description: 'Nhúng text ẩn để tìm kiếm, copy chữ',
   //   longDescription: 'Chạy OCR nhận diện chữ trên ảnh scan, tạo lớp text ẩn giúp copy, tìm kiếm dễ dàng.',
-  //   category: 'util',
+  //   category: 'image',
   //   component: ImpositionTab,
   //   isEnabled: true,
   //   defaultPayload: { focusFeature: 'ocr' },
@@ -596,7 +615,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     icon: '📄',
     description: 'Chuyển sang chuẩn in ấn PDF/X an toàn',
     longDescription: 'Flatten transparency, chuyển đổi chuẩn PDF/X-1a, PDF/X-4.',
-    category: 'util',
+    category: 'print',
     component: ImpositionTab,
     isEnabled: true,
     defaultPayload: { focusFeature: 'pdfx' },
@@ -608,12 +627,12 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   },
   {
     id: 'imposition',
-    title: 'AI Upscale',
+    title: 'Phóng to ảnh (Upscale)',
     tabTitle: 'Bình bài (Chưa có file)',
     icon: '🪄',
-    description: 'Phóng to ảnh AI đúng kích thước (2x, 4x)',
-    longDescription: 'Cải thiện độ nét cảm nhận khi phóng to 2x, 4x, xử lý hoàn toàn trên máy. AI có thể suy đoán chi tiết; cần kiểm tra chữ và logo ở mức zoom 1:1.',
-    category: 'util',
+    description: 'Phóng to ảnh đúng kích thước (2x, 4x)',
+    longDescription: 'Cải thiện độ nét cảm nhận khi phóng to 2x, 4x, xử lý hoàn toàn trên máy. Có thể suy đoán chi tiết; cần kiểm tra chữ và logo ở mức zoom 1:1.',
+    category: 'image',
     component: ImpositionTab,
     isEnabled: true,
     defaultPayload: { focusFeature: 'upscale' },
@@ -623,8 +642,23 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     bgIcon: 'bg-violet-100 dark:bg-violet-500/10',
     textIcon: 'text-violet-600',
   },
-  // UIUX (audit 2026-07-29 §LR.HOLD): tạm ẩn Logo Rebuild khỏi mọi menu.
-  // Workspace/backend được giữ nguyên để bật lại sau khi màu và hình học đạt nghiệm thu.
+  ...(LOGO_REBUILD_ENABLED ? [{
+    id: 'imposition',
+    title: 'Phục hồi & Vector hóa Logo',
+    tabTitle: 'Phục hồi Logo',
+    icon: '🧩',
+    description: 'Tái tạo logo raster thành SVG có palette xác nhận',
+    longDescription: 'Gợi ý màu từ pixel nhìn thấy, dựng lại đường vector và xuất SVG để kiểm tra trước khi in.',
+    category: 'image',
+    component: ImpositionTab,
+    isEnabled: true,
+    defaultPayload: { focusFeature: 'logo_rebuild' },
+    hoverColor: 'hover:border-violet-500 hover:text-violet-600 text-slate-800 dark:text-white',
+    hoverBorder: 'hover:border-violet-500',
+    hoverShadow: 'hover:shadow-[0_8px_30px_rgb(139,92,246,0.15)]',
+    bgIcon: 'bg-violet-100 dark:bg-violet-500/10',
+    textIcon: 'text-violet-600',
+  } satisfies ToolDefinition] : []),
   {
     id: 'combine_pdf',
     title: 'Ghép & Trộn PDF',
@@ -783,6 +817,7 @@ export const TOOL_KEYWORDS: Record<string, string> = {
   cnc_imposer: 'cnc drop cut die two sided duplex mirror binh be rot 2 mat cat roi lat guong khuon',
   // Packaging
   dieline: 'dieline die cut packaging box carton mockup 3d khuon be bao bi hop tui',
+  paper_library: 'paper stock gsm weight thickness caliper spine lamination film thread sewing library lookup thu vien vat tu giay dinh luong do day gay sach mang can may chi tra cuu bang tra couche fort bristol ivory duplex kraft',
   // Utilities
   bgremover: 'background remover remove bg ai cutout tach nen bong tach phong',
   watermark: 'watermark background stamp logo overlay dong dau chen nen logo chim phoi nen',

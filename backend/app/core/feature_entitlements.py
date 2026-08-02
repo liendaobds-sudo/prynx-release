@@ -23,7 +23,8 @@ FREE_FEATURES = {
 PRO_FEATURES = {
     "pdf.resize_batch", "pdf.office_batch", "pdf.optimize_advanced", "pdf.trim_shift",
     "prepress.preflight", "prepress.convert_colors", "prepress.hairlines", "prepress.trapping",
-    "prepress.cutline", "prepress.pdfx", "vdp.datamerge", "vdp.numbering", "vdp.cover_numbering",
+    "prepress.cutline", "prepress.pdfx", "prepress.paper_library",
+    "vdp.datamerge", "vdp.numbering", "vdp.cover_numbering",
     "impo.booklet", "impo.nup", "impo.diecut", "impo.cnc", "packaging.dieline",
     "util.bgremover", "util.upscale", "util.logo_rebuild", "qc.compare_pdf",
 }

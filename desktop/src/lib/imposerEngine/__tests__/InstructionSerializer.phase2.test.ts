@@ -15,7 +15,7 @@ const PAGES = 16;
 
 function buildForPages(pageCount: number, s: any) {
     const bMode = s.bindingMode || 'saddle';
-    const map = generateBindingMap(pageCount, bMode, s.foliosize, 'end').sheets;
+    const map = generateBindingMap(pageCount, bMode, s.foliosize, 'end', s.scaleMode || (s.cutStack ? 'cut_stack' : '100')).sheets;
     const pageDetails = Array.from({ length: pageCount }, () => ({ visualW: W, visualH: H, angle: 0 }));
     const fp = s.foldPattern;
     const phase2 = !!s.chainNup || (!!fp && fp !== '');
@@ -113,6 +113,27 @@ describe('serializeBookletPlan — phase-2 contract', () => {
         expect(p.phase2?.mode).toBe('step_repeat');
         expect(p.sheets).toHaveLength(4);
         expect(p.phase2?.plates).toHaveLength(4);
+    });
+
+    it('chặn flush_mount + cut_stack trước khi tạo plate A/B hai mặt', () => {
+        expect(() => buildForPages(8, {
+            imposerMode: 'guillotine', paperClassification: 'in_nhanh',
+            bindingMode: 'flush_mount', chainNup: true, cutStack: true,
+            sheetWidth: 640, sheetHeight: 450,
+        })).toThrow(/Dán đối lưng/);
+    });
+
+    it('dấu giữa 1-up: saddle là nếp gấp đỏ, continuous là đường xẻ đen', () => {
+        const saddle = build({ bindingMode: 'saddle', bleed: 3, markType: 'guillotine' });
+        const continuous = build({ bindingMode: 'continuous', bleed: 3, markType: 'guillotine' });
+
+        const foldMarks = saddle.sheets[0].front.marks.filter(mark => mark.type === 'fold_mark');
+        expect(foldMarks).toHaveLength(2);
+        expect(foldMarks.every(mark => mark.color.join(',') === '0,1,1,0')).toBe(true);
+
+        const slitMarks = continuous.sheets[0].front.marks.filter(mark => mark.type === 'slit_mark');
+        expect(slitMarks).toHaveLength(2);
+        expect(slitMarks.every(mark => mark.color.join(',') === '0,0,0,1')).toBe(true);
     });
 
     it('preserves the per-thumbnail page rotation in backend instructions', () => {

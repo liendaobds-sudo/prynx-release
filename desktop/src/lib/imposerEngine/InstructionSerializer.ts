@@ -11,6 +11,7 @@ import type { GeometricContext } from './GeometricSolver';
 import { solvePageTransform } from './GeometricSolver';
 import type { ProcessingSettings } from '../pdfImposer';
 import { getSpreadPatternById, getExactPatternForPageCount, type SpreadFoldPattern } from './FoldPatterns';
+import { tv } from '../../i18n';
 
 const MM_TO_POINTS = 2.83465;
 
@@ -264,6 +265,12 @@ export function serializeBookletPlan(
     // ── Phát hiện chế độ phase-2 (Step&Repeat / Fold Pattern / Cut&Stack) ──
     const wantChainNup = !!(settings as any).chainNup;
     const wantCutStack = !!(settings as any).cutStack;
+    // BOOKLET (audit 2026-07-31 §A.1): không được ghép các surface một mặt của
+    // dán đối lưng thành plate A/B hai mặt. UI đã chặn; đây là hàng rào engine.
+    if (isSingleSided && wantCutStack) {
+        throw new Error(tv('Dán đối lưng chỉ hỗ trợ in một mặt — hãy chọn 1 cuốn/tờ hoặc Nhiều cuốn/tờ.'));
+    }
+
     const phase2Mode: 'step_repeat' | 'fold_pattern' | 'cut_stack' | null =
         foldPattern ? 'fold_pattern'
             : (wantChainNup && wantCutStack) ? 'cut_stack'
@@ -318,8 +325,9 @@ export function serializeBookletPlan(
             const frontPlacements = buildSurfacePlacements(frontSurf);
             const backPlacements = buildSurfacePlacements(backSurf);
 
-            const frontMarks = serializeBookletMarks(context, spreadTrim, markLenPt, markOffPt, markThickPt, markType);
-            const backMarks = serializeBookletMarks(context, spreadTrim, markLenPt, markOffPt, markThickPt, markType);
+            const isFoldableBinding = bindingMode === 'saddle' || bindingMode === 'thread';
+            const frontMarks = serializeBookletMarks(context, spreadTrim, markLenPt, markOffPt, markThickPt, markType, isFoldableBinding);
+            const backMarks = serializeBookletMarks(context, spreadTrim, markLenPt, markOffPt, markThickPt, markType, isFoldableBinding);
 
             const sheet: SheetInstruction = {
                 sheet_index: frontSurf?.sheetIndex ?? surfIdx / 2,
@@ -682,6 +690,7 @@ function serializeBookletMarks(
     markOffPt: number,
     markThickPt: number,
     markType: string,
+    isFoldableBinding: boolean,
 ): MarkInstruction[] {
     if (!markType || markType === 'none') return [];
 
@@ -709,10 +718,13 @@ function serializeBookletMarks(
     addMark('trim_line', right, trimY - markOffPt, right, trimY - markOffPt - markLenPt, black);
     addMark('trim_line', right + markOffPt, trimY, right + markOffPt + markLenPt, trimY, black);
 
-    // Fold mark at center spine
+    // BOOKLET (audit 2026-07-31 §A.4): chỉ saddle/thread có nếp gấp đỏ;
+    // gáy keo, ráp xấp và dán đối lưng cần đường xẻ/cắt màu đen.
     const centerX = context.finalSheetWidth / 2;
-    addMark('fold_mark', centerX, top + markOffPt, centerX, top + markOffPt + markLenPt, red);
-    addMark('fold_mark', centerX, trimY - markOffPt, centerX, trimY - markOffPt - markLenPt, red);
+    const centerType: MarkInstruction['type'] = isFoldableBinding ? 'fold_mark' : 'slit_mark';
+    const centerColor = isFoldableBinding ? red : black;
+    addMark(centerType, centerX, top + markOffPt, centerX, top + markOffPt + markLenPt, centerColor);
+    addMark(centerType, centerX, trimY - markOffPt, centerX, trimY - markOffPt - markLenPt, centerColor);
 
     return marks;
 }

@@ -41,6 +41,9 @@ export interface NupSlice {
     setDuplexFlow: (v: 'normal' | 'double') => void;
     duplexFlipEdge: 'long' | 'short';
     setDuplexFlipEdge: (v: 'long' | 'short') => void;
+    /** MIXED-GUILLOTINE (audit 2026-07-30 §MG-A2): % in dư cho phép để gom bản kẽm. */
+    mixedExcessPercent: number;
+    setMixedExcessPercent: (v: number) => void;
     align: NupSettings['align'];
     setAlign: (v: NupSettings['align']) => void;
     clusterMode: 'none' | 'row' | 'column';
@@ -74,7 +77,8 @@ export const NUP_PERSIST_KEYS = [
     'layoutType', 'columns', 'rows', 'gridStrategy', 'groupingStrategy',
     'clusterCombineMode',
     'clusterTileW', 'clusterTileH', 'clusterSizingMode', 'clusterCols', 'clusterRows',
-    'tileGapX', 'tileGapY', 'clusterNesting', 'duplexFlow', 'duplexFlipEdge', 'align',
+    'tileGapX', 'tileGapY', 'clusterNesting', 'duplexFlow', 'duplexFlipEdge',
+    'mixedExcessPercent', 'align',
     'clusterMode', 'clusterCount', 'clusterGap', 'clusterGapMode', 'clusterDistribution',
     'clusterBorder',
 ] as const;
@@ -132,6 +136,10 @@ export const createNupSlice: ImposerSlice<NupSlice> = (set) => ({
     setDuplexFlow: (v) => set({ duplexFlow: v }),
     duplexFlipEdge: 'long',
     setDuplexFlipEdge: (v) => set({ duplexFlipEdge: v }),
+    // §MG-A2: 10% là mặc định user đã chốt — gom được ca SL đều (dư ~1,2%),
+    // vẫn từ chối ca SL lệch nhiều (cần ~80% dư) nên không ép bài đắt hơn.
+    mixedExcessPercent: 10,
+    setMixedExcessPercent: (v) => set({ mixedExcessPercent: Math.max(0, Math.min(100, v)) }),
     align: 'center',
     setAlign: (v) => set({ align: v }),
     clusterMode: 'none',

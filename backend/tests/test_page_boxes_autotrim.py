@@ -5,9 +5,16 @@ Test hàm thuần _pixel_bbox_to_cropbox — ánh xạ bbox pixel (ảnh pdfium 
 Đây là phần dễ sai nhất của auto_trim: pdfium render ảnh đã xoay nên pix_w/pix_h
 hoán đổi khi 90/270; nếu ánh xạ sai thì box xén lệch hẳn với file có /Rotate.
 """
+import numpy as np
+import pikepdf
 import pytest
 
-from app.core.page_boxes import _pixel_bbox_to_cropbox, PT_PER_MM
+from app.core.page_boxes import (
+    PT_PER_MM,
+    PageBoxesEngine,
+    _find_nonwhite_content_bbox,
+    _pixel_bbox_to_cropbox,
+)
 
 
 # Trang gốc (chưa xoay): 200pt rộng × 100pt cao, gốc CropBox tại (0,0).
@@ -108,3 +115,78 @@ def test_cropbox_offset_origin_respected():
     assert box[1] == pytest.approx(cb[1], abs=1.5)
     assert box[2] == pytest.approx(cb[2], abs=1.5)
     assert box[3] == pytest.approx(cb[3], abs=1.5)
+
+
+def _previous_nonwhite_bbox(arr: np.ndarray, min_area: int):
+    """Thuật toán trước tối ưu, giữ tại test để khóa parity pixel tuyệt đối."""
+    cv2 = pytest.importorskip("cv2")
+    if arr.ndim == 3 and arr.shape[2] >= 3:
+        mask = np.any(arr[:, :, :3] < 248, axis=2).astype(np.uint8)
+    else:
+        mask = (arr[:, :, 0] < 248).astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    clean = np.zeros_like(mask)
+    for index in range(1, count):
+        if stats[index, cv2.CC_STAT_AREA] >= min_area:
+            clean[labels == index] = 1
+    if not clean.any():
+        return None
+    rows = np.any(clean, axis=1)
+    cols = np.any(clean, axis=0)
+    y0, y1 = np.where(rows)[0][[0, -1]]
+    x0, x1 = np.where(cols)[0][[0, -1]]
+    return ((int(x0), int(y0), int(x1), int(y1)), int(clean.sum()))
+
+
+@pytest.mark.parametrize("channels", [3, 4])
+def test_fast_nonwhite_bbox_matches_previous_algorithm(channels):
+    """PERF §RT.1: đường stats nhanh phải giữ nguyên bbox và số pixel sạch."""
+    arr = np.full((240, 320, channels), 255, dtype=np.uint8)
+    if channels == 4:
+        arr[:, :, 3] = 0  # alpha không tham gia nhận diện trắng
+    arr[30:160, 40:220, :3] = (30, 120, 250)
+    for y, x in ((8, 260), (190, 15), (205, 270), (175, 245)):
+        arr[y:y + 7, x:x + 7, :3] = 0
+    rng = np.random.default_rng(20260731)
+    noise_y = rng.integers(0, arr.shape[0], size=300)
+    noise_x = rng.integers(0, arr.shape[1], size=300)
+    arr[noise_y, noise_x, :3] = 0
+
+    assert _find_nonwhite_content_bbox(arr, 9) == _previous_nonwhite_bbox(arr, 9)
+
+
+@pytest.mark.parametrize("shape", [(60, 80, 1), (60, 80, 3), (60, 80, 4)])
+def test_fast_nonwhite_bbox_keeps_blank_page_unchanged(shape):
+    arr = np.full(shape, 255, dtype=np.uint8)
+    if shape[2] == 4:
+        arr[:, :, 3] = 0
+    assert _find_nonwhite_content_bbox(arr, 4) is None
+
+
+def test_auto_trim_fast_path_preserves_geometry_for_all_rotations(tmp_path):
+    """Đường bitmap→NumPy nhanh vẫn xén đúng cùng nội dung ở bốn góc xoay."""
+    pytest.importorskip("pypdfium2")
+    source = tmp_path / "auto_trim_rotations.pdf"
+    pdf = pikepdf.Pdf.new()
+    for rotate in (0, 90, 180, 270):
+        pdf.add_blank_page(page_size=(200.0, 100.0))
+        page = pdf.pages[-1]
+        page.obj[pikepdf.Name("/Contents")] = pikepdf.Stream(
+            pdf,
+            b"0 0 0 rg 40 10 120 80 re f\n",
+        )
+        page.obj[pikepdf.Name("/Rotate")] = rotate
+    pdf.save(source)
+    pdf.close()
+
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path
+    output = engine.auto_trim(str(source))
+    with pikepdf.Pdf.open(output) as result:
+        assert len(result.pages) == 4
+        for page, rotate in zip(result.pages, (0, 90, 180, 270)):
+            media_box = [float(value) for value in page.obj["/MediaBox"]]
+            assert media_box == pytest.approx([40.0, 10.0, 160.0, 90.0], abs=0.5)
+            assert int(page.get("/Rotate", 0) or 0) == rotate

@@ -6,8 +6,10 @@ import {
   cancelLogoRebuildPreview,
   createLogoRebuildPreview,
   getLogoRebuildCapabilities,
+  preflightLogoRebuild,
   type LogoRebuildCapabilities,
   type LogoRebuildMode,
+  type LogoPaletteSuggestion,
   type LogoRebuildPreview,
   type LogoRebuildSettings,
   type NormalizedPoint,
@@ -23,6 +25,7 @@ interface LogoRebuildWorkspaceProps {
 interface EditorState {
   mode: LogoRebuildMode;
   palette: string[];
+  paletteConfirmed: boolean;
   removeBackground: boolean;
   backgroundColor: string;
   selectionMode: SelectionMode;
@@ -43,14 +46,15 @@ const DEFAULT_PERSPECTIVE: NormalizedPoint[] = [
 const MAX_HISTORY_STEPS = 60;
 const HISTORY_COALESCE_MS = 500;
 const INITIAL_EDITOR_STATE: EditorState = {
-  mode: 'monochrome',
+  mode: 'fixed_palette',
   palette: DEFAULT_PALETTE,
+  paletteConfirmed: false,
   removeBackground: false,
   backgroundColor: '#ffffff',
   selectionMode: 'full',
   crop: { x: 0, y: 0, width: 100, height: 100 },
   perspective: DEFAULT_PERSPECTIVE,
-  smoothing: 0.5,
+  smoothing: 0,
   despeckle: 4,
   illumination: false,
 };
@@ -90,13 +94,17 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
   const [editor, setEditor] = useState<EditorState>(() => cloneEditorState(INITIAL_EDITOR_STATE));
   const [preview, setPreview] = useState<LogoRebuildPreview | null>(null);
   const [previewUrl, setPreviewUrl] = useState('');
+  const [paletteSuggestions, setPaletteSuggestions] = useState<LogoPaletteSuggestion[]>([]);
+  const [preflightWarnings, setPreflightWarnings] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
   const [isRunning, setIsRunning] = useState(false);
+  const [isPreflighting, setIsPreflighting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [, setHistoryVersion] = useState(0);
   const activeJobRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const preflightAbortRef = useRef<AbortController | null>(null);
   const cancelledJobRef = useRef<string | null>(null);
   const previewUrlRef = useRef('');
   const revisionRef = useRef(0);
@@ -108,6 +116,7 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
   const {
     mode,
     palette,
+    paletteConfirmed,
     removeBackground,
     backgroundColor,
     selectionMode,
@@ -139,6 +148,9 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
       abortRef.current = null;
       setIsRunning(false);
     }
+    preflightAbortRef.current?.abort();
+    preflightAbortRef.current = null;
+    setIsPreflighting(false);
     setStatus('');
     clearPreview();
   }, [clearPreview]);
@@ -172,6 +184,14 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
     setEditor(next);
     refreshHistoryButtons();
     invalidatePreview();
+    if (
+      historyKey === 'selection-mode'
+      || historyKey.startsWith('crop-')
+      || historyKey.startsWith('perspective-')
+    ) {
+      setPaletteSuggestions([]);
+      setPreflightWarnings([]);
+    }
   }, [invalidatePreview, refreshHistoryButtons]);
 
   const undo = useCallback(() => {
@@ -183,6 +203,8 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
     lastCommitRef.current = null;
     refreshHistoryButtons();
     invalidatePreview();
+    setPaletteSuggestions([]);
+    setPreflightWarnings([]);
   }, [invalidatePreview, refreshHistoryButtons]);
 
   const redo = useCallback(() => {
@@ -194,6 +216,8 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
     lastCommitRef.current = null;
     refreshHistoryButtons();
     invalidatePreview();
+    setPaletteSuggestions([]);
+    setPreflightWarnings([]);
   }, [invalidatePreview, refreshHistoryButtons]);
 
   useEffect(() => {
@@ -223,6 +247,7 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
     abortRef.current = null;
     if (jobId) void cancelLogoRebuildPreview(jobId).catch(() => undefined);
     controller?.abort();
+    preflightAbortRef.current?.abort();
     if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
   }, []);
 
@@ -269,6 +294,67 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
     setPreview(result);
   };
 
+  const buildSettings = (source: EditorState = editorRef.current): LogoRebuildSettings => {
+    const normalizedPalette = [...new Set(source.palette.map(color => color.toLowerCase()))];
+    const settings: LogoRebuildSettings = {
+      mode: source.mode,
+      palette: source.mode === 'fixed_palette' ? normalizedPalette : [],
+      ...(source.mode === 'fixed_palette' && source.removeBackground
+        ? { background_color: source.backgroundColor.toLowerCase() }
+        : {}),
+      smoothing: source.smoothing,
+      despeckle_size_px: source.despeckle,
+      illumination_correction: source.illumination,
+    };
+    if (source.selectionMode === 'crop') {
+      settings.crop = {
+        x: source.crop.x / 100,
+        y: source.crop.y / 100,
+        width: source.crop.width / 100,
+        height: source.crop.height / 100,
+      };
+    } else if (source.selectionMode === 'perspective') {
+      settings.perspective_points = source.perspective;
+    }
+    return settings;
+  };
+
+  const analyzePalette = async (
+    targetFile: File,
+    source: EditorState = editorRef.current,
+    requestRevision: number = revisionRef.current,
+  ) => {
+    preflightAbortRef.current?.abort();
+    const controller = new AbortController();
+    preflightAbortRef.current = controller;
+    setIsPreflighting(true);
+    setError('');
+    try {
+      const result = await preflightLogoRebuild(
+        targetFile,
+        buildSettings(source),
+        controller.signal,
+      );
+      if (
+        preflightAbortRef.current === controller
+        && revisionRef.current === requestRevision
+        && !controller.signal.aborted
+      ) {
+        setPaletteSuggestions(result.palette_suggestions);
+        setPreflightWarnings(result.warnings);
+      }
+    } catch (reason) {
+      if (!controller.signal.aborted && revisionRef.current === requestRevision) {
+        setError(reason instanceof Error ? reason.message : tv('Không thể phân tích màu từ ảnh.'));
+      }
+    } finally {
+      if (preflightAbortRef.current === controller) {
+        preflightAbortRef.current = null;
+        setIsPreflighting(false);
+      }
+    }
+  };
+
   const selectFile = (selected?: File | null) => {
     if (!selected) return;
     if (!/\.(png|jpe?g|webp)$/i.test(selected.name)) {
@@ -276,32 +362,16 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
       return;
     }
     invalidatePreview();
+    const nextEditor = { ...editorRef.current, paletteConfirmed: false };
+    editorRef.current = nextEditor;
+    setEditor(nextEditor);
     resetHistory();
+    setPaletteSuggestions([]);
+    setPreflightWarnings([]);
     setFile(selected);
     setError('');
     setStatus('');
-  };
-
-  const buildSettings = (): LogoRebuildSettings => {
-    const settings: LogoRebuildSettings = {
-      mode,
-      palette: mode === 'fixed_palette' ? uniquePalette : [],
-      ...(mode === 'fixed_palette' && removeBackground ? { background_color: backgroundColor.toLowerCase() } : {}),
-      smoothing,
-      despeckle_size_px: despeckle,
-      illumination_correction: illumination,
-    };
-    if (selectionMode === 'crop') {
-      settings.crop = {
-        x: crop.x / 100,
-        y: crop.y / 100,
-        width: crop.width / 100,
-        height: crop.height / 100,
-      };
-    } else if (selectionMode === 'perspective') {
-      settings.perspective_points = perspective;
-    }
-    return settings;
+    void analyzePalette(selected, nextEditor, revisionRef.current);
   };
 
   const runPreview = async () => {
@@ -311,6 +381,10 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
     }
     if (!engineReady) {
       setError(tv('Engine preview chưa sẵn sàng. Hãy build lại lõi native.'));
+      return;
+    }
+    if (mode === 'fixed_palette' && !paletteConfirmed) {
+      setError(tv('Hãy áp dụng bảng màu gợi ý hoặc chỉnh màu thủ công trước.'));
       return;
     }
     if (mode === 'fixed_palette' && uniquePalette.some(color => !/^#[0-9a-f]{6}$/i.test(color))) {
@@ -446,7 +520,7 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
               {tv('Phục hồi & Vector hóa Logo')}
             </h1>
             <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
-              {tv('MVP chỉ hỗ trợ logo đen trắng hoặc bảng màu do bạn xác nhận; không tự đoán màu thương hiệu.')}
+              {tv('Logo màu dùng gợi ý từ pixel nhìn thấy và chỉ áp dụng sau khi bạn xác nhận.')}
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -497,22 +571,86 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
                 <button
                   type="button"
                   aria-pressed={mode === 'fixed_palette'}
-                  onClick={() => commitEditor('mode', current => ({ ...current, mode: 'fixed_palette', smoothing: 1 }))}
+                  onClick={() => commitEditor('mode', current => ({ ...current, mode: 'fixed_palette', smoothing: 0 }))}
                   className={`rounded-lg border px-3 py-2 text-xs font-semibold ${mode === 'fixed_palette' ? 'border-violet-500 bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-200' : 'border-slate-200 dark:border-zinc-700'}`}
                 >
-                  {tv('Màu đã xác nhận')}
+                  {tv('Logo màu')}
                 </button>
               </div>
             </section>
 
+            {mode === 'fixed_palette' && file && (
+              <section className="rounded-lg border border-violet-200 bg-violet-50/60 p-3 dark:border-violet-900 dark:bg-violet-950/20">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="text-xs font-bold uppercase tracking-wide text-violet-700 dark:text-violet-300">
+                    {tv('Gợi ý màu từ ảnh')}
+                  </h2>
+                  <button
+                    type="button"
+                    disabled={isPreflighting}
+                    onClick={() => void analyzePalette(file)}
+                    className="text-xs font-semibold text-violet-700 disabled:opacity-40 dark:text-violet-300"
+                  >
+                    {isPreflighting ? tv('Đang phân tích…') : tv('Gợi ý lại')}
+                  </button>
+                </div>
+                <p className="mt-1 text-[11px] text-slate-500 dark:text-zinc-400">
+                  {tv('Gợi ý theo pixel nhìn thấy; cần kiểm tra trước khi dùng.')}
+                </p>
+                {paletteSuggestions.length > 0 ? (
+                  <>
+                    <div className="mt-2 space-y-1" role="list">
+                      {paletteSuggestions.map((suggestion, index) => (
+                        <div
+                          key={suggestion.color}
+                          role="listitem"
+                          aria-label={tv('Màu gợi ý') + ' ' + (index + 1)}
+                          className="flex items-center gap-2 rounded bg-white/80 px-2 py-1 text-[11px] dark:bg-zinc-900/70"
+                        >
+                          <span
+                            className="h-5 w-5 rounded border border-black/10"
+                            style={{ backgroundColor: suggestion.color }}
+                          />
+                          <code className="flex-1 uppercase">{suggestion.color}</code>
+                          <span className="text-slate-500">
+                            {Math.round(suggestion.coverage_ratio * 100)}%
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        commitEditor('palette-suggestion', current => ({
+                          ...current,
+                          palette: paletteSuggestions.map(item => item.color),
+                          paletteConfirmed: true,
+                        }));
+                        setError('');
+                        setStatus(tv('Đã áp dụng bảng màu gợi ý.'));
+                      }}
+                      className="mt-2 w-full rounded-md bg-violet-600 px-3 py-2 text-xs font-bold text-white hover:bg-violet-700"
+                    >
+                      {tv('Áp dụng gợi ý')}
+                    </button>
+                  </>
+                ) : !isPreflighting ? (
+                  <p className="mt-2 text-[11px] text-slate-500">{tv('Chưa có gợi ý màu.')}</p>
+                ) : null}
+                {preflightWarnings.map((warning, index) => (
+                  <p key={index} className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">⚠ {warning}</p>
+                ))}
+              </section>
+            )}
+
             {mode === 'fixed_palette' && (
               <section>
                 <div className="mb-2 flex items-center justify-between">
-                  <h2 className="text-xs font-bold uppercase tracking-wide text-slate-500">{tv('Bảng màu in')}</h2>
+                  <h2 className="text-xs font-bold uppercase tracking-wide text-slate-500">{tv('Bảng màu logo')}</h2>
                   <button
                     type="button"
                     disabled={palette.length >= 12}
-                    onClick={() => commitEditor('palette-add', current => ({ ...current, palette: [...current.palette, '#808080'] }))}
+                    onClick={() => commitEditor('palette-add', current => ({ ...current, palette: [...current.palette, '#808080'], paletteConfirmed: true }))}
                     className="flex items-center gap-1 text-xs font-semibold text-violet-600 disabled:opacity-40"
                   >
                     <Plus className="h-3.5 w-3.5" /> {tv('Thêm màu')}
@@ -525,7 +663,7 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
                         aria-label={`${tv('Màu')} ${index + 1}`}
                         type="color"
                         value={/^#[0-9a-f]{6}$/i.test(color) ? color : '#000000'}
-                        onChange={event => commitEditor(`palette-${index}`, current => ({ ...current, palette: current.palette.map((item, itemIndex) => itemIndex === index ? event.target.value : item) }))}
+                        onChange={event => commitEditor('palette-' + index, current => ({ ...current, palette: current.palette.map((item, itemIndex) => itemIndex === index ? event.target.value : item), paletteConfirmed: true }))}
                         className="h-8 w-11 cursor-pointer rounded border border-slate-200 bg-transparent"
                       />
                       <input
@@ -533,14 +671,14 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
                         value={color}
                         maxLength={7}
                         spellCheck={false}
-                        onChange={event => commitEditor(`palette-${index}`, current => ({ ...current, palette: current.palette.map((item, itemIndex) => itemIndex === index ? event.target.value.toLowerCase() : item) }))}
+                        onChange={event => commitEditor('palette-' + index, current => ({ ...current, palette: current.palette.map((item, itemIndex) => itemIndex === index ? event.target.value.toLowerCase() : item), paletteConfirmed: true }))}
                         className="min-w-0 flex-1 rounded border border-slate-200 bg-transparent px-2 py-1.5 font-mono text-xs uppercase dark:border-zinc-700"
                       />
                       <button
                         type="button"
                         aria-label={`${tv('Xóa màu')} ${index + 1}`}
                         disabled={palette.length <= 1}
-                        onClick={() => commitEditor('palette-remove', current => ({ ...current, palette: current.palette.filter((_, itemIndex) => itemIndex !== index) }))}
+                        onClick={() => commitEditor('palette-remove', current => ({ ...current, palette: current.palette.filter((_, itemIndex) => itemIndex !== index), paletteConfirmed: true }))}
                         className="rounded p-1 text-slate-400 hover:text-red-600 disabled:opacity-30"
                       >
                         <Trash2 className="h-4 w-4" />
@@ -622,8 +760,11 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
 
             <section className="space-y-3">
               <label className="block text-xs font-semibold">
-                {tv('Độ mượt')}: {smoothing.toFixed(1)}
-                <input aria-label={tv('Độ mượt')} type="range" min={0} max={1} step={0.1} value={smoothing} onChange={event => commitEditor('smoothing', current => ({ ...current, smoothing: Number(event.target.value) }))} className="mt-1 w-full" />
+                {tv('Độ mượt đường cong')}: {smoothing.toFixed(1)}
+                <input aria-label={tv('Độ mượt đường cong')} type="range" min={0} max={1} step={0.1} value={smoothing} onChange={event => commitEditor('smoothing', current => ({ ...current, smoothing: Number(event.target.value) }))} className="mt-1 w-full" />
+                <span className="mt-1 block text-[11px] font-normal text-slate-500 dark:text-zinc-400">
+                  {tv('0 = trung thực nét; 1 = mượt và gọn node hơn.')}
+                </span>
               </label>
               <label className="block text-xs font-semibold">
                 {tv('Khử hạt nhỏ (px)')}

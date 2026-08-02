@@ -7,16 +7,25 @@ import {
   cancelLogoRebuildPreview,
   createLogoRebuildPreview,
   getLogoRebuildCapabilities,
+  preflightLogoRebuild,
 } from '../../lib/logoRebuildApi';
 import { saveBlob } from '../../lib/saveBlob';
 import LogoRebuildWorkspace from './LogoRebuildWorkspace';
 
 vi.mock('../../lib/logoRebuildApi', () => ({
   getLogoRebuildCapabilities: vi.fn(),
+  preflightLogoRebuild: vi.fn(),
   createLogoRebuildPreview: vi.fn(),
   cancelLogoRebuildPreview: vi.fn(),
 }));
 vi.mock('../../lib/saveBlob', () => ({ saveBlob: vi.fn() }));
+
+async function selectFileAndApplySuggestedPalette(filename: string): Promise<File> {
+  const file = new File(['png-data'], filename, { type: 'image/png' });
+  fireEvent.change(screen.getByLabelText('Chọn ảnh có logo'), { target: { files: [file] } });
+  fireEvent.click(await screen.findByRole('button', { name: 'Áp dụng gợi ý' }));
+  return file;
+}
 
 describe('LogoRebuildWorkspace', () => {
   beforeEach(() => {
@@ -28,6 +37,32 @@ describe('LogoRebuildWorkspace', () => {
       auto_color_enabled: false,
       preview_engine_enabled: true,
       engine: { engine: 'vtracer', version: '1.0.0-alpha.2', cancellable: true },
+      limitations: [],
+    });
+    vi.mocked(preflightLogoRebuild).mockResolvedValue({
+      status: 'ready',
+      source: {
+        width_px: 320,
+        height_px: 180,
+        mode: 'RGBA',
+        format: 'PNG',
+        file_size_bytes: 8,
+        has_alpha: true,
+        has_icc_profile: false,
+        dpi: null,
+      },
+      settings: {
+        mode: 'fixed_palette',
+        palette: ['#000000', '#ffffff'],
+        smoothing: 0,
+        despeckle_size_px: 4,
+        illumination_correction: false,
+      },
+      palette_suggestions: [
+        { color: '#233d69', coverage_ratio: 0.7 },
+        { color: '#ef4444', coverage_ratio: 0.3 },
+      ],
+      warnings: [],
       limitations: [],
     });
     vi.mocked(cancelLogoRebuildPreview).mockResolvedValue(true);
@@ -44,7 +79,8 @@ describe('LogoRebuildWorkspace', () => {
     await waitFor(() => expect(screen.getByText(/vtracer 1.0.0-alpha.2/i)).toBeTruthy());
 
     expect(screen.getByRole('button', { name: 'Đen trắng' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Màu đã xác nhận' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Logo màu' }).getAttribute('aria-pressed')).toBe('true');
+    expect((screen.getByLabelText('Độ mượt đường cong') as HTMLInputElement).value).toBe('0');
     expect(screen.queryByText(/auto.?color/i)).toBeNull();
     expect((screen.getByLabelText('Cân bằng ánh sáng trên vải/ảnh chụp') as HTMLInputElement).checked).toBe(false);
   });
@@ -65,7 +101,6 @@ describe('LogoRebuildWorkspace', () => {
 
     const file = new File(['png-data'], 'logo.png', { type: 'image/png' });
     fireEvent.change(screen.getByLabelText('Chọn ảnh có logo'), { target: { files: [file] } });
-    fireEvent.click(screen.getByRole('button', { name: 'Màu đã xác nhận' }));
     fireEvent.change(screen.getByLabelText('Mã màu 1'), { target: { value: '#233d69' } });
     fireEvent.change(screen.getByLabelText('Mã màu 2'), { target: { value: '#ef4444' } });
     fireEvent.click(screen.getByLabelText('Loại màu nền khỏi SVG'));
@@ -76,7 +111,7 @@ describe('LogoRebuildWorkspace', () => {
     expect(settings.mode).toBe('fixed_palette');
     expect(settings.palette).toEqual(['#233d69', '#ef4444']);
     expect(settings.background_color).toBe('#ffffff');
-    expect(settings.smoothing).toBe(1);
+    expect(settings.smoothing).toBe(0);
     expect(settings.illumination_correction).toBe(false);
     expect(await screen.findByAltText('SVG vector đã dựng')).toBeTruthy();
     expect((screen.getByRole('button', { name: /Tải SVG/ }) as HTMLButtonElement).disabled).toBe(false);
@@ -96,6 +131,83 @@ describe('LogoRebuildWorkspace', () => {
     expect((screen.getByRole('button', { name: /Tải SVG/ }) as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it('không tự áp dụng palette gợi ý và Undo khôi phục palette trước đó', async () => {
+    render(<LogoRebuildWorkspace />);
+    await waitFor(() => expect(screen.getByText(/vtracer 1.0.0-alpha.2/i)).toBeTruthy());
+
+    const file = new File(['png-data'], 'suggestions.png', { type: 'image/png' });
+    fireEvent.change(screen.getByLabelText('Chọn ảnh có logo'), { target: { files: [file] } });
+    const apply = await screen.findByRole('button', { name: 'Áp dụng gợi ý' });
+
+    expect((screen.getByLabelText('Mã màu 1') as HTMLInputElement).value).toBe('#000000');
+    expect((screen.getByLabelText('Mã màu 2') as HTMLInputElement).value).toBe('#ffffff');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tạo preview SVG' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Hãy áp dụng bảng màu');
+    expect(createLogoRebuildPreview).not.toHaveBeenCalled();
+
+    fireEvent.click(apply);
+    expect((screen.getByLabelText('Mã màu 1') as HTMLInputElement).value).toBe('#233d69');
+    expect((screen.getByLabelText('Mã màu 2') as HTMLInputElement).value).toBe('#ef4444');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hoàn tác' }));
+    expect((screen.getByLabelText('Mã màu 1') as HTMLInputElement).value).toBe('#000000');
+    expect((screen.getByLabelText('Mã màu 2') as HTMLInputElement).value).toBe('#ffffff');
+  });
+
+  it('bỏ response preflight trễ của file cũ', async () => {
+    type PreflightResult = Awaited<ReturnType<typeof preflightLogoRebuild>>;
+    const resultFor = (color: string): PreflightResult => ({
+      status: 'ready',
+      source: {
+        width_px: 100,
+        height_px: 100,
+        mode: 'RGB',
+        format: 'PNG',
+        file_size_bytes: 8,
+        has_alpha: false,
+        has_icc_profile: false,
+        dpi: null,
+      },
+      settings: {
+        mode: 'fixed_palette',
+        palette: ['#000000'],
+        smoothing: 0,
+        despeckle_size_px: 4,
+        illumination_correction: false,
+      },
+      palette_suggestions: [{ color, coverage_ratio: 1 }],
+      warnings: [],
+      limitations: [],
+    });
+    let resolveFirst!: (value: PreflightResult) => void;
+    let resolveSecond!: (value: PreflightResult) => void;
+    vi.mocked(preflightLogoRebuild)
+      .mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise(resolve => { resolveSecond = resolve; }));
+
+    render(<LogoRebuildWorkspace />);
+    await waitFor(() => expect(screen.getByText(/vtracer 1.0.0-alpha.2/i)).toBeTruthy());
+
+    const first = new File(['first'], 'first.png', { type: 'image/png' });
+    const second = new File(['second'], 'second.png', { type: 'image/png' });
+    fireEvent.change(screen.getByLabelText('Chọn ảnh có logo'), { target: { files: [first] } });
+    fireEvent.change(screen.getByLabelText('Chọn ảnh có logo'), { target: { files: [second] } });
+
+    await act(async () => {
+      resolveSecond(resultFor('#00ff00'));
+      await Promise.resolve();
+    });
+    expect(await screen.findByText('#00ff00')).toBeTruthy();
+
+    await act(async () => {
+      resolveFirst(resultFor('#ff0000'));
+      await Promise.resolve();
+    });
+    expect(screen.queryByText('#ff0000')).toBeNull();
+    expect(screen.getByText('#00ff00')).toBeTruthy();
+  });
+
   it('hoàn tác, làm lại và vô hiệu preview khi cấu hình đổi', async () => {
     vi.mocked(createLogoRebuildPreview).mockResolvedValue({
       status: 'ready',
@@ -110,15 +222,14 @@ describe('LogoRebuildWorkspace', () => {
     render(<LogoRebuildWorkspace />);
     await waitFor(() => expect(screen.getByText(/vtracer 1.0.0-alpha.2/i)).toBeTruthy());
 
-    const file = new File(['png-data'], 'history.png', { type: 'image/png' });
-    fireEvent.change(screen.getByLabelText('Chọn ảnh có logo'), { target: { files: [file] } });
+    await selectFileAndApplySuggestedPalette('history.png');
     fireEvent.click(screen.getByRole('button', { name: 'Tạo preview SVG' }));
     await screen.findByAltText('SVG vector đã dựng');
     expect(screen.getByText(/Preview đã sẵn sàng/)).toBeTruthy();
 
     const download = screen.getByRole('button', { name: /Tải SVG/ }) as HTMLButtonElement;
     expect(download.disabled).toBe(false);
-    fireEvent.click(screen.getByRole('button', { name: 'Màu đã xác nhận' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Đen trắng' }));
     expect(download.disabled).toBe(true);
     expect(screen.queryByAltText('SVG vector đã dựng')).toBeNull();
     expect(screen.queryByText(/Preview đã sẵn sàng/)).toBeNull();
@@ -127,10 +238,10 @@ describe('LogoRebuildWorkspace', () => {
     const redo = screen.getByRole('button', { name: 'Làm lại' }) as HTMLButtonElement;
     expect(undo.disabled).toBe(false);
     fireEvent.click(undo);
-    expect(screen.getByRole('button', { name: 'Đen trắng' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Logo màu' }).getAttribute('aria-pressed')).toBe('true');
     expect(redo.disabled).toBe(false);
     fireEvent.click(redo);
-    expect(screen.getByRole('button', { name: 'Màu đã xác nhận' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Đen trắng' }).getAttribute('aria-pressed')).toBe('true');
   });
 
   it('bỏ response preview trễ sau khi cấu hình đổi', async () => {
@@ -139,10 +250,9 @@ describe('LogoRebuildWorkspace', () => {
     render(<LogoRebuildWorkspace />);
     await waitFor(() => expect(screen.getByText(/vtracer 1.0.0-alpha.2/i)).toBeTruthy());
 
-    const file = new File(['png-data'], 'stale.png', { type: 'image/png' });
-    fireEvent.change(screen.getByLabelText('Chọn ảnh có logo'), { target: { files: [file] } });
+    await selectFileAndApplySuggestedPalette('stale.png');
     fireEvent.click(screen.getByRole('button', { name: 'Tạo preview SVG' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Màu đã xác nhận' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Đen trắng' }));
     resolvePreview({
       status: 'ready',
       job_id: 'stale-job',
@@ -169,8 +279,7 @@ describe('LogoRebuildWorkspace', () => {
 
     render(<LogoRebuildWorkspace />);
     await waitFor(() => expect(screen.getByText(/vtracer 1.0.0-alpha.2/i)).toBeTruthy());
-    const file = new File(['png-data'], 'cancel.png', { type: 'image/png' });
-    fireEvent.change(screen.getByLabelText('Chọn ảnh có logo'), { target: { files: [file] } });
+    await selectFileAndApplySuggestedPalette('cancel.png');
 
     fireEvent.click(screen.getByRole('button', { name: 'Tạo preview SVG' }));
     const firstSignal = vi.mocked(createLogoRebuildPreview).mock.calls[0][3] as AbortSignal;
@@ -219,8 +328,7 @@ describe('LogoRebuildWorkspace', () => {
     const { unmount } = render(<LogoRebuildWorkspace />);
     await waitFor(() => expect(screen.getByText(/vtracer 1.0.0-alpha.2/i)).toBeTruthy());
 
-    const file = new File(['png-data'], 'unmount.png', { type: 'image/png' });
-    fireEvent.change(screen.getByLabelText('Chọn ảnh có logo'), { target: { files: [file] } });
+    await selectFileAndApplySuggestedPalette('unmount.png');
     fireEvent.click(screen.getByRole('button', { name: 'Tạo preview SVG' }));
     const signal = vi.mocked(createLogoRebuildPreview).mock.calls[0][3] as AbortSignal;
     await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalledTimes(1));
@@ -258,10 +366,9 @@ describe('LogoRebuildWorkspace', () => {
       });
       render(<LogoRebuildWorkspace />);
       await waitFor(() => expect(screen.getByText(/vtracer 1.0.0-alpha.2/i)).toBeTruthy());
-      const file = new File(['png-data'], 'coalesce.png', { type: 'image/png' });
-      fireEvent.change(screen.getByLabelText('Chọn ảnh có logo'), { target: { files: [file] } });
+      await selectFileAndApplySuggestedPalette('coalesce.png');
 
-      const smoothing = screen.getByLabelText('Độ mượt') as HTMLInputElement;
+      const smoothing = screen.getByLabelText('Độ mượt đường cong') as HTMLInputElement;
       fireEvent.change(smoothing, { target: { value: '0.4' } });
       fireEvent.click(screen.getByRole('button', { name: 'Tạo preview SVG' }));
       await screen.findByAltText('SVG vector đã dựng');
@@ -276,16 +383,17 @@ describe('LogoRebuildWorkspace', () => {
     const { rerender } = render(<LogoRebuildWorkspace isActive />);
     await waitFor(() => expect(screen.getByText(/vtracer 1.0.0-alpha.2/i)).toBeTruthy());
 
-    fireEvent.click(screen.getByRole('button', { name: 'Màu đã xác nhận' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Đen trắng' }));
     fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true });
-    expect(screen.getByRole('button', { name: 'Đen trắng' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Logo màu' }).getAttribute('aria-pressed')).toBe('true');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Màu đã xác nhận' }));
-    const smoothing = screen.getByLabelText('Độ mượt') as HTMLInputElement;
+    fireEvent.click(screen.getByRole('button', { name: 'Đen trắng' }));
+    const smoothing = screen.getByLabelText('Độ mượt đường cong') as HTMLInputElement;
     fireEvent.change(smoothing, { target: { value: '0.8' } });
     fireEvent.keyDown(smoothing, { key: 'z', ctrlKey: true });
-    expect(smoothing.value).toBe('1');
+    expect(smoothing.value).toBe('0.5');
 
+    fireEvent.click(screen.getByRole('button', { name: 'Logo màu' }));
     const colorCode = screen.getByLabelText('Mã màu 1') as HTMLInputElement;
     fireEvent.change(colorCode, { target: { value: '#123456' } });
     fireEvent.keyDown(colorCode, { key: 'z', ctrlKey: true });
@@ -293,6 +401,6 @@ describe('LogoRebuildWorkspace', () => {
 
     rerender(<LogoRebuildWorkspace isActive={false} />);
     fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true });
-    expect(screen.getByRole('button', { name: 'Màu đã xác nhận' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Logo màu' }).getAttribute('aria-pressed')).toBe('true');
   });
 });

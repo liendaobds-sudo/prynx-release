@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
     CancelledTileRenderError,
+    INITIAL_TILE_LOAD_STATE,
     SupersededTileRenderError,
     TileRenderScheduler,
+    TileRenderSchedulerUnavailableError,
+    isTileLoadCancellation,
+    tileLoadReducer,
 } from './tileRenderScheduler';
 
 function deferred<T>() {
@@ -235,5 +239,151 @@ describe('TileRenderScheduler', () => {
 
         await Promise.all([sharp, background]);
         expect(order).toEqual(['active-coarse', 'active-sharp', 'prefetch-coarse']);
+    });
+    it('giữ slot vật lý qua hot-reload cho tới khi task cũ thật sự kết thúc', async () => {
+        const scheduler = new TileRenderScheduler<string>();
+        const oldGate = deferred<string>();
+        const nextGate = deferred<string>();
+        const nextStarted = deferred<void>();
+        const order: string[] = [];
+
+        const oldTask = scheduler.enqueue({
+            requestKey: 'old-running',
+            groupKey: 'old-running',
+            ownerId: 'old-tab',
+            priority: 0,
+            run: async () => {
+                order.push('old-running');
+                return oldGate.promise;
+            },
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const staleQueued = scheduler.enqueue({
+            requestKey: 'stale-queued',
+            groupKey: 'stale-queued',
+            ownerId: 'old-tab',
+            priority: 100,
+            run: async () => 'stale-queued',
+        });
+        const staleOutcome = staleQueued.catch((error) => error);
+
+        const oldOutcome = oldTask.catch((error) => error);
+        scheduler.prepareForHotReload();
+        expect(await oldOutcome).toBeInstanceOf(CancelledTileRenderError);
+        expect(await staleOutcome).toBeInstanceOf(CancelledTileRenderError);
+
+        const blockedRun = vi.fn(async () => 'blocked');
+        const blockedOutcome = scheduler.enqueue({
+            requestKey: 'blocked-during-hmr',
+            groupKey: 'blocked-during-hmr',
+            ownerId: 'new-tab',
+            priority: 0,
+            run: blockedRun,
+        }).catch((error) => error);
+        expect(await blockedOutcome).toBeInstanceOf(TileRenderSchedulerUnavailableError);
+        expect(blockedRun).not.toHaveBeenCalled();
+        expect(order).toEqual(['old-running']);
+
+        oldGate.resolve('old-running');
+        await Promise.resolve();
+        await Promise.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        const nextTask = scheduler.enqueue({
+            requestKey: 'next-running',
+            groupKey: 'next-running',
+            ownerId: 'new-tab',
+            priority: 0,
+            run: async () => {
+                order.push('next-running');
+                nextStarted.resolve();
+                return nextGate.promise;
+            },
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+        await nextStarted.promise;
+        expect(order).toEqual(['old-running', 'next-running']);
+
+        const afterTask = scheduler.enqueue({
+            requestKey: 'after',
+            groupKey: 'after',
+            ownerId: 'new-tab',
+            priority: 10,
+            run: async () => {
+                order.push('after');
+                return 'after';
+            },
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(order).toEqual(['old-running', 'next-running']);
+
+        nextGate.resolve('next-running');
+        await Promise.all([nextTask, afterTask]);
+        expect(order).toEqual(['old-running', 'next-running', 'after']);
+    });
+
+    it('hủy caller đang chạy nhưng không mở task kế tiếp trước khi nền thật sự kết thúc', async () => {
+        const scheduler = new TileRenderScheduler<string>();
+        const oldGate = deferred<string>();
+        const order: string[] = [];
+        const oldTask = scheduler.enqueue({
+            requestKey: 'old-running',
+            groupKey: 'old-running',
+            ownerId: 'old-tab',
+            priority: 100,
+            run: async () => {
+                order.push('old-running');
+                return oldGate.promise;
+            },
+        });
+        const oldOutcome = oldTask.catch((error) => error);
+        await Promise.resolve();
+        await Promise.resolve();
+
+        scheduler.cancelOwner('old-tab');
+        expect(await oldOutcome).toBeInstanceOf(CancelledTileRenderError);
+
+        const nextTask = scheduler.enqueue({
+            requestKey: 'next',
+            groupKey: 'next',
+            ownerId: 'new-tab',
+            priority: 0,
+            run: async () => {
+                order.push('next');
+                return 'next';
+            },
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(order).toEqual(['old-running']);
+
+        oldGate.resolve('old-running');
+        await expect(nextTask).resolves.toBe('next');
+        expect(order).toEqual(['old-running', 'next']);
+    });
+});
+
+describe('first-tile load state', () => {
+    it('không cho callback cũ ghi đè lần retry mới', () => {
+        const loadingFirst = tileLoadReducer(INITIAL_TILE_LOAD_STATE, { type: 'start', attempt: 1 });
+        const slowFirst = tileLoadReducer(loadingFirst, { type: 'slow', attempt: 1 });
+        expect(slowFirst.phase).toBe('slow');
+
+        const loadingRetry = tileLoadReducer(slowFirst, { type: 'start', attempt: 2 });
+        const staleReady = tileLoadReducer(loadingRetry, { type: 'ready', attempt: 1 });
+        expect(staleReady).toBe(loadingRetry);
+
+        const failedRetry = tileLoadReducer(staleReady, { type: 'error', attempt: 2 });
+        expect(failedRetry).toEqual({ phase: 'error', attempt: 2 });
+    });
+
+    it('nhận diện cancel cả khi Error đến từ phiên bản module trước HMR', () => {
+        expect(isTileLoadCancellation(new CancelledTileRenderError())).toBe(true);
+        expect(isTileLoadCancellation({ name: 'SupersededTileRenderError' })).toBe(true);
+        expect(isTileLoadCancellation(new TileRenderSchedulerUnavailableError())).toBe(false);
     });
 });

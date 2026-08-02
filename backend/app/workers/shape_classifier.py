@@ -1078,6 +1078,10 @@ def _analyze_width_profile(samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w,
                 'rightOH': round(right_oh, 2),
                 'longBase': round(long_base, 2),
                 'shortBase': round(short_base, 2),
+                # UIUX (audit 2026-08-02 §TRAP-NaN): preview cần kích thước
+                # bbox để đổi chiều dài hai đáy thành tỷ lệ hữu hạn.
+                'bbW': round(total_w, 2),
+                'bbH': round(total_h, 2),
                 'rampRatio': round(ramp_ratio, 4),
             }
         # else: has waist → fall through to hammer/dumbbell detection below
@@ -1264,6 +1268,8 @@ def classify_shape(path_items, page_rect=None) -> Dict[str, Any]:
                 'isHorizontal': wp_result['isHorizontal'],
                 'longBase': wp_result['longBase'],
                 'shortBase': wp_result['shortBase'],
+                'bbW': wp_result['bbW'],
+                'bbH': wp_result['bbH'],
             }
             logger.info(f"[SHAPE_CLASSIFIER] Width profile: TRAPEZOID (ramp), "
                         f"leftOH={trap_params['leftOH']}, rightOH={trap_params['rightOH']}")

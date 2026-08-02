@@ -32,6 +32,10 @@ import { computeTargetPose } from './CameraRig';
 import type { CameraPreset } from '../../stores/useMockupStore';
 import { useTranslation } from 'react-i18next';
 
+type MockupExportFormat = 'png' | 'jpeg' | 'webp';
+const MIME_MAP: Record<MockupExportFormat, string> = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' };
+const EXT_MAP: Record<MockupExportFormat, string> = { png: 'png', jpeg: 'jpg', webp: 'webp' };
+
 // ─── Tùy chọn & kiểu trả về ─────────────────────────────────────────────────
 
 /** Tùy chọn cấu hình hook xuất cảnh. */
@@ -102,9 +106,29 @@ function downloadBlob(blob: Blob, filename: string): void {
         anchor.click();
         document.body.removeChild(anchor);
     } finally {
-        // Thu hồi sau một nhịp để trình duyệt kịp khởi tạo việc tải.
         setTimeout(() => URL.revokeObjectURL(url), 0);
     }
+}
+
+/**
+ * Ghi Blob vào thư mục đích qua Tauri `fs.writeBinaryFile`.
+ * Nếu không có thư mục đích, dùng `<a download>` như trước.
+ */
+async function saveBlob(blob: Blob, filename: string, outputDir?: string): Promise<void> {
+    if (outputDir) {
+        try {
+            const { writeFile, mkdir } = await import('@tauri-apps/plugin-fs');
+            await mkdir(outputDir, { recursive: true }).catch(() => {/* đã tồn tại */});
+            const sep = outputDir.includes('/') ? '/' : '\\\\';
+            const fullPath = `${outputDir}${sep}${filename}`;
+            const buffer = await blob.arrayBuffer();
+            await writeFile(fullPath, new Uint8Array(buffer));
+            return;
+        } catch {
+            // Fallback về download nếu Tauri fs không khả dụng
+        }
+    }
+    downloadBlob(blob, filename);
 }
 
 // ─── Hook ───────────────────────────────────────────────────────────────────
@@ -130,6 +154,9 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
     // Hệ số xuất mặc định lấy từ store mockup (Yêu cầu 6.2).
     const storeExportScale = useMockupStore((s) => s.exportScale);
     const exportTransparent = useMockupStore((s) => s.exportTransparent);
+    const exportFormat = useMockupStore((s) => s.exportFormat);
+    const exportQuality = useMockupStore((s) => s.exportJpegQuality);
+    const exportOutputDir = useMockupStore((s) => s.exportOutputDir);
     const qualityTier = useMockupStore((s) => s.qualityTier);
     const setQualityTier = useMockupStore((s) => s.setQualityTier);
     const invalidate = useThree((s) => s.invalidate);
@@ -198,7 +225,9 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
     // Render vào framebuffer riêng rồi đọc pixel. Canvas hiển thị không cần
     // preserveDrawingBuffer và không bị resize trong lúc export.
     const renderToBlob = useCallback(
-        async (transparent: boolean, width: number, height: number): Promise<Blob | null> => {
+        async (transparent: boolean, width: number, height: number, fmt: MockupExportFormat = 'png', quality = 90): Promise<Blob | null> => {
+            // JPEG không hỗ trợ transparent
+            const effectiveTransparent = fmt === 'jpeg' ? false : transparent;
             const prevBg = scene.background;
             const floor = scene.getObjectByName('mockup-floor');
             const prevFloorVisible = floor ? floor.visible : undefined;
@@ -216,7 +245,7 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
                 ? Math.min(4, maxSamples)
                 : 0;
 
-            if (transparent) {
+            if (effectiveTransparent) {
                 scene.background = null;
                 if (floor) floor.visible = false;
                 gl.setClearColor(0x000000, 0);
@@ -243,12 +272,14 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
                 context.putImageData(imageData, 0, 0);
 
                 return await new Promise<Blob | null>((resolve) => {
-                    exportCanvas.toBlob((blob) => resolve(blob), 'image/png');
+                    const mime = MIME_MAP[fmt];
+                    const q = fmt !== 'png' ? quality / 100 : undefined;
+                    exportCanvas.toBlob((blob) => resolve(blob), mime, q);
                 });
             } finally {
                 gl.setRenderTarget(prevTarget);
                 target.dispose();
-                if (transparent) {
+                if (effectiveTransparent) {
                     scene.background = prevBg;
                     if (floor && prevFloorVisible !== undefined) floor.visible = prevFloorVisible;
                     gl.setClearColor(prevClear, prevClearAlpha);
@@ -276,14 +307,17 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
                         exportTransparent,
                         sizing.width,
                         sizing.height,
+                        exportFormat,
+                        exportQuality,
                     ),
                 );
                 if (!blob) {
                     throw new Error(t('dieline.useSceneExport:trinh_duyet_khong_tao_duoc_du_lieu_anh'));
                 }
 
-                const filename = buildFilename(filePrefix, 'png');
-                downloadBlob(blob, filename);
+                const ext = EXT_MAP[exportFormat];
+                const filename = buildFilename(filePrefix, ext as any);
+                await saveBlob(blob, filename, exportOutputDir || undefined);
                 reportSuccess('png', filename);
                 return true;
             } catch (err) {
@@ -297,7 +331,7 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
                 busyRef.current = false;
             }
         },
-        [size.width, size.height, storeExportScale, maxTextureSize, filePrefix, reportError, reportSuccess, renderToBlob, exportTransparent, withExportQuality, t],
+        [size.width, size.height, storeExportScale, maxTextureSize, filePrefix, reportError, reportSuccess, renderToBlob, exportTransparent, exportFormat, exportQuality, exportOutputDir, withExportQuality, t],
     );
     // ── exportBatchPNG: nhiều góc camera ──────────────────────────────────────
     const exportBatchPNG = useCallback(async (): Promise<boolean> => {
@@ -333,7 +367,8 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
                     sizing.height,
                 );
                 if (blob) {
-                    downloadBlob(blob, buildFilename(`${filePrefix}-${preset}`, 'png'));
+                    const ext = EXT_MAP[exportFormat];
+                    await saveBlob(blob, buildFilename(`${filePrefix}-${preset}`, ext as any), exportOutputDir || undefined);
                     okCount += 1;
                 }
             }
@@ -355,7 +390,7 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
             }
             busyRef.current = false;
         }
-    }, [camera, controls, size.width, size.height, storeExportScale, maxTextureSize, filePrefix, reportError, reportSuccess, renderToBlob, exportTransparent, t]);
+    }, [camera, controls, size.width, size.height, storeExportScale, maxTextureSize, filePrefix, reportError, reportSuccess, renderToBlob, exportTransparent, exportFormat, exportOutputDir, t]);
     // ── exportGLB ────────────────────────────────────────────────────────────
     const exportGLB = useCallback(async (): Promise<boolean> => {
         if (busyRef.current) return false;

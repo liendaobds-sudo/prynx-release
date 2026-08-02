@@ -133,7 +133,9 @@ export default function BookletSettingsSection() {
                                 { value: '100', title: t('imposition.bookletSettings:1_cuon_to_100'), desc: t('imposition.bookletSettings:giu_nguyen_kich_thuoc_trang_khong_vua') },
                                 { value: 'fit', title: t('imposition.bookletSettings:1_cuon_to_bop_vua_kho'), desc: t('imposition.bookletSettings:thu_noi_dung_cho_vua_kho_giay_da_chon') },
                                 { value: 'chain_nup', title: t('imposition.bookletSettings:nhieu_cuon_to_step_repeat'), desc: t('imposition.bookletSettings:nhan_ban_nhieu_cuon_giong_het_nhau_lap') },
-                                ...(s.paperClassification === 'in_nhanh' && s.signatureMode !== 'cut_stacks' ? [{ value: 'cut_stack', title: t('imposition.bookletSettings:ghep_nua_cuon_cut_stack'), desc: t('imposition.bookletSettings:2_nua_cuon_tren_1_to_xen_doi_rap_lai') }] : [])
+                                // BOOKLET (audit 2026-07-31 §A.1): dán đối lưng là bài in một mặt,
+                                // không được biến thành cặp plate A/B của Cut & Stack.
+                                ...(s.paperClassification === 'in_nhanh' && s.signatureMode !== 'cut_stacks' && s.signatureMode !== 'flush_mount' ? [{ value: 'cut_stack', title: t('imposition.bookletSettings:ghep_nua_cuon_cut_stack'), desc: t('imposition.bookletSettings:2_nua_cuon_tren_1_to_xen_doi_rap_lai') }] : [])
                             ]}
                         />
                     </div>
@@ -209,7 +211,8 @@ export default function BookletSettingsSection() {
                             )}
                         </div>
 
-                        {s.signatureMode === 'cut_stacks' ? (
+                        {/* UIUX (audit 2026-07-31): Chỉ Cắt–Xếp dùng lựa chọn cơ chế rải trang; các kiểu In nhanh khác luôn dùng GAP nhập tay. */}
+                        {s.signatureMode === 'cut_stacks' && (
                             <RichSelect
                                 value={s.spreadDistribution}
                                 onChange={(v) => s.setSpreadDistribution(v as 'even' | 'clustered')}
@@ -218,20 +221,9 @@ export default function BookletSettingsSection() {
                                     { value: 'even', title: t('imposition.bookletSettings:trai_deu_giu_nguyen_chieu'), desc: t('imposition.bookletSettings:tan_deu_cac_trang_tren_mat_giay_khong') }
                                 ]}
                             />
-                        ) : (
-                            <div className="flex items-center space-x-2">
-                                <input type="checkbox" id="spreadDistribution"
-                                    className="rounded border-zinc-300 dark:border-zinc-700 text-blue-600 bg-white dark:bg-zinc-900 focus:ring-blue-500"
-                                    checked={s.spreadDistribution === 'even'}
-                                    onChange={e => s.setSpreadDistribution(e.target.checked ? 'even' : 'clustered')}
-                                />
-                                <label htmlFor="spreadDistribution" className="text-xs text-zinc-700 dark:text-zinc-300 cursor-pointer">
-                                    {t('imposition.bookletSettings:dan_deu_2_ben_chia_deu_tao_khoang_ho')}
-                                </label>
-                            </div>
                         )}
 
-                        {s.spreadDistribution !== 'even' && (
+                        {(s.signatureMode !== 'cut_stacks' || s.spreadDistribution !== 'even') && (
                             <div className="grid grid-cols-2 gap-x-3 gap-y-3 pt-2 border-t border-slate-200 dark:border-white/10 mt-1">
                                 <div>
                                     <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.bookletSettings:khoang_cach_gay_gap_x')}</label>

@@ -168,7 +168,7 @@ export const imposePdf = async (
             setStatus(i18n.t('lib.pdfImposer:giai_doan_1_dang_thiet_lap_so_do_trang'));
             const bMode = (settings as any).bindingMode || 'saddle';
             const orderedLen = bodyOrderedIndices.length;
-            const mapResult = generateBindingMap(orderedLen, bMode, (settings as any).foliosize, (settings as any).blankPlacement || 'end');
+            const mapResult = generateBindingMap(orderedLen, bMode, (settings as any).foliosize, (settings as any).blankPlacement || 'end', (settings as any).scaleMode || '100');
             const virtualMap = mapResult.sheets;
             if (mapResult.report) reportMsg += (reportMsg ? '\n' : '') + mapResult.report;
 
@@ -622,7 +622,7 @@ export const imposePdfViaBackend = async (
     }
 
     const effectiveCount = bodyOrder.length;
-    const mapResult = generateBindingMap(effectiveCount, bMode, (settings as any).foliosize, (settings as any).blankPlacement || 'end');
+    const mapResult = generateBindingMap(effectiveCount, bMode, (settings as any).foliosize, (settings as any).blankPlacement || 'end', (settings as any).scaleMode || '100');
     const virtualMap = mapResult.sheets;
     const remapSlot = (slot: { srcIndex: number | null; userRotation?: number }) => {
         if (slot.srcIndex === null) return;

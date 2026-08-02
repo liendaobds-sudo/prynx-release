@@ -35,10 +35,6 @@ export default function PDFUploader({
         toast.info(t('misc.pDFUploader:vui_long_chon_hoac_tha_file_pdf'));
         return;
       }
-      if (pdfs[0].size > 500 * 1024 * 1024) {
-        toast.error(t('misc.pDFUploader:file_qua_lon_toi_da_500mb'));
-        return;
-      }
       onFileSelected(pdfs[0], pdfs);
     },
     [onFileSelected, t],
@@ -194,7 +190,6 @@ export default function PDFUploader({
           <p className="text-xs text-slate-400 dark:text-zinc-500 mt-2">
             {t('misc.pDFUploader:keo_tha_file_pdf_vao_day_hoac_click_de')}
           </p>
-          <p className="text-xs text-slate-500 dark:text-zinc-400">{t('misc.pDFUploader:toi_da_500mb')}</p>
         </div>
       )}
     </div>

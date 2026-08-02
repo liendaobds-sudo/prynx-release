@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useReducer } from 'react';
 import { createPortal } from 'react-dom';
 import { Page } from 'react-pdf';
 import { localFileUrl } from '../../lib/localFileTransport';
@@ -8,7 +8,13 @@ import { getVisiblePlateOverlaysForPage } from '../../lib/outputPreviewOverlay';
 import { useCropPointerDrawing } from '../../hooks/useCropPointerDrawing';
 import { VdpPreviewImage } from './ViewerHelpers';
 import { useViewerHotkeys } from '../../hooks/viewer/useViewerHotkeys';
-import { nativeTileRenderScheduler } from '../../hooks/viewer/tileRenderScheduler';
+import {
+    FIRST_TILE_SLOW_MS,
+    INITIAL_TILE_LOAD_STATE,
+    isTileLoadCancellation,
+    nativeTileRenderScheduler,
+    tileLoadReducer,
+} from '../../hooks/viewer/tileRenderScheduler';
 import { globalPdfObjectCache } from '../../stores/pdfObjectCache';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
@@ -38,6 +44,7 @@ import {
     scrollElementVerticallyIntoView,
 } from './verticalScroll';
 import { buildPropertyAffine, mmToPt, pickTopmostObjectAtPoint, ptToMm, selectionBounds } from './editTransformMath';
+import { previewPerfLog } from '../../lib/previewPerfLog';
 
 // Mảng rỗng ỔN ĐỊNH — không tạo `[]` mới mỗi effect (tránh cascade setState).
 const EMPTY_OBJECT_IDS: string[] = [];
@@ -212,9 +219,25 @@ interface LoadableTileElement extends HTMLDivElement {
     _loadTile?: () => void;
 }
 
-const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible, renderOwnerId, renderPriority = 100, renderEnabled = true }: any) => {
+interface TileLoadLabels {
+    loading: string;
+    slow: string;
+    error: string;
+    cancelled: string;
+    retry: string;
+    cancel: string;
+}
+
+const EMPTY_TILE_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==';
+
+const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible, renderOwnerId, renderPriority = 100, renderEnabled = true, showLoadStatus = false, loadLabels }: any) => {
     const tileRef = useRef<LoadableTileElement>(null);
     const imgRef = useRef<HTMLImageElement>(null);
+    const loadAttemptRef = useRef(0);
+    const mountedRef = useRef(true);
+    const [loadState, dispatchLoadState] = useReducer(tileLoadReducer, INITIAL_TILE_LOAD_STATE);
+    const [hasVisibleTile, setHasVisibleTile] = useState(false);
+    const labels = loadLabels as TileLoadLabels | undefined;
     const renderGroupKey = `${renderOwnerId || fileKey}:${pageNum}:${clipW && clipH ? 'tile' : 'page'}`;
     // NÉT (audit độ nét 2026-07-28 §R.4): ép ảnh vẽ ở ĐÚNG kích thước pixel gốc để tỉ lệ
     // scale = 1.0 (map 1:1 device pixel) — đó là điều kiện DUY NHẤT để chữ nét như Acrobat.
@@ -269,6 +292,19 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
     const displayedScaleRef = useRef(0);
     
     const currentParams = `${fileKey}_${pageNum}_${zoom}_${rot}_${clipX}_${clipY}_${clipW}_${clipH}`;
+
+    // PERF (audit 2026-08-02 §LOAD.2): đây chỉ là watchdog THÔNG TIN cho first tile.
+    // Không timeout invoke, không nhả slot và không mở thêm render PDFium song song.
+    useEffect(() => {
+        if (!showLoadStatus || loadState.phase !== 'loading') return;
+        const attempt = loadState.attempt;
+        const timer = setTimeout(() => {
+            if (!mountedRef.current) return;
+            dispatchLoadState({ type: 'slow', attempt });
+            void previewPerfLog('live-tile-load-slow', { page: pageNum, zoom });
+        }, FIRST_TILE_SLOW_MS);
+        return () => clearTimeout(timer);
+    }, [loadState.attempt, loadState.phase, pageNum, showLoadStatus, zoom]);
     
     // On mount: immediately restore cached image (no white flash!)
     useEffect(() => {
@@ -291,6 +327,8 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
         if (!renderEnabled) {
             el._loadTile = undefined;
             loadedParamsRef.current = '';
+            const attempt = ++loadAttemptRef.current;
+            dispatchLoadState({ type: 'replace', attempt, phase: 'idle' });
             if (renderOwnerId) {
                 nativeTileRenderScheduler.cancelGroup(renderOwnerId, renderGroupKey);
             }
@@ -317,8 +355,14 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
             if (loadedParamsRef.current === currentParams && hasLoadedOnce.current) return;
             if (!getTileUrl) return;
             const paramsAtRequest = currentParams;
+            const attempt = ++loadAttemptRef.current;
+            const requestIsCurrent = () => mountedRef.current
+                && loadAttemptRef.current === attempt
+                && loadedParamsRef.current === paramsAtRequest;
             loadedParamsRef.current = paramsAtRequest;
             displayedScaleRef.current = 0;
+            dispatchLoadState({ type: 'start', attempt });
+            if (showLoadStatus) void previewPerfLog('live-tile-load-start', { page: pageNum, zoom });
             
             // Cancel previous preload
             if (preloadRef.current) {
@@ -336,14 +380,14 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
                     priority: renderPriority,
                 })
                     .then((url: string) => {
-                        if (loadedParamsRef.current !== paramsAtRequest) {
+                        if (!requestIsCurrent()) {
                             if (url && url.startsWith('blob:') && !url.includes('#keep')) URL.revokeObjectURL(url);
                             return;
                         }
                         const preImg = new Image();
                         preloadRef.current = preImg;
                         preImg.onload = () => {
-                            if (loadedParamsRef.current !== paramsAtRequest || scale < displayedScaleRef.current) {
+                            if (!requestIsCurrent() || scale < displayedScaleRef.current) {
                                 if (url && url.startsWith('blob:') && !url.includes('#keep')) {
                                     URL.revokeObjectURL(url);
                                 }
@@ -371,19 +415,36 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
                                 // (tránh thumbnail tranh chấp pdfium handle với trang chính).
                                 window.dispatchEvent(new CustomEvent('prynx-main-tile-ready'));
                             }
+                            setHasVisibleTile(true);
+                            dispatchLoadState({ type: 'ready', attempt });
+                            if (showLoadStatus) void previewPerfLog('live-tile-load-ready', { page: pageNum, zoom: scale });
                             if (preloadRef.current === preImg) preloadRef.current = null;
                         };
                         preImg.onerror = () => {
                             if (preloadRef.current === preImg) preloadRef.current = null;
+                            if (url && url.startsWith('blob:') && !url.includes('#keep')) URL.revokeObjectURL(url);
                             if (onReady) return; // sharp đã được nối ngay sau khi gán src
-                            if (loadedParamsRef.current === paramsAtRequest) loadedParamsRef.current = '';
+                            if (!requestIsCurrent()) return;
+                            loadedParamsRef.current = '';
+                            dispatchLoadState({ type: 'error', attempt });
+                            if (showLoadStatus) void previewPerfLog('live-tile-load-error', { page: pageNum, stage: 'decode' });
                         };
                         preImg.src = url;
                         if (onReady) onReady();
                     })
-                    .catch(() => {
-                        if (onReady) { onReady(); return; }
-                        if (loadedParamsRef.current === paramsAtRequest) loadedParamsRef.current = '';
+                    .catch((error: unknown) => {
+                        if (onReady) {
+                            if (requestIsCurrent()) onReady();
+                            return;
+                        }
+                        if (!requestIsCurrent()) return;
+                        loadedParamsRef.current = '';
+                        const cancelled = isTileLoadCancellation(error);
+                        dispatchLoadState({ type: cancelled ? 'cancelled' : 'error', attempt });
+                        if (showLoadStatus) {
+                            const errorName = error instanceof Error ? error.name : typeof error;
+                            void previewPerfLog('live-tile-load-error', { page: pageNum, error: errorName });
+                        }
                     });
             };
 
@@ -408,38 +469,119 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
             el._loadTile = undefined;
             onVisible(el, true, eager);
         };
-    }, [currentParams, coarseZoom, eager, getTileUrl, onVisible, renderEnabled, renderGroupKey, renderOwnerId, renderPriority, zoom]);
+    }, [clipH, clipW, clipX, clipY, coarseZoom, currentParams, eager, getTileUrl, onVisible, pageNum, renderEnabled, renderGroupKey, renderOwnerId, renderPriority, rot, showLoadStatus, zoom]);
     
     // Cleanup on unmount — DON'T revoke blob URLs, they're in the cache now!
     useEffect(() => {
+        mountedRef.current = true;
         return () => {
+            mountedRef.current = false;
+            loadAttemptRef.current += 1;
             if (preloadRef.current) {
                 preloadRef.current.onload = null;
+                preloadRef.current.onerror = null;
                 preloadRef.current = null;
             }
+            if (renderOwnerId) nativeTileRenderScheduler.cancelGroup(renderOwnerId, renderGroupKey);
             // Intentionally NOT revoking imgRef.current.src — it's cached for instant re-mount
         };
-    }, []);
+    }, [renderGroupKey, renderOwnerId]);
     // Initialize empty pixel only once (but only if no cached image was restored)
     useEffect(() => {
         if (imgRef.current && !imgRef.current.src) {
-            imgRef.current.src = "data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==";
+            imgRef.current.src = EMPTY_TILE_PIXEL;
         }
     }, []);
+
+    const handleDisplayedImageLoad = (imgEl: HTMLImageElement) => {
+        applyExactFit(imgEl);
+        if (!imgEl.src || imgEl.src === EMPTY_TILE_PIXEL) return;
+        hasLoadedOnce.current = true;
+        setHasVisibleTile(true);
+        dispatchLoadState({ type: 'ready', attempt: loadAttemptRef.current });
+    };
+
+    const retryTile = () => {
+        const attempt = ++loadAttemptRef.current;
+        loadedParamsRef.current = '';
+        displayedScaleRef.current = 0;
+        dispatchLoadState({ type: 'replace', attempt, phase: 'idle' });
+        if (preloadRef.current) {
+            preloadRef.current.onload = null;
+            preloadRef.current.onerror = null;
+            preloadRef.current = null;
+        }
+        if (renderOwnerId) nativeTileRenderScheduler.cancelGroup(renderOwnerId, renderGroupKey);
+        queueMicrotask(() => tileRef.current?._loadTile?.());
+    };
+
+    const cancelTile = () => {
+        const attempt = ++loadAttemptRef.current;
+        loadedParamsRef.current = '';
+        dispatchLoadState({ type: 'replace', attempt, phase: 'cancelled' });
+        if (renderOwnerId) nativeTileRenderScheduler.cancelGroup(renderOwnerId, renderGroupKey);
+        if (showLoadStatus) void previewPerfLog('live-tile-load-cancelled', { page: pageNum });
+    };
+
+    const showStatusOverlay = showLoadStatus && !hasVisibleTile && loadState.phase !== 'ready';
+    const statusText = loadState.phase === 'slow'
+        ? labels?.slow
+        : loadState.phase === 'error'
+            ? labels?.error
+            : loadState.phase === 'cancelled'
+                ? labels?.cancelled
+                : labels?.loading;
+    const showRetry = loadState.phase === 'slow' || loadState.phase === 'error' || loadState.phase === 'cancelled';
     
     return (
         // background:'white' cho khung: khi snap 1:1 (§R.4) bitmap có thể hụt ≤2px so với
         // khung do làm tròn → chừa sợi mảnh ở mép phải/dưới. Nền trắng làm nó vô hình trên
         // trang PDF (PDFium render với clear_color=WHITE), thay vì hở ra nền skeleton xám.
-        <div ref={tileRef} style={{ position: 'absolute', left: cssLeft ?? clipX, top: cssTop ?? clipY, width: cssW || clipW, height: cssH || clipH, outline: 'none', opacity: hasLoadedOnce.current ? 1 : 0, transition: 'opacity 0.05s ease-in', background: 'white' }} className="tile-container">
+        <div ref={tileRef} style={{ position: 'absolute', left: cssLeft ?? clipX, top: cssTop ?? clipY, width: cssW || clipW, height: cssH || clipH, outline: 'none', opacity: showLoadStatus || hasVisibleTile ? 1 : 0, transition: 'opacity 0.05s ease-in', background: 'white' }} className="tile-container">
             {/* onLoad chạy cho MỌI đường vào (tải mới, khôi phục từ cache, pixel rỗng ban
                 đầu) nên chỉ cần một chỗ để bảo đảm map 1:1 — xem applyExactFit. */}
             <img
                 ref={imgRef}
                 draggable={false}
-                onLoad={(e) => applyExactFit(e.currentTarget)}
-                style={{ width: '100%', height: '100%', objectFit: 'fill', pointerEvents: 'none', userSelect: 'none', background: 'white' }}
+                onLoad={(e) => handleDisplayedImageLoad(e.currentTarget)}
+                style={{ width: '100%', height: '100%', objectFit: 'fill', pointerEvents: 'none', userSelect: 'none', background: 'white', opacity: hasVisibleTile ? 1 : 0 }}
             />
+            {showStatusOverlay && (
+                <div
+                    className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-slate-50/95 px-6 text-center dark:bg-zinc-900/95"
+                    role={loadState.phase === 'error' ? 'alert' : 'status'}
+                    aria-live="polite"
+                >
+                    {loadState.phase === 'error' || loadState.phase === 'cancelled' ? (
+                        <AlertTriangle className="h-8 w-8 text-amber-500" aria-hidden="true" />
+                    ) : (
+                        <div className="h-8 w-8 animate-spin rounded-full border-4 border-slate-300 border-t-indigo-500" aria-hidden="true" />
+                    )}
+                    <span className="max-w-sm text-xs font-semibold text-slate-600 dark:text-zinc-300">{statusText}</span>
+                    {showRetry && (
+                        <div className="flex items-center gap-2">
+                            <button
+                                type="button"
+                                onMouseDown={(event) => event.stopPropagation()}
+                                onClick={(event) => { event.stopPropagation(); retryTile(); }}
+                                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-indigo-700"
+                            >
+                                {labels?.retry}
+                            </button>
+                            {loadState.phase === 'slow' && (
+                                <button
+                                    type="button"
+                                    onMouseDown={(event) => event.stopPropagation()}
+                                    onClick={(event) => { event.stopPropagation(); cancelTile(); }}
+                                    className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-100 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-200"
+                                >
+                                    {labels?.cancel}
+                                </button>
+                            )}
+                        </div>
+                    )}
+                </div>
+            )}
         </div>
     );
 });
@@ -712,6 +854,14 @@ const SelectableTextLayer = React.memo(function SelectableTextLayer({
 
 export const LivePageFrame = (props: any) => {
   const { t } = useTranslation();
+    const tileLoadLabels = useMemo<TileLoadLabels>(() => ({
+        loading: t('misc.livePageFrame:dang_dung_hinh', 'Đang dựng hình…'),
+        slow: t('misc.livePageFrame:dung_hinh_cham', 'Đang dựng trang lâu hơn bình thường…'),
+        error: t('misc.livePageFrame:khong_dung_duoc_trang', 'Không dựng được trang này.'),
+        cancelled: t('misc.livePageFrame:da_huy_dung_hinh', 'Đã hủy dựng trang.'),
+        retry: t('misc.livePageFrame:thu_lai', 'Thử lại'),
+        cancel: t('misc.livePageFrame:huy', 'Hủy'),
+    }), [t]);
     //#region Props & State
     const { originalPageNum, viewerPageNum, pageInstanceId, actualWidth100, zoom, rotation, bleedView, highlightBoxes, pageDim,
         onObjectDelete,
@@ -2773,7 +2923,26 @@ export const LivePageFrame = (props: any) => {
                             </div>
                         </div>
                         <div className="absolute inset-0 z-10">
-                            <LiveTile fileKey={pdfUrl || 'unknown'} key="full" pageNum={originalPageNum} zoom={bgZoom} rot={0} clipX={0} clipY={0} clipW={0} clipH={0} cssW={Math.ceil(displayWidth)} cssH={Math.ceil(displayHeight)} getTileUrl={getTileUrl} onVisible={handleTileVisibility} renderOwnerId={effectiveRenderOwnerId} renderPriority={pageRenderPriority} renderEnabled={shouldRenderBasePage} />
+                            <LiveTile
+                                fileKey={pdfUrl || 'unknown'}
+                                key="full"
+                                pageNum={originalPageNum}
+                                zoom={bgZoom}
+                                rot={0}
+                                clipX={0}
+                                clipY={0}
+                                clipW={0}
+                                clipH={0}
+                                cssW={Math.ceil(displayWidth)}
+                                cssH={Math.ceil(displayHeight)}
+                                getTileUrl={getTileUrl}
+                                onVisible={handleTileVisibility}
+                                renderOwnerId={effectiveRenderOwnerId}
+                                renderPriority={pageRenderPriority}
+                                renderEnabled={shouldRenderBasePage}
+                                showLoadStatus={isActiveFrame && shouldRenderBasePage}
+                                loadLabels={tileLoadLabels}
+                            />
                         </div>
                         {needsTiling && (
                             <div className="absolute inset-0 z-[11]">

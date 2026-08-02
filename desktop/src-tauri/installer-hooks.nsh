@@ -37,7 +37,8 @@
 ; Verb "Convert to PDF" — CHỈ cho ảnh (jpg/jpeg/png), KHÔNG cho .pdf (pdf→pdf vô nghĩa).
 ; Truyền cờ --prynx-action=convert để app phân biệt với Combine (cả 2 verb đều gọi cùng
 ; exe): app đọc cờ qua get_startup_args → 1 ảnh + convert đi thẳng tab Ghép (xuất PDF)
-; thay vì tab Bình bài. Combine KHÔNG mang cờ → giữ nguyên luồng cũ đã chạy tốt.
+; thay vì tab Bình bài. Combine mang cờ --prynx-action=combine để PDF không bị router
+; Acrobat mặc định tách thành nhiều tab trước khi vào tab Ghép.
 !define CVTVERB "pdf-inspector-convert"
 !define CVTLABEL "Convert to PDF (PrynX)"
 !define PDFPROGID "PrynX.PDF"
@@ -48,7 +49,7 @@
   WriteRegStr HKCU "Software\Classes\SystemFileAssociations\${EXT}\shell\${CTXVERB}" "" "${CTXLABEL}"
   WriteRegStr HKCU "Software\Classes\SystemFileAssociations\${EXT}\shell\${CTXVERB}" "Icon" '"$INSTDIR\pdf-inspector.exe",0'
   WriteRegStr HKCU "Software\Classes\SystemFileAssociations\${EXT}\shell\${CTXVERB}" "MultiSelectModel" "Player"
-  WriteRegStr HKCU "Software\Classes\SystemFileAssociations\${EXT}\shell\${CTXVERB}\command" "" '"$INSTDIR\pdf-inspector.exe" "%1"'
+  WriteRegStr HKCU "Software\Classes\SystemFileAssociations\${EXT}\shell\${CTXVERB}\command" "" '"$INSTDIR\pdf-inspector.exe" --prynx-action=combine "%1"'
 !macroend
 
 !macro REGISTER_CONVERT_VERB EXT

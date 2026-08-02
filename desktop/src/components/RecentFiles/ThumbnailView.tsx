@@ -3,6 +3,7 @@ import { Document, Page, pdfjs } from 'react-pdf';
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { statRecentFile } from '../../lib/useRecentFiles'; // §RF.1 (audit menu 2026-07-28)
 import { localFileUrl } from '../../lib/localFileTransport';
+import { isOfficePathOrName } from '../../lib/officeFileTypes';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -18,6 +19,7 @@ const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
   const [imgError, setImgError] = useState(false);
 
   const isPdf = name.toLowerCase().endsWith('.pdf');
+  const isOffice = isOfficePathOrName(name);
   const isTauri = typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__;
 
   useEffect(() => {
@@ -52,9 +54,13 @@ const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
           // page=1, zoom nhỏ (~0.3) đủ nét cho thumbnail 180px; object-contain tự vừa khung.
           setSrc(`http://tile.localhost/${enc}/1/0.3/0/0/0/0/0`);
           setFileExists(true);
-        } else {
+        } else if (!isOffice) {
           // FILEIO (audit 2026-07-28 §FL.03): ảnh recent có thể ở ổ ngoài scope.
           setSrc(localFileUrl(path));
+          setFileExists(true);
+        } else {
+          // Office chưa có thumbnail trực tiếp; dùng placeholder terminal, không thử
+          // nạp DOCX/XLSX/PPTX như ảnh rồi chờ onError.
           setFileExists(true);
         }
       })();
@@ -62,7 +68,7 @@ const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
     return () => {
       isActive = false;
     };
-  }, [path, isPdf, isTauri, active]);
+  }, [path, isPdf, isOffice, isTauri, active]);
 
   if (fileExists === false) {
     return (
@@ -72,6 +78,15 @@ const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
     );
   }
 
+  if (isOffice) {
+    const ext = (name.split('.').pop() || '').toUpperCase();
+    return (
+      <div className="w-full h-full bg-slate-100 dark:bg-zinc-800 flex flex-col items-center justify-center gap-1">
+        <span className="text-2xl opacity-40">📄</span>
+        {ext && <span className="text-[10px] font-semibold text-slate-400">{ext}</span>}
+      </div>
+    );
+  }
   if (!src) {
     return <div className="animate-pulse w-full h-full bg-slate-100 dark:bg-zinc-800" />;
   }

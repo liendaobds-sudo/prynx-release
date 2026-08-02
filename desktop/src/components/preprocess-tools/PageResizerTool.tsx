@@ -1,13 +1,25 @@
-import { ResizeOptions } from '../../lib/preprocessEngine/PageResizer';
+import { ResizeOptions, type BackgroundFillMode, type ScaleMode } from '../../lib/preprocessEngine/PageResizer';
 import { 
-    ToolSectionLabel, ToolDivider, ToolCardOption, 
+    ToolSectionLabel, ToolCardOption,
     ToolCheckboxOption, ToolNumberInput,
 } from './ToolUI';
+import { RichSelect } from '../imposition-tools/SharedUI';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
 
 const inputCls = "w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500";
 const selectCls = "w-full h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm font-medium focus:outline-none focus:border-indigo-500";
+
+// UIUX (audit 2026-08-01 §R.11): đồng bộ engine với Xén vuông góc, đồng thời
+// cho phép giữ vùng giấy trống thay vì ép người dùng phải sinh thêm màu nền.
+const BG_FILL_MODES: Array<{ value: BackgroundFillMode; title: string; desc: string }> = [
+    { value: 'white', title: '⬜ Không tạo nền', desc: 'Giữ vùng trống của khổ mới theo màu giấy; không lật, kéo, làm mượt hoặc đổ thêm màu.' },
+    { value: 'mirror', title: '🪞 Lật gương tự động', desc: 'Lật ngược mép ảnh siêu tốc. Giữ nguyên 100% độ sắc nét ban đầu.' },
+    { value: 'trajectory', title: '🧭 Theo quỹ đạo dải màu', desc: 'Tiếp tục dải màu theo đúng hướng tại mép nội dung. Phù hợp tia tỏa, sọc nghiêng và hoa văn có hướng.' },
+    { value: 'inpaint', title: '✨ Làm mượt thông minh', desc: 'CHỈ hợp mép ảnh chụp/gradient mềm. KHÔNG hợp dải màu phẳng — sẽ loang.' },
+    { value: 'image', title: '🖼️ Kéo giãn mép ảnh', desc: 'Tự động kéo giãn dải màu sát mép ảnh ra ngoài lề.' },
+    { value: 'solid', title: '🎨 Đổ màu trơn', desc: 'Đổ một màu đồng nhất vào vùng trống.' },
+];
 
 const COMMON_SIZES = [
     { id: 'A4', name: 'A4', desc: '210 × 297 mm', w: 210, h: 297 },
@@ -20,14 +32,20 @@ const COMMON_SIZES = [
     { id: 'custom', name: 'Tùy chỉnh', desc: 'Nhập W × H', w: 0, h: 0 },
 ];
 
+export type PageSizeMode = 'fixed' | 'fixed_width' | 'fixed_height';
+
 export interface PageResizerSettings extends ResizeOptions {
     sizePresetId: string;
     applyToStr: string;
+    pageSizeMode?: PageSizeMode;
     // Giảm dữ liệu theo khổ mới (giống PDF Optimizer). undefined = tự động
     // (downsample 300 DPI khi thu nhỏ khổ), 0 = tắt (giữ nguyên chất lượng),
     // >0 = DPI cụ thể. resizeMode: 'auto' | 'vector' | 'raster'.
     targetDpi?: number;
     resizeMode?: string;
+    // Khử viền trắng trước khi resize (auto-trim → resize)
+    autoTrimBefore?: boolean;
+    autoTrimMarginMm?: number;
 }
 
 const DPI_PRESETS = [150, 300, 600];
@@ -37,8 +55,31 @@ interface Props {
     onChange: (settings: PageResizerSettings) => void;
 }
 
+export function shouldShowBackgroundFill(
+    _autoTrimBefore: boolean | undefined,
+    scaleMode: ScaleMode,
+    pageSizeMode: PageSizeMode = 'fixed',
+): boolean {
+    // Nền chỉ có ý nghĩa khi phép co giãn thật sự tạo vùng trống.
+    return pageSizeMode === 'fixed'
+        && (scaleMode === 'fit' || scaleMode === 'center_no_scale');
+}
+
+export function applyPageSizeMode(
+    settings: PageResizerSettings,
+    mode: PageSizeMode,
+): PageResizerSettings {
+    return {
+        ...settings,
+        pageSizeMode: mode,
+        sizePresetId: mode === 'fixed' ? settings.sizePresetId : 'custom',
+        scaleMode: mode === 'fixed' ? settings.scaleMode : 'fit',
+    };
+}
+
 export default function PageResizerTool({ settings, onChange }: Props) {
   const { t } = useTranslation();
+    const pageSizeMode: PageSizeMode = settings.pageSizeMode || 'fixed';
     
     const handlePresetChange = (presetId: string) => {
         const preset = COMMON_SIZES.find(p => p.id === presetId);
@@ -50,6 +91,10 @@ export default function PageResizerTool({ settings, onChange }: Props) {
                 targetH: preset.id === 'custom' ? settings.targetH : preset.h
             });
         }
+    };
+
+    const handlePageSizeModeChange = (mode: PageSizeMode) => {
+        onChange(applyPageSizeMode(settings, mode));
     };
 
     const handleApplyToChange = (val: string) => {
@@ -70,84 +115,145 @@ export default function PageResizerTool({ settings, onChange }: Props) {
 
     return (
         <div className="flex flex-col gap-4 animate-in fade-in duration-200 relative z-[60]">
-            
+
+
+
             <div className="flex flex-col gap-2">
                 <ToolSectionLabel>{t('preprocess.pageResizer:1_kich_thuoc_trang_dich')}</ToolSectionLabel>
-                <select
-                    value={settings.sizePresetId || 'A4'}
-                    onChange={(e) => handlePresetChange(e.target.value)}
-                    className={selectCls}
-                >
-                    {COMMON_SIZES.map(p => (
-                        <option key={p.id} value={p.id}>
-                            {p.id === 'custom' ? tv(p.name) : `${p.name} — ${p.desc}`}
-                        </option>
-                    ))}
-                </select>
+                <div className="relative z-[75]">
+                    <RichSelect
+                        value={pageSizeMode}
+                        onChange={(v: string) => handlePageSizeModeChange(v as PageSizeMode)}
+                        options={[
+                            { value: 'fixed', title: t('preprocess.pageResizer:kho_co_dinh', { defaultValue: 'Khổ cố định (W × H)' }), desc: t('preprocess.pageResizer:kho_co_dinh_desc', { defaultValue: 'Mọi trang có cùng chiều rộng và chiều cao.' }) },
+                            { value: 'fixed_width', title: t('preprocess.pageResizer:cung_chieu_rong', { defaultValue: 'Cùng chiều rộng' }), desc: t('preprocess.pageResizer:cung_chieu_rong_desc', { defaultValue: 'Chiều cao tự tính theo tỷ lệ từng tem.' }) },
+                            { value: 'fixed_height', title: t('preprocess.pageResizer:cung_chieu_cao', { defaultValue: 'Cùng chiều cao' }), desc: t('preprocess.pageResizer:cung_chieu_cao_desc', { defaultValue: 'Chiều rộng tự tính theo tỷ lệ từng tem.' }) },
+                        ]}
+                    />
+                </div>
+
+                {pageSizeMode === 'fixed' && (
+                <div className="relative z-[70]">
+                    <RichSelect
+                        value={settings.sizePresetId || 'A4'}
+                        onChange={(v: string) => handlePresetChange(v)}
+                        options={COMMON_SIZES.map(p => ({
+                            value: p.id,
+                            title: p.id === 'custom' ? tv(p.name) : p.name,
+                            desc: p.id === 'custom' ? undefined : p.desc
+                        }))}
+                    />
+                </div>
+                )}
                 
-                {settings.sizePresetId === 'custom' && (
-                    <div className="grid grid-cols-2 gap-3 mt-1 p-3 bg-white dark:bg-zinc-800/50 rounded-lg border border-black/5 dark:border-white/5">
+                {(pageSizeMode !== 'fixed' || settings.sizePresetId === 'custom') && (
+                    <div className={`${pageSizeMode === 'fixed' ? 'grid-cols-2' : 'grid-cols-1'} grid gap-3 mt-1 p-3 bg-white dark:bg-zinc-800/50 rounded-lg border border-black/5 dark:border-white/5`}>
+                        {pageSizeMode !== 'fixed_height' && (
                         <ToolNumberInput 
-                            label={t('preprocess.pageResizer:chieu_ngang')}
+                            label={t('preprocess.pageResizer:chieu_rong', { defaultValue: 'Chiều rộng' })}
                             value={settings.targetW}
                             onChange={val => onChange({ ...settings, targetW: val })}
                             suffix="mm" step={0.1}
                         />
+                        )}
+                        {pageSizeMode !== 'fixed_width' && (
                         <ToolNumberInput 
-                            label={t('preprocess.pageResizer:chieu_doc')}
+                            label={t('preprocess.pageResizer:chieu_cao', { defaultValue: 'Chiều cao' })}
                             value={settings.targetH}
                             onChange={val => onChange({ ...settings, targetH: val })}
                             suffix="mm" step={0.1}
                         />
+                        )}
+                        {pageSizeMode !== 'fixed' && (
+                            <>
+                            <div className="text-[10.5px] leading-snug text-slate-500 dark:text-zinc-400">
+                                {t('preprocess.pageResizer:kich_thuoc_con_lai_tu_dong', { defaultValue: 'Kích thước còn lại tự động theo nội dung từng trang sau khi xén viền trắng.' })}
+                            </div>
+                            <div className="text-[10.5px] leading-snug text-amber-700 dark:text-amber-300">
+                                {t('preprocess.pageResizer:canh_bao_nhieu_kho', { defaultValue: 'PDF đầu ra sẽ có nhiều khổ trang; một số chế độ dàn chỉ nhận các trang cùng kích thước.' })}
+                            </div>
+                            </>
+                        )}
                     </div>
                 )}
             </div>
 
-            <ToolDivider />
 
-            <div className="flex flex-col gap-2">
+
+            {pageSizeMode === 'fixed' && (
+            <div className="flex flex-col gap-2 relative z-[60]">
                 <ToolSectionLabel>{t('preprocess.pageResizer:2_kieu_ty_le')}</ToolSectionLabel>
-                <div className="grid grid-cols-2 gap-2">
-                    <ToolCheckboxOption 
-                        selected={settings.scaleMode === 'fit'}
-                        onClick={() => onChange({...settings, scaleMode: 'fit'})}
-                        label={t('preprocess.pageResizer:thu_vua_khit')}
-                        desc={t('preprocess.pageResizer:thu_phong_noi_dung_vua_khit_vao_kho')}
-                    />
-                    <ToolCheckboxOption 
-                        selected={settings.scaleMode === 'fill'}
-                        onClick={() => onChange({...settings, scaleMode: 'fill'})}
-                        label={t('preprocess.pageResizer:phong_lap_day')}
-                        desc={t('preprocess.pageResizer:phong_to_noi_dung_lap_day_kho_moi_phan')}
-                    />
-                    <ToolCheckboxOption 
-                        selected={settings.scaleMode === 'stretch'}
-                        onClick={() => onChange({...settings, scaleMode: 'stretch'})}
-                        label={t('preprocess.pageResizer:ep_bop_meo')}
-                        desc={t('preprocess.pageResizer:ep_noi_dung_vua_dung_kho_moi_nhung')}
-                    />
-                    <ToolCheckboxOption 
-                        selected={settings.scaleMode === 'center_no_scale'}
-                        onClick={() => onChange({...settings, scaleMode: 'center_no_scale'})}
-                        label={t('preprocess.pageResizer:giu_nguyen_o_giua')}
-                        desc={t('preprocess.pageResizer:giu_nguyen_kich_thuoc_noi_dung_goc_chi')}
-                    />
-                </div>
+                <RichSelect
+                    value={settings.scaleMode}
+                    onChange={(v: string) => onChange({...settings, scaleMode: v as ScaleMode})}
+                    options={[
+                        { value: 'fit', title: t('preprocess.pageResizer:thu_vua_khit'), desc: t('preprocess.pageResizer:thu_phong_noi_dung_vua_khit_vao_kho') },
+                        { value: 'fill', title: t('preprocess.pageResizer:phong_lap_day'), desc: t('preprocess.pageResizer:phong_to_noi_dung_lap_day_kho_moi_phan') },
+                        { value: 'stretch', title: t('preprocess.pageResizer:ep_bop_meo'), desc: t('preprocess.pageResizer:ep_noi_dung_vua_dung_kho_moi_nhung') },
+                        { value: 'center_no_scale', title: t('preprocess.pageResizer:giu_nguyen_o_giua'), desc: t('preprocess.pageResizer:giu_nguyen_kich_thuoc_noi_dung_goc_chi') },
+                    ]}
+                />
             </div>
+            )}
 
-            <ToolDivider />
+            {/* RESIZE (audit 2026-08-01 §RT.11): mode nền tự dò mép, không phụ thuộc cờ auto-trim cũ. */}
+            {shouldShowBackgroundFill(settings.autoTrimBefore, settings.scaleMode, pageSizeMode) && (
+                <div className="mt-1 p-3 bg-white dark:bg-zinc-800/50 rounded-lg border border-black/5 dark:border-white/5 relative z-[50]">
+                    <div className="text-[11px] font-medium text-slate-500 dark:text-zinc-400 mb-1.5">{t('preprocess.pageResizer:mau_nen_vung_trong')}</div>
+                    <div className="flex flex-col gap-1.5">
+                        <RichSelect
+                            value={settings.bgFillMode || 'mirror'}
+                            onChange={(v: string) => onChange({ ...settings, bgFillMode: v as BackgroundFillMode })}
+                            options={BG_FILL_MODES}
+                        />
+                    </div>
 
-            <div className="flex flex-col gap-2">
-                <ToolSectionLabel>{t('preprocess.pageResizer:3_ap_dung_cho')}</ToolSectionLabel>
-                <div className="grid grid-cols-2 gap-2">
-                    <ToolCardOption selected={settings.applyToStr === 'all'} onClick={() => handleApplyToChange('all')} label={t('preprocess.pageResizer:tat_ca_trang')} />
-                    <ToolCardOption selected={settings.applyToStr === 'even'} onClick={() => handleApplyToChange('even')} label={t('preprocess.pageResizer:trang_chan')} />
-                    <ToolCardOption selected={settings.applyToStr === 'odd'} onClick={() => handleApplyToChange('odd')} label={t('preprocess.pageResizer:trang_le')} />
-                    <ToolCardOption selected={!['all', 'even', 'odd'].includes(settings.applyToStr)} onClick={() => handleApplyToChange('custom')} label={t('preprocess.pageResizer:tuy_chinh')} />
+                    {settings.bgFillMode === 'mirror' && (
+                        <div className="flex items-start gap-2 mt-2 px-2.5 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40">
+                            <span className="text-amber-500 text-sm leading-none mt-0.5">⚠️</span>
+                            <p className="text-[10.5px] text-amber-700 dark:text-amber-300 leading-snug">
+                                Lật gương <strong>soi ngược nội dung sát mép</strong> ra vùng trống. Chữ/logo sát mép sẽ <strong>sai nội dung</strong>. Chỉ nên dùng cho nền trừu tượng/hoa văn, hoặc <strong>"Kéo giãn mép ảnh"</strong>.
+                            </p>
+                        </div>
+                    )}
+
+                    {settings.bgFillMode === 'solid' && (
+                        <div className="mt-2 flex items-center gap-2">
+                            <input
+                                type="color"
+                                value={settings.bgFillColor || '#ffffff'}
+                                onChange={e => onChange({ ...settings, bgFillColor: e.target.value })}
+                                className="w-8 h-8 rounded border border-slate-300 dark:border-white/20 cursor-pointer"
+                            />
+                            <input
+                                type="text"
+                                value={settings.bgFillColor || '#ffffff'}
+                                onChange={e => onChange({ ...settings, bgFillColor: e.target.value })}
+                                placeholder="#ffffff"
+                                className={inputCls + ' !w-28'}
+                            />
+                        </div>
+                    )}
                 </div>
+            )}
+
+
+
+            <div className="flex flex-col gap-2 relative z-[40]">
+                <ToolSectionLabel>{t('preprocess.pageResizer:3_ap_dung_cho')}</ToolSectionLabel>
+                <RichSelect
+                    value={['all', 'even', 'odd'].includes(settings.applyToStr) ? settings.applyToStr : 'custom'}
+                    onChange={(v: string) => handleApplyToChange(v)}
+                    options={[
+                        { value: 'all', title: t('preprocess.pageResizer:tat_ca_trang') },
+                        { value: 'even', title: t('preprocess.pageResizer:trang_chan') },
+                        { value: 'odd', title: t('preprocess.pageResizer:trang_le') },
+                        { value: 'custom', title: t('preprocess.pageResizer:tuy_chinh') }
+                    ]}
+                />
 
                 {!['all', 'even', 'odd'].includes(settings.applyToStr) && (
-                    <div className="mt-3">
+                    <div className="mt-1">
                         <input
                             type="text"
                             value={settings.applyToStr === 'custom' ? '' : settings.applyToStr}
@@ -160,10 +266,10 @@ export default function PageResizerTool({ settings, onChange }: Props) {
                 )}
             </div>
 
-            <ToolDivider />
+
 
             {/* 4. Giảm dung lượng theo khổ mới */}
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-2 relative z-[30]">
                 <ToolSectionLabel>{t('preprocess.pageResizer:4_giam_dung_luong_theo_kho_moi')}</ToolSectionLabel>
                 {(() => {
                     const dpiChoice: 'auto' | 'off' | 'custom' =
@@ -177,29 +283,18 @@ export default function PageResizerTool({ settings, onChange }: Props) {
                     const mode = settings.resizeMode || 'auto';
                     return (
                         <>
-                            <div className="grid grid-cols-3 gap-2">
-                                <ToolCardOption
-                                    selected={dpiChoice === 'auto'}
-                                    onClick={() => setChoice('auto')}
-                                    label={t('preprocess.pageResizer:tu_dong')}
-                                    desc={t('preprocess.pageResizer:giam_mau_300_dpi_khi_thu_nho_kho_khuyen')}
-                                />
-                                <ToolCardOption
-                                    selected={dpiChoice === 'custom'}
-                                    onClick={() => setChoice('custom')}
-                                    label={t('preprocess.pageResizer:chon_dpi')}
-                                    desc={t('preprocess.pageResizer:tu_dat_do_phan_giai_dich_cho_anh')}
-                                />
-                                <ToolCardOption
-                                    selected={dpiChoice === 'off'}
-                                    onClick={() => setChoice('off')}
-                                    label={t('preprocess.pageResizer:giu_nguyen')}
-                                    desc={t('preprocess.pageResizer:khong_giam_mau_chat_luong_toi_da_file')}
-                                />
-                            </div>
+                            <RichSelect
+                                value={dpiChoice}
+                                onChange={(v: string) => setChoice(v as any)}
+                                options={[
+                                    { value: 'auto', title: t('preprocess.pageResizer:tu_dong'), desc: t('preprocess.pageResizer:giam_mau_300_dpi_khi_thu_nho_kho_khuyen') },
+                                    { value: 'custom', title: t('preprocess.pageResizer:chon_dpi'), desc: t('preprocess.pageResizer:tu_dat_do_phan_giai_dich_cho_anh') },
+                                    { value: 'off', title: t('preprocess.pageResizer:giu_nguyen'), desc: t('preprocess.pageResizer:khong_giam_mau_chat_luong_toi_da_file') },
+                                ]}
+                            />
 
                             {dpiChoice === 'custom' && (
-                                <div className="mt-2 flex items-center gap-2">
+                                <div className="mt-1 flex items-center gap-2">
                                     {DPI_PRESETS.map(d => (
                                         <ToolCardOption
                                             key={d}
@@ -221,28 +316,17 @@ export default function PageResizerTool({ settings, onChange }: Props) {
                             )}
 
                             {dpiChoice !== 'off' && (
-                                <div className="mt-3">
+                                <div className="mt-1 relative z-[20]">
                                     <div className="text-[11px] font-medium text-slate-500 dark:text-zinc-400 mb-1.5 ml-0.5">{t('preprocess.pageResizer:che_do_xu_ly')}</div>
-                                    <div className="grid grid-cols-3 gap-2">
-                                        <ToolCardOption
-                                            selected={mode === 'auto'}
-                                            onClick={() => onChange({ ...settings, resizeMode: 'auto' })}
-                                            label={t('preprocess.pageResizer:tu_dong')}
-                                            desc={t('preprocess.pageResizer:tu_chon_theo_noi_dung_trang')}
-                                        />
-                                        <ToolCardOption
-                                            selected={mode === 'vector'}
-                                            onClick={() => onChange({ ...settings, resizeMode: 'vector' })}
-                                            label={t('preprocess.pageResizer:uu_tien_chat_luong')}
-                                            desc={t('preprocess.pageResizer:giu_chu_vector_mau_cmyk_chi_giam_anh')}
-                                        />
-                                        <ToolCardOption
-                                            selected={mode === 'raster'}
-                                            onClick={() => onChange({ ...settings, resizeMode: 'raster' })}
-                                            label={t('preprocess.pageResizer:nhanh_nhat')}
-                                            desc={t('preprocess.pageResizer:dung_lai_theo_anh_mat_vector_ra_rgb')}
-                                        />
-                                    </div>
+                                    <RichSelect
+                                        value={mode}
+                                        onChange={(v: string) => onChange({ ...settings, resizeMode: v as any })}
+                                        options={[
+                                            { value: 'auto', title: t('preprocess.pageResizer:tu_dong'), desc: t('preprocess.pageResizer:tu_chon_theo_noi_dung_trang') },
+                                            { value: 'vector', title: t('preprocess.pageResizer:uu_tien_chat_luong'), desc: t('preprocess.pageResizer:giu_chu_vector_mau_cmyk_chi_giam_anh') },
+                                            { value: 'raster', title: t('preprocess.pageResizer:nhanh_nhat'), desc: t('preprocess.pageResizer:dung_lai_theo_anh_mat_vector_ra_rgb') },
+                                        ]}
+                                    />
                                 </div>
                             )}
                         </>

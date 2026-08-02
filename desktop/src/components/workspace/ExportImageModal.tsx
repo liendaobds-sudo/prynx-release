@@ -11,13 +11,16 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
-import { exportImages, uploadPDF } from '../../lib/api';
+import { exportImagesBatch, uploadPDF } from '../../lib/api';
 import { toast } from '../ui/Toast';
 import { useTranslation } from 'react-i18next';
+import { Plus, Trash2 } from 'lucide-react';
 
 interface Props {
     open: boolean;
     onClose: () => void;
+    /** Mục menu Tệp quyết định mở thẳng chế độ thường hay Export for Screens. */
+    initialTab?: ExportImageTab;
     fileId?: string;
     filePath?: string;
     numPages: number;
@@ -30,8 +33,55 @@ interface Props {
     pageHeightPt?: number;
 }
 
-type Fmt = 'png' | 'jpeg' | 'tiff';
+type Fmt = 'png' | 'jpeg' | 'tiff' | 'webp';
 type RangeMode = 'all' | 'current' | 'custom';
+type SubFolderMode = 'none' | 'scale' | 'format';
+export type ExportImageTab = 'export' | 'screens';
+
+export interface ScaleRow {
+    scale: number;
+    suffix: string;
+    format: Fmt;
+}
+
+const DEFAULT_SCALE_ROW: ScaleRow = { scale: 1, suffix: '', format: 'png' };
+const SCALE_OPTIONS = [1, 2, 3, 4];
+export interface ExportPlanJob {
+    dpi: number;
+    format: Fmt;
+    suffix: string;
+    subDir: string;
+}
+
+/** Lập và kiểm tra TOÀN BỘ batch trước upload/render để không sinh output dở dang. */
+export function buildExportJobs(input: {
+    dpi: number;
+    format: Fmt;
+    colorMode: 'rgb' | 'gray' | 'cmyk';
+    multiScaleEnabled: boolean;
+    scaleRows: ScaleRow[];
+    subFolderMode: SubFolderMode;
+}): ExportPlanJob[] {
+    const rows = input.multiScaleEnabled && input.scaleRows.length > 0
+        ? input.scaleRows
+        : [{ scale: 1, suffix: '', format: input.format }];
+    if (rows.length > 8) throw new Error('Mỗi batch chỉ được tối đa 8 đầu ra.');
+
+    return rows.map(row => {
+        const effectiveDpi = input.dpi * row.scale;
+        if (!Number.isInteger(effectiveDpi) || effectiveDpi < 36 || effectiveDpi > 1200) {
+            throw new Error(`Độ phân giải ${effectiveDpi} DPI vượt giới hạn 36–1200 DPI.`);
+        }
+        if (input.colorMode === 'cmyk' && (row.format === 'png' || row.format === 'webp')) {
+            throw new Error('PNG/WebP không hỗ trợ CMYK. Hãy dùng TIFF hoặc JPEG.');
+        }
+        let subDir = '';
+        if (input.subFolderMode === 'scale') subDir = `${row.scale}x`;
+        else if (input.subFolderMode === 'format') subDir = row.format.toUpperCase();
+        return { dpi: effectiveDpi, format: row.format, suffix: row.suffix, subDir };
+    });
+}
+
 
 /** Parse "1-3, 5, 8-10" → [1,2,3,5,8,9,10] (giới hạn trong [1..max], khử trùng, giữ thứ tự). */
 export function parsePageRange(input: string, max: number): number[] {
@@ -62,9 +112,11 @@ export function parsePageRange(input: string, max: number): number[] {
 
 const DPI_OPTIONS = [72, 150, 300, 600];
 
-export default function ExportImageModal({ open, onClose, fileId, filePath, numPages, currentPage, baseName, getWorkingFile, pageWidthPt, pageHeightPt }: Props) {
+export default function ExportImageModal({ open, onClose, initialTab = 'export', fileId, filePath, numPages, currentPage, baseName, getWorkingFile, pageWidthPt, pageHeightPt }: Props) {
   const { t } = useTranslation();
     const [format, setFormat] = useState<Fmt>('png');
+    const formatRef = useRef(format);
+    formatRef.current = format;
     const [dpi, setDpi] = useState(150);
     const [colorMode, setColorMode] = useState<'rgb' | 'gray' | 'cmyk'>('rgb');
     const [rangeMode, setRangeMode] = useState<RangeMode>('all');
@@ -73,6 +125,34 @@ export default function ExportImageModal({ open, onClose, fileId, filePath, numP
     const [jpegQuality, setJpegQuality] = useState(90);
     const [outputDir, setOutputDir] = useState('');
     const [busy, setBusy] = useState(false);
+
+    // A2: Multi-scale rows (giống Illustrator "+ Add Scale")
+    const [scaleRows, setScaleRows] = useState<ScaleRow[]>([]);
+    const [multiScaleEnabled, setMultiScaleEnabled] = useState(false);
+    // A3: Prefix tùy chỉnh
+    const [prefix, setPrefix] = useState(baseName || '');
+    // A4: Sub-folder
+    const [subFolderMode, setSubFolderMode] = useState<SubFolderMode>('none');
+    // Include Bleed (xuất cả vùng tràn lề)
+    const [includeBleed, setIncludeBleed] = useState(true);
+    // Mở thư mục sau khi xuất
+    const [openAfterExport, setOpenAfterExport] = useState(true);
+    // Tab: 'export' = đơn giản (1 format), 'screens' = multi-scale (giống Export for Screens)
+    const [exportTab, setExportTab] = useState<ExportImageTab>(initialTab);
+
+    // Cập nhật prefix khi baseName thay đổi (mở file mới)
+    useEffect(() => { if (baseName) setPrefix(baseName); }, [baseName]);
+
+    useEffect(() => {
+        if (!open) return;
+        // UIUX (audit 2026-08-01 §EXPORT.MENU): hai mục menu dùng chung modal,
+        // nhưng phải mở đúng workflow ngay từ lần render đầu tiên như Illustrator.
+        setExportTab(initialTab);
+        setMultiScaleEnabled(initialTab === 'screens');
+        if (initialTab === 'screens') {
+            setScaleRows(rows => rows.length > 0 ? rows : [{ ...DEFAULT_SCALE_ROW, format: formatRef.current }]);
+        }
+    }, [open, initialTab]);
 
     // EXPORT (audit 2026-07-30 §IMG-06): progress + cancel
     const [progressText, setProgressText] = useState('');
@@ -107,22 +187,33 @@ export default function ExportImageModal({ open, onClose, fileId, filePath, numP
     // EXPORT (audit 2026-07-30 §IMG-07 lô 3): ước lượng kích thước pixel + dung lượng
     const outputEstimate = useMemo(() => {
         if (!pageWidthPt || !pageHeightPt || pageCount === 0) return null;
-        const pw = Math.round(pageWidthPt * dpi / 72);
-        const ph = Math.round(pageHeightPt * dpi / 72);
-        const channels = colorMode === 'gray' ? 1 : 3;
-        const rawPerPage = pw * ph * channels;
-        let ratio: number;
-        if (format === 'jpeg') ratio = jpegQuality / 300;
-        else if (format === 'tiff') ratio = 0.65;
-        else ratio = 0.6; // PNG
-        const totalBytes = rawPerPage * ratio * pageCount;
+        let jobs: ExportPlanJob[];
+        try {
+            jobs = buildExportJobs({
+                dpi, format, colorMode, multiScaleEnabled, scaleRows, subFolderMode,
+            });
+        } catch {
+            return null;
+        }
+        const channels = colorMode === 'gray' ? 1 : colorMode === 'cmyk' ? 4 : 3;
+        let totalBytes = 0;
+        const dimensions = jobs.map(job => {
+            const pw = Math.round(pageWidthPt * job.dpi / 72);
+            const ph = Math.round(pageHeightPt * job.dpi / 72);
+            let ratio: number;
+            if (job.format === 'jpeg' || job.format === 'webp') ratio = jpegQuality / 300;
+            else if (job.format === 'tiff') ratio = 0.65;
+            else ratio = 0.6;
+            totalBytes += pw * ph * channels * ratio * pageCount;
+            return `${pw}×${ph}`;
+        });
         const sizeStr = totalBytes < 1024 * 1024
             ? `${(totalBytes / 1024).toFixed(0)} KB`
             : totalBytes < 1024 * 1024 * 1024
                 ? `${(totalBytes / (1024 * 1024)).toFixed(1)} MB`
                 : `${(totalBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-        return { pw, ph, sizeStr };
-    }, [pageWidthPt, pageHeightPt, dpi, colorMode, format, jpegQuality, pageCount]);
+        return { dimensions: dimensions.join(' + '), sizeStr };
+    }, [pageWidthPt, pageHeightPt, dpi, colorMode, format, jpegQuality, pageCount, multiScaleEnabled, scaleRows, subFolderMode]);
 
     // EXPORT (audit 2026-07-30 §IMG-06): hủy job đang chạy
     // Hooks phải gọi TRƯỚC mọi early return (rules of hooks).
@@ -159,6 +250,16 @@ export default function ExportImageModal({ open, onClose, fileId, filePath, numP
         }
         // EXPORT (audit 2026-07-30 §IMG-06): chặn job trùng
         if (abortRef.current) return;
+        let exportJobs: ExportPlanJob[];
+        try {
+            exportJobs = buildExportJobs({
+                dpi, format, colorMode, multiScaleEnabled, scaleRows, subFolderMode,
+            });
+        } catch (e) {
+            toast.info((e as Error).message);
+            return;
+        }
+
 
         setBusy(true);
         setProgressText(t('misc.exportImage:dang_chuan_bi'));
@@ -167,35 +268,49 @@ export default function ExportImageModal({ open, onClose, fileId, filePath, numP
 
         try {
             // EXPORT (audit 2026-07-30 §IMG-04): bake page-order/rotation/delete
-            // theo pattern useWorkingPdf chuẩn dự án trước khi gửi backend render.
             setProgressText(t('misc.exportImage:dang_chuan_bi_trang'));
             let resolvedFileId = fileId;
             let resolvedFilePath = filePath;
 
             const workingFile = await getWorkingFile();
             if (workingFile && workingFile !== null) {
-                // workingFile khác file gốc → có sửa đổi → upload bản bake
-                // Kiểm tra abort sau bước tốn thời gian
                 if (controller.signal.aborted) return;
-
                 setProgressText(t('misc.exportImage:dang_tai_len_ban_da_chinh'));
                 const uploaded = await uploadPDF(workingFile, { signal: controller.signal });
+
                 resolvedFileId = uploaded.id;
                 resolvedFilePath = undefined;
             }
 
             if (controller.signal.aborted) return;
 
-            const total = pageCount;
-            setProgressText(t('misc.exportImage:dang_xuat_trang_x_y', { x: 1, y: total }));
-
-            const res = await exportImages({
-                fileId: resolvedFileId, filePath: resolvedFilePath, outputDir, format, dpi, colorMode,
-                pages, multipageTiff: format === 'tiff' && multipageTiff,
-                jpegQuality, baseName,
+            setProgressText(t('misc.exportImage:dang_xuat'));
+            const res = await exportImagesBatch({
+                fileId: resolvedFileId,
+                filePath: resolvedFilePath,
+                colorMode,
+                pages,
+                includeBleed,
                 signal: controller.signal,
+                jobs: exportJobs.map(job => ({
+                    outputDir: job.subDir ? `${outputDir}\\${job.subDir}` : outputDir,
+                    format: job.format,
+                    dpi: job.dpi,
+                    multipageTiff: job.format === 'tiff' && multipageTiff,
+                    jpegQuality,
+                    baseName: prefix + job.suffix,
+                })),
             });
-            toast.success(t('misc.exportImage:da_xuat_file_anh_vao', { count: res.count, dir: res.output_dir }));
+            const totalExported = res.count;
+
+            toast.success(t('misc.exportImage:da_xuat_file_anh_vao', { count: totalExported, dir: outputDir }));
+            // Mở thư mục kết quả
+            if (openAfterExport && outputDir) {
+                try {
+                    const { open: shellOpen } = await import('@tauri-apps/plugin-shell');
+                    await shellOpen(outputDir);
+                } catch { /* không mở được — bỏ qua */ }
+            }
             onClose();
         } catch (e) {
             if ((e as any)?.name === 'AbortError' || controller.signal.aborted) {
@@ -225,34 +340,136 @@ export default function ExportImageModal({ open, onClose, fileId, filePath, numP
                     <button onClick={busy ? undefined : onClose} disabled={busy} className="text-slate-400 hover:text-slate-700 dark:hover:text-white disabled:opacity-30" title={t('misc.exportImage:dong')} aria-label={t('misc.exportImage:dong')}><X className="w-4 h-4" /></button>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-4">
-                    {/* Định dạng */}
-                    <div>
-                        <label className="text-[11px] font-bold text-slate-600 dark:text-zinc-400 uppercase">{t('misc.exportImage:dinh_dang')}</label>
-                        <div className="flex gap-4 mt-1">
-                            {(['png', 'jpeg', 'tiff'] as Fmt[]).map(f => (
-                                <label key={f} className={`${radioRow} ${f === 'png' && colorMode === 'cmyk' ? 'opacity-40' : ''}`}>
-                                    <input type="radio" name="fmt" checked={format === f}
-                                        onChange={() => { setFormat(f); if (f === 'png' && colorMode === 'cmyk') setColorMode('rgb'); }}
-                                        disabled={busy || (f === 'png' && colorMode === 'cmyk')} />
-                                    {f.toUpperCase()}
-                                </label>
-                            ))}
-                        </div>
-                        {format === 'jpeg' && (
-                            <div className="mt-2 flex items-center gap-2 text-sm">
-                                <span className="text-slate-500">{t('misc.exportImage:chat_luong_jpeg')}</span>
-                                <input type="range" min={1} max={100} value={jpegQuality} onChange={e => setJpegQuality(parseInt(e.target.value))} className="flex-1" disabled={busy} />
-                                <span className="w-8 text-right tabular-nums">{jpegQuality}</span>
-                            </div>
-                        )}
-                        {format === 'tiff' && (
-                            <label className="mt-2 flex items-center gap-1.5 text-sm cursor-pointer">
-                                <input type="checkbox" checked={multipageTiff} onChange={e => setMultipageTiff(e.target.checked)} disabled={busy} />
-                                {t('misc.exportImage:gop_tat_ca_trang_vao_1_file_tiff')}
-                            </label>
-                        )}
+                <div className="flex-1 overflow-y-auto flex flex-col">
+                    {/* ── Tab bar ── */}
+                    <div role="tablist" className="flex border-b border-slate-200 dark:border-white/10 px-5">
+                        {(['export', 'screens'] as const).map(tab => (
+                            <button key={tab}
+                                role="tab" aria-selected={exportTab === tab}
+                                onClick={() => {
+                                    setExportTab(tab);
+                                    if (tab === 'screens') {
+                                        setMultiScaleEnabled(true);
+                                        if (scaleRows.length === 0) setScaleRows([{ ...DEFAULT_SCALE_ROW, format }]);
+                                    } else {
+                                        setMultiScaleEnabled(false);
+                                    }
+                                }}
+                                disabled={busy}
+                                className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+                                    exportTab === tab
+                                        ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400 dark:border-indigo-400'
+                                        : 'border-transparent text-slate-500 dark:text-zinc-400 hover:text-slate-700 dark:hover:text-zinc-200'
+                                }`}>
+                                {tab === 'export' ? t('misc.exportImage:tab_xuat_anh') : t('misc.exportImage:tab_xuat_cho_man_hinh')}
+                            </button>
+                        ))}
                     </div>
+
+                    <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-4">
+
+                    {/* ══════════ Tab 1: Xuất ảnh (đơn giản) ══════════ */}
+                    {exportTab === 'export' && (
+                    <>
+                        {/* Định dạng */}
+                        <div>
+                            <label className="text-[11px] font-bold text-slate-600 dark:text-zinc-400 uppercase">{t('misc.exportImage:dinh_dang')}</label>
+                            <div className="flex gap-4 mt-1">
+                                {(['png', 'jpeg', 'webp', 'tiff'] as Fmt[]).map(f => (
+                                    <label key={f} className={`${radioRow} ${(f === 'png' || f === 'webp') && colorMode === 'cmyk' ? 'opacity-40' : ''}`}>
+                                        <input type="radio" name="fmt" checked={format === f}
+                                            onChange={() => { setFormat(f); if ((f === 'png' || f === 'webp') && colorMode === 'cmyk') setColorMode('rgb'); }}
+                                            disabled={busy || ((f === 'png' || f === 'webp') && colorMode === 'cmyk')} />
+                                        {f.toUpperCase()}
+                                    </label>
+                                ))}
+                            </div>
+                            {(format === 'jpeg' || format === 'webp') && (
+                                <div className="mt-2 flex items-center gap-2 text-sm">
+                                    <span className="text-slate-500">{format === 'jpeg' ? t('misc.exportImage:chat_luong_jpeg') : t('misc.exportImage:chat_luong_webp')}</span>
+                                    <input type="range" min={1} max={100} value={jpegQuality} onChange={e => setJpegQuality(parseInt(e.target.value))} className="flex-1" disabled={busy} />
+                                    <span className="w-8 text-right tabular-nums">{jpegQuality}</span>
+                                </div>
+                            )}
+                            {format === 'tiff' && (
+                                <label className="mt-2 flex items-center gap-1.5 text-sm cursor-pointer">
+                                    <input type="checkbox" checked={multipageTiff} onChange={e => setMultipageTiff(e.target.checked)} disabled={busy} />
+                                    {t('misc.exportImage:gop_tat_ca_trang_vao_1_file_tiff')}
+                                </label>
+                            )}
+                        </div>
+                    </>
+                    )}
+
+                    {/* ══════════ Tab 2: Xuất cho màn hình (multi-scale) ══════════ */}
+                    {exportTab === 'screens' && (
+                    <>
+                        {/* Prefix */}
+                        <div>
+                            <label className="text-[11px] font-bold text-slate-600 dark:text-zinc-400 uppercase">{t('misc.exportImage:tien_to_ten_file')}</label>
+                            <input value={prefix} onChange={e => setPrefix(e.target.value)}
+                                placeholder={baseName || 'page'}
+                                disabled={busy}
+                                className="mt-1 w-full h-8 px-2 border border-slate-300 dark:border-white/15 rounded bg-white dark:bg-zinc-800 text-sm" />
+                            <p className="mt-0.5 text-[11px] text-slate-400 dark:text-zinc-500">{t('misc.exportImage:vi_du_prefix', { prefix: prefix || baseName || 'page' })}</p>
+                        </div>
+
+                        {/* Sub-folder */}
+                        <div>
+                            <label className="text-[11px] font-bold text-slate-600 dark:text-zinc-400 uppercase">{t('misc.exportImage:thu_muc_con')}</label>
+                            <div className="flex gap-4 mt-1">
+                                <label className={radioRow}><input type="radio" name="subfolder" checked={subFolderMode === 'none'} onChange={() => setSubFolderMode('none')} disabled={busy} />{t('misc.exportImage:khong')}</label>
+                                <label className={radioRow}><input type="radio" name="subfolder" checked={subFolderMode === 'scale'} onChange={() => setSubFolderMode('scale')} disabled={busy} />{t('misc.exportImage:theo_scale')}</label>
+                                <label className={radioRow}><input type="radio" name="subfolder" checked={subFolderMode === 'format'} onChange={() => setSubFolderMode('format')} disabled={busy} />{t('misc.exportImage:theo_format')}</label>
+                            </div>
+                        </div>
+
+                        {/* Multi-scale table */}
+                        <div>
+                            <div className="grid grid-cols-[60px_1fr_90px_28px] gap-1.5 text-[10px] text-slate-400 dark:text-zinc-500 uppercase font-bold">
+                                <span>Scale</span><span>Suffix</span><span>Format</span><span></span>
+                            </div>
+                            {scaleRows.map((row, i) => (
+                                <div key={i} className="grid grid-cols-[60px_1fr_90px_28px] gap-1.5 items-center mt-1.5">
+                                    <select value={row.scale}
+                                        onChange={e => {
+                                            const next = [...scaleRows];
+                                            next[i] = { ...next[i], scale: Number(e.target.value), suffix: next[i].suffix || `@${e.target.value}x` };
+                                            setScaleRows(next);
+                                        }}
+                                        disabled={busy}
+                                        className="h-7 px-1 border border-slate-300 dark:border-white/15 rounded bg-white dark:bg-zinc-800 text-sm">
+                                        {SCALE_OPTIONS.map(s => <option key={s} value={s}>{s}×</option>)}
+                                    </select>
+                                    <input value={row.suffix}
+                                        onChange={e => { const next = [...scaleRows]; next[i] = { ...next[i], suffix: e.target.value }; setScaleRows(next); }}
+                                        placeholder={`@${row.scale}x`}
+                                        disabled={busy}
+                                        className="h-7 px-1.5 border border-slate-300 dark:border-white/15 rounded bg-white dark:bg-zinc-800 text-sm" />
+                                    <select value={row.format}
+                                        onChange={e => { const next = [...scaleRows]; next[i] = { ...next[i], format: e.target.value as Fmt }; setScaleRows(next); }}
+                                        disabled={busy}
+                                        className="h-7 px-1 border border-slate-300 dark:border-white/15 rounded bg-white dark:bg-zinc-800 text-sm">
+                                        {(['png', 'jpeg', 'webp', 'tiff'] as Fmt[]).map(f => (
+                                            <option key={f} value={f} disabled={colorMode === 'cmyk' && (f === 'png' || f === 'webp')}>{f.toUpperCase()}</option>
+                                        ))}
+                                    </select>
+                                    <button onClick={() => setScaleRows(scaleRows.filter((_, j) => j !== i))} disabled={busy}
+                                        className="h-7 w-7 flex items-center justify-center text-slate-400 hover:text-red-500 dark:hover:text-red-400">
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                </div>
+                            ))}
+                            <button onClick={() => setScaleRows([...scaleRows, { ...DEFAULT_SCALE_ROW, format }])}
+                                disabled={busy || scaleRows.length >= 8}
+                                className="flex items-center gap-1 text-sm text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 disabled:opacity-40 mt-2">
+                                <Plus className="w-3.5 h-3.5" /> {t('misc.exportImage:them_kich_thuoc')}
+                            </button>
+                        </div>
+                    </>
+                    )}
+
+                    {/* ══════════ Phần chung (cả 2 tab) ══════════ */}
 
                     {/* DPI */}
                     <div>
@@ -277,11 +494,11 @@ export default function ExportImageModal({ open, onClose, fileId, filePath, numP
                         <div className="flex gap-4 mt-1">
                             <label className={radioRow}><input type="radio" name="color" checked={colorMode === 'rgb'} onChange={() => setColorMode('rgb')} disabled={busy} />RGB</label>
                             <label className={radioRow}><input type="radio" name="color" checked={colorMode === 'gray'} onChange={() => setColorMode('gray')} disabled={busy} />Grayscale</label>
-                            <label className={radioRow}><input type="radio" name="color" checked={colorMode === 'cmyk'} onChange={() => { setColorMode('cmyk'); if (format === 'png') setFormat('tiff'); }} disabled={busy} />CMYK</label>
+                            <label className={radioRow}><input type="radio" name="color" checked={colorMode === 'cmyk'} onChange={() => { setColorMode('cmyk'); if (format === 'png' || format === 'webp') setFormat('tiff'); setScaleRows(rows => rows.map(row => (row.format === 'png' || row.format === 'webp') ? { ...row, format: 'tiff' } : row)); }} disabled={busy} />CMYK</label>
                         </div>
                         {colorMode === 'cmyk' && (
                             <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
-                                CMYK dùng PPE ink-space (FOGRA39). PNG không hỗ trợ — chỉ TIFF/JPEG.
+                                CMYK dùng PPE ink-space (FOGRA39). PNG/WebP không hỗ trợ — chỉ TIFF/JPEG.
                             </p>
                         )}
                     </div>
@@ -310,6 +527,20 @@ export default function ExportImageModal({ open, onClose, fileId, filePath, numP
                             <button onClick={pickFolder} disabled={busy} className="px-3 h-9 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium disabled:opacity-50">{t('misc.exportImage:chon')}</button>
                         </div>
                     </div>
+
+                    {/* Include Bleed + Open after export */}
+                    <div className="flex gap-4">
+                        <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+                            <input type="checkbox" checked={includeBleed} onChange={e => setIncludeBleed(e.target.checked)} disabled={busy} />
+                            {t('misc.exportImage:xuat_ca_vung_bleed')}
+                        </label>
+                        <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+                            <input type="checkbox" checked={openAfterExport} onChange={e => setOpenAfterExport(e.target.checked)} disabled={busy} />
+                            {t('misc.exportImage:mo_thu_muc_sau_xuat')}
+                        </label>
+                    </div>
+
+                    </div>
                 </div>
 
                 <div className="flex items-center justify-between gap-2 px-5 py-3 border-t border-slate-200 dark:border-white/10">
@@ -321,7 +552,7 @@ export default function ExportImageModal({ open, onClose, fileId, filePath, numP
                         </span>
                         {!busy && outputEstimate && (
                             <span className="text-[11px] text-slate-400 dark:text-zinc-500 tabular-nums">
-                                {outputEstimate.pw}×{outputEstimate.ph} px · ~{outputEstimate.sizeStr}
+                                {outputEstimate.dimensions} px · ~{outputEstimate.sizeStr}
                             </span>
                         )}
                     </div>

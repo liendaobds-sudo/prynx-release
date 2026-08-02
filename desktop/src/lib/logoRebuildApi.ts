@@ -33,6 +33,29 @@ export interface LogoRebuildCapabilities {
   limitations: string[];
 }
 
+export interface LogoPaletteSuggestion {
+  color: string;
+  coverage_ratio: number;
+}
+
+export interface LogoRebuildPreflight {
+  status: 'ready';
+  source: {
+    width_px: number;
+    height_px: number;
+    mode: string;
+    format: string;
+    file_size_bytes: number;
+    has_alpha: boolean;
+    has_icc_profile: boolean;
+    dpi: [number, number] | null;
+  };
+  settings: LogoRebuildSettings;
+  palette_suggestions: LogoPaletteSuggestion[];
+  warnings: string[];
+  limitations: string[];
+}
+
 export interface LogoRebuildPreview {
   status: 'ready';
   job_id: string;
@@ -57,6 +80,24 @@ async function responseError(response: Response, fallback: string): Promise<Erro
 export async function getLogoRebuildCapabilities(): Promise<LogoRebuildCapabilities> {
   const response = await authenticatedFetch(`${getApiUrl()}/logo-rebuild/capabilities`);
   if (!response.ok) throw await responseError(response, 'Không đọc được khả năng vector hóa logo.');
+  return response.json();
+}
+
+export async function preflightLogoRebuild(
+  file: File,
+  settings: LogoRebuildSettings,
+  signal?: AbortSignal,
+): Promise<LogoRebuildPreflight> {
+  const upload = await prepareFileForUpload(file);
+  const body = new FormData();
+  body.append('file', upload, file.name);
+  body.append('settings_json', JSON.stringify(settings));
+  const response = await authenticatedFetch(getApiUrl() + '/logo-rebuild/preflight', {
+    method: 'POST',
+    body,
+    signal,
+  });
+  if (!response.ok) throw await responseError(response, 'Không thể phân tích màu từ ảnh.');
   return response.json();
 }
 

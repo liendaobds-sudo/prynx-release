@@ -187,6 +187,22 @@ describe('PageResizer — resizePages', () => {
     expect(Math.abs(w[1] - target)).toBeLessThan(1); // idx1 (trang 2) resize
     expect(Math.abs(w[3] - target)).toBeLessThan(1); // idx3 (trang 4) resize
   });
+
+
+  it('solid tô được cả trang trắng không có Contents', async () => {
+    const source = await PDFDocument.create();
+    source.addPage([100, 100]);
+    const out = await resizePages(await source.save(), {
+      targetW: 100,
+      targetH: 200,
+      scaleMode: 'fit',
+      applyTo: 'all',
+      bgFillMode: 'solid',
+      bgFillColor: '#12a34b',
+    });
+    const result = await PDFDocument.load(out);
+    expect(result.getPage(0).node.Contents()).toBeTruthy();
+  });
 });
 
 // ─── PdfMerger (PDF-only, không chạm imageNormalizer) ──────────────────────

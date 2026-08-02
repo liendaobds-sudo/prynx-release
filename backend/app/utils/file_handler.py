@@ -15,9 +15,6 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
-MAX_FILE_SIZE = settings.MAX_FILE_SIZE_MB * 1024 * 1024
-
-
 async def _save_upload_file(upload_file: UploadFile) -> tuple[str, str, int]:
     """
     Save uploaded file to disk.
@@ -38,11 +35,6 @@ async def _save_upload_file(upload_file: UploadFile) -> tuple[str, str, int]:
     async with aiofiles.open(file_path, "wb") as f:
         while chunk := await upload_file.read(1024 * 1024):  # 1MB chunks
             file_size += len(chunk)
-            if file_size > MAX_FILE_SIZE:
-                os.remove(file_path)
-                raise ValueError(
-                    f"File quá lớn. Kích thước tối đa: {settings.MAX_FILE_SIZE_MB}MB"
-                )
             await f.write(chunk)
 
     logger.info(f"Saved upload: {upload_file.filename} → {stored_name} ({file_size} bytes)")

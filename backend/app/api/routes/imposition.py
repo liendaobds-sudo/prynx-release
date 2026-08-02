@@ -3,7 +3,6 @@ import shutil
 import tempfile
 import logging
 import contextlib
-import re
 import time
 import asyncio
 from pathlib import Path
@@ -11,6 +10,15 @@ from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Depends
 from fastapi.responses import FileResponse
 from app.core.license_guard import require_license, require_feature, enforce_feature
 from app.core.heavy_job_scheduler import scheduled_job
+from app.core.detect_shape_service import (
+    canonical_detection_path,
+    classify_raster_separations,
+    raster_fallback_budget as _raster_fallback_budget,
+    run_vector_detection,
+)
+from app.core.imposition_file_access import validate_imposition_pdf_path as _validate_file_path
+from app.core import nup_job_state
+from app.api.routes.document_tools import get_pdf_meta  # compatibility re-export
 from app.schemas.imposition import (
     ImposeJobStartResponse,
     NupJobCancelResponse,
@@ -55,7 +63,7 @@ def _imposition_feature(settings) -> str:
         settings, "page_sheet_mode", default=False
     ))
 
-    # CNC also carries isDieCutMode=true, so it must be checked first.
+    # CNC cũng mang isDieCutMode=true nên phải kiểm tra trước.
     if imposer_mode == "cnc" or task_mode in ("cnc", "cnc_imposer"):
         return "impo.cnc"
     if page_sheet_mode:
@@ -66,109 +74,6 @@ def _imposition_feature(settings) -> str:
         return "impo.diecut"
     return "impo.nup"
 
-# ── Allowed directories for file path inputs ──
-# Desktop (Tauri) chạy loopback-only như chính người dùng → mặc định cho phép mọi
-# .pdf local hợp lệ. Khi deploy web/đa người dùng, đặt env IMPOSITION_RESTRICT_PATHS=1
-# để BẬT allowlist (chống LFI). Thêm thư mục cho phép qua IMPOSITION_ALLOWED_DIRS
-# (ngăn cách bằng os.pathsep).
-_ALLOWED_DIRS = [
-    os.path.abspath(UPLOAD_DIR),
-    os.path.abspath(RESULTS_DIR),
-    os.path.abspath(tempfile.gettempdir()),
-]
-for _d in (os.environ.get("IMPOSITION_ALLOWED_DIRS", "") or "").split(os.pathsep):
-    if _d.strip():
-        _ALLOWED_DIRS.append(os.path.abspath(_d.strip()))
-
-_RESTRICT_PATHS = (os.environ.get("IMPOSITION_RESTRICT_PATHS", "") or "").strip().lower() in ("1", "true", "yes", "on")
-
-
-def _validate_file_path(path: str | None, must_exist: bool = True) -> str:
-    """
-    Validate a client-supplied file path to prevent path traversal attacks.
-    Returns the resolved absolute path if valid, raises HTTPException otherwise.
-    """
-    if not path:
-        raise HTTPException(status_code=400, detail="File path is required.")
-
-    # Chặn traversal theo THÀNH PHẦN path (không chặn nhầm tên file hợp lệ có chứa
-    # chuỗi '..', ví dụ "report..final.pdf"). Chỉ chặn khi '..' là một segment đường dẫn.
-    _parts = re.split(r'[\\/]+', path)
-    if any(p == '..' for p in _parts):
-        raise HTTPException(status_code=400, detail="Invalid path: directory traversal not allowed.")
-
-    resolved = os.path.abspath(path)
-
-    # Reject symbolic links tại path đích. Khi BẬT chế độ hạn chế (web/đa người dùng),
-    # kiểm tra CHẶT hơn: realpath giải mọi symlink/junction ở thư mục cha; nếu khác
-    # resolved (đã chuẩn hoá hoa/thường + dấu phân cách) → có link trung gian → từ chối.
-    # KHÔNG áp realpath ở desktop mode: trên Windows realpath có thể đổi casing ổ đĩa /
-    # giải 8.3 → false-positive chặn nhầm file hợp lệ của chính người dùng.
-    if os.path.islink(resolved):
-        raise HTTPException(status_code=400, detail="Invalid path: symbolic links not allowed.")
-    if _RESTRICT_PATHS and os.path.normcase(os.path.realpath(resolved)) != os.path.normcase(resolved):
-        raise HTTPException(status_code=400, detail="Invalid path: symbolic links not allowed.")
-
-    # Must be a PDF file
-    if not resolved.lower().endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
-
-    # Desktop App (Tauri) mode: backend loopback-only, người dùng truy cập file local
-    # của chính mình → cho phép mọi path. Khi BẬT IMPOSITION_RESTRICT_PATHS (web/đa
-    # người dùng) → ép path nằm trong _ALLOWED_DIRS (defense-in-depth chống LFI).
-    if _RESTRICT_PATHS:
-        if not any(
-            os.path.commonpath([resolved, d]) == d
-            for d in _ALLOWED_DIRS
-        ):
-            raise HTTPException(status_code=403, detail="Invalid path: outside allowed directories.")
-
-    if must_exist and not os.path.exists(resolved):
-        raise HTTPException(status_code=404, detail=f"File not found: {path}")
-
-    return resolved
-
-@router.post("/unlock-pdf")
-async def unlock_pdf(file: UploadFile = File(...), license_info: dict = Depends(require_license)):
-    """
-    Unlock and Flatten a PDF using PDFium backend.
-    This strips encryption dictionaries and digitally certified signatures,
-    and flattens all Annotations (including visual signature stamps) into the vector stream.
-    """
-    if not file.filename.endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
-    
-    try:
-        import pypdfium2 as pdfium
-        from fastapi import Response
-        
-        contents = await file.read()
-
-        # KIENTRUC (audit 2026-07-29 §C.1): flatten + save đều là lời gọi PDFium ghi dữ
-        # liệu, phải nằm trong khóa. Đây là trường hợp DUY NHẤT trong repo dùng PDFium để
-        # GHI (FPDF_REMOVE_SECURITY) nên càng không được để chạy song song.
-        from app.core.pdfium_lock import pdfium_guard
-        import io
-        out_buffer = io.BytesIO()
-        with pdfium_guard("imposition_unlock_pdf"):
-            # Load PDF using pdfium (bypasses owner pass automatically usually, or allows interaction)
-            pdf = pdfium.PdfDocument(contents)
-
-            # Flatten all pages to ensure annotations (visual signatures, stamps) are baked into vector paths
-            for i in range(len(pdf)):
-                page = pdf[i]
-                # FPDFPage_Flatten: 0 = FLAT_NORMALDISPLAY
-                pdfium.raw.FPDFPage_Flatten(page, 0)
-
-            # flags=3 corresponds to FPDF_REMOVE_SECURITY, ensuring the output is perfectly clean and decoded
-            pdf.save(out_buffer, flags=3)
-            pdf.close()
-
-        
-        return Response(content=out_buffer.getvalue(), media_type="application/pdf")
-        
-    except Exception as e:
-        raise_http(e, "Mở khoá PDF thất bại")
 
 @router.post("/execute-plan")
 async def execute_plan_imposition(
@@ -186,8 +91,8 @@ async def execute_plan_imposition(
     import json
     from app.core.plan_executor import PlanExecutor, PlanExecutionError
     
-    if not file.filename.endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Chỉ hỗ trợ file PDF.")
     
     try:
         plan = json.loads(plan_json)
@@ -268,287 +173,6 @@ async def execute_plan_json(body: dict, license_info: dict = Depends(require_fea
 # PDFium. Bên gọi duy nhất (`desktop/src/lib/viewerPreview.ts`) cũng không được import ở
 # đâu. Muốn có lại lớp preview tạm thì viết bằng PPE/pdfium, đừng khôi phục đường GS.
 
-@router.post("/quick-color-space")
-async def quick_color_space(body: dict):
-    """
-    Quickly detect the color space of a PDF using pikepdf.
-    Expects body: { "path": "C:/Users/.../catalog.pdf" }
-    """
-    pdf_path = _validate_file_path(body.get("path"))
-    try:
-        import pikepdf
-        pdf = pikepdf.open(pdf_path)
-        cmyk = 0
-        rgb = 0
-        
-        # Check OutputIntents
-        if "/Root" in pdf.trailer and "/OutputIntents" in pdf.trailer.Root:
-            for intent in pdf.trailer.Root.OutputIntents:
-                val = str(intent.get("/OutputConditionIdentifier", "")).upper()
-                if "CMYK" in val or "FOGRA" in val or "SWOP" in val:
-                    return {"color_space": "CMYK"}
-                if "RGB" in val:
-                    return {"color_space": "RGB"}
-        
-        def check_color_space(cs):
-            nonlocal cmyk, rgb
-            if isinstance(cs, pikepdf.Array):
-                if str(cs[0]) == "/DeviceCMYK": cmyk += 1
-                elif str(cs[0]) == "/DeviceRGB": rgb += 1
-                elif str(cs[0]) == "/ICCBased" and len(cs) > 1:
-                    icc_stream = cs[1]
-                    if "/N" in icc_stream:
-                        n = int(icc_stream.N)
-                        if n == 4: cmyk += 1
-                        elif n == 3: rgb += 1
-                elif str(cs[0]) == "/Separation" and len(cs) > 2:
-                    check_color_space(cs[2])
-            else:
-                if str(cs) == "/DeviceCMYK": cmyk += 1
-                elif str(cs) == "/DeviceRGB": rgb += 1
-
-        # Check page resources (scan up to 50 pages)
-        pages_to_scan = min(len(pdf.pages), 50)
-        for i in range(pages_to_scan):
-            page = pdf.pages[i]
-            if "/Resources" in page:
-                res = page.Resources
-                if "/ColorSpace" in res:
-                    for key in res.ColorSpace.keys():
-                        check_color_space(res.ColorSpace[key])
-                if "/XObject" in res:
-                    for key in res.XObject.keys():
-                        xobj = res.XObject[key]
-                        if "/ColorSpace" in xobj:
-                            check_color_space(xobj.ColorSpace)
-            
-            # Fast return if we find a dominant color space early
-            if cmyk > 5: return {"color_space": "CMYK"}
-            if rgb > 5: return {"color_space": "RGB"}
-        
-        # If still 0, check the actual content stream operators!
-        # Many vector PDFs just use implicit DeviceCMYK (k, K operators) or DeviceRGB (rg, RG)
-        if cmyk == 0 and rgb == 0:
-            import pikepdf.models
-            for i in range(pages_to_scan):
-                try:
-                    page = pdf.pages[i]
-                    # Read uncompressed raw content stream
-                    contents = b""
-                    if "/Contents" in page:
-                        c = page.Contents
-                        if isinstance(c, pikepdf.Array):
-                            for stream in c:
-                                contents += stream.read_bytes()
-                        else:
-                            contents = c.read_bytes()
-                    # Check for operator patterns
-                    # ' k' or ' K' (CMYK), ' rg' or ' RG' (RGB)
-                    # This is a heuristic but very effective for simple vectors
-                    import re
-                    if re.search(br'(?:\s|^)[0-9.]+\s+[0-9.]+\s+[0-9.]+\s+[0-9.]+\s+[kK](?:\s|$)', contents):
-                        cmyk += 1
-                    elif re.search(br'(?:\s|^)[0-9.]+\s+[0-9.]+\s+[0-9.]+\s+[rgRG](?:\s|$)', contents):
-                        rgb += 1
-                except Exception:
-                    pass
-        
-        pdf.close()
-        
-        if cmyk > rgb: return {"color_space": "CMYK"}
-        if rgb > cmyk: return {"color_space": "RGB"}
-        return {"color_space": None}
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"Failed to detect color space: {e}")
-        return {"color_space": None}
-@router.post("/pdf-layers")
-async def get_pdf_layers(body: dict):
-    """
-    Extract OCG layers directly from a file path.
-    Expects body: { "path": "C:/Users/.../file.pdf" }
-    Returns the same structure as /preflight/layers/{file_id}
-    """
-    from app.core.layer_engine import LayerEngine
-    
-    pdf_path = _validate_file_path(body.get("path"))
-    engine = LayerEngine()
-    try:
-        result = engine.get_layer_tree(pdf_path)
-        return result
-    except Exception as e:
-        raise_http(e, "Trích xuất layer OCG thất bại")
-
-@router.post("/pdf-layers/preview")
-async def preview_pdf_layers(body: dict):
-    """
-    Render a page with specified OCG layers hidden.
-    Expects body: { "path": "...", "page": 1, "hidden_layer_ids": [5, 7], "dpi": 150 }
-    Returns: { "preview_b64": "data:image/jpeg;base64,..." }
-    """
-    from app.core.layer_engine import LayerEngine
-    
-    pdf_path = _validate_file_path(body.get("path"))
-    page = body.get("page", 1)
-    hidden_layer_ids = body.get("hidden_layer_ids", [])
-    hidden_object_keys = body.get("hidden_object_keys", [])
-    dpi = body.get("dpi", 150)
-    
-    engine = LayerEngine()
-    try:
-        preview_b64 = engine.render_with_visibility(pdf_path, page, hidden_layer_ids, dpi, hidden_object_keys=hidden_object_keys)
-        return {
-            "success": True,
-            "preview_b64": preview_b64,
-        }
-    except Exception as e:
-        raise_http(e, "Render preview layer thất bại")
-
-@router.post("/pdf-text")
-async def get_pdf_text(body: dict):
-    """
-    Trích text CÓ TOẠ ĐỘ cho chế độ XEM THƯỜNG (quét chữ + copy như Acrobat).
-    Chỉ lấy text THẬT trong PDF (không OCR) — file scan/ảnh/chữ đã outline sẽ ra rỗng,
-    y hệt Acrobat khi chưa chạy OCR.
-
-    Expects: { "path": "...", "page": 1 }   (page 1-based)
-    Returns: {
-        "blocks": [ { "lines": [ { "bbox": {x,y,w,h}, "chars": [{c}] } ] } ],
-        "page_width_pt": float, "page_height_pt": float
-    }
-    bbox ở POINT, gốc TRÊN-TRÁI (pdfplumber `top`), khớp cách text layer đặt span.
-    Dòng gộp bằng pdfplumber extract_text_lines (theo y_tolerance chuẩn).
-    """
-    import pdfplumber
-
-    pdf_path = _validate_file_path(body.get("path"))
-    page = int(body.get("page", 1))
-
-    try:
-        with pdfplumber.open(pdf_path) as pdf:
-            if page < 1 or page > len(pdf.pages):
-                return {"blocks": [], "page_width_pt": 0.0, "page_height_pt": 0.0}
-            pg = pdf.pages[page - 1]
-            # extract_text_lines gộp dòng CHUẨN theo y_tolerance của pdfplumber (dựa
-            # trên chars, không phình band như gộp thủ công) → không nuốt dòng kề.
-            # Mỗi line có: text, x0, x1, top, bottom (đơn vị point, gốc trên-trái).
-            text_lines = pg.extract_text_lines(strip=True)
-
-            out_lines = []
-            for ln in text_lines:
-                text = ln.get("text", "")
-                if not text:
-                    continue
-                x0 = float(ln.get("x0", 0)); top = float(ln.get("top", 0))
-                x1 = float(ln.get("x1", 0)); bottom = float(ln.get("bottom", 0))
-                out_lines.append({
-                    "bbox": {"x": x0, "y": top, "w": x1 - x0, "h": bottom - top},
-                    "chars": [{"c": ch} for ch in text],
-                })
-
-            return {
-                "blocks": [{"lines": out_lines}],
-                "page_width_pt": float(pg.width),
-                "page_height_pt": float(pg.height),
-            }
-    except Exception as e:
-        raise_http(e, "Trích xuất text PDF thất bại")
-
-@router.post("/pdf-meta")
-async def get_pdf_meta(body: dict):
-    """
-    Read PDF metadata (page count, dimensions, rotations) using pypdfium2.
-    
-    This allows the TypeScript Planner to get the info it needs for computation
-    WITHOUT loading the entire PDF into the Webview's RAM.
-    
-    Expects body: { "path": "C:/Users/.../catalog.pdf" }
-    """
-    from app.workers import pdf_wrapper as pdf_lib
-    from app.core.imposition_page_box import effective_imposition_box
-    
-    pdf_path = _validate_file_path(body.get("path"))
-    
-    try:
-        pdf = pdf_lib.open(pdf_path)
-        page_count = len(pdf)
-        pages = []
-        max_w = 0.0
-        max_h = 0.0
-        
-        # Page sizes can differ after resize; return metadata for every page.
-        scan_limit = page_count
-        
-        _PT_TO_MM = 1.0 / 2.83465
-        detected_bleed_mm = 0.0  # bleed suy ra từ (MediaBox - TrimBox)/2 của trang đầu
-        for i in range(scan_limit):
-            page = pdf[i]
-            # MediaBox giữ bleed khi chênh lệch nhỏ; CropBox là trang logic khi
-            # MediaBox thực chất là canvas lớn chứa nhiều trang đặt cạnh nhau.
-            src_box = effective_imposition_box(page)
-            w = src_box.width
-            h = src_box.height
-            rot = page.rotation
-
-            # Tự nhận bleed từ metadata file: nếu TrimBox nhỏ hơn MediaBox đối xứng
-            # thì khoảng chênh /2 chính là bleed (giống cách Acrobat đọc page boxes).
-            if i == 0:
-                try:
-                    _tb = page.trimbox
-                    _mb = page.mediabox
-                    _bx = (float(_mb.width) - float(_tb.width)) / 2.0
-                    _by = (float(_mb.height) - float(_tb.height)) / 2.0
-                    if _bx > 0.5 and _by > 0.5 and abs(_bx - _by) < 3.0:
-                        detected_bleed_mm = round(((_bx + _by) / 2.0) * _PT_TO_MM, 2)
-                except Exception:
-                    detected_bleed_mm = 0.0
-            
-            user_unit = 1.0
-            try:
-                if "/UserUnit" in page._page:
-                    user_unit = float(page._page["/UserUnit"])
-            except Exception:
-                pass
-            
-            w *= user_unit
-            h *= user_unit
-            media_w = float(page.mediabox.width) * user_unit
-            media_h = float(page.mediabox.height) * user_unit
-            
-            # Adjust visual dimensions for rotation
-            if rot in (90, 270):
-                visual_w, visual_h = h, w
-                media_visual_w, media_visual_h = media_h, media_w
-            else:
-                visual_w, visual_h = w, h
-                media_visual_w, media_visual_h = media_w, media_h
-            
-            if visual_w > max_w:
-                max_w = visual_w
-            if visual_h > max_h:
-                max_h = visual_h
-            
-            pages.append({
-                "index": i,
-                "width_pt": round(visual_w, 2),
-                "height_pt": round(visual_h, 2),
-                "media_width_pt": round(media_visual_w, 2),
-                "media_height_pt": round(media_visual_h, 2),
-                "rotation": rot,
-            })
-        
-        pdf.close()
-        
-        return {
-            "page_count": page_count,
-            "max_width_pt": round(max_w, 2),
-            "max_height_pt": round(max_h, 2),
-            "detected_bleed_mm": detected_bleed_mm,
-            "pages": pages,
-        }
-    except Exception as e:
-        raise_http(e, "Đọc metadata PDF thất bại")
-
 # Cache kết quả nhận diện theo (path tuyệt đối, mtime, size) → đổi công cụ / mở lại
 # cùng file trả tức thì, không tính lại. Bounded để tránh phình bộ nhớ.
 _DETECT_CACHE: dict = {}
@@ -574,6 +198,24 @@ def _make_detect_cache_key(file_path, config):
         )
     except Exception:
         return None
+
+
+def _resolve_detect_file_id(file_id: str) -> str:
+    from app.database import SessionLocal
+    from app.models.job import UploadedFile as UploadedFileModel
+
+    database = SessionLocal()
+    try:
+        database_file = (
+            database.query(UploadedFileModel)
+            .filter(UploadedFileModel.id == file_id)
+            .first()
+        )
+        if not database_file:
+            raise ValueError(f"File not found in database: {file_id}")
+        return database_file.file_path
+    finally:
+        database.close()
 
 
 async def _run_shared_detection(cache_key, work):
@@ -602,149 +244,51 @@ async def _run_shared_detection(cache_key, work):
 
 
 async def _raster_fallback_shape(engine, file_path, page_idx, config, _logger):
-    """Nhánh raster fallback (Ghostscript/IO bất đồng bộ) — gọi build_shape_from_raster.
-
-    Logic phân loại nằm trong module Detection (SSOT); route chỉ làm phần IO.
-    Trả DetectedShape (source=raster_fallback) hoặc None nếu không thấy spot.
-    """
-    import numpy as np
-    import base64
-    import zlib
+    """Extract separation bất đồng bộ; decompress/OpenCV chạy trong worker thread."""
     import time as _t
-    from app.workers.die_detection import build_shape_from_raster
+
     from app.utils.preview_perf_log import log as _perf
 
-    _t0 = _t.perf_counter()
+    started = _t.perf_counter()
     try:
-        sep_result = await engine.extract_separations(
-            file_path, page_num=page_idx + 1,
-            dpi=config.raster_fallback_dpi, use_ghostscript=True,
+        separation_result = await engine.extract_separations(
+            file_path,
+            page_num=page_idx + 1,
+            dpi=config.raster_fallback_dpi,
+            use_ghostscript=True,
         )
-    except Exception as e:
-        _logger.warning(f"Spot extraction on page {page_idx + 1} failed: {e}")
-        _perf("DETECT", "raster_fallback FAIL", page=page_idx, ms=(_t.perf_counter() - _t0) * 1000, err=str(e)[:80])
+    except Exception as exc:
+        _logger.warning(
+            "Spot extraction on page %s failed: %s", page_idx + 1, exc
+        )
+        _perf(
+            "DETECT",
+            "raster_fallback FAIL",
+            page=page_idx,
+            ms=(_t.perf_counter() - started) * 1000,
+            err=str(exc)[:80],
+        )
         return None
 
-    plates = [
-        p for p in sep_result.get("plates", [])
-        # Bất kỳ plate KHÔNG phải process color (CMYK) → ứng viên kênh khuôn (spot).
-        if p["name"] not in ("Cyan", "Magenta", "Yellow", "Black")
-    ]
-    if not plates:
-        return None
-
-    # Ưu tiên plate có TÊN khớp kênh khuôn cấu hình (CutContour/Dieline/…) — nhất
-    # quán với _select_from_paths ở đường vector (tên kênh > spot bất kỳ). Khi không
-    # plate nào khớp tên, giữ THỨ TỰ GỐC (plate spot đầu tiên) như cũ (sort ổn định).
-    from app.workers.die_detection import _match_die_channel
-    _names = frozenset(n.strip().lower() for n in (config.die_channel_names or ()))
-    plates.sort(key=lambda p: 0 if _match_die_channel(p.get("name"), _names) else 1)
-
-    import cv2
-    for p in plates:
-        try:
-            raw_bytes = zlib.decompress(base64.b64decode(p["alpha_data"]))
-            h = sep_result["height"]
-            w = sep_result["width"]
-            mask = np.frombuffer(raw_bytes, dtype=np.uint8).reshape((h, w))
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if contours:
-                solid = np.zeros_like(mask)
-                cv2.drawContours(solid, contours, -1, 255, cv2.FILLED)
-                mask = solid
-            ys, xs = np.where(mask > 0)
-            if len(ys) == 0:
-                continue
-            dpi = config.raster_fallback_dpi
-            spot_w = float((xs.max() - xs.min()) * 72.0 / dpi)
-            spot_h = float((ys.max() - ys.min()) * 72.0 / dpi)
-            shape = build_shape_from_raster(page_idx, mask, spot_w, spot_h)
-            _perf(
-                "DETECT", "raster_fallback OK",
-                page=page_idx, ms=(_t.perf_counter() - _t0) * 1000,
-                plate=str(p.get("name", ""))[:40],
-            )
-            return shape
-        except Exception as e:
-            _logger.warning(f"Raster classify page {page_idx + 1} failed: {e}")
-            continue
-    _perf("DETECT", "raster_fallback none", page=page_idx, ms=(_t.perf_counter() - _t0) * 1000)
+    fallback, plate_name = await classify_raster_separations(
+        separation_result, page_idx, config, _logger
+    )
+    elapsed_ms = (_t.perf_counter() - started) * 1000
+    if fallback is not None:
+        _perf(
+            "DETECT",
+            "raster_fallback OK",
+            page=page_idx,
+            ms=elapsed_ms,
+            plate=plate_name[:40],
+        )
+        return fallback
+    _perf("DETECT", "raster_fallback none", page=page_idx, ms=elapsed_ms)
     return None
-
-
-def _raster_fallback_budget(
-    shapes,
-    statuses,
-    *,
-    max_tries=None,
-    fail_streak_stop: int = 2,
-) -> dict:
-    """Quyết định có chạy Ghostscript raster fallback không / bao nhiêu trang.
-
-    Log thực tế (tron.pdf 28 trang): vector xong ~16ms (1 separation + 27 custom),
-    rồi 27× GS @144dpi hits=0 → 9–27s. Budget:
-      - Đã có ≥1 trang vector/separation/xobject → chỉ probe 1 trang custom;
-        miss → dừng (file homogeneous: khuôn ở 1 trang, còn lại artwork).
-      - Toàn custom → tối đa max_tries (mặc định 3), dừng sau fail_streak_stop miss liên tiếp.
-      - Hard cap max_tries luôn áp dụng.
-    """
-    import os as _os
-
-    if max_tries is None:
-        try:
-            max_tries = int((_os.environ.get("PRYNX_DETECT_RASTER_MAX") or "3").strip())
-        except ValueError:
-            max_tries = 3
-    max_tries = max(0, min(max_tries, 50))
-
-    candidates: list[int] = []
-    vector_ok = 0
-    for i, shape in enumerate(shapes):
-        src = getattr(shape, "source", None) or ""
-        st = statuses[i] if i < len(statuses) else None
-        ok = bool(getattr(st, "ok", True)) if st is not None else True
-        if src in ("vector", "separation", "xobject"):
-            vector_ok += 1
-            continue
-        if src == "custom" and ok:
-            candidates.append(i)
-
-    if not candidates or max_tries == 0:
-        return {
-            "indices": [],
-            "max_tries": 0,
-            "fail_streak_stop": fail_streak_stop,
-            "reason": "none_or_disabled",
-            "vector_ok": vector_ok,
-            "custom_n": len(candidates),
-        }
-
-    # Đã có khuôn vector: raster hiếm khi cứu 20+ trang CUSTOM (hits=0 trên tron.pdf).
-    if vector_ok >= 1:
-        budget = min(1, max_tries, len(candidates))
-        reason = "probe_only_has_vector_master"
-    else:
-        budget = min(max_tries, len(candidates))
-        reason = "all_custom_capped"
-
-    return {
-        "indices": candidates[:budget] if budget else [],
-        # allow early-stop within the candidate list up to budget
-        "max_tries": budget,
-        "fail_streak_stop": fail_streak_stop,
-        "reason": reason,
-        "vector_ok": vector_ok,
-        "custom_n": len(candidates),
-        # full candidate list for streak logic (we only *start* raster on first `budget`
-        # pages, but if first hits we can expand — see loop below)
-        "all_custom_indices": candidates,
-    }
-
 
 async def _compute_detect_response(file_path, config, detect_logger):
     """Run vector detection plus raster fallback and return the legacy response."""
     import time as _t
-    from app.workers.nup_engine import canonical_page_space
     from app.utils.preview_perf_log import log as _perf, mark as _pmark
 
     _t0 = _t.perf_counter()
@@ -755,120 +299,92 @@ async def _compute_detect_response(file_path, config, detect_logger):
     # `run_nup_engine` chuẩn hoá /Rotate + gốc MediaBox trước khi layout, còn route này
     # trước đây mở file thô → trang /Rotate=90 khổ 200×100 báo trim 200×100 trong khi
     # export dựng theo 100×200 (đo được: hoán w/h). Nay dùng chung chốt đó.
-    with canonical_page_space(file_path) as _canon_path:
+    async with canonical_detection_path(file_path) as _canon_path:
         return await _detect_on_canonical(
             _canon_path, config, detect_logger, _t0, _fname, _perf, _pmark
         )
 
 
-async def _detect_on_canonical(file_path, config, detect_logger,
-                               _t0, _fname, _perf, _pmark):
-    """Phần thân nhận diện, chạy trên trang ĐÃ chuẩn hoá (xem _compute_detect_response)."""
-    from app.workers import pdf_wrapper as pdf_lib
-    from app.workers.die_detection import detect_die_shapes, to_legacy_response
+async def _detect_on_canonical(
+    file_path, config, detect_logger, _t0, _fname, _perf, _pmark
+):
+    """Điều phối detect trên file đã canonicalize; mọi CPU/I/O sync chạy off-loop."""
     from app.core.separations import SeparationEngine
+    from app.workers.die_detection import to_legacy_response
 
-    doc = pdf_lib.open(file_path)
-    _pmark("DETECT", "open_doc", _t0, file=_fname, pages=getattr(doc, "page_count", "?"))
-    try:
-        from app.workers.die_detection import apply_master_die_inheritance
+    result, budget, source_counts = await run_vector_detection(
+        file_path, config, _t0, _fname, _perf, _pmark
+    )
 
-        result = detect_die_shapes(doc, config)
-        _src_counts: dict[str, int] = {}
-        for s in result.shapes:
-            _src_counts[s.source] = _src_counts.get(s.source, 0) + 1
-        _pmark(
-            "DETECT", "vector_done", _t0,
-            pages=result.total_pages, sources=str(_src_counts),
-        )
+    engine = SeparationEngine()
+    raster_tries = 0
+    raster_hits = 0
+    fail_streak = 0
+    max_tries = int(budget.get("max_tries") or 0)
+    fail_stop = int(budget.get("fail_streak_stop") or 2)
+    custom_indices = list(
+        budget.get("all_custom_indices") or budget.get("indices") or []
+    )
 
-        # 1 khuôn master + N artwork → trang không bế kế thừa type/trim (UI Tròn/Elip).
-        # Chạy TRƯỚC raster để không tốn Ghostscript cho 27 trang CUSTOM (tron.pdf).
-        _before_custom = sum(1 for s in result.shapes if s.type.name == "CUSTOM")
-        result = apply_master_die_inheritance(result)
-        _after_custom = sum(1 for s in result.shapes if s.type.name == "CUSTOM")
-        if _after_custom != _before_custom:
-            _src_counts = {}
-            for s in result.shapes:
-                _src_counts[s.source] = _src_counts.get(s.source, 0) + 1
+    for index in custom_indices:
+        if raster_tries >= max_tries:
             _perf(
-                "DETECT", "master_inherit",
-                before_custom=_before_custom, after_custom=_after_custom,
-                sources=str(_src_counts),
+                "DETECT",
+                "raster_skip_cap",
+                tried=raster_tries,
+                left=len(custom_indices) - raster_tries,
             )
-
-        budget = _raster_fallback_budget(result.shapes, result.statuses)
-        _perf(
-            "DETECT", "raster_budget",
-            reason=budget.get("reason"),
-            max_tries=budget.get("max_tries"),
-            vector_ok=budget.get("vector_ok"),
-            custom_n=budget.get("custom_n"),
-        )
-
-        engine = SeparationEngine()
-        raster_tries = 0
-        raster_hits = 0
-        fail_streak = 0
-        max_tries = int(budget.get("max_tries") or 0)
-        fail_stop = int(budget.get("fail_streak_stop") or 2)
-        # Khi đã có vector master: chỉ probe 1 trang. Khi all-custom: thử tối đa max_tries,
-        # dừng sớm nếu fail_streak đạt ngưỡng (GS không có plate trên file này).
-        custom_indices = list(budget.get("all_custom_indices") or budget.get("indices") or [])
-
-        for i in custom_indices:
-            if raster_tries >= max_tries:
-                _perf("DETECT", "raster_skip_cap", tried=raster_tries, left=len(custom_indices) - raster_tries)
-                break
-            if fail_streak >= fail_stop and raster_hits == 0:
-                _perf(
-                    "DETECT", "raster_skip_fail_streak",
-                    fail_streak=fail_streak, tried=raster_tries,
-                    skipped=len(custom_indices) - raster_tries,
-                )
-                break
-            # Sau khi đã có ≥1 hit raster, cho phép nới budget tới max(3, max_tries) trang
-            # (file một phần chỉ có spot raster). Không bao giờ quét hết 28 trang mặc định.
-            if raster_hits > 0 and raster_tries >= max(max_tries, 3):
-                _perf("DETECT", "raster_skip_after_hits", hits=raster_hits, tried=raster_tries)
-                break
-
-            shape = result.shapes[i]
-            # Đã có type (kể cả kế thừa master) → không cần GS.
-            if shape.source != "custom" or shape.type.name != "CUSTOM":
-                continue
-            raster_tries += 1
-            fallback = await _raster_fallback_shape(
-                engine, file_path, shape.page, config, detect_logger
+            break
+        if fail_streak >= fail_stop and raster_hits == 0:
+            _perf(
+                "DETECT",
+                "raster_skip_fail_streak",
+                fail_streak=fail_streak,
+                tried=raster_tries,
+                skipped=len(custom_indices) - raster_tries,
             )
-            if fallback is not None:
-                raster_hits += 1
-                fail_streak = 0
-                result.shapes[i] = fallback
-                result.statuses[i] = type(result.statuses[i])(
-                    page=fallback.page,
-                    ok=True,
-                    source=fallback.source,
-                    error=None,
-                )
-            else:
-                fail_streak += 1
+            break
+        if raster_hits > 0 and raster_tries >= max(max_tries, 3):
+            _perf(
+                "DETECT",
+                "raster_skip_after_hits",
+                hits=raster_hits,
+                tried=raster_tries,
+            )
+            break
 
-        _pmark(
-            "DETECT", "compute_done", _t0,
-            file=_fname, pages=result.total_pages,
-            raster_tries=raster_tries, raster_hits=raster_hits,
-            sources=str(_src_counts),
-            raster_reason=budget.get("reason"),
+        shape = result.shapes[index]
+        if shape.source != "custom" or shape.type.name != "CUSTOM":
+            continue
+        raster_tries += 1
+        fallback = await _raster_fallback_shape(
+            engine, file_path, shape.page, config, detect_logger
         )
-    finally:
-        try:
-            doc.close()
-        except Exception:
-            pass
+        if fallback is not None:
+            raster_hits += 1
+            fail_streak = 0
+            result.shapes[index] = fallback
+            result.statuses[index] = type(result.statuses[index])(
+                page=fallback.page,
+                ok=True,
+                source=fallback.source,
+                error=None,
+            )
+        else:
+            fail_streak += 1
 
+    _pmark(
+        "DETECT",
+        "compute_done",
+        _t0,
+        file=_fname,
+        pages=result.total_pages,
+        raster_tries=raster_tries,
+        raster_hits=raster_hits,
+        sources=str(source_counts),
+        raster_reason=budget.get("reason"),
+    )
     return to_legacy_response(result)
-
 
 @router.post("/perf-beacon")
 async def preview_perf_beacon(body: dict, license_info: dict = Depends(require_license)):
@@ -902,27 +418,20 @@ async def api_detect_shape(body: dict):
         # Web mode (không có path local) vẫn dùng 'fileId' → resolve từ DB như cũ.
         path_in = body.get("path")
         if path_in:
-            file_path = _validate_file_path(path_in)  # validate tồn tại + .pdf + chống traversal
+            file_path = await asyncio.to_thread(_validate_file_path, path_in)
             _detect_logger.info(f"[DETECT_SHAPE] Direct path → {file_path}")
         else:
             file_id = body.get("fileId")
             if not file_id:
                 raise ValueError("Missing 'path' or 'fileId'")
 
-            from app.database import SessionLocal
-            from app.models.job import UploadedFile as UploadedFileModel
-            db = SessionLocal()
-            try:
-                db_file = db.query(UploadedFileModel).filter(UploadedFileModel.id == file_id).first()
-                if not db_file:
-                    raise ValueError(f"File not found in database: {file_id}")
-                file_path = db_file.file_path
-                _detect_logger.info(f"[DETECT_SHAPE] Resolved fileId={file_id} → file_path={file_path}")
-            finally:
-                db.close()
+            file_path = await asyncio.to_thread(_resolve_detect_file_id, file_id)
+            _detect_logger.info(
+                f"[DETECT_SHAPE] Resolved fileId={file_id} → file_path={file_path}"
+            )
 
         import os
-        if not os.path.exists(file_path):
+        if not await asyncio.to_thread(os.path.exists, file_path):
             raise ValueError(f"File not found on disk: {file_path}")
 
         # Cache theo (path, mtime, size) — trả tức thì khi đổi công cụ / mở lại cùng file.
@@ -952,7 +461,7 @@ async def api_detect_shape(body: dict):
         reset_session(f"detect:{_fname}")
         _span = Span("DETECT", "api_detect_shape", file=_fname)
 
-        _cache_key = _make_detect_cache_key(file_path, config)
+        _cache_key = await asyncio.to_thread(_make_detect_cache_key, file_path, config)
         if _cache_key is not None:
             _cached = _DETECT_CACHE.get(_cache_key)
             if _cached is not None:
@@ -1067,18 +576,6 @@ def _cleanup_job_temp(job_id: str):
     _cleanup_nup_chunk_files(job_id)
 
 
-def _read_nup_state(job_id: str):
-    state_file = os.path.join(tempfile.gettempdir(), f"nup_state_{job_id}.txt")
-    try:
-        with open(state_file, "r", encoding="utf-8") as file_obj:
-            parts = file_obj.read().split("|||", 1)
-    except (OSError, UnicodeDecodeError):
-        return None
-    status = parts[0]
-    if status not in {"completed", "failed"}:
-        return None
-    return status, parts[1] if len(parts) > 1 else ""
-
 
 @scheduled_job("nup")
 def _spawn_nup_process(source_path: str, output_path: str, settings: dict, job_id: str):
@@ -1148,14 +645,25 @@ def _spawn_nup_process(source_path: str, output_path: str, settings: dict, job_i
                 current_job["completed_at"] = current_job.get("completed_at") or time.time()
             if current_job and current_job.get("process") is proc:
                 current_job["process"] = None
-        if proc.exitcode not in (0, None) and not cancelled:
-            state_file = os.path.join(tempfile.gettempdir(), f"nup_state_{job_id}.txt")
-            if not os.path.exists(state_file):
-                try:
-                    with open(state_file, 'w', encoding='utf-8') as f:
-                        f.write(f"failed|||N-Up worker exited with code {proc.exitcode}")
-                except OSError:
-                    pass
+        terminal_state = nup_job_state.resolve_nup_terminal_state(
+            job_id,
+            proc.exitcode,
+            cancelled=cancelled,
+            temp_dir=tempfile.gettempdir(),
+        )
+
+        if terminal_state is not None:
+            terminal_status, terminal_message = terminal_state
+            with _NUP_JOBS_LOCK:
+                current_job = nup_jobs.get(job_id)
+                if current_job and current_job.get("status") != "cancelled":
+                    current_job["status"] = terminal_status
+                    current_job["completed_at"] = current_job.get("completed_at") or time.time()
+                    if terminal_status == "completed":
+                        current_job["report"] = terminal_message
+                        current_job["error"] = None
+                    else:
+                        current_job["error"] = terminal_message
     finally:
         if sampler is not None:
             try:
@@ -1360,7 +868,7 @@ async def get_nup_status(job_id: str, _: dict = Depends(require_license)):
 @router.post("/nup-cancel/{job_id}", response_model=NupJobCancelResponse)
 async def cancel_nup_job(job_id: str, _: dict = Depends(require_license)):
     """Cancel a queued/running N-Up job. Repeated and terminal calls are safe."""
-    terminal_state = _read_nup_state(job_id)
+    terminal_state = nup_job_state.read_nup_state(job_id, tempfile.gettempdir())
     with _NUP_JOBS_LOCK:
         job = nup_jobs.get(job_id)
         if job is None:
@@ -1477,6 +985,9 @@ class PreviewLayoutRequest(BaseModel):
     # mặt sau trong plan; field này không dùng chung tên CNC để tránh lệch contract.
     duplex_flip_edge: str = "long"
     mixed_guillotine_strategy: str = "auto_zone"
+    # MIXED-GUILLOTINE (audit 2026-07-30 §MG-A2): tỉ lệ in dư cho phép để gom bản kẽm.
+    # 0 = dư = 0 (nhiều kẽm như trước); 0.1 = cho dư 10% nếu nhờ đó về được 1 kẽm.
+    mixed_excess_tolerance: float = Field(default=0.0, ge=0.0, le=10.0)
     split_gap: Optional[float] = 0
     target_quantity: Optional[int] = Field(default=0, ge=0, le=1000000)
     target_quantities_by_page: Optional[Dict[str, int]] = Field(default_factory=dict)
@@ -1732,6 +1243,7 @@ def _build_mixed_guillotine_preview(doc: Any, req: PreviewLayoutRequest) -> dict
     if sheet_height <= 0:
         sheet_height = margin_top + float(req.usable_h) + margin_bottom
 
+    split_gap = float(getattr(req, "split_gap", 0.0) or 0.0)
     plan = build_mixed_guillotine_plan(
         products,
         MixedGuillotineSettings(
@@ -1745,8 +1257,13 @@ def _build_mixed_guillotine_preview(doc: Any, req: PreviewLayoutRequest) -> dict
             ),
             gap_x=float(req.gap_x),
             gap_y=float(req.gap_y),
+            # §MARK-GAP.1: preview đã nhận point từ resolveImpositionSplitGap.
+            split_gap=split_gap if split_gap > 0 else None,
             duplex=duplex,
             flip_edge=flip_edge,
+            excess_tolerance=float(
+                getattr(req, "mixed_excess_tolerance", 0.0) or 0.0
+            ),
         ),
     )
 
@@ -1863,6 +1380,10 @@ def _build_mixed_guillotine_preview(doc: Any, req: PreviewLayoutRequest) -> dict
         "products": plan["products"],
         "duplex": duplex,
         "flipEdge": plan["flipEdge"],
+        # §MG-A2/§MG-B2: ngưỡng dư đã dùng + cảnh báo nghiệp vụ cho FE hiển thị.
+        "excessTolerance": plan.get("excessTolerance", 0.0),
+        "splitGap": plan.get("splitGap"),
+        "warnings": plan.get("warnings", []),
         "coordinateSpace": plan["coordinateSpace"],
         "planHash": plan["planHash"],
         "planVersion": plan["version"],

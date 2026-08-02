@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
     buildResultTabPayload,
+    partitionIncomingFiles,
+    planIncomingFiles,
     registerActiveTabFeature,
     resolveActiveDedicatedReceiver,
     resolveActiveImageBatchReceiver,
@@ -63,7 +65,31 @@ describe('điều hướng đa tab', () => {
             expect(resolveActiveImageBatchReceiver(tabs, 'phong-to')).toBeNull();
         } finally {
             unregister();
+
         }
+    });
+    it('tách tất cả PDF để shell mở mỗi file thành một tab mới', () => {
+        const files = [
+            { name: '01_bia.PDF' },
+            { name: 'du_lieu.xlsx' },
+            { name: 'anh.png' },
+            { name: '02_ruot.pdf' },
+        ];
+
+        expect(partitionIncomingFiles(files)).toEqual({
+            pdfFiles: [files[0], files[3]],
+            officeFiles: [files[1]],
+            otherFiles: [files[2]],
+        });
+    });
+
+    it('PDF không rơi vào nhóm công cụ ảnh dù đang thả cùng ảnh', () => {
+        const result = partitionIncomingFiles([
+            { name: 'tai_lieu.pdf' },
+            { name: 'preview.jpg' },
+        ]);
+        expect(result.pdfFiles.map(file => file.name)).toEqual(['tai_lieu.pdf']);
+        expect(result.otherFiles.map(file => file.name)).toEqual(['preview.jpg']);
     });
 
     it('khong dinh tuyen vao registry stale cua tab da dong', () => {
@@ -82,4 +108,31 @@ describe('điều hướng đa tab', () => {
             lockedMode: 'nup',
         });
     });
+    it('intent Combine giữ nguyên toàn bộ PDF và ảnh trong một batch', () => {
+        const files = [
+            { name: '01_bia.pdf' },
+            { name: '02_ruot.PDF' },
+            { name: '03_minh-hoa.png' },
+        ];
+
+        expect(planIncomingFiles(files, 'combine')).toEqual({
+            mode: 'combine',
+            files,
+        });
+    });
+
+    it('không có intent Combine vẫn giữ quy tắc mở PDF kiểu Acrobat', () => {
+        const files = [
+            { name: 'tai-lieu.pdf' },
+            { name: 'anh.jpg' },
+        ];
+
+        expect(planIncomingFiles(files, '')).toEqual({
+            mode: 'default',
+            pdfFiles: [files[0]],
+            officeFiles: [],
+            otherFiles: [files[1]],
+        });
+    });
+
 });

@@ -188,6 +188,51 @@ def test_render_does_not_recurse(mirrored):
         doc.close()
 
 
+@pytest.mark.parametrize("rotate", [90, 180, 270])
+def test_rotated_page_mirror_fills_bleed_instead_of_only_expanding_box(tmp_path, rotate):
+    """RESIZE (audit 2026-07-31 §A.1): trang xoay phải có mực ở vùng mirror.
+
+    Hồi quy cũ chỉ nới MediaBox/CropBox rồi tiếp tục nên dải vừa nới là giấy
+    trắng. Dùng nền đỏ kín trang để bốn cạnh sau mirror đều phải còn đỏ.
+    """
+    pdfium = pytest.importorskip("pypdfium2")
+    src = str(tmp_path / f"rotated_{rotate}.pdf")
+    pdf = pikepdf.Pdf.new()
+    pdf.add_blank_page(page_size=(TRIM_W, TRIM_H))
+    page = pdf.pages[0]
+    page.obj[pikepdf.Name("/Contents")] = pdf.make_stream(
+        f"1 0 0 rg 0 0 {TRIM_W} {TRIM_H} re f\n".encode("ascii")
+    )
+    page.obj[pikepdf.Name("/Rotate")] = rotate
+    pdf.save(src)
+    pdf.close()
+
+    out = PageBoxesEngine().add_mirror_bleed(src, BLEED_MM, None)
+    try:
+        with pikepdf.Pdf.open(out) as result:
+            assert int(result.pages[0].get("/Rotate", 0) or 0) == 0
+
+        doc = pdfium.PdfDocument(out)
+        try:
+            image = doc[0].render(scale=2.0).to_pil().convert("RGB")
+        finally:
+            doc.close()
+
+        width, height = image.size
+        samples = (
+            image.getpixel((1, height // 2)),
+            image.getpixel((width - 2, height // 2)),
+            image.getpixel((width // 2, 1)),
+            image.getpixel((width // 2, height - 2)),
+        )
+        assert all(r > 180 and g < 80 and b < 80 for r, g, b in samples)
+    finally:
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+
+
 # ------------------------------------------------------------- ca biên
 
 def test_zero_bleed_keeps_page(src_pdf):
@@ -197,6 +242,35 @@ def test_zero_bleed_keeps_page(src_pdf):
         mb = _boxes(out)["/MediaBox"]
         assert mb[2] - mb[0] == pytest.approx(TRIM_W, abs=1e-4)
         assert mb[3] - mb[1] == pytest.approx(TRIM_H, abs=1e-4)
+    finally:
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+
+
+@pytest.mark.parametrize("rotate", [90, 180, 270])
+def test_zero_bleed_preserves_rotated_page_without_rewriting(tmp_path, rotate):
+    """RESIZE (audit 2026-07-31 §A.1): bleed 0 không được bake trang xoay."""
+    src = str(tmp_path / f"zero_bleed_rotated_{rotate}.pdf")
+    pdf = pikepdf.Pdf.new()
+    pdf.add_blank_page(page_size=(TRIM_W, TRIM_H))
+    page = pdf.pages[0]
+    page.obj[pikepdf.Name("/Contents")] = pdf.make_stream(
+        b"0 0 1 rg 10 20 30 40 re f\n"
+    )
+    page.obj[pikepdf.Name("/Rotate")] = rotate
+    pdf.save(src)
+    pdf.close()
+
+    original_content = _raw_content(src)
+    original_media_box = _boxes(src)["/MediaBox"]
+    out = PageBoxesEngine().add_mirror_bleed(src, 0.0, None)
+    try:
+        with pikepdf.Pdf.open(out) as result:
+            assert int(result.pages[0].get("/Rotate", 0) or 0) == rotate
+        assert _raw_content(out) == original_content
+        assert _boxes(out)["/MediaBox"] == pytest.approx(original_media_box)
     finally:
         try:
             os.remove(out)

@@ -233,6 +233,8 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
                     : 'all',
             );
             fd.append('cut_first_page_only', productType === 'sticker' && p.cutFirstPageOnly ? 'true' : 'false');
+            // Recipe cũ không có field này phải giữ hành vi cũ: không crop.
+            fd.append('crop_to_sticker', productType === 'sticker' && p.cutMode !== 'none' && p.cropToSticker === true ? 'true' : 'false');
             fd.append(
                 'shape_mode',
                 productType === 'sticker'

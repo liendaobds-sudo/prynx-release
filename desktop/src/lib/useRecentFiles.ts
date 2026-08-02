@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { statNativeSystemFile } from './nativeFileAccess';
+import { isOutputFile } from './constants';
 
 export interface RecentFile {
   path: string;
@@ -124,24 +126,62 @@ export const useRecentFiles = create<RecentFilesState>()(
   )
 );
 
+interface OpenPayloadWithSources {
+  file?: File | null;
+  officeSourceFile?: File | null;
+  officeSourceFiles?: File[];
+}
+
+/** Ghi mọi file nguồn vật lý của một lần mở, gồm cả batch Office, vào Recent. */
+export function addOpenPayloadToRecent(payload?: OpenPayloadWithSources | null): number {
+  if (!payload) return 0;
+  const candidates = [
+    payload.file,
+    payload.officeSourceFile,
+    ...(payload.officeSourceFiles || []),
+  ];
+  const seenPaths = new Set<string>();
+  let added = 0;
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const path = (candidate as File & { path?: string }).path;
+    if (!path || seenPaths.has(path)) continue;
+    seenPaths.add(path);
+    if (
+      isOutputFile(candidate.name || '')
+      || (candidate as File & { isBlank?: boolean }).isBlank
+      || (candidate as File & { isGenerated?: boolean }).isGenerated
+    ) {
+      continue;
+    }
+    useRecentFiles.getState().addFile({
+      path,
+      name: candidate.name,
+      size: candidate.size || 0,
+    });
+    added += 1;
+  }
+  return added;
+}
 /**
- * Kiểm một mục "mở gần đây" còn trên đĩa hay không, ĐỒNG THỜI cập nhật cờ mất trong
- * store. Trả về kích thước THẬT (size lưu trong store có thể đã cũ) hoặc `null` nếu
- * file không còn.
- *
- * Chỉ chạy trong Tauri; môi trường web trả về `{ size: 0 }` để caller đi tiếp như cũ.
+ * Kiểm một mục "mở gần đây" qua command native dùng được với D:/USB/UNC.
+ * Chỉ `missing` đã được xác nhận mới trả `null`; timeout/quyền/NAS offline vẫn trả
+ * `{ size: 0 }` để caller thử mở bằng native path và không xóa nhầm mục Recent.
  */
 export async function statRecentFile(path: string): Promise<{ size: number } | null> {
-  // Dùng `in` thay vì `(window as any).__TAURI_INTERNALS__` để không thêm một `any`
-  // mới vào đống nợ lint đang được dọn (xem docs/BAO_CAO_AUDIT_LINT_2026-07-28.md).
   if (!('__TAURI_INTERNALS__' in window)) return { size: 0 };
-  try {
-    const { stat } = await import('@tauri-apps/plugin-fs');
-    const info = await stat(path);
+
+  // FILEIO (audit 2026-08-02 §OPEN.2): plugin-fs mất scope sau restart và từ chối
+  // ổ D/USB/UNC; dùng cùng contract native với Open With/Home.
+  const info = await statNativeSystemFile(path);
+  if (info.status === 'available') {
     useRecentFiles.getState().clearMissing(path);
-    return { size: typeof info.size === 'number' ? info.size : 0 };
-  } catch {
+    return { size: info.size };
+  }
+  if (info.status === 'missing') {
     useRecentFiles.getState().markMissing(path);
     return null;
   }
+  return { size: 0 };
 }

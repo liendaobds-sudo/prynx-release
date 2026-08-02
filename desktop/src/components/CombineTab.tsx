@@ -1,11 +1,16 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { backendMergeManifest, backendMergePdfs } from '../lib/api';
-import { shouldDelegateLargePdfJob } from '../lib/combineDelegation';
+import { backendMergeManifestJob, backendMergePdfsJob } from '../lib/api';
+import {
+  estimateCombineImagePixels,
+  getCombineMemoryStatus,
+  shouldDelegateLargePdfJob,
+} from '../lib/combineDelegation';
 import { PDFDocument, degrees } from 'pdf-lib';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { getFileArrayBuffer } from '../lib/utils';
 import { localFileUrl } from '../lib/localFileTransport';
-import { imageBytesToPdfDoc } from '../lib/imageNormalizer';
+import { appendImagePageToPdfDoc, imageBytesToPdfDoc } from '../lib/imageNormalizer';
+import { IMAGE_ACCEPT_ATTR, imageFileExtension, isSupportedImageFileName } from '../lib/imageFileTypes';
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
 import 'react-pdf/dist/esm/Page/TextLayer.css';
@@ -17,16 +22,29 @@ import { usePrintDialog } from './shared/usePrintDialog';
 import {
   addRotatedBlankPage,
   buildBackendCombineManifest,
+  isCompletePdfBytes,
+  toExactArrayBuffer,
   visiblePageSize,
 } from '../lib/combineAssembly';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
+function createPdfBlobFromBytes(bytes: Uint8Array, invalidMessage: string): Blob {
+  if (!isCompletePdfBytes(bytes)) throw new Error(invalidMessage);
+  // PDF (audit 2026-08-01 §B.1): chỉ đưa đúng byte-window vào Blob, không lấy cả backing buffer.
+  return new Blob([toExactArrayBuffer(bytes)], { type: 'application/pdf' });
+}
+
+function createPdfFileFromBytes(bytes: Uint8Array, name: string, invalidMessage: string): File {
+  if (!isCompletePdfBytes(bytes)) throw new Error(invalidMessage);
+  return new File([toExactArrayBuffer(bytes)], name, { type: 'application/pdf' });
+}
+
 export type CombineNode = {
   id: string;
   type: 'single' | 'collapsed_group' | 'blank';
   file?: File;
-  previewUrl?: string;
+
   rotation?: number;
   
   // For 'single' nodes that are part of an expanded group
@@ -41,6 +59,33 @@ export type CombineNode = {
   sizeKey?: string;
 };
 
+function backendCompletedNodeIds(
+  nodes: CombineNode[],
+  phase: string,
+  completed: number,
+  total: number,
+): Set<string> {
+  const result = new Set<string>();
+  const safeCompleted = Math.max(0, Math.floor(completed));
+  const safeTotal = Math.max(0, Math.floor(total));
+  if (safeCompleted <= 0 || safeTotal <= 0) return result;
+
+  // UIUX (audit 2026-08-02 §COMB.UI.2): backend đếm trang, không đếm card.
+  // Chỉ ánh xạ tuần tự khi mỗi node chắc chắn đúng một trang; PDF nguyên file chỉ
+  // được đánh dấu đồng loạt ở pha sau merging để không báo hoàn tất sớm.
+  const isOnePageSequence = nodes.length === safeTotal && nodes.every(node => (
+    node.type === 'blank'
+    || node.pageIndex !== undefined
+    || isSupportedImageFileName(node.file?.name || '')
+  ));
+  if (isOnePageSequence) {
+    nodes.slice(0, Math.min(nodes.length, safeCompleted)).forEach(node => result.add(node.id));
+  } else if (safeCompleted >= safeTotal && phase !== 'merging') {
+    nodes.forEach(node => result.add(node.id));
+  }
+  return result;
+}
+
 interface Props {
   tabId?: string;
   isActive?: boolean;
@@ -49,6 +94,8 @@ interface Props {
   initialFiles?: File[];
   /** Kết quả ghép 1 file → mở tab imposition (hành vi cũ). */
   onSpawnTab?: (file: File, extraPayload?: any) => void;
+  /** Mọi kết quả đã được mở; shell có thể đóng tab Combine nguồn. */
+  onResultsOpened?: () => void;
   /**
    * Kết quả ghép theo nhóm kích thước → mỗi file mở 1 tab Combine riêng
    * (title + files trong extra).
@@ -56,20 +103,87 @@ interface Props {
   onSpawnCombineTabs?: (results: { file: File; title: string }[]) => void;
 }
 
-class PdfErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean, retryCount: number}> {
-  constructor(props: any) {
+const PDF_PREVIEW_AUTO_RETRIES = 5;
+
+interface PdfErrorBoundaryProps {
+  children: React.ReactNode;
+  errorLabel: string;
+  retryLabel: string;
+  resetKey: string;
+}
+
+interface PdfErrorBoundaryState {
+  hasError: boolean;
+  retryCount: number;
+}
+
+class PdfErrorBoundary extends React.Component<PdfErrorBoundaryProps, PdfErrorBoundaryState> {
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(props: PdfErrorBoundaryProps) {
     super(props);
     this.state = { hasError: false, retryCount: 0 };
   }
-  static getDerivedStateFromError() { return { hasError: true }; }
+
+  static getDerivedStateFromError(): Partial<PdfErrorBoundaryState> {
+    return { hasError: true };
+  }
+
   componentDidCatch() {
-    if (this.state.retryCount < 5) {
-      setTimeout(() => this.setState(prev => ({ hasError: false, retryCount: prev.retryCount + 1 })), 100);
+    if (this.state.retryCount >= PDF_PREVIEW_AUTO_RETRIES) return;
+    this.clearRetryTimer();
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.setState((previous) => ({
+        hasError: false,
+        retryCount: previous.retryCount + 1,
+      }));
+    }, 100);
+  }
+
+  componentDidUpdate(previousProps: PdfErrorBoundaryProps) {
+    if (previousProps.resetKey !== this.props.resetKey) {
+      this.clearRetryTimer();
+      if (this.state.hasError || this.state.retryCount > 0) {
+        this.setState({ hasError: false, retryCount: 0 });
+      }
     }
   }
+
+  componentWillUnmount() {
+    this.clearRetryTimer();
+  }
+
+  private clearRetryTimer() {
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+  }
+
+  private handleRetry = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    this.clearRetryTimer();
+    this.setState({ hasError: false, retryCount: 0 });
+  };
+
   render() {
     if (this.state.hasError) {
-      return <div className="animate-pulse w-full h-full bg-slate-100 dark:bg-zinc-800 flex items-center justify-center text-[10px] text-slate-400">Loading...</div>;
+      return (
+        <div
+          className="w-full h-full bg-slate-100 dark:bg-zinc-800 flex flex-col gap-1 items-center justify-center text-[10px] text-slate-500"
+          role="alert"
+        >
+          <span>{this.props.errorLabel}</span>
+          <button
+            type="button"
+            className="pointer-events-auto rounded border border-slate-300 dark:border-zinc-600 px-2 py-0.5 hover:bg-white dark:hover:bg-zinc-700"
+            onClick={this.handleRetry}
+          >
+            {this.props.retryLabel}
+          </button>
+        </div>
+      );
     }
     return this.props.children;
   }
@@ -104,37 +218,65 @@ const PdfThumbnail = React.memo(({ file, pageIndex }: { file: string | File; pag
 
 const ImageThumbnail = React.memo(({ file, rotation }: { file: File; rotation?: number }) => {
   const [src, setSrc] = useState<string>('');
+  const extension = imageFileExtension(file.name);
+  const usesDarkTransparencySurface = extension === 'png' || extension === 'webp';
 
   useEffect(() => {
     let isActive = true;
-    if ((window as any).__TAURI_INTERNALS__ && (file as any).path) {
-      Promise.resolve(localFileUrl((file as any).path)).then((url) => {
-        if (isActive) setSrc(url);
-      });
-    } else {
-      Promise.resolve(URL.createObjectURL(file)).then((url) => {
-        if (isActive) setSrc(url);
-      });
-    }
-    return () => { isActive = false; };
+    let ownedObjectUrl: string | null = null;
+    const nativePath = (file as File & { path?: string }).path;
+    const isTauri = Boolean(
+      (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__,
+    );
+    const nextSrc = isTauri && nativePath
+      ? localFileUrl(nativePath)
+      : URL.createObjectURL(file);
+    if (!isTauri || !nativePath) ownedObjectUrl = nextSrc;
+
+    Promise.resolve().then(() => {
+      if (isActive) setSrc(nextSrc);
+    });
+
+    // FILEIO (audit 2026-08-02 §COMB.2): component tạo URL thì component phải
+    // thu hồi khi đổi file/unmount; URL protocol localfile không thuộc ownership này.
+    return () => {
+      isActive = false;
+      if (ownedObjectUrl) URL.revokeObjectURL(ownedObjectUrl);
+    };
   }, [file]);
 
   if (!src) return <div className="animate-pulse w-full h-full bg-slate-100 dark:bg-zinc-800" />;
 
   return (
-    <img src={src} alt="" style={{ transform: `rotate(${rotation || 0}deg)` }} className="object-contain w-full h-full transition-transform duration-300" />
+    <div className={`w-full h-full flex items-center justify-center ${usesDarkTransparencySurface ? 'bg-black' : ''}`}>
+      <img src={src} alt="" style={{ transform: `rotate(${rotation || 0}deg)` }} className="object-contain w-full h-full transition-transform duration-300" />
+    </div>
   );
 });
 
-export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTabs, onTitleChange, isActive, tabId }: Props) {
+export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, onSpawnCombineTabs, onTitleChange, isActive, tabId }: Props) {
   const { t } = useTranslation();
   const { openPrintDialog, printDialog } = usePrintDialog();
   const [nodes, setNodes] = useState<CombineNode[]>([]);
   const [pageCounts, setPageCounts] = useState<Record<string, number>>({});
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isDelegatedCombineRunning, setIsDelegatedCombineRunning] = useState(false);
+  const [delegatedCombineProgress, setDelegatedCombineProgress] = useState(0);
+  const [completedCombineNodeIds, setCompletedCombineNodeIds] = useState<Set<string>>(new Set());
+  const [isCancellingCombine, setIsCancellingCombine] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const combineJobAbortRef = useRef<AbortController | null>(null);
+  const combineJobGenerationRef = useRef(0);
+
+  // PDF (audit 2026-08-02 §6F/§UI.1): tab đã đóng không được nhận tiến độ/kết quả
+  // của job cũ; abort đồng thời yêu cầu backend dừng công việc đang chạy.
+  useEffect(() => () => {
+    combineJobGenerationRef.current += 1;
+    combineJobAbortRef.current?.abort();
+    combineJobAbortRef.current = null;
+  }, []);
 
   const [scaleMode, setScaleMode] = useState<'keep' | 'fit_a4' | 'fit_first'>('keep');
   /** Chia nhóm theo kích thước trang (như viewer hiển thị) — tick là sắp view ngay. */
@@ -142,6 +284,15 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
   const [isGrouping, setIsGrouping] = useState(false);
   /** Chống re-group lặp khi chính setNodes từ regroup. */
   const skipNextRegroupRef = useRef(false);
+
+  const markCombineNodeCompleted = useCallback((node: CombineNode) => {
+    setCompletedCombineNodeIds(previous => {
+      if (previous.has(node.id)) return previous;
+      const next = new Set(previous);
+      next.add(node.id);
+      return next;
+    });
+  }, []);
 
   const handleAddBlankPage = () => {
     setNodes(prev => {
@@ -206,7 +357,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
         id: `init-${i}-${Date.now()}`,
         type: 'single' as const,
         file: f,
-        previewUrl: URL.createObjectURL(f),
+
         rotation: 0
       }));
       setNodes(initNodes);
@@ -244,31 +395,16 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
     fetchPageCounts();
   }, [nodes, pageCounts]);
 
-  // Cleanup object URLs for removed nodes
-  const prevNodesRef = useRef<CombineNode[]>([]);
-  useEffect(() => {
-    const currentUrls = new Set(nodes.map(n => n.previewUrl).filter(Boolean));
-    prevNodesRef.current.forEach(prevNode => {
-      if (prevNode.previewUrl && !currentUrls.has(prevNode.previewUrl)) {
-        URL.revokeObjectURL(prevNode.previewUrl);
-      }
-    });
-    prevNodesRef.current = nodes;
-  }, [nodes]);
-
   const handleAddFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      const newFiles = Array.from(e.target.files).filter(f => 
-        f.name.toLowerCase().endsWith('.pdf') || 
-        f.name.toLowerCase().endsWith('.jpg') || 
-        f.name.toLowerCase().endsWith('.jpeg') || 
-        f.name.toLowerCase().endsWith('.png')
+      const newFiles = Array.from(e.target.files).filter(f =>
+        f.name.toLowerCase().endsWith('.pdf') || isSupportedImageFileName(f.name)
       );
       const newNodes: CombineNode[] = newFiles.map((f, i) => ({
         id: `added-${Date.now()}-${i}`,
         type: 'single' as const,
         file: f,
-        previewUrl: URL.createObjectURL(f),
+
         rotation: 0
       }));
       setNodes(prev => [...prev, ...newNodes]);
@@ -306,7 +442,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
         id: `extracted-${groupId}-${i}`,
         type: 'single',
         file: nodeToExpand.file, // Keep reference to original file
-        previewUrl: nodeToExpand.previewUrl, // Share the Object URL
+
         rotation: nodeToExpand.rotation,
         pageIndex: i, // We use this at Combine time to extract the specific page
         groupId,
@@ -333,7 +469,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
         id: `collapsed-${groupId}`,
         type: 'collapsed_group',
         file: groupNodes[0].file, // Representative thumbnail
-        previewUrl: groupNodes[0].previewUrl, // Keep representative URL
+
         pages: groupNodes,
         groupName
       };
@@ -463,27 +599,73 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
   const handleInterleave = async () => {
     if (nodes.length < 2) return;
 
+    const requestGeneration = combineJobGenerationRef.current + 1;
+    combineJobGenerationRef.current = requestGeneration;
+    combineJobAbortRef.current?.abort();
+    combineJobAbortRef.current = null;
+    let delegatedController: AbortController | null = null;
+
     setIsProcessing(true);
+    setIsDelegatedCombineRunning(false);
+    setDelegatedCombineProgress(0);
+    setCompletedCombineNodeIds(new Set());
+    setIsCancellingCombine(false);
     setStatusMsg(t('tabs.combine:dang_xu_ly_dan_xen'));
 
     try {
       const topLevelFiles = nodes.filter(n => n.type === 'collapsed_group' || (n.type === 'single' && !n.groupId));
+      const progressNodes = topLevelFiles;
       const canDelegateInterleave = topLevelFiles.length === nodes.length
         && shouldDelegateLargePdfJob(topLevelFiles, pageCounts, {
           scaleMode,
           requireTopLevel: true,
         });
       if (canDelegateInterleave) {
-        setStatusMsg(`${t('tabs.combine:dang_xu_ly_dan_xen')} (backend)`);
-        const blob = await backendMergePdfs(topLevelFiles.map(n => n.file!), 'interleave');
-        const finalFile = new File([blob], 'Interleaved.pdf', { type: 'application/pdf' });
-        if (onSpawnTab) onSpawnTab(finalFile);
+        delegatedController = new AbortController();
+        combineJobAbortRef.current = delegatedController;
+        setIsDelegatedCombineRunning(true);
+        setStatusMsg(t('tabs.combine:dang_ghep_backend_progress', { progress: 0 }));
+        const result = await backendMergePdfsJob(
+          topLevelFiles.map(n => n.file!),
+          'interleave',
+          {
+            signal: delegatedController.signal,
+            onProgress: (status) => {
+              if (
+                delegatedController?.signal.aborted
+                || combineJobGenerationRef.current !== requestGeneration
+              ) return;
+              const progress = Math.min(100, Math.max(0, Math.round(status.progress || 0)));
+              setDelegatedCombineProgress(progress);
+              setCompletedCombineNodeIds(backendCompletedNodeIds(
+                progressNodes,
+                status.status,
+                status.completed,
+                status.total,
+              ));
+              setStatusMsg(t('tabs.combine:dang_ghep_backend_progress', { progress }));
+            },
+          },
+        );
+        if (
+          delegatedController.signal.aborted
+          || combineJobGenerationRef.current !== requestGeneration
+        ) return;
+        const finalFile = result.path
+          ? new File([], 'Interleaved.pdf', { type: 'application/pdf' })
+          : new File([result.blob as Blob], 'Interleaved.pdf', { type: 'application/pdf' });
+        if (result.path) Object.defineProperty(finalFile, 'path', { value: result.path });
+        if (onSpawnTab) {
+          onSpawnTab(finalFile);
+          onResultsOpened?.();
+        }
         return;
       }
       const finalDoc = await PDFDocument.create();
       const loadedDocs = new Map<File, PDFDocument>();
       
       const pdfsToInterleave: PDFDocument[] = [];
+      const interleaveNodes: CombineNode[] = [];
       const rotations: number[] = [];
       
       let firstPageSize: [number, number] | null = null;
@@ -502,6 +684,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
           loadedDocs.set(p.file!, srcDoc);
         }
         pdfsToInterleave.push(srcDoc);
+        interleaveNodes.push(p);
         rotations.push(p.rotation || 0);
       }
 
@@ -537,10 +720,16 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
             }
 
             finalDoc.addPage(copiedPage);
+            if (i === copiedPagesByDoc[j].length - 1) {
+              markCombineNodeCompleted(interleaveNodes[j]);
+            }
           }
         }
       }
 
+      if (finalDoc.getPageCount() === 0) {
+        throw new Error(t('tabs.combine:khong_co_trang_hop_le_de_ghep'));
+      }
       let finalBytes = await finalDoc.save();
 
       if (scaleMode !== 'keep') {
@@ -552,15 +741,31 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
         finalBytes = await resizePages(finalBytes, { targetW, targetH, scaleMode: 'fit', applyTo: 'all' });
       }
 
-      const finalBlob = new Blob([finalBytes.buffer as ArrayBuffer], { type: 'application/pdf' });
-      const finalFile = new File([finalBlob], 'Interleaved.pdf', { type: 'application/pdf' });
-      if (onSpawnTab) onSpawnTab(finalFile);
+      const finalFile = createPdfFileFromBytes(finalBytes, 'Interleaved.pdf', t('lib.processHandlers:khong_ghep_duoc_pdf'));
+      if (onSpawnTab) {
+        onSpawnTab(finalFile);
+        onResultsOpened?.();
+      }
 
-    } catch (e: any) {
-      toast.error(t('tabs.combine:loi_khi_dan_xen', { msg: e?.message || e }));
+    } catch (e: unknown) {
+      const isStale = combineJobGenerationRef.current !== requestGeneration;
+      const isCancelled = delegatedController?.signal.aborted
+        || (e instanceof DOMException && e.name === 'AbortError');
+      if (!isStale && !isCancelled) {
+        const message = e instanceof Error ? e.message : String(e);
+        toast.error(t('tabs.combine:loi_khi_dan_xen', { msg: message }));
+      }
     } finally {
-      setIsProcessing(false);
-      setStatusMsg('');
+      if (combineJobGenerationRef.current === requestGeneration) {
+        if (combineJobAbortRef.current === delegatedController) {
+          combineJobAbortRef.current = null;
+        }
+        setIsProcessing(false);
+        setIsDelegatedCombineRunning(false);
+        setDelegatedCombineProgress(0);
+        setIsCancellingCombine(false);
+        setStatusMsg('');
+      }
     }
   };
 
@@ -589,6 +794,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
     flatNodes: CombineNode[],
     loadedDocs: Map<File, PDFDocument>,
     statusPrefix = '',
+    onNodeComplete?: (node: CombineNode) => void,
   ): Promise<Uint8Array> => {
     const finalDoc = await PDFDocument.create();
     let firstPageSize: [number, number] | null = null;
@@ -601,10 +807,23 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
         const size = scaleMode === 'fit_a4' ? A4_SIZE : (firstPageSize || A4_SIZE);
         const page = addRotatedBlankPage(finalDoc, size as [number, number], p.rotation || 0);
         if (!firstPageSize) firstPageSize = visiblePageSize(page);
+        onNodeComplete?.(p);
         continue;
       }
 
       if (!p.file) continue;
+      if (p.file.name.toLowerCase().match(/\.(jpg|jpeg|png)$/)) {
+        // PERF (audit 2026-08-02 §B.1): nhúng thẳng vào finalDoc; tạo PDF ảnh tạm rồi
+        // copyPages làm đúng kết quả nhưng chiếm phần lớn thời gian của ca nhiều PNG.
+        const bytes = await getFileArrayBuffer(p.file);
+        const page = await appendImagePageToPdfDoc(finalDoc, bytes, p.file.name);
+        if (p.rotation) {
+          page.setRotation(degrees(page.getRotation().angle + p.rotation));
+        }
+        if (!firstPageSize) firstPageSize = visiblePageSize(page);
+        onNodeComplete?.(p);
+        continue;
+      }
       const srcDoc = await loadSrcDoc(p.file, loadedDocs);
       const pageIndices = p.pageIndex !== undefined ? [p.pageIndex] : srcDoc.getPageIndices();
       const copiedPages = await finalDoc.copyPages(srcDoc, pageIndices);
@@ -621,8 +840,12 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
 
         finalDoc.addPage(page);
       }
+      onNodeComplete?.(p);
     }
 
+    if (finalDoc.getPageCount() === 0) {
+      throw new Error(t('tabs.combine:khong_co_trang_hop_le_de_ghep'));
+    }
     let finalBytes = await finalDoc.save();
 
     if (scaleMode !== 'keep') {
@@ -643,10 +866,11 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
     const flatNodes = nodes.flatMap(n => n.type === 'collapsed_group' && n.pages ? n.pages : [n]);
     if (flatNodes.length === 0) { toast.info(t('tabs.combine:chua_co_trang_de_in')); return; }
     setIsProcessing(true);
+    setCompletedCombineNodeIds(new Set());
     setStatusMsg(t('tabs.combine:dang_chuan_bi_in'));
     try {
       const bytes = await combineFlatNodes(flatNodes, new Map());
-      const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' });
+      const blob = createPdfBlobFromBytes(bytes, t('lib.processHandlers:khong_ghep_duoc_pdf'));
       await openPrintDialog({ source: blob, numPages: flatNodes.length });
     } catch (e: any) {
       toast.error(t('tabs.combine:khong_the_in_file') + (e?.message || e));
@@ -773,31 +997,101 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
     void runRegroup(nodes, { toast: true });
   };
 
+  const handleCancelCombine = useCallback(() => {
+    const controller = combineJobAbortRef.current;
+    if (!controller || controller.signal.aborted) return;
+    setIsCancellingCombine(true);
+    setStatusMsg(t('tabs.combine:dang_huy'));
+    controller.abort();
+  }, [t]);
+
   const handleCombine = async () => {
     if (nodes.length === 0) return;
 
+    const requestGeneration = combineJobGenerationRef.current + 1;
+    combineJobGenerationRef.current = requestGeneration;
+    combineJobAbortRef.current?.abort();
+    combineJobAbortRef.current = null;
+    let delegatedController: AbortController | null = null;
+
     setIsProcessing(true);
+    setIsDelegatedCombineRunning(false);
+    setDelegatedCombineProgress(0);
+    setCompletedCombineNodeIds(new Set());
+    setIsCancellingCombine(false);
     setStatusMsg(t('tabs.combine:dang_xu_ly_tai_lieu'));
 
     try {
       const loadedDocs = new Map<File, PDFDocument>();
       const flatNodes = nodes.flatMap(n => n.type === 'collapsed_group' && n.pages ? n.pages : [n]);
+      const progressNodes = flatNodes;
 
       if (!groupByPageSize) {
+        // PERF (audit 2026-08-01 §B.1): chỉ đọc header ảnh có giới hạn để chọn
+        // tầng xử lý; không giải mã bitmap trong WebView chỉ để ước lượng tải.
+        const totalImagePixels = await estimateCombineImagePixels(flatNodes);
+        const memoryStatus = totalImagePixels > 0
+          ? await getCombineMemoryStatus()
+          : null;
         const canDelegateMerge = shouldDelegateLargePdfJob(flatNodes, pageCounts, {
           scaleMode,
           groupingEnabled: groupByPageSize,
           allowManifest: true,
+          totalImagePixels,
+          memoryStatus,
+        });
+        const sourceFiles = [
+          ...new Set(flatNodes.flatMap(node => node.file ? [node.file] : [])),
+        ];
+        console.info('[COMBINE]', {
+          stage: 'delegation_decision',
+          nodeCount: flatNodes.length,
+          sourceCount: sourceFiles.length,
+          imageNodeCount: flatNodes.filter(node =>
+            isSupportedImageFileName(node.file?.name || '')
+          ).length,
+          totalEncodedBytes: sourceFiles.reduce((sum, file) => sum + file.size, 0),
+          totalImagePixels,
+          systemTotalMemoryBytes: memoryStatus?.totalBytes ?? null,
+          systemAvailableMemoryBytes: memoryStatus?.availableBytes ?? null,
+          path: canDelegateMerge ? 'backend_manifest' : 'frontend',
         });
         if (canDelegateMerge) {
-          setStatusMsg(`${t('tabs.combine:dang_xu_ly_tai_lieu')} (backend)`);
+          delegatedController = new AbortController();
+          combineJobAbortRef.current = delegatedController;
+          setIsDelegatedCombineRunning(true);
+          setStatusMsg(t('tabs.combine:dang_ghep_backend_progress', { progress: 0 }));
           const { files, manifest } = buildBackendCombineManifest(flatNodes);
-          const result = await backendMergeManifest(files, manifest);
+          const result = await backendMergeManifestJob(files, manifest, {
+            signal: delegatedController.signal,
+            onProgress: (status) => {
+              if (
+                delegatedController?.signal.aborted
+                || combineJobGenerationRef.current !== requestGeneration
+              ) return;
+              const progress = Math.min(100, Math.max(0, Math.round(status.progress || 0)));
+              setDelegatedCombineProgress(progress);
+              setCompletedCombineNodeIds(backendCompletedNodeIds(
+                progressNodes,
+                status.status,
+                status.completed,
+                status.total,
+              ));
+              setStatusMsg(t('tabs.combine:dang_ghep_backend_progress', { progress }));
+            },
+          });
+          if (
+            delegatedController.signal.aborted
+            || combineJobGenerationRef.current !== requestGeneration
+          ) return;
           const finalFile = result.path
             ? new File([], result.filename, { type: 'application/pdf' })
             : new File([result.blob as Blob], result.filename, { type: 'application/pdf' });
           if (result.path) Object.defineProperty(finalFile, 'path', { value: result.path });
-          if (onSpawnTab) onSpawnTab(finalFile);
+          if (onSpawnTab) {
+            onSpawnTab(finalFile);
+            onResultsOpened?.();
+          }
           return;
         }
       }
@@ -805,10 +1099,12 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
 
       // ── Không chia nhóm: 1 file → tab imposition (hành vi cũ) ──
       if (!groupByPageSize) {
-        const finalBytes = await combineFlatNodes(flatNodes, loadedDocs);
-        const finalBlob = new Blob([finalBytes.buffer as ArrayBuffer], { type: 'application/pdf' });
-        const finalFile = new File([finalBlob], 'Combined.pdf', { type: 'application/pdf' });
-        if (onSpawnTab) onSpawnTab(finalFile);
+        const finalBytes = await combineFlatNodes(flatNodes, loadedDocs, '', markCombineNodeCompleted);
+        const finalFile = createPdfFileFromBytes(finalBytes, 'Combined.pdf', t('lib.processHandlers:khong_ghep_duoc_pdf'));
+        if (onSpawnTab) {
+          onSpawnTab(finalFile);
+          onResultsOpened?.();
+        }
         return;
       }
 
@@ -837,12 +1133,12 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
         gi++;
         const label = sizeKeyLabel(key);
         setStatusMsg(t('tabs.combine:dang_ghep_label_progress', { label, cur: gi, total: groups.size }));
-        const bytes = await combineFlatNodes(groupNodes, loadedDocs, `[${label}] `);
+        const bytes = await combineFlatNodes(groupNodes, loadedDocs, `[${label}] `, markCombineNodeCompleted);
         const safeName = key.replace(/[^\d.x×]/gi, '_');
-        const file = new File(
-          [bytes.buffer as ArrayBuffer],
+        const file = createPdfFileFromBytes(
+          bytes,
           `Combined_${safeName}mm.pdf`,
-          { type: 'application/pdf' },
+          t('lib.processHandlers:khong_ghep_duoc_pdf'),
         );
         results.push({
           file,
@@ -853,14 +1149,27 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
 
       // Tab hiện tại ← nhóm đầu (kết quả ngay, không thêm bước)
       const [first, ...rest] = results;
-      const previewUrl = URL.createObjectURL(first.file);
+
+      // UIUX (audit 2026-08-02 §COMB.UI): trong shell thật, kết quả thuộc viewer;
+      // không biến tab nguồn thành một màn Combine chỉ chứa file đã ghép.
+      if (onSpawnTab && onResultsOpened) {
+        for (const result of results) onSpawnTab(result.file);
+        toast.success(
+          results.length === 1
+            ? t('tabs.combine:da_ghep_label', { label: sizeKeyLabel(first.sizeKey) })
+            : t('tabs.combine:da_ghep_n_nhom_tab_combine', { n: results.length, rest: rest.length }),
+        );
+        onResultsOpened();
+        return;
+      }
+
       skipNextRegroupRef.current = true;
       setGroupByPageSize(false);
       setNodes([{
         id: `combined-${Date.now()}`,
         type: 'single',
         file: first.file,
-        previewUrl,
+
         rotation: 0,
       }]);
       setSelectedIndices(new Set());
@@ -878,11 +1187,25 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
           : t('tabs.combine:da_ghep_n_nhom_tab_combine', { n: results.length, rest: rest.length }),
       );
 
-    } catch (e: any) {
-      toast.error(t('tabs.combine:loi_khi_ghep_file', { msg: e?.message || e }));
+    } catch (e: unknown) {
+      const isStale = combineJobGenerationRef.current !== requestGeneration;
+      const isCancelled = delegatedController?.signal.aborted
+        || (e instanceof DOMException && e.name === 'AbortError');
+      if (!isStale && !isCancelled) {
+        const message = e instanceof Error ? e.message : String(e);
+        toast.error(t('tabs.combine:loi_khi_ghep_file', { msg: message }));
+      }
     } finally {
-      setIsProcessing(false);
-      setStatusMsg('');
+      if (combineJobGenerationRef.current === requestGeneration) {
+        if (combineJobAbortRef.current === delegatedController) {
+          combineJobAbortRef.current = null;
+        }
+        setIsProcessing(false);
+        setIsDelegatedCombineRunning(false);
+        setDelegatedCombineProgress(0);
+        setIsCancellingCombine(false);
+        setStatusMsg('');
+      }
     }
   };
 
@@ -947,6 +1270,14 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
 
     const isMultiPage = pCount > 1;
     const isSelected = selectedIndices.has(index);
+    const isCombineComplete = isProcessing && (
+      completedCombineNodeIds.has(node.id)
+      || Boolean(
+        node.type === 'collapsed_group'
+        && node.pages?.length
+        && node.pages.every(page => completedCombineNodeIds.has(page.id))
+      )
+    );
 
     return (
       <div
@@ -989,7 +1320,16 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
                 <span className="text-[10px] font-medium text-slate-400">Blank Page</span>
               </div>
             ) : node.file?.name.toLowerCase().endsWith('.pdf') ? (
-              <PdfErrorBoundary>
+              <PdfErrorBoundary
+                errorLabel={t('imposition.cutExport:khong_xem_truoc_duoc')}
+                retryLabel={t('dieline.dieline:thu_lai')}
+                resetKey={[
+                  node.id,
+                  node.pageIndex ?? 0,
+                  node.file?.name ?? '',
+                  node.file?.size ?? 0,
+                ].join(':')}
+              >
                 <div style={{ transform: `rotate(${node.rotation || 0}deg)`, transition: 'transform 0.3s ease' }} className="w-full h-full flex items-center justify-center">
                   <PdfThumbnail file={node.file!} pageIndex={node.pageIndex ?? 0} />
                 </div>
@@ -998,6 +1338,20 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
               <ImageThumbnail file={node.file!} rotation={node.rotation} />
             )}
           </div>
+
+          {isCombineComplete && (
+            <div
+              data-combine-complete="true"
+              aria-hidden="true"
+              className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none"
+            >
+              <div className="w-8 h-8 rounded-full bg-emerald-500 text-white shadow-lg ring-2 ring-white/90 flex items-center justify-center">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 12.5l4 4L19 7" />
+                </svg>
+              </div>
+            </div>
+          )}
 
           {/* Visual Stack Layers for Multi-page (Now visible because parent has no overflow-hidden) */}
           {isMultiPage && (
@@ -1104,12 +1458,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
       {/* Header Toolbar */}
       <div className="flex items-center justify-between p-4 bg-white dark:bg-[#252526] border-b border-slate-200 dark:border-white/10 shadow-sm shrink-0">
         <div className="flex items-center gap-4">
-          <div className="flex flex-col min-w-0">
-            <h2 className="text-lg font-semibold text-slate-800 dark:text-zinc-200">{t('tabs.combine:title_b8')}</h2>
-            <p className="text-[10px] text-slate-500 dark:text-zinc-400 truncate max-w-[280px]">{t('tabs.combine:help_b8')}</p>
-          </div>
-          <div className="h-6 w-px bg-slate-300 dark:bg-white/10 mx-2"></div>
-          
+
           <button
             onClick={() => handleAddBlankPage()}
             className="flex items-center gap-2 px-3 py-2 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-zinc-700 text-slate-700 dark:text-zinc-200 rounded-md transition-colors text-sm font-medium"
@@ -1128,7 +1477,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
           <input 
             type="file" 
             multiple 
-            accept=".pdf,image/png,image/jpeg,image/jpg" 
+            accept={`.pdf,${IMAGE_ACCEPT_ATTR}`}
             ref={fileInputRef} 
             className="hidden" 
             onChange={handleAddFiles} 
@@ -1168,8 +1517,21 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
           {(isProcessing || isGrouping) && (
             <div className="flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400">
               <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"></div>
-              {statusMsg || (isGrouping ? t('tabs.combine:dang_chia_nhom') : t('tabs.combine:dang_xu_ly'))}
+              {isDelegatedCombineRunning
+                ? `${delegatedCombineProgress}%`
+                : statusMsg || (isGrouping ? t('tabs.combine:dang_chia_nhom') : t('tabs.combine:dang_xu_ly'))}
             </div>
+          )}
+
+          {isDelegatedCombineRunning && (
+            <button
+              type="button"
+              onClick={handleCancelCombine}
+              disabled={isCancellingCombine}
+              className="px-3 py-2 border border-rose-300 dark:border-rose-500/50 text-rose-700 dark:text-rose-300 rounded-md transition-colors font-semibold hover:bg-rose-50 dark:hover:bg-rose-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isCancellingCombine ? t('tabs.combine:dang_huy') : t('tabs.combine:dung')}
+            </button>
           )}
           
           <button 

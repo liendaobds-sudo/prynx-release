@@ -70,6 +70,8 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
         scaleMode: state.scaleMode,
         // Bình 2 mặt (CNC) — Cạnh lật + Dấu canh in 2 mặt (chuyển vào đây cho gọn UI)
         duplexFlow: state.duplexFlow, setDuplexFlow: state.setDuplexFlow,
+        // UIUX (audit 2026-08-01 §MG-AUTO): chỉ giữ cạnh lật; in dư do solver tự quyết.
+        duplexFlipEdge: state.duplexFlipEdge, setDuplexFlipEdge: state.setDuplexFlipEdge,
         cncFlipEdge: state.cncFlipEdge, setCncFlipEdge: state.setCncFlipEdge,
         cncDuplexMarks: state.cncDuplexMarks, setCncDuplexMarks: state.setCncDuplexMarks,
         layoutType: state.layoutType, setLayoutType: state.setLayoutType,
@@ -206,6 +208,25 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
 
 
                         {/* ══ BÌNH 2 MẶT (CNC) — In 2 mặt + Cạnh lật + Dấu canh in 2 mặt ══ */}
+                        {/* UIUX (audit 2026-08-01 §MG-AUTO): in dư do solver tự quyết;
+                            Thiết lập mở rộng chỉ còn lựa chọn cần thiết cho mặt sau. */}
+                        {activeTool === 'nup' && s.taskMode === 'nup' && s.layoutType === 'mixed_guillotine' && s.duplexFlow === 'double' && (
+                        <CollapsibleGroup title={t('imposition.gridSettings:dan_nhieu_kich_thuoc')} defaultOpen>
+                            <div className="flex items-center gap-3">
+                                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">
+                                    {t('imposition.gridSettings:lat_mat_sau')}
+                                </label>
+                                <select
+                                    value={s.duplexFlipEdge}
+                                    onChange={(e) => s.setDuplexFlipEdge(e.target.value as 'long' | 'short')}
+                                    className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+                                >
+                                    <option value="long">{t('imposition.gridSettings:theo_canh_dai')}</option>
+                                    <option value="short">{t('imposition.gridSettings:theo_canh_ngan')}</option>
+                                </select>
+                            </div>
+                        </CollapsibleGroup>
+                        )}
                         {activeTool === 'cnc_imposer' && (
                         <CollapsibleGroup title={t('imposition.advancedSettings:binh_2_mat_cnc')} defaultOpen>
                             <Checkbox

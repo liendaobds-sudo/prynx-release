@@ -146,8 +146,14 @@ export interface MockupState {
 
     // ═══ Xuất ═══
     exportScale: ExportScale; // mặc định 1
+    /** Định dạng xuất mockup (PNG/JPEG/WebP). */
+    exportFormat: 'png' | 'jpeg' | 'webp';
+    /** Chất lượng JPEG/WebP (1–100). */
+    exportJpegQuality: number;
     /** Xuất PNG nền TRONG SUỐT (ẩn nền/sàn, alpha=0). */
     exportTransparent: boolean;
+    /** Thư mục đích xuất mockup (Tauri dialog). Rỗng = tải về Downloads. */
+    exportOutputDir: string;
 
     // ═══ Cầu nối xuất cảnh (request → component trong Canvas) ═══
     // useSceneExport PHẢI chạy bên trong <Canvas> (dùng useThree). Các nút
@@ -189,7 +195,10 @@ export interface MockupState {
     setShowTechnicalLines: (show: boolean) => void;
     setShowFloorGrid: (show: boolean) => void;
     setExportScale: (scale: ExportScale) => void;
+    setExportFormat: (fmt: 'png' | 'jpeg' | 'webp') => void;
+    setExportJpegQuality: (q: number) => void;
     setExportTransparent: (v: boolean) => void;
+    setExportOutputDir: (dir: string) => void;
     setHdriStatus: (status: HdriStatus) => void;
     setWebglSupported: (supported: boolean) => void;
 
@@ -318,6 +327,7 @@ function createInitialState(): Omit<
     | 'setExplodedFactor' | 'setShowDimensions'
     | 'setShowTechnicalLines' | 'setShowFloorGrid'
     | 'setExportScale' | 'setHdriStatus' | 'setWebglSupported'
+    | 'setExportFormat' | 'setExportJpegQuality' | 'setExportOutputDir'
     | 'setExportTransparent'
     | 'requestExportPng' | 'requestExportGlb'
     | 'requestExportBatch'
@@ -367,7 +377,10 @@ function createInitialState(): Omit<
         artworkFuture: [],
         artworkEditMode: false,
         exportScale: 1,
+        exportFormat: 'png',
+        exportJpegQuality: 90,
         exportTransparent: false,
+        exportOutputDir: '',
         exportPngNonce: 0,
         exportGlbNonce: 0,
         exportBatchNonce: 0,
@@ -437,7 +450,10 @@ export const useMockupStore = create<MockupState>((set) => ({
     setShowTechnicalLines: (show) => set({ showTechnicalLines: show }),
     setShowFloorGrid: (show) => set({ showFloorGrid: show }),
     setExportScale: (scale) => set({ exportScale: scale }),
+    setExportFormat: (fmt) => set({ exportFormat: fmt }),
+    setExportJpegQuality: (q) => set({ exportJpegQuality: Math.max(1, Math.min(100, q)) }),
     setExportTransparent: (v) => set({ exportTransparent: v }),
+    setExportOutputDir: (dir) => set({ exportOutputDir: dir }),
     setHdriStatus: (status) => set({ hdriStatus: status }),
     setWebglSupported: (supported) => set({ webglSupported: supported }),
 
@@ -490,7 +506,10 @@ export const useMockupStore = create<MockupState>((set) => ({
                     showTechnicalLines: state.showTechnicalLines,
                     showFloorGrid: state.showFloorGrid,
                     exportScale: state.exportScale,
+                    exportFormat: state.exportFormat,
+                    exportJpegQuality: state.exportJpegQuality,
                     exportTransparent: state.exportTransparent,
+                    exportOutputDir: state.exportOutputDir,
                     artwork: {
                         mode: state.artwork.mode,
                         showBleedSafe: state.artwork.showBleedSafe,
@@ -561,7 +580,10 @@ export const useMockupStore = create<MockupState>((set) => ({
                     showTechnicalLines: !!d.showTechnicalLines,
                     showFloorGrid: !!d.showFloorGrid,
                     exportScale: (d.exportScale === 2 || d.exportScale === 4 ? d.exportScale : 1) as ExportScale,
+                    exportFormat: ['png', 'jpeg', 'webp'].includes(d.exportFormat) ? d.exportFormat : state.exportFormat,
+                    exportJpegQuality: typeof d.exportJpegQuality === 'number' ? Math.max(1, Math.min(100, d.exportJpegQuality)) : state.exportJpegQuality,
                     exportTransparent: !!d.exportTransparent,
+                    exportOutputDir: typeof d.exportOutputDir === 'string' ? d.exportOutputDir : state.exportOutputDir,
                     // Giữ URL ảnh hiện tại, chỉ khôi phục transform/cờ.
                     artwork: {
                         ...state.artwork,

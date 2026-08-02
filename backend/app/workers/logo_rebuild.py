@@ -14,7 +14,7 @@ from xml.etree import ElementTree
 from PIL import Image, ImageCms, ImageOps
 
 from app.core.system_memory import read_memory_status_mb
-from app.schemas.logo_rebuild import LogoRebuildSettings
+from app.schemas.logo_rebuild import LogoPaletteSuggestion, LogoRebuildSettings
 
 
 class LogoEngineUnavailable(RuntimeError):
@@ -39,6 +39,8 @@ class PreparedLogo:
     height_px: int
     rgba: bytes
     warnings: list[str]
+    physical_width_mm: float | None = None
+    physical_height_mm: float | None = None
 
 
 @dataclass(frozen=True)
@@ -53,6 +55,10 @@ class LogoPreviewResult:
 
 _ACTIVE_JOBS_LOCK = threading.Lock()
 _ACTIVE_JOBS: dict[str, Any] = {}
+_PALETTE_KMEANS_LOCK = threading.Lock()
+_MAX_PALETTE_SAMPLE_PIXELS = 40_000
+_MIN_PALETTE_COVERAGE = 0.01
+_MERGE_PALETTE_DISTANCE_RGB = 18.0
 
 
 def _load_native_module() -> Any:
@@ -173,23 +179,79 @@ def _plan_work_size(width: int, height: int) -> tuple[tuple[int, int], list[str]
     ]
 
 
+def _upscale_target_dimensions(width: int, height: int) -> tuple[int, int]:
+    """Nâng ảnh nhỏ trước khi trace; chỉ máy yếu mới hạ mục tiêu chất lượng."""
+
+    shortest_side = min(width, height)
+    if shortest_side >= 600:
+        return width, height
+
+    total_mb, _available_mb = read_memory_status_mb()
+    target_shortest_side = 1200
+    # PERF (audit 2026-07-30 §LG.03): máy mạnh giữ mức chất lượng đầy đủ;
+    # chỉ máy dưới 16 GB mới giảm mục tiêu để tránh tạo ảnh làm việc quá lớn.
+    if total_mb is not None and total_mb < 8 * 1024:
+        target_shortest_side = 600
+    elif total_mb is not None and total_mb < 16 * 1024:
+        target_shortest_side = 900
+
+    scale = target_shortest_side / shortest_side
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+def _read_image_dpi(raw: object) -> tuple[float, float] | None:
+    if not isinstance(raw, tuple) or len(raw) < 2:
+        return None
+    try:
+        x_dpi, y_dpi = float(raw[0]), float(raw[1])
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(x_dpi) or not math.isfinite(y_dpi) or x_dpi <= 0 or y_dpi <= 0:
+        return None
+    return x_dpi, y_dpi
+
+
+def _load_logo_image(source_bytes: bytes) -> tuple[Image.Image, tuple[float, float] | None]:
+    try:
+        with Image.open(BytesIO(source_bytes)) as opened:
+            opened.seek(0)
+            source_dpi = _read_image_dpi(opened.info.get("dpi"))
+            orientation = opened.getexif().get(274, 1)
+            image = ImageOps.exif_transpose(opened)
+            image.load()
+    except (OSError, SyntaxError, ValueError) as exc:
+        raise LogoInputError("File ảnh không thể giải mã.") from exc
+
+    if source_dpi is not None and orientation in (5, 6, 7, 8):
+        source_dpi = source_dpi[1], source_dpi[0]
+    return image, source_dpi
+
+
 def _convert_to_srgb(image: Image.Image, warnings: list[str]) -> Image.Image:
     has_alpha = image.mode in ("RGBA", "LA") or "transparency" in image.info
     alpha = image.convert("RGBA").getchannel("A") if has_alpha else None
-    rgb = image.convert("RGB")
     profile_bytes = image.info.get("icc_profile")
     if profile_bytes:
         try:
             source_profile = ImageCms.ImageCmsProfile(BytesIO(profile_bytes))
             target_profile = ImageCms.createProfile("sRGB")
+            # LOGO-REBUILD (audit 2026-07-30 §LG.05): dựng transform từ ảnh
+            # nguồn. Convert CMYK sang RGB trước bước này làm profile nguồn vô hiệu.
+            color_source = image.convert("RGB") if has_alpha else image
             rgb = ImageCms.profileToProfile(
-                rgb,
+                color_source,
                 source_profile,
                 target_profile,
                 outputMode="RGB",
+                renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC,
             )
         except (OSError, ValueError, ImageCms.PyCMSError):
-            warnings.append("Không đọc được ICC profile; preview dùng chuyển đổi RGB mặc định.")
+            rgb = image.convert("RGB")
+            warnings.append(
+                "Không áp dụng được ICC profile; preview dùng chuyển đổi RGB mặc định nên màu có thể sai."
+            )
+    else:
+        rgb = image.convert("RGB")
     if alpha is not None:
         rgb.putalpha(alpha)
     return rgb
@@ -265,23 +327,128 @@ def _correct_illumination(image: Image.Image) -> Image.Image:
     return Image.fromarray(corrected)
 
 
-def prepare_logo_image(source_bytes: bytes, settings: LogoRebuildSettings) -> PreparedLogo:
-    warnings: list[str] = []
-    try:
-        with Image.open(BytesIO(source_bytes)) as opened:
-            opened.seek(0)
-            image = ImageOps.exif_transpose(opened)
-            image.load()
-    except (OSError, SyntaxError, ValueError) as exc:
-        raise LogoInputError("File ảnh không thể giải mã.") from exc
+def suggest_logo_palette(
+    source_bytes: bytes,
+    settings: LogoRebuildSettings,
+) -> tuple[list[LogoPaletteSuggestion], list[str]]:
+    """Gợi ý màu pixel sRGB nhìn thấy; người dùng vẫn phải xác nhận trước khi trace."""
 
+    warnings: list[str] = []
+    image, _source_dpi = _load_logo_image(source_bytes)
     image = _convert_to_srgb(image, warnings)
     image = _apply_perspective(image, settings)
     image = _apply_crop(image, settings)
-    planned_size, memory_warnings = _plan_work_size(*image.size)
+
+    # OpenCV/Numpy đã là dependency đóng gói. Nạp lười để backend khởi động nhẹ.
+    import cv2
+    import numpy as np
+
+    pixels = np.asarray(image.convert("RGBA"), dtype=np.uint8).reshape(-1, 4)
+    visible = pixels[:, 3] > 0
+    if not bool(np.any(visible)):
+        warnings.append("Ảnh không có pixel nhìn thấy để gợi ý màu.")
+        return [], warnings
+
+    colors = pixels[visible, :3]
+    alpha_weights = pixels[visible, 3].astype(np.float32) / 255.0
+    if len(colors) > _MAX_PALETTE_SAMPLE_PIXELS:
+        indices = np.linspace(
+            0,
+            len(colors) - 1,
+            _MAX_PALETTE_SAMPLE_PIXELS,
+            dtype=np.int64,
+        )
+        colors = colors[indices]
+        alpha_weights = alpha_weights[indices]
+
+    unique_count = len(np.unique(colors, axis=0))
+    cluster_count = min(12, unique_count, len(colors))
+    samples = colors.astype(np.float32)
+    if cluster_count == 1:
+        centers = samples[:1]
+        labels = np.zeros((len(samples), 1), dtype=np.int32)
+    else:
+        criteria = (
+            cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
+            30,
+            0.5,
+        )
+        # LOGO-REBUILD (audit 2026-07-30 §LG.04): dùng k tối đa rồi lọc/gộp
+        # theo coverage để không cần oracle biết trước số màu như benchmark cũ.
+        with _PALETTE_KMEANS_LOCK:
+            cv2.setRNGSeed(20260730)
+            _compactness, labels, centers = cv2.kmeans(
+                samples,
+                cluster_count,
+                None,
+                criteria,
+                5,
+                cv2.KMEANS_PP_CENTERS,
+            )
+
+    weights = np.bincount(
+        labels.reshape(-1),
+        weights=alpha_weights,
+        minlength=cluster_count,
+    )
+    total_weight = float(alpha_weights.sum())
+    merged: list[tuple[Any, float]] = []
+    for index in np.argsort(weights)[::-1]:
+        coverage = float(weights[index]) / total_weight
+        if coverage < _MIN_PALETTE_COVERAGE:
+            continue
+        center = centers[index].astype(np.float64)
+        for merged_index, (existing, existing_coverage) in enumerate(merged):
+            if float(np.linalg.norm(center - existing)) < _MERGE_PALETTE_DISTANCE_RGB:
+                combined = existing_coverage + coverage
+                merged[merged_index] = (
+                    (existing * existing_coverage + center * coverage) / combined,
+                    combined,
+                )
+                break
+        else:
+            merged.append((center, coverage))
+
+    suggestions: list[LogoPaletteSuggestion] = []
+    for center, coverage in sorted(merged, key=lambda item: item[1], reverse=True)[:12]:
+        red, green, blue = (
+            int(np.clip(np.rint(channel), 0, 255)) for channel in center
+        )
+        suggestions.append(
+            LogoPaletteSuggestion(
+                color=f"#{red:02x}{green:02x}{blue:02x}",
+                coverage_ratio=round(coverage, 6),
+            )
+        )
+    return suggestions, warnings
+
+
+def prepare_logo_image(source_bytes: bytes, settings: LogoRebuildSettings) -> PreparedLogo:
+    warnings: list[str] = []
+    image, source_dpi = _load_logo_image(source_bytes)
+    image = _convert_to_srgb(image, warnings)
+    image = _apply_perspective(image, settings)
+    image = _apply_crop(image, settings)
+    physical_width_mm = None
+    physical_height_mm = None
+    if source_dpi is not None:
+        physical_width_mm = image.width * 25.4 / source_dpi[0]
+        physical_height_mm = image.height * 25.4 / source_dpi[1]
+
+    requested_size = _upscale_target_dimensions(*image.size)
+    planned_size, memory_warnings = _plan_work_size(*requested_size)
     warnings.extend(memory_warnings)
     if image.size != planned_size:
-        image = image.resize(planned_size, Image.Resampling.LANCZOS)
+        is_upscale = planned_size[0] > image.width or planned_size[1] > image.height
+        image = image.resize(
+            planned_size,
+            Image.Resampling.NEAREST if is_upscale else Image.Resampling.LANCZOS,
+        )
+        if is_upscale:
+            warnings.append(
+                "Ảnh nhỏ đã được nâng bằng nội suy giữ biên lên "
+                f"{planned_size[0]}×{planned_size[1]} px trước khi dựng nét."
+            )
     rgba = image.convert("RGBA")
     alpha_minimum, _alpha_maximum = rgba.getchannel("A").getextrema()
     has_transparency = alpha_minimum < 255
@@ -306,7 +473,31 @@ def prepare_logo_image(source_bytes: bytes, settings: LogoRebuildSettings) -> Pr
         height_px=rgba.height,
         rgba=rgba.tobytes(),
         warnings=warnings,
+        physical_width_mm=physical_width_mm,
+        physical_height_mm=physical_height_mm,
     )
+
+
+def _format_svg_number(value: float) -> str:
+    return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+def _apply_svg_geometry(svg: str, prepared: PreparedLogo) -> str:
+    """Gắn hệ tọa độ ổn định và kích thước vật lý khi ảnh có DPI."""
+
+    try:
+        root = ElementTree.fromstring(svg)
+    except ElementTree.ParseError as exc:
+        raise RuntimeError("Engine trả về SVG không thể phân tích.") from exc
+    ElementTree.register_namespace("", "http://www.w3.org/2000/svg")
+    root.set("viewBox", f"0 0 {prepared.width_px} {prepared.height_px}")
+    if prepared.physical_width_mm is not None and prepared.physical_height_mm is not None:
+        root.set("width", f"{_format_svg_number(prepared.physical_width_mm)}mm")
+        root.set("height", f"{_format_svg_number(prepared.physical_height_mm)}mm")
+    else:
+        root.set("width", str(prepared.width_px))
+        root.set("height", str(prepared.height_px))
+    return ElementTree.tostring(root, encoding="unicode")
 
 
 def _strip_svg_background(svg: str, background_color: str) -> tuple[str, int]:
@@ -348,14 +539,21 @@ def _strip_svg_background(svg: str, background_color: str) -> tuple[str, int]:
                 qualified("mask"),
                 {"id": mask_id, "maskUnits": "userSpaceOnUse"},
             )
+            view_box = root.attrib.get("viewBox", "").split()
+            if len(view_box) == 4:
+                mask_x, mask_y, mask_width, mask_height = view_box
+            else:
+                mask_x, mask_y = "0", "0"
+                mask_width = root.attrib.get("width", "100%")
+                mask_height = root.attrib.get("height", "100%")
             ElementTree.SubElement(
                 mask,
                 qualified("rect"),
                 {
-                    "x": "0",
-                    "y": "0",
-                    "width": root.attrib.get("width", "100%"),
-                    "height": root.attrib.get("height", "100%"),
+                    "x": mask_x,
+                    "y": mask_y,
+                    "width": mask_width,
+                    "height": mask_height,
                     "fill": "#ffffff",
                 },
             )
@@ -408,6 +606,9 @@ def process_logo_preview(
             if token.is_cancelled() or "hủy" in str(exc).lower():
                 raise LogoJobCancelled("Đã hủy preview logo.") from exc
             raise
+        # LOGO-REBUILD (audit 2026-07-30 §LG.06): mọi SVG có viewBox;
+        # ảnh có DPI còn giữ đúng kích thước vật lý khi mở trong phần mềm chế bản.
+        svg = _apply_svg_geometry(svg, prepared)
         warnings = list(prepared.warnings)
         if settings.background_color is not None:
             svg, removed = _strip_svg_background(svg, settings.background_color)

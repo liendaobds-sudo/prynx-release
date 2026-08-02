@@ -18,7 +18,10 @@ from collections import defaultdict
 from app.workers import pdf_wrapper as pdf_lib
 from app.workers.nup_layout_solver import get_src_page_idx
 from app.workers.nup_marks import _draw_ponts_on_page
-from app.workers.cluster_tile_engine import draw_tile_cut_marks
+from app.workers.cluster_tile_engine import (
+    draw_segment_cut_marks,
+    draw_tile_cut_marks,
+)
 from app.workers.nup_artwork import (
     place_one_artwork,
     compute_block_bbox,
@@ -916,11 +919,16 @@ def process_chunk(args):
             shape.finish(color=(1, 1, 1, 1), width=mark_thick)  # registration (mọi kẽm)
 
             shape.commit()
-        # Draw cluster tile cut marks (always, regardless of mark_type)
-        # Plan mixed cũng truyền cut lines qua contract này nhưng không bật cluster_tile.
-        if sheet_idx in chunk_cluster_tile_cuts:
+        # MARKS (audit 2026-08-01 §DXM.1/§DXM.2): `none` phải tắt mọi dấu.
+        # Mixed dùng segment tách zone thật; cluster_tile cũ vẫn dùng lưới {v,h}.
+        if mark_type != 'none' and sheet_idx in chunk_cluster_tile_cuts:
             _ctcl = chunk_cluster_tile_cuts[sheet_idx]
-            draw_tile_cut_marks(
+            _draw_cluster_marks = (
+                draw_segment_cut_marks
+                if 'segments' in _ctcl
+                else draw_tile_cut_marks
+            )
+            _draw_cluster_marks(
                 out_page, _ctcl,
                 mark_off=float(mark_off),
                 mark_len=float(mark_len),

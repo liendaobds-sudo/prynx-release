@@ -46,10 +46,40 @@ class OfficeConvertStatusResponse(BaseModel):
     libreoffice_path: str = ""
     google_export: bool = True
     can_convert_office: bool = False
+    supported_extensions: list[str] = Field(default_factory=list)
+    unsupported_extensions: list[str] = Field(default_factory=list)
+    engine_by_extension: dict[str, str] = Field(
+        default_factory=dict,
+        description="Engine thật theo từng đuôi: word/excel/powerpoint/libreoffice/unavailable",
+    )
     hint: Optional[str] = Field(
         default=None, description="Câu giải thích hiển thị cho người dùng (tiếng Việt)"
     )
 
+
+class OfficeJobStatusResponse(BaseModel):
+    job_id: str
+    phase: str
+    terminal: bool = False
+    cancel_requested: bool = False
+    remaining_seconds: float = 0.0
+    message: Optional[str] = None
+
+
+class OfficeJobCancelResponse(BaseModel):
+    job_id: str
+    phase: str
+    cancelled: bool = False
+    terminal: bool = False
+    message: Optional[str] = None
+
+
+class OfficeJobExtendResponse(BaseModel):
+    job_id: str
+    phase: str
+    remaining_seconds: float
+    extended: bool = False
+    message: Optional[str] = None
 
 class WarmupResponse(BaseModel):
     """Kết quả `POST /api/pdf-tools/remove-background/warmup` và `/upscale/warmup`.

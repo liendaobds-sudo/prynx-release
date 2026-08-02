@@ -2385,7 +2385,6 @@ def _run_nup_engine_impl(
             )
             from app.workers.mixed_guillotine_adapter import (
                 build_product_specs,
-                full_span_cut_coordinates,
                 materialize_plan_for_renderer,
             )
 
@@ -2409,35 +2408,45 @@ def _run_nup_engine_impl(
                     ),
                     gap_x=gap_x,
                     gap_y=gap_y,
+                    # §MARK-GAP.1: secondary_gap đã đổi splitGap mm → point giống preview.
+                    split_gap=secondary_gap,
                     duplex=_mixed_duplex,
                     flip_edge=str(settings.get('duplexFlipEdge', 'long') or 'long'),
+                    # §MG-A2: cùng ngưỡng dư preview đã dùng → preview ≡ output.
+                    excess_tolerance=float(
+                        settings.get('mixedExcessTolerance', 0.0) or 0.0
+                    ),
                 ),
             )
+            # §MG-B2: cảnh báo lề bất đối xứng đi cùng kênh warning sẵn có → hiện ở
+            # message hoàn tất, không chặn job (hình học vẫn đúng).
+            for _mixed_warn in (_mixed_plan.get('warnings') or []):
+                _ratio_stack_warnings.append(f"⚠ {_mixed_warn}")
+
             _mixed_export_unique = bool(settings.get('exportUniqueSheets', True))
             precalculated_placements, _mixed_face_metadata = materialize_plan_for_renderer(
                 _mixed_plan,
                 expand_run_count=not _mixed_export_unique,
             )
 
-            # Marks vùng dùng đúng cutLines của từng mặt. Root mặt sau có thể đổi vị
-            # trí khi lề bất đối xứng, nên lấy bounds từ cutTree đã materialize.
+            # MARKS (audit 2026-08-01 §DXM.1/§DXM.3): dấu thành phẩm đã do Rust
+            # vẽ theo placements. Tầng này chỉ chuyển segment tách zone thật; không
+            # chiếu thành lưới {v,h} và không thêm mép usableRect, tránh nhân V×H.
             for _output_page_index, _face_meta in _mixed_face_metadata.items():
-                _face_root = _face_meta['cutTree']['rect']
-                _face_cuts = full_span_cut_coordinates(
-                    _face_meta,
-                    sheet_width=sheet_w,
-                    sheet_height=sheet_h,
-                    usable_rect=_face_root,
-                )
-                _face_cuts['v'].update({
-                    round(float(_face_root['x']), 2),
-                    round(float(_face_root['x']) + float(_face_root['width']), 2),
-                })
-                _face_cuts['h'].update({
-                    round(float(_face_root['y']), 2),
-                    round(float(_face_root['y']) + float(_face_root['height']), 2),
-                })
-                cluster_tile_cuts[_output_page_index] = _face_cuts
+                _zone_segments = [
+                    {
+                        'axis': str(_line['axis']),
+                        'coordinate': float(_line['coordinate']),
+                        'start': float(_line['start']),
+                        'end': float(_line['end']),
+                    }
+                    for _line in _face_meta.get('cutLines', [])
+                    if _line.get('kind') == 'zone'
+                ]
+                if _zone_segments:
+                    cluster_tile_cuts[_output_page_index] = {
+                        'segments': _zone_segments,
+                    }
 
             _mixed_capacity = max(
                 (len(_placements) for _placements in precalculated_placements.values()),

@@ -425,8 +425,12 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     }, [s.taskMode, s.layoutType]);
 
     useEffect(() => {
-        if (s.signatureMode === 'cut_stacks' && s.scaleMode === 'cut_stack') s.setScaleMode('100');
-    }, [s.signatureMode]);
+        // BOOKLET (audit 2026-07-31 §A.1): hai kiểu này không hỗ trợ Cut & Stack
+        // phase-2; dán đối lưng phải giữ đúng bất biến in một mặt.
+        if ((s.signatureMode === 'cut_stacks' || s.signatureMode === 'flush_mount') && s.scaleMode === 'cut_stack') {
+            s.setScaleMode('100');
+        }
+    }, [s.signatureMode, s.scaleMode]);
 
     // Persistence is now handled automatically by Zustand persist middleware in useImposerSettingsStore.ts
 
@@ -1120,6 +1124,8 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 marginMode: dieGeometryMode ? 'labels_only' : s.marginMode,
                 duplexFlow: pageSheetMode ? 'normal' : s.duplexFlow, align: s.align, mirrorAlign: true,
                 duplexFlipEdge: s.duplexFlipEdge,
+                // §MG-A2: ngưỡng in dư cho phép gom bản kẽm (Dàn nhiều kích thước).
+                mixedExcessPercent: s.mixedExcessPercent,
                 markType: getImposerCapability(pageSheetMode ? 'guillotine' : activeTool === 'sticker_imposer' ? 'diecut' : activeTool === 'cnc_imposer' ? 'cnc' : 'guillotine').supportsMarks ? s.markType : 'none',
                 markOffset: s.marksConfig.distance, markLength: s.marksConfig.length, markThickness: s.marksConfig.thickness,
                 markStyle: s.marksConfig.style === 2 ? 'japanese' : 'default',
@@ -1182,7 +1188,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         taskMode: s.taskMode as 'booklet' | 'nup' | 'sticker_imposer',
         paper: { formsize: s.formsize, customSheetWidth: s.customSheetWidth, customSheetHeight: s.customSheetHeight, bleed: s.bleed, gapX: s.gapX, gapY: s.gapY, spreadDistribution: s.spreadDistribution, marginTop: s.marginTop, marginBottom: s.marginBottom, marginLeft: s.marginLeft, marginRight: s.marginRight, marginMode: s.marginMode },
         marks: { markType: s.markType, markOffset: s.marksConfig.distance, markLength: s.marksConfig.length, markThickness: s.marksConfig.thickness, markStyle: s.marksConfig.style === 2 ? 'style2' as const : 'style1' as const },
-        booklet: s.taskMode === 'booklet' ? { signatureMode: s.signatureMode, foliosize: s.foliosize, paperThickness: s.paperThickness, scaleMode: s.paperClassification === 'offset' ? 'chain_nup' : s.scaleMode, interleave: s.interleave, foldPattern: s.paperClassification === 'offset' ? (s.foldPattern || undefined) : undefined, gripperMargin: s.paperClassification === 'offset' ? s.gripperMargin : undefined } : undefined,
+        booklet: s.taskMode === 'booklet' ? { signatureMode: s.signatureMode, foliosize: s.foliosize, paperThickness: s.paperThickness, gutterMargin: s.gutterMargin, blankPlacement: s.blankPlacement, scaleMode: s.paperClassification === 'offset' ? 'chain_nup' : s.scaleMode, interleave: s.interleave, foldPattern: s.paperClassification === 'offset' ? (s.foldPattern || undefined) : undefined, gripperMargin: s.paperClassification === 'offset' ? s.gripperMargin : undefined } : undefined,
         nup: s.taskMode !== 'booklet' ? { layoutType: s.layoutType, columns: s.columns, rows: s.rows, gridStrategy: s.gridStrategy, groupingStrategy: s.groupingStrategy, duplexFlow: s.duplexFlow, align: s.align, clusterMode: s.clusterMode, clusterCount: s.clusterCount, clusterGap: s.clusterGap, clusterGapMode: s.clusterGapMode } : undefined,
     }), [s]);
 
@@ -1197,6 +1203,9 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         if (preset.booklet) {
             s.setSignatureMode(preset.booklet.signatureMode); s.setFoliosize(preset.booklet.foliosize);
             s.setPaperThickness(preset.booklet.paperThickness); s.setScaleMode(preset.booklet.scaleMode);
+            // BOOKLET (audit 2026-07-31 §B.1): preset cũ thiếu field thì giữ mặc định hiện tại.
+            if (preset.booklet.gutterMargin !== undefined) s.setGutterMargin(preset.booklet.gutterMargin);
+            if (preset.booklet.blankPlacement !== undefined) s.setBlankPlacement(preset.booklet.blankPlacement);
             s.setInterleave(preset.booklet.interleave);
             if (preset.booklet.foldPattern) s.setFoldPattern(preset.booklet.foldPattern);
             if (preset.booklet.gripperMargin) s.setGripperMargin(preset.booklet.gripperMargin);
@@ -1495,6 +1504,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 }
                                 duplexFlow={activeTool === 'sticker_imposer' ? 'normal' : s.duplexFlow}
                                 duplexFlipEdge={s.duplexFlipEdge}
+                                mixedExcessPercent={s.mixedExcessPercent}
                                 splitGap={splitGap}
                                 gapX={s.gapX} gapY={s.gapY}
                                 groupingStrategy={_effGroupingPv}

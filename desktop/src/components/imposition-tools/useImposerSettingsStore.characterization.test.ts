@@ -6,7 +6,7 @@
  * Test BLACK-BOX qua API công khai + localStorage → chạy y hệt TRƯỚC và SAU refactor.
  * Nếu refactor làm lệch default state / partialize keys / migration / tool-profile → ĐỎ.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createImposerSettingsStore } from './useImposerSettingsStore';
 import { disposeImposerPersistScope } from './store/persist';
 
@@ -95,7 +95,7 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
         expect(rd.fieldOrder.indexOf('gangCount')).toBe(rd.fieldOrder.indexOf('identifier') + 1);
     });
 
-    it('migration v7 → v8: persist resizeSettings (nhớ thiết lập co giãn trang)', () => {
+    it('migration v7 → v8: persist resizeSettings (nhớ thiết lập co giãn trang)', async () => {
         localStorage.clear();
         const v7 = {
             state: {
@@ -116,9 +116,20 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
         const store = createImposerSettingsStore();
         const rs = store.getState().resizeSettings as any;
         expect(rs.sizePresetId).toBe('A3');
+        expect(rs.pageSizeMode).toBe('fixed');
         expect(rs.scaleMode).toBe('fill');
         expect(rs.targetDpi).toBe(150);
         expect(rs.resizeMode).toBe('vector');
+
+        vi.useFakeTimers();
+        try {
+            store.getState().setResizeSettings({ ...rs, pageSizeMode: 'fixed_width' });
+            await vi.advanceTimersByTimeAsync(200);
+            const persisted = JSON.parse(localStorage.getItem(PERSIST_KEY) as string);
+            expect(persisted.state.resizeSettings.pageSizeMode).toBe('fixed_width');
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('switchToolProfile lưu/khôi phục field thuật toán theo công cụ', () => {

@@ -161,8 +161,12 @@ def test_process_parallel_falls_back_on_pool_crash(tmp_path, monkeypatch):
     )
 
     call_modes = []
+    captured_sample_insets = []
 
     def fake_run(args_list, n_workers, use_pool):
+        captured_sample_insets.extend(
+            args.get("edge_sample_inset_mm") for args in args_list
+        )
         call_modes.append(use_pool)
         if use_pool:
             raise BrokenProcessPool(
@@ -197,12 +201,15 @@ def test_process_parallel_falls_back_on_pool_crash(tmp_path, monkeypatch):
         bleed_color_type="image",
         solid_bleed_color=(255, 255, 255),
         draw_cut_contour=False,
+        edge_sample_inset_mm=0.5,
         rectangle_mode=True,
         edge_bite_mm=0.0,
         cut_first_page_only=False,
         shape_mode="contour",
     )
 
+    assert captured_sample_insets
+    assert set(captured_sample_insets) == {0.5}
     assert success is True
     assert call_modes == [True, False], "phải thử pool rồi fallback sequential"
     assert os.path.exists(out) and os.path.getsize(out) > 0

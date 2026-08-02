@@ -11,7 +11,7 @@ import { ImpositionMode, type ProcessingSettings } from '../lib/pdfImposer';
 import { Button } from './Button';
 import { Printer, Scissors, Settings, Star } from 'lucide-react';
 import { PDFDocument, degrees } from 'pdf-lib';
-import { imageBytesToPdfDoc } from '../lib/imageNormalizer';
+import { imageFileToPdfIfNeeded } from '../lib/imageNormalizer';
 import ImposerDashboard from './imposition-tools/ImposerDashboard';
 import CutExportModal from './imposition-tools/cut-export/CutExportModal';
 import OpenInDesignModal from './imposition-tools/OpenInDesignModal';
@@ -62,6 +62,9 @@ import { registerActiveTabFeature } from '../lib/tabNavigation';
 // trong RAM). Không cap → file 50MB × N commit = leak vài GB/tab (audit RAM 2026-07-06).
 // Cắt entry CŨ NHẤT (đầu mảng) khi vượt ngưỡng; undo vẫn pop từ cuối như cũ.
 const MAX_HISTORY = 12;
+
+type FileOpeningPhase = 'idle' | 'loading' | 'slow' | 'error';
+const FILE_OPEN_SLOW_MS = 8_000;
 
 interface Props {
     tabId?: string;
@@ -117,23 +120,6 @@ export function isEphemeralBackendPath(p?: string | null): boolean {
     if (/\/(uploads|results|temp)\//.test(norm)) return true;
     if (/\/[0-9a-f]{32}\.pdf$/.test(norm)) return true;
     return false;
-}
-
-/**
- * Ảnh (JPG/PNG) → File PDF 1 trang. App cho mở ảnh nhưng MỌI công cụ (đổi khổ, bình
- * bài, VDP…) giả định PDF (PDFDocument.load / backend parse) → ảnh không có header %PDF
- * → nổ "No PDF header found". Convert NGAY khi mở để mọi luồng sau chỉ còn PDF.
- * imageBytesToPdfDoc lo phần giữ nén gốc (JPEG DCT / PNG Flate) + khổ trang theo DPI.
- * Trả về File PDF nếu là ảnh; ngược lại trả nguyên file. Ném lỗi nếu ảnh hỏng.
- */
-async function imageFileToPdfIfNeeded(f: File): Promise<File> {
-    const _nm = (f.name || '').toLowerCase();
-    if (!(_nm.endsWith('.jpg') || _nm.endsWith('.jpeg') || _nm.endsWith('.png'))) return f;
-    const _imgBytes = await getFileArrayBuffer(f);
-    const _doc = await imageBytesToPdfDoc(_imgBytes, f.name || 'image');
-    const _pdfBytes = await _doc.save();
-    const _pdfName = (f.name || 'image').replace(/\.(jpe?g|png)$/i, '.pdf');
-    return new File([_pdfBytes as any], _pdfName, { type: 'application/pdf' });
 }
 
 function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onSpawnTab, initialFile, initialReport, initialFeature, lockedMode, batchOutput: initialBatchOutput, systemMergeFiles, officeSourceFile, officeSourceFiles, initialRecovery, imposerStoreRef }: Props & { imposerStoreRef: React.MutableRefObject<ReturnType<typeof createImposerSettingsStore> | null> }) {
@@ -386,67 +372,109 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             return () => clearTimeout(timer);
         }
     }, [file]);
-    // Khi mở từ App (Ctrl+O / recent / drop) với initialFile: Ảnh phải convert → PDF
-    // (async). Trước đây phase='upload' hiện màn kéo-thả rồi mới vào workspace → "nháy"
-    // màn Bình Bài. Giữ cờ opening để hiện loading thay vì màn upload trống.
-    const [isOpeningFile, setIsOpeningFile] = useState(() => !!initialFile);
+    // FILEIO (audit 2026-08-02 §TEST.1): chuyển ảnh có trạng thái hữu hạn. Watchdog chỉ
+    // đổi thông tin UI, không hard-timeout ảnh lớn; generation fence từ chối mọi callback muộn.
+    const [fileOpeningPhase, setFileOpeningPhase] = useState<FileOpeningPhase>(() => initialFile ? 'loading' : 'idle');
+    const [initialOpenRetryToken, setInitialOpenRetryToken] = useState(0);
+    const fileOpeningAttemptRef = useRef(0);
+    const fileOpeningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const initialOpenRetryRef = useRef<(() => void) | null>(null);
+    const pendingSelectedOpenRef = useRef<{ file: File; allFiles?: File[] } | null>(null);
 
-    // Handle initial file passed from App.tsx (if spawned via multi-file drop)
-    // ĐƯỜNG MỞ FILE THỨ 2 (recent files / spawn tab / App-level) — KHÔNG qua
-    // handleFileSelected. Ảnh cũng phải convert → PDF ở đây, nếu không đổi khổ/bình
-    // bài nổ "No PDF header found" (bug: chỉ sửa handleFileSelected là bỏ sót đường này).
+    const clearFileOpeningTimer = useCallback(() => {
+        if (fileOpeningTimerRef.current) clearTimeout(fileOpeningTimerRef.current);
+        fileOpeningTimerRef.current = null;
+    }, []);
+
+    const beginFileOpeningAttempt = useCallback(() => {
+        clearFileOpeningTimer();
+        const attempt = ++fileOpeningAttemptRef.current;
+        setError('');
+        setFileOpeningPhase('loading');
+        fileOpeningTimerRef.current = setTimeout(() => {
+            if (fileOpeningAttemptRef.current === attempt) setFileOpeningPhase('slow');
+        }, FILE_OPEN_SLOW_MS);
+        return attempt;
+    }, [clearFileOpeningTimer, setError]);
+
+    const settleFileOpeningAttempt = useCallback((attempt: number, next: 'idle' | 'error') => {
+        if (fileOpeningAttemptRef.current !== attempt) return false;
+        clearFileOpeningTimer();
+        setFileOpeningPhase(next);
+        return true;
+    }, [clearFileOpeningTimer]);
+
+    const cancelFileOpening = useCallback(() => {
+        fileOpeningAttemptRef.current += 1;
+        clearFileOpeningTimer();
+        setError('');
+        setFileOpeningPhase('idle');
+    }, [clearFileOpeningTimer, setError]);
+
+    useEffect(() => () => {
+        fileOpeningAttemptRef.current += 1;
+        clearFileOpeningTimer();
+    }, [clearFileOpeningTimer]);
+
+    // Handle initial file passed from App.tsx (recent / picker / native drop / Open With).
     useEffect(() => {
         if (initialFile && !file) {
-            let _cancelled = false;
-            setIsOpeningFile(true);
+            let cancelled = false;
+            pendingSelectedOpenRef.current = null;
+            initialOpenRetryRef.current = () => setInitialOpenRetryToken(token => token + 1);
+            const attempt = beginFileOpeningAttempt();
             (async () => {
-                let _f = initialFile;
+                let openedFile = initialFile;
                 try {
-                    _f = await imageFileToPdfIfNeeded(initialFile);
-                } catch (e) {
-                    console.error('[initialFile] convert ảnh → PDF lỗi:', e);
-                    if (!_cancelled) {
+                    openedFile = await imageFileToPdfIfNeeded(initialFile, getFileArrayBuffer);
+                } catch (openError) {
+                    console.error('[initialFile] convert ảnh → PDF lỗi:', openError);
+                    if (!cancelled && fileOpeningAttemptRef.current === attempt) {
                         setError(t('tabs.imposition:khong_doc_duoc_file_anh'));
-                        setIsOpeningFile(false);
+                        settleFileOpeningAttempt(attempt, 'error');
                     }
                     return;
                 }
-                if (_cancelled) return;
-                // Ảnh đã convert → File PDF mới KHÔNG có .path trên đĩa → dùng blob URL.
+                if (cancelled || fileOpeningAttemptRef.current !== attempt) return;
+                // Ảnh đã convert thành File PDF không còn path đĩa nên dùng blob URL.
                 if (pdfUrl) URL.revokeObjectURL(pdfUrl);
                 let objUrl = '';
-                if ((window as any).__TAURI_INTERNALS__ && (_f as any).path) {
-                    objUrl = localFileUrl((_f as any).path);
+                const nativePath = (openedFile as File & { path?: string }).path;
+                const isTauri = !!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+                if (isTauri && nativePath) {
+                    objUrl = localFileUrl(nativePath);
                 } else {
-                    objUrl = URL.createObjectURL(_f);
+                    objUrl = URL.createObjectURL(openedFile);
                 }
-                setFile(_f);
-                setOriginalFileName(_f.name);
-                setFileSizeStr((_f.size / (1024 * 1024)).toFixed(2) + ' MB');
+                setFile(openedFile);
+                setOriginalFileName(openedFile.name);
+                setFileSizeStr((openedFile.size / (1024 * 1024)).toFixed(2) + ' MB');
                 setPdfUrl(objUrl);
                 setPhase('workspace');
-                setIsOpeningFile(false);
-                onTitleChange?.(_f.name);
+                settleFileOpeningAttempt(attempt, 'idle');
+                onTitleChange?.(openedFile.name);
 
-                // Defer: chỉ cập nhật tiêu đề (RGB/CMYK), không cấp thiết khi mở → tránh
-                // gọi Python tranh chấp với meta + render trang đầu.
+                // Chỉ cập nhật tiêu đề màu sau first tile để không tranh tài nguyên lúc mở.
                 setTimeout(() => {
-                    detectColorSpace(_f).then(cs => {
-                        if (cs) {
-                            onTitleChange?.(`${_f.name} (${cs})`);
-                        }
+                    detectColorSpace(openedFile).then(cs => {
+                        if (cs) onTitleChange?.(`${openedFile.name} (${cs})`);
                     });
                 }, 2500);
 
-                if (initialBatchOutput) {
-                    setBatchOutput(initialBatchOutput);
-                }
+                if (initialBatchOutput) setBatchOutput(initialBatchOutput);
             })();
-            return () => { _cancelled = true; };
+            return () => {
+                cancelled = true;
+                if (fileOpeningAttemptRef.current === attempt) {
+                    fileOpeningAttemptRef.current += 1;
+                    clearFileOpeningTimer();
+                }
+            };
         }
-        if (!initialFile) setIsOpeningFile(false);
-    }, [initialFile, initialBatchOutput]);
-
+        if (!initialFile) setFileOpeningPhase('idle');
+        // Chỉ khởi động lại khi nguồn hoặc lệnh Thử lại đổi; callback UI đổi không được hủy conversion đang chạy.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [initialFile, initialBatchOutput, initialOpenRetryToken, beginFileOpeningAttempt, clearFileOpeningTimer, settleFileOpeningAttempt]);
     // Áp lockedMode = "đang ở công cụ nào". Tác vụ (Bình trang / Dàn nhiều mẫu) nhớ
     // RIÊNG theo từng công cụ trong toolProfiles — KHÔNG ghi đè taskMode bằng identity
     // công cụ (sticker_imposer/cnc_imposer). Trước đây ép taskMode = lockedMode → mỗi
@@ -1186,19 +1214,20 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const formatSize = (bytes: number) => (bytes / (1024 * 1024)).toFixed(2) + ' MB';
 
     const handleFileSelected = useCallback(async (selectedFile: File, allFiles?: File[]) => {
-        // Ảnh → PDF NGAY khi mở (xem imageFileToPdfIfNeeded) để mọi công cụ sau chỉ
-        // còn thấy PDF, tránh "No PDF header found" ở bước ngẫu nhiên.
-        // Hiện loading (không giữ màn kéo-thả) trong lúc convert ảnh.
-        setIsOpeningFile(true);
-        setError('');
+        // Ảnh → PDF ngay khi mở để mọi công cụ sau chỉ nhận hợp đồng PDF.
+        pendingSelectedOpenRef.current = { file: selectedFile, allFiles };
+        const attempt = beginFileOpeningAttempt();
         try {
-            selectedFile = await imageFileToPdfIfNeeded(selectedFile);
-        } catch (e) {
-            console.error('[handleFileSelected] convert ảnh → PDF lỗi:', e);
-            setError(t('tabs.imposition:khong_doc_duoc_file_anh'));
-            setIsOpeningFile(false);
+            selectedFile = await imageFileToPdfIfNeeded(selectedFile, getFileArrayBuffer);
+        } catch (openError) {
+            console.error('[handleFileSelected] convert ảnh → PDF lỗi:', openError);
+            if (fileOpeningAttemptRef.current === attempt) {
+                setError(t('tabs.imposition:khong_doc_duoc_file_anh'));
+                settleFileOpeningAttempt(attempt, 'error');
+            }
             return;
         }
+        if (fileOpeningAttemptRef.current !== attempt) return;
         setFile(selectedFile);
         setOriginalFileName(selectedFile.name);
         setSelectionFileId(''); // Reset — will be re-uploaded by the useEffect above
@@ -1206,15 +1235,17 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         
         if (pdfUrl && !pdfUrl.startsWith('https://')) URL.revokeObjectURL(pdfUrl);
         let objUrl = '';
-        if ((window as any).__TAURI_INTERNALS__ && (selectedFile as any).path) {
+        const nativePath = (selectedFile as File & { path?: string }).path;
+        const isTauri = !!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+        if (isTauri && nativePath) {
             // FILEIO (audit 2026-07-28 §FL.03): không phụ thuộc asset scope cố định.
-            objUrl = localFileUrl((selectedFile as any).path);
+            objUrl = localFileUrl(nativePath);
         } else {
             objUrl = URL.createObjectURL(selectedFile);
         }
         setPdfUrl(objUrl);
         setPhase('workspace');
-        setIsOpeningFile(false);
+        settleFileOpeningAttempt(attempt, 'idle');
         
         setHistory([]);
         // Reset undo/redo edit-object khi đổi file (tránh khôi phục file cũ).
@@ -1244,7 +1275,21 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 onSpawnTab(allFiles[i]);
             }
         }
-    }, [onTitleChange, onSpawnTab]);
+    }, [
+        beginFileOpeningAttempt, onSpawnTab, onTitleChange, pdfUrl,
+        setDetectedDimensionsByPage, setDetectedShapeParams, setDetectedShapeParamsByPage,
+        setDetectedShapeType, setDetectedShapesByPage, setError, setFile, setFileSizeStr,
+        setHistory, setOriginalFileName, setPdfUrl, setPhase, setSelectionFileId,
+        setViewerFitMode, setViewerPageDisplayMode, settleFileOpeningAttempt, store, t,
+    ]);
+    const retryFileOpening = useCallback(() => {
+        const pending = pendingSelectedOpenRef.current;
+        if (pending) {
+            void handleFileSelected(pending.file, pending.allFiles);
+            return;
+        }
+        initialOpenRetryRef.current?.();
+    }, [handleFileSelected]);
     //#endregion
 
     //#region Processing Handlers
@@ -2218,24 +2263,51 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     //#region Render
     return (
         <div className="w-full h-full flex flex-col bg-slate-50 dark:bg-[#1a1a1a]">
-            {phase === 'upload' && isOpeningFile && (
-                <div className="flex-1 flex flex-col items-center justify-center py-12 px-6 animate-fade-in">
-                    <div className="w-12 h-12 border-[3px] border-indigo-400 border-t-transparent rounded-full animate-spin mb-5" />
-                    <p className="text-base font-semibold text-slate-800 dark:text-zinc-100">
-                        {t('tabs.imposition:dang_mo_file')}
-                    </p>
-                    <p className="mt-2 text-sm text-slate-500 dark:text-zinc-400 max-w-sm text-center">
-                        {t('tabs.imposition:dang_chuyen_anh_sang_pdf')}
-                    </p>
-                    {initialFile?.name && (
-                        <p className="mt-3 text-xs text-slate-400 dark:text-zinc-500 truncate max-w-md">
-                            {initialFile.name}
-                        </p>
-                    )}
+            {phase === 'upload' && fileOpeningPhase !== 'idle' && (
+                <div className="flex-1 flex items-center justify-center px-6">
+                    <div
+                        className="inline-flex max-w-lg items-center gap-2.5 rounded-lg border border-slate-200/80 bg-white/80 px-3.5 py-2 text-sm shadow-sm backdrop-blur-sm dark:border-zinc-700/80 dark:bg-zinc-800/80 animate-fade-in"
+                        role={fileOpeningPhase === 'error' ? 'alert' : 'status'}
+                        aria-live="polite"
+                    >
+                        {fileOpeningPhase === 'error' ? (
+                            <svg className="h-4 w-4 shrink-0 text-amber-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v3m0 4h.01M10.3 3.7 2.2 18a2 2 0 0 0 1.8 3h16a2 2 0 0 0 1.8-3L13.7 3.7a2 2 0 0 0-3.4 0Z" />
+                            </svg>
+                        ) : (
+                            <div className="h-4 w-4 shrink-0 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin" aria-hidden="true" />
+                        )}
+                        <div className="min-w-0">
+                            <p className="font-medium text-slate-600 dark:text-zinc-300">
+                                {fileOpeningPhase === 'error'
+                                    ? error || t('tabs.imposition:khong_doc_duoc_file_anh')
+                                    : fileOpeningPhase === 'slow'
+                                        ? t('tabs.imposition:mo_file_cham')
+                                        : t('tabs.imposition:dang_mo_file')}
+                            </p>
+                            {(fileOpeningPhase === 'slow' || fileOpeningPhase === 'error') && (
+                                <div className="mt-2 flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={retryFileOpening}
+                                        className="rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-indigo-700"
+                                    >
+                                        {t('tabs.imposition:thu_lai')}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={cancelFileOpening}
+                                        className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-700"
+                                    >
+                                        {t('tabs.imposition:huy_bo')}
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    </div>
                 </div>
             )}
-
-            {phase === 'upload' && !isOpeningFile && (
+            {phase === 'upload' && fileOpeningPhase === 'idle' && (
                 <div className="flex-1 flex flex-col items-center justify-center py-12 px-6">
                     <div className="text-center mb-10 animate-fade-in">
                         <h1 className="text-3xl font-bold text-slate-900 dark:text-white mb-3 transition-colors">

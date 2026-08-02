@@ -11,13 +11,14 @@ import { appPerf } from './lib/perfMarks';
 import SystemIntegrations from './components/SystemIntegrations';
 import UpdateChecker from './components/UpdateChecker';
 import { TOOL_REGISTRY, TOOL_CATEGORIES, getToolsByCategory, getToolUniqueKey, getTabTitle, getExistingInstance, isImpositionFamilyTool, type AppToolId } from './lib/toolRegistry';
-import { isOfficePathOrName } from './lib/officeFileTypes';
 import { MenuBar, type MenuDef } from './components/MenuBar';
 import AboutModal, { SUPPORT } from './components/AboutModal';
 import { useAppSettingsStore } from './stores/appSettingsStore';
 import { useActiveViewerStore } from './stores/useActiveViewerStore'; // UIUX (audit menu 2026-07-28 §MB.5)
 import { useTheme } from './hooks/useTheme';
-import { useRecentFiles, statRecentFile } from './lib/useRecentFiles';
+import { addOpenPayloadToRecent, useRecentFiles, statRecentFile } from './lib/useRecentFiles';
+import { createPathBackedFile, dispatchSupportedSystemFiles, systemFileMime } from './lib/nativeFileAccess';
+import { SUPPORTED_IMAGE_EXTENSIONS } from './lib/imageFileTypes';
 import { FileProvider, useFileContext } from './lib/fileContext';
 import { isOutputFile } from './lib/constants';
 import { useAuthStore } from './stores/useAuthStore';
@@ -36,7 +37,8 @@ import { useTranslation } from 'react-i18next';
 import { tv } from './i18n';
 import { canUse, featureIdForFocus, FEATURE_CATALOG } from './lib/license/features';
 import { getShortcutLabel, matchesShortcut } from './lib/keyboardShortcuts';
-import { buildResultTabPayload, resolveActiveImageBatchReceiver } from './lib/tabNavigation';
+import { buildResultTabPayload } from './lib/tabNavigation';
+import { useIncomingFileDispatcher } from './hooks/useIncomingFileDispatcher';
 
 type AppTabType = 'home' | AppToolId;
 
@@ -567,18 +569,9 @@ function AppInner() {
     // Automatically mark spawned imposition files as dirty
     const isSpawnedDirty = payload && payload.file && payload.file.name && isOutputFile(payload.file.name);
 
-    // Save to recent files history if it has a physical path.
-    // Bỏ qua file kết quả chưa lưu (VDP_, Imposed_...): chúng trỏ tới file tạm
-    // trên server (dung lượng ~0, sẽ bị dọn) nên xuất hiện dạng 0MB/"Missing".
-    if (payload && payload.file && (payload.file as any).path && !isOutputFile(payload.file.name || '') && !(payload.file as any).isBlank && !(payload.file as any).isGenerated) {
-      import('./lib/useRecentFiles').then(({ useRecentFiles }) => {
-        useRecentFiles.getState().addFile({
-          path: (payload.file as any).path,
-          name: payload.file.name,
-          size: payload.file.size || 0
-        });
-      });
-    }
+    // FILEIO (audit 2026-08-02 §TEST.1): ghi cả nguồn Office/batch Office vào Recent.
+    // Helper vẫn bỏ file kết quả tạm, blank và generated như chính sách cũ.
+    addOpenPayloadToRecent(payload);
 
     setTabs(prev => [...prev, { id: newId, type: appId, title, isClosable: true, payload, isDirty: !!isSpawnedDirty }]);
     setActiveTabId(newId);
@@ -625,7 +618,7 @@ function AppInner() {
   tabsRef.current = tabs;
   activeTabIdRef.current = activeTabId;
 
-  const commitCloseTab = useCallback((id: string) => {
+  const commitCloseTab = useCallback((id: string, preserveActiveTab = false) => {
     // Release all blob URLs associated with this tab
     fileCtx.releaseTab(id);
     // Đóng tab CHỦ ĐỘNG (có xác nhận nếu dirty) = thoát sạch tab này → xóa snapshot
@@ -636,7 +629,7 @@ function AppInner() {
       const idx = prev.findIndex(t => t.id === id);
       if (idx === -1) return prev;
       const nextTabs = prev.filter(t => t.id !== id);
-      if (activeTabIdRef.current === id && nextTabs.length > 0) {
+      if (!preserveActiveTab && activeTabIdRef.current === id && nextTabs.length > 0) {
         const nextActiveIdx = Math.max(0, idx - 1);
         setActiveTabId(nextTabs[nextActiveIdx].id);
       }
@@ -873,45 +866,21 @@ function AppInner() {
     if ((window as any).__TAURI_INTERNALS__) {
       import('@tauri-apps/plugin-dialog').then(async ({ open }) => {
         try {
-          const { OFFICE_EXTENSIONS, isOfficePathOrName, mimeForOfficeName } = await import('./lib/officeFileTypes');
+          const { OFFICE_EXTENSIONS } = await import('./lib/officeFileTypes');
           const selected = await open({
             multiple: false,
             filters: [
-              { name: 'PDF, Office & Hình ảnh', extensions: ['pdf', 'png', 'jpg', 'jpeg', ...OFFICE_EXTENSIONS] },
+              { name: 'PDF, Office & Hình ảnh', extensions: ['pdf', ...SUPPORTED_IMAGE_EXTENSIONS, ...OFFICE_EXTENSIONS] },
               { name: 'PDF', extensions: ['pdf'] },
               { name: 'Word / Excel / PowerPoint', extensions: [...OFFICE_EXTENSIONS] },
-              { name: 'Hình ảnh', extensions: ['png', 'jpg', 'jpeg'] },
+              { name: 'Hình ảnh', extensions: [...SUPPORTED_IMAGE_EXTENSIONS] },
             ]
           });
           if (selected && typeof selected === 'string') {
-            const { stat } = await import('@tauri-apps/plugin-fs');
-            let size = 0;
-            try {
-              size = (await stat(selected)).size;
-            } catch {
-              try {
-                const { invoke } = await import('@tauri-apps/api/core');
-                size = await invoke<number>('get_file_size', { path: selected });
-              } catch { /* keep 0 */ }
-            }
-            const name = selected.split('\\').pop() || selected.split('/').pop() || 'unknown';
-            const lower = name.toLowerCase();
-            let type = 'application/octet-stream';
-            if (lower.endsWith('.pdf')) type = 'application/pdf';
-            else if (lower.endsWith('.png')) type = 'image/png';
-            else if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) type = 'image/jpeg';
-            else if (isOfficePathOrName(name)) type = mimeForOfficeName(name);
-            const fileObj = new File([], name, { type });
-            Object.defineProperty(fileObj, 'path', { value: selected });
-            Object.defineProperty(fileObj, 'size', { value: size });
-            if (isOfficePathOrName(name)) {
-              handleOpenApp('imposition', {
-                focusFeature: 'office_convert',
-                officeSourceFile: fileObj,
-              });
-            } else {
-              handleOpenApp('imposition', { file: fileObj });
-            }
+            // FILEIO (audit 2026-08-02 §TEST.1): Ctrl+O dùng đúng transport và
+            // dispatcher của Home/Open With/Recent; metadata timeout vẫn mở size=0.
+            const { file } = await createPathBackedFile(selected);
+            dispatchSupportedSystemFiles([file]);
           }
         } catch (err) {
           console.error(err);
@@ -920,7 +889,7 @@ function AppInner() {
     } else {
       document.getElementById('home-generic-pdf-input')?.click();
     }
-  }, [handleOpenApp]);
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1000,92 +969,11 @@ function AppInner() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleCloseTab, handleOpenApp, handleOpenFile, t]);
 
-  const accumulatedFiles = useRef<File[]>([]);
-  const sysTimeoutRef = useRef<any>(null);
-  const sysActionRef = useRef<string>(''); // ý định từ menu chuột phải (vd 'convert')
-
-  useEffect(() => {
-    const handleSystemFiles = (e: any) => {
-      if (e.detail && e.detail.files && e.detail.files.length > 0) {
-        accumulatedFiles.current = [...accumulatedFiles.current, ...e.detail.files];
-        // Giữ ý định menu (vd 'convert'). Menu gọi 1 tiến trình/file nên nhiều event
-        // dồn vào cùng đợt debounce — chỉ cần 1 event mang cờ là đủ, không cho ''
-        // ghi đè cờ đã bắt.
-        if (e.detail.action) sysActionRef.current = e.detail.action;
-
-        if (sysTimeoutRef.current) clearTimeout(sysTimeoutRef.current);
-        sysTimeoutRef.current = setTimeout(() => {
-          const filesToProcess = [...accumulatedFiles.current];
-          accumulatedFiles.current = [];
-          const intent = sysActionRef.current;
-          sysActionRef.current = '';
-          // Sắp theo SỐ dẫn đầu tên file (numeric): "10_" SAU "2_" (kiểu số, không
-          // phải chữ cái). Quy ước người dùng đặt tên "1_...","2_..." để định thứ tự
-          // trang → CombineTab gộp trang theo đúng thứ tự này → khớp cột số lượng
-          // Excel khi dán. File không có số đầu vẫn sắp ổn định theo tên.
-          if (filesToProcess.length > 1) {
-            filesToProcess.sort((a, b) =>
-              a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
-            );
-          }
-          if (filesToProcess.length > 0) {
-            // Office files → tool convert (không mở viewer PDF)
-            const officeFiles = filesToProcess.filter(f => isOfficePathOrName(f.name));
-            const otherFiles = filesToProcess.filter(f => !isOfficePathOrName(f.name));
-            const pdfFiles = otherFiles.filter(f => /\.pdf$/i.test(f.name));
-            const conversionFiles = officeFiles.length > 0 ? [...officeFiles, ...pdfFiles] : [];
-            const remainingOtherFiles = officeFiles.length > 0
-              ? otherFiles.filter(f => !/\.pdf$/i.test(f.name))
-              : otherFiles;
-
-            if (conversionFiles.length > 0) {
-              handleOpenApp('imposition', {
-                focusFeature: 'office_convert',
-                officeSourceFile: conversionFiles[0],
-                officeSourceFiles: conversionFiles,
-              });
-            }
-
-            if (remainingOtherFiles.length === 0) return;
-            const filesForOtherTools = remainingOtherFiles;
-
-            if (intent === 'convert') {
-              // Menu "Convert to PDF" (chỉ ảnh): mở tab Ghép để nhúng ảnh→PDF —
-              // KỂ CẢ 1 file (khác luồng mặc định đẩy 1 file vào imposition).
-              // CombineTab đã có sẵn logic ảnh→trang PDF; convert = combine 1 ảnh.
-              handleOpenApp('combine_pdf' as AppToolId, { files: filesForOtherTools });
-            } else {
-              // NAV (audit điều hướng tab 2026-07-28 §DROP.01): chỉ công cụ ảnh
-              // chuyên dụng ĐANG XEM mới nhận file native; tab nền không được hút file.
-              const imageBatchReceiver = resolveActiveImageBatchReceiver(
-                tabsRef.current,
-                activeTabIdRef.current,
-              );
-
-              if (imageBatchReceiver) {
-                window.dispatchEvent(new CustomEvent(imageBatchReceiver.eventName, {
-                  detail: { tabId: imageBatchReceiver.tabId, files: filesForOtherTools },
-                }));
-              } else if (filesForOtherTools.length > 1) {
-                handleOpenApp('combine_pdf' as AppToolId, { files: filesForOtherTools });
-              } else {
-              // LUÔN mở tab MỚI (kiểu Acrobat). Trước đây khi tab hiện tại đã mở file thì
-              // phát `send-file-to-tab-${id}` để "gửi vào tab đang xem" — NHƯNG không có
-              // listener nào nhận sự kiện đó (ImpositionTab chỉ nạp qua prop initialFile,
-              // mà prop này bị bỏ qua khi tab đã có file). Hệ quả: double-click / Open with
-              // một file khi Prynx đang mở sẵn file → file rơi vào hư không, không mở được.
-                handleOpenApp('imposition', {
-                  file: filesForOtherTools[0],
-                });
-              }
-            }
-          }
-        }, 50); // Reduced delay for drag-and-drop snappiness
-      }
-    };
-    window.addEventListener('system-files-received', handleSystemFiles);
-    return () => window.removeEventListener('system-files-received', handleSystemFiles);
-  }, [handleOpenApp]);
+  useIncomingFileDispatcher({
+    onOpenApp: handleOpenApp,
+    tabsRef,
+    activeTabIdRef,
+  });
 
   // ── MENU BAR (kiểu Acrobat) — lệnh viewer đi qua sự kiện 'prynx-menu-command'
   //    (chỉ tab active xử lý); lệnh app-level gọi handler trực tiếp. ─────────────
@@ -1166,13 +1054,12 @@ function AppInner() {
       useRecentFiles.getState().removeFile(rf.path);
       return;
     }
-    const lower = rf.name.toLowerCase();
-    const type = lower.endsWith('.pdf') ? 'application/pdf' : lower.endsWith('.png') ? 'image/png' : 'image/jpeg';
-    const fileObj = new File([], rf.name, { type });
+    const fileObj = new File([], rf.name, { type: systemFileMime(rf.name) });
     Object.defineProperty(fileObj, 'path', { value: rf.path });
     Object.defineProperty(fileObj, 'size', { value: info.size || rf.size });
-    handleOpenApp('imposition', { file: fileObj });
-  }, [handleOpenApp, t]);
+    // FILEIO (audit 2026-08-02 §TEST.1): menu Recent không đi tắt dispatcher.
+    dispatchSupportedSystemFiles([fileObj]);
+  }, [t]);
 
   const openExternal = useCallback(async (url: string) => {
     try {
@@ -1268,6 +1155,17 @@ function AppInner() {
           onClick: () => window.dispatchEvent(new CustomEvent('app-trigger-save', { detail: { tabId: activeTabId, saveAs: false } })) },
         { label: tv('Lưu thành…'), shortcut: getShortcutLabel('global.save_as'), disabled: !canSaveActiveTab || activeViewerNumPages === 0,
           onClick: () => window.dispatchEvent(new CustomEvent('app-trigger-save', { detail: { tabId: activeTabId, saveAs: true } })) },
+        { separator: true },
+        {
+          label: `${t('misc.exportImage:tab_xuat_anh')}…`,
+          disabled: !canViewerCommand || activeViewerNumPages === 0,
+          onClick: () => viewerCmd('export-image'),
+        },
+        {
+          label: `${t('misc.exportImage:tab_xuat_cho_man_hinh')}…`,
+          disabled: !canViewerCommand || activeViewerNumPages === 0,
+          onClick: () => viewerCmd('export-for-screens'),
+        },
         { separator: true },
         {
           // UIUX (audit menu 2026-07-28 §MB.10): bỏ nhánh else báo lỗi — item đã disabled
@@ -1532,6 +1430,10 @@ function AppInner() {
                       onDirtyChange={(isDirty: boolean) => updateTabDirty(tab.id, isDirty)}
                       initialFiles={tab.payload?.files}
                       onSpawnTab={(file: any, extraPayload?: any) => handleOpenApp('imposition', buildResultTabPayload(file, extraPayload))}
+                      onResultsOpened={() => {
+                        // UIUX (audit 2026-08-02 §COMB.UI): giữ active tab kết quả.
+                        commitCloseTab(tab.id, true);
+                      }}
                       onSpawnCombineTabs={(results: { file: File; title: string }[]) => {
                         // Mỗi nhóm kích thước → 1 tab Combine riêng (file đã ghép).
                         // Stagger timestamp nhẹ để id tab không trùng trong cùng ms.

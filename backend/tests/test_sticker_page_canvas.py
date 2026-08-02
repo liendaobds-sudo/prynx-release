@@ -273,3 +273,73 @@ def test_sticker_endpoint_expands_page_for_bleed_overflow(tmp_path, monkeypatch)
         height_mm = (media[3] - media[1]) * 25.4 / 72.0
         assert width_mm == pytest.approx(150.0)
         assert height_mm == pytest.approx(210.0)
+
+
+def test_sticker_endpoint_passes_process_pages_to_engine(tmp_path, monkeypatch):
+    from app.api.routes import pdf_tools
+    from app.workers import sticker_engine
+
+    source = tmp_path / "source_route_pages.pdf"
+    _make_source(source)
+    captured = {}
+
+    class StubEngine:
+        def __init__(self, dpi=300):
+            self.dpi = dpi
+
+        def process_pdf(self, input_path, output_path, **kwargs):
+            captured.update(kwargs)
+            _make_tight_cropped_output(output_path, 0.0)
+            return True, {"pages": [{"page": 1}]}
+
+    class FakeRequest:
+        async def form(self):
+            return {
+                "file_path": str(source),
+                "cut_mode": "none",
+                "bleed_mm": "3",
+                "rectangle_mode": "true",
+                "process_pages": "[2, 4]",
+            }
+
+    monkeypatch.setattr(sticker_engine, "StickerEngine", StubEngine)
+    monkeypatch.setattr(pdf_tools, "RESULTS_DIR", str(tmp_path))
+    monkeypatch.setattr(pdf_tools, "_safe_watermark", lambda *args: None)
+
+    asyncio.run(pdf_tools.sticker_dieline_endpoint(FakeRequest(), license_info={}))
+    assert captured["process_pages"] == [2, 4]
+
+
+def test_sticker_engine_only_expands_selected_pages(tmp_path):
+    """RESIZE (audit 2026-07-31 §A.4): trang ngoài applyTo phải giữ nguyên."""
+    from app.workers.sticker_engine import StickerEngine
+
+    source = tmp_path / "selected_pages_source.pdf"
+    output = tmp_path / "selected_pages_output.pdf"
+    with pikepdf.Pdf.new() as pdf:
+        for color in (b"1 0 0 rg", b"0 0 1 rg"):
+            page = pdf.add_blank_page(page_size=(120.0, 80.0))
+            page.obj[pikepdf.Name("/Contents")] = pdf.make_stream(
+                color + b" 0 0 120 80 re f\n"
+            )
+        pdf.save(source)
+
+    success, _meta = StickerEngine(dpi=72).process_pdf(
+        input_path=str(source),
+        output_path=str(output),
+        cut_mode="none",
+        bleed_mm=3.0,
+        bleed_color_type="image",
+        draw_cut_contour=False,
+        rectangle_mode=True,
+        shape_mode="force_rect",
+        process_pages=[2],
+    )
+    assert success is True
+
+    with pikepdf.Pdf.open(output) as pdf:
+        first = _box(pdf.pages[0], "/MediaBox")
+        second = _box(pdf.pages[1], "/MediaBox")
+        assert first == pytest.approx([0.0, 0.0, 120.0, 80.0])
+        assert second[2] - second[0] > 120.0
+        assert second[3] - second[1] > 80.0

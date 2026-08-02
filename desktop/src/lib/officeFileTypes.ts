@@ -1,3 +1,5 @@
+import { isSupportedImageFileName } from './imageFileTypes';
+
 /**
  * Office / spreadsheet extensions accepted for → PDF conversion.
  * Keep in sync with backend OFFICE_EXTENSIONS.
@@ -16,6 +18,19 @@ export function isOfficePathOrName(pathOrName: string): boolean {
   return OFFICE_EXTENSIONS.some((ext) => lower.endsWith(`.${ext}`));
 }
 
+export function officeExtension(pathOrName: string): string | null {
+  const match = pathOrName.toLowerCase().match(/\.([a-z0-9]+)$/);
+  return match?.[1] && OFFICE_EXTENSIONS.includes(match[1] as typeof OFFICE_EXTENSIONS[number])
+    ? match[1]
+    : null;
+}
+
+export function isGoogleOfficeUrl(value: string): boolean {
+  const text = value.trim();
+  return /docs\.google\.com\/(document|spreadsheets|presentation)\/d\//i.test(text)
+    || /drive\.google\.com\/file\/d\//i.test(text)
+    || /drive\.google\.com\/open\?[^\s#]*\bid=[a-zA-Z0-9_-]+/i.test(text);
+}
 export function mimeForOfficeName(name: string): string {
   const lower = name.toLowerCase();
   if (lower.endsWith('.docx')) return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -31,10 +46,5 @@ export function mimeForOfficeName(name: string): string {
 
 export function isPdfOrImagePath(pathOrName: string): boolean {
   const lower = pathOrName.toLowerCase();
-  return (
-    lower.endsWith('.pdf') ||
-    lower.endsWith('.jpg') ||
-    lower.endsWith('.jpeg') ||
-    lower.endsWith('.png')
-  );
+  return lower.endsWith('.pdf') || isSupportedImageFileName(lower);
 }

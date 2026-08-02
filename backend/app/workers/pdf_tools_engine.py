@@ -13,9 +13,31 @@ All use pikepdf (C++/QPDF) → Faster and completely open-source (MPL), fully op
 import os
 import math
 import pikepdf
-from typing import List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 MM_TO_PTS = 2.83465
+
+class PdfOperationCancelled(RuntimeError):
+    """Tác vụ PDF đã nhận tín hiệu hủy ở điểm cooperative an toàn."""
+
+
+def _background_rgb(bg_fill_mode: str, bg_fill_color: str) -> tuple[float, float, float]:
+    """Chuẩn hóa màu nền resize; mode khác solid luôn dùng màu giấy trắng."""
+    if str(bg_fill_mode or "").strip().lower() != "solid":
+        return 1.0, 1.0, 1.0
+
+    value = str(bg_fill_color or "").strip()
+    if value.startswith("#"):
+        value = value[1:]
+    if len(value) != 6:
+        return 1.0, 1.0, 1.0
+    try:
+        channels = tuple(int(value[index:index + 2], 16) / 255.0 for index in (0, 2, 4))
+    except ValueError:
+        return 1.0, 1.0, 1.0
+    return channels
+
+
 
 
 def save_pdf_compat(pdf: "pikepdf.Pdf", path: str, **kwargs) -> None:
@@ -127,12 +149,22 @@ def resize_pages(source_path: str, output_path: str,
                  target_w_mm: float, target_h_mm: float,
                  scale_mode: str = 'fit',
                  apply_to: str = 'all',
-                 auto_orientation: bool = False) -> str:
+                 auto_orientation: bool = False,
+                 bg_fill_mode: str = "white",
+                 bg_fill_color: str = "#ffffff",
+                 cancel_event: Optional[object] = None,
+                 progress_callback: Optional[Callable[[int, int], None]] = None) -> str:
     target_w = target_w_mm * MM_TO_PTS
+    bg_r, bg_g, bg_b = _background_rgb(bg_fill_mode, bg_fill_color)
     target_h = target_h_mm * MM_TO_PTS
 
     out_doc = pikepdf.Pdf.new()
-    
+
+    def check_cancelled() -> None:
+        if cancel_event is not None and bool(cancel_event.is_set()):
+            out_doc.close()
+            raise PdfOperationCancelled("Đã hủy chuẩn hóa khổ PDF.")
+
     with pikepdf.Pdf.open(source_path) as src:
         total = len(src.pages)
         pages_to_resize = set()
@@ -166,6 +198,7 @@ def resize_pages(source_path: str, output_path: str,
                         pages_to_resize.add(p - 1)
 
         for i in range(total):
+            check_cancelled()
             src_page = src.pages[i]
             
             if i in pages_to_resize:
@@ -212,6 +245,17 @@ def resize_pages(source_path: str, output_path: str,
                     page_target_w, page_target_h = target_h, target_w
                 # Create the destination only after choosing its per-page orientation.
                 new_page = out_doc.add_blank_page(page_size=(page_target_w, page_target_h))
+                if (
+                    str(bg_fill_mode or "").strip().lower() == "solid"
+                    and scale_mode in {"fit", "center_no_scale"}
+                ):
+                    # RESIZE (audit 2026-07-31 §B.1): nền phải được vẽ cả trên
+                    # đường backend để file lớn/downsample không đổi hành vi.
+                    background = (
+                        f"q {bg_r:.6f} {bg_g:.6f} {bg_b:.6f} rg "
+                        f"0 0 {page_target_w:.4f} {page_target_h:.4f} re f Q"
+                    )
+                    new_page.contents_add(pikepdf.Stream(out_doc, background.encode("ascii")))
 
                 # Force the form BBox to the full MediaBox so bleed remains renderable.
                 try:
@@ -276,7 +320,12 @@ def resize_pages(source_path: str, output_path: str,
             else:
                 out_doc.pages.append(src_page)
 
+            if progress_callback is not None:
+                progress_callback(i + 1, total)
+
+    check_cancelled()
     save_pdf_compat(out_doc, output_path)
+    out_doc.close()
     return output_path
 
 
@@ -440,7 +489,9 @@ def _gs_downsample(input_path: str, output_path: str, target_dpi: int) -> bool:
 
 def _raster_resize(source_path: str, output_path: str,
                    target_w_mm: float, target_h_mm: float,
-                   scale_mode: str, target_dpi: int) -> str:
+                   scale_mode: str, target_dpi: int,
+                   bg_fill_mode: str = "white",
+                   bg_fill_color: str = "#ffffff") -> str:
     """Render mỗi trang ở đúng DPI đích rồi dựng lại PDF khổ mới (pypdfium2 + PIL).
 
     NHANH & NHỎ nhất cho trang thuần ảnh. Raster hoá → mất vector/text, ra RGB.
@@ -452,6 +503,10 @@ def _raster_resize(source_path: str, output_path: str,
     th_pt = target_h_mm * MM_TO_PTS
     px_w = max(1, round(target_w_mm / 25.4 * target_dpi))
     px_h = max(1, round(target_h_mm / 25.4 * target_dpi))
+    background_rgb = tuple(
+        max(0, min(255, round(channel * 255)))
+        for channel in _background_rgb(bg_fill_mode, bg_fill_color)
+    )
 
     pdf = pdfium.PdfDocument(source_path)
     pages_img: List["Image.Image"] = []
@@ -487,7 +542,7 @@ def _raster_resize(source_path: str, output_path: str,
                 # Chặn scale phi lý (trang lỗi) → tránh OOM.
                 render_scale = max(0.01, min(render_scale, target_dpi / 72.0 * 8))
                 bmp = page.render(scale=render_scale).to_pil().convert("RGB")
-            canvas = Image.new("RGB", (px_w, px_h), "white")
+            canvas = Image.new("RGB", (px_w, px_h), background_rgb)
             off_x = (px_w - bmp.width) // 2
             off_y = (px_h - bmp.height) // 2
             # fill/crop có thể tràn canvas → paste vẫn cắt đúng phần trong canvas.
@@ -520,17 +575,59 @@ def _choose_auto_mode(apply_to: str, has_text: bool, has_non_rgb_images: bool) -
 def resize_pages_smart(source_path: str, output_path: str,
                        target_w_mm: float, target_h_mm: float,
                        scale_mode: str = "fit", apply_to: str = "all",
-                       target_dpi: int = 0, mode: str = "auto") -> str:
+                       target_dpi: int = 0, mode: str = "auto",
+                       bg_fill_mode: str = "white",
+                       bg_fill_color: str = "#ffffff",
+                       page_size_mode: str = "fixed") -> str:
     """Resize trang + (tuỳ chọn) giảm dữ liệu theo khổ mới.
 
     target_dpi<=0 hoặc mode='xobject' → chỉ đổi hình học (hành vi cũ).
     Xem block chú thích 3b để biết các mode."""
-    # Không downsample → hành vi cũ nguyên vẹn.
-    if target_dpi <= 0 or mode == "xobject":
-        return resize_pages(source_path, output_path, target_w_mm, target_h_mm, scale_mode, apply_to)
+    from app.workers.resize_background_engine import (
+        is_dynamic_background_mode,
+        normalize_page_size_mode,
+        resize_pages_with_background,
+    )
 
-    chosen = mode
-    if mode == "auto":
+    target_dpi = int(target_dpi or 0)
+    page_size_mode = normalize_page_size_mode(page_size_mode)
+    variable_page_size = page_size_mode != "fixed"
+    dynamic_background = (
+        is_dynamic_background_mode(bg_fill_mode)
+        and scale_mode in {"fit", "center_no_scale"}
+    )
+    content_aware_resize = dynamic_background or variable_page_size
+    background_dpi = target_dpi if target_dpi > 0 else 300
+
+    def _resize_geometry(destination_path: str) -> str:
+        if content_aware_resize:
+            return resize_pages_with_background(
+                source_path,
+                destination_path,
+                target_w_mm,
+                target_h_mm,
+                scale_mode=scale_mode,
+                apply_to=apply_to,
+                background_mode=bg_fill_mode,
+                background_dpi=background_dpi,
+                background_color=bg_fill_color,
+                page_size_mode=page_size_mode,
+            )
+        return resize_pages(
+            source_path, destination_path, target_w_mm, target_h_mm, scale_mode, apply_to,
+            bg_fill_mode=bg_fill_mode, bg_fill_color=bg_fill_color,
+        )
+
+    # DPI=0 chỉ giữ artwork gốc; lớp nền động vẫn dựng ở 300 DPI.
+    if target_dpi <= 0 or mode == "xobject":
+        return _resize_geometry(output_path)
+
+    # RESIZE (audit 2026-08-01 §B.1): artwork đã là Form vector nằm trên
+    # nền raster; không được rơi vào _raster_resize dù UI chọn "raster".
+    # RESIZE (audit 2026-08-01 §R.4): khóa một chiều cũng cần contentBox theo
+    # từng trang, nên luôn dựng geometry vector trước rồi mới giảm mẫu ảnh.
+    chosen = "vector" if content_aware_resize else mode
+    if mode == "auto" and not content_aware_resize:
         chosen = _choose_auto_mode(
             apply_to=apply_to,
             has_text=_doc_has_text_fonts(source_path),
@@ -539,14 +636,17 @@ def resize_pages_smart(source_path: str, output_path: str,
 
     if chosen == "raster" and apply_to == "all":
         try:
-            return _raster_resize(source_path, output_path, target_w_mm, target_h_mm, scale_mode, target_dpi)
+            return _raster_resize(
+                source_path, output_path, target_w_mm, target_h_mm,
+                scale_mode, target_dpi, bg_fill_mode, bg_fill_color,
+            )
         except Exception as e:  # noqa: BLE001
             _pt_logger.warning("raster resize lỗi (%s) → fallback sang vector.", e)
             chosen = "vector"
 
     # ── Vector: đổi hình học (XObject) rồi hạ độ phân giải ảnh ──
     tmp_geom = output_path + ".geom.pdf"
-    resize_pages(source_path, tmp_geom, target_w_mm, target_h_mm, scale_mode, apply_to)
+    _resize_geometry(tmp_geom)
     try:
         # Ưu tiên đường object-level: nó chỉ ghi đè đúng ảnh vượt ngưỡng, còn
         # pdfwrite dựng lại cả tài liệu (subset lại font, quy đổi colorspace,

@@ -56,6 +56,60 @@ def _get_page_box(page, box_name: str, fallback=None):
     return [0, 0, 595, 842]  # A4 default
 
 
+def _canonicalize_rotated_page_for_mirror(doc, page) -> None:
+    """Bake /Rotate vào content để mirror theo trục trang hiển thị.
+
+    Trang đã auto-trim vẫn có thể giữ /Rotate. Chỉ nới page box cho các trang
+    đó tạo ra vùng giấy trắng vì nội dung chưa được phản chiếu. Hàm này chuẩn hóa
+    đúng một trang về /Rotate=0 và gốc (0, 0), đồng thời biến đổi mọi box
+    phụ bằng cùng ma trận trước khi thuật toán mirror chạy.
+    """
+    rotate = int(page.get("/Rotate", 0) or 0) % 360
+    if rotate == 0:
+        return
+
+    mx0, my0, mx1, my1 = _get_page_box(page, "/MediaBox")
+    width = mx1 - mx0
+    height = my1 - my0
+    if rotate == 90:
+        matrix = (0.0, -1.0, 1.0, 0.0, -my0, mx0 + width)
+        new_width, new_height = height, width
+    elif rotate == 180:
+        matrix = (-1.0, 0.0, 0.0, -1.0, mx0 + width, my0 + height)
+        new_width, new_height = width, height
+    elif rotate == 270:
+        matrix = (0.0, 1.0, -1.0, 0.0, my0 + height, -mx0)
+        new_width, new_height = height, width
+    else:
+        raise ValueError(f"Góc xoay PDF không được hỗ trợ: {rotate}°")
+
+    a, b, c, d, e, f = matrix
+    prefix = f"q {a:.6g} {b:.6g} {c:.6g} {d:.6g} {e:.4f} {f:.4f} cm\n".encode("ascii")
+    if "/Contents" in page.obj:
+        page.contents_coalesce()
+        stream = page.obj["/Contents"]
+        stream.write(prefix + stream.read_bytes() + b"\nQ")
+    else:
+        page.obj[pikepdf.Name("/Contents")] = pikepdf.Stream(doc, prefix + b"Q")
+
+    # RESIZE (audit 2026-07-31 §A.1): mọi box phải đi cùng content; nếu chỉ đổi
+    # MediaBox thì trang xoay vẫn lộ dải trắng dù hình học trang nhìn có vẻ đúng.
+    for box_name in ("/CropBox", "/TrimBox", "/BleedBox", "/ArtBox"):
+        raw_box = page.get(box_name)
+        if raw_box is None:
+            continue
+        x0, y0, x1, y1 = _pike_box_to_list(raw_box)
+        corners = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+        xs = [a * x + c * y + e for x, y in corners]
+        ys = [b * x + d * y + f for x, y in corners]
+        page[pikepdf.Name(box_name)] = pikepdf.Array(
+            [min(xs), min(ys), max(xs), max(ys)]
+        )
+
+    page[pikepdf.Name("/MediaBox")] = pikepdf.Array([0.0, 0.0, new_width, new_height])
+    page[pikepdf.Name("/Rotate")] = 0
+
+
 def _pixel_bbox_to_cropbox(x0, y0, x1, y1, pix_w, pix_h, cb, rotate, margin_pt):
     """Ánh xạ bounding box nội dung (toạ độ PIXEL, gốc trên-trái, từ ảnh pdfium ĐÃ
     áp /Rotate) → CropBox trong hệ toạ độ trang GỐC (chưa xoay).
@@ -113,6 +167,56 @@ def _pixel_bbox_to_cropbox(x0, y0, x1, y1, pix_w, pix_h, cb, rotate, margin_pt):
     cx1 = min(cb2, cx1)
     cy1 = min(cb3, cy1)
     return [cx0, cy0, cx1, cy1]
+
+
+def _find_nonwhite_content_bbox(
+    arr: np.ndarray,
+    min_area: int,
+) -> tuple[tuple[int, int, int, int], int] | None:
+    """Tìm bbox pixel không trắng sau khi lọc nhiễu, không dựng lại mask theo nhãn."""
+    import cv2
+
+    # PERF (audit 2026-07-31 §RT.1): inRange tạo mask 2D trực tiếp. Biểu thức
+    # np.any(arr < 248, axis=2) cũ phải cấp phát mảng bool 3D rồi reduce toàn trang.
+    if arr.ndim == 3 and arr.shape[2] >= 3:
+        white = cv2.inRange(
+            arr[:, :, :3],
+            (248, 248, 248),
+            (255, 255, 255),
+        )
+        mask = cv2.bitwise_not(white)
+    else:
+        gray = arr[:, :, 0] if arr.ndim == 3 else arr
+        mask = cv2.compare(gray, 248, cv2.CMP_LT)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    _count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        mask,
+        connectivity=8,
+    )
+
+    components = stats[1:]  # 0 = nền
+    if components.size == 0:
+        return None
+    kept = components[components[:, cv2.CC_STAT_AREA] >= min_area]
+    if kept.size == 0:
+        return None
+
+    # PERF (audit 2026-07-31 §RT.1): bbox hợp của stats tương đương chính xác với
+    # clean[labels == i] cũ, nhưng tránh quét toàn bộ ảnh thêm một lần cho MỖI nhãn.
+    left = kept[:, cv2.CC_STAT_LEFT]
+    top = kept[:, cv2.CC_STAT_TOP]
+    right = left + kept[:, cv2.CC_STAT_WIDTH] - 1
+    bottom = top + kept[:, cv2.CC_STAT_HEIGHT] - 1
+    bbox = (
+        int(left.min()),
+        int(top.min()),
+        int(right.max()),
+        int(bottom.max()),
+    )
+    content_pixels = int(kept[:, cv2.CC_STAT_AREA].sum(dtype=np.int64))
+    return bbox, content_pixels
 
 
 def _normalise_crop_rects(page, rects_mm: list[dict]) -> tuple[list[float], list[list[float]]]:
@@ -926,7 +1030,6 @@ class PageBoxesEngine:
           _pixel_bbox_to_cropbox (đảo đúng góc quay) thay vì giả định luôn R=0.
         """
         import pypdfium2 as pdfium
-        import cv2
 
         from app.core.pdfium_lock import pdfium_guard
 
@@ -952,51 +1055,58 @@ class PageBoxesEngine:
                 cb = _get_page_box(page, "/CropBox", fallback=_get_page_box(page, "/MediaBox"))
                 rotate = int(page.get("/Rotate", 0) or 0) % 360
 
-                # `np.array(img)` copy pixel ra khỏi bộ đệm bitmap → phải trong khóa.
-                # Lấy trang (`pdf_render[...]`) cũng là lời gọi PDFium → cùng trong khóa.
+                # Copy thẳng bitmap → NumPy để bỏ vòng bitmap→PIL→bytes→NumPy.
+                # Mọi handle PDFium được đóng ngay trong khóa; OpenCV chạy ngoài khóa.
                 with pdfium_guard("auto_trim_page_render"):
-                    render_page = pdf_render[pnum - 1]
-                    bitmap = render_page.render(scale=DETECT_SCALE)
-                    img = bitmap.to_pil()
-                    arr = np.array(img)
-                    pix_w, pix_h = img.size
+                    render_page = None
+                    bitmap = None
+                    try:
+                        render_page = pdf_render[pnum - 1]
+                        bitmap = render_page.render(scale=DETECT_SCALE)
+                        arr = np.array(bitmap.to_numpy(), copy=True)
+                        pix_h, pix_w = arr.shape[:2]
+                    finally:
+                        if bitmap is not None:
+                            bitmap.close()
+                        if render_page is not None:
+                            render_page.close()
 
-                # Nội dung = pixel KHÔNG-trắng. Ngưỡng 248 (nới nhẹ) rồi lọc noise:
-                # nền JPEG lẫn đốm 245-249 lẻ tẻ; morphology-open (erode→dilate) xoá
-                # đốm ≤ 1px; connectedComponents bỏ mảng nhỏ hơn ngưỡng diện tích.
-                if arr.ndim == 3 and arr.shape[2] >= 3:
-                    mask = np.any(arr[:, :, :3] < 248, axis=2).astype(np.uint8)
-                else:
-                    mask = (arr[:, :, 0] < 248).astype(np.uint8)
-
-                # Bỏ đốm nhiễu 1px (open = erode rồi dilate, kernel 3x3).
-                _k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-                mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, _k)
-
-                # Bỏ thành phần liên thông quá nhỏ (noise còn sót sau open). Ngưỡng
-                # ~ (0.3mm)^2 ở DPI hiện tại — nhỏ hơn coi là nhiễu, không phải nội dung.
-                _min_side_px = max(2, int(0.3 * PT_PER_MM * DETECT_SCALE))
-                _min_area = _min_side_px * _min_side_px
-                n_lbl, _lbl, _stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-                clean = np.zeros_like(mask)
-                for _i in range(1, n_lbl):  # 0 = nền
-                    if _stats[_i, cv2.CC_STAT_AREA] >= _min_area:
-                        clean[_lbl == _i] = 1
-                mask = clean
-
-                if not mask.any():
+                # Ngưỡng ~ (0.3mm)^2 ở DPI hiện tại — nhỏ hơn coi là nhiễu.
+                min_side_px = max(2, int(0.3 * PT_PER_MM * DETECT_SCALE))
+                min_area = min_side_px * min_side_px
+                detection = _find_nonwhite_content_bbox(arr, min_area)
+                if detection is None:
                     continue  # Trang trắng (hoặc chỉ có noise) → bỏ qua, giữ nguyên box
+                (x0, y0, x1, y1), content_pixels = detection
 
-                rows = np.any(mask, axis=1)
-                cols = np.any(mask, axis=0)
-                y0, y1 = np.where(rows)[0][[0, -1]]
-                x0, x1 = np.where(cols)[0][[0, -1]]
+                if logger.isEnabledFor(logging.DEBUG):
+                    content_ratio = content_pixels / max(1, pix_w * pix_h) * 100
+                    logger.debug(
+                        "[auto-trim] page=%d render=%dx%d bbox_px=(%d,%d)-(%d,%d) "
+                        "old_cb=%s content_coverage=%.1f%%",
+                        pnum, pix_w, pix_h, x0, y0, x1, y1,
+                        [float(v) for v in cb], content_ratio,
+                    )
 
                 new_cb = _pixel_bbox_to_cropbox(
-                    int(x0), int(y0), int(x1), int(y1),
+                    x0, y0, x1, y1,
                     pix_w, pix_h, cb, rotate, margin_pt,
                 )
+                logger.debug(
+                    "[auto-trim] page=%d new_box=%s",
+                    pnum,
+                    [round(v, 2) for v in new_cb],
+                )
+                # Set cả MediaBox lẫn CropBox → triệt để: các tool downstream
+                # (resize, viewer, imposition) đọc MediaBox = vùng nội dung thực,
+                # không còn viền trắng ẩn ngoài CropBox.
+                page[pikepdf.Name("/MediaBox")] = pikepdf.Array(new_cb)
                 page[pikepdf.Name("/CropBox")] = pikepdf.Array(new_cb)
+                # Xóa TrimBox/BleedBox/ArtBox cũ (nếu có) vì chúng có thể lớn hơn
+                # MediaBox mới → gây nhầm lẫn cho downstream.
+                for box_name in ("/TrimBox", "/BleedBox", "/ArtBox"):
+                    if pikepdf.Name(box_name) in page:
+                        del page[pikepdf.Name(box_name)]
 
         with pdfium_guard("auto_trim_close"):
             pdf_render.close()
@@ -1091,7 +1201,8 @@ class PageBoxesEngine:
         không vẽ dải gương; góc chỉ được vẽ khi cả hai cạnh kề đều bật.
 
         Trim box lấy theo CropBox (kết quả auto_trim) → TrimBox → MediaBox.
-        Lưu ý: không xử lý trang có /Rotate ≠ 0 (giữ nguyên, chỉ set bleed box).
+        Trang có /Rotate được bake về hệ hiển thị trước khi tạo mirror để mọi cạnh
+        đều có mực, không còn nhánh chỉ nới box tạo vùng giấy trắng.
         """
         doc = pikepdf.Pdf.open(file_path)
         target_pages = pages if pages else list(range(1, len(doc.pages) + 1))
@@ -1105,6 +1216,8 @@ class PageBoxesEngine:
             if not (1 <= pnum <= len(doc.pages)):
                 continue
             page = doc.pages[pnum - 1]
+            if bleed_pt > 0:
+                _canonicalize_rotated_page_for_mirror(doc, page)
 
             mb = _get_page_box(page, "/MediaBox")
             crop = _get_page_box(page, "/CropBox", fallback=mb)
@@ -1117,9 +1230,8 @@ class PageBoxesEngine:
             b_b = b if side_b else 0.0
             b_t = b if side_t else 0.0
 
-            # Trang xoay: kỹ thuật mirror theo trục thẳng sẽ sai → fallback set box.
-            rotate = int(page.get("/Rotate", 0) or 0) % 360
-            if rotate != 0 or bleed_pt <= 0:
+            # Bleed 0 giữ nguyên hành vi cũ, không rewrite content hoặc /Rotate.
+            if bleed_pt <= 0:
                 bleed_rect = [x0 - b_l, y0 - b_b, x1 + b_r, y1 + b_t]
                 new_mb = [
                     min(mb[0], bleed_rect[0]), min(mb[1], bleed_rect[1]),

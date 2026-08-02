@@ -134,10 +134,12 @@ def test_preview_and_export_build_the_same_plan_hash(tmp_path, monkeypatch):
     _make_pdf(source, [(100.0, 80.0), (60.0, 40.0)])
     real_builder = mixed_guillotine_module.build_mixed_guillotine_plan
     captured_hashes: list[str] = []
+    captured_split_gaps: list[float | None] = []
 
     def capture_plan(products, settings):
         plan = real_builder(products, settings)
         captured_hashes.append(plan["planHash"])
+        captured_split_gaps.append(settings.split_gap)
         return plan
 
     monkeypatch.setattr(
@@ -145,7 +147,7 @@ def test_preview_and_export_build_the_same_plan_hash(tmp_path, monkeypatch):
         "build_mixed_guillotine_plan",
         capture_plan,
     )
-    preview = preview_layout(_request(source), PRO_LICENSE)
+    preview = preview_layout(_request(source, split_gap=16 * MM_TO_PT), PRO_LICENSE)
     nup_engine.run_nup_engine(
         source,
         output,
@@ -162,6 +164,7 @@ def test_preview_and_export_build_the_same_plan_hash(tmp_path, monkeypatch):
             "targetQuantitiesByPage": {"0": 1, "1": 1},
             "gapX": 5.0 / MM_TO_PT,
             "gapY": 5.0 / MM_TO_PT,
+            "splitGap": 16.0,
             "bleed": 0,
             "marginTop": MARGIN / MM_TO_PT,
             "marginBottom": MARGIN / MM_TO_PT,
@@ -175,6 +178,8 @@ def test_preview_and_export_build_the_same_plan_hash(tmp_path, monkeypatch):
     )
 
     assert captured_hashes == [preview["planHash"], preview["planHash"]]
+    assert captured_split_gaps == pytest.approx([16 * MM_TO_PT, 16 * MM_TO_PT])
+    assert preview["splitGap"] == pytest.approx(16 * MM_TO_PT)
 
 
 def test_preview_does_not_expand_large_template_run_count(tmp_path):

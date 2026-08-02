@@ -13,7 +13,7 @@ from collections import namedtuple
 
 import pytest
 
-from app.workers.shape_classifier import classify_shape
+from app.workers.shape_classifier import _analyze_width_profile, classify_shape
 from app.workers.shape_types import ShapeType
 
 P = namedtuple("P", ["x", "y"])
@@ -102,6 +102,23 @@ _VECTOR_CASES = [
 def test_classify_shape_vector(name, items, expect):
     got = classify_shape(items)["shape_type"]
     assert got == expect, f"{name}: expect {expect.name}, got {got.name}"
+
+
+def test_width_profile_trapezoid_includes_preview_bbox():
+    """Hình thang bo cong vẫn phải mang bbox để preview không chia cho undefined."""
+    samples = []
+    for index in range(50):
+        frac = (index + 0.5) / 50
+        width = 60.0 if frac < 0.10 else 85.0 + 15.0 * (frac - 0.10) / 0.90
+        y = frac * 200.0
+        samples.extend([((100.0 - width) / 2.0, y), ((100.0 + width) / 2.0, y)])
+
+    result = _analyze_width_profile(samples, 0, 100, 0, 200, 100, 200, edges=[])
+
+    assert result is not None
+    assert result["shapeType"] == "trapezoid"
+    assert result["bbW"] == 100
+    assert result["bbH"] == 200
 
 
 def test_arrow7_not_hammer_regression():

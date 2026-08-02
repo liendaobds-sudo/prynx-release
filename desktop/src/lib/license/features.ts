@@ -25,6 +25,7 @@ export const FEATURE_CATALOG = {
   'prepress.trapping': { minPlan: 'pro', label: 'Trapping' },
   'prepress.cutline': { minPlan: 'pro', label: 'Bù xén và đường cắt' },
   'prepress.pdfx': { minPlan: 'pro', label: 'Xuất PDF/X' },
+  'prepress.paper_library': { minPlan: 'pro', label: 'Thư viện vật tư in' },
   'vdp.datamerge': { minPlan: 'pro', label: 'Trộn dữ liệu VDP' },
   'vdp.numbering': { minPlan: 'pro', label: 'Nhảy số tự động' },
   'vdp.cover_numbering': { minPlan: 'pro', label: 'Chạy số bìa' },
@@ -82,7 +83,8 @@ export function featureIdForFocus(key: string): FeatureId | null {
     trapping: 'prepress.trapping', sticker: 'prepress.cutline', pdfx: 'prepress.pdfx',
     datamerge: 'vdp.datamerge', numbering: 'vdp.numbering', cover_numbering: 'vdp.cover_numbering',
     booklet: 'impo.booklet', nup: 'impo.nup', sticker_imposer: 'impo.diecut', cnc_imposer: 'impo.cnc',
-    dieline: 'packaging.dieline', bgremover: 'util.bgremover', upscale: 'util.upscale', logo_rebuild: 'util.logo_rebuild',
+    dieline: 'packaging.dieline', paper_library: 'prepress.paper_library',
+    bgremover: 'util.bgremover', upscale: 'util.upscale', logo_rebuild: 'util.logo_rebuild',
     compare_pdf: 'qc.compare_pdf', compare_text: 'qc.compare_text',
   };
   return map[key] ?? null;

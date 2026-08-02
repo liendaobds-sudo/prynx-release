@@ -29,7 +29,7 @@ export default function BgRemoverOptions({ options, onChange, disabled = false }
 
     return (
         <fieldset disabled={disabled} className={"flex flex-col gap-4 mt-2 " + (disabled ? "opacity-60" : "") }>
-            {/* AI Engine Selection */}
+            {/* Engine Selection */}
             <div>
                 <ToolSectionLabel>{t('preprocess.bgRemoverOptions:mo_hinh_phan_tich')}</ToolSectionLabel>
                 <select

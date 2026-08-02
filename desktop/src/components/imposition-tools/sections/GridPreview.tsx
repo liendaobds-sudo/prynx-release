@@ -6,8 +6,39 @@ import type { NupSettings } from "../types";
 import { inheritedSingleMoldMaster } from "../shapeDetectionPolicy";
 import { materializePreviewViewerPdf, parsePreviewViewerState, resolvePreviewCellType, resolvePreviewPageCount, shouldDeferPreviewLayout } from "../previewSourcePolicy";
 import { useTranslation } from 'react-i18next';
+import { ImposerSettingsContext } from "../useImposerSettingsStore";
 // UIUX (audit 2026-07-27 §B-05): lỗi kỹ thuật → câu Việt + hướng khắc phục
 import { formatError } from "../../../lib/errorMessages";
+
+const SAME_SIZE_ONLY_MESSAGE = "chỉ hỗ trợ các trang cùng kích thước";
+
+export function shouldAutoSwitchToMixedGuillotine({
+  status,
+  message,
+  taskMode,
+  layoutType,
+  isDieCut,
+  pageSheetMode,
+  imposerMode,
+}: {
+  status: number;
+  message: string;
+  taskMode: string;
+  layoutType?: string;
+  isDieCut?: boolean;
+  pageSheetMode?: boolean;
+  imposerMode?: string;
+}): boolean {
+  return (
+    status === 422 &&
+    taskMode === "nup" &&
+    !isDieCut &&
+    !pageSheetMode &&
+    imposerMode !== "cnc" &&
+    ["sequential", "cut_stacks", "ratio_stack"].includes(layoutType || "") &&
+    message.toLocaleLowerCase("vi").includes(SAME_SIZE_ONLY_MESSAGE)
+  );
+}
 
 export interface GridPreviewProps {
   taskMode: string;
@@ -19,6 +50,8 @@ export interface GridPreviewProps {
   duplexFlow?: string;
   /** Cạnh lật của mặt sau khi Dàn nhiều kích thước. */
   duplexFlipEdge?: "long" | "short";
+  /** §MG-A2: % in dư cho phép để gom bản kẽm (Dàn nhiều kích thước). */
+  mixedExcessPercent?: number;
   gridStrategy: NupSettings["gridStrategy"];
   splitGap?: number;
   columns: number;
@@ -138,6 +171,10 @@ interface BackendLayoutResult {
   coordinateSpace?: string;
   duplex?: boolean;
   flipEdge?: "long" | "short";
+  /** §MG-A2: ngưỡng in dư backend đã dùng để gom bản kẽm. */
+  excessTolerance?: number;
+  /** §MG-B2: cảnh báo nghiệp vụ (lề bất đối xứng khi lật) — không phải lỗi. */
+  warnings?: string[];
   /** chia cụm zone modes: MỌI tờ (mỗi tờ 1 bộ loại) để lật ◄ n/N ► không fetch lại. */
   sheets?: Array<{
     cells: BackendLayoutCell[];
@@ -303,6 +340,37 @@ const DEBOUNCE_MS = 250;
  *
  * Inputs `sx, sy, sw, sh` are the final SVG pixel coordinates of this cell's bounding box.
  */
+export function resolveTrapezoidPreviewRatios(
+  shapeProps: Record<string, unknown> | null,
+): { isHorizontal: boolean; longRatio: number; shortRatio: number } | null {
+  if (!shapeProps) return null;
+
+  const isHorizontal = shapeProps.isHorizontal === true;
+  const longBase = Number(shapeProps.longBase);
+  const shortBase = Number(shapeProps.shortBase);
+  const bboxExtent = Number(isHorizontal ? shapeProps.bbW : shapeProps.bbH);
+
+  // UIUX (audit 2026-08-02 §TRAP-NaN): cache cũ có thể thiếu bbox.
+  // Không để phép chia undefined tạo NaN rồi truyền xuống thuộc tính SVG.
+  if (
+    !Number.isFinite(longBase) ||
+    !Number.isFinite(shortBase) ||
+    !Number.isFinite(bboxExtent) ||
+    longBase <= 0 ||
+    shortBase <= 0 ||
+    bboxExtent <= 0
+  ) {
+    return null;
+  }
+
+  return {
+    isHorizontal,
+    longRatio: longBase / bboxExtent,
+    shortRatio: shortBase / bboxExtent,
+  };
+}
+
+
 function renderCellShape(
   sx: number,
   sy: number,
@@ -447,14 +515,13 @@ function renderCellShape(
     }
 
     case "TRAPEZOID": {
-      // Use precise geometric proportions from shapeProps if available
-      if (shapeProps && shapeProps.longBase && shapeProps.shortBase) {
-        const isH = shapeProps.isHorizontal;
-        // Determine base sizes relative to bounding box
-        const longRatio =
-          shapeProps.longBase / (isH ? shapeProps.bbW : shapeProps.bbH);
-        const shortRatio =
-          shapeProps.shortBase / (isH ? shapeProps.bbW : shapeProps.bbH);
+      const trapezoidRatios = resolveTrapezoidPreviewRatios(shapeProps);
+      if (trapezoidRatios) {
+        const {
+          isHorizontal: isH,
+          longRatio,
+          shortRatio,
+        } = trapezoidRatios;
 
         // If it is horizontal, the parallel bases are top and bottom.
         if (isH) {
@@ -763,6 +830,7 @@ export default function GridPreview(props: GridPreviewProps) {
     layoutType,
     duplexFlow = "normal",
     duplexFlipEdge = "long",
+    mixedExcessPercent = 0,
     gridStrategy,
     splitGap = 0,
     columns,
@@ -818,6 +886,8 @@ export default function GridPreview(props: GridPreviewProps) {
     getWorkingFile,
     previewSourceKey,
   } = props;
+
+  const settingsStore = React.useContext(ImposerSettingsContext);
 
   const [expanded, setExpanded] = useState(false);
   const [layoutResult, setLayoutResult] = useState<BackendLayoutResult | null>(
@@ -1103,6 +1173,9 @@ export default function GridPreview(props: GridPreviewProps) {
       die: !!isDieCut,
       psm: pageSheetMode,
       dfe: duplexFlipEdge,
+      // §MG-A2: PHẢI có trong cache key — đổi ngưỡng dư là đổi số bản kẽm, thiếu
+      // key này thì preview trả kết quả cũ (bẫy cache đã ghi trong prynx-imposition).
+      mxe: mixedExcessPercent,
       n: sourceTotalPages || 0,
       sw: sheetWidth,
       sh: sheetHeight,
@@ -1352,6 +1425,9 @@ export default function GridPreview(props: GridPreviewProps) {
           // Chia cọc theo loại (ratio_stack + clusterDistribution='type'): gửi để preview
           // dựng đa cọc KHỚP nup_engine. cluster_gap → points (backend không nhân lại).
           duplex_flip_edge: duplexFlipEdge,
+          // MIXED-GUILLOTINE (audit 2026-07-30 §MG-A2): % dư → tỉ lệ. Preview và export
+          // PHẢI dùng cùng giá trị, nếu không số bản kẽm 2 bên lệch nhau.
+          mixed_excess_tolerance: Math.max(0, Number(mixedExcessPercent ?? 0)) / 100,
           cluster_mode: clusterMode || "none",
           cluster_count: clusterCount || 2,
           cluster_gap: (clusterGap || 0) * MM_TO_PT,
@@ -1395,6 +1471,30 @@ export default function GridPreview(props: GridPreviewProps) {
             else if (typeof parsed?.error === "string") message = parsed.error;
           } catch {
             if (errText.trim()) message = errText.trim();
+          }
+          // UIUX (audit 2026-08-01 §MG-AUTO): backend đã đọc kích thước xén thật.
+          // Nếu mode lưới đồng cỡ từ chối nhiều khổ, đổi đúng store của tab sang
+          // mixed-guillotine rồi effect tự gọi lại preview; không nháy lỗi đỏ cho user.
+          if (
+            settingsStore &&
+            shouldAutoSwitchToMixedGuillotine({
+              status: res.status,
+              message,
+              taskMode,
+              layoutType,
+              isDieCut,
+              pageSheetMode,
+              imposerMode,
+            })
+          ) {
+            void previewPerfLog("preview-layout AUTO_SWITCH_MIXED_SIZE", {
+              ms: Math.round(performance.now() - _tPrev),
+              status: res.status,
+            });
+            if (gen === previewGenRef.current) {
+              settingsStore.getState().setLayoutType("mixed_guillotine");
+            }
+            return;
           }
           console.error(
             "Preview layout API error:",
@@ -2033,6 +2133,18 @@ export default function GridPreview(props: GridPreviewProps) {
                 {t('imposition.gridPreview:khong_du_cho_tren_to_cho_trang_tach', { pages: layoutResult.ratioUnplaced.map((i) => i + 1).join(", ") })}
               </div>
             )}
+
+          {/* §MG-B2 (audit 2026-07-30): cảnh báo lề bất đối xứng khi bình 2 mặt.
+              Backend đã soạn câu tiếng Việt kèm số đo nên hiển thị nguyên văn. */}
+          {Array.isArray(layoutResult.warnings) &&
+            layoutResult.warnings.map((warning, index) => (
+              <div
+                key={index}
+                className="text-[12px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded px-2 py-1 w-full"
+              >
+                ⚠ {warning}
+              </div>
+            ))}
 
           {/* SVG Wireframe */}
           {layoutResult.cells.length > 0 && (

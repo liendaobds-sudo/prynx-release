@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { TOOL_CATEGORIES, getToolsByCategory, toolMatchesQuery, type ToolDefinition, type AppToolId } from '../lib/toolRegistry';
-import { OFFICE_EXTENSIONS, isOfficePathOrName, mimeForOfficeName } from '../lib/officeFileTypes';
+import { OFFICE_EXTENSIONS } from '../lib/officeFileTypes';
+import { IMAGE_ACCEPT_ATTR, SUPPORTED_IMAGE_EXTENSIONS } from '../lib/imageFileTypes';
+import { createPathBackedFile, dispatchSupportedSystemFiles } from '../lib/nativeFileAccess';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useRecentFiles } from '../lib/useRecentFiles';
 import { useAppSettingsStore } from '../stores/appSettingsStore';
@@ -11,12 +13,10 @@ import { useAuthStore } from '../stores/useAuthStore';
 import { canUse, featureIdForFocus, isProFeature } from '../lib/license/features';
 import { appPerf } from '../lib/perfMarks';
 
-/** accept= cho input file — dựng từ OFFICE_EXTENSIONS (tránh HMR stale export). */
+/** accept= dùng cùng nguồn chân lý với dispatcher và converter ảnh. */
 const HOME_FILE_ACCEPT = [
-  'application/pdf',
-  'image/png',
-  'image/jpeg',
-  'image/jpg',
+  '.pdf',
+  IMAGE_ACCEPT_ATTR,
   ...OFFICE_EXTENSIONS.map((ext) => `.${ext}`),
 ].join(',');
 
@@ -205,7 +205,13 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
     // onDragDropEvent của webview để bật/tắt highlight; DOM handler bên dưới giữ làm
     // fallback khi chạy browser dev.
     useEffect(() => {
-        if (!(window as any).__TAURI_INTERNALS__) return;
+        // FILEIO (audit 2026-08-02 §OPEN.3): App giữ tab nền mounted; Home ẩn
+        // không được tiếp tục đổi highlight theo native drag của tab đang hoạt động.
+        if (!isActive) {
+            setIsDragOver(false);
+            return;
+        }
+        if (!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) return;
         let isUnmounted = false;
         let unlistenDrag: (() => void) | null = null;
         import('@tauri-apps/api/webview').then(m =>
@@ -221,7 +227,7 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
             isUnmounted = true;
             if (unlistenDrag) unlistenDrag();
         };
-    }, []);
+    }, [isActive]);
     const _q = toolQuery.trim().toLowerCase();
     const matchesQuery = (t: ToolDefinition) => toolMatchesQuery(t, toolQuery);
 
@@ -301,42 +307,31 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
                         // Guard chống nhấp nháy: dragleave bắn cả khi rê qua phần tử CON —
                         // chỉ tắt highlight khi con trỏ RỜI HẲN dropzone.
                         onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setIsDragOver(false); }}
-                        onDrop={(e) => { e.preventDefault(); setIsDragOver(false); /* Tauri tauri://drag-drop xử lý path */ }}
+                        // FILEIO (audit 2026-08-02 §OPEN.3): DOM fallback phải tự dispatch;
+                        // preventDefault khiến listener window chủ động nhường quyền cho dropzone này.
+                        onDrop={(e) => {
+                            e.preventDefault();
+                            setIsDragOver(false);
+                            dispatchSupportedSystemFiles(Array.from(e.dataTransfer.files));
+                        }}
                         onClick={async () => {
-                            if ((window as any).__TAURI_INTERNALS__) {
+                            if ((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
                                 try {
                                     const selected = await open({
                                         multiple: false,
                                         filters: [
-                                            { name: t('tabs.home:tai_lieu_hinh_anh'), extensions: ['pdf', 'png', 'jpg', 'jpeg', ...OFFICE_EXTENSIONS] },
+                                            { name: t('tabs.home:tai_lieu_hinh_anh'), extensions: ['pdf', ...SUPPORTED_IMAGE_EXTENSIONS, ...OFFICE_EXTENSIONS] },
                                             { name: 'Word / Excel', extensions: [...OFFICE_EXTENSIONS] },
                                             { name: 'PDF', extensions: ['pdf'] },
                                         ]
                                     });
                                     if (selected && typeof selected === 'string') {
-                                        const { stat } = await import('@tauri-apps/plugin-fs');
-                                        let size = 0;
-                                        try { size = (await stat(selected)).size; } catch { /* ignore */ }
-                                        const name = selected.split('\\').pop() || selected.split('/').pop() || 'unknown';
-                                        const lower = name.toLowerCase();
-                                        let type = 'application/octet-stream';
-                                        if (lower.endsWith('.pdf')) type = 'application/pdf';
-                                        else if (lower.endsWith('.png')) type = 'image/png';
-                                        else if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) type = 'image/jpeg';
-                                        else if (isOfficePathOrName(name)) type = mimeForOfficeName(name);
-                                        const fileObj = new File([], name, { type });
-                                        Object.defineProperty(fileObj, 'path', { value: selected });
-                                        Object.defineProperty(fileObj, 'size', { value: size });
-                                        if (isOfficePathOrName(name)) {
-                                            onOpenApp('imposition', {
-                                                focusFeature: 'office_convert',
-                                                officeSourceFile: fileObj,
-                                            });
-                                        } else {
-                                            onOpenApp('imposition', { file: fileObj });
-                                        }
+                                        // FILEIO (audit 2026-08-02 §OPEN.1/§OPEN.3): picker
+                                        // dùng cùng probe native và cùng router với Open With/drop.
+                                        const { file } = await createPathBackedFile(selected);
+                                        dispatchSupportedSystemFiles([file]);
                                     }
-                                } catch (e) {
+                                } catch {
                                     document.getElementById('home-generic-pdf-input')?.click();
                                 }
                             } else {
@@ -351,18 +346,10 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
                             type="file"
                             accept={HOME_FILE_ACCEPT}
                             className="hidden"
+                            onClick={(e) => e.stopPropagation()}
                             onChange={(e) => {
                                 const file = e.target.files?.[0];
-                                if (file) {
-                                    if (isOfficePathOrName(file.name)) {
-                                        onOpenApp('imposition', {
-                                            focusFeature: 'office_convert',
-                                            officeSourceFile: file,
-                                        });
-                                    } else {
-                                        onOpenApp('imposition', { file });
-                                    }
-                                }
+                                if (file) dispatchSupportedSystemFiles([file]);
                                 e.target.value = '';
                             }}
                         />
@@ -383,7 +370,7 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
                     </div>
 
                     {/* RECENT FILES GRID */}
-                    <RecentFilesGrid onOpenFile={(file) => onOpenApp('imposition', { file })} active={isActive} />
+                    <RecentFilesGrid onOpenFile={(file) => dispatchSupportedSystemFiles([file])} active={isActive} />
                 </div>
             </div>
 

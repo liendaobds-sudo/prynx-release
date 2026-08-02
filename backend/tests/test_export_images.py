@@ -8,8 +8,14 @@ import pytest
 
 from app.api.routes import export as export_route
 from app.api.routes.export import render_pdf_to_images
-from app.schemas.export import ExportImagesRequest
+from app.schemas.export import ExportImageBatchJob, ExportImagesBatchRequest, ExportImagesRequest
 from app.workers import pdf_wrapper as pdf_lib
+
+
+class _ConnectedRequest:
+    async def is_disconnected(self):
+        return False
+
 
 
 def _make_pdf(tmp_path, pages=3):
@@ -157,11 +163,33 @@ def test_async_route_offloads_render_from_event_loop(tmp_path, monkeypatch):
 
     monkeypatch.setattr(export_route, "render_pdf_to_images", fake_render)
     req = ExportImagesRequest(file_path=src, output_dir=str(out))
-    result = asyncio.run(export_route.export_images(req))
+    result = asyncio.run(export_route.export_images(req, _ConnectedRequest()))
 
     assert result["ok"] is True
     assert render_thread is not None
     assert render_thread != event_loop_thread
+
+
+def test_disconnect_watcher_sets_cancel_event():
+    """RE-AUDIT §RA-03: HTTP disconnect phải bật event mà worker đang kiểm tra."""
+    class DisconnectAfterTwoPolls:
+        def __init__(self):
+            self.calls = 0
+
+        async def is_disconnected(self):
+            self.calls += 1
+            return self.calls >= 2
+
+    async def run_case():
+        request = DisconnectAfterTwoPolls()
+        cancel_event = threading.Event()
+        await asyncio.wait_for(
+            export_route._watch_export_disconnect(request, cancel_event), timeout=1,
+        )
+        assert cancel_event.is_set()
+        assert request.calls == 2
+
+    asyncio.run(run_case())
 
 
 def test_cancel_event_stops_render_and_rolls_back(tmp_path):
@@ -359,3 +387,109 @@ def test_cmyk_multipage_tiff_four_channel(tmp_path):
         assert getattr(im, "n_frames", 1) == 3
         assert im.mode == "CMYK"
         assert im.tag_v2.get(259) == 8  # Deflate
+
+
+def test_cmyk_fails_loudly_when_ppe_reports_unsound(tmp_path, monkeypatch):
+    """RE-AUDIT §RA-02: không giao file CMYK nếu PPE báo thiếu nội dung/mực."""
+    src = _make_pdf(tmp_path, 1)
+    out = tmp_path / "out"
+
+    def fake_export(*args, **kwargs):
+        return {
+            "width": 2, "height": 2, "cmyk": bytes(2 * 2 * 4),
+            "ink_unsound": True, "degraded": False,
+        }
+
+    monkeypatch.setattr("app.core.print_engine.facade.export_cmyk", fake_export)
+    with pytest.raises(ValueError, match="không thể dựng đủ"):
+        render_pdf_to_images(src, str(out), fmt="tiff", color_mode="cmyk")
+    assert not out.exists() or list(out.iterdir()) == []
+
+
+@pytest.mark.parametrize("include_bleed, expected_box", [(True, "media"), (False, "trim")])
+def test_cmyk_forwards_selected_page_box(tmp_path, monkeypatch, include_bleed, expected_box):
+    """RE-AUDIT §RA-01: CMYK phải truyền đúng MediaBox/TrimBox vào PPE."""
+    src = _make_pdf(tmp_path, 1)
+    seen = []
+
+    def fake_export(*args, **kwargs):
+        seen.append(kwargs.get("page_box"))
+        return {
+            "width": 2, "height": 2, "cmyk": bytes(2 * 2 * 4),
+            "ink_unsound": False, "degraded": False,
+        }
+
+    monkeypatch.setattr("app.core.print_engine.facade.export_cmyk", fake_export)
+    files = render_pdf_to_images(
+        src, str(tmp_path / "out"), fmt="tiff", color_mode="cmyk",
+        include_bleed=include_bleed,
+    )
+    assert seen == [expected_box]
+    assert _is_image(files[0], "tiff")
+
+
+def test_rgb_include_bleed_selects_media_or_trim_box(tmp_path):
+    """RE-AUDIT §RA-01: RGB phải render đúng kích thước MediaBox/TrimBox."""
+    import pikepdf
+    from PIL import Image
+
+    src = _make_pdf(tmp_path, 1)
+    with pikepdf.open(src, allow_overwriting_input=True) as pdf:
+        page = pdf.pages[0]
+        page.MediaBox = [0, 0, 200, 200]
+        page.CropBox = [20, 20, 180, 180]
+        page.TrimBox = [50, 60, 150, 140]
+        pdf.save(src)
+
+    media_file = render_pdf_to_images(src, str(tmp_path / "media"), dpi=72, include_bleed=True)[0]
+    trim_file = render_pdf_to_images(src, str(tmp_path / "trim"), dpi=72, include_bleed=False)[0]
+    with Image.open(media_file) as media, Image.open(trim_file) as trim:
+        assert media.size == (200, 200)
+
+
+def test_batch_rolls_back_files_from_previous_jobs(tmp_path, monkeypatch):
+    """RE-AUDIT §RA-06: job sau lỗi thì file của job trước cũng phải bị xóa."""
+    written = tmp_path / "first.png"
+    calls = 0
+
+    def fake_render(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            written.write_bytes(b"image")
+            return [str(written)]
+        raise ValueError("job thứ hai lỗi")
+
+    monkeypatch.setattr(export_route, "render_pdf_to_images", fake_render)
+    jobs = [
+        ExportImageBatchJob(output_dir=str(tmp_path), format="png", dpi=150),
+        ExportImageBatchJob(output_dir=str(tmp_path), format="jpeg", dpi=300),
+    ]
+
+    with pytest.raises(ValueError, match="job thứ hai lỗi"):
+        export_route._render_image_batch(
+            "source.pdf", jobs, "rgb", None, True, threading.Event()
+        )
+
+    assert not written.exists()
+
+
+def test_batch_schema_rejects_invalid_job_before_render():
+    """RE-AUDIT §RA-06: DPI sai ở bất kỳ hàng nào làm hỏng cả request từ đầu."""
+    with pytest.raises(Exception):
+        ExportImagesBatchRequest(
+            file_path="source.pdf",
+            jobs=[
+                {"output_dir": "out", "format": "png", "dpi": 150},
+                {"output_dir": "out", "format": "png", "dpi": 1201},
+            ],
+        )
+
+
+def test_batch_schema_limits_number_of_jobs():
+    with pytest.raises(Exception):
+        ExportImagesBatchRequest(
+            file_path="source.pdf",
+            jobs=[{"output_dir": "out", "format": "png", "dpi": 150}] * 9,
+        )
+        assert trim.size == (100, 80)

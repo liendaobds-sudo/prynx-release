@@ -12,12 +12,14 @@ Bao gồm:
 import io
 import os
 import tempfile
+import threading
 
 import pikepdf
 import pytest
 from fastapi import UploadFile
 
 from app.workers.pdf_tools_engine import (
+    PdfOperationCancelled,
     merge_pdfs,
     split_pdf,
     resize_pages,
@@ -158,6 +160,64 @@ def test_resize_apply_to_range_string(workdir):
         assert abs(w[idx] - orig) < 1, f"idx {idx} phải giữ nguyên, got {w[idx]}"
 
 
+def test_resize_cancel_before_first_page(workdir):
+    src = os.path.join(workdir, "s.pdf"); _make_pdf(src, 8, base_w=100)
+    out = os.path.join(workdir, "cancelled.pdf")
+    cancel = threading.Event()
+    cancel.set()
+
+    with pytest.raises(PdfOperationCancelled):
+        resize_pages(src, out, 210, 297, cancel_event=cancel)
+
+    assert not os.path.exists(out)
+
+
+def test_resize_cancel_between_pages_reports_real_progress(workdir):
+    src = os.path.join(workdir, "s.pdf"); _make_pdf(src, 8, base_w=100)
+    out = os.path.join(workdir, "cancelled.pdf")
+    cancel = threading.Event()
+    progress = []
+
+    def on_progress(completed, total):
+        progress.append((completed, total))
+        if completed == 2:
+            cancel.set()
+
+    with pytest.raises(PdfOperationCancelled):
+        resize_pages(
+            src,
+            out,
+            210,
+            297,
+            cancel_event=cancel,
+            progress_callback=on_progress,
+        )
+
+    assert progress == [(1, 8), (2, 8)]
+    assert not os.path.exists(out)
+
+
+def test_resize_cancel_after_last_page_still_blocks_save(workdir):
+    src = os.path.join(workdir, "s.pdf"); _make_pdf(src, 3, base_w=100)
+    out = os.path.join(workdir, "cancelled.pdf")
+    cancel = threading.Event()
+
+    def on_progress(completed, total):
+        if completed == total:
+            cancel.set()
+
+    with pytest.raises(PdfOperationCancelled):
+        resize_pages(
+            src,
+            out,
+            210,
+            297,
+            cancel_event=cancel,
+            progress_callback=on_progress,
+        )
+
+    assert not os.path.exists(out)
+
 # ═══════════════════════════════════════════════════════════════════════
 #  ENGINE: shuffle_pages
 # ═══════════════════════════════════════════════════════════════════════
@@ -217,6 +277,28 @@ async def test_route_resize_does_not_crash(workdir):
         assert len(pdf.pages) == 6
     try: os.remove(resp.path)
     except OSError: pass
+
+
+async def test_route_resize_file_path_preserves_source(workdir):
+    """PERF §RT.10: fast-path đọc file gốc tại chỗ và không được xóa nó."""
+    from app.api.routes import pdf_tools
+
+    src = os.path.join(workdir, "local_source.pdf")
+    _make_pdf(src, 2, base_w=100)
+    resp = await pdf_tools.resize_pages_endpoint(
+        file=None,
+        file_path=src,
+        target_w=40,
+        target_h=60,
+        scale_mode="fit",
+        apply_to="all",
+        target_dpi=0,
+        mode="auto",
+        license_info=_DEV_LICENSE,
+    )
+    assert os.path.isfile(src), "endpoint đã xóa nhầm file PDF gốc"
+    assert os.path.isfile(resp.path)
+    os.remove(resp.path)
 
 
 async def test_route_shuffle_does_not_crash(workdir):

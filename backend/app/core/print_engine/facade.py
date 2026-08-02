@@ -524,6 +524,7 @@ def export_cmyk(
     cmyk_profile_id: str = "fogra39",
     render_intent: int = 1,
     simulate_overprint: bool = True,
+    page_box: str = "crop",
 ) -> dict[str, Any]:
     """Render một trang ra CMYK composite 4 kênh 8 bit (production export).
 
@@ -557,7 +558,7 @@ def export_cmyk(
             dpi=float(dpi),
             cmyk_profile=cmyk_profile,
             render_intent=int(render_intent),
-            page_box="crop",
+            page_box=page_box,
             fallback_font=_fallback_font_path(),
             simulate_overprint=simulate_overprint,
             memory_budget_mb=_memory_budget_mb(),

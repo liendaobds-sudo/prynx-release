@@ -124,8 +124,6 @@ export default function GridSettingsSection(props: GridSettingsProps) {
       setBleed: state.setBleed,
       showBleedView: state.showBleedView,
       setShowBleedView: state.setShowBleedView,
-      duplexFlipEdge: state.duplexFlipEdge,
-      setDuplexFlipEdge: state.setDuplexFlipEdge,
     })),
   );
   const quantityApplies = !(taskMode === "nup" && s.layoutType === "cut_stacks");
@@ -699,23 +697,6 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                   </select>
                 </div>
               </div>
-              {duplexFlow === "double" && taskMode === "nup" && s.layoutType === "mixed_guillotine" && (
-                <div className="flex items-center gap-3">
-                  <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">
-                    {t('imposition.gridSettings:lat_mat_sau')}
-                  </label>
-                  <div className="flex flex-1 items-center gap-3 min-w-0">
-                    <select
-                      value={s.duplexFlipEdge}
-                      onChange={(e) => s.setDuplexFlipEdge(e.target.value as 'long' | 'short')}
-                      className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
-                    >
-                      <option value="long">{t('imposition.gridSettings:theo_canh_dai')}</option>
-                      <option value="short">{t('imposition.gridSettings:theo_canh_ngan')}</option>
-                    </select>
-                  </div>
-                </div>
-              )}
               {duplexFlow === "double" && sourceTotalPages > 0 && sourceTotalPages % 2 !== 0 && (
                 <div className="text-[11px] text-red-600 dark:text-red-400 pl-[107px] leading-snug">
                   {t('imposition.gridSettings:binh_2_mat_bat_buoc_so_trang')} <strong>{t('imposition.gridSettings:chan')}</strong>. {t('imposition.gridSettings:file_hien_n_trang_le_them_xoa_1_trang', { n: sourceTotalPages })}

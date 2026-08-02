@@ -87,6 +87,9 @@ def test_register_local_pdf_uses_workspace_copy_without_touching_source(tmp_path
         def add(self, row):
             self.row = row
 
+        def flush(self):
+            pass
+
         def commit(self):
             pass
 

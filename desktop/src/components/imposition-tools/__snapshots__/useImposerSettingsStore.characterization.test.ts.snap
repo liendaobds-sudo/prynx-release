@@ -192,6 +192,7 @@ exports[`useImposerSettingsStore — characterization (golden) > default state (
   "resizeSettings": {
     "applyTo": "all",
     "applyToStr": "all",
+    "pageSizeMode": "fixed",
     "resizeMode": "auto",
     "scaleMode": "fit",
     "sizePresetId": "A4",

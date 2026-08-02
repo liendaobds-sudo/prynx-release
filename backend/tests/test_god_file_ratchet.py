@@ -35,7 +35,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 # dòng) và `pdf_tools.py`. Nếu nhánh đó còn đang làm dở thì lấy lại mốc một lần nữa sau khi
 # nó land — ratchet chỉ có ý nghĩa khi mốc là trạng thái đã ổn định.
 CEILINGS: dict[str, int] = {
-    "app/api/routes/imposition.py": 4141,
+    "app/api/routes/imposition.py": 3878,
     "app/api/routes/pdf_tools.py": 1933,
     "app/api/routes/preflight.py": 1660,
     "app/api/routes/edit.py": 1432,

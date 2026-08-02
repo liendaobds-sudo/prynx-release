@@ -1,6 +1,8 @@
 import asyncio
+import time
 
 from app.api.routes import imposition
+from app.core import detect_shape_service
 from app.workers.die_detection import DetectionConfig
 
 
@@ -56,6 +58,57 @@ def test_cancelled_client_does_not_cancel_shared_detection():
         current_client = asyncio.create_task(imposition._run_shared_detection(("pdf",), work))
         release.set()
         assert await current_client == "done"
+
+    asyncio.run(scenario())
+
+
+def test_vector_and_raster_cpu_phases_keep_event_loop_responsive(monkeypatch):
+    async def await_with_heartbeat(awaitable):
+        task = asyncio.create_task(awaitable)
+        ticks = 0
+        while not task.done():
+            ticks += 1
+            await asyncio.sleep(0.01)
+        return await task, ticks
+
+    def blocking_vector(*_args):
+        time.sleep(0.12)
+        return "result", {"max_tries": 0}, {}
+
+    def blocking_raster(*_args):
+        time.sleep(0.12)
+        return "shape", "CutContour"
+
+    monkeypatch.setattr(
+        detect_shape_service, "_run_vector_detection_sync", blocking_vector
+    )
+    monkeypatch.setattr(
+        detect_shape_service,
+        "_classify_raster_separations_sync",
+        blocking_raster,
+    )
+
+    async def scenario():
+        vector_result, vector_ticks = await await_with_heartbeat(
+            detect_shape_service.run_vector_detection(
+                "fixture.pdf",
+                object(),
+                0.0,
+                "fixture.pdf",
+                lambda *_args, **_kwargs: None,
+                lambda *_args, **_kwargs: None,
+            )
+        )
+        raster_result, raster_ticks = await await_with_heartbeat(
+            detect_shape_service.classify_raster_separations(
+                {}, 0, object(), object()
+            )
+        )
+
+        assert vector_result[0] == "result"
+        assert raster_result == ("shape", "CutContour")
+        assert vector_ticks >= 3
+        assert raster_ticks >= 3
 
     asyncio.run(scenario())
 

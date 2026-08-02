@@ -33,6 +33,7 @@ from app.workers.logo_rebuild import (
     logo_vectorizer_capabilities,
     process_logo_preview,
     reserve_logo_job,
+    suggest_logo_palette,
 )
 
 
@@ -177,12 +178,21 @@ async def logo_rebuild_preflight(
     settings_json: str = Form(...),
 ) -> LogoRebuildPreflightResponse:
     logo_settings = _parse_settings(settings_json)
-    _payload, source = await _read_and_inspect_upload(file)
+    payload, source = await _read_and_inspect_upload(file)
+    try:
+        palette_suggestions, palette_warnings = await run_in_threadpool(
+            suggest_logo_palette,
+            payload,
+            logo_settings,
+        )
+    except LogoInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     engine_enabled = logo_vectorizer_capabilities() is not None
     return LogoRebuildPreflightResponse(
         source=source,
         settings=logo_settings,
-        warnings=_preflight_warnings(source),
+        palette_suggestions=palette_suggestions,
+        warnings=list(dict.fromkeys([*_preflight_warnings(source), *palette_warnings])),
         limitations=_limitations(engine_enabled),
     )
 

@@ -28,8 +28,12 @@ export const generateBindingMap = (
     effectivePageCount: number,
     bindingMode: 'continuous' | 'saddle' | 'thread' | 'cut_stacks' | 'flush_mount',
     foliosize: number = 16,
-    blankPlacement: 'end' | 'center' = 'end'
+    blankPlacement: 'end' | 'center' = 'end',
+    scaleMode: string = '100'
 ): BindingMapResult => {
+    // Continuous + cut_stack: ghép nửa cuốn → cần pad bội 4 (left=nửa đầu, right=nửa sau)
+    const isContinuousCutStack = bindingMode === 'continuous' && scaleMode === 'cut_stack';
+
     const paddedPageCount = bindingMode === 'flush_mount'
         ? Math.ceil(effectivePageCount / 2) * 2
         : Math.ceil(effectivePageCount / 4) * 4;
@@ -83,19 +87,43 @@ export const generateBindingMap = (
             });
         }
     } else if (bindingMode === 'continuous') {
-        for (let i = 0; i < totalSheets; i++) {
-            sheets.push({
-                sheetIndex: i,
-                signatureIndex: 1,
-                front: {
-                    left: getSlot(4 * i + 1),
-                    right: getSlot(4 * i + 2)
-                },
-                back: {
-                    left: getSlot(4 * i + 3),
-                    right: getSlot(4 * i + 4)
-                }
-            });
+        if (isContinuousCutStack) {
+            // Ghép nửa cuốn: left = nửa đầu sách, right = nửa sau.
+            // front=[trang N, trang N+half], back=[trang N+1+half, trang N+1]
+            // Xén dọc → trái = nửa đầu, phải = nửa sau. Xếp chồng → 1 cuốn hoàn chỉnh.
+            // VD 16 trang: half=8, sheet0: front=[1,9] back=[10,2]
+            const half = paddedPageCount / 2;
+            for (let i = 0; i < totalSheets; i++) {
+                sheets.push({
+                    sheetIndex: i,
+                    signatureIndex: 1,
+                    front: {
+                        left:  getSlot(2 * i + 1),          // nửa đầu recto
+                        right: getSlot(2 * i + 1 + half)    // nửa sau recto
+                    },
+                    back: {
+                        left:  getSlot(2 * i + 2 + half),   // nửa sau verso
+                        right: getSlot(2 * i + 2)           // nửa đầu verso
+                    }
+                });
+            }
+        } else {
+            // BOOKLET (audit 2026-07-31 §C.2): một spread chỉ chứa một bộ trang
+            // tuần tự. Việc nhân nhiều cuốn chỉ diễn ra ở phase-2 Step & Repeat.
+            for (let i = 0; i < totalSheets; i++) {
+                sheets.push({
+                    sheetIndex: i,
+                    signatureIndex: 1,
+                    front: {
+                        left: getSlot(4 * i + 1),
+                        right: getSlot(4 * i + 2)
+                    },
+                    back: {
+                        left: getSlot(4 * i + 3),
+                        right: getSlot(4 * i + 4)
+                    }
+                });
+            }
         }
     } else if (bindingMode === 'cut_stacks') {
         const half = paddedPageCount / 2;

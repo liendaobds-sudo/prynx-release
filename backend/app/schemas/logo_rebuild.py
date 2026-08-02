@@ -61,7 +61,9 @@ class LogoRebuildSettings(BaseModel):
     def apply_mode_defaults(cls, data: object) -> object:
         if isinstance(data, dict) and "smoothing" not in data:
             normalized = dict(data)
-            normalized["smoothing"] = 1.0 if data.get("mode") == "fixed_palette" else 0.5
+            # LOGO-REBUILD (audit 2026-07-30 §LG.02): chế độ màu ưu tiên
+            # trung thực đường nét; request/project cũ có giá trị tường minh vẫn giữ nguyên.
+            normalized["smoothing"] = 0.0 if data.get("mode") == "fixed_palette" else 0.5
             return normalized
         return data
 
@@ -147,10 +149,18 @@ class LogoSourceInfo(BaseModel):
     dpi: tuple[float, float] | None = None
 
 
+class LogoPaletteSuggestion(BaseModel):
+    """Một màu nhìn thấy trong ảnh nguồn; không phải cam kết màu in gốc."""
+
+    color: str = Field(pattern=r"^#[0-9a-f]{6}$")
+    coverage_ratio: float = Field(ge=0.0, le=1.0)
+
+
 class LogoRebuildPreflightResponse(BaseModel):
     status: Literal["ready"] = "ready"
     source: LogoSourceInfo
     settings: LogoRebuildSettings
+    palette_suggestions: list[LogoPaletteSuggestion] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
 

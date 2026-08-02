@@ -3,12 +3,18 @@ from __future__ import annotations
 
 import pytest
 
+from app.workers import office_convert_engine as engine
 from app.workers.office_convert_engine import (
     OFFICE_EXTENSIONS,
     google_export_pdf_url,
     parse_google_url,
     probe_converters,
 )
+OFFICE_EXTENSION_ORACLE = {
+    ".doc", ".docx", ".odt", ".rtf",
+    ".xls", ".xlsx", ".ods", ".csv",
+    ".ppt", ".pptx", ".odp",
+}
 
 
 def test_parse_google_docs():
@@ -50,4 +56,204 @@ def test_probe_shape():
     p = probe_converters()
     assert "can_convert_office" in p
     assert p.get("google_export") is True
-    assert ".docx" in OFFICE_EXTENSIONS
+    assert OFFICE_EXTENSIONS == OFFICE_EXTENSION_ORACLE
+    assert set(p["supported_extensions"]) | set(p["unsupported_extensions"]) == OFFICE_EXTENSION_ORACLE
+    assert set(p["engine_by_extension"]) == OFFICE_EXTENSION_ORACLE
+
+def test_parse_google_drive_open_id():
+    kind, fid = parse_google_url("https://drive.google.com/open?id=DriveFile99")
+    assert (kind, fid) == ("drive_file", "DriveFile99")
+
+
+def test_parse_google_drive_file_path_and_reject_folder():
+    assert parse_google_url("https://drive.google.com/file/d/DriveFile88/view") == (
+        "drive_file",
+        "DriveFile88",
+    )
+    with pytest.raises(ValueError):
+        parse_google_url("https://drive.google.com/drive/folders/Folder99")
+
+def test_engine_matrix_matches_actual_dispatch():
+    matrix = engine._engine_by_extension(
+        {"word": True, "excel": True, "powerpoint": True},
+        has_libreoffice=False,
+    )
+    assert set(matrix) == OFFICE_EXTENSIONS
+    assert all(value != "unavailable" for value in matrix.values())
+    assert matrix[".odt"] == "word"
+    assert matrix[".ods"] == "excel"
+    assert matrix[".odp"] == "powerpoint"
+
+
+def test_engine_matrix_does_not_overpromise_partial_office():
+    matrix = engine._engine_by_extension(
+        {"word": True, "excel": False, "powerpoint": False},
+        has_libreoffice=False,
+    )
+    assert matrix[".docx"] == "word"
+    assert matrix[".xlsx"] == "unavailable"
+    assert matrix[".pptx"] == "unavailable"
+    assert matrix[".ods"] == "unavailable"
+
+
+def test_libreoffice_fallback_covers_all_extensions():
+    matrix = engine._engine_by_extension({}, has_libreoffice=True)
+    assert set(matrix) == OFFICE_EXTENSIONS
+    assert set(matrix.values()) == {"libreoffice"}
+
+
+def test_probe_reports_powerpoint_and_per_extension(monkeypatch):
+    monkeypatch.setattr(
+        engine,
+        "_probe_ms_office",
+        lambda: {"word": True, "excel": False, "powerpoint": True},
+    )
+    monkeypatch.setattr(engine, "_find_soffice", lambda: None)
+
+    status = probe_converters()
+
+    assert status["ms_office"]["powerpoint"] is True
+    assert status["engine_by_extension"][".pptx"] == "powerpoint"
+    assert status["engine_by_extension"][".xlsx"] == "unavailable"
+    assert ".xlsx" in status["unsupported_extensions"]
+
+
+def test_non_preserve_excel_layout_never_falls_back_silently(monkeypatch, tmp_path):
+    source = tmp_path / "sheet.ods"
+    source.write_bytes(b"ods")
+    monkeypatch.setattr(
+        engine,
+        "_probe_ms_office",
+        lambda: {"word": False, "excel": False, "powerpoint": False},
+    )
+    monkeypatch.setattr(engine, "_find_soffice", lambda: "soffice")
+    monkeypatch.setattr(
+        engine,
+        "_convert_libreoffice",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Không được gọi LibreOffice khi layout sẽ bị bỏ qua")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="phân trang Excel"):
+        engine.convert_office_file(
+            str(source),
+            str(tmp_path / "out.pdf"),
+            excel_layout="fit_width",
+        )
+
+
+def test_report_com_pid_accepts_callable_hwnd(monkeypatch, tmp_path):
+    import ctypes
+
+    class FakeApplication:
+        def Hwnd(self):
+            return 4242
+
+    class FakeUser32:
+        @staticmethod
+        def GetWindowThreadProcessId(hwnd, pid_pointer):
+            assert hwnd == 4242
+            pid_pointer._obj.value = 9876
+            return 1
+
+    class FakeWindll:
+        user32 = FakeUser32()
+
+    pid_path = tmp_path / "owned-pids"
+    monkeypatch.setattr(engine.os, "name", "nt")
+    monkeypatch.setattr(ctypes, "windll", FakeWindll(), raising=False)
+
+    engine._report_com_pid(FakeApplication(), str(pid_path))
+
+    assert pid_path.read_text(encoding="ascii") == "9876\n"
+
+def test_google_export_streams_chunks_without_response_content(monkeypatch, tmp_path):
+    import httpx
+
+    payload = b"%PDF-1.4\n" + b"x" * 64
+
+    class FakeResponse:
+        status_code = 200
+        headers = {
+            "content-type": "application/pdf",
+            "content-length": str(len(payload)),
+        }
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        @property
+        def content(self):
+            raise AssertionError("Không được materialize response.content")
+
+        def iter_bytes(self, chunk_size: int):
+            assert chunk_size == 1024 * 1024
+            yield payload[:2]
+            yield payload[2:]
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def stream(self, method: str, _url: str):
+            assert method == "GET"
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    output = tmp_path / "google.pdf"
+
+    assert engine.convert_google_link(
+        "https://docs.google.com/document/d/Doc99/edit", str(output)
+    ) == str(output)
+    assert output.read_bytes() == payload
+
+
+def test_google_html_stream_is_rejected_and_partial_is_removed(monkeypatch, tmp_path):
+    import httpx
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/html"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def iter_bytes(self, chunk_size: int):
+            assert chunk_size == 1024 * 1024
+            yield b"<html>private</html>"
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def stream(self, _method: str, _url: str):
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    output = tmp_path / "private.pdf"
+
+    with pytest.raises(ValueError, match="HTML"):
+        engine.convert_google_link(
+            "https://docs.google.com/document/d/Private99/edit", str(output)
+        )
+
+    assert not output.exists()

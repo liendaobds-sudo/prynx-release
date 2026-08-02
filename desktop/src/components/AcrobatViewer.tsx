@@ -11,8 +11,8 @@ import { useActiveViewerStore } from '../stores/useActiveViewerStore'; // UIUX (
 
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { LivePageFrame, clearTileUrlCache } from './workspace/LivePageFrame';
-import ExportImageModal from './workspace/ExportImageModal';
-import { uploadPDF, getApiUrl } from '../lib/api';
+import ExportImageModal, { type ExportImageTab } from './workspace/ExportImageModal';
+import { uploadPDF, getApiUrl, authenticatedFetch } from '../lib/api';
 import { toast } from './ui/Toast';
 import { QuickDeleteModal, ExtractPagesModal, InsertBlankPageModal, AcrobatToolbar, Ruler, GuideLayer, DimensionLayer, findDimensionCandidate, ThumbSidebar, ViewerContextMenu, type Guide, type DimensionMeasurement } from './acrobat';
 import { StatusBar } from './acrobat/StatusBar'; // UIUX (audit 2026-07-27 §M-1+C-05)
@@ -180,20 +180,73 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     // ── Export ảnh (PNG/JPEG/TIFF) — tương tự Acrobat "Export To > Image" ──
     const [isExportImageOpen, setIsExportImageOpen] = useState(false);
     const [exportFileId, setExportFileId] = useState<string | undefined>(undefined);
+    const [exportImageInitialTab, setExportImageInitialTab] = useState<ExportImageTab>('export');
     const [exportFilePath, setExportFilePath] = useState<string | undefined>(undefined);
     // EXPORT (audit 2026-07-30 §IMG-04): bake page-order/rotation/delete trước khi xuất
     const getWorkingFile = useWorkingPdf();
-    const openExportImage = useCallback(async () => {
+    const openExportImage = useCallback(async (initialTab: ExportImageTab = 'export') => {
         if (!file) { toast.info(t('misc.acrobatViewer:chua_co_file_de_xuat_anh')); return; }
         try {
             const p = (file as any)?.path;
             if (p) { setExportFilePath(p); setExportFileId(undefined); }
             else { const fid = await ensureCropFileId(); setExportFileId(fid); setExportFilePath(undefined); }
             setIsExportImageOpen(true);
+            setExportImageInitialTab(initialTab);
         } catch (e) {
             toast.error('Không chuẩn bị được file để xuất ảnh: ' + ((e as any)?.message || e));
         }
-    }, [file, ensureCropFileId]);
+    }, [file, ensureCropFileId, t]);
+
+    // ── Khử viền trắng (Auto-trim whitespace) ──
+    const [isAutoTrimOpen, setIsAutoTrimOpen] = useState(false);
+    const [autoTrimBusy, setAutoTrimBusy] = useState(false);
+    const [autoTrimMargin, setAutoTrimMargin] = useState(0);
+    const [autoTrimScope, setAutoTrimScope] = useState<'all' | 'current'>('all');
+    const autoTrimPopRef = useRef<HTMLDivElement>(null);
+
+    // Đóng popover khi click ngoài
+    useEffect(() => {
+        if (!isAutoTrimOpen) return;
+        const handler = (e: MouseEvent) => {
+            if (autoTrimPopRef.current && !autoTrimPopRef.current.contains(e.target as Node)) setIsAutoTrimOpen(false);
+        };
+        document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+    }, [isAutoTrimOpen]);
+
+    const handleAutoTrim = useCallback(async () => {
+        if (!file) return;
+        setAutoTrimBusy(true);
+        const loadingId = toast.info(t('misc.acrobatViewer:dang_xu_ly_khu_vien'));
+        try {
+            const fid = await ensureCropFileId();
+            const pages = autoTrimScope === 'current' ? [activePage] : undefined;
+            const res = await authenticatedFetch(`${getApiUrl()}/preflight/auto-trim`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ file_id: fid, pages, margin_mm: autoTrimMargin }),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
+                throw new Error(err.detail || 'auto-trim failed');
+            }
+            const data = await res.json();
+            // Truyền download URL server-side cho onEditCommit — nó tự fetch/tạo blob
+            const downloadUrl = `${getApiUrl()}/preflight/download/${data.output_filename}`;
+            if (onEditCommit) {
+                await onEditCommit(downloadUrl, data.output_filename);
+            }
+            const count = pages ? pages.length : numPages;
+            toast.dismiss(loadingId);
+            toast.success(t('misc.acrobatViewer:khu_vien_thanh_cong', { count }));
+            setIsAutoTrimOpen(false);
+        } catch (e) {
+            toast.dismiss(loadingId);
+            toast.error(t('misc.acrobatViewer:khu_vien_that_bai', { msg: (e as any)?.message || e }));
+        } finally {
+            setAutoTrimBusy(false);
+        }
+    }, [file, ensureCropFileId, autoTrimScope, autoTrimMargin, activePage, numPages, onEditCommit, t]);
 
     // ═══ DOM Refs ═══
     const containerRef = useRef<HTMLDivElement>(null);
@@ -235,7 +288,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         pageOrder, setPageOrder, pageInstanceIds, setPageInstanceIds,
         selectedIndices, setSelectedIndices, lastSelectedIndex, setLastSelectedIndex,
         pageRotations, setPageRotations, pastStack, setPastStack, futureStack, setFutureStack,
-        updatePageDimForPage, generateThumb, loadError
+        updatePageDimForPage, generateThumb, loadError, loadStatus, retryLoad, cancelLoad
     } = loader;
 
     // Helper: mọi thao tác đổi thứ tự trang PHẢI cập nhật pageOrder VÀ pageInstanceIds
@@ -320,6 +373,43 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 });
         };
     }, [isObjectEditMode, selectionFileId]);
+
+    const getExportWorkingFile = useCallback(async (): Promise<File | null> => {
+        let committedFile: File | undefined;
+        const currentSession = editSessionRef.current;
+
+        if (currentSession?.dirty) {
+            // EXPORT (re-audit 2026-07-31 §RA-04): snapshot phải gồm cả object-op
+            // đang nằm trong Live_Document; commit fail thì dừng, tuyệt đối không xuất file cũ.
+            const result = await currentSession.commit();
+            if (!result?.success) {
+                throw new Error('Không thể chốt các chỉnh sửa đối tượng trước khi xuất ảnh.');
+            }
+
+            const outputName = result.output_filename || file?.name || 'document.pdf';
+            if (result.output_path) {
+                committedFile = new File([], outputName, { type: 'application/pdf' });
+                Object.defineProperty(committedFile, 'path', { value: result.output_path });
+            } else if (result.output_url) {
+                const base = getApiUrl().replace(/\/api\/?$/, '');
+                const url = result.output_url.startsWith('http')
+                    ? result.output_url
+                    : `${base}${result.output_url}`;
+                const response = await authenticatedFetch(url);
+                if (!response.ok) {
+                    throw new Error(`Không tải được Working File vừa chốt (HTTP ${response.status}).`);
+                }
+                const blob = await response.blob();
+                committedFile = new File([blob], outputName, { type: 'application/pdf' });
+            } else {
+                throw new Error('Backend không trả về Working File sau khi chốt chỉnh sửa.');
+            }
+        }
+
+        // Truyền thẳng file vừa commit: callback này vẫn đang giữ closure của render cũ,
+        // nên không dựa vào việc React/store đã kịp render lại hay chưa.
+        return getWorkingFile(committedFile);
+    }, [file, getWorkingFile]);
 
     // ═══ Derived Values ═══
     const actualWidth100 = pageWidthPt * (96 / 72);
@@ -541,13 +631,15 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                     break;
                 }
                 case 'delete-pages': setIsDeleteModalOpen(true); break;
+                case 'export-image': void openExportImage('export'); break;
+                case 'export-for-screens': void openExportImage('screens'); break;
                 case 'undo': if (isCropMode) undoCropSelection(); else undo(); break;
                 case 'redo': if (isCropMode) redoCropSelection(); else redo(); break;
             }
         };
         window.addEventListener('prynx-menu-command', handleMenuCommand);
         return () => window.removeEventListener('prynx-menu-command', handleMenuCommand);
-    }, [isActive, setZoom, setFitMode, applyFitWidth, applyFitPage, setPageDisplayMode, navigatePage, pageOrder.length, activePage, toggleRulers, setIsObjectEditMode, setIsCropMode, setToolMode, undo, redo, isCropMode, undoCropSelection, redoCropSelection]);
+    }, [isActive, setZoom, setFitMode, applyFitWidth, applyFitPage, setPageDisplayMode, navigatePage, pageOrder.length, activePage, toggleRulers, setIsObjectEditMode, setIsCropMode, setToolMode, undo, redo, isCropMode, undoCropSelection, redoCropSelection, openExportImage]);
 
     // UIUX (audit menu 2026-07-28 §MB.5): phát trạng thái hiển thị lên store toàn cục
     // để menu Xem tick được mục đang chọn. Chỉ tab ĐANG XEM phát (tab nền vẫn mounted).
@@ -1473,12 +1565,26 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                 </svg>
                 <h2 className="text-2xl font-bold">{t('misc.acrobatViewer:loi_tai_pdf')}</h2>
-                <p className="text-lg font-medium">{loadError.message}</p>
+                <p className="text-lg font-medium">{t('lib.processHandlers:loi_xu_ly_he_thong')}</p>
                 <button 
-                    onClick={() => window.location.reload()}
+                    onClick={retryLoad}
                     className="mt-4 px-6 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 font-medium"
                 >
-                    {t('misc.acrobatViewer:tai_lai_trang')}
+                    {t('misc.errorBoundary:thu_lai')}
+                </button>
+            </div>
+        );
+    }
+
+    if (loadStatus === 'cancelled') {
+        return (
+            <div className="flex flex-col items-center justify-center h-full w-full bg-[#525659] text-zinc-100 gap-4 p-8 text-center">
+                <p className="text-lg font-medium">{t('shell:err_canceled')}</p>
+                <button
+                    onClick={retryLoad}
+                    className="px-6 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-500 font-medium"
+                >
+                    {t('misc.errorBoundary:thu_lai')}
                 </button>
             </div>
         );
@@ -1515,7 +1621,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 extraActions={<>
                     {file && (
                         <button
-                            onClick={openExportImage}
+                            onClick={() => void openExportImage('export')}
                             title={t('misc.acrobatViewer:xuat_anh_png_jpeg_tiff')}
                             aria-label={t('misc.acrobatViewer:xuat_anh')}
                             className="flex items-center gap-1.5 px-2.5 h-8 rounded text-[13px] font-medium text-slate-600 dark:text-zinc-300 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
@@ -1523,6 +1629,62 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
                             <span className="tb-label">{t('misc.acrobatViewer:xuat_anh')}</span>
                         </button>
+                    )}
+                    {/* Nút khử viền trắng */}
+                    {file && (
+                        <div className="relative" ref={autoTrimPopRef}>
+                            <button
+                                onClick={() => setIsAutoTrimOpen(!isAutoTrimOpen)}
+                                title={t('misc.acrobatViewer:khu_vien_trang_desc')}
+                                aria-label={t('misc.acrobatViewer:khu_vien_trang')}
+                                disabled={autoTrimBusy}
+                                className={`flex items-center gap-1.5 px-2.5 h-8 rounded text-[13px] font-medium transition-colors ${
+                                    isAutoTrimOpen
+                                        ? 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300'
+                                        : 'text-slate-600 dark:text-zinc-300 hover:bg-black/5 dark:hover:bg-white/10'
+                                } disabled:opacity-40`}
+                            >
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>
+                                <span className="tb-label">{t('misc.acrobatViewer:khu_vien_trang')}</span>
+                            </button>
+                            {isAutoTrimOpen && (
+                                <div className="absolute top-full left-0 mt-1 z-50 bg-white dark:bg-zinc-800 rounded-lg shadow-xl border border-slate-200 dark:border-white/15 p-3 w-56">
+                                    {/* Phạm vi */}
+                                    <div className="flex gap-2 mb-2">
+                                        <button
+                                            onClick={() => setAutoTrimScope('all')}
+                                            className={`flex-1 text-xs py-1.5 rounded font-medium border transition-colors ${
+                                                autoTrimScope === 'all'
+                                                    ? 'bg-indigo-600 text-white border-indigo-600'
+                                                    : 'bg-slate-50 dark:bg-zinc-700 border-slate-300 dark:border-white/15 text-slate-600 dark:text-zinc-300'
+                                            }`}>
+                                            {t('misc.acrobatViewer:tat_ca_trang')}
+                                        </button>
+                                        <button
+                                            onClick={() => setAutoTrimScope('current')}
+                                            className={`flex-1 text-xs py-1.5 rounded font-medium border transition-colors ${
+                                                autoTrimScope === 'current'
+                                                    ? 'bg-indigo-600 text-white border-indigo-600'
+                                                    : 'bg-slate-50 dark:bg-zinc-700 border-slate-300 dark:border-white/15 text-slate-600 dark:text-zinc-300'
+                                            }`}>
+                                            {t('misc.acrobatViewer:trang_hien_tai')}
+                                        </button>
+                                    </div>
+                                    {/* Margin */}
+                                    <label className="text-[11px] font-medium text-slate-500 dark:text-zinc-400">{t('misc.acrobatViewer:le_bo_sung_mm')}</label>
+                                    <input type="number" min={0} max={20} step={0.5} value={autoTrimMargin}
+                                        onChange={e => setAutoTrimMargin(Math.max(0, parseFloat(e.target.value) || 0))}
+                                        className="w-full h-7 px-2 mt-0.5 mb-2 border border-slate-300 dark:border-white/15 rounded bg-white dark:bg-zinc-700 text-sm" />
+                                    {/* Nút áp dụng */}
+                                    <button
+                                        onClick={handleAutoTrim}
+                                        disabled={autoTrimBusy}
+                                        className="w-full h-8 rounded bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-bold">
+                                        {autoTrimBusy ? t('misc.acrobatViewer:dang_xu_ly_khu_vien') : t('misc.acrobatViewer:ap_dung')}
+                                    </button>
+                                </div>
+                            )}
+                        </div>
                     )}
                     {toolbarExtra}
                 </>}
@@ -1565,6 +1727,25 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                         <div className="flex-1 flex flex-col items-center justify-center gap-4 bg-[#525659]">
                             <div className="w-10 h-10 border-[3px] border-indigo-400/30 border-t-indigo-400 rounded-full animate-spin" />
                             <p className="text-sm text-zinc-400 font-medium animate-pulse">{t('misc.acrobatViewer:dang_tai_file_pdf')}</p>
+                            {loadStatus === 'slow' && (
+                                <div className="flex flex-col items-center gap-3 text-center px-6">
+                                    <p className="text-xs text-zinc-300">{t('lib.processHandlers:file_lon_co_the_mat_vai_phut')}</p>
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            onClick={retryLoad}
+                                            className="px-4 py-2 rounded-md bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-500"
+                                        >
+                                            {t('misc.errorBoundary:thu_lai')}
+                                        </button>
+                                        <button
+                                            onClick={cancelLoad}
+                                            className="px-4 py-2 rounded-md bg-zinc-700 text-zinc-100 text-sm font-medium hover:bg-zinc-600"
+                                        >
+                                            {t('misc.acrobatViewer:huy')}
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -1703,13 +1884,14 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 open={isExportImageOpen}
                 onClose={() => setIsExportImageOpen(false)}
                 fileId={exportFileId}
+                initialTab={exportImageInitialTab}
                 filePath={exportFilePath}
                 numPages={pageOrder.length || numPages}
                 currentPage={activePage}
                 baseName={file?.name?.replace(/\.[^.]+$/, '') || 'page'}
-                getWorkingFile={getWorkingFile}
-                pageWidthPt={pageDim?.w}
-                pageHeightPt={pageDim?.h}
+                getWorkingFile={getExportWorkingFile}
+                pageWidthPt={activePagePhysical.widthPt}
+                pageHeightPt={activePagePhysical.heightPt}
             />
 
             {/* Context Menu */}

@@ -20,8 +20,12 @@ interface CutlineRunOverrides {
     forceContour?: boolean;
 }
 
-const CUT_MODES_RICH = [
+export const ALPHA_CONTOUR_INSET_MM = 0.15;
+export const DEFAULT_CROP_TO_STICKER = true;
+
+export const CUT_MODES_RICH = [
     { value: 'original', title: '✂️ Theo hình gốc', desc: 'Cắt bám theo viền ảnh hoặc vector.' },
+    { value: 'alpha', title: '🧩 Theo biên trong suốt PNG', desc: 'Dùng kênh trong suốt còn lưu trong PDF, giữ viền trắng và tự lùi đường cắt 0,15 mm để tránh mép bán trong suốt.' },
     { value: 'bleed', title: '🩸 Theo mép tràn lề', desc: 'Đường cắt = mép ngoài lề bù xén (bao luôn tràn màu). Không cắt giữa vành.' },
     { value: 'none', title: '🚫 Không vẽ đường cắt', desc: 'Chỉ mở nền (tràn màu).' },
 ];
@@ -32,18 +36,39 @@ const CORNER_STYLES = [
     { id: 'miter', label: '🔺 Góc nhọn', desc: '' },
 ];
 
-const BLEED_COLOR_MODES_STICKER = [
+export const BLEED_COLOR_MODES_STICKER = [
     { value: 'image', title: '🖼️ Lấy theo màu viền tem', desc: 'Lấy đúng màu dọc viền tem (bỏ AA/trắng mép), kéo ra vùng bù xén. Bật “Bỏ nền trắng” khi file có nền trắng quanh tem.' },
+    { value: 'trajectory', title: '🧭 Theo quỹ đạo dải màu', desc: 'Tem chữ nhật tiếp tục dải màu theo hướng tại mép. Contour khác tự lấy theo màu viền tem để giữ bù xén an toàn.' },
     { value: 'inpaint', title: '✨ Làm mượt thông minh', desc: 'CHỈ hợp mép ảnh chụp/gradient mềm. KHÔNG hợp dải màu phẳng (logo, tem chữ) — sẽ loang, mất nét. Dải màu phẳng nên chọn "Lấy theo màu viền tem".' },
     { value: 'solid', title: '🎨 Đổ màu trơn', desc: 'Bo viền nền bằng hệ màu in ấn chuyên nghiệp (CMYK).' },
 ];
 
 const BLEED_COLOR_MODES_RECTANGLE = [
     { value: 'mirror', title: '🪞 Lật gương tự động', desc: 'Lật ngược mép ảnh siêu tốc. Giữ nguyên 100% độ sắc nét ban đầu.' },
-    { value: 'inpaint', title: '✨ Làm mượt thông minh', desc: 'CHỈ hợp mép ảnh chụp/gradient mềm. KHÔNG hợp dải màu phẳng (banner, card, khối màu) — sẽ loang, không phân biệt được dải màu. Dải màu phẳng nên chọn "Kéo giãn mép ảnh".' },
-    { value: 'image', title: '🖼️ Kéo giãn mép ảnh', desc: 'Tự động kéo giãn dải màu sát mép ảnh ra ngoài lề.' },
+    { value: 'trajectory', title: '🧭 Theo quỹ đạo dải màu', desc: 'Tiếp tục dải màu theo đúng hướng tại mép xén. Phù hợp cánh quạt, tia tỏa, sọc nghiêng và hoa văn có hướng; ưu tiên giữ ranh giới màu sắc nét.' },
+    { value: 'inpaint', title: '✨ Làm mượt vùng ảnh', desc: 'Phù hợp ảnh chụp và gradient mềm; ưu tiên chuyển tiếp êm. Với logo hoặc nan màu phẳng, hãy chọn "Theo quỹ đạo dải màu" để hạn chế loang màu.' },
+    { value: 'image', title: '🖼️ Kéo thẳng mép ảnh', desc: 'Kéo dải màu sát mép theo phương vuông góc với đường xén.' },
     { value: 'solid', title: '🎨 Đổ màu trơn', desc: 'Bo viền nền bằng hệ màu in ấn chuyên nghiệp (CMYK).' },
 ];
+
+// UIUX (audit 2026-08-02 §CROP-STICKER.2): chỉ crop khi đang ở tab Bế tem
+// và có đường cắt; chế độ "Không vẽ đường cắt" không được tự đổi khổ trang.
+export function shouldCropStickerPage(
+    productType: 'sticker' | 'rectangle',
+    cutMode: string,
+    cropToSticker: boolean,
+): boolean {
+    return productType === 'sticker' && cutMode !== 'none' && cropToSticker;
+}
+
+export function normalizeStickerBleedColorType(
+    bleedColorType: string,
+    productType: 'sticker' | 'rectangle',
+): string {
+    // UIUX (audit 2026-08-01 §BT.1): mirror chưa có hình học contour;
+    // trajectory được giữ lại vì backend tự nhận tem chữ nhật và fallback an toàn.
+    return productType === 'sticker' && bleedColorType === 'mirror' ? 'image' : bleedColorType;
+}
 
 // Cạnh nào được bù xén (chỉ tab XÉN VUÔNG GÓC). Bế tem nhãn bù xén quanh đường
 // contour nên "trên/dưới/trái/phải" không có nghĩa hình học ở đó.
@@ -77,9 +102,9 @@ const BleedSideToggle = ({ active, label, arrow, lockHint, onToggle }: {
 
 const STICKER_STORAGE_PREFIX = 'ps_sticker_';
 const STICKER_PREFERENCE_KEYS = [
-    'cutMode', 'offsetMm', 'cornerStyle', 'fillHoles', 'bleedMm',
+    'productType', 'cutMode', 'offsetMm', 'cornerStyle', 'fillHoles', 'bleedMm',
     'removeWhiteBg', 'trimWhiteEdge', 'bleedColorType', 'bleedColorHex',
-    'edgeBiteMm', 'edgeBiteVersion', 'cutFirstPageOnly', 'bleedSides',
+    'edgeBiteMm', 'edgeBiteVersion', 'cutFirstPageOnly', 'cropToSticker', 'bleedSides',
 ] as const;
 let warnedAboutStickerStorage = false;
 
@@ -224,7 +249,9 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     const { setActiveDashboardTool } = useImposerSettingsStore();
     
     // Tab State
-    const [productType, setProductType] = useState<'sticker' | 'rectangle'>('sticker');
+    const [productType, setProductType] = useState<'sticker' | 'rectangle'>(() =>
+        readStickerEnum('productType', 'sticker', ['sticker', 'rectangle']) as 'sticker' | 'rectangle'
+    );
     const setTaskMode = useImposerSettingsStore(s => s.setTaskMode);
 
     // Số từ localStorage PHẢI ép về number hợp lệ + clamp [min,max] ngay lúc khởi tạo.
@@ -240,13 +267,18 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     };
 
     // UI State for Sticker
-    const [cutMode, setCutMode] = useState(() => readStickerEnum('cutMode', 'original', ['original', 'bleed', 'none']));
+    const [cutMode, setCutMode] = useState(() => readStickerEnum('cutMode', 'original', ['original', 'alpha', 'bleed', 'none']));
     const [offsetMm, setOffsetMm] = useState<number>(() => readStickerNumber('offsetMm', 0.0, -10, 10));
     const [cornerStyle, setCornerStyle] = useState(() => readStickerEnum('cornerStyle', 'preserve', ['preserve', 'round', 'miter']));
     const [fillHoles, setFillHoles] = useState<boolean>(() => readStickerBoolean('fillHoles', true));
     // "Tạo đường cắt cho trang đầu": file nhiều loại tem CÙNG khuôn → chỉ trang 1 mang
     // đường cắt (khuôn master), trang 2+ chỉ bù xén. Bước đệm sang Bình tem bế/CNC đồng nhất.
     const [cutFirstPageOnly, setCutFirstPageOnly] = useState<boolean>(() => readStickerBoolean('cutFirstPageOnly', false));
+    // UIUX (audit 2026-08-02 §CROP-STICKER.1): file tem mở trên canvas lớn
+    // mặc định thu khổ theo kết quả; người dùng vẫn có thể bỏ tick để giữ khổ nguồn.
+    const [cropToSticker, setCropToSticker] = useState<boolean>(() =>
+        readStickerBoolean('cropToSticker', DEFAULT_CROP_TO_STICKER)
+    );
     // Hình học đường cắt: backend tự nhận (auto_safe). "Hình cắt sai?" → forceContour
     // ép giữ mép ảnh. KHÔNG lưu localStorage: mỗi file khác hình, mặc định luôn auto.
     const [forceContour, setForceContour] = useState<boolean>(false);
@@ -273,7 +305,10 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     // Shared State
     const [bleedMm, setBleedMm] = useState<number>(() => readStickerNumber('bleedMm', 0.0, 0, 10));
     const [removeWhiteBg, setRemoveWhiteBg] = useState<boolean>(() => readStickerBoolean('removeWhiteBg', true));
-    const [bleedColorType, setBleedColorType] = useState(() => readStickerEnum('bleedColorType', 'image', ['mirror', 'image', 'inpaint', 'solid']));
+    const [bleedColorType, setBleedColorType] = useState(() => {
+        const saved = readStickerEnum('bleedColorType', 'image', ['mirror', 'image', 'trajectory', 'inpaint', 'solid']);
+        return normalizeStickerBleedColorType(saved, productType);
+    });
     const [bleedColorHex, setBleedColorHex] = useState(readStickerColor);
     // "Lẹm mép" (rectangle): hút màu sâu vào trong để doa viền trắng mảnh của file không tràn lề.
     // Con dao 2 lưỡi — lẹm quá ăn vào nội dung sát mép → default nhỏ, cho chỉnh/tắt (0).
@@ -307,6 +342,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
 
     // Save to localStorage whenever state changes
     useEffect(() => {
+        writeStickerPreference('productType', productType);
         writeStickerPreference('cutMode', cutMode);
         writeStickerPreference('offsetMm', offsetMm);
         writeStickerPreference('cornerStyle', cornerStyle);
@@ -318,8 +354,9 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         writeStickerPreference('edgeBiteMm', edgeBiteMm);
         try { getStickerStorage()?.setItem(`${STICKER_STORAGE_PREFIX}edgeBiteVersion`, '2'); } catch (error) { warnStickerStorage(error); }
         writeStickerPreference('cutFirstPageOnly', cutFirstPageOnly);
+        writeStickerPreference('cropToSticker', cropToSticker);
         writeStickerPreference('bleedSides', bleedSides);
-    }, [cutMode, offsetMm, cornerStyle, fillHoles, bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm, cutFirstPageOnly, bleedSides]);
+    }, [productType, cutMode, offsetMm, cornerStyle, fillHoles, bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm, cutFirstPageOnly, cropToSticker, bleedSides]);
     
     // Process state
     const [isProcessing, setIsProcessing] = useState(false);
@@ -371,12 +408,12 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         else formData.append('file_id', String(uploadRes!.id));
         formData.append('cut_mode', productType === 'rectangle' ? 'none' : cutMode);
         formData.append('offset_mm', productType === 'rectangle' ? '0' : String(offsetMm));
-        formData.append('corner_style', productType === 'rectangle' ? 'miter' : requestedCornerStyle);
+        formData.append('corner_style', productType === 'rectangle' ? 'miter' : (cutMode === 'alpha' ? 'preserve' : requestedCornerStyle));
         formData.append('bleed_mm', String(bleedMm));
         formData.append('fill_holes', productType === 'rectangle' ? 'true' : (fillHoles ? 'true' : 'false'));
-        formData.append('remove_white_bg', productType === 'rectangle' ? 'false' : (removeWhiteBg ? 'true' : 'false'));
+        formData.append('remove_white_bg', productType === 'rectangle' || cutMode === 'alpha' ? 'false' : (removeWhiteBg ? 'true' : 'false'));
         formData.append('draw_cut_contour', productType === 'rectangle' ? 'false' : (cutMode !== 'none' ? 'true' : 'false'));
-        formData.append('bleed_color_type', bleedColorType); // 'image', 'inpaint', 'solid'
+        formData.append('bleed_color_type', bleedColorType); // image | trajectory | inpaint | solid
         formData.append('bleed_color_hex', bleedColorHex);
         // Lẹm mép CHỈ tab Xén vuông (không có “Bỏ nền trắng” dò mask).
         // Tab Bế tem: một nút “Bỏ nền trắng” + sample viền (shell/AA) — không thêm ô lẹm.
@@ -387,10 +424,13 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         // "Tạo đường cắt cho trang đầu": chỉ tab Bế tem nhãn. Trang 1 mang khuôn
         // CutContour, trang 2+ chỉ bù xén → bước đệm cho Bình tem bế/CNC đồng nhất.
         formData.append('cut_first_page_only', productType === 'sticker' && cutFirstPageOnly ? 'true' : 'false');
+        formData.append('crop_to_sticker', shouldCropStickerPage(productType, cutMode, cropToSticker) ? 'true' : 'false');
         formData.append(
             'shape_mode',
             productType === 'sticker'
-                ? ((requestedCornerStyle === 'preserve' || requestedForceContour) ? 'contour' : 'auto_safe')
+                ? (cutMode === 'alpha'
+                    ? 'contour'
+                    : ((requestedCornerStyle === 'preserve' || requestedForceContour) ? 'contour' : 'auto_safe'))
                 : 'contour',
         );
         if (productType === 'rectangle') {
@@ -454,7 +494,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
             recipeRecorder.noteOperation('sticker_dieline', {
                 productType, cutMode, offsetMm, cornerStyle: requestedCornerStyle, fillHoles,
                 bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm,
-                cutFirstPageOnly,
+                cutFirstPageOnly, cropToSticker,
                 bleedSides: { ...bleedSides },
                 shapeMode: (requestedCornerStyle === 'preserve' || requestedForceContour) ? 'contour' : 'auto_safe',
             });
@@ -489,15 +529,22 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     // Auto-fix bleedColorType when switching tabs
     const handleProductTypeChange = (type: 'sticker' | 'rectangle') => {
         setProductType(type);
-        if (type === 'sticker' && bleedColorType === 'mirror') {
-            setBleedColorType('image'); // 'mirror' is not supported for stickers
+        const normalizedBleedColorType = normalizeStickerBleedColorType(bleedColorType, type);
+        if (normalizedBleedColorType !== bleedColorType) {
+            setBleedColorType(normalizedBleedColorType);
         }
         // Removing the aggressive override when switching to rectangle to preserve user choice
     };
 
     // UIUX (audit 2026-07-28 §BX.6): cho thấy rõ bleed được đo từ đường cắt,
     // không đổi công thức backend đã chốt.
-    const bleedGeometry = computeStickerBleedGeometry(cutMode, offsetMm, bleedMm);
+    // UIUX (audit 2026-08-01 §ALPHA.1): Alpha tự lùi 0,15 mm; phần tóm tắt
+    // phải phản chiếu đúng hình học backend thay vì vẫn báo offset 0 mm.
+    const bleedGeometry = computeStickerBleedGeometry(
+        cutMode,
+        cutMode === 'alpha' ? offsetMm - ALPHA_CONTOUR_INSET_MM : offsetMm,
+        bleedMm,
+    );
 
     return (
         <div className="flex flex-col gap-4">
@@ -709,7 +756,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                     </label>
                                 </div>
                                 <p className="text-[10px] text-slate-400 mt-1">{t('preprocess.sticker:so_am_vd_0_5_ep_duong_cat_lun_vao_trong')}</p>
-                                <div className="flex gap-1.5 mt-2 mb-4">
+                                {cutMode !== 'alpha' && <div className="flex gap-1.5 mt-2 mb-4">
                                     {CORNER_STYLES.map(opt => (
                                         <button
                                             key={opt.id}
@@ -724,7 +771,17 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                             {tv(opt.label)}
                                         </button>
                                     ))}
-                                </div>
+                                </div>}
+                                {!activeObjectSelection && (
+                                    <div className="mt-2 mb-4">
+                                        <ToolCheckboxOption
+                                            selected={cropToSticker}
+                                            onClick={() => setCropToSticker(value => !value)}
+                                            label="Crop trang theo tem"
+                                            desc="Thu khổ trang sát đường bế và phần bù xén; TrimBox giữ đúng kích thước thật của tem. Bỏ tick để giữ nguyên khổ trang nguồn."
+                                        />
+                                    </div>
+                                )}
                             </>
                         )}
                     </div>
@@ -733,7 +790,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                         <ToolSectionLabel>{t('preprocess.sticker:2_tran_le_dac_ruot')}</ToolSectionLabel>
                         <div className="flex gap-2 mb-4 items-end">
                             <ToolNumberInput
-                                label={cutMode === 'original'
+                                label={cutMode === 'original' || cutMode === 'alpha'
                                     ? t('preprocess.sticker:bu_xen_ngoai_duong_cat')
                                     : t('preprocess.sticker:tran_mau')}
                                 value={bleedMm}
@@ -757,6 +814,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 >
                                     {fillHoles ? t('preprocess.sticker:dac_ruot') : t('preprocess.sticker:dac_ruot_2')}
                                 </button>
+                                {cutMode !== 'alpha' && (
                                 <button
                                     onClick={() => setRemoveWhiteBg(!removeWhiteBg)}
                                     aria-pressed={removeWhiteBg}
@@ -769,10 +827,11 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 >
                                     {removeWhiteBg ? t('preprocess.sticker:bo_nen_trang') : t('preprocess.sticker:bo_nen_trang_2')}
                                 </button>
+                                )}
                             </div>
                         </div>
 
-                        {cutMode === 'original' && bleedMm > 0 && (
+                        {(cutMode === 'original' || cutMode === 'alpha') && bleedMm > 0 && (
                             <div
                                 role="note"
                                 data-testid="sticker-bleed-geometry-summary"
@@ -842,7 +901,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 max={10}
                                 className="flex-1 min-w-0"
                             />
-                            {(bleedColorType === 'image' || bleedColorType === 'inpaint') && (
+                            {(bleedColorType === 'image' || bleedColorType === 'trajectory' || bleedColorType === 'inpaint') && (
                                 <ToolNumberInput
                                     label={t('preprocess.sticker:do_lem_mep')}
                                     value={edgeBiteMm}

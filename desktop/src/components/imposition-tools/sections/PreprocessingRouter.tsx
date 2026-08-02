@@ -283,7 +283,7 @@ export default function PreprocessingRouter({
                     pdfFile={pdfFile}
                     officeSourceFile={officeSourceFile}
                     officeSourceFiles={officeSourceFiles}
-                    onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }}
+                    onFileFixed={(blob, name, path) => { if (onFileFixed) onFileFixed(blob, name, path); }}
                 />
             )}
         </>

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { WORKSPACE_TOOL_PANEL, isWorkspaceTool, resolveRightPanel, type WorkspacePanelKind } from './types';
-import { canToolRunWithoutPdf, LOGO_REBUILD_ENABLED, PREPROCESS_ROUTER_TOOLS, resolveDedicatedInitialTool } from './sections/preprocessRouterTools';
+import { canToolRunWithoutPdf, isLogoRebuildEnabled, LOGO_REBUILD_ENABLED, PREPROCESS_ROUTER_TOOLS, resolveDedicatedInitialTool } from './sections/preprocessRouterTools';
 
 /**
  * Chốt routing workspace bình bài (Bước C — refactor).
@@ -98,8 +98,12 @@ describe('điều hướng tab công cụ độc lập', () => {
     it('giữ đúng công cụ gốc thay vì rơi về workspace PDF trống', () => {
         expect(resolveDedicatedInitialTool('upscale')).toBe('upscale');
         expect(resolveDedicatedInitialTool('bgremover')).toBe('bgremover');
-        expect(LOGO_REBUILD_ENABLED).toBe(false);
-        expect(resolveDedicatedInitialTool('logo_rebuild')).toBeNull();
+        expect(isLogoRebuildEnabled(true)).toBe(true);
+        expect(isLogoRebuildEnabled(false)).toBe(false);
+        expect(LOGO_REBUILD_ENABLED).toBe(import.meta.env.DEV);
+        expect(resolveDedicatedInitialTool('logo_rebuild')).toBe(
+            LOGO_REBUILD_ENABLED ? 'logo_rebuild' : null,
+        );
         expect(resolveDedicatedInitialTool('office_convert')).toBe('office_convert');
         expect(resolveDedicatedInitialTool('font_tools')).toBeNull();
         expect(resolveDedicatedInitialTool()).toBeNull();
@@ -110,7 +114,7 @@ describe('capability điều hướng workspace', () => {
     it('chỉ ba công cụ tự nhận nguồn được phép chạy không cần PDF', () => {
         expect(canToolRunWithoutPdf('bgremover')).toBe(true);
         expect(canToolRunWithoutPdf('upscale')).toBe(true);
-        expect(canToolRunWithoutPdf('logo_rebuild')).toBe(false);
+        expect(canToolRunWithoutPdf('logo_rebuild')).toBe(LOGO_REBUILD_ENABLED);
         expect(canToolRunWithoutPdf('office_convert')).toBe(true);
         expect(canToolRunWithoutPdf('encrypt')).toBe(false);
         expect(canToolRunWithoutPdf('metadata')).toBe(false);

@@ -26,6 +26,9 @@ from app.workers.sticker_engine import (
     _trajectory_right_strip,
     _trajectory_extend_axis,
     _rectangle_smooth_color_fill,
+    _rectangle_trajectory_color_fill,
+    _fit_fan_trajectory_slopes,
+    _fit_fan_slopes_from_edge_segments,
 )
 
 # 300 DPI ≈ 11.81 px/mm; các test dùng giá trị này cho gần thực tế.
@@ -330,3 +333,282 @@ def test_rectangle_smooth_fill_empty_input_safe():
     empty = np.empty((0, 0, 3), dtype=np.uint8)
     out = _rectangle_smooth_color_fill(empty, 5, 0, PX_PER_MM)
     assert out.shape == (0, 0, 3)
+
+
+def test_steep_parallel_bands_are_not_bent_at_trim():
+    """BX-11: hoa văn dốc HƠN trần cũ 1.25 không được bị bẻ ngay tại đường trim.
+
+    Đây là ca người dùng báo mà cả lô A lẫn oracle của nó đều KHÔNG chạm tới: oracle
+    ``_oriented_stripes`` cũ chỉ chạy tới dốc 1.25 — đúng bằng giá trị trần — nên vùng
+    bão hoà chưa bao giờ được thử. Đo trên file thật (sticker chữ nhật, hoa văn
+    diamond): mép dưới có dốc nét thật trung vị 2,72 (≈70° so với mép), 91,8% hàng
+    vượt trần, và trần cũ ép tất cả về 51,3° ⇒ góc bẻ trung vị 27,0° ngay tại trim.
+
+    Test khoá điều kiện: dốc hiệu dụng phải VƯỢT HẲN trần cũ khi hoa văn thật sự dốc
+    và các hàng ĐỒNG THUẬN (dải song song). Bản trước lô B cho đúng 1.25.
+    """
+    from app.workers.sticker_engine import _TRAJ_SLOPE_CAP_FLOOR
+
+    h, w, amount = 1200, 320, 35
+    img = _oriented_stripes(h, w, 2.72)
+    eff = float(np.median(_effective_slope(img, amount)))
+    assert eff > _TRAJ_SLOPE_CAP_FLOOR + 0.4, (
+        f"dốc hiệu dụng {eff:.3f} vẫn bị kẹp quanh trần cũ "
+        f"{_TRAJ_SLOPE_CAP_FLOOR} → dải màu còn bẻ khúc tại đường trim"
+    )
+
+
+def test_divergent_pattern_still_capped_at_floor():
+    """BX-11: nới trần CHỈ dành cho dải song song, KHÔNG cho tia phân kỳ.
+
+    Trần dốc vẫn là bảo hiểm chống hướng ước lượng sai. Tia tỏa có coherence cao
+    nhưng các hàng kề KHÔNG đồng thuận (|ds/dr| đo được 0,112-0,211 so với 0,034 của
+    dải song song), theo đúng dốc thật sẽ xé dải và lấy màu vùng khác hẳn. Test khoá
+    chiều ngược lại của bản vá: ca phân kỳ phải giữ tầm với trong trần cũ.
+    """
+    from app.workers.sticker_engine import _TRAJ_MAX_REACH_FACTOR
+
+    h, w = 240, 120
+    img = _sunburst(h, w, cx=-40.0, cy=110.0, nrays=24)
+    amount = 30
+    reach = float(np.abs(_disp_field(img, amount)).max()) / amount
+    assert reach <= _TRAJ_MAX_REACH_FACTOR + 0.05, (
+        f"tia phân kỳ vươn tới {reach:.2f}× — trần bảo hiểm đã bị nới sai chỗ"
+    )
+
+
+def test_project_no_fold_satisfies_constraint():
+    """BX-11: phép chiếu phải thực sự đưa trường dốc vào tập KHÔNG GẤP.
+
+    Ánh xạ thuận đơn điệu ⇔ ``Δs ≥ −(1 − min_spacing)/amount``. Kiểm trực tiếp trên
+    một trường dốc cố tình vi phạm mạnh (răng cưa biên độ lớn): sau khi chiếu, mọi
+    hàng phải thoả bất đẳng thức, và kết quả không được xa bản gốc hơn mức cần thiết.
+    """
+    from app.workers.sticker_engine import _project_no_fold, _TRAJ_MIN_SPACING
+
+    amount = 35
+    rng = np.random.default_rng(20260730)
+    slopes = (rng.random(400).astype(np.float32) - 0.5) * 8.0
+    fitted = _project_no_fold(slopes, amount, _TRAJ_MIN_SPACING)
+
+    tau = (1.0 - _TRAJ_MIN_SPACING) / float(amount)
+    worst = float(np.diff(fitted).min())
+    assert worst >= -tau - 1e-5, (
+        f"sau khi chiếu vẫn còn gấp: Δs nhỏ nhất {worst:.6f} < ngưỡng {-tau:.6f}"
+    )
+    # Đơn điệu hoá KHÔNG được biến trường thành hằng số: phải còn biến thiên thật.
+    assert float(fitted.max() - fitted.min()) > 1.0, "phép chiếu làm phẳng cả trường"
+
+
+def test_project_no_fold_leaves_valid_field_untouched():
+    """BX-11: trường đã không gấp thì phép chiếu phải là phép ĐỒNG NHẤT.
+
+    Bảo đảm bản vá không âm thầm đổi kết quả ở hoa văn thường — chỉ can thiệp đúng
+    chỗ vi phạm ràng buộc.
+    """
+    from app.workers.sticker_engine import _project_no_fold, _TRAJ_MIN_SPACING
+
+    amount = 35
+    slopes = np.linspace(-0.8, 0.8, 300).astype(np.float32)
+    fitted = _project_no_fold(slopes, amount, _TRAJ_MIN_SPACING)
+    assert np.allclose(fitted, slopes, atol=1e-5), (
+        "trường vốn không gấp mà vẫn bị phép chiếu làm lệch"
+    )
+
+
+def test_stretch_is_bounded_on_steep_pattern():
+    """BX-11: chống gấp không được đổi thành KÉO DÃN vô hạn.
+
+    ``_TRAJ_MIN_SPACING`` là trần kéo dãn: một hàng nguồn trải ra tối đa
+    ``1/min_spacing`` hàng đích. Thời còn cưỡng chế tham lam nó gần như không chạm
+    biên nên giá trị lỏng 0.05 (dãn 20×) vô hại; phép chiếu L2 CHẠM ĐÚNG biên nên
+    trần lỏng lập tức thành vệt nhoè thật. Test khoá trần này ở hoa văn dốc.
+
+    Ca đo: mép NGẮN (583px) với hoa văn dốc 4,3 — đúng chỗ ràng buộc thật sự chạm
+    biên. Đo được 2,86× với min_spacing 0.35 và 17,79× với giá trị cũ 0.05.
+    """
+    import cv2
+
+    from app.workers.sticker_engine import _TRAJ_MIN_SPACING
+
+    h, w, amount = 583, 320, 35
+    img = _oriented_stripes(h, w, 4.3)
+
+    original = cv2.remap
+    captured = []
+
+    def spy(src, map_x, map_y, **kwargs):
+        captured.append(np.asarray(map_y).copy())
+        return original(src, map_x, map_y, **kwargs)
+
+    cv2.remap = spy
+    try:
+        _trajectory_right_strip(img, amount, PX_PER_MM)
+    finally:
+        cv2.remap = original
+
+    stretch = float(np.diff(captured[0][:, -1]).max())
+    # 1) Tôn trọng trần do chính hằng số khai báo.
+    ceiling = 1.0 / _TRAJ_MIN_SPACING
+    assert stretch <= ceiling + 0.2, (
+        f"kéo dãn {stretch:.2f}× vượt trần khai báo {ceiling:.2f}× → vệt nhoè"
+    )
+    # 2) Ngưỡng TUYỆT ĐỐI: nếu ai nới min_spacing về giá trị lỏng cũ thì test phải đỏ,
+    #    nên không thể chỉ so với hằng số đang chạy.
+    assert stretch <= 4.0, (
+        f"kéo dãn {stretch:.2f}× — hồi quy về mức nhoè của bản trước lô B"
+    )
+
+
+
+_FAN_PALETTE = np.array([
+    [230, 35, 35],
+    [35, 180, 60],
+    [35, 90, 230],
+    [230, 190, 35],
+    [180, 40, 210],
+    [30, 200, 200],
+    [240, 110, 30],
+    [120, 70, 220],
+], dtype=np.uint8)
+
+
+def _fan_labels(
+    h: int,
+    w: int,
+    cx: float,
+    cy: float,
+    spokes: int,
+    x0: int = 0,
+) -> np.ndarray:
+    """Nhãn màu lý tưởng của cánh quạt có tâm và số nan đã biết."""
+    yy, xx = np.mgrid[0:h, x0:x0 + w]
+    angle = np.mod(np.arctan2(yy - cy, xx - cx), 2.0 * np.pi)
+    return (
+        np.floor(angle / (2.0 * np.pi / spokes)).astype(np.int32)
+        % len(_FAN_PALETTE)
+    )
+
+
+def _classify_fan_colors(img: np.ndarray) -> np.ndarray:
+    """Gán pixel về màu nan gần nhất; uint32 tránh tràn khi bình phương."""
+    delta = (
+        img.astype(np.int32)[:, :, None, :]
+        - _FAN_PALETTE.astype(np.int32)[None, None, :, :]
+    )
+    return np.sum(delta * delta, axis=3).argmin(axis=2)
+
+
+def test_color_band_mode_keeps_radial_fan_trajectory():
+    """TRAJECTORY: 24 nan màu phải tiếp tục xòe đúng hướng qua đường trim.
+
+    Mẫu này khóa đúng ca người dùng: nhiều mảng màu phẳng cùng hội tụ về một tâm.
+    Mode mới phải tốt hơn trường cục bộ đã làm trơn và vẫn đúng ở cột xa nhất.
+    """
+    h, w, amount = 360, 260, 35
+    cx, cy, spokes = 120.0, 180.0, 24
+    source_labels = _fan_labels(h, w, cx, cy, spokes)
+    img = np.ascontiguousarray(_FAN_PALETTE[source_labels])
+    truth = _fan_labels(h, amount, cx, cy, spokes, x0=w)
+
+    smooth = _trajectory_right_strip(img, amount, PX_PER_MM)
+    trajectory = _trajectory_right_strip(
+        img,
+        amount,
+        PX_PER_MM,
+        preserve_color_bands=True,
+    )
+    smooth_labels = _classify_fan_colors(smooth)
+    trajectory_labels = _classify_fan_colors(trajectory)
+
+    smooth_accuracy = float(np.mean(smooth_labels == truth))
+    trajectory_accuracy = float(np.mean(trajectory_labels == truth))
+    far_accuracy = float(np.mean(trajectory_labels[:, -1] == truth[:, -1]))
+
+    assert trajectory_accuracy >= 0.98
+    assert far_accuracy >= 0.96
+    assert trajectory_accuracy >= smooth_accuracy + 0.015
+
+
+def test_fan_model_rejects_conflicting_directions():
+    """TRAJECTORY: hai họ nét xung đột không được bị ép thành một cánh quạt giả."""
+    count = 240
+    slopes = np.where(np.arange(count) % 2 == 0, 1.8, -1.8).astype(np.float32)
+    direction_y = 1.0 / np.sqrt(1.0 + slopes * slopes)
+    direction_x = -slopes * direction_y
+    valid = np.ones(count, dtype=bool)
+    coherence = np.full(count, 0.9, dtype=np.float32)
+
+    fitted = _fit_fan_trajectory_slopes(
+        direction_x,
+        direction_y,
+        coherence,
+        valid,
+        slope_cap=8.0,
+    )
+    assert fitted is None
+
+
+def test_rectangle_trajectory_preserves_core_and_size():
+    """TRAJECTORY: mode mới chỉ sinh halo, không thay đổi pixel artwork gốc."""
+    h, w, pad = 80, 120, 18
+    labels = _fan_labels(h, w, 20.0, 40.0, 12)
+    img = np.ascontiguousarray(_FAN_PALETTE[labels])
+    out = _rectangle_trajectory_color_fill(img, pad, 0, PX_PER_MM)
+
+    assert out.shape == (h + 2 * pad, w + 2 * pad, 3)
+    assert np.array_equal(out[pad:pad + h, pad:pad + w], img)
+
+
+
+def test_edge_segment_fan_fit_ignores_crossing_outliers():
+    """TRAJECTORY: biên chạm trim phải khôi phục đúng fan dù có nét nhiễu."""
+    import cv2
+
+    h, w, amount = 480, 180, 35
+    centre_x, centre_y = -30.0, 240.0
+    edge_x = w - 1
+    img = np.full((h, w, 3), (30, 145, 235), dtype=np.uint8)
+    for edge_y in range(20, h - 19, 30):
+        start_y = centre_y + (
+            (edge_y - centre_y) * (0.0 - centre_x) / (edge_x - centre_x)
+        )
+        cv2.line(
+            img,
+            (0, round(start_y)),
+            (edge_x, edge_y),
+            (245, 245, 245),
+            2,
+            cv2.LINE_AA,
+        )
+
+    # Hai họ nét khác màu cố tình không đi qua tâm fan.
+    cv2.line(img, (90, 50), (edge_x, 95), (20, 40, 240), 2, cv2.LINE_AA)
+    cv2.line(img, (90, 430), (edge_x, 365), (40, 220, 30), 2, cv2.LINE_AA)
+
+    fitted = _fit_fan_slopes_from_edge_segments(img, amount, PX_PER_MM)
+    assert fitted is not None
+    truth = (np.arange(h, dtype=np.float32) - centre_y) / (
+        edge_x - centre_x
+    )
+    assert float(np.median(np.abs(fitted - truth))) < 0.03
+    assert fitted[0] < -1.0
+    assert fitted[-1] > 1.0
+
+    # Mô phỏng top/bottom sau khi engine đã nở hai cạnh bên 7 mm.
+    side_pad = 83
+    rng = np.random.default_rng(20260801)
+    padded = rng.integers(
+        0, 256, size=(h + 2 * side_pad, w, 3), dtype=np.uint8,
+    )
+    padded[side_pad:side_pad + h] = img
+    padded_fit = _fit_fan_slopes_from_edge_segments(
+        padded,
+        amount,
+        PX_PER_MM,
+        analysis_rows=(side_pad, side_pad + h),
+    )
+    assert padded_fit is not None
+    assert float(np.median(np.abs(
+        padded_fit[side_pad:side_pad + h] - truth
+    ))) < 0.03

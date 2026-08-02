@@ -12,6 +12,41 @@ export class CancelledTileRenderError extends Error {
     }
 }
 
+export class TileRenderSchedulerUnavailableError extends Error {
+    constructor() {
+        super('Bộ dựng hình đang chờ tác vụ cũ kết thúc');
+        this.name = 'TileRenderSchedulerUnavailableError';
+    }
+}
+
+export const FIRST_TILE_SLOW_MS = 8_000;
+export type TileLoadPhase = 'idle' | 'loading' | 'slow' | 'ready' | 'error' | 'cancelled';
+export interface TileLoadViewState {
+    phase: TileLoadPhase;
+    attempt: number;
+}
+export type TileLoadAction =
+    | { type: 'start'; attempt: number }
+    | { type: 'replace'; attempt: number; phase: TileLoadPhase }
+    | { type: 'slow' | 'ready' | 'error' | 'cancelled'; attempt: number };
+
+export const INITIAL_TILE_LOAD_STATE: TileLoadViewState = { phase: 'idle', attempt: 0 };
+
+export function tileLoadReducer(state: TileLoadViewState, action: TileLoadAction): TileLoadViewState {
+    if (action.type === 'start') return { phase: 'loading', attempt: action.attempt };
+    if (action.type === 'replace') return { phase: action.phase, attempt: action.attempt };
+    if (action.attempt !== state.attempt) return state;
+    return { phase: action.type, attempt: action.attempt };
+}
+
+export function isTileLoadCancellation(error: unknown): boolean {
+    if (error instanceof CancelledTileRenderError || error instanceof SupersededTileRenderError) return true;
+    if (!error || typeof error !== 'object' || !('name' in error)) return false;
+    const name = String((error as { name?: unknown }).name || '');
+    // Fast Refresh có thể trả Error được tạo bởi phiên bản module cũ nên không chỉ dựa instanceof.
+    return name === 'CancelledTileRenderError' || name === 'SupersededTileRenderError';
+}
+
 export interface TileRenderTask<T> {
     requestKey: string;
     groupKey: string;
@@ -41,6 +76,7 @@ export class TileRenderScheduler<T> {
     private sequence = 0;
     private pumpScheduled = false;
     private pumpTimer: ReturnType<typeof setTimeout> | null = null;
+    private quarantined = false;
 
     constructor(private readonly maxConcurrent = 1) {
         if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1) {
@@ -49,6 +85,9 @@ export class TileRenderScheduler<T> {
     }
 
     enqueue(input: TileRenderTask<T>): Promise<T> {
+        if (this.quarantined) {
+            return Promise.reject(new TileRenderSchedulerUnavailableError());
+        }
         const duplicate = this.byRequestKey.get(input.requestKey);
         if (duplicate) {
             duplicate.priority = Math.min(duplicate.priority, input.priority);
@@ -56,7 +95,9 @@ export class TileRenderScheduler<T> {
             return duplicate.promise;
         }
 
-        this.rejectQueuedGroup(input.ownerId, input.groupKey, new SupersededTileRenderError());
+        const superseded = new SupersededTileRenderError();
+        this.rejectQueuedGroup(input.ownerId, input.groupKey, superseded);
+        this.rejectRunningGroup(input.ownerId, input.groupKey, superseded);
 
         let resolve!: (value: T) => void;
         let reject!: (reason: unknown) => void;
@@ -79,11 +120,42 @@ export class TileRenderScheduler<T> {
     }
 
     cancelOwner(ownerId: string): void {
-        this.rejectQueuedOwner(ownerId, new CancelledTileRenderError());
+        const reason = new CancelledTileRenderError();
+        this.rejectQueuedOwner(ownerId, reason);
+        this.rejectRunningOwner(ownerId, reason);
     }
 
     cancelGroup(ownerId: string, groupKey: string): void {
-        this.rejectQueuedGroup(ownerId, groupKey, new CancelledTileRenderError());
+        const reason = new CancelledTileRenderError();
+        this.rejectQueuedGroup(ownerId, groupKey, reason);
+        this.rejectRunningGroup(ownerId, groupKey, reason);
+    }
+
+    /**
+     * DEV (2026-08-02): dọn caller cũ trước HMR nhưng KHÔNG nhả slot của task đang chạy.
+     * Lệnh native cũ vẫn có thể đang chạm PDFium; chỉ `finally` của chính lệnh đó mới được
+     * giảm activeCount. Scheduler được giữ qua `import.meta.hot.data`, nên module mới không
+     * tạo một hàng đợi thứ hai chạy song song với hàng đợi cũ.
+     */
+    prepareForHotReload(): void {
+        const reason = new CancelledTileRenderError();
+        this.quarantined = this.activeCount > 0;
+        for (let index = this.queued.length - 1; index >= 0; index -= 1) {
+            const task = this.queued[index];
+            this.queued.splice(index, 1);
+            this.byRequestKey.delete(task.requestKey);
+            task.reject(reason);
+        }
+        for (const task of this.byRequestKey.values()) {
+            if (task.state !== 'running') continue;
+            this.byRequestKey.delete(task.requestKey);
+            task.reject(reason);
+        }
+        if (this.pumpTimer !== null) {
+            clearTimeout(this.pumpTimer);
+            this.pumpTimer = null;
+        }
+        this.pumpScheduled = false;
     }
 
     private rejectQueuedGroup(ownerId: string, groupKey: string, reason: Error): void {
@@ -101,6 +173,26 @@ export class TileRenderScheduler<T> {
             const task = this.queued[index];
             if (task.ownerId !== ownerId) continue;
             this.queued.splice(index, 1);
+            this.byRequestKey.delete(task.requestKey);
+            task.reject(reason);
+        }
+    }
+
+    /**
+     * Chỉ kết thúc promise phía caller. Task vật lý vẫn giữ activeCount cho tới `finally`,
+     * nên cancel/đổi zoom không bao giờ mở thêm một lời gọi PDFium song song.
+     */
+    private rejectRunningGroup(ownerId: string, groupKey: string, reason: Error): void {
+        for (const task of this.byRequestKey.values()) {
+            if (task.state !== 'running' || task.ownerId !== ownerId || task.groupKey !== groupKey) continue;
+            this.byRequestKey.delete(task.requestKey);
+            task.reject(reason);
+        }
+    }
+
+    private rejectRunningOwner(ownerId: string, reason: Error): void {
+        for (const task of this.byRequestKey.values()) {
+            if (task.state !== 'running' || task.ownerId !== ownerId) continue;
             this.byRequestKey.delete(task.requestKey);
             task.reject(reason);
         }
@@ -145,6 +237,7 @@ export class TileRenderScheduler<T> {
                 .then(task.resolve, task.reject)
                 .finally(() => {
                     this.activeCount -= 1;
+                    if (this.activeCount === 0) this.quarantined = false;
                     if (this.byRequestKey.get(task.requestKey) === task) {
                         this.byRequestKey.delete(task.requestKey);
                     }
@@ -158,4 +251,24 @@ export class TileRenderScheduler<T> {
     }
 }
 
-export const nativeTileRenderScheduler = new TileRenderScheduler<ArrayBuffer>(1);
+interface TileSchedulerHotData {
+    nativeTileRenderScheduler?: TileRenderScheduler<ArrayBuffer>;
+}
+
+const schedulerHotData = import.meta.hot?.data as TileSchedulerHotData | undefined;
+export const nativeTileRenderScheduler = schedulerHotData?.nativeTileRenderScheduler
+    ?? new TileRenderScheduler<ArrayBuffer>(1);
+
+if (schedulerHotData) schedulerHotData.nativeTileRenderScheduler = nativeTileRenderScheduler;
+
+// DEV (2026-08-02): giữ MỘT scheduler qua Fast Refresh. Tạo singleton mới trong khi
+// singleton cũ còn invoke native sẽ phá bất biến PDFium tuần tự dù mỗi scheduler đều cap 1.
+if (import.meta.hot) {
+    const prepareSchedulerForHotReload = () => nativeTileRenderScheduler.prepareForHotReload();
+    import.meta.hot.on('vite:beforeUpdate', prepareSchedulerForHotReload);
+    import.meta.hot.dispose((data) => {
+        prepareSchedulerForHotReload();
+        import.meta.hot?.off('vite:beforeUpdate', prepareSchedulerForHotReload);
+        (data as TileSchedulerHotData).nativeTileRenderScheduler = nativeTileRenderScheduler;
+    });
+}

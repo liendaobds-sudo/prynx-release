@@ -725,3 +725,72 @@ def draw_tile_cut_marks(
         f"({len(int_v)} internal v, {len(int_h)} internal h), "
         f"corners skipped"
     )
+
+def draw_segment_cut_marks(
+    out_page,
+    segment_cut_lines: Dict,
+    mark_off: float = 8.51,
+    mark_len: float = 14.17,
+    mark_thickness: float = 0.71,
+    mark_style: str = 'default',
+    bleed_pt: float = 0.0,
+):
+    """Vẽ hai dấu endpoint cho từng segment tách zone của mixed-guillotine.
+
+    Khác ``draw_tile_cut_marks``, hàm này giữ nguyên phạm vi ``start/end`` của
+    từng nhát cắt và không tạo tích Descartes giữa các toạ độ dọc/ngang.
+    """
+    from app.workers.pdf_types import Point
+
+    segments = segment_cut_lines.get('segments', [])
+    if not segments:
+        return
+
+    shape = out_page.new_shape()
+    is_japanese = mark_style == 'japanese' and bleed_pt > 0.01
+    drawn: set[tuple[float, float, float, float]] = set()
+
+    def draw_once(x1: float, y1: float, x2: float, y2: float) -> None:
+        key = tuple(round(value, 4) for value in (x1, y1, x2, y2))
+        if key in drawn:
+            return
+        drawn.add(key)
+        shape.draw_line(Point(x1, y1), Point(x2, y2))
+
+    for segment in segments:
+        axis = segment.get('axis')
+        coordinate = float(segment.get('coordinate', 0.0))
+        start = float(segment.get('start', 0.0))
+        end = float(segment.get('end', 0.0))
+        if end < start:
+            start, end = end, start
+        if end - start <= 0.01:
+            continue
+
+        if axis == 'x':
+            x_values = (
+                (coordinate - bleed_pt, coordinate + bleed_pt)
+                if is_japanese
+                else (coordinate,)
+            )
+            for x_value in x_values:
+                draw_once(x_value, start - mark_off, x_value, start - mark_off - mark_len)
+                draw_once(x_value, end + mark_off, x_value, end + mark_off + mark_len)
+        elif axis == 'y':
+            y_values = (
+                (coordinate - bleed_pt, coordinate + bleed_pt)
+                if is_japanese
+                else (coordinate,)
+            )
+            for y_value in y_values:
+                draw_once(start - mark_off, y_value, start - mark_off - mark_len, y_value)
+                draw_once(end + mark_off, y_value, end + mark_off + mark_len, y_value)
+
+    if not drawn:
+        return
+    shape.finish(color=(1, 1, 1, 1), fill=None, width=mark_thickness)
+    shape.commit()
+    logger.info(
+        f"[MIXED_GUILLOTINE] Drew {len(drawn)} endpoint marks "
+        f"for {len(segments)} zone segments (style={mark_style})"
+    )

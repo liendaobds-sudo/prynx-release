@@ -1,0 +1,234 @@
+// @vitest-environment jsdom
+
+import { act, cleanup, render, renderHook } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const systemMocks = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  listen: vi.fn(),
+}));
+
+vi.mock('@tauri-apps/api/core', () => ({ invoke: systemMocks.invoke }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: systemMocks.listen }));
+vi.mock('../components/ui/Toast', () => ({
+  toast: { error: vi.fn() },
+}));
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({ t: (key: string) => key }),
+}));
+import { dispatchSupportedSystemFiles } from '../lib/nativeFileAccess';
+import SystemIntegrations from '../components/SystemIntegrations';
+import {
+  EXPLICIT_INTENT_FALLBACK_MS,
+  INCOMING_FILES_DEBOUNCE_MS,
+  SYSTEM_FILES_POLL_SETTLED_EVENT,
+  SYSTEM_FILES_RECEIVED_EVENT,
+  useIncomingFileDispatcher,
+} from './useIncomingFileDispatcher';
+
+function file(name: string): File {
+  return new File(['fixture'], name);
+}
+
+const OFFICE_EXTENSION_ORACLE = [
+  'doc', 'docx', 'odt', 'rtf', 'xls', 'xlsx', 'ods', 'csv', 'ppt', 'pptx', 'odp',
+] as const;
+const IMAGE_EXTENSION_ORACLE = [
+  'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff',
+] as const;
+function emitFiles(files: File[], action = ''): void {
+  window.dispatchEvent(new CustomEvent(SYSTEM_FILES_RECEIVED_EVENT, {
+    detail: { files, action },
+  }));
+}
+
+describe('useIncomingFileDispatcher', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    systemMocks.invoke.mockReset();
+    systemMocks.listen.mockReset();
+    systemMocks.listen.mockResolvedValue(() => undefined);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  function renderDispatcher(activeTabId = 'home') {
+    const onOpenApp = vi.fn();
+    const tabsRef = {
+      current: [
+        { id: 'home', type: 'home' },
+        { id: 'pdf', type: 'imposition', payload: { file: 'working.pdf' } },
+      ],
+    };
+    const activeTabIdRef = { current: activeTabId };
+    const hook = renderHook(() => useIncomingFileDispatcher({
+      onOpenApp,
+      tabsRef,
+      activeTabIdRef,
+    }));
+    return { ...hook, onOpenApp, tabsRef, activeTabIdRef };
+  }
+
+  it('đường picker/Recent dùng event chung và vẫn debounce batch mặc định', () => {
+    const { onOpenApp } = renderDispatcher();
+    const first = file('10-ruot.pdf');
+    const second = file('2-bia.pdf');
+
+    act(() => {
+      dispatchSupportedSystemFiles([first]);
+      vi.advanceTimersByTime(INCOMING_FILES_DEBOUNCE_MS - 1);
+      dispatchSupportedSystemFiles([second]);
+      vi.advanceTimersByTime(INCOMING_FILES_DEBOUNCE_MS);
+    });
+
+    expect(onOpenApp).toHaveBeenCalledTimes(2);
+    expect(onOpenApp.mock.calls.map(([, payload]) => payload.file.name)).toEqual([
+      '2-bia.pdf',
+      '10-ruot.pdf',
+    ]);
+  });
+
+  it('giữ Combine cold-start qua poll đầu và chỉ mở một tab với đủ file', () => {
+    const { onOpenApp } = renderDispatcher();
+    const first = file('01-bia.pdf');
+    const second = file('02-ruot.pdf');
+
+    act(() => emitFiles([first], 'combine'));
+    act(() => vi.advanceTimersByTime(1_000));
+    expect(onOpenApp).not.toHaveBeenCalled();
+
+    act(() => emitFiles([second], 'combine'));
+    expect(onOpenApp).not.toHaveBeenCalled();
+
+    act(() => window.dispatchEvent(new Event(SYSTEM_FILES_POLL_SETTLED_EVENT)));
+    expect(onOpenApp).toHaveBeenCalledTimes(1);
+    expect(onOpenApp).toHaveBeenCalledWith('combine_pdf', { files: [first, second] });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('giữ Convert cold-start qua poll và không lẫn PDF vào nhánh ảnh', () => {
+    const { onOpenApp } = renderDispatcher();
+    const imageOne = file('01-anh.jpg');
+    const imageTwo = file('02-anh.png');
+
+    act(() => emitFiles([imageOne], 'convert'));
+    act(() => emitFiles([imageTwo], 'convert'));
+    act(() => window.dispatchEvent(new Event(SYSTEM_FILES_POLL_SETTLED_EVENT)));
+
+    expect(onOpenApp).toHaveBeenCalledTimes(1);
+    expect(onOpenApp).toHaveBeenCalledWith('combine_pdf', {
+      files: [imageOne, imageTwo],
+    });
+  });
+
+  it('fallback vẫn kết thúc explicit intent nếu nguồn legacy không phát poll-settled', () => {
+    const { onOpenApp } = renderDispatcher();
+    const image = file('anh.jpeg');
+
+    act(() => emitFiles([image], 'convert'));
+    act(() => vi.advanceTimersByTime(EXPLICIT_INTENT_FALLBACK_MS));
+
+    expect(onOpenApp).toHaveBeenCalledWith('combine_pdf', { files: [image] });
+  });
+
+  it('gom startup và pending process thật qua poll trước khi mở tab Combine', async () => {
+    let pendingCalls = 0;
+    systemMocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_startup_args') {
+        return ['pdf-inspector.exe', '--prynx-action=combine', 'D:\\viec\\01-bia.pdf'];
+      }
+      if (command === 'get_pending_system_files') {
+        pendingCalls += 1;
+        return pendingCalls === 1
+          ? ['pdf-inspector.exe', '--prynx-action=combine', 'D:\\viec\\02-ruot.pdf']
+          : [];
+      }
+      if (command === 'stat_system_file') return { status: 'available', size: 123 };
+      return null;
+    });
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    });
+
+    const { onOpenApp } = renderDispatcher();
+    render(<SystemIntegrations />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(onOpenApp).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    expect(onOpenApp).toHaveBeenCalledTimes(1);
+    const [appId, payload] = onOpenApp.mock.calls[0];
+    expect(appId).toBe('combine_pdf');
+    expect(payload.files.map((item: File) => item.name)).toEqual([
+      '01-bia.pdf',
+      '02-ruot.pdf',
+    ]);
+  });
+  it('định tuyến oracle đủ PDF, 7 ảnh và 11 Office kể cả đuôi viết hoa', () => {
+    const { onOpenApp } = renderDispatcher();
+    const pdf = file('mẫu.PDF');
+    const officeFiles = OFFICE_EXTENSION_ORACLE.map(extension => file(`office.${extension.toUpperCase()}`));
+    const imageFiles = IMAGE_EXTENSION_ORACLE.map(extension => file(`image.${extension.toUpperCase()}`));
+    let accepted = 0;
+
+    act(() => {
+      accepted = dispatchSupportedSystemFiles([
+        pdf,
+        ...officeFiles,
+        ...imageFiles,
+        file('khong-ho-tro.gif'),
+      ]);
+      vi.advanceTimersByTime(INCOMING_FILES_DEBOUNCE_MS);
+    });
+
+    expect(accepted).toBe(19);
+    expect(onOpenApp).toHaveBeenCalledTimes(3);
+    expect(onOpenApp).toHaveBeenCalledWith('imposition', { file: pdf });
+    const officeCall = onOpenApp.mock.calls.find(([, payload]) => payload?.focusFeature === 'office_convert');
+    expect(officeCall?.[1].officeSourceFiles.map((item: File) => item.name).sort()).toEqual(
+      officeFiles.map(item => item.name).sort(),
+    );
+    const combineCall = onOpenApp.mock.calls.find(([appId]) => appId === 'combine_pdf');
+    expect(combineCall?.[1].files.map((item: File) => item.name).sort()).toEqual(
+      imageFiles.map(item => item.name).sort(),
+    );
+  });
+
+  it('một ảnh TIFF mặc định đi thẳng viewer thay vì tab Combine rỗng', () => {
+    const { onOpenApp } = renderDispatcher();
+    const image = file('scan.TIFF');
+
+    act(() => emitFiles([image]));
+    act(() => vi.advanceTimersByTime(INCOMING_FILES_DEBOUNCE_MS));
+
+    expect(onOpenApp).toHaveBeenCalledWith('imposition', { file: image });
+  });
+  it('phân PDF thành tab riêng và gom đủ Office trong cùng batch', () => {
+    const { onOpenApp } = renderDispatcher();
+    const pdf = file('mau.pdf');
+    const docx = file('hop-dong.docx');
+    const xlsx = file('so-luong.xlsx');
+
+    act(() => emitFiles([xlsx, pdf, docx]));
+    act(() => vi.advanceTimersByTime(INCOMING_FILES_DEBOUNCE_MS));
+
+    expect(onOpenApp).toHaveBeenNthCalledWith(1, 'imposition', { file: pdf });
+    expect(onOpenApp).toHaveBeenNthCalledWith(2, 'imposition', {
+      focusFeature: 'office_convert',
+      officeSourceFile: docx,
+      officeSourceFiles: [docx, xlsx],
+    });
+  });
+});

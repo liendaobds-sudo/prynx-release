@@ -108,6 +108,47 @@ def test_geometry_only_no_downsample(tmp_path):
     assert all(w == 148 and h == 210 for (w, h) in sizes), sizes
 
 
+@pytest.mark.parametrize(
+    ("mode", "target_dpi"),
+    [("xobject", 0), ("raster", 72)],
+)
+def test_solid_background_fills_fit_gaps_on_vector_and_raster_paths(
+    tmp_path, mode, target_dpi,
+):
+    """RESIZE (audit 2026-07-31 §B.1): fallback backend phải giữ màu nền."""
+    pdfium = pytest.importorskip("pypdfium2")
+    src = str(tmp_path / f"solid_{mode}_src.pdf")
+    out = str(tmp_path / f"solid_{mode}_out.pdf")
+
+    pdf = pikepdf.Pdf.new()
+    pdf.add_blank_page(page_size=(100, 100))
+    page = pdf.pages[0]
+    page.obj[pikepdf.Name("/Contents")] = pdf.make_stream(
+        b"0 0 1 rg 0 0 100 100 re f\n"
+    )
+    pdf.save(src)
+    pdf.close()
+
+    resize_pages_smart(
+        src, out, 100.0, 200.0, "fit", "all",
+        target_dpi=target_dpi,
+        mode=mode,
+        bg_fill_mode="solid",
+        bg_fill_color="#12a34b",
+    )
+
+    doc = pdfium.PdfDocument(out)
+    try:
+        image = doc[0].render(scale=1.0).to_pil().convert("RGB")
+    finally:
+        doc.close()
+
+    width, height = image.size
+    for x, y in ((2, 2), (width - 3, 2), (2, height - 3), (width - 3, height - 3)):
+        pixel = image.getpixel((x, y))
+        assert pixel == pytest.approx((18, 163, 75), abs=6)
+
+
 def test_auto_orientation_uses_portrait_and_landscape_per_page(tmp_path):
     src = str(tmp_path / "mixed.pdf")
     out = str(tmp_path / "mixed_a4.pdf")

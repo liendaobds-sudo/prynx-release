@@ -483,9 +483,9 @@ export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
             return { sheets: allSheets, report: t('misc.sheetViewerDialog:dua_tren_cau_hinh_auto_catalog'), jobMap: jMap };
         } else {
             if (!imposedPageOrder.length) return { sheets: [] as VirtualSheet[], report: '', jobMap: null };
-            return { ...generateBindingMap(imposedPageOrder.length, bindingMode, foliosize, blankPlacement), jobMap: null };
+            return { ...generateBindingMap(imposedPageOrder.length, bindingMode, foliosize, blankPlacement, scaleMode || '100'), jobMap: null };
         }
-    }, [catalogJobs, imposedPageOrder, bindingMode, foliosize, blankPlacement]);
+    }, [catalogJobs, imposedPageOrder, bindingMode, foliosize, blankPlacement, scaleMode]);
 
     const cs = sheets[currentSheetIdx];
     const currentJob = jobMap?.get(cs);

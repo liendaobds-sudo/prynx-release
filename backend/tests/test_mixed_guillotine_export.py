@@ -11,6 +11,7 @@ from app.workers import nup_engine
 from app.workers import nup_process_chunk
 from app.workers import nup_report
 from app.workers import pdf_wrapper as pdf_lib
+from app.workers.cluster_tile_engine import draw_segment_cut_marks
 
 
 MM_TO_PT = 2.83465
@@ -68,6 +69,98 @@ def _rotation(placement: dict) -> int:
     if rotated:
         return 90
     return 0
+
+
+class _FakeShape:
+    def __init__(self):
+        self.lines = []
+        self.finished = False
+        self.committed = False
+
+    def draw_line(self, p1, p2):
+        self.lines.append(((p1.x, p1.y), (p2.x, p2.y)))
+
+    def finish(self, **_kwargs):
+        self.finished = True
+
+    def commit(self):
+        self.committed = True
+
+
+class _FakePage:
+    def __init__(self):
+        self.shape = _FakeShape()
+
+    def new_shape(self):
+        return self.shape
+
+
+def test_segment_marks_draw_only_two_endpoints_per_zone_cut():
+    page = _FakePage()
+    draw_segment_cut_marks(
+        page,
+        {
+            "segments": [
+                {"axis": "x", "coordinate": 50.0, "start": 10.0, "end": 90.0},
+                {"axis": "y", "coordinate": 60.0, "start": 20.0, "end": 120.0},
+            ]
+        },
+        mark_off=3.0,
+        mark_len=5.0,
+    )
+
+    assert len(page.shape.lines) == 4
+    assert page.shape.finished is True
+    assert page.shape.committed is True
+
+
+def test_mixed_mark_none_skips_both_cluster_mark_renderers(tmp_path, monkeypatch):
+    source = str(tmp_path / "mixed-no-marks.pdf")
+    output = str(tmp_path / "mixed-no-marks-out.pdf")
+    _make_pdf(source, [(100.0, 80.0), (60.0, 40.0)])
+
+    def unexpected_call(*_args, **_kwargs):
+        raise AssertionError("markType='none' không được gọi renderer dấu xén")
+
+    monkeypatch.setattr(nup_process_chunk, "draw_tile_cut_marks", unexpected_call)
+    monkeypatch.setattr(nup_process_chunk, "draw_segment_cut_marks", unexpected_call)
+    nup_engine.run_nup_engine(
+        source,
+        output,
+        _settings(markType="none"),
+        job_id="mixed-guillotine-no-marks",
+    )
+
+
+def test_mixed_guillotine_routes_only_zone_segments_to_segment_renderer(
+    tmp_path, monkeypatch
+):
+    source = str(tmp_path / "mixed-zone-marks.pdf")
+    output = str(tmp_path / "mixed-zone-marks-out.pdf")
+    _make_pdf(source, [(100.0, 80.0), (60.0, 40.0)])
+    captured: list[dict] = []
+
+    def reject_grid_renderer(*_args, **_kwargs):
+        raise AssertionError("mixed-guillotine không được dùng renderer lưới tile")
+
+    def capture_segments(_page, cuts, **_kwargs):
+        captured.extend(copy.deepcopy(cuts.get("segments", [])))
+
+    monkeypatch.setattr(nup_process_chunk, "draw_tile_cut_marks", reject_grid_renderer)
+    monkeypatch.setattr(nup_process_chunk, "draw_segment_cut_marks", capture_segments)
+    nup_engine.run_nup_engine(
+        source,
+        output,
+        _settings(markType="guillotine"),
+        job_id="mixed-guillotine-zone-marks",
+    )
+
+    assert len(captured) == 1  # Một rãnh chỉ có một đường phân cách ở tâm.
+
+    assert all(
+        set(segment) == {"axis", "coordinate", "start", "end"}
+        for segment in captured
+    )
 
 
 def test_mixed_export_places_two_different_sizes_on_one_output_page(tmp_path):

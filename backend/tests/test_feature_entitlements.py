@@ -20,6 +20,8 @@ def test_gate_on_free_and_pro(monkeypatch):
     assert can_use_feature("util.logo_rebuild", "free") is False
     assert can_use_feature("util.logo_rebuild", "free", ["util.logo_rebuild"]) is True
     assert can_use_feature("util.logo_rebuild", "pro") is True
+    assert can_use_feature("prepress.paper_library", "free") is False
+    assert can_use_feature("prepress.paper_library", "pro") is True
     with pytest.raises(PermissionError):
         assert_feature("impo.cnc", {"plan": "free"})
 

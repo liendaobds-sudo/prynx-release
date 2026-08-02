@@ -4,11 +4,13 @@ import json
 import pikepdf
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from app.api.routes import pdf_tools
 from app.core.license_guard import require_license
 from app.main import app
 from app.utils import file_handler
+from app.workers import pdf_manifest_engine as manifest_engine
 
 
 def _pdf_bytes(page_count: int) -> bytes:
@@ -18,6 +20,18 @@ def _pdf_bytes(page_count: int) -> bytes:
         page.obj["/Rotate"] = index * 90
     output = io.BytesIO()
     pdf.save(output)
+    return output.getvalue()
+
+
+def _png_bytes(size: tuple[int, int] = (20, 30), dpi: tuple[int, int] = (30, 30)) -> bytes:
+    output = io.BytesIO()
+    Image.new('RGB', size, 'white').save(output, format='PNG', dpi=dpi)
+    return output.getvalue()
+
+
+def _jpeg_bytes(size: tuple[int, int] = (30, 20), dpi: tuple[int, int] = (150, 150)) -> bytes:
+    output = io.BytesIO()
+    Image.new("RGB", size, "white").save(output, format="JPEG", dpi=dpi)
     return output.getvalue()
 
 
@@ -105,4 +119,110 @@ def test_pdf_tools_rejects_unsupported_extension_before_writing(client):
     )
 
     assert response.status_code == 415
+    assert list(tmp_path.iterdir()) == []
+
+def test_manifest_route_accepts_uploaded_png(client):
+    test_client, tmp_path = client
+    response = test_client.post(
+        "/api/pdf-tools/merge-manifest",
+        files=[("files", ("source.png", _png_bytes(), "image/png"))],
+        data={"manifest": json.dumps([{"file_index": 0, "rotation": 90}])},
+    )
+
+    assert response.status_code == 200, response.text
+    with pikepdf.Pdf.open(io.BytesIO(response.content)) as result:
+        assert len(result.pages) == 1
+        assert int(result.pages[0].obj.get("/Rotate", 0)) % 360 == 90
+        assert float(result.pages[0].mediabox[2]) == pytest.approx(48, abs=0.1)
+        assert float(result.pages[0].mediabox[3]) == pytest.approx(72, abs=0.1)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_manifest_route_accepts_native_png_path(client):
+    test_client, tmp_path = client
+    source_path = tmp_path / "native-source.png"
+    source_path.write_bytes(_png_bytes())
+
+    response = test_client.post(
+        "/api/pdf-tools/merge-manifest",
+        data={
+            "manifest": json.dumps([{"file_index": 0}]),
+            "file_paths": json.dumps([str(source_path)]),
+            "return_path": "true",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert source_path.exists()
+    with pikepdf.Pdf.open(response.json()["path"]) as result:
+        assert len(result.pages) == 1
+
+def test_manifest_route_accepts_uploaded_jpeg(client):
+    test_client, tmp_path = client
+    response = test_client.post(
+        "/api/pdf-tools/merge-manifest",
+        files=[("files", ("source.JPEG", _jpeg_bytes(), "image/jpeg"))],
+        data={"manifest": json.dumps([{"file_index": 0}])},
+    )
+
+    assert response.status_code == 200, response.text
+    with pikepdf.Pdf.open(io.BytesIO(response.content)) as result:
+        assert len(result.pages) == 1
+        assert float(result.pages[0].mediabox[2]) == pytest.approx(14.4, abs=0.1)
+        assert float(result.pages[0].mediabox[3]) == pytest.approx(9.6, abs=0.1)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_manifest_route_rejects_unsupported_image_extension_before_writing(client):
+    test_client, tmp_path = client
+    response = test_client.post(
+        "/api/pdf-tools/merge-manifest",
+        files=[("files", ("source.webp", b"RIFF-not-a-supported-source", "image/webp"))],
+        data={"manifest": json.dumps([{"file_index": 0}])},
+    )
+
+    assert response.status_code == 415
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_manifest_route_rejects_native_extension_content_mismatch(client):
+    test_client, tmp_path = client
+    source_path = tmp_path / "spoofed.png"
+    source_path.write_bytes(_jpeg_bytes())
+
+    response = test_client.post(
+        "/api/pdf-tools/merge-manifest",
+        data={
+            "manifest": json.dumps([{"file_index": 0}]),
+            "file_paths": json.dumps([str(source_path)]),
+            "return_path": "true",
+        },
+    )
+
+    assert response.status_code == 400
+    assert source_path.exists()
+    assert not any(path.name.startswith("merged_manifest_") for path in tmp_path.iterdir())
+def test_manifest_route_rejects_low_ram_expansion_and_cleans_all_artifacts(
+    client,
+    monkeypatch,
+):
+    test_client, tmp_path = client
+    monkeypatch.delenv("PRYNX_MANIFEST_MAX_PAGES", raising=False)
+    monkeypatch.setattr(
+        manifest_engine,
+        "read_memory_status_mb",
+        lambda: (6 * 1024.0, 5 * 1024.0),
+    )
+    manifest = [{"blank": True}] * (manifest_engine.LOW_RAM_MAX_EXPANDED_PAGES + 1)
+
+    response = test_client.post(
+        "/api/pdf-tools/merge-manifest",
+        files=[("files", ("source.pdf", _pdf_bytes(1), "application/pdf"))],
+        data={"manifest": json.dumps(manifest)},
+    )
+
+    assert response.status_code == 400
+    assert "4,000" in response.json()["detail"]
     assert list(tmp_path.iterdir()) == []

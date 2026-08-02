@@ -166,6 +166,11 @@ def test_downscale_keeps_smask_aligned_with_image(tmp_path):
                 mask = obj.SMask
                 assert (int(obj.Width), int(obj.Height)) == (300, 300)
                 assert (int(mask.Width), int(mask.Height)) == (300, 300)
+                # RESIZE (audit 2026-08-01 §PNG-1): không chỉ kiểm metadata.
+                # Stream từng bị ghi byte thô nhưng vẫn khai /FlateDecode, khiến
+                # PDFium không giải mã được và toàn bộ ảnh PNG alpha thành trắng.
+                assert len(obj.read_bytes()) == 300 * 300 * 3
+                assert len(mask.read_bytes()) == 300 * 300
                 break
         else:
             pytest.fail("không tìm thấy ảnh có SMask trong output")

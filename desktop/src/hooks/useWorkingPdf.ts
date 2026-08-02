@@ -22,7 +22,7 @@ import {
     finishOptionalContentTransfer,
 } from '../lib/pdfOptionalContent';
 
-export function useWorkingPdf(): () => Promise<File | null> {
+export function useWorkingPdf(): (sourceFile?: File | null) => Promise<File | null> {
     const file = useWorkspaceStore(state => state.file);
     const viewerPageOrder = useWorkspaceStore(state => state.viewerPageOrder);
     const viewerPageRotations = useWorkspaceStore(state => state.viewerPageRotations);
@@ -32,8 +32,11 @@ export function useWorkingPdf(): () => Promise<File | null> {
         sourcePageCountCacheRef.current = null;
     }, [file]);
 
-    return useCallback(async (): Promise<File | null> => {
-        if (!file) return null;
+    return useCallback(async (sourceFile?: File | null): Promise<File | null> => {
+        // EXPORT (re-audit 2026-07-31 §RA-04): nhận Working File vừa commit để
+        // tránh closure React còn giữ file cũ trong cùng lượt async.
+        const activeFile = sourceFile === undefined ? file : sourceFile;
+        if (!activeFile) return null;
 
         const resolveSourcePageCount = async (f: File): Promise<number> => {
             const key = `${(f as any).path || f.name}|${f.size}|${(f as any).lastModified || 0}`;
@@ -49,7 +52,7 @@ export function useWorkingPdf(): () => Promise<File | null> {
 
         let hasOrderEdits = false;
         if (viewerPageOrder && viewerPageOrder.length > 0) {
-            const srcCount = await resolveSourcePageCount(file);
+            const srcCount = await resolveSourcePageCount(activeFile);
             const isIdentity =
                 viewerPageOrder.length === srcCount
                 && viewerPageOrder.every((p: number, i: number) => p === i + 1);
@@ -60,10 +63,10 @@ export function useWorkingPdf(): () => Promise<File | null> {
         // chưa xoay gì) → KHÔNG dùng .length/keys để đoán "có sửa" (sẽ bật oan → bake thừa).
         // Kiểm CÓ GÓC KHÁC 0. Dữ liệu cũ Record<pageNum,deg> thì Object.values cũng chạy.
         const hasRotEdits = !!(viewerPageRotations && Object.values(viewerPageRotations).some((r: any) => (((r as number) % 360) + 360) % 360 !== 0));
-        if (!hasOrderEdits && !hasRotEdits) return file;
+        if (!hasOrderEdits && !hasRotEdits) return activeFile;
 
         const rotations = viewerPageRotations || {};
-        const arrayBuffer = await getFileArrayBuffer(file);
+        const arrayBuffer = await getFileArrayBuffer(activeFile);
         const srcDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
         const newDoc = await PDFDocument.create();
 
@@ -106,6 +109,6 @@ export function useWorkingPdf(): () => Promise<File | null> {
 
         finishOptionalContentTransfer(ocTransfer, newDoc);
         const pdfBytes = await newDoc.save();
-        return new File([pdfBytes as any], file.name, { type: 'application/pdf' });
+        return new File([pdfBytes as any], activeFile.name, { type: 'application/pdf' });
     }, [file, viewerPageOrder, viewerPageRotations]);
 }

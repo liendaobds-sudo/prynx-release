@@ -5,13 +5,14 @@ Phase 1: render trang bằng pypdfium2 → Pillow → ghi ra thư mục người
 CHỈ ĐỌC file nguồn (render), KHÔNG ghi đè/sửa file gốc (đúng invariant an toàn màu).
 """
 import os
+import asyncio
 import logging
 import re
 import tempfile
 import threading
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from app.core.heavy_job_scheduler import run_scheduled_in_threadpool
 
 from app.core.license_guard import require_license
@@ -23,6 +24,8 @@ logger = logging.getLogger(__name__)
 # KIENTRUC (audit 2026-07-29 §A.2 lô 13): model đã gom về app/schemas/export.py;
 # import lại ở đây để mọi đường import cũ (kể cả test) vẫn dùng được.
 from app.schemas.export import (  # noqa: F401
+    ExportImageBatchJob,
+    ExportImagesBatchRequest,
     ExportImagesRequest,
 )
 
@@ -32,8 +35,8 @@ router = APIRouter(prefix="/export", tags=["Export"], dependencies=[Depends(requ
 # Giới hạn an toàn
 _MIN_DPI = 36
 _MAX_DPI = 1200
-_FORMATS = {"png", "jpeg", "tiff"}
-_EXT = {"png": "png", "jpeg": "jpg", "tiff": "tiff"}
+_FORMATS = {"png", "jpeg", "tiff", "webp"}
+_EXT = {"png": "png", "jpeg": "jpg", "tiff": "tiff", "webp": "webp"}
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WINDOWS_RESERVED_NAMES = {
     "CON", "PRN", "AUX", "NUL",
@@ -185,6 +188,18 @@ class ExportCancelled(Exception):
     """Job xuất ảnh bị hủy bởi client."""
 
 
+async def _watch_export_disconnect(request: Request, cancel_event: threading.Event) -> None:
+    """Bật cờ hủy khi ASGI báo client đã ngắt kết nối."""
+    while not cancel_event.is_set():
+        if await request.is_disconnected():
+            # EXPORT (re-audit 2026-07-31 §RA-03): threadpool không tự dừng khi
+            # fetch bị abort; event là cầu nối cooperative cancellation tới worker.
+            cancel_event.set()
+            return
+        await asyncio.sleep(0.1)
+
+
+
 # ── CMYK production helpers (audit 2026-07-30 §IMG-04 lô 4) ──────────────────
 
 _CMYK_ICC_BYTES: bytes | None = None
@@ -214,6 +229,7 @@ def _render_cmyk_pages(
     jpeg_quality: int,
     base_name: Optional[str],
     cancel_event: Optional[threading.Event],
+    include_bleed: bool,
 ) -> List[str]:
     """Render CMYK production bằng PPE ink-space — KHÔNG đi qua RGB.
 
@@ -246,6 +262,22 @@ def _render_cmyk_pages(
 
     pad = max(2, len(str(n)))
     written: List[str] = []
+    page_box = "media" if include_bleed else "trim"
+
+    def render_page(pno: int):
+        result = ppe_export_cmyk(src_path, pno, dpi=dpi, page_box=page_box)
+        # EXPORT (re-audit 2026-07-31 §RA-02): output chế bản không được phép
+        # âm thầm giao trang mà PPE đã đánh dấu thiếu mực hoặc sai hình học.
+        if result.get("ink_unsound"):
+            raise ValueError(
+                f"Trang {pno}: PPE không thể dựng đủ nội dung/mực; đã dừng xuất CMYK."
+            )
+        if result.get("degraded"):
+            raise ValueError(
+                f"Trang {pno}: PPE chỉ dựng được hình học xấp xỉ; đã dừng xuất CMYK."
+            )
+        return result
+
 
     try:
         # TIFF multipage
@@ -258,7 +290,7 @@ def _render_cmyk_pages(
                 for page_index, pno in enumerate(valid_nos):
                     if cancel_event is not None and cancel_event.is_set():
                         raise ExportCancelled("Xuất ảnh bị hủy.")
-                    result = ppe_export_cmyk(src_path, pno, dpi=dpi)
+                    result = render_page(pno)
                     img = Image.frombytes("CMYK", (result["width"], result["height"]), bytes(result["cmyk"]))
                     img.save(
                         writer, format="TIFF", compression="tiff_deflate",
@@ -283,7 +315,7 @@ def _render_cmyk_pages(
         for pno in valid_nos:
             if cancel_event is not None and cancel_event.is_set():
                 raise ExportCancelled("Xuất ảnh bị hủy.")
-            result = ppe_export_cmyk(src_path, pno, dpi=dpi)
+            result = render_page(pno)
             img = Image.frombytes("CMYK", (result["width"], result["height"]), bytes(result["cmyk"]))
             fname = f"{base_nm}_p{str(pno).zfill(pad)}.{ext}"
             out_path = _reserve_output_path(output_dir, fname)
@@ -324,6 +356,7 @@ def render_pdf_to_images(
     jpeg_quality: int = 90,
     base_name: Optional[str] = None,
     cancel_event: Optional[threading.Event] = None,
+    include_bleed: bool = True,
 ) -> List[str]:
     """Render các trang PDF thành ảnh và ghi ra ``output_dir``.
 
@@ -351,8 +384,8 @@ def render_pdf_to_images(
     if color_mode not in ("rgb", "gray", "cmyk"):
         raise ValueError(f"color_mode không hợp lệ: {color_mode}")
     # EXPORT (audit 2026-07-30 §IMG-04 lô 4): PNG không hỗ trợ CMYK 4 kênh.
-    if color_mode == "cmyk" and fmt == "png":
-        raise ValueError("PNG không hỗ trợ CMYK. Dùng TIFF hoặc JPEG.")
+    if color_mode == "cmyk" and fmt in ("png", "webp"):
+        raise ValueError("PNG/WebP không hỗ trợ CMYK. Dùng TIFF hoặc JPEG.")
     if not src_path or not os.path.exists(src_path):
         raise FileNotFoundError(f"File nguồn không tồn tại: {src_path}")
 
@@ -366,7 +399,7 @@ def render_pdf_to_images(
     if color_mode == "cmyk":
         return _render_cmyk_pages(
             src_path, output_dir, fmt, dpi, pages, multipage_tiff,
-            jpeg_quality, base_name, cancel_event,
+            jpeg_quality, base_name, cancel_event, include_bleed,
         )
 
     pil_mode = "L" if color_mode == "gray" else "RGB"
@@ -421,13 +454,28 @@ def render_pdf_to_images(
                     raise ExportCancelled("Xuất ảnh bị hủy.")
                 page = None
                 bitmap = None
+                original_crop = None
                 with pdfium_guard("export_images_page"):
                     try:
                         page = pdf[pno - 1]
+                        # EXPORT (re-audit 2026-07-31 §RA-01): PDFium render theo
+                        # CropBox hiệu lực. Tạm đặt CropBox thành box người dùng chọn
+                        # trong RAM rồi khôi phục trước khi nhả khóa.
+                        original_crop = page.get_cropbox()
+                        if include_bleed:
+                            target_box = page.get_mediabox()
+                        else:
+                            try:
+                                target_box = page.get_trimbox()
+                            except Exception:
+                                target_box = original_crop
+                        page.set_cropbox(*target_box)
                         bitmap = page.render(scale=scale, rotation=0)
                         # ``convert`` tạo buffer độc lập; đóng handle ngay trong khóa.
                         img = bitmap.to_pil().convert(pil_mode)
                     finally:
+                        if page is not None and original_crop is not None:
+                            page.set_cropbox(*original_crop)
                         if bitmap is not None:
                             bitmap.close()
                         if page is not None:
@@ -459,9 +507,12 @@ def render_pdf_to_images(
                             dpi=(dpi, dpi), icc_profile=icc_bytes,
                         )
                     else:
+                        save_fmt = "WEBP" if fmt == "webp" else "PNG"
+                        save_kwargs = dict(dpi=(dpi, dpi), icc_profile=icc_bytes)
+                        if fmt == "webp":
+                            save_kwargs["quality"] = jpeg_quality
                         _save_image_atomic(
-                            img, out_path, "PNG",
-                            dpi=(dpi, dpi), icc_profile=icc_bytes,
+                            img, out_path, save_fmt, **save_kwargs,
                         )
                     written.append(out_path)
                 finally:
@@ -500,9 +551,8 @@ def render_pdf_to_images(
 
 
 @router.post("/images", response_model=ExportImagesResponse)
-async def export_images(req: ExportImagesRequest):
+async def export_images(req: ExportImagesRequest, request: Request):
     """Xuất trang PDF ra ảnh. Nhận file_id (đã upload) hoặc file_path (desktop)."""
-    from starlette.requests import Request as StarletteRequest
     # Resolve nguồn
     src_path = None
     if req.file_path and os.path.exists(req.file_path):
@@ -521,6 +571,7 @@ async def export_images(req: ExportImagesRequest):
     cancel_event = threading.Event()
 
     try:
+        disconnect_watcher = asyncio.create_task(_watch_export_disconnect(request, cancel_event))
         # PERF (audit 2026-07-30 §IMG-02): export lớn chạy ngoài event loop để
         # health/preview/công cụ khác vẫn phản hồi, nhưng vẫn qua scheduler RAM.
         files = await run_scheduled_in_threadpool(
@@ -536,6 +587,7 @@ async def export_images(req: ExportImagesRequest):
             req.jpeg_quality,
             req.base_name,
             cancel_event,
+            req.include_bleed,
         )
         return {"ok": True, "count": len(files), "output_dir": req.output_dir, "files": files}
     except ExportCancelled:
@@ -550,3 +602,92 @@ async def export_images(req: ExportImagesRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise_http(e, "Xuất ảnh thất bại")
+    finally:
+        cancel_event.set()
+        disconnect_watcher.cancel()
+        try:
+            await disconnect_watcher
+        except asyncio.CancelledError:
+            pass
+
+
+
+def _render_image_batch(
+    src_path: str,
+    jobs: List[ExportImageBatchJob],
+    color_mode: str,
+    pages: Optional[List[int]],
+    include_bleed: bool,
+    cancel_event: threading.Event,
+) -> List[str]:
+    """Render batch nguyên tử; lỗi/hủy sẽ xóa mọi file batch đã tạo."""
+    written: List[str] = []
+    try:
+        for job in jobs:
+            if cancel_event.is_set():
+                raise ExportCancelled("Xuất ảnh bị hủy.")
+            files = render_pdf_to_images(
+                src_path=src_path,
+                output_dir=job.output_dir,
+                fmt=job.format,
+                dpi=job.dpi,
+                color_mode=color_mode,
+                pages=pages,
+                multipage_tiff=job.multipage_tiff,
+                jpeg_quality=job.jpeg_quality,
+                base_name=job.base_name,
+                cancel_event=cancel_event,
+                include_bleed=include_bleed,
+            )
+            written.extend(files)
+        return written
+    except BaseException:
+        # EXPORT (re-audit 2026-07-31 §RA-06): mỗi renderer rollback job hiện tại;
+        # lớp ngoài rollback cả các job trước để người dùng không nhận batch dở dang.
+        for path in written:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        raise
+
+
+@router.post("/images/batch", response_model=ExportImagesResponse)
+async def export_images_batch(req: ExportImagesBatchRequest, request: Request):
+    """Xuất nhiều định dạng/DPI trong một giao dịch rollback toàn batch."""
+    src_path = None
+    if req.file_path and os.path.exists(req.file_path):
+        src_path = req.file_path
+    elif req.file_id:
+        from app.api.routes.preflight import _get_file_path
+        src_path = _get_file_path(req.file_id)
+    if not src_path:
+        raise HTTPException(status_code=400, detail="Thiếu file_id/file_path hợp lệ.")
+
+    cancel_event = threading.Event()
+    disconnect_watcher = asyncio.create_task(_watch_export_disconnect(request, cancel_event))
+    try:
+        files = await run_scheduled_in_threadpool(
+            "export-images-batch",
+            _render_image_batch,
+            src_path,
+            req.jobs,
+            req.color_mode,
+            req.pages,
+            req.include_bleed,
+            cancel_event,
+        )
+        return {"ok": True, "count": len(files), "output_dir": req.jobs[0].output_dir, "files": files}
+    except ExportCancelled:
+        raise HTTPException(status_code=499, detail="Xuất ảnh đã bị hủy.")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise_http(e, "Xuất batch ảnh thất bại")
+    finally:
+        cancel_event.set()
+        disconnect_watcher.cancel()
+        try:
+            await disconnect_watcher
+        except asyncio.CancelledError:
+            pass

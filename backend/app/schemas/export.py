@@ -29,10 +29,33 @@ class ExportImagesRequest(BaseModel):
     file_id: Optional[str] = None
     file_path: Optional[str] = None
     output_dir: str
-    format: Literal["png", "jpeg", "tiff"] = "png"
+    format: Literal["png", "jpeg", "tiff", "webp"] = "png"
     dpi: int = Field(default=150, ge=36, le=1200, description="Độ phân giải 36–1200 DPI")
     color_mode: Literal["rgb", "gray", "cmyk"] = "rgb"
     pages: Optional[List[int]] = None  # 1-based; None = tất cả
     multipage_tiff: bool = False
     jpeg_quality: int = Field(default=90, ge=1, le=100, description="Chất lượng JPEG 1–100")
     base_name: Optional[str] = None
+    include_bleed: bool = Field(default=True, description="True = xuất cả vùng bleed (MediaBox), False = cắt theo TrimBox")
+
+
+class ExportImageBatchJob(BaseModel):
+    """Một đầu ra trong batch; mọi job đã được Pydantic kiểm tra trước khi render."""
+
+    output_dir: str
+    format: Literal["png", "jpeg", "tiff", "webp"]
+    dpi: int = Field(ge=36, le=1200)
+    multipage_tiff: bool = False
+    jpeg_quality: int = Field(default=90, ge=1, le=100)
+    base_name: Optional[str] = None
+
+
+class ExportImagesBatchRequest(BaseModel):
+    """Batch nguyên tử: lỗi một job thì xóa toàn bộ file do batch vừa tạo."""
+
+    file_id: Optional[str] = None
+    file_path: Optional[str] = None
+    color_mode: Literal["rgb", "gray", "cmyk"] = "rgb"
+    pages: Optional[List[int]] = None
+    include_bleed: bool = True
+    jobs: List[ExportImageBatchJob] = Field(min_length=1, max_length=8)

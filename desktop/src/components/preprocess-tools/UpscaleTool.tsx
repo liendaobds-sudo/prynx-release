@@ -83,7 +83,7 @@ async function processBatch(tabId: string) {
                 }
                 const warningCodes = (res.headers.get('X-Upscale-Warnings') || '').split(',');
                 if (warningCodes.includes('color-converted-to-srgb')) {
-                    toast.info(tv('Ảnh CMYK đã được chuyển sang sRGB để mô hình AI xử lý.'));
+                    toast.info(tv('Ảnh CMYK đã được chuyển sang sRGB để xử lý.'));
                 }
                 if (warningCodes.includes('bit-depth-reduced-to-8')) {
                     toast.info(tv('Ảnh 16-bit được xử lý ở 8-bit; hãy kiểm tra chuyển sắc trước khi in.'));

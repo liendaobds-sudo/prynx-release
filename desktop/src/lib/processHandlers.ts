@@ -29,6 +29,7 @@ import { toast } from '../components/ui/Toast';
 const LONG_TASK_HINT = () =>
     i18n.t('lib.processHandlers:file_lon_co_the_mat_vai_phut', { defaultValue: '… (file lớn có thể mất vài phút — đừng đóng tab)' });
 
+
 // ─── Shared context type for all handlers ───
 export interface ProcessContext {
     file: File;
@@ -155,6 +156,11 @@ export async function runProcessEngine(
                 // MIXED-GUILLOTINE (audit 2026-07-30 §MG.5/§MG.8): planner materialize mặt sau theo cạnh này.
                 duplexFlipEdge: isGuillotine && (settings as any).layoutType === 'mixed_guillotine'
                     ? ((settings as any).duplexFlipEdge || 'long')
+                    : undefined,
+                // MIXED-GUILLOTINE (audit 2026-07-30 §MG-A2): % in dư cho phép → tỉ lệ.
+                // Gom nhiều bản kẽm về 1 khi dư còn trong ngưỡng; preview dùng CÙNG giá trị.
+                mixedExcessTolerance: isGuillotine && (settings as any).layoutType === 'mixed_guillotine'
+                    ? Math.max(0, Number((settings as any).mixedExcessPercent ?? 0)) / 100
                     : undefined,
                 // Report & xuất tờ duy nhất (spec: binh-tem-be-report) — gồm cả CNC
                 exportUniqueSheets: (isDieCut || isPageSheet || (isGuillotine && (settings as any).layoutType === 'mixed_guillotine'))
@@ -500,12 +506,34 @@ export async function runShuffle(ctx: ProcessContext, settings: any) {
 
 export async function runResize(ctx: ProcessContext, settings: any) {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
-    // UIUX (audit 2026-07-27 §D-09): thêm hậu tố trấn an cho tác vụ chạy dài
-    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_doi_kho_trang') + LONG_TASK_HINT());
+    const perfNow = () => globalThis.performance?.now?.() ?? Date.now();
+    const perfStarted = perfNow();
+    const roundMs = (value: number) => Math.round(value * 10) / 10;
+    const logResizePerf = (payload: Record<string, unknown>) =>
+        console.info(`[ResizePerf] ${JSON.stringify(payload)}`);
+    let perfRoute = 'frontend_pdf_lib';
+    // UIUX (audit 2026-08-01 §R.10): Resize chỉ dùng một thông báo chờ ổn định.
+    const processingStatus = i18n.t('lib.processHandlers:dang_xu_ly', {
+        defaultValue: 'Đang xử lý...',
+    });
+    setError(''); setIsProcessing(true); setProcessStatus(processingStatus);
 
     const MM_TO_PT = 2.83465;
     const resizeMode: string = settings.resizeMode || 'auto';
+    const pageSizeMode: 'fixed' | 'fixed_width' | 'fixed_height' = settings.pageSizeMode || 'fixed';
+    const lockedAxis = pageSizeMode === 'fixed_width' || pageSizeMode === 'fixed_height';
+    const effectiveScaleMode = lockedAxis ? 'fit' : settings.scaleMode;
     const newFileName = `Resized_${file.name}`;
+    // PERF (audit 2026-08-01 §RT.12): log mốc đầu để ca bị treo vẫn cho biết
+    // đã vào handler với đường xử lý nào; không ghi tên/path của file khách hàng.
+    logResizePerf({
+        stage: 'handler_start',
+        inputBytes: file.size,
+        scaleMode: effectiveScaleMode,
+        pageSizeMode,
+        bgFillMode: settings.bgFillMode || 'mirror',
+        targetDpi: typeof settings.targetDpi === 'number' ? settings.targetDpi : 0,
+    });
     // pdf-lib nạp CẢ file vào RAM rồi embedPages (nhân bản nội dung trang thành Form
     // XObject) + save (dựng Uint8Array mới) → đỉnh RAM ~3-4× kích thước file. File
     // lớn/nhiều ảnh vượt trần cấp phát ArrayBuffer của V8 → "Array buffer allocation
@@ -514,36 +542,107 @@ export async function runResize(ctx: ProcessContext, settings: any) {
     const FE_SIZE_LIMIT = 50 * 1024 * 1024;
 
     const emit = async (blob: Blob) => {
-        if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
-        else { await commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
+        const commitStarted = perfNow();
+        const destination = settings.spawnNewTab && onSpawnTab ? 'new_tab' : 'working_file';
+        logResizePerf({
+            stage: 'commit_start',
+            route: perfRoute,
+            destination,
+            processingMs: roundMs(commitStarted - perfStarted),
+            outputBytes: blob.size,
+        });
+        if (settings.spawnNewTab && onSpawnTab) {
+            onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' }));
+        } else {
+            await commitWorkingFile(blob, newFileName);
+            ctx.setReportMsg('');
+        }
+        const finished = perfNow();
+        logResizePerf({
+            stage: 'handler_done',
+            route: perfRoute,
+            destination,
+            processingMs: roundMs(commitStarted - perfStarted),
+            commitMs: roundMs(finished - commitStarted),
+            totalMs: roundMs(finished - perfStarted),
+            outputBytes: blob.size,
+        });
     };
 
-    try {
-        // ── Backend theo PATH (không giữ file trong RAM) ─────────────────────
-        // Dùng khi: không đọc nổi bytes vào RAM (RangeError). prepareFileForUpload
-        // (trong backendResizePages) đọc lại nội dung THẬT từ đĩa qua file.path →
-        // KHÔNG nhân bản bytes trong WebView. Mất phần bake edit-ảo (order/rotation)
-        // nhưng còn hơn crash cứng — file cỡ này bake trong JS cũng sẽ crash.
-        const runBackendByPath = async (): Promise<Blob> => {
-            const { backendResizePages } = await import('../lib/api');
-            return backendResizePages(file, settings.targetW, settings.targetH, settings.scaleMode, settings.applyToStr || 'all', 0, resizeMode);
-        };
 
+
+    try {
+        // RESIZE (audit 2026-08-01 §RT.11): nền động đi một backend job;
+        // solid/không nền vẫn giữ fast-path frontend hiện có.
+        const hasGapMode = !lockedAxis
+            && (effectiveScaleMode === 'fit' || effectiveScaleMode === 'center_no_scale');
+        const fillMode = settings.bgFillMode || 'mirror';
+        const wantEdgeFill =
+            ['mirror', 'trajectory', 'inpaint', 'image'].includes(fillMode) && hasGapMode;
+        const wantSolidFill =
+            fillMode === 'solid' && hasGapMode;
+        // RESIZE (audit 2026-08-01 §R.5): nền đã bị ẩn trong mode khóa một
+        // chiều thì state cũ không được âm thầm đổi transparency/màu output.
+        const effectiveFillMode = lockedAxis ? 'white' : fillMode;
+
+
+        console.log('[resize] pipeline start', {
+            scaleMode: effectiveScaleMode, pageSizeMode, fillMode,
+            wantEdgeFill, wantSolidFill,
+        });
+
+        if (wantEdgeFill || lockedAxis) {
+            // RESIZE (audit 2026-08-01 §RT.11): một backend job duy nhất tự dò
+            // contentBox, fit, lấp vùng trống và đặt lại artwork vector.
+            setProcessStatus(processingStatus);
+            const { backendResizePages } = await import('../lib/api');
+            let sourcePath: string | undefined;
+            try {
+                sourcePath = await ctx.getWorkingSourcePath?.();
+            } catch {
+                sourcePath = undefined;
+            }
+            perfRoute = sourcePath ? 'backend_path' : 'backend_upload';
+
+            let inputFile = file;
+            if (!sourcePath) {
+                const inputBytes = await getWorkingBytes();
+                inputFile = new File([inputBytes as BlobPart], file.name, {
+                    type: 'application/pdf',
+                });
+            }
+            const targetDpi = typeof settings.targetDpi === 'number'
+                ? settings.targetDpi
+                : 0;
+            await emit(await backendResizePages(
+                inputFile, settings.targetW, settings.targetH, effectiveScaleMode,
+                settings.applyToStr || 'all', targetDpi, resizeMode,
+                effectiveFillMode, '#ffffff', sourcePath,
+                pageSizeMode,
+            ));
+            return;
+        }
+
+        // Đọc input bytes
         let inputBytes: Uint8Array;
         try {
             inputBytes = await getWorkingBytes();
         } catch (readErr) {
-            // Không giữ nổi file trong RAM (RangeError / bake edit crash) → backend theo path.
-            console.warn('[resize] không đọc được bytes vào RAM, fallback backend theo path:', readErr);
-            await emit(await runBackendByPath());
+            console.warn('[resize] không đọc được bytes vào RAM, fallback backend:', readErr);
+            const { backendResizePages } = await import('../lib/api');
+            perfRoute = 'backend_upload_read_fallback';
+            await emit(await backendResizePages(
+                file, settings.targetW, settings.targetH, settings.scaleMode,
+                settings.applyToStr || 'all', 0, resizeMode,
+                wantSolidFill ? 'solid' : 'white',
+                wantSolidFill ? (settings.bgFillColor || '#ffffff') : '#ffffff',
+                undefined,
+                pageSizeMode,
+            ));
             return;
         }
 
-        // Thử soi bằng pdf-lib để lấy số trang + quyết định downsample. File do
-        // BACKEND sinh (bù xén/downsample qua pikepdf/QPDF, Ghostscript) có thể
-        // dùng object stream/xref nén mà pdf-lib (pako) KHÔNG giải nén được →
-        // ném "Invalid header in flate stream". Khi đó không dùng được đường
-        // frontend, phải đẩy sang backend (đọc bytes trực tiếp, không qua pdf-lib).
+        // Soi pdf-lib để lấy số trang + quyết định downsample
         let totalPages = 0;
         let sourceArea = 0;
         let canUseFrontend = true;
@@ -555,13 +654,15 @@ export async function runResize(ctx: ProcessContext, settings: any) {
                 sourceArea = width * height;
             } catch { /* ignore */ }
         } catch {
-            canUseFrontend = false;  // pdf-lib không parse được → chỉ còn backend
+            canUseFrontend = false;
         }
 
-        // ── Giảm dữ liệu theo khổ mới (giống PDF Optimizer) ──────────────────
-        // resize kiểu XObject giữ NGUYÊN độ phân giải ảnh gốc → A1→A5 mà file vẫn
-        // ~dung lượng gốc → tác vụ sau chậm. Khổ đích NHỎ HƠN khổ gốc → bật
-        // downsample (mặc định 300 DPI) qua backend (Ghostscript/pypdfium2).
+        const workingBytes = inputBytes;
+
+        // ── Bước 2: Resize ──────────────────────────────────────────────────
+        setProcessStatus(processingStatus);
+
+        // Giảm dữ liệu theo khổ mới (downsample)
         const targetArea = (settings.targetW * MM_TO_PT) * (settings.targetH * MM_TO_PT);
         const isDownsizing = sourceArea > 0 && targetArea > 0 && targetArea < sourceArea * 0.9;
         const targetDpi: number = typeof settings.targetDpi === 'number'
@@ -571,35 +672,59 @@ export async function runResize(ctx: ProcessContext, settings: any) {
 
         const runBackend = async (): Promise<Blob> => {
             const { backendResizePages } = await import('../lib/api');
-            const workingFile = new File([inputBytes as any], file.name, { type: 'application/pdf' });
-            return backendResizePages(workingFile, settings.targetW, settings.targetH, settings.scaleMode, settings.applyToStr || 'all', targetDpi, resizeMode);
+            perfRoute = 'backend_upload';
+            const workingFile = new File([workingBytes as any], file.name, { type: 'application/pdf' });
+            return backendResizePages(
+                workingFile, settings.targetW, settings.targetH, effectiveScaleMode,
+                settings.applyToStr || 'all', targetDpi, resizeMode,
+                wantSolidFill ? 'solid' : 'white',
+                wantSolidFill ? (settings.bgFillColor || '#ffffff') : '#ffffff',
+                undefined,
+                pageSizeMode,
+            );
         };
 
-        // Backend bắt buộc khi: cần downsample, pdf-lib không parse được, hoặc file lớn.
-        if (wantDownsample || !canUseFrontend || totalPages > 1000 || (file.size || inputBytes.byteLength) > FE_SIZE_LIMIT) {
-            await emit(await runBackend());
-            return;
+        let resizedBlob: Blob;
+        if (wantDownsample || !canUseFrontend || totalPages > 1000 || (file.size || workingBytes.byteLength) > FE_SIZE_LIMIT) {
+            console.log('[resize] bước 2: đi backend');
+            resizedBlob = await runBackend();
+        } else {
+            try {
+                let applyToPages: 'all' | 'even' | 'odd' | number[] = 'all';
+                if (settings.applyToStr === 'even' || settings.applyToStr === 'odd' || settings.applyToStr === 'all') {
+                    applyToPages = settings.applyToStr;
+                } else {
+                    const ranges = parseRanges(settings.applyToStr, totalPages);
+                    applyToPages = ranges.flatMap(([start, end]: [number, number]) => Array.from({ length: end - start + 1 }, (_, i) => start + i));
+                }
+                const outputBytes = await resizePages(workingBytes, {
+                    targetW: settings.targetW,
+                    targetH: settings.targetH,
+                    scaleMode: effectiveScaleMode,
+                    applyTo: applyToPages,
+                    bgFillMode: wantSolidFill ? 'solid' : undefined,
+                    bgFillColor: wantSolidFill ? settings.bgFillColor : undefined,
+                });
+                resizedBlob = new Blob([outputBytes as any], { type: 'application/pdf' });
+            } catch (feErr) {
+                console.warn('[resize] pdf-lib thất bại, fallback backend:', feErr);
+                resizedBlob = await runBackend();
+            }
         }
 
-        // Đường frontend pdf-lib (nhanh, không round-trip). Nếu ném lỗi (vd flate
-        // stream do file backend-sinh, hoặc RangeError khi embed/save file nặng),
-        // TỰ fallback sang backend thay vì báo lỗi.
-        try {
-            let applyToPages: 'all' | 'even' | 'odd' | number[] = 'all';
-            if (settings.applyToStr === 'even' || settings.applyToStr === 'odd' || settings.applyToStr === 'all') {
-                applyToPages = settings.applyToStr;
-            } else {
-                const ranges = parseRanges(settings.applyToStr, totalPages);
-                applyToPages = ranges.flatMap(([start, end]: [number, number]) => Array.from({ length: end - start + 1 }, (_, i) => start + i));
-            }
-            const outputBytes = await resizePages(inputBytes, { targetW: settings.targetW, targetH: settings.targetH, scaleMode: settings.scaleMode, applyTo: applyToPages });
-            await emit(new Blob([outputBytes as any], { type: 'application/pdf' }));
-        } catch (feErr) {
-            console.warn('[resize] pdf-lib thất bại, fallback backend:', feErr);
-            await emit(await runBackend());
-        }
-    // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
-    } catch (err: any) { if (!isCanceled(err)) setError(formatError(err, i18n.t('lib.processHandlers:khong_doi_duoc_kho_trang', { defaultValue: 'Không đổi được khổ trang' }))); }
+        await emit(resizedBlob);
+    } catch (err: any) {
+        const canceled = isCanceled(err);
+        logResizePerf({
+            stage: 'handler_error',
+            route: perfRoute,
+            totalMs: roundMs(perfNow() - perfStarted),
+            canceled,
+            errorType: err?.name || typeof err,
+        });
+        // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
+        if (!canceled) setError(formatError(err, i18n.t('lib.processHandlers:khong_doi_duoc_kho_trang', { defaultValue: 'Không đổi được khổ trang' })));
+    }
     finally { setIsProcessing(false); setProcessStatus(''); }
 }
 
@@ -682,52 +807,106 @@ export async function runSplit(ctx: ProcessContext, settings: any) {
 }
 
 export async function runMerge(ctx: ProcessContext, settings: any) {
-    const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
+    const {
+        file, onSpawnTab, commitWorkingFile, setError, setIsProcessing,
+        setProcessStatus, setCancelHandler, getWorkingBytes,
+    } = ctx;
     // UIUX (audit 2026-07-27 §D-09): thêm hậu tố trấn an cho tác vụ chạy dài
     setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_ghep_pdf') + LONG_TASK_HINT());
-    try {
-        // Tuân thủ kết quả cuối cùng: file nền (tab hiện tại) dùng bản đã áp dụng sửa đổi trang.
-        const workingBaseFile = file
-            ? new File([await getWorkingBytes() as any], file.name, { type: 'application/pdf' })
-            : null;
 
-        let totalPageEstimate = 0;
-        if (file) totalPageEstimate += file.size / 5000;
-        if (settings.mode === 'merge_files' && settings.filesToMerge?.length > 0) {
-            for (const f of settings.filesToMerge) totalPageEstimate += f.size / 5000;
+    try {
+        const isInterleave = settings.mode === 'interleave';
+        let workingBytes: Uint8Array | null = null;
+        let workingBaseFile: File | null = null;
+        let inputFiles: File[];
+
+        if (isInterleave) {
+            // FILEIO (audit 2026-08-02 §COMB.1): Interleave chỉ dùng đúng hai nguồn;
+            // không đọc/bake file của tab hiện tại vì engine không sử dụng nó.
+            inputFiles = [settings.oddFile, settings.evenFile]
+                .filter((candidate: File | undefined): candidate is File => Boolean(candidate));
+        } else {
+            // Merge thường phải dùng bản working đã áp dụng mọi chỉnh sửa trang.
+            workingBytes = await getWorkingBytes();
+            workingBaseFile = new File(
+                [new Uint8Array(workingBytes).buffer],
+                file.name,
+                { type: 'application/pdf' },
+            );
+            const extraFiles = Array.isArray(settings.filesToMerge)
+                ? settings.filesToMerge.filter(
+                    (candidate: unknown): candidate is File => candidate instanceof File,
+                )
+                : [];
+            inputFiles = [workingBaseFile, ...extraFiles];
         }
 
-        const allMergeFiles = workingBaseFile ? [workingBaseFile, ...(settings.filesToMerge || [])] : (settings.filesToMerge || []);
-        const hasImages = allMergeFiles.some((f: any) => {
-            const n = f.name.toLowerCase();
-            return n.endsWith('.jpg') || n.endsWith('.jpeg') || n.endsWith('.png');
-        });
+        // COMBINE (audit 2026-08-02 §COMB.1): estimate và loại input phải dựa
+        // đúng danh sách sẽ gửi, đặc biệt odd/even của Interleave.
+        const totalPageEstimate = inputFiles.reduce(
+            (estimate, input) => estimate + input.size / 5000,
+            0,
+        );
+        const hasImages = inputFiles.some((input) => /\.(jpe?g|png)$/i.test(input.name));
+        const canDelegate = totalPageEstimate > 1000
+            && !hasImages
+            && (!isInterleave || inputFiles.length === 2);
 
-        if (settings.mode === 'merge_files' && totalPageEstimate > 1000 && !hasImages) {
+        if (canDelegate) {
+            const { backendMergePdfsJob } = await import('../lib/api');
+            const mode = isInterleave ? 'interleave' : 'merge_files';
+            const controller = new AbortController();
+            setCancelHandler?.(async () => controller.abort());
+            const result = await backendMergePdfsJob(inputFiles, mode, {
+                signal: controller.signal,
+                onProgress: status => setProcessStatus(
+                    `${i18n.t('lib.processHandlers:dang_ghep_pdf')} ${Math.round(status.progress)}%`,
+                ),
+            });
+            controller.signal.throwIfAborted();
+            const newFileName = isInterleave
+                ? 'Interleaved_Document.pdf'
+                : `Merged_${file.name}`;
+            const blob = result.blob || new Blob([], { type: 'application/pdf' });
+            if (settings.spawnNewTab && onSpawnTab) {
+                const output = new File([blob], newFileName, { type: 'application/pdf' });
+                if (result.path) Object.defineProperty(output, 'path', { value: result.path });
+                onSpawnTab(output);
+            } else if (result.path) {
+                await commitWorkingFile(blob, newFileName, result.path);
+            } else {
+                await commitWorkingFile(blob, newFileName);
+            }
+            return;
+        }
 
-            const { backendMergePdfs } = await import('../lib/api');
-            const allFiles = workingBaseFile ? [workingBaseFile, ...(settings.filesToMerge || [])] : (settings.filesToMerge || []);
-            const blob = await backendMergePdfs(allFiles, 'merge_files');
-            const newFileName = file ? `Merged_${file.name}` : 'Merged_Document.pdf';
-            if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
-            else { await commitWorkingFile(blob, newFileName); }
-        } else if (settings.mode === 'interleave' && totalPageEstimate > 1000 && !hasImages) {
-
-            const { backendMergePdfs } = await import('../lib/api');
-            const allFiles = [settings.oddFile, settings.evenFile].filter(Boolean);
-            const blob = await backendMergePdfs(allFiles, 'interleave');
-            const newFileName = 'Interleaved_Document.pdf';
-            if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
-            else { await commitWorkingFile(blob, newFileName); }
+        const outputBytes = await mergePdf(workingBytes, settings);
+        const blob = new Blob(
+            [new Uint8Array(outputBytes).buffer],
+            { type: 'application/pdf' },
+        );
+        const newFileName = isInterleave
+            ? 'Interleaved_Document.pdf'
+            : `Merged_${file.name}`;
+        if (settings.spawnNewTab && onSpawnTab) {
+            onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' }));
         } else {
-            const inputBytes = workingBaseFile ? new Uint8Array(await workingBaseFile.arrayBuffer()) : null;
-            const outputBytes = await mergePdf(inputBytes, settings);
-            const blob = new Blob([outputBytes as any], { type: 'application/pdf' });
-            const newFileName = file ? `Merged_${file.name}` : `Merged_Document.pdf`;
-            if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
-            else { await commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
+            await commitWorkingFile(blob, newFileName);
+            ctx.setReportMsg('');
         }
     // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
-    } catch (err: any) { if (!isCanceled(err)) setError(formatError(err, i18n.t('lib.processHandlers:khong_ghep_duoc_pdf', { defaultValue: 'Không ghép được PDF' }))); }
-    finally { setIsProcessing(false); setProcessStatus(''); }
+    } catch (error: unknown) {
+        if (!isCanceled(error)) {
+            setError(formatError(
+                error,
+                i18n.t('lib.processHandlers:khong_ghep_duoc_pdf', {
+                    defaultValue: 'Không ghép được PDF',
+                }),
+            ));
+        }
+    } finally {
+        setCancelHandler?.(null);
+        setIsProcessing(false);
+        setProcessStatus('');
+    }
 }

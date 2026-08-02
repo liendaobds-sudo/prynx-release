@@ -7,6 +7,7 @@ import {
     ImposerSettingsContext,
 } from '../useImposerSettingsStore';
 import GridSettingsSection, { type GridSettingsProps } from './GridSettingsSection';
+import AdvancedSettingsSection from './AdvancedSettingsSection';
 
 // MIXED-GUILLOTINE (audit 2026-07-30 §MG.8/§MG.9): khóa phạm vi hiển thị mode và cạnh lật.
 type TestTool = 'nup' | 'sticker_imposer' | 'cnc_imposer';
@@ -80,6 +81,28 @@ function renderGridSettings({
     );
     return { store, ...view };
 }
+function renderAdvancedSettings({
+    layoutType = 'mixed_guillotine',
+    duplexFlow = 'double',
+    taskMode = 'nup',
+}: Pick<RenderOptions, 'layoutType' | 'duplexFlow' | 'taskMode'> = {}) {
+    localStorage.clear();
+    const store = createImposerSettingsStore();
+    store.setState({
+        activeDashboardTool: 'nup',
+        impositionUnit: 'sticker',
+        layoutType,
+        duplexFlow,
+        taskMode,
+        mixedExcessPercent: 0,
+    });
+    const view = render(
+        <ImposerSettingsContext.Provider value={store}>
+            <AdvancedSettingsSection activeTool="nup" sourceTotalPages={4} />
+        </ImposerSettingsContext.Provider>,
+    );
+    return { store, ...view };
+}
 
 describe('GridSettingsSection — Dàn nhiều kích thước', () => {
     it('chỉ đưa lựa chọn Dàn nhiều kích thước vào công cụ Bình cắt xén', () => {
@@ -102,26 +125,28 @@ describe('GridSettingsSection — Dàn nhiều kích thước', () => {
         ).toBeNull();
     });
 
-    it('chỉ hiện selector cạnh lật khi mode mixed và đang bình hai mặt', () => {
-        const { store } = renderGridSettings({
+    it('chỉ chuyển cạnh lật vào Thiết lập mở rộng và tự động hóa mức in dư', () => {
+        renderGridSettings({
             layoutType: 'mixed_guillotine',
             duplexFlow: 'double',
         });
+        expect(screen.queryByRole('option', { name: 'Theo cạnh dài' })).toBeNull();
+        expect(document.getElementById('mixed-excess-percent')).toBeNull();
 
+        const { store } = renderAdvancedSettings();
+        expect(document.getElementById('mixed-excess-percent')).toBeNull();
         const longEdgeOption = screen.getByRole('option', { name: 'Theo cạnh dài' });
         const flipEdgeSelect = longEdgeOption.closest('select');
         expect(flipEdgeSelect).toBeTruthy();
-
         fireEvent.change(flipEdgeSelect as HTMLSelectElement, { target: { value: 'short' } });
         expect(store.getState().duplexFlipEdge).toBe('short');
     });
-
     it.each([
         ['mixed nhưng một mặt', 'mixed_guillotine', 'normal', 'nup'],
         ['hai mặt nhưng mode cũ', 'sequential', 'double', 'nup'],
         ['mixed hai mặt nhưng tác vụ Bình trang', 'mixed_guillotine', 'double', 'step_repeat'],
     ] as const)('ẩn selector cạnh lật khi %s', (_label, layoutType, duplexFlow, taskMode) => {
-        renderGridSettings({ layoutType, duplexFlow, taskMode });
+        renderAdvancedSettings({ layoutType, duplexFlow, taskMode });
 
         expect(screen.queryByRole('option', { name: 'Theo cạnh dài' })).toBeNull();
         expect(screen.queryByRole('option', { name: 'Theo cạnh ngắn' })).toBeNull();

@@ -90,6 +90,12 @@ export default function MockupPanel() {
     const setExportScale = useMockupStore((s) => s.setExportScale);
     const exportTransparent = useMockupStore((s) => s.exportTransparent);
     const setExportTransparent = useMockupStore((s) => s.setExportTransparent);
+    const exportFormat = useMockupStore((s) => s.exportFormat);
+    const setExportFormat = useMockupStore((s) => s.setExportFormat);
+    const exportJpegQuality = useMockupStore((s) => s.exportJpegQuality);
+    const setExportJpegQuality = useMockupStore((s) => s.setExportJpegQuality);
+    const exportOutputDir = useMockupStore((s) => s.exportOutputDir);
+    const setExportOutputDir = useMockupStore((s) => s.setExportOutputDir);
     const requestExportPng = useMockupStore((s) => s.requestExportPng);
     const requestExportGlb = useMockupStore((s) => s.requestExportGlb);
     const requestExportBatch = useMockupStore((s) => s.requestExportBatch);
@@ -289,8 +295,9 @@ export default function MockupPanel() {
                 </div>
             </CollapsibleSection>
 
-            {/* ─── Xuất ảnh / mô hình ─── */}
+            {/* ── Xuất ảnh / mô hình ── */}
             <CollapsibleSection title={t('dieline.mockup:xuat_mockup')}>
+                {/* Độ phân giải */}
                 <div className="dt-param-header" style={{ marginBottom: '0.35rem' }}>
                     <label className="dt-param-label">{t('dieline.mockup:do_phan_giai')}</label>
                 </div>
@@ -306,9 +313,43 @@ export default function MockupPanel() {
                     ))}
                 </div>
 
+                {/* Định dạng */}
+                <div className="dt-param-header" style={{ marginTop: '0.5rem', marginBottom: '0.25rem' }}>
+                    <label className="dt-param-label">{t('dieline.mockup:dinh_dang')}</label>
+                </div>
+                <div className="dt-glue-side-toggle">
+                    {(['png', 'jpeg', 'webp'] as const).map((f) => (
+                        <button
+                            key={f}
+                            className={`dt-glue-side-btn ${exportFormat === f ? 'active' : ''}`}
+                            onClick={() => {
+                                setExportFormat(f);
+                                // JPEG không hỗ trợ transparent
+                                if (f === 'jpeg' && exportTransparent) setExportTransparent(false);
+                            }}
+                        >
+                            {f.toUpperCase()}
+                        </button>
+                    ))}
+                </div>
+
+                {/* Chất lượng JPEG/WebP */}
+                {exportFormat !== 'png' && (
+                    <div style={{ marginTop: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <label className="dt-param-label" style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>
+                            {t('dieline.mockup:chat_luong')}
+                        </label>
+                        <input type="range" min={1} max={100} value={exportJpegQuality}
+                            onChange={e => setExportJpegQuality(parseInt(e.target.value))}
+                            style={{ flex: 1 }} />
+                        <span style={{ fontSize: '0.75rem', minWidth: '1.5rem', textAlign: 'right' }}>{exportJpegQuality}</span>
+                    </div>
+                )}
+
+                {/* Nút xuất */}
                 <div className="dt-glue-side-toggle" style={{ marginTop: '0.5rem' }}>
                     <button className="dt-glue-side-btn" onClick={() => requestExportPng()} title={t('dieline.mockup:xuat_anh_png_phia_client')}>
-                        {t('dieline.mockup:xuat_png')}
+                        {t('dieline.mockup:xuat_format', { format: exportFormat.toUpperCase() })}
                     </button>
                     <button className="dt-glue-side-btn" onClick={() => requestExportBatch()} title={t('dieline.mockup:xuat_4_goc_mat_truoc_phoi_canh_tu_tren')}>
                         {t('dieline.mockup:4_goc')}
@@ -318,22 +359,62 @@ export default function MockupPanel() {
                     </button>
                 </div>
 
-                <div
-                    className="dt-param-cell"
-                    style={{ cursor: 'pointer', marginTop: '0.5rem' }}
-                    onClick={() => setExportTransparent(!exportTransparent)}
-                    title={t('dieline.mockup:an_nen_san_va_xuat_png_co_nen_trong')}
-                >
-                    <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>
-                        {t('dieline.mockup:nen_trong_suot_png')}
-                    </label>
-                    <input
-                        type="checkbox"
-                        checked={exportTransparent}
-                        readOnly
-                        style={{ accentColor: 'var(--dt-accent)' }}
-                    />
+                {/* Nền trong suốt (chỉ PNG/WebP) */}
+                {exportFormat !== 'jpeg' && (
+                    <div
+                        className="dt-param-cell"
+                        style={{ cursor: 'pointer', marginTop: '0.5rem' }}
+                        onClick={() => setExportTransparent(!exportTransparent)}
+                        title={t('dieline.mockup:an_nen_san_va_xuat_png_co_nen_trong')}
+                    >
+                        <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>
+                            {t('dieline.mockup:nen_trong_suot_png')}
+                        </label>
+                        <input
+                            type="checkbox"
+                            checked={exportTransparent}
+                            readOnly
+                            style={{ accentColor: 'var(--dt-accent)' }}
+                        />
+                    </div>
+                )}
+
+                {/* Thư mục đích */}
+                <div style={{ marginTop: '0.5rem' }}>
+                    <label className="dt-param-label" style={{ fontSize: '0.7rem' }}>{t('dieline.mockup:thu_muc_luu')}</label>
+                    <div style={{ display: 'flex', gap: '0.3rem', marginTop: '0.2rem' }}>
+                        <input
+                            readOnly
+                            value={exportOutputDir}
+                            placeholder={t('dieline.mockup:downloads_mac_dinh')}
+                            style={{ flex: 1, fontSize: '0.7rem', padding: '0.25rem 0.4rem', border: '1px solid var(--dt-border)', borderRadius: '4px', background: 'var(--dt-bg-input, transparent)' }}
+                        />
+                        <button
+                            className="dt-glue-side-btn"
+                            onClick={async () => {
+                                try {
+                                    const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
+                                    const dir = await openDialog({ directory: true, multiple: false, title: t('dieline.mockup:chon_thu_muc_luu_mockup') });
+                                    if (typeof dir === 'string') setExportOutputDir(dir);
+                                } catch { /* user cancel */ }
+                            }}
+                            style={{ fontSize: '0.7rem', padding: '0.25rem 0.5rem' }}
+                        >
+                            {t('dieline.mockup:chon')}
+                        </button>
+                        {exportOutputDir && (
+                            <button
+                                className="dt-glue-side-btn"
+                                onClick={() => setExportOutputDir('')}
+                                style={{ fontSize: '0.7rem', padding: '0.25rem 0.4rem' }}
+                                title={t('dieline.mockup:dung_lai_downloads')}
+                            >
+                                ×
+                            </button>
+                        )}
+                    </div>
                 </div>
+
                 <p className="dt-param-desc">
                     {t('dieline.mockup:anh_png_xuat_theo_do_phan_giai_da_chon')}
                 </p>

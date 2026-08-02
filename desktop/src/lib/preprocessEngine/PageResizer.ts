@@ -3,19 +3,29 @@
 //  Đổi khổ trang PDF — resize, scale, center content on new page size
 // =========================================================================
 
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, rgb } from 'pdf-lib';
 
 import { beginOptionalContentTransfer, finishOptionalContentTransfer } from '../pdfOptionalContent';
 
 const MM_TO_POINTS = 2.83465;
 
 export type ScaleMode = 'fit' | 'fill' | 'stretch' | 'center_no_scale';
+export type BackgroundFillMode =
+    | 'white'
+    | 'mirror'
+    | 'trajectory'
+    | 'inpaint'
+    | 'image'
+    | 'solid';
 
 export interface ResizeOptions {
     targetW: number;   // mm
     targetH: number;   // mm
     scaleMode: ScaleMode;
     applyTo: 'all' | 'even' | 'odd' | number[];  // 1-based page numbers
+    // Màu nền vùng trống khi fit/center
+    bgFillMode?: BackgroundFillMode;
+    bgFillColor?: string;  // hex '#rrggbb'
 }
 
 /**
@@ -26,6 +36,14 @@ function shouldProcess(pageIndex: number, applyTo: ResizeOptions['applyTo']): bo
     if (applyTo === 'even') return (pageIndex + 1) % 2 === 0;
     if (applyTo === 'odd') return (pageIndex + 1) % 2 === 1;
     return applyTo.includes(pageIndex + 1);
+}
+
+
+function parseSolidColor(value: string | undefined): [number, number, number] {
+    const match = /^#?([0-9a-f]{6})$/i.exec((value || "").trim());
+    if (!match) return [1, 1, 1];
+    const hex = match[1];
+    return [0, 2, 4].map(index => parseInt(hex.slice(index, index + 2), 16) / 255) as [number, number, number];
 }
 
 /**
@@ -65,6 +83,17 @@ export async function resizePages(
 
         // Create new page with target dimensions
         const newPage = outputPdf.addPage([targetWPt, targetHPt]);
+        const hasGap = options.scaleMode === 'fit' || options.scaleMode === 'center_no_scale';
+        if (hasGap && options.bgFillMode === 'solid') {
+            const [fillR, fillG, fillB] = parseSolidColor(options.bgFillColor);
+            // RESIZE (audit 2026-07-31 §B.2): vẽ trước khi kiểm tra /Contents để
+            // trang trắng cũng nhận đúng màu nền đã chọn.
+            newPage.drawRectangle({
+                x: 0, y: 0,
+                width: targetWPt, height: targetHPt,
+                color: rgb(fillR, fillG, fillB),
+            });
+        }
 
         // Trang trắng (chèn thêm để đủ số trang) không có /Contents —
         // embedPages sẽ ném "Can't embed page with missing Contents".
@@ -130,6 +159,7 @@ export async function resizePages(
                 break;
             }
         }
+
 
         newPage.drawPage(embedded, {
             x: offsetX,

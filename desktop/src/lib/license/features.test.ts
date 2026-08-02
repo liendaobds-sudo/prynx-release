@@ -35,6 +35,8 @@ describe('license feature catalog', () => {
     expect(hasFeatureAccess('impo.cnc', 'free', ['impo.cnc'])).toBe(true);
     expect(hasFeatureAccess('impo.cnc', 'pro')).toBe(true);
     expect(hasFeatureAccess('impo.cnc', 'dev')).toBe(true);
+    expect(hasFeatureAccess('prepress.paper_library', 'free')).toBe(false);
+    expect(hasFeatureAccess('prepress.paper_library', 'pro')).toBe(true);
   });
 
   it('normalize plan và giữ tương thích tên gói cũ', () => {
@@ -58,9 +60,10 @@ describe('license feature catalog', () => {
       'datamerge', 'numbering', 'cover_numbering', 'stick_text_number',
       'booklet', 'nup', 'sticker_imposer', 'cnc_imposer', 'dieline',
       'bgremover', 'watermark', 'optimize', 'encrypt', 'metadata',
-      'office_convert', 'pdfx', 'upscale', 'logo_rebuild', 'compare_pdf', 'compare_text',
+      'office_convert', 'pdfx', 'paper_library', 'upscale', 'logo_rebuild', 'compare_pdf', 'compare_text',
     ];
     for (const key of keys) expect(featureIdForFocus(key), key).not.toBeNull();
+    expect(featureIdForFocus('paper_library')).toBe('prepress.paper_library');
     expect(featureIdForFocus('unknown_xyz')).toBeNull();
   });
 });

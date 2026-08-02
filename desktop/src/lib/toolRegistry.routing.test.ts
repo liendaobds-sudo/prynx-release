@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PREPROCESS_ROUTER_TOOLS } from '../components/imposition-tools/sections/preprocessRouterTools';
+import { LOGO_REBUILD_ENABLED, PREPROCESS_ROUTER_TOOLS } from '../components/imposition-tools/sections/preprocessRouterTools';
 import { TOOL_REGISTRY, isImpositionFamilyTool } from './toolRegistry';
 
 describe('TOOL_REGISTRY — routing công cụ vào workspace chung', () => {
@@ -39,7 +39,12 @@ describe('TOOL_REGISTRY — routing công cụ vào workspace chung', () => {
       expect(tool.component, tool.title + ' bị tách sang component riêng').toBe(impositionComponent);
     }
   });
-  it('ẩn công cụ Logo Rebuild trong thời gian tạm khóa chất lượng', () => {
-    expect(TOOL_REGISTRY.find((tool) => tool.defaultPayload?.focusFeature === 'logo_rebuild')).toBeUndefined();
+  it('chỉ đưa Logo Rebuild vào registry trong môi trường dev', () => {
+    const logoRebuild = TOOL_REGISTRY.find((tool) => tool.defaultPayload?.focusFeature === 'logo_rebuild');
+    expect(Boolean(logoRebuild)).toBe(LOGO_REBUILD_ENABLED);
+    if (logoRebuild) {
+      expect(logoRebuild.component).toBe(impositionComponent);
+      expect(logoRebuild.isEnabled).toBe(true);
+    }
   });
 });

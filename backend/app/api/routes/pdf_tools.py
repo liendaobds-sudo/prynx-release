@@ -9,6 +9,7 @@ Provides endpoints for:
 """
 
 import os
+import math
 import uuid
 import shutil
 import time
@@ -18,15 +19,20 @@ from contextlib import contextmanager
 from fastapi import APIRouter, File, UploadFile, HTTPException, Form, Request, Depends
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
+
 from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
 from app.schemas.pdf_tools import (
     EncryptionStatusResponse,
     MetadataReadResponse,
-    OfficeConvertStatusResponse,
     WarmupResponse,
 )
 from typing import List, Optional
 import json
+from app.api.routes.combine_jobs import (
+    manifest_source_extension as _manifest_source_extension,
+    router as combine_jobs_router,
+    validate_manifest_source_file as _validate_manifest_source_file,
+)
 from app.core.license_guard import require_license, require_feature, enforce_feature
 from app.config import settings
 from app.utils.errors import raise_http
@@ -35,6 +41,7 @@ from app.utils.file_handler import ALLOWED_EXTENSIONS, save_upload_file
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/pdf-tools", tags=["PDF Tools"], dependencies=[Depends(require_license)])
+router.include_router(combine_jobs_router)
 
 # Xếp hàng job tạo viền bế / bù xén khi in liên tục. Mỗi job peak RAM cao
 # (raster 300 DPI × workers); chạy chồng chéo dễ OOM. Mặc định 1 job/lúc
@@ -297,6 +304,7 @@ async def save_upload(file: UploadFile) -> str:
     except ValueError as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
 
+
 @router.post("/merge")
 async def merge_pdfs_endpoint(
     files: List[UploadFile] = File(...),
@@ -379,16 +387,20 @@ async def merge_manifest_endpoint(
     output_path = os.path.join(RESULTS_DIR, f"merged_manifest_{job_id}.pdf")
     try:
         for uploaded in uploads:
+            source_name = uploaded.filename or ""
+            _manifest_source_extension(source_name)
             uploaded_path = await save_upload(uploaded)
-            resolved_paths.append(uploaded_path)
             owned_paths.append(uploaded_path)
+            _validate_manifest_source_file(uploaded_path, source_name)
+            resolved_paths.append(uploaded_path)
         for native_path in native_paths:
+            _manifest_source_extension(native_path)
+            if not os.path.isabs(native_path):
+                raise HTTPException(status_code=400, detail="Đường dẫn nguồn Combine phải là đường dẫn tuyệt đối.")
             resolved = os.path.realpath(native_path)
-            if not os.path.isfile(resolved) or os.path.splitext(resolved)[1].lower() != ".pdf":
-                raise HTTPException(status_code=400, detail="Native source path is not a PDF file")
-            with open(resolved, "rb") as source_file:
-                if source_file.read(5) != b"%PDF-":
-                    raise HTTPException(status_code=400, detail="Native source path is not a valid PDF")
+            if not os.path.isfile(resolved):
+                raise HTTPException(status_code=400, detail="Không tìm thấy file nguồn Combine trên máy.")
+            _validate_manifest_source_file(resolved, native_path)
             resolved_paths.append(resolved)
         await run_in_threadpool(merge_manifest, resolved_paths, manifest_items, output_path)
         await run_in_threadpool(_safe_watermark, output_path, license_info)
@@ -480,13 +492,17 @@ async def split_pdf_endpoint(
 
 @router.post("/resize")
 async def resize_pages_endpoint(
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
+    file_path: str = Form(""),
     target_w: float = Form(210),
     target_h: float = Form(297),
     scale_mode: str = Form("fit"),
     apply_to: str = Form("all"),
     target_dpi: int = Form(0),
     mode: str = Form("auto"),
+    bg_fill_mode: str = Form("white"),
+    bg_fill_color: str = Form("#ffffff"),
+    page_size_mode: str = Form("fixed"),
     license_info: dict = Depends(require_license),
 ):
     """Resize PDF pages to a new format.
@@ -497,29 +513,110 @@ async def resize_pages_endpoint(
       - 'vector'  : GS downsample ảnh, giữ vector/text/CMYK (an toàn in ấn).
       - 'raster'  : render lại theo DPI (nhanh/nhỏ nhất, mất vector & CMYK).
       - 'xobject' : chỉ đổi hình học (hành vi cũ, không giảm dung lượng).
-    target_dpi=0 → giữ hành vi cũ."""
+    target_dpi=0 → giữ artwork gốc; nền động vẫn dựng ở 300 DPI."""
+    request_started = time.perf_counter()
     from app.workers.pdf_tools_engine import resize_pages_smart
-
-    source_path = await save_upload(file)
-    job_id = uuid.uuid4().hex[:8]
-    output_path = os.path.join(RESULTS_DIR, f"resized_{job_id}.pdf")
+    from app.workers.resize_background_engine import normalize_page_size_mode
 
     try:
-        await run_in_threadpool(resize_pages_smart, source_path, output_path, target_w, target_h,
-                           scale_mode, apply_to, target_dpi=target_dpi, mode=mode)
+        # Test/caller Python gọi trực tiếp endpoint sẽ nhận FormInfo nếu bỏ qua
+        # tham số; request HTTP thật luôn đưa chuỗi. Giữ tương thích call site cũ.
+        raw_page_size_mode = page_size_mode if isinstance(page_size_mode, str) else "fixed"
+        page_size_mode = normalize_page_size_mode(raw_page_size_mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if page_size_mode != "fixed" and scale_mode != "fit":
+        raise HTTPException(
+            status_code=422,
+            detail="Giữ tỷ lệ từng trang chỉ hỗ trợ kiểu Thu vừa khít.",
+        )
+
+    job_id = uuid.uuid4().hex[:8]
+    output_path = os.path.join(RESULTS_DIR, f"resized_{job_id}.pdf")
+    source_path: Optional[str] = None
+    delete_source = False
+    source_name = "document.pdf"
+    source_kind = "unknown"
+
+    try:
+        path_arg = file_path.strip().strip('"') if isinstance(file_path, str) else ""
+        if path_arg:
+            # PERF (audit 2026-08-01 §RT.10): sidecar cùng máy đọc thẳng
+            # file sạch, không materialize PDF lớn trong WebView chỉ để upload.
+            real_path = os.path.realpath(path_arg)
+            if (
+                not os.path.isabs(path_arg)
+                or not os.path.isfile(real_path)
+                or not real_path.lower().endswith(".pdf")
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Không tìm thấy file PDF nguồn trên máy.",
+                )
+            source_path = real_path
+            source_name = os.path.basename(real_path)
+            source_kind = "path"
+        elif file is not None:
+            source_name = file.filename or source_name
+            source_path = await save_upload(file)
+            delete_source = True
+            source_kind = "upload"
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Thiếu file PDF cần đổi khổ.",
+            )
+        try:
+            source_ready = time.perf_counter()
+            engine_started = source_ready
+            await run_in_threadpool(
+                resize_pages_smart, source_path, output_path, target_w, target_h,
+                scale_mode, apply_to, target_dpi=target_dpi, mode=mode,
+                bg_fill_mode=bg_fill_mode, bg_fill_color=bg_fill_color,
+                page_size_mode=page_size_mode,
+            )
+            engine_finished = time.perf_counter()
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        watermark_started = time.perf_counter()
         await run_in_threadpool(_safe_watermark, output_path, license_info)
+        response_ready = time.perf_counter()
+
+        # PERF (audit 2026-08-01 §RT.12): đưa timing backend về console frontend
+        # để tách engine khỏi tải response và commitWorkingFile trên đúng file thật.
+        timing_payload = {
+            "source": source_kind,
+            "source_ms": round((source_ready - request_started) * 1000.0, 1),
+            "engine_ms": round((engine_finished - engine_started) * 1000.0, 1),
+            "watermark_ms": round((response_ready - watermark_started) * 1000.0, 1),
+            "backend_ms": round((response_ready - request_started) * 1000.0, 1),
+            "input_bytes": os.path.getsize(source_path),
+            "output_bytes": os.path.getsize(output_path),
+        }
+        timing_header = json.dumps(timing_payload, separators=(",", ":"))
+        logger.info("[RESIZE_TIMING] route_done %s", timing_header)
         return FileResponse(
             path=output_path,
-            filename=f"resized_{file.filename}",
+            filename=f"resized_{source_name}",
             media_type="application/pdf",
+            headers={
+                "X-PrynX-Resize-Timing": timing_header,
+                "Access-Control-Expose-Headers": "X-PrynX-Resize-Timing",
+            },
             background=BackgroundTask(_cleanup_file, output_path),
         )
+    except HTTPException:
+        _cleanup_file(output_path)
+        raise
     except Exception as e:
         _cleanup_file(output_path)
         raise_http(e, "Đổi kích thước trang thất bại")
     finally:
-        try: os.remove(source_path)
-        except OSError: pass
+        if delete_source and source_path:
+            try:
+                os.remove(source_path)
+            except OSError:
+                pass
 
 
 @router.post("/trim-shift")
@@ -1092,226 +1189,15 @@ async def metadata_write_endpoint(
             pass
 
 
-@router.get("/office-convert/status", response_model=OfficeConvertStatusResponse)
-async def office_convert_status(license_info: dict = Depends(require_license)):
-    """Probe available Word/Excel/LibreOffice/Google converters (no side effects)."""
-    from app.workers.office_convert_engine import probe_converters
-    return probe_converters()
-
-
-@router.post("/office-convert/file")
-async def office_convert_file_endpoint(
-    file: Optional[UploadFile] = File(None),
-    file_path: str = Form(""),
-    excel_layout: str = Form("preserve"),
-    batch_mode: bool = Form(False),
-    license_info: dict = Depends(require_license),
-):
-    """Convert Word/Excel/… → PDF.
-
-    Prefer ``file_path`` (absolute path on same machine as sidecar) — reliable for
-    Tauri path-stub Files. Fallback: multipart upload ``file``.
-    """
-    from app.workers.office_convert_engine import convert_office_file, OFFICE_EXTENSIONS
-    if batch_mode:
-        enforce_feature("pdf.office_batch", license_info)
-
-    job_id = uuid.uuid4().hex[:8]
-    output_path = os.path.join(RESULTS_DIR, f"converted_{job_id}.pdf")
-    source_path: Optional[str] = None
-    delete_source = False
-    name = "document.docx"
-
-    try:
-        path_arg = (file_path or "").strip().strip('"')
-        if path_arg:
-            if not os.path.isfile(path_arg):
-                raise HTTPException(status_code=400, detail=f"Không tìm thấy file: {path_arg}")
-            source_path = path_arg
-            name = os.path.basename(path_arg)
-            delete_source = False  # never delete user's original
-        elif file is not None and (file.filename or file.size is not None):
-            name = file.filename or "document.docx"
-            ext = os.path.splitext(name)[1].lower()
-            if ext not in OFFICE_EXTENSIONS:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Định dạng không hỗ trợ: {ext}. Hỗ trợ: {', '.join(sorted(OFFICE_EXTENSIONS))}",
-                )
-            file_id = uuid.uuid4().hex
-            source_path = os.path.join(UPLOAD_DIR, f"{file_id}{ext}")
-            await file.seek(0)
-            content = await file.read()
-            if not content:
-                raise HTTPException(
-                    status_code=400,
-                    detail="File upload rỗng. Hãy chọn lại file hoặc dùng đường dẫn đĩa.",
-                )
-            with open(source_path, "wb") as f:
-                f.write(content)
-            delete_source = True
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="Thiếu file: gửi file_path (đường dẫn tuyệt đối) hoặc upload file.",
-            )
-
-        ext = os.path.splitext(name)[1].lower()
-        if ext not in OFFICE_EXTENSIONS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Định dạng không hỗ trợ: {ext}. Hỗ trợ: {', '.join(sorted(OFFICE_EXTENSIONS))}",
-            )
-
-        # COM/LibreOffice are blocking and may take minutes on complex files.
-        # PERF (audit 2026-07-29 §C.3b): dùng kind "office" (KHÔNG phải "pdf-tools") để
-        # scheduler cách ly đường này còn ĐÚNG MỘT suất. Nhiều instance COM/LibreOffice
-        # cùng lúc là nguồn treo đã có lịch sử, nên việc nới trần toàn cục cho máy mạnh
-        # không được phép chạm vào đây.
-        from app.core.heavy_job_scheduler import run_scheduled_in_threadpool
-        await run_scheduled_in_threadpool(
-            "office", convert_office_file, source_path, output_path, excel_layout
-        )
-        if not os.path.isfile(output_path) or os.path.getsize(output_path) < 32:
-            raise HTTPException(status_code=500, detail="Chuyển đổi xong nhưng file PDF rỗng.")
-
-        await run_in_threadpool(_safe_watermark, output_path, license_info)
-        base = os.path.splitext(name)[0] + ".pdf"
-        return FileResponse(
-            path=output_path,
-            filename=f"converted_{base}",
-            media_type="application/pdf",
-            background=BackgroundTask(_cleanup_file, output_path),
-        )
-    except HTTPException:
-        _cleanup_file(output_path)
-        raise
-    except ValueError as e:
-        _cleanup_file(output_path)
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        _cleanup_file(output_path)
-        logger.exception("Office convert failed")
-        raise_http(e, "Chuyển Office → PDF thất bại")
-    finally:
-        if delete_source and source_path:
-            try:
-                os.remove(source_path)
-            except OSError:
-                pass
-
-
-@router.post("/office-convert/google")
-async def office_convert_google_endpoint(
-    url: str = Form(...),
-    license_info: dict = Depends(require_license),
-):
-    """Export PDF from a shareable Google Docs / Sheets / Slides link."""
-    from app.workers.office_convert_engine import convert_google_link, parse_google_url
-
-    job_id = uuid.uuid4().hex[:8]
-    output_path = os.path.join(RESULTS_DIR, f"google_{job_id}.pdf")
-    try:
-        kind, _fid = parse_google_url(url)
-        # The engine uses a synchronous HTTP client; keep the API loop responsive.
-        # PERF (audit 2026-07-29 §C.3b): cùng kind "office" — xem giải thích ở
-        # office_convert_file_endpoint.
-        from app.core.heavy_job_scheduler import (
-            run_heavy_in_threadpool as run_in_threadpool,
-            run_scheduled_in_threadpool,
-        )
-        await run_scheduled_in_threadpool("office", convert_google_link, url, output_path)
-        await run_in_threadpool(_safe_watermark, output_path, license_info)
-        return FileResponse(
-            path=output_path,
-            filename=f"google_{kind}.pdf",
-            media_type="application/pdf",
-            background=BackgroundTask(_cleanup_file, output_path),
-        )
-    except ValueError as e:
-        _cleanup_file(output_path)
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        _cleanup_file(output_path)
-        logger.exception("Google convert failed")
-        raise_http(e, "Xuất Google → PDF thất bại")
-
-
-@router.post("/office-convert/resize-output")
-async def office_convert_resize_output(
-    file: Optional[UploadFile] = File(None),
-    file_path: str = Form(""),
-    target_w: float = Form(...),
-    target_h: float = Form(...),
-    auto_orientation: bool = Form(True),
-    license_info: dict = Depends(require_license),
-    batch_mode: bool = Form(False),
-):
-    """Fit a batch PDF onto a standard paper size without rasterizing or overwriting."""
-    from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
-    from app.workers.pdf_tools_engine import resize_pages
-
-    if batch_mode:
-        enforce_feature("pdf.resize_batch", license_info)
-    if not (10.0 <= target_w <= 5000.0 and 10.0 <= target_h <= 5000.0):
-        raise HTTPException(status_code=400, detail="Kích thước PDF phải từ 10 đến 5000 mm.")
-
-    source_path: Optional[str] = None
-    delete_source = False
-    name = "document.pdf"
-    job_id = uuid.uuid4().hex[:8]
-    output_path = os.path.join(RESULTS_DIR, f"batch_resized_{job_id}.pdf")
-    try:
-        path_arg = (file_path or "").strip().strip('"')
-        if path_arg:
-            if not os.path.isfile(path_arg) or not path_arg.lower().endswith(".pdf"):
-                raise HTTPException(status_code=400, detail="Không tìm thấy file PDF nguồn.")
-            source_path = path_arg
-            name = os.path.basename(path_arg)
-        elif file is not None:
-            name = file.filename or "document.pdf"
-            if not name.lower().endswith(".pdf"):
-                raise HTTPException(status_code=400, detail="File tải lên không phải PDF.")
-            source_path = await save_upload(file)
-            delete_source = True
-        else:
-            raise HTTPException(status_code=400, detail="Thiếu file PDF cần chuẩn hóa.")
-
-        await run_in_threadpool(
-            resize_pages,
-            source_path,
-            output_path,
-            target_w,
-            target_h,
-            "fit",
-            "all",
-            auto_orientation,
-        )
-        return FileResponse(
-            path=output_path,
-            filename=f"resized_{name}",
-            media_type="application/pdf",
-            background=BackgroundTask(_cleanup_file, output_path),
-        )
-    except HTTPException:
-        _cleanup_file(output_path)
-        raise
-    except Exception as e:
-        _cleanup_file(output_path)
-        logger.exception("Batch output resize failed")
-        raise_http(e, "Chuẩn hóa khổ PDF thất bại")
-    finally:
-        if delete_source and source_path:
-            try:
-                os.remove(source_path)
-            except OSError:
-                pass
-
 @router.post("/sticker-dieline", dependencies=[Depends(require_feature("prepress.cutline"))])
 async def sticker_dieline_endpoint(request: Request, license_info: dict = Depends(require_license)):
     """Generate Cut Contour and Bleed for Stickers."""
     request_started = time.perf_counter()
-    from app.workers.sticker_engine import StickerEngine, compute_cut_bleed_offsets
+    from app.workers.sticker_engine import (
+        ALPHA_CONTOUR_INSET_MM,
+        StickerEngine,
+        compute_cut_bleed_offsets,
+    )
     from app.workers.sticker_page_canvas import restore_sticker_page_canvas
     
     form = await request.form()
@@ -1384,8 +1270,34 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
     do_rectangle_mode = rectangle_mode_raw.lower() in ("true", "1", "yes")
     cut_first_page_only_raw = form.get("cut_first_page_only", "false")
     do_cut_first_page_only = cut_first_page_only_raw.lower() in ("true", "1", "yes")
+    # UIUX (audit 2026-08-02 §CROP-STICKER.1): client cũ mặc định giữ khổ
+    # nguồn; chỉ giữ canvas tight của engine khi người dùng bật rõ ràng.
+    crop_to_sticker_raw = form.get("crop_to_sticker", "false")
+    do_crop_to_sticker = (
+        cut_mode != "none"
+        and crop_to_sticker_raw.lower() in ("true", "1", "yes")
+    )
     # auto_safe | contour | force_circle | force_ellipse | force_rect | force_triangle
     shape_mode = (form.get("shape_mode") or "auto_safe").strip().lower()
+
+    process_pages = None
+    process_pages_raw = form.get("process_pages")
+    if process_pages_raw:
+        try:
+            import json as _process_pages_json
+            parsed_pages = _process_pages_json.loads(str(process_pages_raw))
+            if (
+                not isinstance(parsed_pages, list)
+                or not parsed_pages
+                or any(
+                    isinstance(page, bool) or not isinstance(page, int) or page < 1
+                    for page in parsed_pages
+                )
+            ):
+                raise ValueError("pages phải là danh sách số trang 1-based không rỗng")
+            process_pages = list(dict.fromkeys(parsed_pages))
+        except (TypeError, ValueError, _process_pages_json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=400, detail=f"Phạm vi trang không hợp lệ: {exc}") from exc
 
     selected_objects_by_page = None
     selection_json_raw = form.get("selection_json")
@@ -1439,6 +1351,15 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
         edge_bite_mm = float(form.get("edge_bite_mm", 0.0))
     except (ValueError, TypeError):
         edge_bite_mm = 0.0
+
+    # Resize chỉ dịch điểm lấy màu vào trong; không dùng tham số này để clip artwork.
+    try:
+        edge_sample_inset_mm = float(form.get("edge_sample_inset_mm", 0.0))
+    except (ValueError, TypeError):
+        edge_sample_inset_mm = 0.0
+    if not math.isfinite(edge_sample_inset_mm):
+        edge_sample_inset_mm = 0.0
+    edge_sample_inset_mm = max(0.0, min(5.0, edge_sample_inset_mm))
     
     job_id = uuid.uuid4().hex[:8]
     output_path = os.path.join(RESULTS_DIR, f"sticker_{job_id}.pdf")
@@ -1485,10 +1406,12 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                 draw_cut_contour=do_draw_cut_contour,
                 rectangle_mode=do_rectangle_mode,
                 edge_bite_mm=edge_bite_mm,
+                edge_sample_inset_mm=edge_sample_inset_mm,
                 cut_first_page_only=do_cut_first_page_only,
                 shape_mode=shape_mode,
                 bleed_sides=bleed_sides_raw,
                 selected_objects_by_page=selected_objects_by_page,
+                process_pages=process_pages,
             )
         engine_seconds = time.perf_counter() - engine_started
         if not success or not os.path.exists(output_path):
@@ -1507,9 +1430,18 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
         # chứa — không thu hẹp. Selection mode đã copy nguyên trang nên không
         # cần hậu xử lý. Xén vuông giữ contract riêng: bleed có thể chủ động
         # nới trang thành phẩm.
-        if selected_objects_by_page is None and not do_rectangle_mode:
+        # Khi bật Crop trang theo tem, giữ nguyên MediaBox/CropBox tight do engine
+        # tạo: TrimBox vẫn là đường bế thật, BleedBox/MediaBox vẫn chứa đủ bù xén.
+        if (
+            not do_crop_to_sticker
+            and selected_objects_by_page is None
+            and not do_rectangle_mode
+        ):
             bleed_pts = bleed_mm * 2.83465
-            offset_pts = offset_mm * 2.83465
+            effective_offset_mm = offset_mm - (
+                ALPHA_CONTOUR_INSET_MM if cut_mode == "alpha" else 0.0
+            )
+            offset_pts = effective_offset_mm * 2.83465
             if cut_mode == "none":
                 page_expansion_pts = max(0.0, bleed_pts)
             else:
@@ -1562,7 +1494,8 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             
         logger.info(
             "[STICKER_TIMING] output_ready job=%s engine_s=%.3f ready_s=%.3f "
-            "input_mb=%.2f output_mb=%.2f pages=%d rectangle=%s bleed_mode=%s source=%s",
+            "input_mb=%.2f output_mb=%.2f pages=%d rectangle=%s crop_to_sticker=%s "
+            "bleed_mode=%s source=%s",
             job_id,
             engine_seconds,
             time.perf_counter() - request_started,
@@ -1570,6 +1503,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             os.path.getsize(output_path) / (1024 * 1024),
             len(meta.get("pages", [])) if isinstance(meta, dict) else 0,
             do_rectangle_mode,
+            do_crop_to_sticker,
             bleed_color_type,
             source_kind,
         )

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PDFDocument } from 'pdf-lib';
 import { ImpositionMode } from './pdfImposer';
-import { runProcessEngine, type ProcessContext } from './processHandlers';
+import { runProcessEngine, runResize, type ProcessContext } from './processHandlers';
 
 const api = vi.hoisted(() => ({
     uploadFileForNup: vi.fn(),
@@ -8,6 +9,10 @@ const api = vi.hoisted(() => ({
     getNupJobStatus: vi.fn(),
     downloadNupJob: vi.fn(),
     cancelNupJobBackend: vi.fn(),
+    uploadPDF: vi.fn(),
+    getApiUrl: vi.fn(),
+    authenticatedFetch: vi.fn(),
+    backendResizePages: vi.fn(),
 }));
 
 vi.mock('./api', () => api);
@@ -126,5 +131,361 @@ describe('runProcessEngine N-Up native fast path', () => {
             'Imposed_input_.pdf',
             'D:\\results\\nup_job-1.pdf',
         );
+    });
+});
+
+
+describe('runResize unified dynamic-background pipeline', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+        api.getApiUrl.mockReturnValue('http://api');
+        api.uploadPDF.mockResolvedValue({ id: 'upload-1', page_count: 8 });
+        api.backendResizePages.mockResolvedValue(
+            new Blob(['resized'], { type: 'application/pdf' }),
+        );
+        api.authenticatedFetch.mockImplementation(async (url: string) => {
+            if (url.endsWith('/preflight/auto-trim')) {
+                return {
+                    ok: true,
+                    json: vi.fn().mockResolvedValue({ output_filename: 'trimmed.pdf' }),
+                };
+            }
+            if (url.endsWith('/preflight/download/trimmed.pdf')) {
+                return {
+                    ok: true,
+                    blob: vi.fn().mockResolvedValue(
+                        new Blob(['trimmed'], { type: 'application/pdf' }),
+                    ),
+                };
+            }
+            throw new Error(`URL test không được xử lý: ${url}`);
+        });
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    const resizeSettings = {
+        autoTrimBefore: true,
+        autoTrimMarginMm: 0,
+        applyToStr: 'even',
+        targetW: 210,
+        targetH: 297,
+        targetDpi: 0,
+        pageSizeMode: 'fixed',
+        scaleMode: 'fit',
+        bgFillMode: 'mirror',
+        bgFillColor: '#ffffff',
+        spawnNewTab: false,
+    };
+
+    function makeContext(file: File, getWorkingBytes: ProcessContext['getWorkingBytes']): ProcessContext {
+        return {
+            file,
+            commitWorkingFile: vi.fn().mockResolvedValue(undefined),
+            setError: vi.fn(),
+            setIsProcessing: vi.fn(),
+            setProcessStatus: vi.fn(),
+            setReportMsg: vi.fn(),
+            setBatchOutput: vi.fn(),
+            getWorkingBytes,
+        };
+    }
+
+    it('registers a clean desktop file by path without reading it into V8', async () => {
+        const file = new File(['source'], 'clean.pdf', { type: 'application/pdf' });
+        Object.defineProperty(file, 'path', { value: 'D:\\clean.pdf' });
+        const getWorkingBytes = vi.fn(async () => new Uint8Array());
+        const context = makeContext(file, getWorkingBytes);
+        context.getWorkingSourcePath = vi.fn().mockResolvedValue('D:\\clean.pdf');
+
+        await runResize(context, resizeSettings);
+
+        expect(api.backendResizePages).toHaveBeenCalledTimes(1);
+        expect(api.backendResizePages).toHaveBeenCalledWith(
+            file,
+            210,
+            297,
+            'fit',
+            'even',
+            0,
+            'auto',
+            'mirror',
+            '#ffffff',
+            'D:\\clean.pdf',
+            'fixed',
+        );
+        expect(getWorkingBytes).not.toHaveBeenCalled();
+        expect(api.uploadPDF).not.toHaveBeenCalled();
+        expect(api.authenticatedFetch).not.toHaveBeenCalled();
+        expect(context.commitWorkingFile).toHaveBeenCalled();
+    });
+
+    it('keeps the baked-byte upload path when the document is dirty', async () => {
+        const file = new File(['source'], 'dirty.pdf', { type: 'application/pdf' });
+        const getWorkingBytes = vi.fn(async () => new Uint8Array([1, 2, 3]));
+        const context = makeContext(file, getWorkingBytes);
+        context.getWorkingSourcePath = vi.fn().mockResolvedValue(undefined);
+
+        await runResize(context, resizeSettings);
+
+        expect(getWorkingBytes).toHaveBeenCalledTimes(1);
+        expect(api.backendResizePages).toHaveBeenCalledTimes(1);
+        expect(api.backendResizePages).toHaveBeenCalledWith(
+            expect.any(File),
+            210,
+            297,
+            'fit',
+            'even',
+            0,
+            'auto',
+            'mirror',
+            '#ffffff',
+            undefined,
+            'fixed',
+        );
+        expect(api.backendResizePages.mock.calls[0][0]).not.toBe(file);
+        expect(api.uploadPDF).not.toHaveBeenCalled();
+        expect(api.authenticatedFetch).not.toHaveBeenCalled();
+        expect(context.commitWorkingFile).toHaveBeenCalled();
+    });
+
+    it.each(['mirror', 'inpaint', 'image'] as const)('sends %s directly to the unified backend job', async (bgFillMode) => {
+        const sourceDoc = await PDFDocument.create();
+        sourceDoc.addPage([100, 100]);
+        const sourceBytes = await sourceDoc.save();
+        const file = new File([sourceBytes as BlobPart], 'inpaint.pdf', { type: 'application/pdf' });
+        const getWorkingBytes = vi.fn(async () => sourceBytes);
+        const context = makeContext(file, getWorkingBytes);
+        api.authenticatedFetch.mockImplementation(async (url: string) => {
+            if (url.endsWith('/preflight/auto-trim')) {
+                return {
+                    ok: true,
+                    json: vi.fn().mockResolvedValue({ output_filename: 'trimmed.pdf' }),
+                };
+            }
+            if (url.endsWith('/preflight/download/trimmed.pdf')) {
+                return {
+                    ok: true,
+                    blob: vi.fn().mockResolvedValue(
+                        new Blob([sourceBytes as BlobPart], { type: 'application/pdf' }),
+                    ),
+                };
+            }
+            if (url.endsWith('/pdf-tools/sticker-dieline')) {
+                return {
+                    ok: true,
+                    blob: vi.fn().mockResolvedValue(
+                        new Blob(['extended'], { type: 'application/pdf' }),
+                    ),
+                };
+            }
+            throw new Error(`URL test không được xử lý: ${url}`);
+        });
+
+        await runResize(context, {
+            ...resizeSettings,
+            autoTrimBefore: true,
+            applyToStr: 'all',
+            scaleMode: 'center_no_scale',
+            bgFillMode,
+        });
+
+        expect(api.backendResizePages).toHaveBeenCalledTimes(1);
+        expect(api.backendResizePages).toHaveBeenCalledWith(
+            expect.any(File),
+            210,
+            297,
+            'center_no_scale',
+            'all',
+            0,
+            'auto',
+            bgFillMode,
+            '#ffffff',
+            undefined,
+            'fixed',
+        );
+        expect(api.authenticatedFetch).not.toHaveBeenCalled();
+        expect(api.uploadPDF).not.toHaveBeenCalled();
+        expect(getWorkingBytes).toHaveBeenCalledTimes(1);
+        expect(context.commitWorkingFile).toHaveBeenCalled();
+    });
+
+    it('keeps the selected background when the legacy auto-trim flag is disabled', async () => {
+        const sourceDoc = await PDFDocument.create();
+        sourceDoc.addPage([100, 100]);
+        const sourceBytes = await sourceDoc.save();
+        const file = new File([sourceBytes as BlobPart], 'no-auto-trim.pdf', { type: 'application/pdf' });
+        const getWorkingBytes = vi.fn(async () => sourceBytes);
+        const context = makeContext(file, getWorkingBytes);
+
+        await runResize(context, {
+            ...resizeSettings,
+            autoTrimBefore: false,
+            applyToStr: 'all',
+            scaleMode: 'center_no_scale',
+            bgFillMode: 'inpaint',
+            bgFillColor: '#ff0000',
+        });
+
+        expect(api.authenticatedFetch).not.toHaveBeenCalled();
+        expect(api.uploadPDF).not.toHaveBeenCalled();
+        expect(api.backendResizePages).toHaveBeenCalledWith(
+            expect.any(File),
+            210,
+            297,
+            'center_no_scale',
+            'all',
+            0,
+            'auto',
+            'inpaint',
+            '#ffffff',
+            undefined,
+            'fixed',
+        );
+        expect(context.setError).toHaveBeenCalledTimes(1);
+        expect(context.setError).toHaveBeenCalledWith('');
+        expect(context.commitWorkingFile).toHaveBeenCalled();
+    });
+
+    it.each(['fill', 'stretch'] as const)(
+        'does not run a hidden dynamic background for %s',
+        async (scaleMode) => {
+            const sourceDoc = await PDFDocument.create();
+            sourceDoc.addPage([100, 100]);
+            const sourceBytes = await sourceDoc.save();
+            const file = new File([sourceBytes as BlobPart], `${scaleMode}.pdf`, {
+                type: 'application/pdf',
+            });
+            const context = makeContext(file, vi.fn(async () => sourceBytes));
+
+            await runResize(context, {
+                ...resizeSettings,
+                scaleMode,
+                targetDpi: 300,
+                bgFillMode: 'mirror',
+            });
+
+            expect(api.backendResizePages).toHaveBeenCalledWith(
+                expect.any(File),
+                210,
+                297,
+                scaleMode,
+                'even',
+                300,
+                'auto',
+                'white',
+                '#ffffff',
+                undefined,
+                'fixed',
+            );
+            expect(api.uploadPDF).not.toHaveBeenCalled();
+            expect(api.authenticatedFetch).not.toHaveBeenCalled();
+        },
+    );
+
+    it('keeps the selected solid color on the backend path', async () => {
+        const sourceDoc = await PDFDocument.create();
+        sourceDoc.addPage([100, 100]);
+        const sourceBytes = await sourceDoc.save();
+        const file = new File([sourceBytes as BlobPart], 'solid.pdf', {
+            type: 'application/pdf',
+        });
+        const context = makeContext(file, vi.fn(async () => sourceBytes));
+
+        await runResize(context, {
+            ...resizeSettings,
+            scaleMode: 'fit',
+            targetDpi: 300,
+            bgFillMode: 'solid',
+            bgFillColor: '#12a34b',
+        });
+
+        expect(api.backendResizePages).toHaveBeenCalledWith(
+            expect.any(File),
+            210,
+            297,
+            'fit',
+            'even',
+            300,
+            'auto',
+            'solid',
+            '#12a34b',
+            undefined,
+            'fixed',
+        );
+        expect(api.uploadPDF).not.toHaveBeenCalled();
+        expect(api.authenticatedFetch).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        ['fixed_width', 80, 120],
+        ['fixed_height', 80, 120],
+    ] as const)(
+        'routes %s through one content-aware backend job and forces fit',
+        async (pageSizeMode, targetW, targetH) => {
+            const file = new File(['source'], `${pageSizeMode}.pdf`, {
+                type: 'application/pdf',
+            });
+            const getWorkingBytes = vi.fn(async () => new Uint8Array([1, 2, 3]));
+            const context = makeContext(file, getWorkingBytes);
+            context.getWorkingSourcePath = vi.fn().mockResolvedValue('D:\\ratio.pdf');
+
+            await runResize(context, {
+                ...resizeSettings,
+                pageSizeMode,
+                targetW,
+                targetH,
+                // State/preset cũ có thể còn mode mâu thuẫn; handler phải phòng thủ.
+                scaleMode: 'stretch',
+                bgFillMode: 'mirror',
+            });
+
+            expect(api.backendResizePages).toHaveBeenCalledTimes(1);
+            expect(api.backendResizePages).toHaveBeenCalledWith(
+                file,
+                targetW,
+                targetH,
+                'fit',
+                'even',
+                0,
+                'auto',
+                'white',
+                '#ffffff',
+                'D:\\ratio.pdf',
+                pageSizeMode,
+            );
+            expect(getWorkingBytes).not.toHaveBeenCalled();
+            expect(context.commitWorkingFile).toHaveBeenCalled();
+        },
+    );
+
+    it.each([
+        ['dynamic background', { bgFillMode: 'mirror' }],
+        ['locked width', { pageSizeMode: 'fixed_width', bgFillMode: 'mirror' }],
+        ['regular backend resize', { bgFillMode: 'white', targetDpi: 300 }],
+    ] as const)('uses only one waiting message for %s', async (_label, overrides) => {
+        const sourceDoc = await PDFDocument.create();
+        sourceDoc.addPage([100, 100]);
+        const sourceBytes = await sourceDoc.save();
+        const file = new File([sourceBytes as BlobPart], 'status.pdf', {
+            type: 'application/pdf',
+        });
+        const context = makeContext(file, vi.fn(async () => sourceBytes));
+
+        await runResize(context, {
+            ...resizeSettings,
+            ...overrides,
+        });
+
+        const statuses = vi.mocked(context.setProcessStatus).mock.calls
+            .map(([status]) => status);
+        const waitingStatuses = statuses.filter((status) => status !== '');
+
+        expect(waitingStatuses.length).toBeGreaterThanOrEqual(2);
+        expect(waitingStatuses.every((status) => status === 'Đang xử lý...')).toBe(true);
+        expect(statuses.at(-1)).toBe('');
     });
 });

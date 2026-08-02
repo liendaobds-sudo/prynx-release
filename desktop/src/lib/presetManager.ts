@@ -46,6 +46,9 @@ export interface ImpositionPreset {
     signatureMode: 'continuous' | 'saddle' | 'thread' | 'cut_stacks' | 'flush_mount';
     foliosize: number;
     paperThickness: number;
+    /** BOOKLET (audit 2026-07-31 §B.1): thông số In nhanh ảnh hưởng trực tiếp output. */
+    gutterMargin?: number;
+    blankPlacement?: 'end' | 'center';
     scaleMode: '100' | 'fit' | 'chain_nup' | 'cut_stack';
     interleave: 'normal' | 'all_fronts_first' | 'reverse_backs' | 'reverse_backs_180';
     foldPattern?: string;

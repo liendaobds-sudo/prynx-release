@@ -1014,7 +1014,11 @@ async def auto_trim(req: AutoTrimRequest):
     from app.core.page_boxes import PageBoxesEngine
     engine = PageBoxesEngine()
     try:
-        output = engine.auto_trim(file_path, req.pages, req.margin_mm)
+        # RESIZE (audit 2026-07-31 §C.2): render PDFium + OpenCV là việc đồng bộ;
+        # không chặn event loop trong lúc xóa viền cho PDF nhiều trang.
+        output = await run_in_threadpool(
+            engine.auto_trim, file_path, req.pages, req.margin_mm,
+        )
         return {"success": True, "output_filename": Path(output).name}
     except Exception as e:
         raise_http(e, "Không tự động xóa lề trắng được")
@@ -1075,8 +1079,14 @@ async def mirror_bleed(req: AddBleedRequest, license_info: dict = Depends(requir
     from app.core.page_boxes import PageBoxesEngine
     engine = PageBoxesEngine()
     try:
-        output = engine.add_mirror_bleed(
-            file_path, req.bleed_mm, req.pages, sides=req.bleed_sides,
+        # RESIZE (audit 2026-07-31 §C.2): pikepdf phải chạy ngoài event loop;
+        # đây là việc trung bình nên dùng threadpool thường, không chiếm heavy slot.
+        output = await run_in_threadpool(
+            engine.add_mirror_bleed,
+            file_path,
+            req.bleed_mm,
+            req.pages,
+            req.bleed_sides,
         )
         _safe_watermark_preflight(output, license_info)
         return {"success": True, "output_filename": Path(output).name}

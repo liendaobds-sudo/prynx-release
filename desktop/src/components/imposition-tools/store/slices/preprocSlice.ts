@@ -5,11 +5,16 @@ export const DEFAULT_RESIZE_SETTINGS = {
     sizePresetId: 'A4',
     targetW: 210,
     targetH: 297,
+    pageSizeMode: 'fixed' as const,
     scaleMode: 'fit' as const,
     applyTo: 'all' as const,
     applyToStr: 'all',
     resizeMode: 'auto',
     // targetDpi: undefined = tự động giảm mẫu khi thu nhỏ
+    // RESIZE (audit 2026-07-31 §B.2): state hiển thị và state thực thi phải trùng.
+    autoTrimBefore: false,
+    bgFillMode: 'mirror' as const,
+    bgFillColor: '#ffffff',
 };
 
 export interface PreprocSlice {

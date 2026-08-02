@@ -343,13 +343,14 @@ export async function exportImages(params: {
   fileId?: string;
   filePath?: string;
   outputDir: string;
-  format: 'png' | 'jpeg' | 'tiff';
+  format: 'png' | 'jpeg' | 'tiff' | 'webp';
   dpi: number;
   colorMode: 'rgb' | 'gray' | 'cmyk';
   pages?: number[] | null;
   multipageTiff?: boolean;
   jpegQuality?: number;
   baseName?: string;
+  includeBleed?: boolean;
   signal?: AbortSignal;
 }): Promise<{ ok: boolean; count: number; output_dir: string; files: string[] }> {
   const res = await authenticatedFetch(`${API_BASE}/api/export/images`, {
@@ -366,12 +367,59 @@ export async function exportImages(params: {
       multipage_tiff: params.multipageTiff ?? false,
       jpeg_quality: params.jpegQuality ?? 90,
       base_name: params.baseName ?? null,
+      include_bleed: params.includeBleed ?? true,
     }),
     signal: params.signal,
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Xuất ảnh thất bại' }));
     throw new Error(typeof err.detail === 'string' ? err.detail : 'Xuất ảnh thất bại');
+  }
+  return res.json();
+}
+
+export interface ExportImageBatchJob {
+  outputDir: string;
+  format: 'png' | 'jpeg' | 'tiff' | 'webp';
+  dpi: number;
+  multipageTiff?: boolean;
+  jpegQuality?: number;
+  baseName?: string;
+}
+
+/** Xuất nhiều đầu ra trong một request; backend rollback toàn batch khi một job lỗi. */
+export async function exportImagesBatch(params: {
+  fileId?: string;
+  filePath?: string;
+  colorMode: 'rgb' | 'gray' | 'cmyk';
+  pages?: number[] | null;
+  includeBleed?: boolean;
+  jobs: ExportImageBatchJob[];
+  signal?: AbortSignal;
+}): Promise<{ ok: boolean; count: number; output_dir: string; files: string[] }> {
+  const res = await authenticatedFetch(`${API_BASE}/api/export/images/batch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      file_id: params.fileId ?? null,
+      file_path: params.filePath ?? null,
+      color_mode: params.colorMode,
+      pages: params.pages ?? null,
+      include_bleed: params.includeBleed ?? true,
+      jobs: params.jobs.map(job => ({
+        output_dir: job.outputDir,
+        format: job.format,
+        dpi: job.dpi,
+        multipage_tiff: job.multipageTiff ?? false,
+        jpeg_quality: job.jpegQuality ?? 90,
+        base_name: job.baseName ?? null,
+      })),
+    }),
+    signal: params.signal,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Xuất batch ảnh thất bại' }));
+    throw new Error(typeof err.detail === 'string' ? err.detail : 'Xuất batch ảnh thất bại');
   }
   return res.json();
 }
@@ -598,8 +646,10 @@ export async function uploadFileForNup(pdfFile: File): Promise<string> {
 
 export async function backendMergePdfs(files: File[], mode: string = 'merge_files'): Promise<Blob> {
   const formData = new FormData();
-  for (const f of files) {
-    formData.append('files', f);
+  for (const file of files) {
+    // FILEIO (audit 2026-08-02 §COMB.1): path-stub có size giả nhưng blob thật
+    // rỗng; mọi nhánh Merge/Interleave legacy phải materialize trước khi upload.
+    formData.append('files', await prepareFileForUpload(file), file.name);
   }
   formData.append('mode', mode);
   
@@ -649,6 +699,155 @@ export async function backendMergeManifest(files: File[], manifest: BackendMerge
   }
   return { blob: await res.blob(), filename: 'Combined.pdf' };
 }
+export type BackendMergeManifestJobStatus = {
+  job_id: string;
+  status: string;
+  terminal: boolean;
+  cancel_requested: boolean;
+  progress: number;
+  completed: number;
+  total: number;
+  message?: string | null;
+};
+
+export type BackendMergeManifestJobOptions = {
+  signal?: AbortSignal;
+  onProgress?: (status: BackendMergeManifestJobStatus) => void;
+  pollIntervalMs?: number;
+  mode?: 'manifest' | 'merge_files' | 'interleave';
+};
+
+function combineAbortError(message = 'Đã hủy ghép PDF.'): DOMException {
+  return new DOMException(message, 'AbortError');
+}
+
+async function combineJobError(response: Response, fallback: string): Promise<Error> {
+  const payload = await response.json().catch(() => null) as { detail?: unknown } | null;
+  return new Error(typeof payload?.detail === 'string' ? payload.detail : fallback);
+}
+
+function waitForCombinePoll(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(combineAbortError());
+  if (milliseconds <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(done, milliseconds);
+    function done() {
+      signal?.removeEventListener('abort', aborted);
+      resolve();
+    }
+    function aborted() {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', aborted);
+      reject(combineAbortError());
+    }
+    signal?.addEventListener('abort', aborted, { once: true });
+  });
+}
+
+/** Job Combine dài: mixed path/upload không copy file native qua WebView, có progress + cancel. */
+export async function backendMergeManifestJob(
+  files: File[],
+  manifest: BackendMergeManifestItem[],
+  options: BackendMergeManifestJobOptions = {},
+): Promise<BackendMergeManifestResult> {
+  const formData = new FormData();
+  const sourcePaths: Array<string | null> = [];
+  for (const file of files) {
+    const nativePath = typeof file.path === 'string' && file.path.length > 0 ? file.path : null;
+    sourcePaths.push(nativePath);
+    if (!nativePath) formData.append('files', await prepareFileForUpload(file), file.name);
+  }
+  formData.append('source_paths', JSON.stringify(sourcePaths));
+  if (options.mode && options.mode !== 'manifest') {
+    formData.append('mode', options.mode);
+  } else {
+    formData.append('manifest', JSON.stringify(manifest));
+  }
+  if ((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+    formData.append('return_path', 'true');
+  }
+
+  let jobId = '';
+  let cancelSent = false;
+  const cancelJob = async () => {
+    if (!jobId || cancelSent) return;
+    cancelSent = true;
+    await authenticatedFetch(
+      `${API_BASE}/api/pdf-tools/merge-manifest/jobs/${jobId}/cancel`,
+      { method: 'POST' },
+    ).catch(() => undefined);
+  };
+  const onAbort = () => { void cancelJob(); };
+
+  try {
+    const start = await authenticatedFetch(`${API_BASE}/api/pdf-tools/merge-manifest/jobs`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!start.ok) throw await combineJobError(start, 'Không thể bắt đầu ghép PDF.');
+    const started = await start.json() as { job_id?: string };
+    if (!started.job_id) throw new Error('Backend không trả về mã job ghép PDF.');
+    jobId = started.job_id;
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    if (options.signal?.aborted) {
+      await cancelJob();
+      throw combineAbortError();
+    }
+
+    while (true) {
+      const statusResponse = await authenticatedFetch(
+        `${API_BASE}/api/pdf-tools/merge-manifest/jobs/${jobId}`,
+      );
+      if (!statusResponse.ok) {
+        throw await combineJobError(statusResponse, 'Không đọc được tiến độ ghép PDF.');
+      }
+      const status = await statusResponse.json() as BackendMergeManifestJobStatus;
+      options.onProgress?.(status);
+      if (options.signal?.aborted) {
+        await cancelJob();
+        throw combineAbortError();
+      }
+      if (status.terminal) {
+        if (status.status === 'cancelled') throw combineAbortError(status.message || undefined);
+        if (status.status !== 'completed') {
+          throw new Error(status.message || 'Ghép PDF thất bại.');
+        }
+        break;
+      }
+      await waitForCombinePoll(options.pollIntervalMs ?? 250, options.signal);
+    }
+
+    const result = await authenticatedFetch(
+      `${API_BASE}/api/pdf-tools/merge-manifest/jobs/${jobId}/result`,
+      { signal: options.signal },
+    );
+    if (!result.ok) throw await combineJobError(result, 'Không tải được kết quả ghép PDF.');
+    if (result.headers.get('content-type')?.includes('application/json')) {
+      const payload = await result.json() as { path: string; filename?: string };
+      return { path: payload.path, filename: payload.filename || 'Combined.pdf' };
+    }
+    return { blob: await result.blob(), filename: 'Combined.pdf' };
+  } catch (error) {
+    if (options.signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
+      await cancelJob();
+      if (error instanceof DOMException && error.name === 'AbortError') throw error;
+      throw combineAbortError();
+    }
+    throw error;
+  } finally {
+    options.signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+/** Merge/Interleave dài dùng cùng lifecycle job và transport mixed zero-copy. */
+export function backendMergePdfsJob(
+  files: File[],
+  mode: 'merge_files' | 'interleave',
+  options: Omit<BackendMergeManifestJobOptions, 'mode'> = {},
+): Promise<BackendMergeManifestResult> {
+  return backendMergeManifestJob(files, [], { ...options, mode });
+}
+
 export async function backendSplitPdf(file: File, mode: string, config: unknown): Promise<Blob> {
   const formData = new FormData();
   formData.append('file', file);
@@ -666,12 +865,26 @@ export async function backendSplitPdf(file: File, mode: string, config: unknown)
 export async function backendResizePages(
   file: File, targetW: number, targetH: number, scaleMode: string, applyTo: string,
   targetDpi: number = 0, mode: string = 'auto',
+  bgFillMode: string = 'white', bgFillColor: string = '#ffffff',
+  sourcePath?: string,
+  pageSizeMode: string = 'fixed',
 ): Promise<Blob> {
+  // PERF (audit 2026-08-01 §RT.12): mốc end-to-end để tách chuẩn bị payload,
+  // chờ backend và tải response; không đổi nội dung request.
+  const perfNow = () => globalThis.performance?.now?.() ?? Date.now();
+  const perfStarted = perfNow();
+  const logResizePerf = (payload: Record<string, unknown>) =>
+    console.info(`[ResizePerf] ${JSON.stringify(payload)}`);
   const formData = new FormData();
   // File lớn: đọc lại bytes từ ĐĨA qua path (asset protocol) thay vì giữ blob
   // trong JS heap — tránh "Array buffer allocation failed" khi resize file nặng.
-  const realFile = await prepareFileForUpload(file);
-  formData.append('file', realFile, file.name);
+  if (sourcePath) {
+    // PERF (audit 2026-08-01 §RT.10): sidecar đọc thẳng file sạch trên đĩa.
+    formData.append('file_path', sourcePath);
+  } else {
+    const realFile = await prepareFileForUpload(file);
+    formData.append('file', realFile, file.name);
+  }
   formData.append('target_w', String(targetW));
   formData.append('target_h', String(targetH));
   formData.append('scale_mode', scaleMode);
@@ -679,13 +892,53 @@ export async function backendResizePages(
   // target_dpi > 0 bật giảm dữ liệu theo khổ mới (giống PDF Optimizer của Acrobat).
   formData.append('target_dpi', String(targetDpi));
   formData.append('mode', mode);
+  formData.append('bg_fill_mode', bgFillMode);
+  formData.append('bg_fill_color', bgFillColor);
+  formData.append('page_size_mode', pageSizeMode);
+
+  const payloadReady = perfNow();
+  const roundMs = (value: number) => Math.round(value * 10) / 10;
+  logResizePerf({
+    stage: 'api_request',
+    source: sourcePath ? 'path' : 'upload',
+    payloadMs: roundMs(payloadReady - perfStarted),
+    inputBytes: file.size,
+    targetW,
+    targetH,
+    scaleMode,
+    bgFillMode,
+    pageSizeMode,
+    targetDpi,
+  });
 
   const res = await authenticatedFetch(`${API_BASE}/api/pdf-tools/resize`, {
     method: 'POST',
     body: formData,
   });
+  const headersReady = perfNow();
   if (!res.ok) throw new Error('Đổi khổ trang thất bại: ' + await res.text()); // UIUX (audit 2026-07-27 §D-13)
-  return await res.blob();
+
+  const backendTimingRaw = res.headers.get('X-PrynX-Resize-Timing');
+  let backendTiming: unknown = null;
+  if (backendTimingRaw) {
+    try { backendTiming = JSON.parse(backendTimingRaw); }
+    catch { backendTiming = backendTimingRaw; }
+  }
+  const downloadStarted = perfNow();
+  const blob = await res.blob();
+  const finished = perfNow();
+  logResizePerf({
+    stage: 'api_done',
+    source: sourcePath ? 'path' : 'upload',
+    payloadMs: roundMs(payloadReady - perfStarted),
+    waitHeadersMs: roundMs(headersReady - payloadReady),
+    downloadMs: roundMs(finished - downloadStarted),
+    totalMs: roundMs(finished - perfStarted),
+    inputBytes: file.size,
+    outputBytes: blob.size,
+    backend: backendTiming,
+  });
+  return blob;
 }
 
 export async function backendShufflePages(file: File, action: string, mapping: number[] = []): Promise<Blob> {

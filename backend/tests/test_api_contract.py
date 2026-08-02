@@ -196,6 +196,7 @@ def test_vdp_cancel_bao_phu_ca_ba_nhanh():
 
 # ── preflight / system / pdf_tools (audit 2026-07-29 §A.2, lô 8 đợt 2) ────────
 from app.api.routes import pdf_tools as pdf_tools_routes  # noqa: E402
+from app.api.routes import office_convert as office_convert_routes  # noqa: E402
 from app.api.routes import preflight as preflight_routes  # noqa: E402
 from app.api.routes import system as system_routes  # noqa: E402
 from app.schemas.preflight import (  # noqa: E402
@@ -322,7 +323,6 @@ def test_gpu_status_chap_nhan_may_khong_gpu():
     [
         ("/encryption-status", "POST"),
         ("/metadata/read", "POST"),
-        ("/office-convert/status", "GET"),
         ("/remove-background/warmup", "POST"),
         ("/upscale/warmup", "POST"),
     ],
@@ -330,6 +330,23 @@ def test_gpu_status_chap_nhan_may_khong_gpu():
 def test_pdf_tools_endpoint_json_co_model(path, method):
     assert _model_of(pdf_tools_routes.router, path, method) is not None
 
+
+@pytest.mark.parametrize(
+    "path,method",
+    [
+        ("/status", "GET"),
+        ("/jobs/{job_id}", "GET"),
+        ("/jobs/{job_id}/cancel", "POST"),
+        ("/jobs/{job_id}/extend", "POST"),
+    ],
+)
+def test_office_convert_endpoint_json_co_model(path, method):
+    assert _model_of(office_convert_routes.router, path, method) is not None
+
+
+def test_office_file_endpoints_khong_gan_response_model():
+    for path in ("/file", "/google"):
+        assert _model_of(office_convert_routes.router, path, "POST") is None
 
 def test_pdf_tools_endpoint_tai_file_khong_gan_model():
     """Endpoint trả `FileResponse` KHÔNG được gắn `response_model`.

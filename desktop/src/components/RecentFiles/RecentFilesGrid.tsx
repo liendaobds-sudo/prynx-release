@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useRecentFiles, statRecentFile, type RecentFile } from '../../lib/useRecentFiles';
 import ThumbnailView from './ThumbnailView';
+import { systemFileMime } from '../../lib/nativeFileAccess';
 import { useAppSettingsStore } from '../../stores/appSettingsStore';
 import { toast } from '../ui/Toast';
 import { useTranslation } from 'react-i18next';
@@ -73,10 +74,7 @@ export default function RecentFilesGrid({ onOpenFile, active = true }: Props) {
         removeFile(rf.path);
         return;
       }
-      const type = rf.name.toLowerCase().endsWith('.pdf') ? 'application/pdf' :
-                  rf.name.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
-
-      const fileObj = new File([], rf.name, { type });
+      const fileObj = new File([], rf.name, { type: systemFileMime(rf.name) });
       Object.defineProperty(fileObj, 'path', { value: rf.path });
       Object.defineProperty(fileObj, 'size', { value: info.size });
 

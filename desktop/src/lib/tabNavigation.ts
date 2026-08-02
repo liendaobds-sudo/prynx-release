@@ -1,3 +1,5 @@
+import { isOfficePathOrName } from './officeFileTypes';
+
 export interface NavigationTabLike {
     id: string;
     type: string;
@@ -57,6 +59,7 @@ export function resolveActiveImageBatchReceiver(
             };
         }
         // Da biet cong cu hien tai khong phai batch anh; khong roi ve intent cu.
+
         return null;
     }
 
@@ -78,4 +81,42 @@ export function resolveActiveImageBatchReceiver(
 /** Tab kết quả bắt đầu ở viewer thường; chỉ intent tường minh mới thêm lockedMode/focusFeature. */
 export function buildResultTabPayload<T>(file: T, extraPayload?: Record<string, unknown>) {
     return { file, ...(extraPayload || {}) };
+}
+export interface IncomingFileLike {
+    name: string;
+}
+
+export type IncomingFilePlan<T> =
+    | { mode: 'combine'; files: T[] }
+    | { mode: 'default'; pdfFiles: T[]; officeFiles: T[]; otherFiles: T[] };
+
+/**
+ * FILEIO (audit 2026-08-02 §COMB.1): intent từ verb Explorer phải được xét
+ * trước quy tắc Acrobat mặc định; nếu không PDF bị tách thành nhiều tab trước khi
+ * Combine có cơ hội nhận toàn bộ batch.
+ */
+export function planIncomingFiles<T extends IncomingFileLike>(
+    files: readonly T[],
+    intent: string,
+): IncomingFilePlan<T> {
+    if (intent === 'combine') {
+        return { mode: 'combine', files: [...files] };
+    }
+    return { mode: 'default', ...partitionIncomingFiles(files) };
+}
+
+/**
+ * PDF luôn là tài liệu độc lập và phải mở mỗi file ở một tab mới. Tách PDF trước
+ * khi xét receiver của công cụ ảnh để tab Upscale/Tách nền không hút nhầm PDF.
+ */
+export function partitionIncomingFiles<T extends IncomingFileLike>(files: readonly T[]) {
+    const pdfFiles: T[] = [];
+    const officeFiles: T[] = [];
+    const otherFiles: T[] = [];
+    for (const file of files) {
+        if (/\.pdf$/i.test(file.name)) pdfFiles.push(file);
+        else if (isOfficePathOrName(file.name)) officeFiles.push(file);
+        else otherFiles.push(file);
+    }
+    return { pdfFiles, officeFiles, otherFiles };
 }

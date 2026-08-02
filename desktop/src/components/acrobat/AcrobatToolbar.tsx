@@ -73,8 +73,9 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
         return () => ro.disconnect();
     }, []);
 
+    // UIUX (audit 2026-08-01): popup toolbar nổi trên ThumbSidebar; sidebar nằm sau trong DOM.
     return (
-        <div ref={barRef} className={`h-12 w-full shrink-0 bg-[#f3f4f6] dark:bg-[#1e1e1e] border-b border-black/10 dark:border-white/10 flex items-center px-4 shadow-sm z-50 relative overflow-visible gap-2 ${isNarrow ? 'tb-narrow' : ''}`}>
+        <div ref={barRef} className={`h-12 w-full shrink-0 bg-[#f3f4f6] dark:bg-[#1e1e1e] border-b border-black/10 dark:border-white/10 flex items-center px-4 shadow-sm z-[70] relative overflow-visible gap-2 ${isNarrow ? 'tb-narrow' : ''}`}>
             <style>{`.tb-narrow .tb-label{display:none!important;}`}</style>
             {/* Mép trái: Xuất ảnh / Ghi quy trình (và extra khác từ parent) */}
             <div className="flex items-center gap-1.5 shrink-0 min-w-0">

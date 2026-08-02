@@ -3,6 +3,21 @@ import { pdfjs } from 'react-pdf';
 import { thumbCacheRef, putThumbCache } from '../../components/workspace/ViewerHelpers';
 import { clearTileUrlCache } from '../../components/workspace/LivePageFrame';
 
+export const PDF_LOAD_SLOW_NOTICE_MS = 10_000;
+export type PdfLoadStatus = 'idle' | 'loading' | 'slow' | 'ready' | 'error' | 'cancelled';
+type PdfLoadingTask = ReturnType<typeof pdfjs.getDocument>;
+type PdfLoadFileIdentity = { name?: string; size?: number; lastModified?: number; path?: string };
+
+function normalizeLoadError(error: unknown): Error {
+    if (error instanceof Error) return error;
+    if (typeof error === 'string' && error.trim()) return new Error(error);
+    return new Error('Không thể đọc file PDF.');
+}
+
+function loadSourceKey(file: PdfLoadFileIdentity | null | undefined, pdfUrl: string | null): string {
+    return [pdfUrl || '', file?.path || '', file?.name || '', file?.size || 0, file?.lastModified || 0].join('|');
+}
+
 export interface PageDim {
     w: number;
     h: number;
@@ -46,6 +61,9 @@ export interface UsePdfLoaderResult {
     lastSelectedIndex: number | null;
     setLastSelectedIndex: React.Dispatch<React.SetStateAction<number | null>>;
     loadError: Error | null;
+    loadStatus: PdfLoadStatus;
+    retryLoad: () => void;
+    cancelLoad: () => void;
 }
 
 interface UsePdfLoaderProps {
@@ -81,8 +99,62 @@ export function usePdfLoader({
     const [futureStack, setFutureStack] = useState<any[]>([]);
     
     const [loadError, setLoadError] = useState<Error | null>(null);
+    const [loadStatus, setLoadStatus] = useState<PdfLoadStatus>('idle');
+    const [loadRevision, setLoadRevision] = useState(0);
 
     const prevPdfUrlRef = useRef<string | null>(null);
+    const loadingTaskRef = useRef<PdfLoadingTask | null>(null);
+    const cancelledSourceRef = useRef<string | null>(null);
+    const loadGenerationRef = useRef(0);
+    const sourceKey = loadSourceKey(file, pdfUrl);
+    const nativeFilePath = typeof file?.path === 'string' && file.path ? file.path : null;
+
+    const retryLoad = useCallback(() => {
+        loadGenerationRef.current += 1;
+        cancelledSourceRef.current = null;
+        const task = loadingTaskRef.current;
+        loadingTaskRef.current = null;
+        void Promise.resolve(task?.destroy?.()).catch(() => undefined);
+        console.info('[PDF-LOAD]', {
+            stage: 'retry',
+            fileName: file?.name || '',
+            fileSize: file?.size || 0,
+            source: file?.path ? 'native' : 'memory',
+        });
+        setLoadRevision(value => value + 1);
+    }, [file]);
+
+    const cancelLoad = useCallback(() => {
+        loadGenerationRef.current += 1;
+        cancelledSourceRef.current = sourceKey;
+        const task = loadingTaskRef.current;
+        loadingTaskRef.current = null;
+        void Promise.resolve(task?.destroy?.()).catch(() => undefined);
+        console.info('[PDF-LOAD]', {
+            stage: 'cancel',
+            fileName: file?.name || '',
+            fileSize: file?.size || 0,
+            source: file?.path ? 'native' : 'memory',
+        });
+        setLoadError(null);
+        setLoadStatus('cancelled');
+        setNumPages(0);
+        setLoadRevision(value => value + 1);
+    }, [file, setNumPages, sourceKey]);
+
+    useEffect(() => {
+        if (!nativeFilePath || !(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+            return;
+        }
+        const leasedPath = nativeFilePath;
+        return () => {
+            // PERF (audit 2026-08-02 §LOAD.3): native giữ Arc cho render đang chạy nên
+            // close chỉ remove cache entry; handle thật đóng sau terminal callback.
+            void import('@tauri-apps/api/core')
+                .then(({ invoke }) => invoke<boolean>('close_pdf_document', { filePath: leasedPath }))
+                .catch(() => undefined);
+        };
+    }, [nativeFilePath, sourceKey]);
 
     // Clear stale tile cache on new file load
     useEffect(() => {
@@ -96,6 +168,7 @@ export function usePdfLoader({
 
     // Main PDF loading effect
     useEffect(() => {
+        const generation = ++loadGenerationRef.current;
         const isSameUrl = prevPdfUrlRef.current === pdfUrl;
         prevPdfUrlRef.current = pdfUrl;
 
@@ -119,7 +192,81 @@ export function usePdfLoader({
         setThumbPdfRef(null);
         setNumPages(0);
 
+        // UIUX (audit 2026-08-01 §A.1+A.2): mỗi lượt tải thật phải có trạng thái
+        // kết thúc rõ ràng; lỗi của file trước không được bám sang file mới.
+        if (cancelledSourceRef.current === sourceKey) {
+            setLoadError(null);
+            setLoadStatus('cancelled');
+            return;
+        }
+        cancelledSourceRef.current = null;
+        setLoadError(null);
+        setLoadStatus(pdfUrl ? 'loading' : 'idle');
+
         const isImage = file?.type?.startsWith('image/') || file?.name?.match(/\.(jpg|jpeg|png|webp|gif)$/i);
+
+        let cancelled = false;
+        let loadingTask: PdfLoadingTask | null = null;
+        let httpAbortController: AbortController | null = null;
+        let slowTimer: number | undefined;
+        const startedAt = performance.now();
+        const logBase = {
+            fileName: file?.name || '',
+            fileSize: file?.size || 0,
+            source: file?.path ? 'native' : 'memory',
+            urlKind: pdfUrl?.startsWith('blob:') ? 'blob' : (pdfUrl ? 'other' : 'none'),
+            attempt: loadRevision + 1,
+        };
+        const clearSlowTimer = () => {
+            if (slowTimer !== undefined) window.clearTimeout(slowTimer);
+        };
+        const startSlowWatchdog = () => {
+            console.info('[PDF-LOAD]', { ...logBase, stage: 'start' });
+            slowTimer = window.setTimeout(() => {
+                if (cancelled || generation !== loadGenerationRef.current) return;
+                // Chỉ đổi UI để người dùng biết tác vụ còn chạy; KHÔNG timeout/hard-cap.
+                setLoadStatus(current => current === 'loading' ? 'slow' : current);
+                console.info('[PDF-LOAD]', {
+                    ...logBase,
+                    stage: 'slow',
+                    elapsedMs: Math.round(performance.now() - startedAt),
+                });
+            }, PDF_LOAD_SLOW_NOTICE_MS);
+        };
+        const markReady = (pages: number) => {
+            if (cancelled || generation !== loadGenerationRef.current) return;
+            clearSlowTimer();
+            setLoadStatus('ready');
+            console.info('[PDF-LOAD]', {
+                ...logBase,
+                stage: 'ready',
+                pages,
+                elapsedMs: Math.round(performance.now() - startedAt),
+            });
+        };
+        const markError = (error: unknown, stage: string) => {
+            if (cancelled || generation !== loadGenerationRef.current) return;
+            clearSlowTimer();
+            const normalized = normalizeLoadError(error);
+            setLoadError(normalized);
+            setLoadStatus('error');
+            console.error('[PDF-LOAD]', {
+                ...logBase,
+                stage,
+                elapsedMs: Math.round(performance.now() - startedAt),
+                errorName: normalized.name,
+                errorMessage: normalized.message,
+            });
+        };
+        const cleanupLoad = () => {
+            cancelled = true;
+            clearSlowTimer();
+            httpAbortController?.abort();
+            if (loadingTask && loadingTaskRef.current === loadingTask) {
+                loadingTaskRef.current = null;
+                void Promise.resolve(loadingTask.destroy?.()).catch(() => undefined);
+            }
+        };
 
         // Trang trắng mới tạo: kích thước đã biết sẵn → dựng đồng bộ, KHÔNG nạp pdfjs/pdfium.
         // Tránh cold-start "đang tải PDF" + "rendering" cho một trang trắng đơn giản.
@@ -150,11 +297,12 @@ export function usePdfLoader({
                     setZoom(safeContainerWidth / w);
                 }
             }
+            setLoadStatus('ready');
             return;
         }
 
         if (isImage && pdfUrl) {
-            let cancelled = false;
+            startSlowWatchdog();
             const img = new Image();
             img.onload = () => {
                 if (cancelled) return;
@@ -169,13 +317,15 @@ export function usePdfLoader({
                 setSelectedIndices(new Set([0]));
                 setLastSelectedIndex(0);
                 setActivePage(1);
+                markReady(1);
             };
+            img.onerror = () => markError(new Error('Không thể đọc dữ liệu ảnh.'), 'image_error');
             img.src = pdfUrl;
-            return () => { cancelled = true; };
+            return cleanupLoad;
         }
 
         if (pdfUrl && (file as any)?.path && (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))) {
-            let cancelled = false;
+            startSlowWatchdog();
             (async () => {
                 try {
                     const filePath = (file as any).path;
@@ -203,14 +353,17 @@ export function usePdfLoader({
                             }
                         }
                     } catch (rustErr) {
+                        if (cancelled || generation !== loadGenerationRef.current) return;
                         // Fallback: backend Python qua HTTP (nếu lệnh Rust lỗi)
                         console.warn('[PERF-META] Rust get_pdf_metadata FAILED → fallback HTTP:', rustErr);
                         const __tf = performance.now();
                         const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8321';
+                        httpAbortController = new AbortController();
                         const res = await fetch(`${apiUrl}/api/imposition/pdf-meta`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ path: filePath })
+                            body: JSON.stringify({ path: filePath }),
+                            signal: httpAbortController.signal,
                         });
                         console.warn(`[PERF-META] HTTP pdf-meta fallback=${(performance.now()-__tf).toFixed(0)}ms ok=${res.ok}`);
                         if (res.ok) {
@@ -225,14 +378,14 @@ export function usePdfLoader({
                             }
                         } else {
                             const errText = await res.text();
-                            if (!cancelled) {
-                                setLoadError(new Error(`API Error: ${res.status} - ${errText}`));
-                                return;
-                            }
+                            throw new Error(`API Error: ${res.status} - ${errText}`);
                         }
                     }
 
                     if (cancelled) return;
+                    if (!Number.isFinite(numPagesFromEngine) || numPagesFromEngine <= 0) {
+                        throw new Error('PDF không có trang hợp lệ.');
+                    }
 
                     setPageWidthPt(widthPt);
                     setPageDim({ w: widthPt * (96 / 72), h: heightPt * (96 / 72) });
@@ -317,17 +470,23 @@ export function usePdfLoader({
                         }, 100);
                     }
 
+                    markReady(numPagesFromEngine);
                 } catch (e) {
-                    console.error('[usePdfLoader] Fast Native Load Failed', e);
+                    markError(e, 'native_error');
                 }
             })();
-            return () => { cancelled = true; };
+            return cleanupLoad;
         } else if (pdfUrl && (!(window as any).__TAURI_INTERNALS__ || (file as any)?.isInMemory || !(file as any)?.path)) {
-            let cancelled = false;
+            startSlowWatchdog();
             (async () => {
                 try {
-                    const doc = await pdfjs.getDocument(pdfUrl).promise;
+                    loadingTask = pdfjs.getDocument(pdfUrl);
+                    loadingTaskRef.current = loadingTask;
+                    const doc = await loadingTask.promise;
                     if (cancelled) return;
+                    if (!Number.isFinite(doc?.numPages) || doc.numPages <= 0) {
+                        throw new Error('PDF không có trang hợp lệ.');
+                    }
                     setPdfRef(doc);
                     setThumbPdfRef(doc);
                     setNumPages(doc.numPages);
@@ -405,11 +564,14 @@ export function usePdfLoader({
                             setZoom(safeContainerWidth / actual100);
                         }
                     }
-                } catch (e) { }
+                    markReady(doc.numPages);
+                } catch (e) {
+                    markError(e, 'pdfjs_error');
+                }
             })();
-            return () => { cancelled = true; };
+            return cleanupLoad;
         }
-    }, [pdfUrl, file]);
+    }, [pdfUrl, file, loadRevision, sourceKey]);
 
     // Update pageDim when active page changes (for multi-size PDFs)
     const updatePageDimForPage = useCallback(async (activePage: number, numPagesCount: number) => {
@@ -475,5 +637,8 @@ export function usePdfLoader({
         updatePageDimForPage,
         generateThumb,
         loadError,
+        loadStatus,
+        retryLoad,
+        cancelLoad,
     };
 }

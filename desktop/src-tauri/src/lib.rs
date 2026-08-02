@@ -3,7 +3,7 @@ use tauri::Manager;
 
 // Add state struct for PDFium
 use pdfium_render::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::ipc::Response;
@@ -136,11 +136,12 @@ fn prune_tile_cache_dir(max_files: usize) {
 }
 
 struct DocHandle {
-    doc: PdfDocument<'static>,
-    lock: Mutex<()>,
     // Cache page ĐÃ MỞ (LRU) để pdfium TÁI DÙNG ảnh đã giải nén giữa các lần render
     // (re-render/zoom/thumbnail rớt từ ~600ms → ~120ms cho trang nhiều ảnh nặng).
+    // Khai báo `pages` trước `doc` để khi drop, mọi FPDF_PAGE đóng trước FPDF_DOCUMENT.
     pages: Mutex<PageLru>,
+    lock: Mutex<()>,
+    doc: PdfDocument<'static>,
 }
 
 // LRU các PdfPage đang mở. Mỗi page giữ ảnh đã giải nén → tốn RAM, nên có cận.
@@ -164,9 +165,78 @@ impl PageLru {
     }
 }
 
+// PERF (audit 2026-08-02 §LOAD.3): LRU tài liệu tách khỏi PDFium để test được
+// lifecycle/cache thuần Rust. `None` nghĩa là không cap trên máy >=16GB; đóng tab vẫn
+// chủ động remove entry nên máy mạnh không bị giảm công suất mà handle không sống vô hạn.
+struct DocumentCache<T> {
+    map: HashMap<String, T>,
+    order: VecDeque<String>,
+    max_entries: Option<usize>,
+}
+
+impl<T> DocumentCache<T> {
+    fn new(max_entries: Option<usize>) -> Self {
+        Self {
+            map: HashMap::new(),
+            order: VecDeque::new(),
+            max_entries,
+        }
+    }
+
+    fn get_cloned(&mut self, key: &str) -> Option<T>
+    where
+        T: Clone,
+    {
+        if !self.map.contains_key(key) {
+            return None;
+        }
+        self.order.retain(|candidate| candidate != key);
+        self.order.push_back(key.to_string());
+        self.map.get(key).cloned()
+    }
+
+    /// Trả các entry bị thay/evict để caller drop SAU KHI đã nhả mutex cache.
+    fn insert(&mut self, key: String, value: T) -> Vec<T> {
+        let mut removed = Vec::new();
+        self.order.retain(|candidate| candidate != &key);
+        if let Some(previous) = self.map.insert(key.clone(), value) {
+            removed.push(previous);
+        }
+        self.order.push_back(key);
+
+        if let Some(max_entries) = self.max_entries {
+            while self.map.len() > max_entries {
+                let Some(oldest) = self.order.pop_front() else {
+                    break;
+                };
+                if let Some(evicted) = self.map.remove(&oldest) {
+                    removed.push(evicted);
+                }
+            }
+        }
+        removed
+    }
+
+    fn remove(&mut self, key: &str) -> Option<T> {
+        self.order.retain(|candidate| candidate != key);
+        self.map.remove(key)
+    }
+}
+
 struct CachedDocument {
     pool: Vec<OnceLock<DocHandle>>,
     next: AtomicUsize, // Round-robin index
+}
+
+impl Drop for CachedDocument {
+    fn drop(&mut self) {
+        // FPDF_ClosePage/FPDF_CloseDocument cũng chạm PDFium. Drop dưới cả hai khóa và
+        // lấy đúng thứ tự LOAD -> RENDER như đường mở tài liệu để không đua với load/in.
+        let _load_guard = lock_mutex(&LOAD_LOCK);
+        let _render_guard = lock_mutex(&RENDER_LOCK);
+        let pool = std::mem::take(&mut self.pool);
+        drop(pool);
+    }
 }
 unsafe impl Send for CachedDocument {}
 unsafe impl Sync for CachedDocument {}
@@ -178,7 +248,7 @@ unsafe impl Send for SyncPdfium {}
 unsafe impl Sync for SyncPdfium {}
 
 static PDFIUM_STATIC: OnceLock<SyncPdfium> = OnceLock::new();
-static DOC_CACHE: OnceLock<Mutex<HashMap<String, Arc<CachedDocument>>>> = OnceLock::new();
+static DOC_CACHE: OnceLock<Mutex<DocumentCache<Arc<CachedDocument>>>> = OnceLock::new();
 
 /// Bind thư viện pdfium MỘT LẦN (OnceLock). Tách hàm để vừa dùng trong các lệnh
 /// Tìm & bind pdfium.dll. Thử các đường dẫn TUYỆT ĐỐI cạnh executable trước
@@ -297,6 +367,138 @@ pub(crate) static LOAD_LOCK: Mutex<()> = Mutex::new(());
 // PrintDlg (tránh treo viewer suốt lúc hộp thoại mở).
 pub static RENDER_LOCK: Mutex<()> = Mutex::new(());
 
+const GIB: u64 = 1024 * 1024 * 1024;
+
+fn doc_cache_limit_for_total_ram(total_bytes: Option<u64>) -> Option<usize> {
+    match total_bytes {
+        Some(bytes) if bytes < 8 * GIB => Some(2),
+        Some(bytes) if bytes < 16 * GIB => Some(4),
+        // PERF (audit 2026-08-02 §LOAD.3): máy >=16GB không hard-cap; lifecycle tab
+        // vẫn đóng document chủ động. Không xác định được RAM cũng chọn không giảm.
+        _ => None,
+    }
+}
+
+// PERF (audit 2026-08-02 §B.1): đưa cả RAM tổng và RAM khả dụng sang frontend để
+// Combine chỉ điều chỉnh khi máy thật sự thiếu bộ nhớ; command này không áp hard-cap.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemMemoryStatus {
+    total_bytes: u64,
+    available_bytes: u64,
+}
+
+#[cfg(target_os = "windows")]
+fn system_memory_status() -> Option<SystemMemoryStatus> {
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+
+    let mut status = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    unsafe { GlobalMemoryStatusEx(&mut status) }.ok()?;
+    Some(SystemMemoryStatus {
+        total_bytes: status.ullTotalPhys,
+        available_bytes: status.ullAvailPhys,
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn system_memory_status() -> Option<SystemMemoryStatus> {
+    None
+}
+
+fn system_total_memory_bytes() -> Option<u64> {
+    system_memory_status().map(|status| status.total_bytes)
+}
+
+#[tauri::command]
+fn get_system_memory_status() -> Result<SystemMemoryStatus, String> {
+    system_memory_status().ok_or_else(|| "Không đọc được trạng thái bộ nhớ hệ thống.".to_string())
+}
+
+fn configured_doc_cache_limit() -> Option<usize> {
+    if let Ok(raw) = std::env::var("PRYNX_DOC_CACHE_LIMIT") {
+        if let Ok(value) = raw.trim().parse::<usize>() {
+            return if value == 0 { None } else { Some(value) };
+        }
+    }
+    doc_cache_limit_for_total_ram(system_total_memory_bytes())
+}
+
+fn document_cache() -> &'static Mutex<DocumentCache<Arc<CachedDocument>>> {
+    DOC_CACHE.get_or_init(|| {
+        let limit = configured_doc_cache_limit();
+        log::info!(
+            "[DOC_CACHE] policy={}",
+            limit
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unbounded".to_string())
+        );
+        Mutex::new(DocumentCache::new(limit))
+    })
+}
+
+fn load_pdf_document(
+    pdfium: &'static Pdfium,
+    file_path: &str,
+) -> Result<PdfDocument<'static>, String> {
+    // I/O không giữ cache mutex; chỉ serialize đoạn thật sự chạm PDFium.
+    let bytes = std::fs::read(file_path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let _load_guard = lock_mutex(&LOAD_LOCK);
+    let _pdfium_guard = lock_mutex(&RENDER_LOCK);
+    pdfium
+        .load_pdf_from_byte_vec(bytes, None)
+        .map_err(|e| format!("Failed to open PDF: {:?}", e))
+}
+
+fn build_cached_document(
+    pdfium: &'static Pdfium,
+    file_path: &str,
+) -> Result<Arc<CachedDocument>, String> {
+    let doc = load_pdf_document(pdfium, file_path)?;
+    let pool_size = get_doc_pool_size().max(1);
+    let mut pool = Vec::with_capacity(pool_size);
+    for _ in 0..pool_size {
+        pool.push(OnceLock::new());
+    }
+    let _ = pool[0].set(DocHandle {
+        pages: Mutex::new(PageLru::new(PAGE_LRU_CAP)),
+        lock: Mutex::new(()),
+        doc,
+    });
+    Ok(Arc::new(CachedDocument {
+        pool,
+        next: AtomicUsize::new(0),
+    }))
+}
+
+fn get_or_load_cached_document(
+    pdfium: &'static Pdfium,
+    file_path: &str,
+) -> Result<Arc<CachedDocument>, String> {
+    if let Some(existing) = {
+        let mut cache = lock_mutex(document_cache());
+        cache.get_cloned(file_path)
+    } {
+        return Ok(existing);
+    }
+
+    // Double-checked insert: đọc/parse file bên ngoài cache mutex. Hai request đua nhau
+    // có thể cùng load; chỉ một entry thắng, bản thừa drop an toàn sau khi nhả mutex.
+    let candidate = build_cached_document(pdfium, file_path)?;
+    let mut cache = lock_mutex(document_cache());
+    if let Some(existing) = cache.get_cloned(file_path) {
+        drop(cache);
+        drop(candidate);
+        return Ok(existing);
+    }
+    let removed = cache.insert(file_path.to_string(), Arc::clone(&candidate));
+    drop(cache);
+    drop(removed);
+    Ok(candidate)
+}
+
 struct SystemFilesState(Mutex<Vec<String>>);
 
 #[tauri::command]
@@ -388,102 +590,103 @@ fn log_frontend_error(
 }
 
 #[tauri::command]
-async fn get_pdf_metadata(
-    file_path: String,
-) -> Result<serde_json::Value, String> {
+async fn close_pdf_document(file_path: String) -> Result<bool, String> {
+    if is_sensitive_path(&file_path) {
+        return Err("Access to this location is not allowed".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
+        let Some(cache_lock) = DOC_CACHE.get() else {
+            return Ok(false);
+        };
+        let removed = {
+            let mut cache = lock_mutex(cache_lock);
+            cache.remove(&file_path)
+        };
+        let existed = removed.is_some();
+        // Drop Arc/document bên ngoài cache mutex; nếu render đang giữ Arc thì document
+        // chỉ đóng sau khi render kết thúc, không invalid handle giữa chừng.
+        drop(removed);
+        perf_log(if existed {
+            "DOC_CACHE_CLOSE removed=1"
+        } else {
+            "DOC_CACHE_CLOSE removed=0"
+        });
+        Ok(existed)
+    })
+    .await
+    .unwrap_or_else(|_| Err("Task panicked".into()))
+}
+
+#[tauri::command]
+async fn get_pdf_metadata(file_path: String) -> Result<serde_json::Value, String> {
     if is_sensitive_path(&file_path) {
         return Err("Access to this location is not allowed".to_string());
     }
     tauri::async_runtime::spawn_blocking(move || -> Result<serde_json::Value, String> {
         let pdfium = ensure_pdfium()?;
-
-        let cache_lock = DOC_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut cache = lock_mutex(cache_lock);
-        
-        if !cache.contains_key(&file_path) {
-            // Lazy pool: open only 1 handle immediately for fast metadata access
-            let doc = {
-                let _guard = lock_mutex(&LOAD_LOCK);
-                let bytes =
-                    std::fs::read(&file_path).map_err(|e| format!("Failed to read file: {}", e))?;
-                pdfium
-                    .load_pdf_from_byte_vec(bytes, None)
-                    .map_err(|e| format!("Failed to open PDF: {:?}", e))?
-            };
-            
-            let pool_size = get_doc_pool_size();
-            let mut pool = Vec::with_capacity(pool_size);
-            for _ in 0..pool_size {
-                pool.push(OnceLock::new());
-            }
-            let _ = pool[0].set(DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(PAGE_LRU_CAP)) });
-            cache.insert(file_path.clone(), Arc::new(CachedDocument {
-                pool,
-                next: AtomicUsize::new(0),
-            }));
-        }
-        
-        let document_arc = Arc::clone(cache.get(&file_path).ok_or("PDF cache miss")?);
-        drop(cache);
+        let document_arc = get_or_load_cached_document(pdfium, &file_path)?;
 
         let handle = document_arc.pool[0].get().ok_or("PDF pool empty")?;
         let _guard = lock_mutex(&handle.lock);
+        let _pdfium_guard = lock_mutex(&RENDER_LOCK);
         let document = &handle.doc;
         let num_pages = document.pages().len();
-        
+
         let mut width_pt = 595.0; // Default A4
         let mut height_pt = 842.0;
-        
         let mut all_dims = serde_json::Map::new();
 
         if num_pages > 0 {
             let pages = document.pages();
-            
-            // First page for global dimensions
-            if let Ok(page) = pages.get(0) {
-                let raw_w = page.width().value;
-                let raw_h = page.height().value;
-                
-                let rot = page.rotation().unwrap_or(pdfium_render::prelude::PdfPageRenderRotation::None);
-                let is_rotated = matches!(rot, pdfium_render::prelude::PdfPageRenderRotation::Degrees90 | pdfium_render::prelude::PdfPageRenderRotation::Degrees270);
-                let (mut w, mut h) = if is_rotated { (raw_h, raw_w) } else { (raw_w, raw_h) };
-                
-                if w < 1.0 { w = 595.0; }
-                if h < 1.0 { h = 842.0; }
+
+            // PERF (audit 2026-08-02 §LOAD.3): FPDF_GetPageSizeByIndex không load page
+            // và đã trả kích thước sau intrinsic rotation (đã có regression test ở print.rs).
+            if let Ok(size) = pages.page_size(0) {
+                let mut w = size.width().value;
+                let mut h = size.height().value;
+                if w < 1.0 {
+                    w = 595.0;
+                }
+                if h < 1.0 {
+                    h = 842.0;
+                }
                 width_pt = w;
                 height_pt = h;
             }
-            
-            // Read dimensions for ALL pages (fast enough in Rust/C++)
-            let max_to_read = std::cmp::min(num_pages, 2000); // Read up to 2000 pages to prevent extreme latency
+
+            let max_to_read = std::cmp::min(num_pages, 2000);
             for i in 0..num_pages {
                 if i < max_to_read {
-                    if let Ok(page) = pages.get(i) {
-                        let raw_w = page.width().value;
-                        let raw_h = page.height().value;
-                        
-                        let rot = page.rotation().unwrap_or(pdfium_render::prelude::PdfPageRenderRotation::None);
-                        let is_rotated = matches!(rot, pdfium_render::prelude::PdfPageRenderRotation::Degrees90 | pdfium_render::prelude::PdfPageRenderRotation::Degrees270);
-                        let (mut pw, mut ph) = if is_rotated { (raw_h, raw_w) } else { (raw_w, raw_h) };
-                        
-                        if pw < 1.0 { pw = 595.0; }
-                        if ph < 1.0 { ph = 842.0; }
-                        all_dims.insert((i as usize + 1).to_string(), serde_json::json!({
-                            "widthPt": pw,
-                            "heightPt": ph
-                        }));
+                    if let Ok(size) = pages.page_size(i) {
+                        let mut pw = size.width().value;
+                        let mut ph = size.height().value;
+                        if pw < 1.0 {
+                            pw = 595.0;
+                        }
+                        if ph < 1.0 {
+                            ph = 842.0;
+                        }
+                        all_dims.insert(
+                            (i as usize + 1).to_string(),
+                            serde_json::json!({
+                                "widthPt": pw,
+                                "heightPt": ph
+                            }),
+                        );
                         continue;
                     }
                 }
-                
-                // Fallback for pages beyond limit or failed to read
-                all_dims.insert((i as usize + 1).to_string(), serde_json::json!({
-                    "widthPt": width_pt,
-                    "heightPt": height_pt
-                }));
+
+                all_dims.insert(
+                    (i as usize + 1).to_string(),
+                    serde_json::json!({
+                        "widthPt": width_pt,
+                        "heightPt": height_pt
+                    }),
+                );
             }
         }
-        
+
         Ok(serde_json::json!({
             "numPages": num_pages,
             "widthPt": width_pt,
@@ -574,33 +777,8 @@ fn render_tile_jpeg(
     }
 
     let pdfium = ensure_pdfium()?;
-    
-    let cache_lock = DOC_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cache = lock_mutex(cache_lock);
-    
-    if !cache.contains_key(file_path) {
-        // Fallback lazy pool init (normally get_pdf_metadata initializes this)
-        let pool_size = get_doc_pool_size();
-        let mut pool = Vec::with_capacity(pool_size);
-        for _ in 0..pool_size {
-            pool.push(OnceLock::new());
-        }
-        let bytes = std::fs::read(&file_path).map_err(|e| format!("FS read error: {}", e))?;
-        let doc = {
-            let _guard = lock_mutex(&LOAD_LOCK);
-            pdfium.load_pdf_from_byte_vec(bytes, None)
-                .map_err(|e| format!("Failed to open PDF: {:?}", e))?
-        };
-        let _ = pool[0].set(DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(PAGE_LRU_CAP)) });
-        cache.insert(file_path.to_string(), Arc::new(CachedDocument {
-            pool,
-            next: AtomicUsize::new(0),
-        }));
-    }
-    
-    let document_arc = Arc::clone(cache.get(file_path).ok_or("PDF cache miss")?);
-    drop(cache);
-    
+    let document_arc = get_or_load_cached_document(pdfium, file_path)?;
+
     let pool_size = document_arc.pool.len();
     let pool_idx = document_arc.next.fetch_add(1, Ordering::Relaxed) % pool_size;
     
@@ -609,17 +787,23 @@ fn render_tile_jpeg(
     // bị xoá/khoá/hỏng giữa phiên). Khởi tạo thủ công + propagate lỗi sạch (§15.7).
     let cell = &document_arc.pool[pool_idx];
     if cell.get().is_none() {
-        let doc = {
-            let _guard = lock_mutex(&LOAD_LOCK);
-            let bytes = std::fs::read(file_path).map_err(|e| format!("FS read error (lazy): {}", e))?;
-            pdfium.load_pdf_from_byte_vec(bytes, None)
-                .map_err(|e| format!("Failed to open PDF (lazy): {:?}", e))?
+        let doc = load_pdf_document(pdfium, file_path)?;
+        let candidate = DocHandle {
+            pages: Mutex::new(PageLru::new(PAGE_LRU_CAP)),
+            lock: Mutex::new(()),
+            doc,
         };
-        // Race-safe: nếu thread khác set trước, set này trả Err → bỏ qua (doc thừa drop, vô hại).
-        let _ = cell.set(DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(PAGE_LRU_CAP)) });
+        // Race-safe: doc thừa phải đóng dưới khóa PDFium, không drop trần cạnh render khác.
+        if let Err(unused) = cell.set(candidate) {
+            let _load_guard = lock_mutex(&LOAD_LOCK);
+            let _render_guard = lock_mutex(&RENDER_LOCK);
+            drop(unused);
+        }
     }
-    let handle = cell.get().ok_or_else(|| "DocHandle init failed".to_string())?;
-    
+    let handle = cell
+        .get()
+        .ok_or_else(|| "DocHandle init failed".to_string())?;
+
     // Đo thật (perf_log): trả ảnh và timing cùng lúc để log sau khi nhả khóa,
     // không kéo dài vùng khóa chỉ vì instrumentation.
     let (rgba_image, lock_wait_ms, render_ms, bitmap_wh) = {
@@ -1165,6 +1349,85 @@ fn get_file_size(path: String) -> Result<u64, String> {
     Ok(metadata.len())
 }
 
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SystemFileStatStatus {
+    Available,
+    Missing,
+    Inaccessible,
+}
+
+#[derive(serde::Serialize)]
+struct SystemFileStat {
+    status: SystemFileStatStatus,
+    size: u64,
+}
+
+fn classify_system_file_stat_error(
+    error: &std::io::Error,
+    parent_is_accessible: bool,
+) -> SystemFileStatStatus {
+    // FILEIO (audit 2026-08-02 §OPEN.2): NotFound chỉ đủ chắc khi thư mục cha vẫn
+    // đọc được. Ổ USB chưa gắn hoặc share NAS offline cũng có thể trả NotFound.
+    if error.kind() == std::io::ErrorKind::NotFound && parent_is_accessible {
+        SystemFileStatStatus::Missing
+    } else {
+        SystemFileStatStatus::Inaccessible
+    }
+}
+
+fn stat_system_file_blocking(file_path: &std::path::Path) -> SystemFileStat {
+    match std::fs::metadata(file_path) {
+        Ok(metadata) if metadata.is_file() => SystemFileStat {
+            status: SystemFileStatStatus::Available,
+            size: metadata.len(),
+        },
+        Ok(_) => SystemFileStat {
+            status: SystemFileStatStatus::Inaccessible,
+            size: 0,
+        },
+        Err(error) => {
+            let parent_is_accessible = file_path
+                .parent()
+                .and_then(|parent| std::fs::metadata(parent).ok())
+                .is_some_and(|metadata| metadata.is_dir());
+            SystemFileStat {
+                status: classify_system_file_stat_error(&error, parent_is_accessible),
+                size: 0,
+            }
+        }
+    }
+}
+
+#[tauri::command]
+async fn stat_system_file(path: String) -> Result<SystemFileStat, String> {
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let allowed = [
+        "pdf", "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "icc", "icm", "svg", "ttf",
+        "otf", "ttc", "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "csv", "ppt", "pptx",
+        "odp", "json", "txt",
+    ];
+    if !allowed.contains(&ext.as_str()) {
+        return Err(format!("File type .{} not allowed", ext));
+    }
+    if is_sensitive_path(&path) {
+        return Err("Access to this location is not allowed".to_string());
+    }
+
+    // FILEIO (audit 2026-08-02 §OPEN.1): metadata NAS/UNC có thể chờ I/O lâu;
+    // chạy ở blocking pool để không giữ luồng IPC/UI. Deadline UX nằm ở frontend
+    // và chỉ ngừng chờ size, không hủy hay giới hạn công suất đọc file thật.
+    tauri::async_runtime::spawn_blocking(move || {
+        stat_system_file_blocking(std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|error| format!("Lỗi chạy tác vụ metadata: {error}"))
+}
+
 #[tauri::command]
 fn write_file_atomic(path: String, contents: Vec<u8>) -> Result<(), String> {
     // GHI FILE NGUYÊN TỬ (chống hỏng/mất file gốc khi crash giữa lúc ghi đè).
@@ -1584,6 +1847,74 @@ fn collect_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> Re
 }
 
 #[cfg(test)]
+mod doc_cache_tests {
+    use super::*;
+
+    #[test]
+    fn lru_evicts_oldest_but_keeps_recently_touched_entry() {
+        let mut cache = DocumentCache::new(Some(2));
+        assert!(cache.insert("a".to_string(), 1).is_empty());
+        assert!(cache.insert("b".to_string(), 2).is_empty());
+        assert_eq!(cache.get_cloned("a"), Some(1));
+
+        let removed = cache.insert("c".to_string(), 3);
+
+        assert_eq!(removed, vec![2]);
+        assert!(cache.map.contains_key("a"));
+        assert!(!cache.map.contains_key("b"));
+        assert!(cache.map.contains_key("c"));
+    }
+
+    #[test]
+    fn unbounded_policy_keeps_entries_until_explicit_close() {
+        let mut cache = DocumentCache::new(None);
+        for index in 0..32 {
+            assert!(cache.insert(format!("doc-{index}"), index).is_empty());
+        }
+        assert_eq!(cache.map.len(), 32);
+        assert_eq!(cache.remove("doc-10"), Some(10));
+        assert_eq!(cache.map.len(), 31);
+        assert!(!cache.order.iter().any(|key| key == "doc-10"));
+    }
+
+    #[test]
+    fn cache_limit_only_reduces_on_low_memory_machines() {
+        assert_eq!(doc_cache_limit_for_total_ram(Some(4 * GIB)), Some(2));
+        assert_eq!(doc_cache_limit_for_total_ram(Some(8 * GIB)), Some(4));
+        assert_eq!(doc_cache_limit_for_total_ram(Some(15 * GIB)), Some(4));
+        assert_eq!(doc_cache_limit_for_total_ram(Some(16 * GIB)), None);
+        assert_eq!(doc_cache_limit_for_total_ram(Some(64 * GIB)), None);
+        assert_eq!(doc_cache_limit_for_total_ram(None), None);
+    }
+
+    #[test]
+    fn memory_status_serializes_with_camel_case_fields() {
+        let status = SystemMemoryStatus {
+            total_bytes: 32 * GIB,
+            available_bytes: 24 * GIB,
+        };
+
+        assert_eq!(
+            serde_json::to_value(status).unwrap(),
+            serde_json::json!({
+                "totalBytes": 32 * GIB,
+                "availableBytes": 24 * GIB,
+            })
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_memory_status_reports_available_within_total() {
+        let status = get_system_memory_status().unwrap();
+
+        assert!(status.total_bytes > 0);
+        assert!(status.available_bytes <= status.total_bytes);
+        assert_eq!(system_total_memory_bytes(), Some(status.total_bytes));
+    }
+}
+
+#[cfg(test)]
 mod batch_folder_tests {
     use super::*;
 
@@ -1600,15 +1931,25 @@ mod batch_folder_tests {
     #[test]
     fn batch_scan_filters_temp_and_unsupported_files() {
         let dir = test_dir("scan");
-        std::fs::write(dir.join("02-report.docx"), b"doc").unwrap();
-        std::fs::write(dir.join("01-source.pdf"), b"%PDF").unwrap();
-        std::fs::write(dir.join("~$02-report.docx"), b"lock").unwrap();
+        let extension_oracle = [
+            "pdf", "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "csv",
+            "ppt", "pptx", "odp",
+        ];
+        for extension in extension_oracle {
+            let upper = extension.to_ascii_uppercase();
+            assert!(supported_batch_extension(std::path::Path::new(&format!("source.{upper}"))));
+            std::fs::write(dir.join(format!("source.{upper}")), b"fixture").unwrap();
+        }
+        std::fs::write(dir.join("~$source.DOCX"), b"lock").unwrap();
         std::fs::write(dir.join("notes.txt"), b"ignore").unwrap();
 
         let files = list_batch_folder_files(dir.to_string_lossy().to_string()).unwrap();
-        assert_eq!(files.len(), 2);
-        assert_eq!(files[0].name, "01-source.pdf");
-        assert_eq!(files[1].name, "02-report.docx");
+        let mut expected = extension_oracle
+            .into_iter()
+            .map(|extension| format!("source.{}", extension.to_ascii_uppercase()))
+            .collect::<Vec<_>>();
+        expected.sort_by_key(|name| name.to_ascii_lowercase());
+        assert_eq!(files.iter().map(|file| file.name.clone()).collect::<Vec<_>>(), expected);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1647,6 +1988,63 @@ mod batch_folder_tests {
         assert!(output.ends_with("report_2.pdf"));
         assert_eq!(std::fs::read(output).unwrap(), b"%PDF-new");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod system_file_stat_tests {
+    use super::*;
+
+    fn test_dir() -> std::path::PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "prynx_stat_{}_{}",
+            std::process::id(),
+            stamp
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn native_stat_distinguishes_available_missing_and_unreachable_parent() {
+        let dir = test_dir();
+        let available_path = dir.join("tài-liệu.pdf");
+        std::fs::write(&available_path, b"%PDF").unwrap();
+
+        let available = stat_system_file_blocking(&available_path);
+        assert_eq!(available.status, SystemFileStatStatus::Available);
+        assert_eq!(available.size, 4);
+
+        let missing = stat_system_file_blocking(&dir.join("da-xoa.pdf"));
+        assert_eq!(missing.status, SystemFileStatStatus::Missing);
+        assert_eq!(missing.size, 0);
+
+        let unreachable_parent =
+            stat_system_file_blocking(&dir.join("share-khong-ton-tai").join("file.pdf"));
+        assert_eq!(
+            unreachable_parent.status,
+            SystemFileStatStatus::Inaccessible
+        );
+
+        let directory_with_pdf_suffix = dir.join("thu-muc.pdf");
+        std::fs::create_dir_all(&directory_with_pdf_suffix).unwrap();
+        let directory = stat_system_file_blocking(&directory_with_pdf_suffix);
+        assert_eq!(directory.status, SystemFileStatStatus::Inaccessible);
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn permission_or_io_error_never_becomes_missing() {
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            classify_system_file_stat_error(&denied, true),
+            SystemFileStatStatus::Inaccessible
+        );
     }
 }
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1688,7 +2086,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(SystemFilesState(Mutex::new(Vec::new())))
-        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, get_startup_args, read_system_file, get_file_size, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, get_pending_system_files, write_file_atomic, copy_file_atomic, read_dir_json, append_perf_log, append_render_perf, log_frontend_error, pdf_engine::diecut::strip_diecut_lines, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
+        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_startup_args, read_system_file, get_file_size, stat_system_file, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, get_pending_system_files, write_file_atomic, copy_file_atomic, read_dir_json, append_perf_log, append_render_perf, log_frontend_error, pdf_engine::diecut::strip_diecut_lines, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(state) = app.try_state::<SystemFilesState>() {
                 if let Ok(mut pending) = state.0.lock() {

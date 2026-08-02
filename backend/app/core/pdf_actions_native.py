@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import math
+import zlib
 from dataclasses import dataclass, field
 
 import pikepdf
@@ -449,7 +450,7 @@ def _resample_image_stream(
         if not _resample_smask(pdf, smask, new_w, new_h):
             return False
 
-    obj.write(raw, filter=pikepdf.Name("/FlateDecode"))
+    obj.write(zlib.compress(raw), filter=pikepdf.Name("/FlateDecode"))
     obj["/Width"] = new_w
     obj["/Height"] = new_h
     obj["/BitsPerComponent"] = 8
@@ -478,7 +479,7 @@ def _resample_smask(pdf: pikepdf.Pdf, smask, new_w: int, new_h: int) -> bool:
     raw = resized.tobytes()
     if len(raw) != new_w * new_h:
         return False
-    smask.write(raw, filter=pikepdf.Name("/FlateDecode"))
+    smask.write(zlib.compress(raw), filter=pikepdf.Name("/FlateDecode"))
     smask["/Width"] = new_w
     smask["/Height"] = new_h
     smask["/BitsPerComponent"] = 8

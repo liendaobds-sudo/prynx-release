@@ -76,7 +76,7 @@ def test_nup_lifecycle_reaches_terminal_and_releases_slot(monkeypatch, tmp_path,
     try:
         imposition._spawn_nup_process("source.pdf", str(output_path), {}, job_id)
         assert slot.releases == 1
-        assert imposition.nup_jobs[job_id]["status"] == "running"
+        assert imposition.nup_jobs[job_id]["status"] == "completed"
 
         status = asyncio.run(imposition.get_nup_status(job_id, {}))
         assert status["status"] == "completed"
@@ -101,6 +101,48 @@ def test_nup_instrumentation_failure_cannot_leak_slot(monkeypatch):
     imposition._spawn_nup_process("source.pdf", "output.pdf", {}, job_id)
 
     assert slot.releases == 1
+
+
+def test_nup_exit_zero_without_state_becomes_failed_terminal(monkeypatch, tmp_path):
+    job_id = "exit-zero-no-state"
+    slot = _TrackingSlot()
+
+    class SilentProcess:
+        pid = 987
+        exitcode = 0
+
+        def __init__(self, *, target, args, daemon):
+            assert target is imposition._nup_process_worker
+            assert daemon is False
+
+        def start(self):
+            return None
+
+        def join(self):
+            return None
+
+    monkeypatch.setattr(multiprocessing, "Process", SilentProcess)
+    monkeypatch.setattr(imposition, "_NUP_SUBMISSION_SLOTS", slot)
+    monkeypatch.setattr(imposition.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(imposition, "_cleanup_nup_chunk_files", lambda _job_id: None)
+    imposition.nup_jobs[job_id] = {
+        "status": "queued",
+        "progress": "0/1",
+        "report": "",
+        "error": None,
+        "output_path": str(tmp_path / "output.pdf"),
+    }
+    try:
+        imposition._spawn_nup_process("source.pdf", "output.pdf", {}, job_id)
+
+        assert slot.releases == 1
+        assert imposition.nup_jobs[job_id]["status"] == "failed"
+        assert "không ghi trạng thái" in imposition.nup_jobs[job_id]["error"]
+        status = asyncio.run(imposition.get_nup_status(job_id, {}))
+        assert status["status"] == "failed"
+        assert status["completed_at"] is not None
+    finally:
+        imposition.nup_jobs.pop(job_id, None)
 
 
 def test_cancel_queued_nup_skips_process_and_preserves_finally(monkeypatch):

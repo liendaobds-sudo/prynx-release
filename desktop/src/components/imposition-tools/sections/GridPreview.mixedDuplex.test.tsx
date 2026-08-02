@@ -5,6 +5,11 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import GridPreview from "./GridPreview";
+import {
+  createImposerSettingsStore,
+  ImposerSettingsContext,
+  useImposerSettingsStore,
+} from "../useImposerSettingsStore";
 
 
 const authenticatedFetchMock = vi.fn();
@@ -112,6 +117,46 @@ function renderMixedPreview() {
   );
 }
 
+function AutoDetectPreviewHarness() {
+  const layoutType = useImposerSettingsStore((state) => state.layoutType);
+  return (
+    <GridPreview
+      taskMode="nup"
+      isDieCut={false}
+      layoutType={layoutType}
+      duplexFlow="normal"
+      gridStrategy="optimal_auto"
+      columns={0}
+      rows={0}
+      gapX={0}
+      gapY={0}
+      sheetWidth={100}
+      sheetHeight={80}
+      marginTop={0}
+      marginBottom={0}
+      marginLeft={0}
+      marginRight={0}
+      align="center"
+      shapeType="CUSTOM"
+      itemW={20}
+      itemH={20}
+      sourceTotalPages={2}
+      filePath="C:\\mixed-size-auto.pdf"
+    />
+  );
+}
+
+function renderAutoDetectPreview() {
+  localStorage.clear();
+  const store = createImposerSettingsStore();
+  store.setState({ taskMode: "nup", layoutType: "sequential" });
+  const view = render(
+    <ImposerSettingsContext.Provider value={store}>
+      <AutoDetectPreviewHarness />
+    </ImposerSettingsContext.Provider>,
+  );
+  return { store, ...view };
+}
 function renderedProductRect(container: HTMLElement): SVGRectElement {
   const rect = container.querySelector<SVGRectElement>(
     'rect[fill="rgba(99, 102, 241, 0.20)"]',
@@ -157,5 +202,32 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     expect(container.querySelectorAll("svg")).toHaveLength(1);
     expect(container.querySelector('g[transform*="scale(-1, 1)"]')).toBeNull();
     expect(authenticatedFetchMock).toHaveBeenCalledTimes(1);
+  });
+  it("tự chuyển sang mixed-size và gọi lại preview khi backend phát hiện nhiều khổ", async () => {
+    authenticatedFetchMock
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 422,
+        text: async () => JSON.stringify({
+          detail: "Dàn nhiều mẫu cắt xén chỉ hỗ trợ các trang cùng kích thước.",
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => mixedResponse(),
+      });
+
+    const { store } = renderAutoDetectPreview();
+
+    await waitFor(() => {
+      expect(store.getState().layoutType).toBe("mixed_guillotine");
+      expect(authenticatedFetchMock).toHaveBeenCalledTimes(2);
+    }, { timeout: 3_000 });
+
+    const retryBody = JSON.parse(
+      String(authenticatedFetchMock.mock.calls[1]?.[1]?.body),
+    );
+    expect(retryBody.layout_type).toBe("mixed_guillotine");
   });
 });

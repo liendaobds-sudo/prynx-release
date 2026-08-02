@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { authenticatedFetch, getApiUrl, prepareFileForUpload } from '../../lib/api';
-import { OFFICE_EXTENSIONS, isOfficePathOrName, mimeForOfficeName } from '../../lib/officeFileTypes';
+import { OFFICE_EXTENSIONS, isGoogleOfficeUrl, isOfficePathOrName, mimeForOfficeName, officeExtension } from '../../lib/officeFileTypes';
 import { ToolSectionLabel } from './ToolUI';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../stores/useAuthStore';
@@ -19,10 +19,71 @@ interface Props {
     /** File Office từ tab payload (Ctrl+O / drop cửa sổ) */
     officeSourceFile?: File | null;
     officeSourceFiles?: File[];
-    onFileFixed?: (blob: Blob, filename: string) => void;
+    onFileFixed?: (blob: Blob, filename: string, path?: string) => void;
+}
+interface OfficePathResponse {
+    path: string;
+    filename?: string;
+}
+interface OfficeCapabilityStatus {
+    supported_extensions: string[];
+    unsupported_extensions: string[];
+    engine_by_extension: Record<string, string>;
+    hint?: string | null;
+}
+
+interface ActiveOfficeRequest {
+    controller: AbortController;
+    generation: number;
+    jobId?: string;
+    pollTimer?: ReturnType<typeof setTimeout>;
+    elapsedTimer?: ReturnType<typeof setInterval>;
+}
+
+interface OfficeJobStatus {
+    phase: string;
+    terminal: boolean;
+    remaining_seconds: number;
 }
 
 type Mode = 'file' | 'google';
+function createOfficeJobId(): string {
+    return globalThis.crypto?.randomUUID?.() || '00000000-0000-4000-8000-' + Date.now().toString(16).padStart(12, '0').slice(-12);
+}
+
+function isAbortError(error: unknown): boolean {
+    return error instanceof DOMException && error.name === 'AbortError';
+}
+
+async function readOfficeOutput(
+    response: Response,
+    preferPath: boolean,
+    fallbackName: string,
+): Promise<{ blob: Blob; name: string; path?: string }> {
+    if (preferPath) {
+        const data = await response.json() as OfficePathResponse;
+        if (!data?.path) throw new Error('Backend không trả về đường dẫn PDF kết quả.');
+        return {
+            blob: new Blob([], { type: 'application/pdf' }),
+            name: data.filename || fallbackName,
+            path: data.path,
+        };
+    }
+    return { blob: await response.blob(), name: fallbackName };
+}
+
+function clearOfficeRequestTimers(request: ActiveOfficeRequest | null): void {
+    if (!request) return;
+    if (request.pollTimer) clearTimeout(request.pollTimer);
+    if (request.elapsedTimer) clearInterval(request.elapsedTimer);
+}
+
+function cancelOfficeBackendJob(jobId?: string): void {
+    if (!jobId) return;
+    void authenticatedFetch(`${getApiUrl()}/pdf-tools/office-convert/jobs/${jobId}/cancel`, {
+        method: 'POST',
+    }).catch(() => undefined);
+}
 type ExcelLayout = 'preserve' | 'fit_width' | 'one_page';
 type BatchResizePreset = 'none' | 'a4' | 'a3' | 'letter' | 'custom';
 
@@ -39,18 +100,13 @@ interface BatchResult extends BatchFolderFile {
 }
 
 function isExcelName(name: string): boolean {
-    return /\.(xls|xlsx|csv)$/i.test(name);
+    return /\.(xls|xlsx|ods|csv)$/i.test(name);
 }
 
 function isSupportedLooseName(name: string): boolean {
     return /\.pdf$/i.test(name) || isOfficePathOrName(name);
 }
 
-function looksLikeGoogleUrl(text: string): boolean {
-    const s = text.trim();
-    return /docs\.google\.com\/(document|spreadsheets|presentation)\//i.test(s)
-        || /drive\.google\.com\/file\/d\//i.test(s);
-}
 
 export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles, onFileFixed }: Props) {
     const { t } = useTranslation();
@@ -60,6 +116,10 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
     const convertingRef = useRef(false);
     const lastSourceKeyRef = useRef<string>('');
     const batchCancelRef = useRef(false);
+    const activeRequestRef = useRef<ActiveOfficeRequest | null>(null);
+    const batchRequestRef = useRef<ActiveOfficeRequest | null>(null);
+    const singleGenerationRef = useRef(0);
+    const batchGenerationRef = useRef(0);
 
     const [mode, setMode] = useState<Mode>('file');
     const [googleUrl, setGoogleUrl] = useState('');
@@ -80,8 +140,167 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
     const [batchResizePreset, setBatchResizePreset] = useState<BatchResizePreset>('none');
     const [batchCustomWidth, setBatchCustomWidth] = useState(210);
     const [batchCustomHeight, setBatchCustomHeight] = useState(297);
+    const [capabilityStatus, setCapabilityStatus] = useState<OfficeCapabilityStatus | null>(null);
+    const [activeJobId, setActiveJobId] = useState<string | null>(null);
+    const [canExtendLease, setCanExtendLease] = useState(false);
+    const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
 
+    const isFormatSupported = useCallback((name: string): boolean => {
+        const extension = officeExtension(name);
+        if (!extension || !capabilityStatus) return Boolean(extension);
+        return capabilityStatus.supported_extensions.includes(`.${extension}`);
+    }, [capabilityStatus]);
+
+    const formatUnavailableMessage = useCallback((name: string): string => {
+        const extension = officeExtension(name);
+        return t('preprocess.officeConvert:format_unavailable', {
+            extension: extension ? `.${extension}` : name,
+        });
+    }, [t]);
+
+    const isRequestCurrent = useCallback((scope: 'single' | 'batch', request: ActiveOfficeRequest) => {
+        const active = scope === 'single' ? activeRequestRef.current : batchRequestRef.current;
+        const generation = scope === 'single' ? singleGenerationRef.current : batchGenerationRef.current;
+        return active === request && generation === request.generation && !request.controller.signal.aborted;
+    }, []);
+
+    const trackRequest = useCallback((
+        scope: 'single' | 'batch',
+        request: ActiveOfficeRequest,
+        initialProgress: string,
+    ) => {
+        setProgress(initialProgress);
+        setElapsedSeconds(0);
+        setActiveJobId(request.jobId || null);
+        setCanExtendLease(false);
+        request.elapsedTimer = setInterval(() => {
+            if (isRequestCurrent(scope, request)) setElapsedSeconds((value) => value + 1);
+        }, 1000);
+
+        if (!request.jobId) return;
+        const poll = async () => {
+            if (!isRequestCurrent(scope, request) || !request.jobId) return;
+            try {
+                const response = await authenticatedFetch(
+                    `${getApiUrl()}/pdf-tools/office-convert/jobs/${request.jobId}`,
+                    { signal: request.controller.signal },
+                );
+                if (response.ok) {
+                    const status = await response.json() as OfficeJobStatus;
+                    if (!isRequestCurrent(scope, request)) return;
+                    setProgress(t(`preprocess.officeConvert:phase_${status.phase}`));
+                    setCanExtendLease(!status.terminal && status.remaining_seconds <= 60);
+                    if (status.terminal) return;
+                }
+            } catch (pollError) {
+                if (isAbortError(pollError)) return;
+            }
+            if (isRequestCurrent(scope, request)) {
+                request.pollTimer = setTimeout(() => void poll(), 500);
+            }
+        };
+        request.pollTimer = setTimeout(() => void poll(), 300);
+    }, [isRequestCurrent, t]);
+
+    const beginRequest = useCallback((
+        scope: 'single' | 'batch',
+        jobId: string | undefined,
+        initialProgress: string,
+    ): ActiveOfficeRequest => {
+        const generationRef = scope === 'single' ? singleGenerationRef : batchGenerationRef;
+        const activeRef = scope === 'single' ? activeRequestRef : batchRequestRef;
+        const previous = activeRef.current;
+        if (previous) {
+            cancelOfficeBackendJob(previous.jobId);
+            previous.controller.abort();
+            clearOfficeRequestTimers(previous);
+        }
+        const request: ActiveOfficeRequest = {
+            controller: new AbortController(),
+            generation: ++generationRef.current,
+            jobId,
+        };
+        activeRef.current = request;
+        trackRequest(scope, request, initialProgress);
+        return request;
+    }, [trackRequest]);
+
+    const finishRequest = useCallback((scope: 'single' | 'batch', request: ActiveOfficeRequest): boolean => {
+        if (!isRequestCurrent(scope, request)) return false;
+        clearOfficeRequestTimers(request);
+        if (scope === 'single') activeRequestRef.current = null;
+        else batchRequestRef.current = null;
+        setActiveJobId(null);
+        setCanExtendLease(false);
+        return true;
+    }, [isRequestCurrent]);
+
+    const cancelActiveRequest = useCallback(() => {
+        const request = activeRequestRef.current;
+        if (!request) return;
+        activeRequestRef.current = null;
+        singleGenerationRef.current += 1;
+        cancelOfficeBackendJob(request.jobId);
+        request.controller.abort();
+        clearOfficeRequestTimers(request);
+        convertingRef.current = false;
+        setIsProcessing(false);
+        setProgress('');
+        setActiveJobId(null);
+        setCanExtendLease(false);
+        setError(t('preprocess.officeConvert:cancelled'));
+    }, [t]);
+
+    const extendActiveLease = useCallback(async () => {
+        if (!activeJobId) return;
+        const request = activeRequestRef.current || batchRequestRef.current;
+        const formData = new FormData();
+        formData.append('seconds', '300');
+        try {
+            const response = await authenticatedFetch(
+                `${getApiUrl()}/pdf-tools/office-convert/jobs/${activeJobId}/extend`,
+                { method: 'POST', body: formData, signal: request?.controller.signal },
+            );
+            if (response.ok) {
+                setCanExtendLease(false);
+                setProgress(t('preprocess.officeConvert:phase_extended'));
+            }
+        } catch (extendError) {
+            if (!isAbortError(extendError)) {
+                setError(t('preprocess.officeConvert:loi_khong_xac_dinh'));
+            }
+        }
+    }, [activeJobId, t]);
+
+    useEffect(() => {
+        const controller = new AbortController();
+        void authenticatedFetch(`${getApiUrl()}/pdf-tools/office-convert/status`, {
+            signal: controller.signal,
+        }).then(async (response) => {
+            if (!response.ok) return;
+            const status = await response.json() as OfficeCapabilityStatus;
+            status.supported_extensions = (status.supported_extensions || []).map((ext) => ext.toLowerCase());
+            setCapabilityStatus(status);
+        }).catch(() => undefined);
+        return () => controller.abort();
+    }, []);
+
+    useEffect(() => {
+        if (activeJobId && elapsedSeconds >= 60) setCanExtendLease(true);
+    }, [activeJobId, elapsedSeconds]);
+
+    useEffect(() => () => {
+        singleGenerationRef.current += 1;
+        batchGenerationRef.current += 1;
+        for (const request of [activeRequestRef.current, batchRequestRef.current]) {
+            cancelOfficeBackendJob(request?.jobId);
+            request?.controller.abort();
+            clearOfficeRequestTimers(request);
+        }
+        activeRequestRef.current = null;
+        batchRequestRef.current = null;
+    }, []);
     // ── Core convert ─────────────────────────────────────────────
     const convertFile = useCallback(async (
         src: File,
@@ -89,26 +308,37 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
         resizeTarget?: { width: number; height: number } | null,
     ) => {
         if (convertingRef.current) return;
+        if (!isFormatSupported(src.name)) {
+            setError(formatUnavailableMessage(src.name));
+            return;
+        }
+
         convertingRef.current = true;
         setIsProcessing(true);
         setError('');
         setSuccess('');
-        setProgress(t('preprocess.officeConvert:dang_chuyen'));
         setPickedFile(src);
         setMode('file');
+        const jobId = createOfficeJobId();
+        const request = beginRequest(
+            'single',
+            jobId,
+            t('preprocess.officeConvert:dang_chuyen'),
+        );
 
         try {
+            const preferPath = !!(window as any).__TAURI_INTERNALS__;
             const formData = new FormData();
+            formData.append('job_id', jobId);
+            if (preferPath) formData.append('return_path', 'true');
             if (isExcelName(src.name)) {
                 formData.append('excel_layout', excelLayoutOverride || 'preserve');
             }
             const diskPath = (src as any).path as string | undefined;
 
             if (diskPath && typeof diskPath === 'string' && diskPath.length > 2) {
-                // Prefer absolute path — backend reads disk, Word COM opens same path
                 formData.append('file_path', diskPath);
             } else {
-                // Browser File or bytes already loaded
                 const real = await prepareFileForUpload(src);
                 const blob = real instanceof Blob ? real : new Blob([real as any]);
                 if (blob.size === 0) {
@@ -120,6 +350,7 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
             const res = await authenticatedFetch(`${getApiUrl()}/pdf-tools/office-convert/file`, {
                 method: 'POST',
                 body: formData,
+                signal: request.controller.signal,
             });
             if (!res.ok) {
                 const errData = await res.json().catch(() => null);
@@ -131,19 +362,33 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                         : t('preprocess.officeConvert:loi_server', { status: res.status });
                 throw new Error(msg);
             }
-            let outBlob = await res.blob();
-            if (outBlob.size < 32) {
+            const fallbackName = `converted_${src.name.replace(/\.[^.]+$/, '')}.pdf`;
+            let output = await readOfficeOutput(res, preferPath, fallbackName);
+            if (!isRequestCurrent('single', request)) return;
+            if (!output.path && output.blob.size < 32) {
                 throw new Error(t('preprocess.officeConvert:loi_pdf_rong'));
             }
             if (resizeTarget) {
+                const resizeJobId = createOfficeJobId();
+                clearOfficeRequestTimers(request);
+                request.jobId = resizeJobId;
+                trackRequest('single', request, t('preprocess.officeConvert:phase_resizing'));
                 const resizeForm = new FormData();
-                resizeForm.append('file', outBlob, 'converted_' + src.name.replace(/\.[^.]+$/, '') + '.pdf');
+                if (output.path) {
+                    resizeForm.append('file_path', output.path);
+                    resizeForm.append('consume_source', 'true');
+                    resizeForm.append('return_path', 'true');
+                } else {
+                    resizeForm.append('file', output.blob, fallbackName);
+                }
                 resizeForm.append('target_w', String(resizeTarget.width));
                 resizeForm.append('target_h', String(resizeTarget.height));
                 resizeForm.append('auto_orientation', 'true');
+                resizeForm.append('job_id', resizeJobId);
                 const resizeResponse = await authenticatedFetch(getApiUrl() + '/pdf-tools/office-convert/resize-output', {
                     method: 'POST',
                     body: resizeForm,
+                    signal: request.controller.signal,
                 });
                 if (!resizeResponse.ok) {
                     const data = await resizeResponse.json().catch(() => null);
@@ -151,27 +396,51 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                         ? data.detail
                         : t('preprocess.officeConvert:loi_server', { status: resizeResponse.status }));
                 }
-                outBlob = await resizeResponse.blob();
+                output = await readOfficeOutput(
+                    resizeResponse,
+                    preferPath,
+                    `resized_${fallbackName}`,
+                );
+                if (!isRequestCurrent('single', request)) return;
             }
-            const outName = `converted_${src.name.replace(/\.[^.]+$/, '')}.pdf`;
             setSuccess(t('preprocess.officeConvert:thanh_cong'));
             setProgress('');
-            onFileFixed?.(outBlob, outName);
-        } catch (e: any) {
-            setError(e?.message || t('preprocess.officeConvert:loi_khong_xac_dinh'));
+            onFileFixed?.(output.blob, output.name, output.path);
+        } catch (convertError: any) {
+            if (!isRequestCurrent('single', request)) return;
+            setError(isAbortError(convertError)
+                ? t('preprocess.officeConvert:cancelled')
+                : convertError?.message || t('preprocess.officeConvert:loi_khong_xac_dinh'));
             setProgress('');
         } finally {
-            convertingRef.current = false;
-            setIsProcessing(false);
+            if (finishRequest('single', request)) {
+                convertingRef.current = false;
+                setIsProcessing(false);
+            }
         }
-    }, [onFileFixed, t]);
+    }, [
+        beginRequest,
+        finishRequest,
+        formatUnavailableMessage,
+        isFormatSupported,
+        isRequestCurrent,
+        onFileFixed,
+        t,
+        trackRequest,
+    ]);
+
     const stageFile = useCallback((src: File) => {
+        if (!isFormatSupported(src.name)) {
+            setPickedFile(null);
+            setError(formatUnavailableMessage(src.name));
+            return;
+        }
         setPickedFile(src);
         setMode('file');
         setError('');
         setSuccess('');
         setProgress('');
-    }, []);
+    }, [formatUnavailableMessage, isFormatSupported]);
 
     const startSingleConversion = useCallback(async () => {
         if (!pickedFile) return;
@@ -211,11 +480,14 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
         try {
             if ((window as any).__TAURI_INTERNALS__) {
                 const { open } = await import('@tauri-apps/plugin-dialog');
+                const supportedOfficeExtensions = capabilityStatus
+                    ? capabilityStatus.supported_extensions.map((ext) => ext.replace(/^\./, ''))
+                    : [...OFFICE_EXTENSIONS];
                 const selected = await open({
                     multiple: canBatch,
                     filters: [
-                        { name: 'Word / Excel / PowerPoint / PDF', extensions: [...OFFICE_EXTENSIONS, 'pdf'] },
-                        { name: 'Office / PDF', extensions: [...OFFICE_EXTENSIONS, 'pdf'] },
+                        { name: 'Word / Excel / PowerPoint / PDF', extensions: [...supportedOfficeExtensions, 'pdf'] },
+                        { name: 'Office / PDF', extensions: [...supportedOfficeExtensions, 'pdf'] },
                     ],
                 });
                 if (!selected) return;
@@ -247,7 +519,10 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                 const input = document.createElement('input');
                 input.type = 'file';
                 input.multiple = canBatch;
-                input.accept = [...OFFICE_EXTENSIONS, 'pdf'].map((e) => '.' + e).join(',');
+                const browserExtensions = capabilityStatus
+                    ? capabilityStatus.supported_extensions.map((ext) => ext.replace(/^\./, ''))
+                    : [...OFFICE_EXTENSIONS];
+                input.accept = [...browserExtensions, 'pdf'].map((e) => '.' + e).join(',');
                 input.onchange = async () => {
                     const files = Array.from(input.files || []);
                     if (files.length > 1 || /\.pdf$/i.test(files[0]?.name || '')) await stageLooseFiles(files);
@@ -258,24 +533,42 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
         } catch (e: any) {
             setError(e?.message || t('preprocess.officeConvert:loi_khong_xac_dinh'));
         }
-    }, [canBatch, stageFile, t]);
+    }, [canBatch, capabilityStatus, stageFile, t]);
 
-    const handleGoogle = async () => {
+    const handleGoogle = useCallback(async () => {
         const url = googleUrl.trim();
         if (!url) {
             setError(t('preprocess.officeConvert:chua_dan_link'));
             return;
         }
+        if (/drive\.google\.com\/drive\/folders\//i.test(url)) {
+            setError(t('preprocess.officeConvert:google_folder_unsupported'));
+            return;
+        }
+        if (!isGoogleOfficeUrl(url)) {
+            setError(t('preprocess.officeConvert:google_link_invalid'));
+            return;
+        }
+
         setIsProcessing(true);
         setError('');
         setSuccess('');
-        setProgress(t('preprocess.officeConvert:dang_tai_google'));
+        const jobId = createOfficeJobId();
+        const request = beginRequest(
+            'single',
+            jobId,
+            t('preprocess.officeConvert:dang_tai_google'),
+        );
         try {
+            const preferPath = !!(window as any).__TAURI_INTERNALS__;
             const formData = new FormData();
             formData.append('url', url);
+            formData.append('job_id', jobId);
+            if (preferPath) formData.append('return_path', 'true');
             const res = await authenticatedFetch(`${getApiUrl()}/pdf-tools/office-convert/google`, {
                 method: 'POST',
                 body: formData,
+                signal: request.controller.signal,
             });
             if (!res.ok) {
                 const errData = await res.json().catch(() => null);
@@ -284,24 +577,31 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                     || t('preprocess.officeConvert:loi_server', { status: res.status })
                 );
             }
-            const blob = await res.blob();
+            const output = await readOfficeOutput(res, preferPath, 'google_export.pdf');
+            if (!isRequestCurrent('single', request)) return;
             setSuccess(t('preprocess.officeConvert:thanh_cong_google'));
             setProgress('');
-            onFileFixed?.(blob, 'google_export.pdf');
-        } catch (e: any) {
-            setError(e?.message || t('preprocess.officeConvert:loi_khong_xac_dinh'));
+            onFileFixed?.(output.blob, output.name, output.path);
+        } catch (googleError: any) {
+            if (!isRequestCurrent('single', request)) return;
+            setError(isAbortError(googleError)
+                ? t('preprocess.officeConvert:cancelled')
+                : googleError?.message || t('preprocess.officeConvert:loi_khong_xac_dinh'));
             setProgress('');
         } finally {
-            setIsProcessing(false);
+            if (finishRequest('single', request)) setIsProcessing(false);
         }
-    };
-
+    }, [beginRequest, finishRequest, googleUrl, isRequestCurrent, onFileFixed, t]);
     const onDrop = async (e: React.DragEvent) => {
         e.preventDefault();
         e.stopPropagation();
         setDragOver(false);
         const text = e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain');
-        if (text && looksLikeGoogleUrl(text)) {
+        if (text && /drive\.google\.com\/drive\/folders\//i.test(text)) {
+            setError(t('preprocess.officeConvert:google_folder_unsupported'));
+            return;
+        }
+        if (text && isGoogleOfficeUrl(text)) {
             const url = text.trim().split(/\s+/)[0];
             setMode('google');
             setGoogleUrl(url);
@@ -455,18 +755,38 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
 
         let successCount = 0;
         let errorCount = 0;
+        let wasCancelled = false;
         for (let index = 0; index < batchResults.length; index += 1) {
             const item = batchResults[index];
             if (batchCancelRef.current) {
                 setBatchResults((current) => current.map((entry, i) =>
                     i >= index && entry.status === 'pending' ? { ...entry, status: 'cancelled' } : entry));
+                wasCancelled = true;
                 break;
             }
+
+            const isPdf = /\.pdf$/i.test(item.name);
+            if (!isPdf && !isFormatSupported(item.name)) {
+                errorCount += 1;
+                updateBatchResult(index, {
+                    status: 'error',
+                    error: formatUnavailableMessage(item.name),
+                });
+                continue;
+            }
+
             updateBatchResult(index, { status: 'processing' });
+            let jobId = isPdf ? undefined : createOfficeJobId();
+            const request = beginRequest(
+                'batch',
+                jobId,
+                t('preprocess.officeConvert:batch_progress', {
+                    current: index + 1,
+                    total: batchResults.length,
+                }),
+            );
             try {
                 const preferredName = `${item.name.replace(/\.[^.]+$/, '')}.pdf`;
-                const isPdf = /\.pdf$/i.test(item.name);
-                let pdfBlob: Blob | null = null;
                 let outputPath: string;
 
                 if (isPdf && !resizeTarget) {
@@ -476,14 +796,18 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                         preferredName,
                     });
                 } else {
+                    let convertedPath: string | null = isPdf ? item.path : null;
                     if (!isPdf) {
                         const formData = new FormData();
                         formData.append('file_path', item.path);
                         formData.append('batch_mode', 'true');
+                        formData.append('job_id', jobId || '');
+                        formData.append('return_path', 'true');
                         if (isExcelName(item.name)) formData.append('excel_layout', excelLayout);
                         const response = await authenticatedFetch(`${getApiUrl()}/pdf-tools/office-convert/file`, {
                             method: 'POST',
                             body: formData,
+                            signal: request.controller.signal,
                         });
                         if (!response.ok) {
                             const data = await response.json().catch(() => null);
@@ -491,20 +815,32 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                                 ? data.detail
                                 : t('preprocess.officeConvert:loi_server', { status: response.status }));
                         }
-                        pdfBlob = await response.blob();
+                        const converted = await response.json() as OfficePathResponse;
+                        convertedPath = converted.path || null;
+                        if (!isRequestCurrent('batch', request)) {
+                            throw new DOMException('Cancelled', 'AbortError');
+                        }
                     }
 
                     if (resizeTarget) {
+                        jobId = createOfficeJobId();
+                        clearOfficeRequestTimers(request);
+                        request.jobId = jobId;
+                        trackRequest('batch', request, t('preprocess.officeConvert:phase_resizing'));
                         const resizeForm = new FormData();
-                        if (isPdf) resizeForm.append('file_path', item.path);
-                        else if (pdfBlob) resizeForm.append('file', pdfBlob, preferredName);
+                        if (!convertedPath) throw new Error(t('preprocess.officeConvert:loi_pdf_rong'));
+                        resizeForm.append('file_path', convertedPath);
+                        if (!isPdf) resizeForm.append('consume_source', 'true');
+                        resizeForm.append('return_path', 'true');
                         resizeForm.append('target_w', String(resizeTarget.width));
                         resizeForm.append('target_h', String(resizeTarget.height));
                         resizeForm.append('auto_orientation', 'true');
                         resizeForm.append('batch_mode', 'true');
+                        if (jobId) resizeForm.append('job_id', jobId);
                         const resizeResponse = await authenticatedFetch(`${getApiUrl()}/pdf-tools/office-convert/resize-output`, {
                             method: 'POST',
                             body: resizeForm,
+                            signal: request.controller.signal,
                         });
                         if (!resizeResponse.ok) {
                             const data = await resizeResponse.json().catch(() => null);
@@ -512,34 +848,59 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                                 ? data.detail
                                 : t('preprocess.officeConvert:loi_server', { status: resizeResponse.status }));
                         }
-                        pdfBlob = await resizeResponse.blob();
+                        const resized = await resizeResponse.json() as OfficePathResponse;
+                        convertedPath = resized.path || null;
                     }
 
-                    if (!pdfBlob) throw new Error(t('preprocess.officeConvert:loi_pdf_rong'));
-                    const contents = new Uint8Array(await pdfBlob.arrayBuffer());
-                    outputPath = await invoke<string>('write_batch_pdf', {
+                    if (!convertedPath) throw new Error(t('preprocess.officeConvert:loi_pdf_rong'));
+                    if (!isRequestCurrent('batch', request)) {
+                        throw new DOMException('Cancelled', 'AbortError');
+                    }
+                    outputPath = await invoke<string>('copy_batch_pdf', {
+                        source: convertedPath,
                         outputDir: batchOutputFolder,
                         preferredName,
-                        contents,
                     });
                 }
                 successCount += 1;
                 updateBatchResult(index, { status: 'success', outputPath });
-            } catch (e: any) {
+            } catch (batchError: any) {
+                if (batchCancelRef.current || isAbortError(batchError)) {
+                    wasCancelled = true;
+                    updateBatchResult(index, { status: 'cancelled' });
+                    setBatchResults((current) => current.map((entry, i) =>
+                        i > index && entry.status === 'pending' ? { ...entry, status: 'cancelled' } : entry));
+                    break;
+                }
                 errorCount += 1;
                 updateBatchResult(index, {
                     status: 'error',
-                    error: e?.message || t('preprocess.officeConvert:loi_khong_xac_dinh'),
+                    error: batchError?.message || t('preprocess.officeConvert:loi_khong_xac_dinh'),
                 });
+            } finally {
+                finishRequest('batch', request);
             }
         }
         setIsBatchRunning(false);
-        setSuccess(t('preprocess.officeConvert:batch_summary', { success: successCount, error: errorCount }));
+        setProgress('');
+        setSuccess(wasCancelled
+            ? t('preprocess.officeConvert:batch_cancelled', { success: successCount, error: errorCount })
+            : t('preprocess.officeConvert:batch_summary', { success: successCount, error: errorCount }));
     };
 
     const stopBatch = () => {
         batchCancelRef.current = true;
+        const request = batchRequestRef.current;
+        batchRequestRef.current = null;
+        batchGenerationRef.current += 1;
+        cancelOfficeBackendJob(request?.jobId);
+        request?.controller.abort();
+        clearOfficeRequestTimers(request);
+        setActiveJobId(null);
+        setCanExtendLease(false);
+        setProgress(t('preprocess.officeConvert:phase_cancel_requested'));
     };
+
     return (
         <div className="flex flex-col gap-4">
 
@@ -667,6 +1028,14 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                                 : t('preprocess.officeConvert:bam_chon_file')}
                         </button>
                         <p className="text-[10px] text-slate-400 mt-2 text-center">{t('preprocess.officeConvert:dinh_dang')}</p>
+                        {capabilityStatus && (
+                            <p className="text-[10px] text-slate-500 dark:text-zinc-400 mt-1 text-center">
+                                {capabilityStatus.hint}<br />
+                                {t('preprocess.officeConvert:supported_on_machine', {
+                                    extensions: capabilityStatus.supported_extensions.join(', '),
+                                })}
+                            </p>
+                        )}
                     </>
                 ) : (
                     <>
@@ -829,7 +1198,32 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
             {progress && (
                 <div className="flex items-center gap-3 bg-teal-50 dark:bg-teal-900/20 p-3 rounded-lg border border-teal-200">
                     <div className="w-5 h-5 rounded-full border-2 border-teal-500 border-t-transparent animate-spin shrink-0" />
-                    <span className="text-[12px] text-teal-700 font-medium">{progress}</span>
+                    <div className="min-w-0 flex-1">
+                        <div className="text-[12px] text-teal-700 font-medium">{progress}</div>
+                        {elapsedSeconds > 0 && (
+                            <div className="text-[10px] text-teal-600/80">
+                                {t('preprocess.officeConvert:elapsed', { seconds: elapsedSeconds })}
+                            </div>
+                        )}
+                    </div>
+                    {canExtendLease && activeJobId && (
+                        <button
+                            type="button"
+                            onClick={() => void extendActiveLease()}
+                            className="px-3 py-1.5 rounded-lg bg-amber-50 text-amber-700 border border-amber-200 text-[11px] font-bold"
+                        >
+                            {t('preprocess.officeConvert:continue_waiting')}
+                        </button>
+                    )}
+                    {isProcessing && (
+                        <button
+                            type="button"
+                            onClick={cancelActiveRequest}
+                            className="px-3 py-1.5 rounded-lg bg-red-50 text-red-600 border border-red-200 text-[11px] font-bold"
+                        >
+                            {t('preprocess.officeConvert:batch_stop')}
+                        </button>
+                    )}
                 </div>
             )}
             {error && (

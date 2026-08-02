@@ -1,5 +1,13 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { PDFDocument, PDFImage } from 'pdf-lib';
+import type { PDFDocument, PDFImage, PDFPage } from 'pdf-lib';
+import { isSupportedImageFileName } from './imageFileTypes';
+
+export {
+    imageFileExtension,
+    isSupportedImageFileName,
+    SUPPORTED_IMAGE_EXTENSIONS,
+    type SupportedImageExtension,
+} from './imageFileTypes';
 
 /**
  * Normalizes an arbitrary image file (e.g. CMYK JPEG, TIFF) into standard RGB PNG bytes.
@@ -8,7 +16,7 @@ import type { PDFDocument, PDFImage } from 'pdf-lib';
  * @returns A promise resolving to the standard PNG bytes
  */
 export async function normalizeImageToPngBytes(bytes: ArrayBuffer | Uint8Array): Promise<Uint8Array> {
-    if (!(window as any).__TAURI_INTERNALS__) {
+    if (!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
         // Fallback for non-Tauri environment (browser fallback)
         return new Uint8Array(bytes);
     }
@@ -83,14 +91,17 @@ function readPngPhysDpi(b: Uint8Array): { x: number; y: number } | null {
     for (let i = 0; i < 8; i++) if (b[i] !== SIG[i]) return null;
     let off = 8;
     while (off + 8 <= b.length) {
-        const len = (b[off] << 24) | (b[off + 1] << 16) | (b[off + 2] << 8) | b[off + 3];
+        const len = b[off] * 0x1000000 + b[off + 1] * 0x10000 + b[off + 2] * 0x100 + b[off + 3];
         const type = String.fromCharCode(b[off + 4], b[off + 5], b[off + 6], b[off + 7]);
         const data = off + 8;
+        const chunkEnd = data + len;
+        if (chunkEnd + 4 > b.length) return null;
         if (type === 'pHYs') {
-            if (data + 9 > b.length) return null;
-            const ppuX = (b[data] << 24) | (b[data + 1] << 16) | (b[data + 2] << 8) | b[data + 3];
-            const ppuY = (b[data + 4] << 24) | (b[data + 5] << 16) | (b[data + 6] << 8) | b[data + 7];
-            const unit = b[data + 12];
+            if (len !== 9) return null;
+            const ppuX = b[data] * 0x1000000 + b[data + 1] * 0x10000 + b[data + 2] * 0x100 + b[data + 3];
+            const ppuY = b[data + 4] * 0x1000000 + b[data + 5] * 0x10000 + b[data + 6] * 0x100 + b[data + 7];
+            // PDF (audit 2026-08-01 §B.2): pHYs chỉ có 9 byte data; unit nằm ở byte 9.
+            const unit = b[data + 8];
             if (unit === 1 && ppuX > 0 && ppuY > 0) {
                 // pixel / mét → DPI (1 inch = 0.0254 m)
                 return { x: ppuX * 0.0254, y: ppuY * 0.0254 };
@@ -98,7 +109,7 @@ function readPngPhysDpi(b: Uint8Array): { x: number; y: number } | null {
             return null;
         }
         if (type === 'IDAT' || type === 'IEND') return null; // pHYs (nếu có) luôn đứng trước IDAT
-        off = data + len + 4; // bỏ qua data + crc
+        off = chunkEnd + 4; // bỏ qua data + crc
     }
     return null;
 }
@@ -116,6 +127,24 @@ function imagePagePoints(img: PDFImage, bytes: Uint8Array, isJpg: boolean): [num
 }
 
 /**
+ * Nhúng ảnh trực tiếp thành một trang trong tài liệu đích. Đường Combine dùng helper
+ * này để tránh tạo PDF trung gian rồi `copyPages()` — bước copy đó chiếm phần lớn thời
+ * gian với PNG lớn dù dữ liệu ảnh vẫn giữ nguyên nén.
+ */
+export async function appendImagePageToPdfDoc(
+    doc: PDFDocument,
+    bytes: ArrayBuffer | Uint8Array,
+    fileName: string,
+): Promise<PDFPage> {
+    const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const img = await embedImagePreserveCompression(doc, buf, fileName);
+    const [pw, ph] = imagePagePoints(img, buf, isJpgName(fileName));
+    const page = doc.addPage([pw, ph]);
+    page.drawImage(img, { x: 0, y: 0, width: pw, height: ph });
+    return page;
+}
+
+/**
  * Ảnh (JPG/PNG) → PDFDocument 1 trang (giữ nén gốc, khổ theo DPI). Dùng chung cho mọi
  * luồng cần chuyển ảnh sang PDF (mở file, ghép, chèn, đóng dấu…).
  */
@@ -124,13 +153,29 @@ export async function imageBytesToPdfDoc(
     fileName: string,
 ): Promise<PDFDocument> {
     const { PDFDocument } = await import('pdf-lib');
-    const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
     const doc = await PDFDocument.create();
-    const img = await embedImagePreserveCompression(doc, buf, fileName);
-    const [pw, ph] = imagePagePoints(img, buf, isJpgName(fileName));
-    const page = doc.addPage([pw, ph]);
-    page.drawImage(img, { x: 0, y: 0, width: pw, height: ph });
+    await appendImagePageToPdfDoc(doc, bytes, fileName);
     return doc;
+}
+
+type ImageFileBytesReader = (file: File) => Promise<ArrayBuffer | Uint8Array>;
+
+/**
+ * FILEIO (audit 2026-08-02 §TEST.1): chuẩn hóa mọi ảnh mà cửa mở file hỗ trợ thành
+ * PDF một trang trước khi giao cho workspace. `readBytes` cho phép file path-stub của
+ * Tauri đọc từ đĩa; file thường vẫn dùng `File.arrayBuffer()`.
+ */
+export async function imageFileToPdfIfNeeded(
+    file: File,
+    readBytes: ImageFileBytesReader = source => source.arrayBuffer(),
+): Promise<File> {
+    if (!isSupportedImageFileName(file.name)) return file;
+
+    const bytes = await readBytes(file);
+    const document = await imageBytesToPdfDoc(bytes, file.name || 'image');
+    const pdfBytes = await document.save();
+    const pdfName = (file.name || 'image').replace(/\.(?:jpe?g|png|webp|bmp|tiff?)$/i, '.pdf');
+    return new File([pdfBytes as unknown as BlobPart], pdfName, { type: 'application/pdf' });
 }
 
 /**

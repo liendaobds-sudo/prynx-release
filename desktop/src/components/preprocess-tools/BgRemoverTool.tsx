@@ -106,7 +106,7 @@ async function processBatch(tabId: string) {
                     toast.info(tv('Ảnh đã được giảm kích thước phù hợp với bộ nhớ của máy.'));
                 }
                 if (warnings.includes('color-converted-to-srgb')) {
-                    toast.info(tv('Ảnh đã được chuyển sang sRGB để mô hình AI xử lý đúng màu.'));
+                    toast.info(tv('Ảnh đã được chuyển sang sRGB để xử lý đúng màu.'));
                 }
                 if (warnings.includes('icc-profile-discarded')) {
                     toast.info(tv('Không đọc được hồ sơ màu nguồn; hãy kiểm tra màu ảnh kết quả.'));
