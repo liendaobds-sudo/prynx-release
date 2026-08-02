@@ -237,3 +237,22 @@ Bộ tổng hợp gồm 8 PNG RGBA `3000×3000` (72 MP), tổng encoded `96.988.
 - Cần chạy lại intent Combine thật trên app Tauri với đúng 8 PNG sau khi sidecar/extension mới được nạp: xác nhận đường `backend_manifest`, tick xanh theo nguồn, mở `Combined.pdf` và first tile.
 - WebP/BMP/TIFF và manifest trộn PDF + ảnh chưa đi native vì chưa có parity riêng; tiếp tục dùng fallback hiện tại.
 - Lô watermark single-pass chỉ được mở khi telemetry bản có license chứng minh `_safe_watermark()` còn là nút thắt đáng kể và phải có test forensic parity; chưa có bằng chứng đó trong đợt này.
+
+### Chốt bảo toàn chất lượng — 2026-08-03
+
+Sau khi rà lại yêu cầu chế bản “Combine không được làm thay đổi chất lượng nguồn”, phát hiện nhánh decode PNG có thể chuyển PNG 16-bit xuống RGBA 8-bit. Hành vi này không được chấp nhận dù chỉ xảy ra với định dạng ít gặp.
+
+Hợp đồng mới là **lossless hoặc dừng trước khi tạo output**:
+
+- PNG/JPEG 8-bit thông thường tiếp tục dùng fast path: JPEG giữ nguyên DCT; PNG RGB/gray giữ IDAT khi an toàn; PNG cần decode vẫn dùng Flate lossless và giữ alpha bằng `/SMask`.
+- PNG khác 8-bit, APNG nhiều frame, PNG có `iCCP/sRGB/gAMA/cHRM/cICP` hoặc JPEG có ICC bị chặn trước khi native/fallback tạo PDF.
+- Backend không còn âm thầm rơi về ReportLab cho các nguồn chưa chứng minh được bảo toàn bit-depth/profile. Job trả thông báo rõ và không để lại output.
+- Bộ 8 PNG 72 MP dùng benchmark vẫn qua quality preflight đủ 8/8 nguồn, nên tốc độ fast path của ca người dùng không bị thay đổi.
+
+Verify sau chốt:
+
+- Rust Combine: **8/8 pass**, gồm PNG 16-bit, PNG color metadata và JPEG ICC fail-closed.
+- Backend engine/job/API: **100/100 pass**; ba ca 16-bit/ICC xác nhận không sinh output.
+- `cargo check --locked --lib`, `rustfmt --check` riêng module và `git diff --check`: pass.
+
+PNG 16-bit/ICC/APNG hiện chưa được gọi là “đã hỗ trợ Combine”; chúng được từ chối an toàn cho tới khi writer có đường nhúng lossless và kiểm thử màu tương ứng. Không có trường hợp nào được phép tự hạ chất lượng để hoàn thành job.

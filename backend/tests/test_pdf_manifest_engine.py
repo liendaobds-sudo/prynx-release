@@ -35,6 +35,27 @@ def _make_jpeg(path: Path, size: tuple[int, int] = (300, 600), dpi: tuple[int, i
     Image.new("RGB", size, (240, 230, 220)).save(path, format="JPEG", dpi=dpi, quality=90)
 
 
+def _make_png_16bit(path: Path) -> None:
+    Image.new("I;16", (2, 1), 32768).save(path, format="PNG")
+
+
+def _make_png_with_icc(path: Path) -> None:
+    Image.new("RGB", (2, 1), (10, 20, 30)).save(
+        path,
+        format="PNG",
+        icc_profile=b"test-icc-profile",
+    )
+
+
+def _make_jpeg_with_icc(path: Path) -> None:
+    Image.new("RGB", (2, 1), (10, 20, 30)).save(
+        path,
+        format="JPEG",
+        quality=90,
+        icc_profile=b"test-icc-profile",
+    )
+
+
 def _first_image_xobject(page):
     xobjects = page.obj["/Resources"]["/XObject"]
     return next(obj for _name, obj in xobjects.items() if obj.get("/Subtype") == "/Image")
@@ -267,6 +288,30 @@ def test_merge_manifest_accepts_jpeg_preserves_jfif_dpi_and_dct(tmp_path: Path):
             if not isinstance(filters, pikepdf.Array)
             else [str(value) for value in filters]
         )
+
+
+@pytest.mark.parametrize(
+    ("name", "maker", "message"),
+    [
+        ("source-16bit.png", _make_png_16bit, "16-bit"),
+        ("source-icc.png", _make_png_with_icc, "hồ sơ/thông tin màu"),
+        ("source-icc.jpg", _make_jpeg_with_icc, "JPEG có ICC"),
+    ],
+)
+def test_merge_manifest_fails_closed_when_quality_cannot_be_preserved(
+    tmp_path: Path,
+    name: str,
+    maker,
+    message: str,
+):
+    source = tmp_path / name
+    output = tmp_path / "must-not-exist.pdf"
+    maker(source)
+
+    with pytest.raises(manifest_engine.ImageQualityGuardError, match=message):
+        merge_manifest([str(source)], [{"file_index": 0}], str(output))
+
+    assert not output.exists()
 
 
 def test_native_image_fast_path_maps_completed_sources(monkeypatch, tmp_path: Path):

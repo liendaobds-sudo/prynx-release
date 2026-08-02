@@ -86,6 +86,10 @@ class _ImageSourceInfo:
         return self.width_px * self.height_px
 
 
+class ImageQualityGuardError(ValueError):
+    """Dừng Combine khi chưa thể chứng minh nguồn ảnh được giữ nguyên chất lượng."""
+
+
 @dataclass(frozen=True)
 class ManifestResourceEstimate:
     """Ước lượng sau khi mở rộng whole-file và mọi lần lặp trang."""
@@ -109,6 +113,48 @@ def _positive_dpi(value: Any) -> float:
     except (TypeError, ValueError):
         return 72.0
     return dpi if math.isfinite(dpi) and dpi > 0 else 72.0
+
+
+def _png_quality_guard_reason(source_path: str) -> str | None:
+    """Đọc chunk trước IDAT để chặn mọi đường có thể rơi bit-depth/profile màu."""
+    color_chunks = {b"iCCP", b"sRGB", b"gAMA", b"cHRM", b"cICP"}
+    try:
+        with open(source_path, "rb") as source:
+            if source.read(8) != b"\x89PNG\r\n\x1a\n":
+                return None
+            while True:
+                header = source.read(8)
+                if len(header) != 8:
+                    return None
+                length = int.from_bytes(header[:4], "big", signed=False)
+                chunk_type = header[4:8]
+                if chunk_type == b"IHDR":
+                    if length != 13:
+                        return None
+                    data = source.read(13)
+                    if len(data) != 13:
+                        return None
+                    if data[8] != 8:
+                        return f"PNG {data[8]}-bit chưa có đường ghép bảo toàn bit-depth"
+                    source.seek(4, os.SEEK_CUR)
+                    continue
+                if chunk_type in color_chunks:
+                    return "PNG có hồ sơ/thông tin màu chưa được nhúng lại lossless vào PDF"
+                if chunk_type in {b"acTL", b"fcTL", b"fdAT"}:
+                    return "APNG nhiều frame chưa có đường ghép bảo toàn đầy đủ"
+                if chunk_type == b"IEND":
+                    return None
+                source.seek(length + 4, os.SEEK_CUR)
+    except OSError:
+        return None
+
+
+def _quality_guard_message(source_path: str, reason: str) -> str:
+    return (
+        f"PrynX đã dừng ghép {os.path.basename(source_path)} để không làm giảm chất lượng: "
+        f"{reason}. Hãy chuyển ảnh sang PDF có nhúng profile hoặc dùng ảnh 8-bit không có "
+        "profile màu cho tới khi đường ghép lossless tương ứng được hỗ trợ."
+    )
 
 
 def _read_png_phys_dpi(source_path: str) -> tuple[float, float] | None:
@@ -189,12 +235,23 @@ def _inspect_image_source(source_path: str) -> _ImageSourceInfo:
     """Đọc kích thước/DPI một lần để admission chạy trước khi tạo PDF tạm."""
     extension = os.path.splitext(source_path)[1].lower()
     expected_format = "PNG" if extension == ".png" else "JPEG"
+    if extension == ".png":
+        reason = _png_quality_guard_reason(source_path)
+        if reason:
+            raise ImageQualityGuardError(_quality_guard_message(source_path, reason))
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(source_path) as image:
                 if image.format != expected_format or getattr(image, "n_frames", 1) != 1:
                     raise ValueError("Image extension and content do not match")
+                if extension in {".jpg", ".jpeg"} and image.info.get("icc_profile"):
+                    raise ImageQualityGuardError(
+                        _quality_guard_message(
+                            source_path,
+                            "JPEG có ICC chưa được dựng thành ICCBased trong PDF",
+                        )
+                    )
                 width_px, height_px = image.size
                 if width_px <= 0 or height_px <= 0:
                     raise ValueError("Invalid image dimensions")
@@ -210,6 +267,8 @@ def _inspect_image_source(source_path: str) -> _ImageSourceInfo:
             source_bytes=source_bytes,
             estimated_pdf_bytes=_estimate_image_pdf_bytes(extension, source_bytes, pixels),
         )
+    except ImageQualityGuardError:
+        raise
     except (
         UnidentifiedImageError,
         Image.DecompressionBombError,

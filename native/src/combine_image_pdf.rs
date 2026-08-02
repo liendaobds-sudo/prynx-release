@@ -32,6 +32,7 @@ const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 enum ImagePdfError {
     Invalid(String),
     Unsupported(String),
+    QualityGuard(String),
     Cancelled,
     Io(String),
     Runtime(String),
@@ -42,6 +43,7 @@ impl fmt::Display for ImagePdfError {
         match self {
             Self::Invalid(message)
             | Self::Unsupported(message)
+            | Self::QualityGuard(message)
             | Self::Io(message)
             | Self::Runtime(message) => f.write_str(message),
             Self::Cancelled => f.write_str("Đã hủy ghép ảnh"),
@@ -166,7 +168,7 @@ struct ParsedPng {
     color_type: u8,
     interlace: u8,
     has_trns: bool,
-    has_iccp: bool,
+    has_color_metadata: bool,
     has_animation: bool,
     idat: Vec<u8>,
 }
@@ -177,6 +179,7 @@ struct ParsedJpeg {
     height: u32,
     bits_per_component: i64,
     channels: u8,
+    has_icc: bool,
 }
 
 #[pyfunction]
@@ -213,6 +216,9 @@ fn to_python_error(error: ImagePdfError) -> PyErr {
         ImagePdfError::Invalid(message) => PyValueError::new_err(message),
         ImagePdfError::Unsupported(message) => {
             PyNotImplementedError::new_err(format!("COMBINE_IMAGE_UNSUPPORTED: {message}"))
+        }
+        ImagePdfError::QualityGuard(message) => {
+            PyValueError::new_err(format!("COMBINE_IMAGE_QUALITY_GUARD: {message}"))
         }
         ImagePdfError::Cancelled => PyInterruptedError::new_err("Đã hủy ghép ảnh"),
         ImagePdfError::Io(message) => PyIOError::new_err(message),
@@ -415,13 +421,22 @@ fn prepare_png(bytes: &[u8], source: &ImageSourceSpec) -> Result<PreparedAsset, 
     let parsed = parse_png(bytes)?;
     ensure_pixel_parity(parsed.width, parsed.height, source)?;
     if parsed.has_animation {
-        return Err(ImagePdfError::Unsupported(
-            "APNG nhiều frame không thuộc fast path".to_string(),
+        return Err(ImagePdfError::QualityGuard(
+            "APNG nhiều frame chưa có đường ghép bảo toàn đầy đủ".to_string(),
         ));
     }
-    if parsed.has_iccp {
-        return Err(ImagePdfError::Unsupported(
-            "PNG có ICC cần đường giữ màu đã audit riêng".to_string(),
+    // PERF (audit 2026-08-03 §TC.Q1): không được đổi tốc độ lấy bit-depth/profile.
+    // Các nguồn này phải dừng trước khi decode cho tới khi PDF writer giữ được
+    // trọn vẹn 16-bit và không gian màu gốc.
+    if parsed.bit_depth != 8 {
+        return Err(ImagePdfError::QualityGuard(format!(
+            "PNG {}-bit chưa có đường ghép bảo toàn bit-depth",
+            parsed.bit_depth
+        )));
+    }
+    if parsed.has_color_metadata {
+        return Err(ImagePdfError::QualityGuard(
+            "PNG có hồ sơ/thông tin màu chưa được nhúng lại lossless vào PDF".to_string(),
         ));
     }
 
@@ -492,7 +507,7 @@ fn parse_png(bytes: &[u8]) -> Result<ParsedPng, ImagePdfError> {
     let mut ihdr: Option<(u32, u32, u8, u8, u8)> = None;
     let mut idat = Vec::new();
     let mut has_trns = false;
-    let mut has_iccp = false;
+    let mut has_color_metadata = false;
     let mut has_animation = false;
     let mut saw_iend = false;
 
@@ -549,7 +564,7 @@ fn parse_png(bytes: &[u8]) -> Result<ParsedPng, ImagePdfError> {
                 idat.extend_from_slice(&bytes[data_start..data_end]);
             }
             b"tRNS" => has_trns = true,
-            b"iCCP" => has_iccp = true,
+            b"iCCP" | b"sRGB" | b"gAMA" | b"cHRM" | b"cICP" => has_color_metadata = true,
             b"acTL" | b"fcTL" | b"fdAT" => has_animation = true,
             b"IEND" => {
                 saw_iend = true;
@@ -572,7 +587,7 @@ fn parse_png(bytes: &[u8]) -> Result<ParsedPng, ImagePdfError> {
         color_type,
         interlace,
         has_trns,
-        has_iccp,
+        has_color_metadata,
         has_animation,
         idat,
     })
@@ -581,6 +596,11 @@ fn parse_png(bytes: &[u8]) -> Result<ParsedPng, ImagePdfError> {
 fn prepare_jpeg(bytes: &[u8], source: &ImageSourceSpec) -> Result<PreparedAsset, ImagePdfError> {
     let parsed = parse_jpeg(bytes)?;
     ensure_pixel_parity(parsed.width, parsed.height, source)?;
+    if parsed.has_icc {
+        return Err(ImagePdfError::QualityGuard(
+            "JPEG có ICC chưa được dựng thành ICCBased trong PDF".to_string(),
+        ));
+    }
     let (color_space, invert_cmyk) = match parsed.channels {
         1 => (AssetColorSpace::Gray, false),
         3 => (AssetColorSpace::Rgb, false),
@@ -608,6 +628,8 @@ fn parse_jpeg(bytes: &[u8]) -> Result<ParsedJpeg, ImagePdfError> {
         return Err(ImagePdfError::Invalid("Sai signature JPEG".to_string()));
     }
     let mut cursor = 2usize;
+    let mut has_icc = false;
+    let mut frame_info: Option<(u32, u32, i64, u8)> = None;
     while cursor < bytes.len() {
         while cursor < bytes.len() && bytes[cursor] == 0xff {
             cursor += 1;
@@ -632,6 +654,13 @@ fn parse_jpeg(bytes: &[u8]) -> Result<ParsedJpeg, ImagePdfError> {
                 "Độ dài marker JPEG không hợp lệ".to_string(),
             ));
         }
+        let payload = cursor + 2;
+        if marker == 0xe2
+            && length >= 16
+            && bytes.get(payload..payload + 12) == Some(b"ICC_PROFILE\0")
+        {
+            has_icc = true;
+        }
         let is_sof = matches!(
             marker,
             0xc0 | 0xc1
@@ -651,7 +680,6 @@ fn parse_jpeg(bytes: &[u8]) -> Result<ParsedJpeg, ImagePdfError> {
             if length < 8 {
                 return Err(ImagePdfError::Invalid("SOF JPEG quá ngắn".to_string()));
             }
-            let payload = cursor + 2;
             let bits_per_component = bytes[payload] as i64;
             let height = u16::from_be_bytes([bytes[payload + 1], bytes[payload + 2]]) as u32;
             let width = u16::from_be_bytes([bytes[payload + 3], bytes[payload + 4]]) as u32;
@@ -659,18 +687,19 @@ fn parse_jpeg(bytes: &[u8]) -> Result<ParsedJpeg, ImagePdfError> {
             if width == 0 || height == 0 || bits_per_component <= 0 {
                 return Err(ImagePdfError::Invalid("SOF JPEG không hợp lệ".to_string()));
             }
-            return Ok(ParsedJpeg {
-                width,
-                height,
-                bits_per_component,
-                channels,
-            });
+            frame_info.get_or_insert((width, height, bits_per_component, channels));
         }
         cursor += length;
     }
-    Err(ImagePdfError::Invalid(
-        "JPEG không có marker SOF hợp lệ".to_string(),
-    ))
+    let (width, height, bits_per_component, channels) = frame_info
+        .ok_or_else(|| ImagePdfError::Invalid("JPEG không có marker SOF hợp lệ".to_string()))?;
+    Ok(ParsedJpeg {
+        width,
+        height,
+        bits_per_component,
+        channels,
+        has_icc,
+    })
 }
 
 fn ensure_pixel_parity(
@@ -1008,6 +1037,41 @@ mod tests {
             .unwrap();
     }
 
+    fn write_rgba16_png(path: &Path, width: u32, height: u32, data: &[u16]) {
+        let raw: Vec<u8> = data.iter().flat_map(|value| value.to_be_bytes()).collect();
+        let file = fs::File::create(path).unwrap();
+        PngEncoder::new(file)
+            .write_image(&raw, width, height, ColorType::Rgba16.into())
+            .unwrap();
+    }
+
+    fn insert_png_chunk_after_ihdr(path: &Path, chunk_type: &[u8; 4], data: &[u8]) {
+        let original = fs::read(path).unwrap();
+        let mut chunk = Vec::new();
+        chunk.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        chunk.extend_from_slice(chunk_type);
+        chunk.extend_from_slice(data);
+        chunk.extend_from_slice(&[0, 0, 0, 0]);
+        let mut updated = Vec::with_capacity(original.len() + chunk.len());
+        updated.extend_from_slice(&original[..33]);
+        updated.extend_from_slice(&chunk);
+        updated.extend_from_slice(&original[33..]);
+        fs::write(path, updated).unwrap();
+    }
+
+    fn insert_jpeg_icc_marker(path: &Path) {
+        let original = fs::read(path).unwrap();
+        let payload = b"ICC_PROFILE\0\x01\x01test-profile";
+        let mut marker = vec![0xff, 0xe2];
+        marker.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+        marker.extend_from_slice(payload);
+        let mut updated = Vec::with_capacity(original.len() + marker.len());
+        updated.extend_from_slice(&original[..2]);
+        updated.extend_from_slice(&marker);
+        updated.extend_from_slice(&original[2..]);
+        fs::write(path, updated).unwrap();
+    }
+
     fn source(path: &Path, width: u32, height: u32) -> ImageSourceSpec {
         ImageSourceSpec {
             path: path.to_string_lossy().into_owned(),
@@ -1043,6 +1107,27 @@ mod tests {
     }
 
     #[test]
+    fn quality_guard_rejects_png_16_bit_instead_of_downconverting() {
+        let path = unique_path("rgba16", "png");
+        write_rgba16_png(&path, 1, 1, &[65535, 32768, 1, 65535]);
+        let bytes = fs::read(&path).unwrap();
+        let error = prepare_png(&bytes, &source(&path, 1, 1)).unwrap_err();
+        assert!(matches!(error, ImagePdfError::QualityGuard(_)));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn quality_guard_rejects_png_color_metadata_instead_of_dropping_it() {
+        let path = unique_path("icc", "png");
+        write_rgb_png(&path, 1, 1, &[10, 20, 30]);
+        insert_png_chunk_after_ihdr(&path, b"iCCP", b"profile\0\0compressed");
+        let bytes = fs::read(&path).unwrap();
+        let error = prepare_png(&bytes, &source(&path, 1, 1)).unwrap_err();
+        assert!(matches!(error, ImagePdfError::QualityGuard(_)));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn jpeg_keeps_dct_bytes() {
         let path = unique_path("jpeg", "jpg");
         let mut bytes = Vec::new();
@@ -1053,6 +1138,21 @@ mod tests {
         let asset = prepare_jpeg(&bytes, &source(&path, 2, 1)).unwrap();
         assert!(matches!(asset.filter, AssetFilter::Dct));
         assert_eq!(asset.data, bytes);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn quality_guard_rejects_jpeg_icc_instead_of_detaching_profile() {
+        let path = unique_path("jpeg_icc", "jpg");
+        let mut bytes = Vec::new();
+        JpegEncoder::new_with_quality(&mut bytes, 90)
+            .encode(&[255, 0, 0], 1, 1, ColorType::Rgb8.into())
+            .unwrap();
+        fs::write(&path, &bytes).unwrap();
+        insert_jpeg_icc_marker(&path);
+        let bytes = fs::read(&path).unwrap();
+        let error = prepare_jpeg(&bytes, &source(&path, 1, 1)).unwrap_err();
+        assert!(matches!(error, ImagePdfError::QualityGuard(_)));
         let _ = fs::remove_file(path);
     }
 
