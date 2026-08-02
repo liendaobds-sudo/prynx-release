@@ -11,6 +11,7 @@ mod dieline_license;
 mod dieline_request;
 mod print_engine_py;
 mod logo_vectorizer;
+mod combine_image_pdf;
 
 use pyo3::prelude::*;
 
@@ -37,6 +38,9 @@ fn pdfcompare_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<logo_vectorizer::LogoVectorizerCancel>()?;
     m.add_function(wrap_pyfunction!(logo_vectorizer::logo_vectorize_rgba, m)?)?;
     m.add_function(wrap_pyfunction!(logo_vectorizer::logo_vectorizer_info, m)?)?;
+    // PERF (audit 2026-08-02 §TC.1): ghép manifest chỉ gồm PNG/JPEG ngoài
+    // WebView, giữ DCT/IDAT khi an toàn và ghi thẳng file kết quả.
+    m.add_function(wrap_pyfunction!(combine_image_pdf::combine_image_manifest_native, m)?)?;
 
     // Imposition grid solver
     m.add_function(wrap_pyfunction!(imposition::grid_solver::solve_grid, m)?)?;

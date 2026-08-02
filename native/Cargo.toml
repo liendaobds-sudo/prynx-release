@@ -30,6 +30,10 @@ rayon = "1.12.0"
 geo = "0.28"
 vtracer = "=1.0.0-alpha.2"
 imposition_core = { path = "../imposition_core" }
+# PERF (audit 2026-08-02 §TC.1): writer Combine ảnh cần object model PDF và
+# Flate trực tiếp. Khai báo ở crate binding; không đưa đường ghi PDF vào PPE.
+lopdf = { version = "0.44", default-features = false }
+flate2 = "1"
 # PrynX Print Engine — lõi prepress ink-space thay Ghostscript.
 print_engine = { path = "../print_engine" }
 
