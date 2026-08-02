@@ -179,3 +179,61 @@
 - Hủy, lỗi hoặc kết quả về muộn không phát tín hiệu đóng tab nguồn.
 - Regression `combineTransport.integration.test.tsx`: **14/14 pass**; ma trận frontend Combine cuối: **77/77 pass**; `npm run typecheck` và ESLint hẹp: **pass**.
 - Smoke Tauri với hai PNG thật: header phụ không còn; sau bấm Ghép, tab Combine nguồn biến mất và `Combined.pdf` vẫn active, ảnh trang đầu hiển thị đúng.
+
+## Lô 3E — Fast path native Rust cho Combine ảnh
+
+**Ngày:** 2026-08-02
+
+**Báo cáo duyệt:** `docs/BAO_CAO_AUDIT_TANG_TOC_COMBINE_2026-08-02.md`
+
+**Trạng thái:** Hoàn tất code, kiểm thử tự động và benchmark A/B; còn smoke lại đúng ca tám ảnh trên app Tauri sau khi nạp build mới.
+
+### Các lô đã triển khai
+
+1. **Native writer + benchmark** — commit `5f9a2cd`
+   - `combine_image_manifest_native` giữ nguyên IDAT của PNG RGB/gray 8-bit khi an toàn; PNG alpha/palette/interlace được decode native, tách RGB + `/SMask` và Flate.
+   - JPEG giữ DCT; CMYK có `/Decode` đúng. Manifest giữ blank, duplicate, rotation và kích thước vật lý.
+   - Rayon xử lý nguồn song song, có cancel/progress và ghi atomic. Module không gọi PDFium.
+2. **Backend + progress nguồn thật** — commit `d246932`
+   - Manifest chỉ gồm PNG/JPEG tự chọn native; định dạng/môi trường chưa hỗ trợ vẫn fallback ReportLab/pikepdf.
+   - Worker theo RAM: `<8 GB = 1`, `8–<16 GB = 2`, `>=16 GB` dùng đầy đủ ngân sách CPU.
+   - Job/API trả `completed_source_indices` tích lũy; PDF tuần tự chỉ báo xong nguồn sau lần dùng cuối, Interleave cho phép file ít trang tick trước.
+   - Watermark backend hiện có vẫn chạy sau khi writer save; không tắt hoặc làm yếu cơ chế license.
+3. **Policy chọn engine** — commit `4642962`
+   - Job thuần PNG/JPEG/blank từ `64.000.000` pixel đi native kể cả máy mạnh còn nhiều RAM vì benchmark chứng minh native nhanh hơn; đây là điểm crossover engine, không phải hard-cap tài nguyên.
+   - Job ảnh nhỏ vẫn ở frontend; manifest trộn PDF + ảnh giữ policy RAM cũ.
+4. **Tick xanh đúng nguồn** — commit `7c5f0c8`
+   - `CombineTab` dùng `completed_source_indices` thay vì suy card hoàn tất từ số trang.
+   - Nguồn hoàn tất lệch thứ tự tick đúng card; một nguồn được dùng ở nhiều card thì mọi card của đúng nguồn đó cùng tick, nguồn khác không bị đánh dấu sớm.
+5. **Benchmark đo đúng fallback** — commit `f3ef237`
+   - Script tự cấu hình import backend/UTF-8 khi chạy trực tiếp và ép tắt native riêng trong nhánh baseline ReportLab, tránh đo nhầm cùng native engine hai lần.
+
+### Benchmark
+
+Bộ tổng hợp gồm 8 PNG RGBA `3000×3000` (72 MP), tổng encoded `96.988.172` byte — nặng hơn bộ người dùng `38.683.168` byte.
+
+| Đường xử lý | Kết quả | Output |
+|---|---:|---:|
+| Native warm, 3 lượt | median `4,6698 s`, p95 `4,6731 s` | `84.300.584` byte |
+| Frontend hiện tại | `12,055 s` | — |
+| Native cold, A/B một lượt | `6,9748 s` | `84.300.584` byte |
+| ReportLab fallback, A/B một lượt | `82,3071 s` | `187.507.610` byte |
+
+- Native warm nhanh hơn frontend khoảng `61,3%`, vượt cổng tối thiểu 30% và đạt mục tiêu combine core khoảng 5 giây.
+- Trong A/B lạnh cùng script, native nhanh hơn ReportLab khoảng `91,5%`; output nhỏ hơn khoảng `55,0%`.
+- Lượt A/B ReportLab đầy đủ 1 warm-up + 3 repeat vượt 240 giây nên bị dừng; số ReportLab công bố là một lượt hợp lệ, không gọi là median nhiều lượt.
+
+### Verify
+
+- Rust: `cargo check --locked --lib` pass; `cargo test --locked combine_image_pdf --lib` **5/5 pass**.
+- Backend engine/job/API contract: **97/97 pass**, gồm cả lần nạp extension native thật.
+- Desktop policy/API: **38/38 pass**; UI transport/tick nguồn: **19/19 pass**.
+- `npm run typecheck`: pass sau cả hai lô desktop.
+- ESLint test tích hợp mới: pass. `CombineTab.tsx` còn 9 lỗi `no-explicit-any` và 4 cảnh báo hook cũ ngoài các dòng sửa; không sửa lan phạm vi.
+- `git diff --check` theo từng lô: pass.
+
+### Chốt còn lại
+
+- Cần chạy lại intent Combine thật trên app Tauri với đúng 8 PNG sau khi sidecar/extension mới được nạp: xác nhận đường `backend_manifest`, tick xanh theo nguồn, mở `Combined.pdf` và first tile.
+- WebP/BMP/TIFF và manifest trộn PDF + ảnh chưa đi native vì chưa có parity riêng; tiếp tục dùng fallback hiện tại.
+- Lô watermark single-pass chỉ được mở khi telemetry bản có license chứng minh `_safe_watermark()` còn là nút thắt đáng kể và phải có test forensic parity; chưa có bằng chứng đó trong đợt này.
