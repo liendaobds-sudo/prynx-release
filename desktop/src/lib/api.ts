@@ -707,6 +707,7 @@ export type BackendMergeManifestJobStatus = {
   progress: number;
   completed: number;
   total: number;
+  completed_source_indices?: number[];
   message?: string | null;
 };
 

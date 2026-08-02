@@ -96,6 +96,7 @@ describe('backend merge native transport', () => {
           progress: 0.5,
           completed: 1,
           total: 2,
+          completed_source_indices: [0],
           message: 'Đang ghép PDF.',
         } : {
           job_id: 'combine-1',
@@ -105,6 +106,7 @@ describe('backend merge native transport', () => {
           progress: 1,
           completed: 2,
           total: 2,
+          completed_source_indices: [0],
           message: 'Đã ghép PDF.',
         }), {
           status: 200,
@@ -126,7 +128,10 @@ describe('backend merge native transport', () => {
     });
 
     expect(onProgress).toHaveBeenCalledTimes(2);
-    expect(onProgress).toHaveBeenNthCalledWith(1, expect.objectContaining({ progress: 0.5 }));
+    expect(onProgress).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      progress: 0.5,
+      completed_source_indices: [0],
+    }));
     expect(onProgress).toHaveBeenNthCalledWith(2, expect.objectContaining({
       status: 'completed',
       progress: 1,

@@ -9,6 +9,7 @@ import {
   LARGE_COMBINE_BYTES,
   LARGE_COMBINE_IMAGE_PIXELS,
   LARGE_COMBINE_PAGES,
+  NATIVE_COMBINE_IMAGE_CROSSOVER_PIXELS,
   readImagePixelSize,
   shouldDelegateLargePdfJob,
 } from './combineDelegation';
@@ -193,17 +194,17 @@ describe('shouldDelegateLargePdfJob', () => {
     })).toBe(true);
   });
 
-  it('keeps 72 MP on the frontend when a strong machine has ample free RAM', () => {
+  it('delegates image-only work above the native crossover on a strong machine', () => {
     const node = sourceNode('large.png', 20 * 1024 * 1024);
     expect(shouldDelegateLargePdfJob([node], {}, {
       scaleMode: 'keep',
       allowManifest: true,
       totalImagePixels: 72_000_000,
       memoryStatus: { totalBytes: 32 * GIB, availableBytes: 13 * GIB },
-    })).toBe(false);
+    })).toBe(true);
   });
 
-  it('keeps the reported eight 3000×3000 PNG files on the fast path on a 32 GB machine', () => {
+  it('delegates the reported eight 3000×3000 PNG files to the faster native path', () => {
     const encodedSizes = [
       11_724_914, 5_941_960, 688_925, 4_086_870,
       1_970_255, 5_812_316, 5_267_451, 3_190_477,
@@ -215,6 +216,16 @@ describe('shouldDelegateLargePdfJob', () => {
       scaleMode: 'keep',
       allowManifest: true,
       totalImagePixels: 8 * 3000 * 3000,
+      memoryStatus: { totalBytes: 32 * GIB, availableBytes: 13 * GIB },
+    })).toBe(true);
+  });
+
+  it('does not apply the native image crossover to a mixed PDF and image manifest', () => {
+    const nodes = [sourceNode('a.pdf', 1), sourceNode('large.png', 20 * 1024 * 1024)];
+    expect(shouldDelegateLargePdfJob(nodes, { 'a.pdf-1': 1 }, {
+      scaleMode: 'keep',
+      allowManifest: true,
+      totalImagePixels: NATIVE_COMBINE_IMAGE_CROSSOVER_PIXELS,
       memoryStatus: { totalBytes: 32 * GIB, availableBytes: 13 * GIB },
     })).toBe(false);
   });

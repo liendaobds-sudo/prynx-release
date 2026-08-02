@@ -5,6 +5,9 @@ export const LARGE_COMBINE_PAGES = 800;
 // PERF (audit 2026-08-01 §B.1): pdf-lib có thể đồng thời giữ RGBA + RGB + alpha,
 // nên 64 MP tương đương khoảng 512 MB buffer tạm trước cả finalDoc và bytes kết quả.
 export const LARGE_COMBINE_IMAGE_PIXELS = 64_000_000;
+// PERF (audit 2026-08-02 §B.2): từ ngưỡng này, native image manifest nhanh hơn
+// frontend khoảng 61% trên máy mạnh; đây là chọn engine, không phải hard-cap tài nguyên.
+export const NATIVE_COMBINE_IMAGE_CROSSOVER_PIXELS = 64_000_000;
 export const IMAGE_HEADER_PROBE_BYTES = 512 * 1024;
 const LOW_RAM_COMBINE_IMAGE_PIXELS = 32_000_000;
 const IMAGE_WORKING_BYTES_PER_PIXEL = 8;
@@ -290,8 +293,20 @@ export function shouldDelegateLargePdfJob(
     ? rawImagePixels
     : Number.MAX_SAFE_INTEGER;
 
+  const nativeImageOnlyManifest = options.allowManifest === true
+    && nodes.every(node => node.type === 'blank' || (
+      node.type === 'single'
+      && !!node.file
+      && isImageSourceName(node.file.name)
+    ))
+    && nodes.some(node => !!node.file && isImageSourceName(node.file.name));
+
   return totalPdfBytes >= LARGE_COMBINE_BYTES
     || estimatedPages >= LARGE_COMBINE_PAGES
+    || (
+      nativeImageOnlyManifest
+      && totalImagePixels >= NATIVE_COMBINE_IMAGE_CROSSOVER_PIXELS
+    )
     || shouldDelegateImageWorkload(
       totalImagePixels,
       totalEncodedImageBytes,
