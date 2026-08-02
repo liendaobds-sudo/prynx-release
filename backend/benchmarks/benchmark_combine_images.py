@@ -10,13 +10,25 @@ import argparse
 import json
 from pathlib import Path
 import statistics
+import sys
 import tempfile
 import time
 
 import pikepdf
 
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+# PERF (audit 2026-08-02 §B.3): benchmark chạy trực tiếp từ repo vẫn import được
+# backend và in tiếng Việt ổn định trên console Windows.
+for stream in (sys.stdout, sys.stderr):
+    reconfigure = getattr(stream, "reconfigure", None)
+    if callable(reconfigure):
+        reconfigure(encoding="utf-8")
+
 from app.core.system_memory import plan_worker_count
-from app.workers.pdf_manifest_engine import _inspect_image_source, merge_manifest
+from app.workers import pdf_manifest_engine
 
 try:
     import pdfcompare_native
@@ -54,7 +66,7 @@ def _native_request(paths: list[Path]) -> tuple[dict, int]:
     sources = []
     largest_worker_mb = 64.0
     for path in paths:
-        info = _inspect_image_source(str(path))
+        info = pdf_manifest_engine._inspect_image_source(str(path))
         sources.append(
             {
                 "path": str(path),
@@ -104,11 +116,18 @@ def _run_native(
 
 
 def _run_backend(paths: list[Path], output: Path) -> None:
-    merge_manifest(
-        [str(path) for path in paths],
-        [{"file_index": index} for index in range(len(paths))],
-        str(output),
-    )
+    # PERF (audit 2026-08-02 §B.3): ép tắt native trong nhánh baseline để không
+    # đo cùng một engine hai lần sau khi merge_manifest đã được tăng tốc.
+    original_loader = pdf_manifest_engine._load_native_image_merger
+    pdf_manifest_engine._load_native_image_merger = lambda: None
+    try:
+        pdf_manifest_engine.merge_manifest(
+            [str(path) for path in paths],
+            [{"file_index": index} for index in range(len(paths))],
+            str(output),
+        )
+    finally:
+        pdf_manifest_engine._load_native_image_merger = original_loader
 
 
 def _measure(
