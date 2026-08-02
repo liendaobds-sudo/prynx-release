@@ -139,7 +139,21 @@ struct PreparedAsset {
     data: Vec<u8>,
     alpha: Option<CompressedAlpha>,
     icc_profile: Option<Vec<u8>>,
+    calibrated_color: Option<CalibratedColorSpace>,
     invert_cmyk: bool,
+}
+
+#[derive(Debug, Clone)]
+enum CalibratedColorSpace {
+    Gray {
+        white_point: [f64; 3],
+        gamma: f64,
+    },
+    Rgb {
+        white_point: [f64; 3],
+        gamma: f64,
+        matrix: [f64; 9],
+    },
 }
 
 type SharedPyCallback = Arc<Mutex<Py<PyAny>>>;
@@ -197,9 +211,19 @@ struct ParsedPng {
     has_trns: bool,
     icc_profile: Option<Vec<u8>>,
     has_srgb: bool,
+    gamma: Option<f64>,
+    chromaticities: Option<PngChromaticities>,
     has_unhandled_color_metadata: bool,
     has_animation: bool,
     idat: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PngChromaticities {
+    white: [f64; 2],
+    red: [f64; 2],
+    green: [f64; 2],
+    blue: [f64; 2],
 }
 
 #[derive(Debug)]
@@ -483,6 +507,7 @@ fn prepare_apng(
     };
     let colors = color_space.components();
     let icc_profile = resolve_png_icc_profile(parsed, color_space)?;
+    let calibrated_color = resolve_png_calibrated_color(parsed, color_space)?;
     let pixel_count = (source.width_px as usize)
         .checked_mul(source.height_px as usize)
         .ok_or_else(|| ImagePdfError::Invalid("Kích thước APNG bị tràn số".to_string()))?;
@@ -593,6 +618,7 @@ fn prepare_apng(
                     data,
                 }),
             icc_profile: icc_profile.clone(),
+            calibrated_color: calibrated_color.clone(),
             invert_cmyk: false,
         });
     }
@@ -784,6 +810,7 @@ fn prepare_png(bytes: &[u8], source: &ImageSourceSpec) -> Result<PreparedAsset, 
             (AssetColorSpace::Rgb, 3)
         };
         let icc_profile = resolve_png_icc_profile(&parsed, color_space)?;
+        let calibrated_color = resolve_png_calibrated_color(&parsed, color_space)?;
         return Ok(PreparedAsset {
             width_px: parsed.width,
             height_px: parsed.height,
@@ -793,6 +820,7 @@ fn prepare_png(bytes: &[u8], source: &ImageSourceSpec) -> Result<PreparedAsset, 
             data: parsed.idat,
             alpha: None,
             icc_profile,
+            calibrated_color,
             invert_cmyk: false,
         });
     }
@@ -820,6 +848,7 @@ fn prepare_png(bytes: &[u8], source: &ImageSourceSpec) -> Result<PreparedAsset, 
         split_png_8bit(&decoded, color_space, pixel_count)?
     };
     let icc_profile = resolve_png_icc_profile(&parsed, color_space)?;
+    let calibrated_color = resolve_png_calibrated_color(&parsed, color_space)?;
 
     Ok(PreparedAsset {
         width_px: source.width_px,
@@ -850,6 +879,7 @@ fn prepare_png(bytes: &[u8], source: &ImageSourceSpec) -> Result<PreparedAsset, 
                 data,
             }),
         icc_profile,
+        calibrated_color,
         invert_cmyk: false,
     })
 }
@@ -865,6 +895,114 @@ fn resolve_png_icc_profile(
     profile
         .map(|bytes| validate_icc_profile(bytes, color_space).map(|_| bytes.to_vec()))
         .transpose()
+}
+
+fn resolve_png_calibrated_color(
+    parsed: &ParsedPng,
+    color_space: AssetColorSpace,
+) -> Result<Option<CalibratedColorSpace>, ImagePdfError> {
+    // QUALITY (audit 2026-08-03): giữ nguyên sample/IDAT và chuyển cặp gAMA+cHRM
+    // sang CalRGB/CalGray tương đương; không được âm thầm rơi về DeviceRGB/Gray.
+    if parsed.icc_profile.is_some() || parsed.has_srgb {
+        return Ok(None);
+    }
+    let (Some(image_gamma), Some(chromaticities)) = (parsed.gamma, parsed.chromaticities) else {
+        return Ok(None);
+    };
+    if !image_gamma.is_finite() || image_gamma <= 0.0 {
+        return Err(calibrated_color_guard());
+    }
+    let gamma = 1.0 / image_gamma;
+    let white_point = xy_to_xyz(chromaticities.white, true)?;
+    if matches!(color_space, AssetColorSpace::Gray) {
+        return Ok(Some(CalibratedColorSpace::Gray { white_point, gamma }));
+    }
+    if !matches!(color_space, AssetColorSpace::Rgb) {
+        return Err(calibrated_color_guard());
+    }
+
+    let red = xy_to_xyz(chromaticities.red, false)?;
+    let green = xy_to_xyz(chromaticities.green, false)?;
+    let blue = xy_to_xyz(chromaticities.blue, false)?;
+    let primaries = [
+        [red[0], green[0], blue[0]],
+        [red[1], green[1], blue[1]],
+        [red[2], green[2], blue[2]],
+    ];
+    let determinant = determinant_3x3(primaries);
+    if !determinant.is_finite() || determinant.abs() < 1.0e-12 {
+        return Err(calibrated_color_guard());
+    }
+    let scales = [
+        determinant_3x3([
+            [white_point[0], primaries[0][1], primaries[0][2]],
+            [white_point[1], primaries[1][1], primaries[1][2]],
+            [white_point[2], primaries[2][1], primaries[2][2]],
+        ]) / determinant,
+        determinant_3x3([
+            [primaries[0][0], white_point[0], primaries[0][2]],
+            [primaries[1][0], white_point[1], primaries[1][2]],
+            [primaries[2][0], white_point[2], primaries[2][2]],
+        ]) / determinant,
+        determinant_3x3([
+            [primaries[0][0], primaries[0][1], white_point[0]],
+            [primaries[1][0], primaries[1][1], white_point[1]],
+            [primaries[2][0], primaries[2][1], white_point[2]],
+        ]) / determinant,
+    ];
+    if scales
+        .iter()
+        .any(|value| !value.is_finite() || *value <= 0.0)
+    {
+        return Err(calibrated_color_guard());
+    }
+    let matrix = [
+        red[0] * scales[0],
+        red[1] * scales[0],
+        red[2] * scales[0],
+        green[0] * scales[1],
+        green[1] * scales[1],
+        green[2] * scales[1],
+        blue[0] * scales[2],
+        blue[1] * scales[2],
+        blue[2] * scales[2],
+    ];
+    if matrix
+        .iter()
+        .any(|value| !value.is_finite() || *value < 0.0)
+    {
+        return Err(calibrated_color_guard());
+    }
+    Ok(Some(CalibratedColorSpace::Rgb {
+        white_point,
+        gamma,
+        matrix,
+    }))
+}
+
+fn xy_to_xyz(xy: [f64; 2], require_positive_xz: bool) -> Result<[f64; 3], ImagePdfError> {
+    let [x, y] = xy;
+    let z = 1.0 - x - y;
+    if !x.is_finite()
+        || !y.is_finite()
+        || y <= 0.0
+        || x < 0.0
+        || z < 0.0
+        || (require_positive_xz && (x <= 0.0 || z <= 0.0))
+    {
+        return Err(calibrated_color_guard());
+    }
+    Ok([x / y, 1.0, z / y])
+}
+
+fn determinant_3x3(matrix: [[f64; 3]; 3]) -> f64 {
+    matrix[0][0] * (matrix[1][1] * matrix[2][2] - matrix[1][2] * matrix[2][1])
+        - matrix[0][1] * (matrix[1][0] * matrix[2][2] - matrix[1][2] * matrix[2][0])
+        + matrix[0][2] * (matrix[1][0] * matrix[2][1] - matrix[1][1] * matrix[2][0])
+}
+
+fn calibrated_color_guard() -> ImagePdfError {
+    ImagePdfError::QualityGuard("PNG gAMA/cHRM không tạo được CalRGB/CalGray hợp lệ".to_string())
 }
 
 fn split_png_8bit(
@@ -944,8 +1082,8 @@ fn parse_png(bytes: &[u8]) -> Result<ParsedPng, ImagePdfError> {
     let mut has_trns = false;
     let mut icc_profile: Option<Vec<u8>> = None;
     let mut has_srgb = false;
-    let mut has_gamma = false;
-    let mut has_chromaticities = false;
+    let mut gamma: Option<f64> = None;
+    let mut chromaticities: Option<PngChromaticities> = None;
     let mut has_cicp = false;
     let mut has_animation = false;
     let mut saw_iend = false;
@@ -1018,8 +1156,30 @@ fn parse_png(bytes: &[u8]) -> Result<ParsedPng, ImagePdfError> {
                 icc_profile = Some(decode_png_iccp(&bytes[data_start..data_end])?);
             }
             b"sRGB" => has_srgb = true,
-            b"gAMA" => has_gamma = true,
-            b"cHRM" => has_chromaticities = true,
+            b"gAMA" => {
+                if length != 4 || gamma.is_some() {
+                    return Err(ImagePdfError::Invalid("gAMA PNG không hợp lệ".to_string()));
+                }
+                let raw = u32::from_be_bytes(
+                    bytes[data_start..data_end]
+                        .try_into()
+                        .map_err(|_| ImagePdfError::Invalid("gAMA PNG bị cắt".to_string()))?,
+                );
+                if raw == 0 {
+                    return Err(ImagePdfError::Invalid(
+                        "Gamma PNG phải lớn hơn 0".to_string(),
+                    ));
+                }
+                gamma = Some(raw as f64 / 100_000.0);
+            }
+            b"cHRM" => {
+                if chromaticities.is_some() {
+                    return Err(ImagePdfError::Invalid(
+                        "PNG có nhiều chunk cHRM".to_string(),
+                    ));
+                }
+                chromaticities = Some(parse_png_chromaticities(&bytes[data_start..data_end])?);
+            }
             b"cICP" => has_cicp = true,
             b"acTL" | b"fcTL" | b"fdAT" => has_animation = true,
             b"IEND" => {
@@ -1041,8 +1201,9 @@ fn parse_png(bytes: &[u8]) -> Result<ParsedPng, ImagePdfError> {
             "PNG không được đồng thời chứa iCCP và sRGB".to_string(),
         ));
     }
+    let has_partial_calibration = gamma.is_some() != chromaticities.is_some();
     let has_unhandled_color_metadata =
-        has_cicp || ((has_gamma || has_chromaticities) && icc_profile.is_none() && !has_srgb);
+        has_cicp || (has_partial_calibration && icc_profile.is_none() && !has_srgb);
     Ok(ParsedPng {
         width,
         height,
@@ -1052,9 +1213,32 @@ fn parse_png(bytes: &[u8]) -> Result<ParsedPng, ImagePdfError> {
         has_trns,
         icc_profile,
         has_srgb,
+        gamma,
+        chromaticities,
         has_unhandled_color_metadata,
         has_animation,
         idat,
+    })
+}
+
+fn parse_png_chromaticities(data: &[u8]) -> Result<PngChromaticities, ImagePdfError> {
+    if data.len() != 32 {
+        return Err(ImagePdfError::Invalid("cHRM PNG không hợp lệ".to_string()));
+    }
+    let mut values = [0.0f64; 8];
+    for (index, chunk) in data.chunks_exact(4).enumerate() {
+        values[index] = u32::from_be_bytes(
+            chunk
+                .try_into()
+                .map_err(|_| ImagePdfError::Invalid("Tọa độ màu cHRM PNG bị cắt".to_string()))?,
+        ) as f64
+            / 100_000.0;
+    }
+    Ok(PngChromaticities {
+        white: [values[0], values[1]],
+        red: [values[2], values[3]],
+        green: [values[4], values[5]],
+        blue: [values[6], values[7]],
     })
 }
 
@@ -1117,6 +1301,7 @@ fn prepare_jpeg(bytes: &[u8], source: &ImageSourceSpec) -> Result<PreparedAsset,
         data: bytes.to_vec(),
         alpha: None,
         icc_profile: parsed.icc_profile,
+        calibrated_color: None,
         invert_cmyk,
     })
 }
@@ -1533,6 +1718,7 @@ fn add_image_object(document: &mut Document, asset: PreparedAsset) -> ObjectId {
         data,
         alpha,
         icc_profile,
+        calibrated_color,
         invert_cmyk,
     } = asset;
     let alpha_id = alpha.map(|alpha| {
@@ -1565,6 +1751,8 @@ fn add_image_object(document: &mut Document, asset: PreparedAsset) -> ObjectId {
                 Object::Reference(profile_id),
             ]),
         );
+    } else if let Some(calibrated) = calibrated_color {
+        image_dictionary.set("ColorSpace", calibrated_color_object(calibrated));
     }
     match filter {
         AssetFilter::Flate { colors } => {
@@ -1597,6 +1785,39 @@ fn add_image_object(document: &mut Document, asset: PreparedAsset) -> ObjectId {
         );
     }
     document.add_object(Stream::new(image_dictionary, data))
+}
+
+fn calibrated_color_object(color: CalibratedColorSpace) -> Object {
+    match color {
+        CalibratedColorSpace::Gray { white_point, gamma } => Object::Array(vec![
+            Object::Name(b"CalGray".to_vec()),
+            Object::Dictionary(dictionary! {
+                "WhitePoint" => real_array(&white_point),
+                "Gamma" => Object::Real(gamma as f32),
+            }),
+        ]),
+        CalibratedColorSpace::Rgb {
+            white_point,
+            gamma,
+            matrix,
+        } => Object::Array(vec![
+            Object::Name(b"CalRGB".to_vec()),
+            Object::Dictionary(dictionary! {
+                "WhitePoint" => real_array(&white_point),
+                "Gamma" => real_array(&[gamma, gamma, gamma]),
+                "Matrix" => real_array(&matrix),
+            }),
+        ]),
+    }
+}
+
+fn real_array(values: &[f64]) -> Object {
+    Object::Array(
+        values
+            .iter()
+            .map(|value| Object::Real(*value as f32))
+            .collect(),
+    )
 }
 
 fn base_image_dictionary(
@@ -1701,6 +1922,13 @@ mod tests {
         let file = fs::File::create(path).unwrap();
         PngEncoder::new(file)
             .write_image(data, width, height, ColorType::Rgb8.into())
+            .unwrap();
+    }
+
+    fn write_gray_png(path: &Path, width: u32, height: u32, data: &[u8]) {
+        let file = fs::File::create(path).unwrap();
+        PngEncoder::new(file)
+            .write_image(data, width, height, ColorType::L8.into())
             .unwrap();
     }
 
@@ -1835,6 +2063,16 @@ mod tests {
         data
     }
 
+    fn png_chrm_data() -> Vec<u8> {
+        // Tọa độ màu sRGB theo đơn vị 1/100000 của PNG cHRM.
+        let values = [31270u32, 32900, 64000, 33000, 30000, 60000, 15000, 6000];
+        let mut data = Vec::with_capacity(32);
+        for value in values {
+            data.extend_from_slice(&value.to_be_bytes());
+        }
+        data
+    }
+
     fn insert_jpeg_icc_markers(path: &Path, profile: &[u8], part_size: usize) {
         let original = fs::read(path).unwrap();
         let parts: Vec<&[u8]> = profile.chunks(part_size).collect();
@@ -1879,6 +2117,22 @@ mod tests {
             .unwrap();
         assert_eq!(profile.dict.get(b"N").unwrap().as_i64().unwrap(), 3);
         assert_eq!(profile.content, expected_profile);
+    }
+
+    fn object_number(object: &Object) -> f64 {
+        match object {
+            Object::Integer(value) => *value as f64,
+            Object::Real(value) => *value as f64,
+            _ => panic!("Giá trị PDF không phải số: {object:?}"),
+        }
+    }
+
+    fn assert_real_array(object: &Object, expected: &[f64], tolerance: f64) {
+        let values = object.as_array().unwrap();
+        assert_eq!(values.len(), expected.len());
+        for (actual, expected) in values.iter().zip(expected) {
+            assert!((object_number(actual) - expected).abs() <= tolerance);
+        }
     }
 
     #[test]
@@ -1949,6 +2203,87 @@ mod tests {
         assert_eq!(asset.icc_profile.as_deref(), Some(SRGB_ICC_PROFILE));
         assert_iccbased_asset(asset, SRGB_ICC_PROFILE);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn png_gamma_and_chromaticities_build_calrgb_without_reencoding() {
+        let path = unique_path("calrgb", "png");
+        write_rgb_png(&path, 2, 1, &[10, 20, 30, 40, 50, 60]);
+        insert_png_chunk_after_ihdr(&path, b"gAMA", &45455u32.to_be_bytes());
+        insert_png_chunk_after_ihdr(&path, b"cHRM", &png_chrm_data());
+        let bytes = fs::read(&path).unwrap();
+        let parsed = parse_png(&bytes).unwrap();
+        let asset = prepare_png(&bytes, &source(&path, 2, 1)).unwrap();
+        assert_eq!(asset.data, parsed.idat);
+        assert!(asset.icc_profile.is_none());
+
+        let mut document = Document::with_version("1.7");
+        let image_id = add_image_object(&mut document, asset);
+        let image = document.get_object(image_id).unwrap().as_stream().unwrap();
+        let color_space = image.dict.get(b"ColorSpace").unwrap().as_array().unwrap();
+        assert_eq!(color_space[0].as_name().unwrap(), b"CalRGB");
+        let calibration = color_space[1].as_dict().unwrap();
+        assert_real_array(
+            calibration.get(b"WhitePoint").unwrap(),
+            &[0.95046, 1.0, 1.08906],
+            1.0e-4,
+        );
+        assert_real_array(
+            calibration.get(b"Gamma").unwrap(),
+            &[2.19998, 2.19998, 2.19998],
+            1.0e-4,
+        );
+        assert_real_array(
+            calibration.get(b"Matrix").unwrap(),
+            &[
+                0.41239, 0.21264, 0.01933, 0.35758, 0.71517, 0.11919, 0.18048, 0.07219, 0.95053,
+            ],
+            1.0e-4,
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn gray_png_gamma_and_chromaticities_build_calgray_without_reencoding() {
+        let path = unique_path("calgray", "png");
+        write_gray_png(&path, 2, 1, &[10, 200]);
+        insert_png_chunk_after_ihdr(&path, b"gAMA", &45455u32.to_be_bytes());
+        insert_png_chunk_after_ihdr(&path, b"cHRM", &png_chrm_data());
+        let bytes = fs::read(&path).unwrap();
+        let parsed = parse_png(&bytes).unwrap();
+        let asset = prepare_png(&bytes, &source(&path, 2, 1)).unwrap();
+        assert_eq!(asset.data, parsed.idat);
+
+        let mut document = Document::with_version("1.7");
+        let image_id = add_image_object(&mut document, asset);
+        let image = document.get_object(image_id).unwrap().as_stream().unwrap();
+        let color_space = image.dict.get(b"ColorSpace").unwrap().as_array().unwrap();
+        assert_eq!(color_space[0].as_name().unwrap(), b"CalGray");
+        let calibration = color_space[1].as_dict().unwrap();
+        assert_real_array(
+            calibration.get(b"WhitePoint").unwrap(),
+            &[0.95046, 1.0, 1.08906],
+            1.0e-4,
+        );
+        assert!((object_number(calibration.get(b"Gamma").unwrap()) - 2.19998).abs() <= 1.0e-4);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn png_partial_gamma_or_chromaticities_stays_at_quality_guard() {
+        let cases = [
+            ("gamma_only", *b"gAMA", 45455u32.to_be_bytes().to_vec()),
+            ("chrm_only", *b"cHRM", png_chrm_data()),
+        ];
+        for (name, chunk_type, chunk_data) in cases {
+            let path = unique_path(name, "png");
+            write_rgb_png(&path, 1, 1, &[10, 20, 30]);
+            insert_png_chunk_after_ihdr(&path, &chunk_type, &chunk_data);
+            let bytes = fs::read(&path).unwrap();
+            let error = prepare_png(&bytes, &source(&path, 1, 1)).unwrap_err();
+            assert!(matches!(error, ImagePdfError::QualityGuard(_)));
+            let _ = fs::remove_file(path);
+        }
     }
 
     #[test]

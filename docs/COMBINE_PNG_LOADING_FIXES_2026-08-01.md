@@ -245,21 +245,22 @@ Sau khi rà lại yêu cầu chế bản “Combine không được làm thay đ
 - PNG/JPEG 8-bit thông thường tiếp tục dùng fast path: JPEG giữ nguyên toàn bộ DCT bytes; PNG RGB/gray giữ IDAT khi an toàn; PNG cần decode vẫn dùng Flate lossless và giữ alpha bằng `/SMask`.
 - PNG 16-bit giữ nguyên `/BitsPerComponent 16`; RGBA/gray-alpha dùng `/SMask` 16-bit, không hạ xuống 8-bit.
 - PNG `iCCP/sRGB` và JPEG ICC được nhúng vào PDF dưới dạng `ICCBased`; JPEG vẫn không re-encode.
+- PNG có đủ cặp `gAMA+cHRM` được biểu diễn tương đương bằng `CalRGB` hoặc `CalGray`: gamma, white point và ma trận primary được giữ trong ColorSpace PDF; đường trực tiếp vẫn giữ nguyên toàn bộ IDAT.
 - APNG kênh 8-bit được compositing đúng `blend/dispose`; mỗi frame hoàn chỉnh trở thành một trang PDF, rotation của node áp cho mọi frame. Nguồn APNG luôn bắt buộc đi native và số frame được tính vào admission/RAM.
-- Backend không rơi về ReportLab cho PNG 16-bit, PNG/JPEG ICC hoặc APNG. Nếu native không sẵn sàng, job dừng trước output với thông báo quality guard.
+- Backend không rơi về ReportLab cho PNG 16-bit, PNG/JPEG ICC, PNG `gAMA+cHRM` hoặc APNG. Nếu native không sẵn sàng, job dừng trước output với thông báo quality guard.
 
 Các nguồn vẫn fail-safe:
 
 - APNG có bit-depth khác 8-bit.
 - PNG `cICP/HDR`.
-- PNG chỉ có `gAMA/cHRM` nhưng không có `iCCP/sRGB`, vì chưa có đường `CalRGB/CalGray` tương đương.
+- PNG chỉ có một trong hai chunk `gAMA` hoặc `cHRM` mà không có `iCCP/sRGB`, vì metadata một phần chưa đủ để tạo `CalRGB/CalGray` tương đương.
 - Yêu cầu API chọn riêng một frame APNG; UI hiện dùng whole-file nên không gặp nhánh này.
 
 Verify sau triển khai:
 
-- Rust native: **33/33 pass**, trong đó Combine **11/11 pass**; APNG test đủ `BlendOp::Over`, `DisposeOp::Background`, `DisposeOp::Previous`, ICC, alpha, rotation và mở rộng 1 node thành 4 trang.
-- Backend manifest focused: **30/30 pass**; xác nhận `frame_count`, output-page estimate, working-pixel RAM budget, bắt buộc native và fail-closed.
-- Runtime bằng extension release mới: PNG RGBA16 có ảnh và `/SMask` 16-bit; PNG/JPEG ICC stream trùng profile nguồn; JPEG stream trùng toàn bộ file DCT nguồn; APNG 2 frame tạo đúng 2 trang. Cả 5 trang mẫu render Poppler đúng màu/alpha.
+- Rust native: **36/36 pass**, trong đó Combine **14/14 pass**; có kiểm tra riêng `CalRGB`, `CalGray`, giữ nguyên IDAT và fail-safe khi metadata `gAMA/cHRM` chỉ có một phần.
+- Backend manifest focused: **35/35 pass**; xác nhận `frame_count`, output-page estimate, working-pixel RAM budget, bắt buộc native, `gAMA+cHRM` đủ cặp và fail-closed.
+- Runtime bằng extension release mới: PNG `gAMA+cHRM` tạo `/CalRGB` đúng white point, gamma và ma trận primary; stream ảnh trùng tuyệt đối IDAT nguồn. Các ca PNG RGBA16, PNG/JPEG ICC, JPEG DCT và APNG trước đó tiếp tục được bảo toàn.
 - Benchmark warm 5 lượt trên bộ 8 PNG RGBA `3000×3000` (72 MP): median `4,0384 s`, p95 `4,0649 s`, output giữ nguyên `84.300.584` byte. So với median trước `4,6698 s`, không có hồi quy tốc độ.
 - `cargo check --locked --lib`, `cargo test --locked --lib`, `py_compile` và `git diff --check`: pass.
 

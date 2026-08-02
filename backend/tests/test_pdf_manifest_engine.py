@@ -1,6 +1,7 @@
 from contextlib import ExitStack
 import json
 from pathlib import Path
+import zlib
 from types import SimpleNamespace
 
 import pikepdf
@@ -48,6 +49,24 @@ def _make_png_with_icc(path: Path) -> None:
         format="PNG",
         icc_profile=SRGB_PROFILE,
     )
+
+
+def _insert_png_chunk_after_ihdr(path: Path, chunk_type: bytes, data: bytes) -> None:
+    original = path.read_bytes()
+    crc = zlib.crc32(chunk_type + data) & 0xFFFFFFFF
+    chunk = len(data).to_bytes(4, "big") + chunk_type + data + crc.to_bytes(4, "big")
+    path.write_bytes(original[:33] + chunk + original[33:])
+
+
+def _png_chromaticities() -> bytes:
+    values = (31270, 32900, 64000, 33000, 30000, 60000, 15000, 6000)
+    return b"".join(value.to_bytes(4, "big") for value in values)
+
+
+def _make_png_with_gamma_and_chromaticities(path: Path) -> None:
+    Image.new("RGB", (2, 1), (10, 20, 30)).save(path, format="PNG")
+    _insert_png_chunk_after_ihdr(path, b"gAMA", (45455).to_bytes(4, "big"))
+    _insert_png_chunk_after_ihdr(path, b"cHRM", _png_chromaticities())
 
 
 def _make_apng(path: Path, size: tuple[int, int] = (20, 30)) -> None:
@@ -311,6 +330,7 @@ def test_merge_manifest_accepts_jpeg_preserves_jfif_dpi_and_dct(tmp_path: Path):
     [
         ("source-16bit.png", _make_png_16bit),
         ("source-icc.png", _make_png_with_icc),
+        ("source-calrgb.png", _make_png_with_gamma_and_chromaticities),
         ("source-icc.jpg", _make_jpeg_with_icc),
         ("source-apng.png", _make_apng),
     ],
@@ -347,6 +367,7 @@ def test_merge_manifest_routes_quality_sensitive_images_to_native(
     ("name", "maker"),
     [
         ("source-16bit.png", _make_png_16bit),
+        ("source-calrgb.png", _make_png_with_gamma_and_chromaticities),
         ("source-apng.png", _make_apng),
     ],
 )
@@ -362,6 +383,36 @@ def test_merge_manifest_fails_closed_when_required_native_is_unavailable(
     monkeypatch.setattr(manifest_engine, "_load_native_image_merger", lambda: None)
 
     with pytest.raises(manifest_engine.ImageQualityGuardError, match="native lossless"):
+        merge_manifest([str(source)], [{"file_index": 0}], str(output))
+
+    assert not output.exists()
+
+
+def test_png_complete_gamma_and_chromaticities_require_native_without_guard(tmp_path: Path):
+    source = tmp_path / "complete-calrgb.png"
+    _make_png_with_gamma_and_chromaticities(source)
+
+    assert manifest_engine._png_lossless_capability(str(source)) == (True, None)
+
+
+@pytest.mark.parametrize(
+    ("chunk_type", "chunk_data"),
+    [
+        (b"gAMA", (45455).to_bytes(4, "big")),
+        (b"cHRM", _png_chromaticities()),
+    ],
+)
+def test_png_partial_gamma_or_chromaticities_stays_at_quality_guard(
+    tmp_path: Path,
+    chunk_type: bytes,
+    chunk_data: bytes,
+):
+    source = tmp_path / f"partial-{chunk_type.decode('ascii')}.png"
+    output = tmp_path / "must-not-exist.pdf"
+    Image.new("RGB", (2, 1), (10, 20, 30)).save(source, format="PNG")
+    _insert_png_chunk_after_ihdr(source, chunk_type, chunk_data)
+
+    with pytest.raises(manifest_engine.ImageQualityGuardError, match="một phần metadata"):
         merge_manifest([str(source)], [{"file_index": 0}], str(output))
 
     assert not output.exists()
