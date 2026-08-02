@@ -124,12 +124,9 @@ def _positive_dpi(value: Any) -> float:
 
 def _png_lossless_capability(source_path: str) -> tuple[bool, str | None]:
     """Xác định nguồn phải đi native và metadata màu chưa có biểu diễn tương đương."""
-    # QUALITY (audit 2026-08-03): cặp gAMA+cHRM đầy đủ đi native CalRGB/CalGray;
-    # metadata chỉ có một nửa phải fail-closed trước khi tạo output.
+    # QUALITY (audit 2026-08-03): gAMA/cHRM kể cả chỉ có một phần đều đi native
+    # để giữ sample lossless và áp fallback màu ổn định, không rơi về ReportLab.
     requires_native = False
-    has_icc_or_srgb = False
-    has_gamma = False
-    has_chromaticities = False
     has_animation = False
     try:
         with open(source_path, "rb") as source:
@@ -152,13 +149,10 @@ def _png_lossless_capability(source_path: str) -> tuple[bool, str | None]:
                     source.seek(4, os.SEEK_CUR)
                     continue
                 if chunk_type in {b"iCCP", b"sRGB"}:
-                    has_icc_or_srgb = True
                     requires_native = True
                 elif chunk_type == b"gAMA":
-                    has_gamma = True
                     requires_native = True
                 elif chunk_type == b"cHRM":
-                    has_chromaticities = True
                     requires_native = True
                 elif chunk_type == b"cICP":
                     return True, "PNG cICP/HDR chưa có không gian màu PDF tương đương"
@@ -166,11 +160,6 @@ def _png_lossless_capability(source_path: str) -> tuple[bool, str | None]:
                     has_animation = True
                     requires_native = True
                 if chunk_type == b"IEND":
-                    if (has_gamma != has_chromaticities) and not has_icc_or_srgb:
-                        return True, (
-                            "PNG chỉ có một phần metadata gAMA/cHRM, chưa đủ dữ liệu "
-                            "để tạo CalRGB/CalGray tương đương"
-                        )
                     if has_animation:
                         requires_native = True
                     return requires_native, None

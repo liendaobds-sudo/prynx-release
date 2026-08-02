@@ -69,6 +69,19 @@ def _make_png_with_gamma_and_chromaticities(path: Path) -> None:
     _insert_png_chunk_after_ihdr(path, b"cHRM", _png_chromaticities())
 
 
+def _make_png_with_gamma_only(path: Path) -> None:
+    Image.new("RGB", (2, 1), (10, 20, 30)).save(path, format="PNG")
+    _insert_png_chunk_after_ihdr(path, b"gAMA", (45455).to_bytes(4, "big"))
+
+
+def _make_png_with_chromaticities_only(path: Path) -> None:
+    Image.new("RGBA", (2, 1), (10, 20, 30, 40)).save(path, format="PNG")
+    # Giá trị đúng từ file 54321 Final.png, lệch tối đa 1/100000 so với sRGB.
+    values = (31269, 32899, 63999, 33001, 30000, 60000, 15000, 5999)
+    data = b"".join(value.to_bytes(4, "big") for value in values)
+    _insert_png_chunk_after_ihdr(path, b"cHRM", data)
+
+
 def _make_apng(path: Path, size: tuple[int, int] = (20, 30)) -> None:
     first = Image.new("RGBA", size, (255, 0, 0, 255))
     second = Image.new("RGBA", size, (0, 0, 255, 128))
@@ -331,6 +344,8 @@ def test_merge_manifest_accepts_jpeg_preserves_jfif_dpi_and_dct(tmp_path: Path):
         ("source-16bit.png", _make_png_16bit),
         ("source-icc.png", _make_png_with_icc),
         ("source-calrgb.png", _make_png_with_gamma_and_chromaticities),
+        ("source-gamma-only.png", _make_png_with_gamma_only),
+        ("source-chrm-only.png", _make_png_with_chromaticities_only),
         ("source-icc.jpg", _make_jpeg_with_icc),
         ("source-apng.png", _make_apng),
     ],
@@ -368,6 +383,7 @@ def test_merge_manifest_routes_quality_sensitive_images_to_native(
     [
         ("source-16bit.png", _make_png_16bit),
         ("source-calrgb.png", _make_png_with_gamma_and_chromaticities),
+        ("source-chrm-only.png", _make_png_with_chromaticities_only),
         ("source-apng.png", _make_apng),
     ],
 )
@@ -395,27 +411,15 @@ def test_png_complete_gamma_and_chromaticities_require_native_without_guard(tmp_
     assert manifest_engine._png_lossless_capability(str(source)) == (True, None)
 
 
-@pytest.mark.parametrize(
-    ("chunk_type", "chunk_data"),
-    [
-        (b"gAMA", (45455).to_bytes(4, "big")),
-        (b"cHRM", _png_chromaticities()),
-    ],
-)
-def test_png_partial_gamma_or_chromaticities_stays_at_quality_guard(
+@pytest.mark.parametrize("maker", [_make_png_with_gamma_only, _make_png_with_chromaticities_only])
+def test_png_partial_gamma_or_chromaticities_require_native_without_guard(
     tmp_path: Path,
-    chunk_type: bytes,
-    chunk_data: bytes,
+    maker,
 ):
-    source = tmp_path / f"partial-{chunk_type.decode('ascii')}.png"
-    output = tmp_path / "must-not-exist.pdf"
-    Image.new("RGB", (2, 1), (10, 20, 30)).save(source, format="PNG")
-    _insert_png_chunk_after_ihdr(source, chunk_type, chunk_data)
+    source = tmp_path / "partial-color-metadata.png"
+    maker(source)
 
-    with pytest.raises(manifest_engine.ImageQualityGuardError, match="một phần metadata"):
-        merge_manifest([str(source)], [{"file_index": 0}], str(output))
-
-    assert not output.exists()
+    assert manifest_engine._png_lossless_capability(str(source)) == (True, None)
 
 
 def test_apng_native_expands_frames_and_uses_working_pixel_budget(

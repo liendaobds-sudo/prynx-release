@@ -226,6 +226,15 @@ struct PngChromaticities {
     blue: [f64; 2],
 }
 
+const PNG_SRGB_GAMMA: f64 = 0.45455;
+const PNG_SRGB_METADATA_TOLERANCE: f64 = 5.0e-5;
+const PNG_SRGB_CHROMATICITIES: PngChromaticities = PngChromaticities {
+    white: [0.31270, 0.32900],
+    red: [0.64000, 0.33000],
+    green: [0.30000, 0.60000],
+    blue: [0.15000, 0.06000],
+};
+
 #[derive(Debug)]
 struct ParsedJpeg {
     width: u32,
@@ -891,10 +900,38 @@ fn resolve_png_icc_profile(
     let profile = parsed
         .icc_profile
         .as_deref()
-        .or_else(|| parsed.has_srgb.then_some(SRGB_ICC_PROFILE));
+        .or_else(|| parsed.has_srgb.then_some(SRGB_ICC_PROFILE))
+        .or_else(|| {
+            (matches!(color_space, AssetColorSpace::Rgb)
+                && has_srgb_compatible_partial_metadata(parsed))
+            .then_some(SRGB_ICC_PROFILE)
+        });
     profile
         .map(|bytes| validate_icc_profile(bytes, color_space).map(|_| bytes.to_vec()))
         .transpose()
+}
+
+fn has_srgb_compatible_partial_metadata(parsed: &ParsedPng) -> bool {
+    // QUALITY (audit 2026-08-03): PNG cho phép thiếu gamma và yêu cầu decoder tự
+    // chọn mặc định. Chỉ gắn ICC sRGB khi phần metadata còn lại khớp chuẩn sRGB;
+    // sample ảnh vẫn giữ nguyên, không biến đổi màu hoặc tái lượng tử hóa.
+    match (parsed.gamma, parsed.chromaticities) {
+        (Some(gamma), None) => (gamma - PNG_SRGB_GAMMA).abs() <= PNG_SRGB_METADATA_TOLERANCE,
+        (None, Some(chromaticities)) => {
+            chromaticities_match(chromaticities, PNG_SRGB_CHROMATICITIES)
+        }
+        _ => false,
+    }
+}
+
+fn chromaticities_match(left: PngChromaticities, right: PngChromaticities) -> bool {
+    [left.white, left.red, left.green, left.blue]
+        .into_iter()
+        .zip([right.white, right.red, right.green, right.blue])
+        .all(|(left_xy, right_xy)| {
+            (left_xy[0] - right_xy[0]).abs() <= PNG_SRGB_METADATA_TOLERANCE
+                && (left_xy[1] - right_xy[1]).abs() <= PNG_SRGB_METADATA_TOLERANCE
+        })
 }
 
 fn resolve_png_calibrated_color(
@@ -902,7 +939,7 @@ fn resolve_png_calibrated_color(
     color_space: AssetColorSpace,
 ) -> Result<Option<CalibratedColorSpace>, ImagePdfError> {
     // QUALITY (audit 2026-08-03): giữ nguyên sample/IDAT và chuyển cặp gAMA+cHRM
-    // sang CalRGB/CalGray tương đương; không được âm thầm rơi về DeviceRGB/Gray.
+    // đầy đủ sang CalRGB/CalGray tương đương.
     if parsed.icc_profile.is_some() || parsed.has_srgb {
         return Ok(None);
     }
@@ -1201,9 +1238,10 @@ fn parse_png(bytes: &[u8]) -> Result<ParsedPng, ImagePdfError> {
             "PNG không được đồng thời chứa iCCP và sRGB".to_string(),
         ));
     }
-    let has_partial_calibration = gamma.is_some() != chromaticities.is_some();
-    let has_unhandled_color_metadata =
-        has_cicp || (has_partial_calibration && icc_profile.is_none() && !has_srgb);
+    // Metadata gAMA/cHRM một phần không làm ảnh mất dữ liệu: native giữ nguyên
+    // sample và chọn ICC sRGB khi phần còn lại khớp chuẩn; nếu không thì để
+    // DeviceRGB/Gray giống cách decoder xử lý ảnh không đủ thông tin màu.
+    let has_unhandled_color_metadata = has_cicp;
     Ok(ParsedPng {
         width,
         height,
@@ -2065,7 +2103,10 @@ mod tests {
 
     fn png_chrm_data() -> Vec<u8> {
         // Tọa độ màu sRGB theo đơn vị 1/100000 của PNG cHRM.
-        let values = [31270u32, 32900, 64000, 33000, 30000, 60000, 15000, 6000];
+        png_chrm_data_from([31270u32, 32900, 64000, 33000, 30000, 60000, 15000, 6000])
+    }
+
+    fn png_chrm_data_from(values: [u32; 8]) -> Vec<u8> {
         let mut data = Vec::with_capacity(32);
         for value in values {
             data.extend_from_slice(&value.to_be_bytes());
@@ -2270,20 +2311,56 @@ mod tests {
     }
 
     #[test]
-    fn png_partial_gamma_or_chromaticities_stays_at_quality_guard() {
-        let cases = [
-            ("gamma_only", *b"gAMA", 45455u32.to_be_bytes().to_vec()),
-            ("chrm_only", *b"cHRM", png_chrm_data()),
-        ];
-        for (name, chunk_type, chunk_data) in cases {
-            let path = unique_path(name, "png");
-            write_rgb_png(&path, 1, 1, &[10, 20, 30]);
-            insert_png_chunk_after_ihdr(&path, &chunk_type, &chunk_data);
-            let bytes = fs::read(&path).unwrap();
-            let error = prepare_png(&bytes, &source(&path, 1, 1)).unwrap_err();
-            assert!(matches!(error, ImagePdfError::QualityGuard(_)));
-            let _ = fs::remove_file(path);
-        }
+    fn png_srgb_gamma_only_uses_icc_and_keeps_original_idat() {
+        let path = unique_path("gamma_only", "png");
+        write_rgb_png(&path, 2, 1, &[10, 20, 30, 40, 50, 60]);
+        insert_png_chunk_after_ihdr(&path, b"gAMA", &45455u32.to_be_bytes());
+        let bytes = fs::read(&path).unwrap();
+        let parsed = parse_png(&bytes).unwrap();
+        let asset = prepare_png(&bytes, &source(&path, 2, 1)).unwrap();
+        assert_eq!(asset.data, parsed.idat);
+        assert_eq!(asset.icc_profile.as_deref(), Some(SRGB_ICC_PROFILE));
+        assert_iccbased_asset(asset, SRGB_ICC_PROFILE);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn png_srgb_chromaticities_only_keep_rgba_samples_and_use_icc() {
+        let path = unique_path("chrm_only", "png");
+        write_rgba_png(&path, 2, 1, &[10, 20, 30, 40, 50, 60, 70, 80]);
+        // Giá trị đúng từ file 54321 Final.png: sRGB bị làm tròn lệch ±1/100000.
+        insert_png_chunk_after_ihdr(
+            &path,
+            b"cHRM",
+            &png_chrm_data_from([31269, 32899, 63999, 33001, 30000, 60000, 15000, 5999]),
+        );
+        let bytes = fs::read(&path).unwrap();
+        let asset = prepare_png(&bytes, &source(&path, 2, 1)).unwrap();
+        assert_eq!(asset.icc_profile.as_deref(), Some(SRGB_ICC_PROFILE));
+        assert_eq!(
+            inflate_predictor_rows(&asset.data, 2, 1, 3),
+            [10, 20, 30, 50, 60, 70]
+        );
+        assert_eq!(
+            inflate_predictor_rows(&asset.alpha.as_ref().unwrap().data, 2, 1, 1),
+            [40, 80]
+        );
+        assert_iccbased_asset(asset, SRGB_ICC_PROFILE);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn png_non_srgb_partial_metadata_keeps_samples_in_device_color() {
+        let path = unique_path("non_srgb_gamma_only", "png");
+        write_rgb_png(&path, 2, 1, &[10, 20, 30, 40, 50, 60]);
+        insert_png_chunk_after_ihdr(&path, b"gAMA", &100000u32.to_be_bytes());
+        let bytes = fs::read(&path).unwrap();
+        let parsed = parse_png(&bytes).unwrap();
+        let asset = prepare_png(&bytes, &source(&path, 2, 1)).unwrap();
+        assert_eq!(asset.data, parsed.idat);
+        assert!(asset.icc_profile.is_none());
+        assert!(asset.calibrated_color.is_none());
+        let _ = fs::remove_file(path);
     }
 
     #[test]
