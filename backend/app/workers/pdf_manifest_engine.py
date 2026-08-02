@@ -80,6 +80,7 @@ class _ImageSourceInfo:
     height_pt: float
     source_bytes: int
     estimated_pdf_bytes: int
+    requires_native_lossless: bool
 
     @property
     def pixels(self) -> int:
@@ -115,45 +116,56 @@ def _positive_dpi(value: Any) -> float:
     return dpi if math.isfinite(dpi) and dpi > 0 else 72.0
 
 
-def _png_quality_guard_reason(source_path: str) -> str | None:
-    """Đọc chunk trước IDAT để chặn mọi đường có thể rơi bit-depth/profile màu."""
-    color_chunks = {b"iCCP", b"sRGB", b"gAMA", b"cHRM", b"cICP"}
+def _png_lossless_capability(source_path: str) -> tuple[bool, str | None]:
+    """Xác định nguồn phải đi native và metadata màu chưa có biểu diễn tương đương."""
+    requires_native = False
+    has_icc_or_srgb = False
+    has_gamma = False
+    has_chromaticities = False
     try:
         with open(source_path, "rb") as source:
             if source.read(8) != b"\x89PNG\r\n\x1a\n":
-                return None
+                return False, None
             while True:
                 header = source.read(8)
                 if len(header) != 8:
-                    return None
+                    return False, None
                 length = int.from_bytes(header[:4], "big", signed=False)
                 chunk_type = header[4:8]
                 if chunk_type == b"IHDR":
                     if length != 13:
-                        return None
+                        return False, None
                     data = source.read(13)
                     if len(data) != 13:
-                        return None
+                        return False, None
                     if data[8] != 8:
-                        return f"PNG {data[8]}-bit chưa có đường ghép bảo toàn bit-depth"
+                        requires_native = True
                     source.seek(4, os.SEEK_CUR)
                     continue
-                if chunk_type in color_chunks:
-                    return "PNG có hồ sơ/thông tin màu chưa được nhúng lại lossless vào PDF"
+                if chunk_type in {b"iCCP", b"sRGB"}:
+                    has_icc_or_srgb = True
+                    requires_native = True
+                elif chunk_type == b"gAMA":
+                    has_gamma = True
+                elif chunk_type == b"cHRM":
+                    has_chromaticities = True
+                elif chunk_type == b"cICP":
+                    return True, "PNG cICP/HDR chưa có không gian màu PDF tương đương"
                 if chunk_type in {b"acTL", b"fcTL", b"fdAT"}:
-                    return "APNG nhiều frame chưa có đường ghép bảo toàn đầy đủ"
+                    return True, "APNG nhiều frame đang chờ đường tách frame lossless"
                 if chunk_type == b"IEND":
-                    return None
+                    if (has_gamma or has_chromaticities) and not has_icc_or_srgb:
+                        return True, "PNG gAMA/cHRM chưa có CalRGB/CalGray tương đương"
+                    return requires_native, None
                 source.seek(length + 4, os.SEEK_CUR)
     except OSError:
-        return None
+        return False, None
 
 
 def _quality_guard_message(source_path: str, reason: str) -> str:
     return (
         f"PrynX đã dừng ghép {os.path.basename(source_path)} để không làm giảm chất lượng: "
-        f"{reason}. Hãy chuyển ảnh sang PDF có nhúng profile hoặc dùng ảnh 8-bit không có "
-        "profile màu cho tới khi đường ghép lossless tương ứng được hỗ trợ."
+        f"{reason}. Không có file kết quả nào được tạo."
     )
 
 
@@ -235,8 +247,9 @@ def _inspect_image_source(source_path: str) -> _ImageSourceInfo:
     """Đọc kích thước/DPI một lần để admission chạy trước khi tạo PDF tạm."""
     extension = os.path.splitext(source_path)[1].lower()
     expected_format = "PNG" if extension == ".png" else "JPEG"
+    requires_native_lossless = False
     if extension == ".png":
-        reason = _png_quality_guard_reason(source_path)
+        requires_native_lossless, reason = _png_lossless_capability(source_path)
         if reason:
             raise ImageQualityGuardError(_quality_guard_message(source_path, reason))
     try:
@@ -246,12 +259,7 @@ def _inspect_image_source(source_path: str) -> _ImageSourceInfo:
                 if image.format != expected_format or getattr(image, "n_frames", 1) != 1:
                     raise ValueError("Image extension and content do not match")
                 if extension in {".jpg", ".jpeg"} and image.info.get("icc_profile"):
-                    raise ImageQualityGuardError(
-                        _quality_guard_message(
-                            source_path,
-                            "JPEG có ICC chưa được dựng thành ICCBased trong PDF",
-                        )
-                    )
+                    requires_native_lossless = True
                 width_px, height_px = image.size
                 if width_px <= 0 or height_px <= 0:
                     raise ValueError("Invalid image dimensions")
@@ -266,6 +274,7 @@ def _inspect_image_source(source_path: str) -> _ImageSourceInfo:
             height_pt=height_px / dpi_y * 72.0,
             source_bytes=source_bytes,
             estimated_pdf_bytes=_estimate_image_pdf_bytes(extension, source_bytes, pixels),
+            requires_native_lossless=requires_native_lossless,
         )
     except ImageQualityGuardError:
         raise
@@ -675,7 +684,19 @@ def _try_native_image_manifest(
 ) -> bool:
     merger = _load_native_image_merger()
     built = _build_native_image_request(file_paths, manifest, image_infos)
+    guarded_sources = [
+        index
+        for index, info in image_infos.items()
+        if info.requires_native_lossless
+    ]
     if merger is None or built is None:
+        if guarded_sources:
+            names = ", ".join(os.path.basename(file_paths[index]) for index in guarded_sources[:3])
+            raise ImageQualityGuardError(
+                "PrynX đã dừng ghép để không làm giảm chất lượng: "
+                f"{names} cần native lossless nhưng đường này chưa sẵn sàng. "
+                "Không có file kết quả nào được tạo."
+            )
         return False
 
     request, native_to_original = built
@@ -731,6 +752,11 @@ def _try_native_image_manifest(
             lambda: bool(cancel_check and cancel_check()),
         )
     except NotImplementedError as exc:
+        if guarded_sources:
+            raise ImageQualityGuardError(
+                "PrynX đã dừng ghép vì native chưa bảo toàn đầy đủ nguồn 16-bit/ICC. "
+                "Không có file kết quả nào được tạo."
+            ) from exc
         logger.info("Native image Combine fallback: %s", str(exc).splitlines()[0])
         return False
     except InterruptedError as exc:

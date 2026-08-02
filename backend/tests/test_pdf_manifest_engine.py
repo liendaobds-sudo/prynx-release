@@ -11,6 +11,9 @@ from app.workers import pdf_manifest_engine as manifest_engine
 from app.workers.pdf_manifest_engine import ManifestResourceEstimate, merge_manifest
 
 
+SRGB_PROFILE = (Path(__file__).resolve().parents[1] / "app/assets/icc/sRGB.icc").read_bytes()
+
+
 def _make_pdf(
     path: Path,
     count: int = 2,
@@ -43,7 +46,7 @@ def _make_png_with_icc(path: Path) -> None:
     Image.new("RGB", (2, 1), (10, 20, 30)).save(
         path,
         format="PNG",
-        icc_profile=b"test-icc-profile",
+        icc_profile=SRGB_PROFILE,
     )
 
 
@@ -52,7 +55,7 @@ def _make_jpeg_with_icc(path: Path) -> None:
         path,
         format="JPEG",
         quality=90,
-        icc_profile=b"test-icc-profile",
+        icc_profile=SRGB_PROFILE,
     )
 
 
@@ -291,24 +294,51 @@ def test_merge_manifest_accepts_jpeg_preserves_jfif_dpi_and_dct(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    ("name", "maker", "message"),
+    ("name", "maker"),
     [
-        ("source-16bit.png", _make_png_16bit, "16-bit"),
-        ("source-icc.png", _make_png_with_icc, "hồ sơ/thông tin màu"),
-        ("source-icc.jpg", _make_jpeg_with_icc, "JPEG có ICC"),
+        ("source-16bit.png", _make_png_16bit),
+        ("source-icc.png", _make_png_with_icc),
+        ("source-icc.jpg", _make_jpeg_with_icc),
     ],
 )
-def test_merge_manifest_fails_closed_when_quality_cannot_be_preserved(
+def test_merge_manifest_routes_quality_sensitive_images_to_native(
+    monkeypatch,
     tmp_path: Path,
     name: str,
     maker,
-    message: str,
 ):
     source = tmp_path / name
-    output = tmp_path / "must-not-exist.pdf"
+    output = tmp_path / "lossless.pdf"
     maker(source)
+    captured: dict[str, object] = {}
 
-    with pytest.raises(manifest_engine.ImageQualityGuardError, match=message):
+    def fake_native(request_json, output_path, _workers, progress, _cancelled):
+        request = json.loads(request_json)
+        captured["request"] = request
+        progress(0)
+        with pikepdf.Pdf.new() as pdf:
+            pdf.add_blank_page(page_size=(10, 10))
+            pdf.save(output_path)
+        return output_path
+
+    monkeypatch.setattr(manifest_engine, "_load_native_image_merger", lambda: fake_native)
+
+    merge_manifest([str(source)], [{"file_index": 0}], str(output))
+
+    assert output.exists()
+    assert captured["request"]["sources"][0]["path"] == str(source)
+
+
+def test_merge_manifest_fails_closed_when_required_native_is_unavailable(
+    monkeypatch,
+    tmp_path: Path,
+):
+    source = tmp_path / "source-16bit.png"
+    output = tmp_path / "must-not-exist.pdf"
+    _make_png_16bit(source)
+    monkeypatch.setattr(manifest_engine, "_load_native_image_merger", lambda: None)
+
+    with pytest.raises(manifest_engine.ImageQualityGuardError, match="native lossless"):
         merge_manifest([str(source)], [{"file_index": 0}], str(output))
 
     assert not output.exists()
