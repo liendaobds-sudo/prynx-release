@@ -3,17 +3,18 @@
 //! PERF (audit 2026-08-02 §TC.1): tránh UPNG/pako trong WebView và tránh
 //! ReportLab tạo PDF tạm từng ảnh. Module này không gọi PDFium.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
-use image::ImageFormat;
+use image::{DynamicImage, ImageFormat};
 use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, Stream};
 use pyo3::exceptions::{
     PyIOError, PyInterruptedError, PyNotImplementedError, PyRuntimeError, PyValueError,
@@ -27,6 +28,8 @@ const MAX_MANIFEST_ITEMS: usize = 20_000;
 const A4_WIDTH_PT: f64 = 595.28;
 const A4_HEIGHT_PT: f64 = 841.89;
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+const MAX_ICC_PROFILE_BYTES: u64 = 32 * 1024 * 1024;
+const SRGB_ICC_PROFILE: &[u8] = include_bytes!("../../backend/app/assets/icc/sRGB.icc");
 
 #[derive(Debug)]
 enum ImagePdfError {
@@ -92,6 +95,24 @@ enum AssetColorSpace {
     Cmyk,
 }
 
+impl AssetColorSpace {
+    fn components(self) -> i64 {
+        match self {
+            Self::Gray => 1,
+            Self::Rgb => 3,
+            Self::Cmyk => 4,
+        }
+    }
+
+    fn device_name(self) -> &'static [u8] {
+        match self {
+            Self::Gray => b"DeviceGray",
+            Self::Rgb => b"DeviceRGB",
+            Self::Cmyk => b"DeviceCMYK",
+        }
+    }
+}
+
 #[derive(Debug)]
 enum AssetFilter {
     Flate { colors: i64 },
@@ -100,6 +121,7 @@ enum AssetFilter {
 
 #[derive(Debug)]
 struct CompressedAlpha {
+    bits_per_component: i64,
     data: Vec<u8>,
 }
 
@@ -112,6 +134,7 @@ struct PreparedAsset {
     filter: AssetFilter,
     data: Vec<u8>,
     alpha: Option<CompressedAlpha>,
+    icc_profile: Option<Vec<u8>>,
     invert_cmyk: bool,
 }
 
@@ -168,7 +191,9 @@ struct ParsedPng {
     color_type: u8,
     interlace: u8,
     has_trns: bool,
-    has_color_metadata: bool,
+    icc_profile: Option<Vec<u8>>,
+    has_srgb: bool,
+    has_unhandled_color_metadata: bool,
     has_animation: bool,
     idat: Vec<u8>,
 }
@@ -179,7 +204,7 @@ struct ParsedJpeg {
     height: u32,
     bits_per_component: i64,
     channels: u8,
-    has_icc: bool,
+    icc_profile: Option<Vec<u8>>,
 }
 
 #[pyfunction]
@@ -425,39 +450,32 @@ fn prepare_png(bytes: &[u8], source: &ImageSourceSpec) -> Result<PreparedAsset, 
             "APNG nhiều frame chưa có đường ghép bảo toàn đầy đủ".to_string(),
         ));
     }
-    // PERF (audit 2026-08-03 §TC.Q1): không được đổi tốc độ lấy bit-depth/profile.
-    // Các nguồn này phải dừng trước khi decode cho tới khi PDF writer giữ được
-    // trọn vẹn 16-bit và không gian màu gốc.
-    if parsed.bit_depth != 8 {
-        return Err(ImagePdfError::QualityGuard(format!(
-            "PNG {}-bit chưa có đường ghép bảo toàn bit-depth",
-            parsed.bit_depth
-        )));
-    }
-    if parsed.has_color_metadata {
+    if parsed.has_unhandled_color_metadata {
         return Err(ImagePdfError::QualityGuard(
-            "PNG có hồ sơ/thông tin màu chưa được nhúng lại lossless vào PDF".to_string(),
+            "PNG có thông tin màu chưa thể biểu diễn tương đương trong PDF".to_string(),
         ));
     }
 
-    if parsed.bit_depth == 8
-        && parsed.interlace == 0
+    let direct_idat = parsed.interlace == 0
         && !parsed.has_trns
-        && matches!(parsed.color_type, 0 | 2)
-    {
+        && ((parsed.color_type == 0 && matches!(parsed.bit_depth, 1 | 2 | 4 | 8 | 16))
+            || (parsed.color_type == 2 && matches!(parsed.bit_depth, 8 | 16)));
+    if direct_idat {
         let (color_space, colors) = if parsed.color_type == 0 {
             (AssetColorSpace::Gray, 1)
         } else {
             (AssetColorSpace::Rgb, 3)
         };
+        let icc_profile = resolve_png_icc_profile(&parsed, color_space)?;
         return Ok(PreparedAsset {
             width_px: parsed.width,
             height_px: parsed.height,
-            bits_per_component: 8,
+            bits_per_component: parsed.bit_depth as i64,
             color_space,
             filter: AssetFilter::Flate { colors },
             data: parsed.idat,
             alpha: None,
+            icc_profile,
             invert_cmyk: false,
         });
     }
@@ -469,33 +487,133 @@ fn prepare_png(bytes: &[u8], source: &ImageSourceSpec) -> Result<PreparedAsset, 
             "Kích thước PNG sau giải mã không khớp bước kiểm tra".to_string(),
         ));
     }
-    let rgba = decoded.to_rgba8().into_raw();
     let pixel_count = (source.width_px as usize)
         .checked_mul(source.height_px as usize)
         .ok_or_else(|| ImagePdfError::Invalid("Kích thước PNG bị tràn số".to_string()))?;
-    let has_alpha = rgba.chunks_exact(4).any(|pixel| pixel[3] != 255);
-    let mut rgb = Vec::with_capacity(pixel_count * 3);
-    let mut alpha = has_alpha.then(|| Vec::with_capacity(pixel_count));
-    for pixel in rgba.chunks_exact(4) {
-        rgb.extend_from_slice(&pixel[..3]);
-        if let Some(channel) = alpha.as_mut() {
-            channel.push(pixel[3]);
-        }
-    }
+    let color_space = if matches!(parsed.color_type, 0 | 4) {
+        AssetColorSpace::Gray
+    } else {
+        AssetColorSpace::Rgb
+    };
+    let colors = color_space.components();
+    let bits_per_component = if parsed.bit_depth == 16 { 16 } else { 8 };
+    let (color, alpha) = if bits_per_component == 16 {
+        split_png_16bit(&decoded, color_space, pixel_count)?
+    } else {
+        split_png_8bit(&decoded, color_space, pixel_count)?
+    };
+    let icc_profile = resolve_png_icc_profile(&parsed, color_space)?;
 
     Ok(PreparedAsset {
         width_px: source.width_px,
         height_px: source.height_px,
-        bits_per_component: 8,
-        color_space: AssetColorSpace::Rgb,
-        filter: AssetFilter::Flate { colors: 3 },
-        data: compress_predictor_rows(&rgb, source.width_px, source.height_px, 3)?,
+        bits_per_component,
+        color_space,
+        filter: AssetFilter::Flate { colors },
+        data: compress_predictor_rows(
+            &color,
+            source.width_px,
+            source.height_px,
+            colors as usize,
+            bits_per_component,
+        )?,
         alpha: alpha
-            .map(|channel| compress_predictor_rows(&channel, source.width_px, source.height_px, 1))
+            .map(|channel| {
+                compress_predictor_rows(
+                    &channel,
+                    source.width_px,
+                    source.height_px,
+                    1,
+                    bits_per_component,
+                )
+            })
             .transpose()?
-            .map(|data| CompressedAlpha { data }),
+            .map(|data| CompressedAlpha {
+                bits_per_component,
+                data,
+            }),
+        icc_profile,
         invert_cmyk: false,
     })
+}
+
+fn resolve_png_icc_profile(
+    parsed: &ParsedPng,
+    color_space: AssetColorSpace,
+) -> Result<Option<Vec<u8>>, ImagePdfError> {
+    let profile = parsed
+        .icc_profile
+        .as_deref()
+        .or_else(|| parsed.has_srgb.then_some(SRGB_ICC_PROFILE));
+    profile
+        .map(|bytes| validate_icc_profile(bytes, color_space).map(|_| bytes.to_vec()))
+        .transpose()
+}
+
+fn split_png_8bit(
+    decoded: &DynamicImage,
+    color_space: AssetColorSpace,
+    pixel_count: usize,
+) -> Result<(Vec<u8>, Option<Vec<u8>>), ImagePdfError> {
+    if matches!(color_space, AssetColorSpace::Gray) {
+        let pixels = decoded.to_luma_alpha8().into_raw();
+        let has_alpha = pixels.chunks_exact(2).any(|pixel| pixel[1] != u8::MAX);
+        let mut gray = Vec::with_capacity(pixel_count);
+        let mut alpha = has_alpha.then(|| Vec::with_capacity(pixel_count));
+        for pixel in pixels.chunks_exact(2) {
+            gray.push(pixel[0]);
+            if let Some(channel) = alpha.as_mut() {
+                channel.push(pixel[1]);
+            }
+        }
+        Ok((gray, alpha))
+    } else {
+        let pixels = decoded.to_rgba8().into_raw();
+        let has_alpha = pixels.chunks_exact(4).any(|pixel| pixel[3] != u8::MAX);
+        let mut rgb = Vec::with_capacity(pixel_count * 3);
+        let mut alpha = has_alpha.then(|| Vec::with_capacity(pixel_count));
+        for pixel in pixels.chunks_exact(4) {
+            rgb.extend_from_slice(&pixel[..3]);
+            if let Some(channel) = alpha.as_mut() {
+                channel.push(pixel[3]);
+            }
+        }
+        Ok((rgb, alpha))
+    }
+}
+
+fn split_png_16bit(
+    decoded: &DynamicImage,
+    color_space: AssetColorSpace,
+    pixel_count: usize,
+) -> Result<(Vec<u8>, Option<Vec<u8>>), ImagePdfError> {
+    if matches!(color_space, AssetColorSpace::Gray) {
+        let pixels = decoded.to_luma_alpha16().into_raw();
+        let has_alpha = pixels.chunks_exact(2).any(|pixel| pixel[1] != u16::MAX);
+        let mut gray = Vec::with_capacity(pixel_count * 2);
+        let mut alpha = has_alpha.then(|| Vec::with_capacity(pixel_count * 2));
+        for pixel in pixels.chunks_exact(2) {
+            gray.extend_from_slice(&pixel[0].to_be_bytes());
+            if let Some(channel) = alpha.as_mut() {
+                channel.extend_from_slice(&pixel[1].to_be_bytes());
+            }
+        }
+        Ok((gray, alpha))
+    } else {
+        let pixels = decoded.to_rgba16().into_raw();
+        let has_alpha = pixels.chunks_exact(4).any(|pixel| pixel[3] != u16::MAX);
+        let mut rgb = Vec::with_capacity(pixel_count * 6);
+        let mut alpha = has_alpha.then(|| Vec::with_capacity(pixel_count * 2));
+        for pixel in pixels.chunks_exact(4) {
+            for channel in &pixel[..3] {
+                rgb.extend_from_slice(&channel.to_be_bytes());
+            }
+            if let Some(channel) = alpha.as_mut() {
+                channel.extend_from_slice(&pixel[3].to_be_bytes());
+            }
+        }
+        Ok((rgb, alpha))
+    }
 }
 
 fn parse_png(bytes: &[u8]) -> Result<ParsedPng, ImagePdfError> {
@@ -507,7 +625,11 @@ fn parse_png(bytes: &[u8]) -> Result<ParsedPng, ImagePdfError> {
     let mut ihdr: Option<(u32, u32, u8, u8, u8)> = None;
     let mut idat = Vec::new();
     let mut has_trns = false;
-    let mut has_color_metadata = false;
+    let mut icc_profile: Option<Vec<u8>> = None;
+    let mut has_srgb = false;
+    let mut has_gamma = false;
+    let mut has_chromaticities = false;
+    let mut has_cicp = false;
     let mut has_animation = false;
     let mut saw_iend = false;
 
@@ -548,7 +670,13 @@ fn parse_png(bytes: &[u8]) -> Result<ParsedPng, ImagePdfError> {
                 let compression = bytes[data_start + 10];
                 let filter = bytes[data_start + 11];
                 let interlace = bytes[data_start + 12];
-                if width == 0 || height == 0 || compression != 0 || filter != 0 || interlace > 1 {
+                if width == 0
+                    || height == 0
+                    || compression != 0
+                    || filter != 0
+                    || interlace > 1
+                    || !valid_png_bit_depth(color_type, bit_depth)
+                {
                     return Err(ImagePdfError::Invalid(
                         "Thông số IHDR không hợp lệ".to_string(),
                     ));
@@ -564,7 +692,18 @@ fn parse_png(bytes: &[u8]) -> Result<ParsedPng, ImagePdfError> {
                 idat.extend_from_slice(&bytes[data_start..data_end]);
             }
             b"tRNS" => has_trns = true,
-            b"iCCP" | b"sRGB" | b"gAMA" | b"cHRM" | b"cICP" => has_color_metadata = true,
+            b"iCCP" => {
+                if icc_profile.is_some() {
+                    return Err(ImagePdfError::Invalid(
+                        "PNG có nhiều chunk iCCP".to_string(),
+                    ));
+                }
+                icc_profile = Some(decode_png_iccp(&bytes[data_start..data_end])?);
+            }
+            b"sRGB" => has_srgb = true,
+            b"gAMA" => has_gamma = true,
+            b"cHRM" => has_chromaticities = true,
+            b"cICP" => has_cicp = true,
             b"acTL" | b"fcTL" | b"fdAT" => has_animation = true,
             b"IEND" => {
                 saw_iend = true;
@@ -580,6 +719,13 @@ fn parse_png(bytes: &[u8]) -> Result<ParsedPng, ImagePdfError> {
     if !saw_iend || idat.is_empty() {
         return Err(ImagePdfError::Invalid("PNG thiếu IDAT/IEND".to_string()));
     }
+    if icc_profile.is_some() && has_srgb {
+        return Err(ImagePdfError::Invalid(
+            "PNG không được đồng thời chứa iCCP và sRGB".to_string(),
+        ));
+    }
+    let has_unhandled_color_metadata =
+        has_cicp || ((has_gamma || has_chromaticities) && icc_profile.is_none() && !has_srgb);
     Ok(ParsedPng {
         width,
         height,
@@ -587,20 +733,51 @@ fn parse_png(bytes: &[u8]) -> Result<ParsedPng, ImagePdfError> {
         color_type,
         interlace,
         has_trns,
-        has_color_metadata,
+        icc_profile,
+        has_srgb,
+        has_unhandled_color_metadata,
         has_animation,
         idat,
     })
 }
 
+fn valid_png_bit_depth(color_type: u8, bit_depth: u8) -> bool {
+    match color_type {
+        0 => matches!(bit_depth, 1 | 2 | 4 | 8 | 16),
+        2 | 4 | 6 => matches!(bit_depth, 8 | 16),
+        3 => matches!(bit_depth, 1 | 2 | 4 | 8),
+        _ => false,
+    }
+}
+
+fn decode_png_iccp(data: &[u8]) -> Result<Vec<u8>, ImagePdfError> {
+    let separator = data
+        .iter()
+        .position(|&value| value == 0)
+        .ok_or_else(|| ImagePdfError::Invalid("iCCP thiếu tên profile".to_string()))?;
+    if separator == 0 || separator > 79 || data.get(separator + 1) != Some(&0) {
+        return Err(ImagePdfError::Invalid("iCCP không hợp lệ".to_string()));
+    }
+    let compressed = data
+        .get(separator + 2..)
+        .filter(|payload| !payload.is_empty())
+        .ok_or_else(|| ImagePdfError::Invalid("iCCP thiếu dữ liệu profile".to_string()))?;
+    let mut decoder = ZlibDecoder::new(compressed).take(MAX_ICC_PROFILE_BYTES + 1);
+    let mut profile = Vec::new();
+    decoder
+        .read_to_end(&mut profile)
+        .map_err(|error| ImagePdfError::Invalid(format!("Không giải nén được iCCP: {error}")))?;
+    if profile.len() as u64 > MAX_ICC_PROFILE_BYTES {
+        return Err(ImagePdfError::Invalid(
+            "ICC vượt giới hạn an toàn".to_string(),
+        ));
+    }
+    Ok(profile)
+}
+
 fn prepare_jpeg(bytes: &[u8], source: &ImageSourceSpec) -> Result<PreparedAsset, ImagePdfError> {
     let parsed = parse_jpeg(bytes)?;
     ensure_pixel_parity(parsed.width, parsed.height, source)?;
-    if parsed.has_icc {
-        return Err(ImagePdfError::QualityGuard(
-            "JPEG có ICC chưa được dựng thành ICCBased trong PDF".to_string(),
-        ));
-    }
     let (color_space, invert_cmyk) = match parsed.channels {
         1 => (AssetColorSpace::Gray, false),
         3 => (AssetColorSpace::Rgb, false),
@@ -611,6 +788,9 @@ fn prepare_jpeg(bytes: &[u8], source: &ImageSourceSpec) -> Result<PreparedAsset,
             ))
         }
     };
+    if let Some(profile) = parsed.icc_profile.as_deref() {
+        validate_icc_profile(profile, color_space)?;
+    }
     Ok(PreparedAsset {
         width_px: parsed.width,
         height_px: parsed.height,
@@ -619,6 +799,7 @@ fn prepare_jpeg(bytes: &[u8], source: &ImageSourceSpec) -> Result<PreparedAsset,
         filter: AssetFilter::Dct,
         data: bytes.to_vec(),
         alpha: None,
+        icc_profile: parsed.icc_profile,
         invert_cmyk,
     })
 }
@@ -628,7 +809,8 @@ fn parse_jpeg(bytes: &[u8]) -> Result<ParsedJpeg, ImagePdfError> {
         return Err(ImagePdfError::Invalid("Sai signature JPEG".to_string()));
     }
     let mut cursor = 2usize;
-    let mut has_icc = false;
+    let mut icc_parts: BTreeMap<u8, Vec<u8>> = BTreeMap::new();
+    let mut icc_part_count: Option<u8> = None;
     let mut frame_info: Option<(u32, u32, i64, u8)> = None;
     while cursor < bytes.len() {
         while cursor < bytes.len() && bytes[cursor] == 0xff {
@@ -659,7 +841,29 @@ fn parse_jpeg(bytes: &[u8]) -> Result<ParsedJpeg, ImagePdfError> {
             && length >= 16
             && bytes.get(payload..payload + 12) == Some(b"ICC_PROFILE\0")
         {
-            has_icc = true;
+            let sequence = bytes[payload + 12];
+            let count = bytes[payload + 13];
+            if sequence == 0 || count == 0 || sequence > count {
+                return Err(ImagePdfError::Invalid(
+                    "Thứ tự ICC APP2 của JPEG không hợp lệ".to_string(),
+                ));
+            }
+            if icc_part_count
+                .replace(count)
+                .is_some_and(|existing| existing != count)
+            {
+                return Err(ImagePdfError::Invalid(
+                    "Số phần ICC APP2 của JPEG không nhất quán".to_string(),
+                ));
+            }
+            if icc_parts
+                .insert(sequence, bytes[payload + 14..cursor + length].to_vec())
+                .is_some()
+            {
+                return Err(ImagePdfError::Invalid(
+                    "JPEG lặp thứ tự ICC APP2".to_string(),
+                ));
+            }
         }
         let is_sof = matches!(
             marker,
@@ -693,13 +897,72 @@ fn parse_jpeg(bytes: &[u8]) -> Result<ParsedJpeg, ImagePdfError> {
     }
     let (width, height, bits_per_component, channels) = frame_info
         .ok_or_else(|| ImagePdfError::Invalid("JPEG không có marker SOF hợp lệ".to_string()))?;
+    let icc_profile = assemble_jpeg_icc(icc_parts, icc_part_count)?;
     Ok(ParsedJpeg {
         width,
         height,
         bits_per_component,
         channels,
-        has_icc,
+        icc_profile,
     })
+}
+
+fn assemble_jpeg_icc(
+    parts: BTreeMap<u8, Vec<u8>>,
+    part_count: Option<u8>,
+) -> Result<Option<Vec<u8>>, ImagePdfError> {
+    let Some(count) = part_count else {
+        return Ok(None);
+    };
+    if parts.len() != count as usize {
+        return Err(ImagePdfError::Invalid(
+            "JPEG thiếu phần ICC APP2".to_string(),
+        ));
+    }
+    let total_bytes = parts.values().try_fold(0usize, |total, part| {
+        total
+            .checked_add(part.len())
+            .ok_or_else(|| ImagePdfError::Invalid("Kích thước ICC JPEG bị tràn số".to_string()))
+    })?;
+    if total_bytes == 0 || total_bytes as u64 > MAX_ICC_PROFILE_BYTES {
+        return Err(ImagePdfError::Invalid(
+            "Kích thước ICC JPEG không hợp lệ".to_string(),
+        ));
+    }
+    let mut profile = Vec::with_capacity(total_bytes);
+    for sequence in 1..=count {
+        profile.extend_from_slice(
+            parts
+                .get(&sequence)
+                .ok_or_else(|| ImagePdfError::Invalid("JPEG thiếu thứ tự ICC APP2".to_string()))?,
+        );
+    }
+    Ok(Some(profile))
+}
+
+fn validate_icc_profile(profile: &[u8], color_space: AssetColorSpace) -> Result<(), ImagePdfError> {
+    if profile.len() < 128 || profile.len() as u64 > MAX_ICC_PROFILE_BYTES {
+        return Err(ImagePdfError::Invalid(
+            "Kích thước ICC không hợp lệ".to_string(),
+        ));
+    }
+    let declared_size = u32::from_be_bytes(profile[..4].try_into().unwrap()) as usize;
+    if declared_size < 128 || declared_size > profile.len() || &profile[36..40] != b"acsp" {
+        return Err(ImagePdfError::Invalid(
+            "Header ICC không hợp lệ".to_string(),
+        ));
+    }
+    let expected = match color_space {
+        AssetColorSpace::Gray => b"GRAY".as_slice(),
+        AssetColorSpace::Rgb => b"RGB ".as_slice(),
+        AssetColorSpace::Cmyk => b"CMYK".as_slice(),
+    };
+    if &profile[16..20] != expected {
+        return Err(ImagePdfError::QualityGuard(
+            "Số kênh ICC không khớp dữ liệu ảnh".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn ensure_pixel_parity(
@@ -721,9 +984,22 @@ fn compress_predictor_rows(
     width: u32,
     height: u32,
     channels: usize,
+    bits_per_component: i64,
 ) -> Result<Vec<u8>, ImagePdfError> {
+    let bytes_per_component = match bits_per_component {
+        8 => 1usize,
+        16 => 2usize,
+        _ => {
+            return Err(ImagePdfError::Invalid(
+                "Predictor chỉ nhận kênh 8-bit hoặc 16-bit".to_string(),
+            ))
+        }
+    };
+    let bytes_per_pixel = channels
+        .checked_mul(bytes_per_component)
+        .ok_or_else(|| ImagePdfError::Invalid("Số byte mỗi pixel bị tràn".to_string()))?;
     let row_bytes = (width as usize)
-        .checked_mul(channels)
+        .checked_mul(bytes_per_pixel)
         .ok_or_else(|| ImagePdfError::Invalid("Số byte mỗi hàng bị tràn".to_string()))?;
     let expected = row_bytes
         .checked_mul(height as usize)
@@ -741,8 +1017,8 @@ fn compress_predictor_rows(
         let mut sub_score = 0u64;
         for (index, &value) in row.iter().enumerate() {
             none_score += signed_byte_score(value);
-            let left = if index >= channels {
-                row[index - channels]
+            let left = if index >= bytes_per_pixel {
+                row[index - bytes_per_pixel]
             } else {
                 0
             };
@@ -878,26 +1154,54 @@ fn build_document(
 }
 
 fn add_image_object(document: &mut Document, asset: PreparedAsset) -> ObjectId {
-    let alpha_id = asset.alpha.map(|alpha| {
-        let mut alpha_dictionary =
-            base_image_dictionary(asset.width_px, asset.height_px, 8, AssetColorSpace::Gray);
+    let PreparedAsset {
+        width_px,
+        height_px,
+        bits_per_component,
+        color_space,
+        filter,
+        data,
+        alpha,
+        icc_profile,
+        invert_cmyk,
+    } = asset;
+    let alpha_id = alpha.map(|alpha| {
+        let mut alpha_dictionary = base_image_dictionary(
+            width_px,
+            height_px,
+            alpha.bits_per_component,
+            AssetColorSpace::Gray,
+        );
         alpha_dictionary.set("Filter", "FlateDecode");
-        alpha_dictionary.set("DecodeParms", predictor_dictionary(asset.width_px, 1, 8));
+        alpha_dictionary.set(
+            "DecodeParms",
+            predictor_dictionary(width_px, 1, alpha.bits_per_component),
+        );
         document.add_object(Stream::new(alpha_dictionary, alpha.data))
     });
 
-    let mut image_dictionary = base_image_dictionary(
-        asset.width_px,
-        asset.height_px,
-        asset.bits_per_component,
-        asset.color_space,
-    );
-    match asset.filter {
+    let mut image_dictionary =
+        base_image_dictionary(width_px, height_px, bits_per_component, color_space);
+    if let Some(profile) = icc_profile {
+        let profile_dictionary = dictionary! {
+            "N" => color_space.components(),
+            "Alternate" => Object::Name(color_space.device_name().to_vec()),
+        };
+        let profile_id = document.add_object(Stream::new(profile_dictionary, profile));
+        image_dictionary.set(
+            "ColorSpace",
+            Object::Array(vec![
+                Object::Name(b"ICCBased".to_vec()),
+                Object::Reference(profile_id),
+            ]),
+        );
+    }
+    match filter {
         AssetFilter::Flate { colors } => {
             image_dictionary.set("Filter", "FlateDecode");
             image_dictionary.set(
                 "DecodeParms",
-                predictor_dictionary(asset.width_px, colors, asset.bits_per_component),
+                predictor_dictionary(width_px, colors, bits_per_component),
             );
         }
         AssetFilter::Dct => {
@@ -907,7 +1211,7 @@ fn add_image_object(document: &mut Document, asset: PreparedAsset) -> ObjectId {
     if let Some(alpha_id) = alpha_id {
         image_dictionary.set("SMask", Object::Reference(alpha_id));
     }
-    if asset.invert_cmyk {
+    if invert_cmyk {
         image_dictionary.set(
             "Decode",
             Object::Array(vec![
@@ -922,7 +1226,7 @@ fn add_image_object(document: &mut Document, asset: PreparedAsset) -> ObjectId {
             ]),
         );
     }
-    document.add_object(Stream::new(image_dictionary, asset.data))
+    document.add_object(Stream::new(image_dictionary, data))
 }
 
 fn base_image_dictionary(
@@ -937,11 +1241,7 @@ fn base_image_dictionary(
         "Width" => width as i64,
         "Height" => height as i64,
         "BitsPerComponent" => bits_per_component,
-        "ColorSpace" => match color_space {
-            AssetColorSpace::Gray => Object::Name(b"DeviceGray".to_vec()),
-            AssetColorSpace::Rgb => Object::Name(b"DeviceRGB".to_vec()),
-            AssetColorSpace::Cmyk => Object::Name(b"DeviceCMYK".to_vec()),
-        },
+        "ColorSpace" => Object::Name(color_space.device_name().to_vec()),
     }
 }
 
@@ -1038,7 +1338,7 @@ mod tests {
     }
 
     fn write_rgba16_png(path: &Path, width: u32, height: u32, data: &[u16]) {
-        let raw: Vec<u8> = data.iter().flat_map(|value| value.to_be_bytes()).collect();
+        let raw: Vec<u8> = data.iter().flat_map(|value| value.to_ne_bytes()).collect();
         let file = fs::File::create(path).unwrap();
         PngEncoder::new(file)
             .write_image(&raw, width, height, ColorType::Rgba16.into())
@@ -1051,7 +1351,10 @@ mod tests {
         chunk.extend_from_slice(&(data.len() as u32).to_be_bytes());
         chunk.extend_from_slice(chunk_type);
         chunk.extend_from_slice(data);
-        chunk.extend_from_slice(&[0, 0, 0, 0]);
+        let mut crc_input = Vec::with_capacity(4 + data.len());
+        crc_input.extend_from_slice(chunk_type);
+        crc_input.extend_from_slice(data);
+        chunk.extend_from_slice(&png_crc32(&crc_input).to_be_bytes());
         let mut updated = Vec::with_capacity(original.len() + chunk.len());
         updated.extend_from_slice(&original[..33]);
         updated.extend_from_slice(&chunk);
@@ -1059,15 +1362,43 @@ mod tests {
         fs::write(path, updated).unwrap();
     }
 
-    fn insert_jpeg_icc_marker(path: &Path) {
+    fn png_crc32(bytes: &[u8]) -> u32 {
+        let mut crc = 0xffff_ffffu32;
+        for &byte in bytes {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+            }
+        }
+        !crc
+    }
+
+    fn png_iccp_data(profile: &[u8]) -> Vec<u8> {
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(profile).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let mut data = b"PrynX sRGB\0\0".to_vec();
+        data.extend_from_slice(&compressed);
+        data
+    }
+
+    fn insert_jpeg_icc_markers(path: &Path, profile: &[u8], part_size: usize) {
         let original = fs::read(path).unwrap();
-        let payload = b"ICC_PROFILE\0\x01\x01test-profile";
-        let mut marker = vec![0xff, 0xe2];
-        marker.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
-        marker.extend_from_slice(payload);
-        let mut updated = Vec::with_capacity(original.len() + marker.len());
+        let parts: Vec<&[u8]> = profile.chunks(part_size).collect();
+        let mut markers = Vec::new();
+        for (index, part) in parts.iter().enumerate() {
+            let mut payload = b"ICC_PROFILE\0".to_vec();
+            payload.push((index + 1) as u8);
+            payload.push(parts.len() as u8);
+            payload.extend_from_slice(part);
+            markers.extend_from_slice(&[0xff, 0xe2]);
+            markers.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+            markers.extend_from_slice(&payload);
+        }
+        let mut updated = Vec::with_capacity(original.len() + markers.len());
         updated.extend_from_slice(&original[..2]);
-        updated.extend_from_slice(&marker);
+        updated.extend_from_slice(&markers);
         updated.extend_from_slice(&original[2..]);
         fs::write(path, updated).unwrap();
     }
@@ -1080,6 +1411,22 @@ mod tests {
             width_pt: width as f64,
             height_pt: height as f64,
         }
+    }
+
+    fn assert_iccbased_asset(asset: PreparedAsset, expected_profile: &[u8]) {
+        let mut document = Document::with_version("1.7");
+        let image_id = add_image_object(&mut document, asset);
+        let image = document.get_object(image_id).unwrap().as_stream().unwrap();
+        let color_space = image.dict.get(b"ColorSpace").unwrap().as_array().unwrap();
+        assert_eq!(color_space[0].as_name().unwrap(), b"ICCBased");
+        let profile_id = color_space[1].as_reference().unwrap();
+        let profile = document
+            .get_object(profile_id)
+            .unwrap()
+            .as_stream()
+            .unwrap();
+        assert_eq!(profile.dict.get(b"N").unwrap().as_i64().unwrap(), 3);
+        assert_eq!(profile.content, expected_profile);
     }
 
     #[test]
@@ -1107,23 +1454,48 @@ mod tests {
     }
 
     #[test]
-    fn quality_guard_rejects_png_16_bit_instead_of_downconverting() {
+    fn rgba16_png_keeps_16_bit_color_and_alpha() {
         let path = unique_path("rgba16", "png");
-        write_rgba16_png(&path, 1, 1, &[65535, 32768, 1, 65535]);
+        write_rgba16_png(&path, 1, 1, &[65535, 32768, 1, 12345]);
         let bytes = fs::read(&path).unwrap();
-        let error = prepare_png(&bytes, &source(&path, 1, 1)).unwrap_err();
-        assert!(matches!(error, ImagePdfError::QualityGuard(_)));
+        let asset = prepare_png(&bytes, &source(&path, 1, 1)).unwrap();
+        assert_eq!(asset.bits_per_component, 16);
+        assert_eq!(asset.alpha.as_ref().unwrap().bits_per_component, 16);
+
+        let mut color_decoder = ZlibDecoder::new(asset.data.as_slice());
+        let mut color = Vec::new();
+        color_decoder.read_to_end(&mut color).unwrap();
+        assert_eq!(&color[1..], &[0xff, 0xff, 0x80, 0x00, 0x00, 0x01]);
+
+        let alpha_asset = asset.alpha.unwrap();
+        let mut alpha_decoder = ZlibDecoder::new(alpha_asset.data.as_slice());
+        let mut alpha = Vec::new();
+        alpha_decoder.read_to_end(&mut alpha).unwrap();
+        assert_eq!(&alpha[1..], &[0x30, 0x39]);
         let _ = fs::remove_file(path);
     }
 
     #[test]
-    fn quality_guard_rejects_png_color_metadata_instead_of_dropping_it() {
+    fn png_iccp_is_preserved_for_iccbased_pdf() {
         let path = unique_path("icc", "png");
         write_rgb_png(&path, 1, 1, &[10, 20, 30]);
-        insert_png_chunk_after_ihdr(&path, b"iCCP", b"profile\0\0compressed");
+        insert_png_chunk_after_ihdr(&path, b"iCCP", &png_iccp_data(SRGB_ICC_PROFILE));
         let bytes = fs::read(&path).unwrap();
-        let error = prepare_png(&bytes, &source(&path, 1, 1)).unwrap_err();
-        assert!(matches!(error, ImagePdfError::QualityGuard(_)));
+        let asset = prepare_png(&bytes, &source(&path, 1, 1)).unwrap();
+        assert_eq!(asset.icc_profile.as_deref(), Some(SRGB_ICC_PROFILE));
+        assert_iccbased_asset(asset, SRGB_ICC_PROFILE);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn png_srgb_chunk_uses_bundled_srgb_icc() {
+        let path = unique_path("srgb", "png");
+        write_rgb_png(&path, 1, 1, &[10, 20, 30]);
+        insert_png_chunk_after_ihdr(&path, b"sRGB", &[0]);
+        let bytes = fs::read(&path).unwrap();
+        let asset = prepare_png(&bytes, &source(&path, 1, 1)).unwrap();
+        assert_eq!(asset.icc_profile.as_deref(), Some(SRGB_ICC_PROFILE));
+        assert_iccbased_asset(asset, SRGB_ICC_PROFILE);
         let _ = fs::remove_file(path);
     }
 
@@ -1142,17 +1514,19 @@ mod tests {
     }
 
     #[test]
-    fn quality_guard_rejects_jpeg_icc_instead_of_detaching_profile() {
+    fn jpeg_icc_keeps_dct_and_builds_iccbased_pdf() {
         let path = unique_path("jpeg_icc", "jpg");
         let mut bytes = Vec::new();
         JpegEncoder::new_with_quality(&mut bytes, 90)
             .encode(&[255, 0, 0], 1, 1, ColorType::Rgb8.into())
             .unwrap();
         fs::write(&path, &bytes).unwrap();
-        insert_jpeg_icc_marker(&path);
+        insert_jpeg_icc_markers(&path, SRGB_ICC_PROFILE, 128);
         let bytes = fs::read(&path).unwrap();
-        let error = prepare_jpeg(&bytes, &source(&path, 1, 1)).unwrap_err();
-        assert!(matches!(error, ImagePdfError::QualityGuard(_)));
+        let asset = prepare_jpeg(&bytes, &source(&path, 1, 1)).unwrap();
+        assert_eq!(asset.data, bytes);
+        assert_eq!(asset.icc_profile.as_deref(), Some(SRGB_ICC_PROFILE));
+        assert_iccbased_asset(asset, SRGB_ICC_PROFILE);
         let _ = fs::remove_file(path);
     }
 
