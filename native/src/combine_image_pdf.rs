@@ -467,7 +467,8 @@ fn prepare_apng(
     ensure_pixel_parity(parsed.width, parsed.height, source)?;
     if parsed.bit_depth != 8 {
         return Err(ImagePdfError::QualityGuard(
-            "APNG 16-bit chưa có decoder animation bảo toàn bit-depth".to_string(),
+            "APNG hiện chỉ hỗ trợ kênh 8-bit; bit-depth khác chưa có decoder animation bảo toàn"
+                .to_string(),
         ));
     }
     if parsed.has_unhandled_color_metadata {

@@ -238,21 +238,29 @@ Bộ tổng hợp gồm 8 PNG RGBA `3000×3000` (72 MP), tổng encoded `96.988.
 - WebP/BMP/TIFF và manifest trộn PDF + ảnh chưa đi native vì chưa có parity riêng; tiếp tục dùng fallback hiện tại.
 - Lô watermark single-pass chỉ được mở khi telemetry bản có license chứng minh `_safe_watermark()` còn là nút thắt đáng kể và phải có test forensic parity; chưa có bằng chứng đó trong đợt này.
 
-### Chốt bảo toàn chất lượng — 2026-08-03
+### Chốt bảo toàn chất lượng — cập nhật triển khai 2026-08-03
 
-Sau khi rà lại yêu cầu chế bản “Combine không được làm thay đổi chất lượng nguồn”, phát hiện nhánh decode PNG có thể chuyển PNG 16-bit xuống RGBA 8-bit. Hành vi này không được chấp nhận dù chỉ xảy ra với định dạng ít gặp.
+Sau khi rà lại yêu cầu chế bản “Combine không được làm thay đổi chất lượng nguồn”, hợp đồng được chốt là **lossless hoặc dừng trước khi tạo output**. Writer native hiện đã mở lại các nguồn có thể chứng minh được parity:
 
-Hợp đồng mới là **lossless hoặc dừng trước khi tạo output**:
+- PNG/JPEG 8-bit thông thường tiếp tục dùng fast path: JPEG giữ nguyên toàn bộ DCT bytes; PNG RGB/gray giữ IDAT khi an toàn; PNG cần decode vẫn dùng Flate lossless và giữ alpha bằng `/SMask`.
+- PNG 16-bit giữ nguyên `/BitsPerComponent 16`; RGBA/gray-alpha dùng `/SMask` 16-bit, không hạ xuống 8-bit.
+- PNG `iCCP/sRGB` và JPEG ICC được nhúng vào PDF dưới dạng `ICCBased`; JPEG vẫn không re-encode.
+- APNG kênh 8-bit được compositing đúng `blend/dispose`; mỗi frame hoàn chỉnh trở thành một trang PDF, rotation của node áp cho mọi frame. Nguồn APNG luôn bắt buộc đi native và số frame được tính vào admission/RAM.
+- Backend không rơi về ReportLab cho PNG 16-bit, PNG/JPEG ICC hoặc APNG. Nếu native không sẵn sàng, job dừng trước output với thông báo quality guard.
 
-- PNG/JPEG 8-bit thông thường tiếp tục dùng fast path: JPEG giữ nguyên DCT; PNG RGB/gray giữ IDAT khi an toàn; PNG cần decode vẫn dùng Flate lossless và giữ alpha bằng `/SMask`.
-- PNG khác 8-bit, APNG nhiều frame, PNG có `iCCP/sRGB/gAMA/cHRM/cICP` hoặc JPEG có ICC bị chặn trước khi native/fallback tạo PDF.
-- Backend không còn âm thầm rơi về ReportLab cho các nguồn chưa chứng minh được bảo toàn bit-depth/profile. Job trả thông báo rõ và không để lại output.
-- Bộ 8 PNG 72 MP dùng benchmark vẫn qua quality preflight đủ 8/8 nguồn, nên tốc độ fast path của ca người dùng không bị thay đổi.
+Các nguồn vẫn fail-safe:
 
-Verify sau chốt:
+- APNG có bit-depth khác 8-bit.
+- PNG `cICP/HDR`.
+- PNG chỉ có `gAMA/cHRM` nhưng không có `iCCP/sRGB`, vì chưa có đường `CalRGB/CalGray` tương đương.
+- Yêu cầu API chọn riêng một frame APNG; UI hiện dùng whole-file nên không gặp nhánh này.
 
-- Rust Combine: **8/8 pass**, gồm PNG 16-bit, PNG color metadata và JPEG ICC fail-closed.
-- Backend engine/job/API: **100/100 pass**; ba ca 16-bit/ICC xác nhận không sinh output.
-- `cargo check --locked --lib`, `rustfmt --check` riêng module và `git diff --check`: pass.
+Verify sau triển khai:
 
-PNG 16-bit/ICC/APNG hiện chưa được gọi là “đã hỗ trợ Combine”; chúng được từ chối an toàn cho tới khi writer có đường nhúng lossless và kiểm thử màu tương ứng. Không có trường hợp nào được phép tự hạ chất lượng để hoàn thành job.
+- Rust native: **33/33 pass**, trong đó Combine **11/11 pass**; APNG test đủ `BlendOp::Over`, `DisposeOp::Background`, `DisposeOp::Previous`, ICC, alpha, rotation và mở rộng 1 node thành 4 trang.
+- Backend manifest focused: **30/30 pass**; xác nhận `frame_count`, output-page estimate, working-pixel RAM budget, bắt buộc native và fail-closed.
+- Runtime bằng extension release mới: PNG RGBA16 có ảnh và `/SMask` 16-bit; PNG/JPEG ICC stream trùng profile nguồn; JPEG stream trùng toàn bộ file DCT nguồn; APNG 2 frame tạo đúng 2 trang. Cả 5 trang mẫu render Poppler đúng màu/alpha.
+- Benchmark warm 5 lượt trên bộ 8 PNG RGBA `3000×3000` (72 MP): median `4,0384 s`, p95 `4,0649 s`, output giữ nguyên `84.300.584` byte. So với median trước `4,6698 s`, không có hồi quy tốc độ.
+- `cargo check --locked --lib`, `cargo test --locked --lib`, `py_compile` và `git diff --check`: pass.
+
+Tiến trình PrynX đang mở vẫn giữ DLL cũ. `maturin` đã build/cài package mới cho tiến trình Python mới nhưng không xóa được thư mục DLL cũ đang bị khóa; cần đóng/mở lại PrynX trước smoke test Tauri cuối.
