@@ -456,7 +456,7 @@ describe('Combine/Interleave transport', () => {
     expect(resultFile.path).toBe('D:\\output\\Combined.pdf');
   });
 
-  it('Combine delegated tick lần lượt card đã ghép xong', async () => {
+  it('Combine delegated tick đúng card theo source index backend dù hoàn tất lệch thứ tự', async () => {
     const job = deferred<BackendMergeManifestResult>();
     const onSpawnTab = vi.fn();
     let reportProgress: BackendMergeManifestJobOptions['onProgress'];
@@ -481,18 +481,71 @@ describe('Combine/Interleave transport', () => {
 
     const cards = container.querySelectorAll<HTMLElement>('[data-combine-index]');
     await act(async () => {
-      reportProgress?.({ ...MERGING_STATUS, progress: 50, completed: 1, total: 2 });
+      reportProgress?.({
+        ...MERGING_STATUS,
+        progress: 50,
+        completed: 1,
+        total: 2,
+        completed_source_indices: [1],
+      });
+    });
+    await waitFor(() => {
+      expect(cards[0].querySelector('[data-combine-complete="true"]')).toBeNull();
+      expect(cards[1].querySelector('[data-combine-complete="true"]')).not.toBeNull();
+    });
+
+    await act(async () => {
+      reportProgress?.({
+        ...MERGING_STATUS,
+        progress: 100,
+        completed: 2,
+        total: 2,
+        completed_source_indices: [1, 0],
+      });
+    });
+    await waitFor(() => {
+      expect(cards[0].querySelector('[data-combine-complete="true"]')).not.toBeNull();
+    });
+
+    await act(async () => {
+      job.resolve({ path: 'D:\\output\\Combined.pdf', filename: 'Combined.pdf' });
+      await job.promise;
+    });
+  });
+
+  it('Combine delegated tick mọi card dùng chung nguồn và không tick nguồn khác', async () => {
+    const job = deferred<BackendMergeManifestResult>();
+    let reportProgress: BackendMergeManifestJobOptions['onProgress'];
+    mocks.backendMergeManifestJob.mockImplementation((
+      _files: File[],
+      _manifest: unknown[],
+      options?: BackendMergeManifestJobOptions,
+    ) => {
+      reportProgress = options?.onProgress;
+      return job.promise;
+    });
+
+    const sharedFile = sizedFile('shared.png', 1_000_000);
+    const otherFile = sizedFile('other.png', 1_000_000);
+    const { container } = render(
+      <CombineTab initialFiles={[sharedFile, otherFile, sharedFile]} onSpawnTab={vi.fn()} isActive />,
+    );
+
+    await waitFor(() => expect(container.querySelectorAll('[data-combine-index]')).toHaveLength(3));
+    fireEvent.click(screen.getByRole('button', { name: 'tabs.combine:ghep_file' }));
+    await waitFor(() => expect(mocks.backendMergeManifestJob).toHaveBeenCalledTimes(1));
+
+    const cards = container.querySelectorAll<HTMLElement>('[data-combine-index]');
+    await act(async () => {
+      reportProgress?.({
+        ...MERGING_STATUS,
+        completed_source_indices: [0],
+      });
     });
     await waitFor(() => {
       expect(cards[0].querySelector('[data-combine-complete="true"]')).not.toBeNull();
       expect(cards[1].querySelector('[data-combine-complete="true"]')).toBeNull();
-    });
-
-    await act(async () => {
-      reportProgress?.({ ...MERGING_STATUS, progress: 100, completed: 2, total: 2 });
-    });
-    await waitFor(() => {
-      expect(cards[1].querySelector('[data-combine-complete="true"]')).not.toBeNull();
+      expect(cards[2].querySelector('[data-combine-complete="true"]')).not.toBeNull();
     });
 
     await act(async () => {

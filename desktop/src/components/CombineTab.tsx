@@ -61,28 +61,21 @@ export type CombineNode = {
 
 function backendCompletedNodeIds(
   nodes: CombineNode[],
-  phase: string,
-  completed: number,
-  total: number,
+  sourceFiles: File[],
+  completedSourceIndices: number[] | undefined,
 ): Set<string> {
   const result = new Set<string>();
-  const safeCompleted = Math.max(0, Math.floor(completed));
-  const safeTotal = Math.max(0, Math.floor(total));
-  if (safeCompleted <= 0 || safeTotal <= 0) return result;
-
-  // UIUX (audit 2026-08-02 §COMB.UI.2): backend đếm trang, không đếm card.
-  // Chỉ ánh xạ tuần tự khi mỗi node chắc chắn đúng một trang; PDF nguyên file chỉ
-  // được đánh dấu đồng loạt ở pha sau merging để không báo hoàn tất sớm.
-  const isOnePageSequence = nodes.length === safeTotal && nodes.every(node => (
-    node.type === 'blank'
-    || node.pageIndex !== undefined
-    || isSupportedImageFileName(node.file?.name || '')
-  ));
-  if (isOnePageSequence) {
-    nodes.slice(0, Math.min(nodes.length, safeCompleted)).forEach(node => result.add(node.id));
-  } else if (safeCompleted >= safeTotal && phase !== 'merging') {
-    nodes.forEach(node => result.add(node.id));
+  const completedFiles = new Set<File>();
+  for (const rawIndex of completedSourceIndices ?? []) {
+    if (!Number.isInteger(rawIndex) || rawIndex < 0 || rawIndex >= sourceFiles.length) continue;
+    completedFiles.add(sourceFiles[rawIndex]);
   }
+
+  // UIUX (audit 2026-08-02 §COMB.UI.3): backend trả index nguồn thật, vì vậy file
+  // hoàn tất lệch thứ tự và một nguồn xuất hiện ở nhiều card đều được tick chính xác.
+  nodes.forEach(node => {
+    if (node.file && completedFiles.has(node.file)) result.add(node.id);
+  });
   return result;
 }
 
@@ -625,8 +618,9 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
         combineJobAbortRef.current = delegatedController;
         setIsDelegatedCombineRunning(true);
         setStatusMsg(t('tabs.combine:dang_ghep_backend_progress', { progress: 0 }));
+        const interleaveSourceFiles = topLevelFiles.map(n => n.file!);
         const result = await backendMergePdfsJob(
-          topLevelFiles.map(n => n.file!),
+          interleaveSourceFiles,
           'interleave',
           {
             signal: delegatedController.signal,
@@ -639,9 +633,8 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
               setDelegatedCombineProgress(progress);
               setCompletedCombineNodeIds(backendCompletedNodeIds(
                 progressNodes,
-                status.status,
-                status.completed,
-                status.total,
+                interleaveSourceFiles,
+                status.completed_source_indices,
               ));
               setStatusMsg(t('tabs.combine:dang_ghep_backend_progress', { progress }));
             },
@@ -1073,9 +1066,8 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
               setDelegatedCombineProgress(progress);
               setCompletedCombineNodeIds(backendCompletedNodeIds(
                 progressNodes,
-                status.status,
-                status.completed,
-                status.total,
+                files,
+                status.completed_source_indices,
               ));
               setStatusMsg(t('tabs.combine:dang_ghep_backend_progress', { progress }));
             },
