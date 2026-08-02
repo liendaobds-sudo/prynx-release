@@ -1,4 +1,5 @@
 from contextlib import ExitStack
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -126,6 +127,7 @@ def test_merge_manifest_interleave_round_robins_all_sources(tmp_path: Path):
     source_b = tmp_path / "b.pdf"
     output = tmp_path / "interleaved.pdf"
     progress: list[tuple[str, int, int]] = []
+    completed_sources: list[int] = []
     _make_pdf(source_a, count=3, width_base=100, height_base=200)
     _make_pdf(source_b, count=2, width_base=400, height_base=500)
 
@@ -137,12 +139,14 @@ def test_merge_manifest_interleave_round_robins_all_sources(tmp_path: Path):
         progress_callback=lambda phase, completed, total: progress.append(
             (phase, completed, total)
         ),
+        source_completed_callback=completed_sources.append,
     )
 
     with pikepdf.Pdf.open(output) as pdf:
         widths = [float(page.mediabox[2] - page.mediabox[0]) for page in pdf.pages]
     assert widths == [100.0, 400.0, 101.0, 401.0, 102.0]
     assert ("saving", 5, 5) in progress
+    assert completed_sources == [1, 0]
 
 
 def test_merge_manifest_rejects_bad_page_reference(tmp_path: Path):
@@ -263,6 +267,102 @@ def test_merge_manifest_accepts_jpeg_preserves_jfif_dpi_and_dct(tmp_path: Path):
             if not isinstance(filters, pikepdf.Array)
             else [str(value) for value in filters]
         )
+
+
+def test_native_image_fast_path_maps_completed_sources(monkeypatch, tmp_path: Path):
+    source_a = tmp_path / "a.png"
+    source_b = tmp_path / "b.png"
+    output = tmp_path / "native.pdf"
+    _make_png(source_a, size=(10, 20))
+    _make_png(source_b, size=(30, 40))
+    completed_sources: list[int] = []
+    captured: dict[str, object] = {}
+
+    def fake_native(request_json, output_path, workers, progress, cancelled):
+        request = json.loads(request_json)
+        captured["request"] = request
+        captured["workers"] = workers
+        assert cancelled() is False
+        progress(1)
+        progress(0)
+        with pikepdf.Pdf.new() as pdf:
+            for page in request["pages"]:
+                if page.get("blank"):
+                    width = page.get("width", 595.28)
+                    height = page.get("height", 841.89)
+                else:
+                    source = request["sources"][page["file_index"]]
+                    width = source["width_pt"]
+                    height = source["height_pt"]
+                pdf.add_blank_page(page_size=(width, height))
+            pdf.save(output_path)
+        return output_path
+
+    monkeypatch.setattr(
+        manifest_engine,
+        "_load_native_image_merger",
+        lambda: fake_native,
+    )
+    monkeypatch.setattr(
+        manifest_engine,
+        "plan_worker_count",
+        lambda **_kwargs: (16, "test"),
+    )
+
+    merge_manifest(
+        [str(source_a), str(source_b)],
+        [
+            {"file_index": 0},
+            {"blank": True, "width": 100, "height": 200},
+            {"file_index": 1, "rotation": 90},
+        ],
+        str(output),
+        source_completed_callback=completed_sources.append,
+    )
+
+    assert completed_sources == [1, 0]
+    assert captured["workers"] == 2
+    request = captured["request"]
+    assert isinstance(request, dict)
+    assert len(request["sources"]) == 2
+    assert [page.get("file_index") for page in request["pages"]] == [0, None, 1]
+    with pikepdf.Pdf.open(output) as pdf:
+        assert len(pdf.pages) == 3
+
+
+def test_native_unsupported_falls_back_without_duplicate_source_event(
+    monkeypatch,
+    tmp_path: Path,
+):
+    source = tmp_path / "icc.png"
+    output = tmp_path / "fallback.pdf"
+    _make_png(source)
+    completed_sources: list[int] = []
+
+    def unsupported(*_args, **_kwargs):
+        raise NotImplementedError("ICC cần fallback")
+
+    monkeypatch.setattr(
+        manifest_engine,
+        "_load_native_image_merger",
+        lambda: unsupported,
+    )
+    monkeypatch.setattr(
+        manifest_engine,
+        "plan_worker_count",
+        lambda **_kwargs: (4, "test"),
+    )
+
+    merge_manifest(
+        [str(source)],
+        [{"file_index": 0}, {"file_index": 0}],
+        str(output),
+        source_completed_callback=completed_sources.append,
+    )
+
+    assert completed_sources == [0]
+    with pikepdf.Pdf.open(output) as pdf:
+        assert len(pdf.pages) == 2
 
 
 def test_merge_manifest_rejects_extension_content_mismatch(tmp_path: Path):

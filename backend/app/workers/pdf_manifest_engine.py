@@ -5,8 +5,10 @@ PDF object graph. Source PDFs are opened once and pages are appended directly
 to the output document, so the request only carries files plus a small plan.
 """
 
+from collections import Counter
 from contextlib import ExitStack
 from dataclasses import dataclass
+import json
 import logging
 import math
 import os
@@ -19,7 +21,7 @@ import pikepdf
 from PIL import Image, UnidentifiedImageError
 
 from app.core.heavy_job_scheduler import max_active_heavy_jobs
-from app.core.system_memory import read_memory_status_mb
+from app.core.system_memory import plan_worker_count, read_memory_status_mb
 from app.workers.pdf_tools_engine import save_pdf_compat
 
 
@@ -40,6 +42,7 @@ MANIFEST_PAGE_RAM_OVERHEAD_BYTES = 64 * 1024
 MANIFEST_BASE_RAM_BYTES = 128 * 1024 * 1024
 MANIFEST_DISK_RESERVE_BYTES = 512 * 1024 * 1024
 ProgressCallback = Callable[[str, int, int], None]
+SourceCompletedCallback = Callable[[int], None]
 CancelCheck = Callable[[], bool]
 
 
@@ -529,6 +532,164 @@ def _enforce_manifest_admission(
     )
 
 
+def _load_native_image_merger() -> Optional[Callable[..., str]]:
+    """Nạp lười extension Rust; dev chưa build native vẫn dùng fallback an toàn."""
+    try:
+        import pdfcompare_native
+    except ImportError:
+        return None
+    merger = getattr(pdfcompare_native, "combine_image_manifest_native", None)
+    return merger if callable(merger) else None
+
+
+def _build_native_image_request(
+    file_paths: List[str],
+    manifest: List[Dict[str, Any]],
+    image_infos: Dict[int, _ImageSourceInfo],
+) -> tuple[dict[str, Any], list[int]] | None:
+    used_original_indices = sorted(
+        {
+            int(item["file_index"])
+            for item in manifest
+            if isinstance(item, dict) and not item.get("blank")
+        }
+    )
+    if not used_original_indices or any(
+        os.path.splitext(file_paths[index])[1].lower() not in IMAGE_SOURCE_EXTENSIONS
+        for index in used_original_indices
+    ):
+        return None
+
+    original_to_native = {
+        original_index: native_index
+        for native_index, original_index in enumerate(used_original_indices)
+    }
+    sources = []
+    for original_index in used_original_indices:
+        info = image_infos.get(original_index)
+        if info is None:
+            return None
+        sources.append(
+            {
+                "path": file_paths[original_index],
+                "width_px": info.width_px,
+                "height_px": info.height_px,
+                "width_pt": info.width_pt,
+                "height_pt": info.height_pt,
+            }
+        )
+
+    pages: list[dict[str, Any]] = []
+    for item in manifest:
+        rotation = int(item.get("rotation", 0) or 0) % 360
+        if item.get("blank"):
+            page: dict[str, Any] = {"blank": True, "rotation": rotation}
+            if item.get("width") is not None:
+                page["width"] = float(item["width"])
+            if item.get("height") is not None:
+                page["height"] = float(item["height"])
+            pages.append(page)
+            continue
+        original_index = int(item["file_index"])
+        page_index = int(item.get("page_index", 0) or 0)
+        if page_index != 0:
+            return None
+        pages.append(
+            {
+                "blank": False,
+                "file_index": original_to_native[original_index],
+                "rotation": rotation,
+            }
+        )
+    return {"sources": sources, "pages": pages}, used_original_indices
+
+
+def _try_native_image_manifest(
+    file_paths: List[str],
+    manifest: List[Dict[str, Any]],
+    image_infos: Dict[int, _ImageSourceInfo],
+    output_path: str,
+    *,
+    progress_callback: Optional[ProgressCallback],
+    source_completed_callback: Optional[SourceCompletedCallback],
+    cancel_check: Optional[CancelCheck],
+) -> bool:
+    merger = _load_native_image_merger()
+    built = _build_native_image_request(file_paths, manifest, image_infos)
+    if merger is None or built is None:
+        return False
+
+    request, native_to_original = built
+    largest_worker_mb = max(
+        64.0,
+        max(image_infos[index].pixels for index in native_to_original)
+        * 8
+        / (1024 * 1024)
+        + 64,
+    )
+    workers, reason = plan_worker_count(
+        kind="combine-images-native",
+        per_worker_mb=largest_worker_mb,
+        env_override="PRYNX_COMBINE_IMAGE_WORKERS",
+    )
+    workers = max(1, min(len(native_to_original), workers))
+    logger.info(
+        "Native image Combine: sources=%d pages=%d workers=%d (%s)",
+        len(native_to_original),
+        len(manifest),
+        workers,
+        reason,
+    )
+
+    completed_native_indices: set[int] = set()
+    total_steps = len(native_to_original) + 1
+    _report_progress(progress_callback, "merging", 0, total_steps, force=True)
+
+    def source_completed(native_index: int) -> None:
+        safe_index = int(native_index)
+        if not 0 <= safe_index < len(native_to_original):
+            raise ValueError("Native Combine trả source index ngoài phạm vi")
+        if safe_index in completed_native_indices:
+            return
+        completed_native_indices.add(safe_index)
+        original_index = native_to_original[safe_index]
+        if source_completed_callback is not None:
+            source_completed_callback(original_index)
+        _report_progress(
+            progress_callback,
+            "merging",
+            len(completed_native_indices),
+            total_steps,
+            force=True,
+        )
+
+    try:
+        merger(
+            json.dumps(request, ensure_ascii=False, separators=(",", ":")),
+            output_path,
+            workers,
+            source_completed,
+            lambda: bool(cancel_check and cancel_check()),
+        )
+    except NotImplementedError as exc:
+        logger.info("Native image Combine fallback: %s", str(exc).splitlines()[0])
+        return False
+    except InterruptedError as exc:
+        raise ManifestJobCancelled("Đã hủy ghép PDF") from exc
+
+    _raise_if_cancelled(cancel_check)
+    if not os.path.isfile(output_path) or os.path.getsize(output_path) <= 0:
+        raise ValueError("Native Combine không tạo được PDF kết quả")
+    _report_progress(
+        progress_callback,
+        "saving",
+        total_steps,
+        total_steps,
+        force=True,
+    )
+    return True
+
+
 def _visible_page_size(page) -> tuple[float, float]:
     """Return page dimensions after its effective quarter-turn rotation."""
     box = [float(value) for value in page.mediabox]
@@ -545,6 +706,7 @@ def merge_manifest(
     *,
     progress_callback: Optional[ProgressCallback] = None,
     cancel_check: Optional[CancelCheck] = None,
+    source_completed_callback: Optional[SourceCompletedCallback] = None,
     order_mode: str = "manifest",
 ) -> str:
     """Assemble a PDF from a bounded list of source-page operations.
@@ -606,6 +768,17 @@ def merge_manifest(
         )
         _enforce_manifest_admission(estimate, output_path)
         _raise_if_cancelled(cancel_check)
+        if order_mode == "manifest" and _try_native_image_manifest(
+            file_paths,
+            manifest,
+            image_infos,
+            output_path,
+            progress_callback=progress_callback,
+            source_completed_callback=source_completed_callback,
+            cancel_check=cancel_check,
+        ):
+            return output_path
+
         completed_pages = 0
         _report_progress(
             progress_callback,
@@ -627,6 +800,17 @@ def merge_manifest(
         else:
             ordered_items = iter(manifest)
 
+        if interleave_file_indices:
+            remaining_source_items = {
+                index: len(sources[index].pages) for index in interleave_file_indices
+            }
+        else:
+            remaining_source_items = Counter(
+                int(item["file_index"])
+                for item in manifest
+                if isinstance(item, dict) and not item.get("blank")
+            )
+
         for item in ordered_items:
             _raise_if_cancelled(cancel_check)
             if not isinstance(item, dict):
@@ -636,6 +820,7 @@ def merge_manifest(
             if rotation % 90 != 0:
                 raise ValueError("Manifest rotation must be a multiple of 90")
 
+            item_source_index: int | None = None
             appended_pages = []
             if item.get("blank"):
                 if item.get("width") is not None or item.get("height") is not None:
@@ -664,6 +849,7 @@ def merge_manifest(
                     raise ValueError("Manifest page reference is invalid") from exc
                 if not 0 <= file_index < len(file_paths):
                     raise ValueError("Manifest file index is out of range")
+                item_source_index = file_index
                 source = sources.get(file_index)
                 if source is None:
                     _raise_if_cancelled(cancel_check)
@@ -715,6 +901,14 @@ def merge_manifest(
                     first_page_size = _visible_page_size(appended_pages[0])
                 except Exception:
                     first_page_size = None
+
+            if item_source_index is not None:
+                remaining_source_items[item_source_index] -= 1
+                if (
+                    remaining_source_items[item_source_index] <= 0
+                    and source_completed_callback is not None
+                ):
+                    source_completed_callback(item_source_index)
 
     _report_progress(
         progress_callback,

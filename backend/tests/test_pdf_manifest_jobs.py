@@ -134,8 +134,10 @@ def test_job_reports_progress_keeps_health_responsive_and_cancels_cleanly(
         *,
         progress_callback=None,
         cancel_check=None,
+        source_completed_callback=None,
     ):
         progress_callback("merging", 1, 4)
+        source_completed_callback(0)
         started.set()
         while not release.wait(0.01):
             if cancel_check():
@@ -154,6 +156,7 @@ def test_job_reports_progress_keeps_health_responsive_and_cancels_cleanly(
     assert status["progress"] == 25
     assert status["completed"] == 1
     assert status["total"] == 4
+    assert status["completed_source_indices"] == [0]
     assert client.get("/health").status_code in {200, 503}
     assert client.get(f"/api/pdf-tools/merge-manifest/jobs/{job_id}/result").status_code == 409
 
@@ -163,6 +166,7 @@ def test_job_reports_progress_keeps_health_responsive_and_cancels_cleanly(
     terminal = _wait_for_status(client, job_id, {"cancelled"})
     assert terminal["terminal"] is True
     assert terminal["cancel_requested"] is True
+    assert terminal["completed_source_indices"] == [0]
     assert list(tmp_path.iterdir()) == []
 
     repeated = client.post(f"/api/pdf-tools/merge-manifest/jobs/{job_id}/cancel")
@@ -186,6 +190,7 @@ def test_queued_job_can_be_cancelled_before_worker_starts_and_cleans_upload(
         *,
         progress_callback=None,
         cancel_check=None,
+        source_completed_callback=None,
     ):
         nonlocal calls
         calls += 1
@@ -239,6 +244,7 @@ def test_completed_job_returns_disk_result_and_preserves_native_source(
     status = _wait_for_status(client, job_id, {"completed"})
     assert status["terminal"] is True
     assert status["progress"] == 100
+    assert status["completed_source_indices"] == [0]
     result = client.get(f"/api/pdf-tools/merge-manifest/jobs/{job_id}/result")
     assert result.status_code == 200
     result_path = Path(result.json()["path"])
@@ -323,6 +329,7 @@ def test_failed_job_has_terminal_message_and_removes_partial_and_upload(
         *,
         progress_callback=None,
         cancel_check=None,
+        source_completed_callback=None,
     ):
         Path(output_path).write_bytes(b"partial")
         raise ValueError("Kế hoạch ghép không hợp lệ")
@@ -428,6 +435,7 @@ def test_cancel_during_watermark_removes_partial_and_never_publishes_result(
         *,
         progress_callback=None,
         cancel_check=None,
+        source_completed_callback=None,
     ):
         progress_callback("merging", 1, 1)
         Path(output_path).write_bytes(_pdf_bytes(1))

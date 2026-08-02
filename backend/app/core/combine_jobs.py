@@ -33,6 +33,7 @@ class CombineJobSnapshot:
     progress: int
     completed: int
     total: int
+    completed_source_indices: tuple[int, ...]
     message: Optional[str]
     return_path: bool
     result_path: str
@@ -63,6 +64,7 @@ class _CombineJobRecord:
     progress: int = 0
     completed: int = 0
     total: int = 0
+    completed_source_indices: list[int] = field(default_factory=list)
     message: Optional[str] = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.monotonic)
@@ -145,6 +147,7 @@ class CombineJobRegistry:
             progress=record.progress,
             completed=record.completed,
             total=record.total,
+            completed_source_indices=tuple(record.completed_source_indices),
             message=record.message,
             return_path=record.return_path,
             result_path=record.result_path,
@@ -317,6 +320,20 @@ class CombineJobRegistry:
                 record.status = status
             if message is not None:
                 record.message = message
+
+
+    def mark_source_completed(self, job_id: str, source_index: int) -> None:
+        """Tích lũy source index đã hoàn tất; giữ nguyên ở mọi trạng thái terminal."""
+        safe_index = int(source_index)
+        if safe_index < 0:
+            return
+        with self._lock:
+            record = self._jobs.get(job_id)
+            if record is None or record.terminal:
+                return
+            if safe_index not in record.completed_source_indices:
+                record.completed_source_indices.append(safe_index)
+                record.updated_at = time.monotonic()
 
     def is_cancel_requested(self, job_id: str) -> bool:
         with self._lock:

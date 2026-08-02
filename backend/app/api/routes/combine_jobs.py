@@ -57,6 +57,7 @@ class CombineJobStatusResponse(BaseModel):
     progress: int = Field(default=0, ge=0, le=100)
     completed: int = Field(default=0, ge=0)
     total: int = Field(default=0, ge=0)
+    completed_source_indices: list[int] = Field(default_factory=list)
     message: Optional[str] = None
     created_at: float
     started_at: Optional[float] = None
@@ -304,6 +305,9 @@ def _run_background_job(
         else:
             registry.update_progress(job_id, phase, completed, total)
 
+    def source_completed(source_index: int) -> None:
+        registry.mark_source_completed(job_id, source_index)
+
     def cancelled() -> bool:
         return registry.is_cancel_requested(job_id)
 
@@ -315,6 +319,7 @@ def _run_background_job(
                 partial_path,
                 progress_callback=progress,
                 cancel_check=cancelled,
+                source_completed_callback=source_completed,
                 order_mode="interleave",
             )
         else:
@@ -324,6 +329,7 @@ def _run_background_job(
                 partial_path,
                 progress_callback=progress,
                 cancel_check=cancelled,
+                source_completed_callback=source_completed,
             )
     except ValueError as exc:
         raw_message = str(exc)
@@ -356,6 +362,7 @@ def _status_response(snapshot) -> CombineJobStatusResponse:
         progress=snapshot.progress,
         completed=snapshot.completed,
         total=snapshot.total,
+        completed_source_indices=list(snapshot.completed_source_indices),
         message=snapshot.message,
         created_at=snapshot.created_at,
         started_at=snapshot.started_at,
