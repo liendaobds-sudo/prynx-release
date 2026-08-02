@@ -6,7 +6,7 @@
 
 **Mốc an toàn trước audit:** commit `7ebcd34` — `checkpoint: lưu các đợt sửa trước tối ưu Combine`.
 
-**Trạng thái:** Giai đoạn khảo sát và lập phương án. Chưa sửa mã tăng tốc trong báo cáo này; chờ chủ dự án duyệt trước khi triển khai theo lô.
+**Trạng thái:** Đã được chủ dự án duyệt và triển khai theo các lô nhỏ. Kết quả code, test, benchmark và các chốt runtime còn lại được ghi tại `docs/COMBINE_PNG_LOADING_FIXES_2026-08-01.md` — mục **Lô 3E**.
 
 ## 1. Kết luận điều hành
 
