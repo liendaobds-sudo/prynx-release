@@ -1685,6 +1685,7 @@ dependencies = [
  "lopdf",
  "numpy",
  "pdfium-render",
+ "png 0.18.1",
  "print_engine",
  "pyo3",
  "rayon",

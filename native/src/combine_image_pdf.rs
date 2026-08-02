@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,6 +16,10 @@ use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use image::{DynamicImage, ImageFormat};
 use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, Stream};
+use png::{
+    BlendOp as PngBlendOp, ColorType as PngColorType, Decoder as ApngDecoder,
+    DisposeOp as PngDisposeOp, Limits as PngLimits, Transformations as PngTransformations,
+};
 use pyo3::exceptions::{
     PyIOError, PyInterruptedError, PyNotImplementedError, PyRuntimeError, PyValueError,
 };
@@ -272,9 +276,10 @@ fn combine_impl(
         prepare()?
     };
 
-    let mut assets: Vec<Option<PreparedAsset>> = (0..request.sources.len()).map(|_| None).collect();
-    for (source_index, asset) in prepared_pairs {
-        assets[source_index] = Some(asset);
+    let mut assets: Vec<Option<Vec<PreparedAsset>>> =
+        (0..request.sources.len()).map(|_| None).collect();
+    for (source_index, source_assets) in prepared_pairs {
+        assets[source_index] = Some(source_assets);
     }
 
     hooks.check_cancelled()?;
@@ -396,7 +401,7 @@ fn prepare_sources(
     sources: &[ImageSourceSpec],
     used_sources: &[usize],
     hooks: &CallbackHooks,
-) -> Result<Vec<(usize, PreparedAsset)>, ImagePdfError> {
+) -> Result<Vec<(usize, Vec<PreparedAsset>)>, ImagePdfError> {
     used_sources
         .par_iter()
         .map(|&source_index| {
@@ -412,7 +417,7 @@ fn prepare_sources(
 fn prepare_source(
     source_index: usize,
     source: &ImageSourceSpec,
-) -> Result<PreparedAsset, ImagePdfError> {
+) -> Result<Vec<PreparedAsset>, ImagePdfError> {
     let bytes = fs::read(&source.path).map_err(|error| {
         ImagePdfError::Io(format!(
             "Không đọc được nguồn ảnh số {source_index} ({}): {error}",
@@ -426,8 +431,8 @@ fn prepare_source(
         .to_ascii_lowercase();
 
     match extension.as_str() {
-        "png" => prepare_png(&bytes, source),
-        "jpg" | "jpeg" => prepare_jpeg(&bytes, source),
+        "png" => prepare_png_source(&bytes, source),
+        "jpg" | "jpeg" => prepare_jpeg(&bytes, source).map(|asset| vec![asset]),
         _ => Err(ImagePdfError::Unsupported(format!(
             "Định dạng .{extension} chưa có fast path native"
         ))),
@@ -442,12 +447,323 @@ fn safe_file_name(path: &str) -> String {
         .to_string()
 }
 
+fn prepare_png_source(
+    bytes: &[u8],
+    source: &ImageSourceSpec,
+) -> Result<Vec<PreparedAsset>, ImagePdfError> {
+    let parsed = parse_png(bytes)?;
+    if parsed.has_animation {
+        prepare_apng(bytes, source, &parsed)
+    } else {
+        prepare_png(bytes, source).map(|asset| vec![asset])
+    }
+}
+
+fn prepare_apng(
+    bytes: &[u8],
+    source: &ImageSourceSpec,
+    parsed: &ParsedPng,
+) -> Result<Vec<PreparedAsset>, ImagePdfError> {
+    ensure_pixel_parity(parsed.width, parsed.height, source)?;
+    if parsed.bit_depth != 8 {
+        return Err(ImagePdfError::QualityGuard(
+            "APNG 16-bit chưa có decoder animation bảo toàn bit-depth".to_string(),
+        ));
+    }
+    if parsed.has_unhandled_color_metadata {
+        return Err(ImagePdfError::QualityGuard(
+            "APNG có thông tin màu chưa thể biểu diễn tương đương trong PDF".to_string(),
+        ));
+    }
+    let color_space = if matches!(parsed.color_type, 0 | 4) {
+        AssetColorSpace::Gray
+    } else {
+        AssetColorSpace::Rgb
+    };
+    let colors = color_space.components();
+    let icc_profile = resolve_png_icc_profile(parsed, color_space)?;
+    let pixel_count = (source.width_px as usize)
+        .checked_mul(source.height_px as usize)
+        .ok_or_else(|| ImagePdfError::Invalid("Kích thước APNG bị tràn số".to_string()))?;
+
+    let mut decoder = ApngDecoder::new(Cursor::new(bytes));
+    decoder.set_transformations(PngTransformations::EXPAND);
+    decoder.set_ignore_text_chunk(true);
+    decoder.set_ignore_iccp_chunk(true);
+    // PERF (audit 2026-08-03 §TC.4): kích thước đã được kiểm tra theo canvas và
+    // backend đã gate RAM; không để mặc định 64 MiB làm chậm/fail máy mạnh.
+    decoder.set_limits(PngLimits { bytes: usize::MAX });
+    let mut reader = decoder
+        .read_info()
+        .map_err(|error| ImagePdfError::Invalid(format!("Không mở được APNG: {error}")))?;
+    let animation = reader
+        .info()
+        .animation_control()
+        .ok_or_else(|| ImagePdfError::Invalid("APNG thiếu chunk acTL".to_string()))?;
+    let frame_count = animation.num_frames as usize;
+    if frame_count == 0 || frame_count > MAX_MANIFEST_ITEMS {
+        return Err(ImagePdfError::Invalid(
+            "Số frame APNG nằm ngoài giới hạn".to_string(),
+        ));
+    }
+
+    let buffer_size = reader.output_buffer_size().ok_or_else(|| {
+        ImagePdfError::Invalid("Bộ đệm giải mã APNG vượt giới hạn hệ thống".to_string())
+    })?;
+    let mut frame_buffer = vec![0u8; buffer_size];
+    let has_thumbnail = reader.info().frame_control().is_none();
+    if has_thumbnail {
+        reader.next_frame(&mut frame_buffer).map_err(|error| {
+            ImagePdfError::Invalid(format!("Không bỏ qua được thumbnail APNG: {error}"))
+        })?;
+    }
+
+    let canvas_bytes = pixel_count
+        .checked_mul(4)
+        .ok_or_else(|| ImagePdfError::Invalid("Bộ đệm canvas APNG bị tràn số".to_string()))?;
+    let mut canvas = vec![0u8; canvas_bytes];
+    let mut restore_canvas: Option<Vec<u8>> = None;
+    let mut previous_dispose = PngDisposeOp::None;
+    let mut previous_region: Option<(u32, u32, u32, u32)> = None;
+    let mut assets = Vec::with_capacity(frame_count);
+
+    for _ in 0..frame_count {
+        apply_apng_disposal(
+            &mut canvas,
+            &mut restore_canvas,
+            previous_dispose,
+            previous_region,
+            source.width_px,
+        )?;
+        let output = reader
+            .next_frame(&mut frame_buffer)
+            .map_err(|error| ImagePdfError::Invalid(format!("Không giải mã được APNG: {error}")))?;
+        let control = reader
+            .info()
+            .frame_control()
+            .cloned()
+            .ok_or_else(|| ImagePdfError::Invalid("Frame APNG thiếu chunk fcTL".to_string()))?;
+        validate_apng_frame(&output, &control, source)?;
+        let frame_rgba = apng_frame_to_rgba(&frame_buffer[..output.buffer_size()], &output)?;
+        restore_canvas = if control.dispose_op == PngDisposeOp::Previous {
+            Some(canvas.clone())
+        } else {
+            None
+        };
+        composite_apng_frame(
+            &mut canvas,
+            source.width_px,
+            &frame_rgba,
+            control.width,
+            control.height,
+            control.x_offset,
+            control.y_offset,
+            control.blend_op,
+        );
+        previous_dispose = control.dispose_op;
+        previous_region = Some((
+            control.x_offset,
+            control.y_offset,
+            control.width,
+            control.height,
+        ));
+
+        let (color, alpha) = split_apng_canvas(&canvas, color_space, pixel_count)?;
+        assets.push(PreparedAsset {
+            width_px: source.width_px,
+            height_px: source.height_px,
+            bits_per_component: 8,
+            color_space,
+            filter: AssetFilter::Flate { colors },
+            data: compress_predictor_rows(
+                &color,
+                source.width_px,
+                source.height_px,
+                colors as usize,
+                8,
+            )?,
+            alpha: alpha
+                .map(|channel| {
+                    compress_predictor_rows(&channel, source.width_px, source.height_px, 1, 8)
+                })
+                .transpose()?
+                .map(|data| CompressedAlpha {
+                    bits_per_component: 8,
+                    data,
+                }),
+            icc_profile: icc_profile.clone(),
+            invert_cmyk: false,
+        });
+    }
+    Ok(assets)
+}
+
+fn validate_apng_frame(
+    output: &png::OutputInfo,
+    control: &png::FrameControl,
+    source: &ImageSourceSpec,
+) -> Result<(), ImagePdfError> {
+    let x_end = control.x_offset.checked_add(control.width);
+    let y_end = control.y_offset.checked_add(control.height);
+    if output.bit_depth != png::BitDepth::Eight
+        || output.width != control.width
+        || output.height != control.height
+        || x_end.is_none_or(|value| value > source.width_px)
+        || y_end.is_none_or(|value| value > source.height_px)
+    {
+        return Err(ImagePdfError::Invalid(
+            "Kích thước frame APNG không hợp lệ".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn apply_apng_disposal(
+    canvas: &mut [u8],
+    restore_canvas: &mut Option<Vec<u8>>,
+    dispose: PngDisposeOp,
+    region: Option<(u32, u32, u32, u32)>,
+    canvas_width: u32,
+) -> Result<(), ImagePdfError> {
+    match dispose {
+        PngDisposeOp::None => {}
+        PngDisposeOp::Background => {
+            let (x, y, width, height) = region
+                .ok_or_else(|| ImagePdfError::Invalid("APNG thiếu vùng dispose".to_string()))?;
+            for row in y..y + height {
+                let start = ((row as usize * canvas_width as usize + x as usize) * 4) as usize;
+                let end = start + width as usize * 4;
+                canvas[start..end].fill(0);
+            }
+        }
+        PngDisposeOp::Previous => {
+            let previous = restore_canvas.take().ok_or_else(|| {
+                ImagePdfError::Invalid("APNG không có canvas để dispose Previous".to_string())
+            })?;
+            canvas.copy_from_slice(&previous);
+        }
+    }
+    Ok(())
+}
+
+fn apng_frame_to_rgba(raw: &[u8], output: &png::OutputInfo) -> Result<Vec<u8>, ImagePdfError> {
+    let channels = match output.color_type {
+        PngColorType::Grayscale => 1,
+        PngColorType::GrayscaleAlpha => 2,
+        PngColorType::Rgb => 3,
+        PngColorType::Rgba => 4,
+        PngColorType::Indexed => {
+            return Err(ImagePdfError::Invalid(
+                "APNG palette chưa được decoder mở rộng".to_string(),
+            ))
+        }
+    };
+    let pixel_count = output.width as usize * output.height as usize;
+    if raw.len() != pixel_count * channels {
+        return Err(ImagePdfError::Invalid(
+            "Bộ đệm frame APNG không khớp kích thước".to_string(),
+        ));
+    }
+    let mut rgba = Vec::with_capacity(pixel_count * 4);
+    for pixel in raw.chunks_exact(channels) {
+        match output.color_type {
+            PngColorType::Grayscale => rgba.extend_from_slice(&[pixel[0], pixel[0], pixel[0], 255]),
+            PngColorType::GrayscaleAlpha => {
+                rgba.extend_from_slice(&[pixel[0], pixel[0], pixel[0], pixel[1]])
+            }
+            PngColorType::Rgb => rgba.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]),
+            PngColorType::Rgba => rgba.extend_from_slice(pixel),
+            PngColorType::Indexed => unreachable!("đã chặn palette chưa mở rộng"),
+        }
+    }
+    Ok(rgba)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn composite_apng_frame(
+    canvas: &mut [u8],
+    canvas_width: u32,
+    frame: &[u8],
+    frame_width: u32,
+    frame_height: u32,
+    x_offset: u32,
+    y_offset: u32,
+    blend: PngBlendOp,
+) {
+    for y in 0..frame_height as usize {
+        for x in 0..frame_width as usize {
+            let source_index = (y * frame_width as usize + x) * 4;
+            let target_index =
+                (((y + y_offset as usize) * canvas_width as usize + x + x_offset as usize) * 4)
+                    as usize;
+            let source = &frame[source_index..source_index + 4];
+            let target = &mut canvas[target_index..target_index + 4];
+            match blend {
+                PngBlendOp::Source => target.copy_from_slice(source),
+                PngBlendOp::Over => blend_rgba_over(target, source),
+            }
+        }
+    }
+}
+
+fn blend_rgba_over(background: &mut [u8], foreground: &[u8]) {
+    let foreground_alpha = foreground[3] as u32;
+    if foreground_alpha == 0 {
+        return;
+    }
+    if foreground_alpha == 255 {
+        background.copy_from_slice(foreground);
+        return;
+    }
+    let background_alpha = background[3] as u32;
+    let inverse_alpha = 255 - foreground_alpha;
+    let output_alpha_numerator = foreground_alpha * 255 + background_alpha * inverse_alpha;
+    if output_alpha_numerator == 0 {
+        background.fill(0);
+        return;
+    }
+    for channel in 0..3 {
+        let numerator = foreground[channel] as u32 * foreground_alpha * 255
+            + background[channel] as u32 * background_alpha * inverse_alpha;
+        background[channel] =
+            ((numerator + output_alpha_numerator / 2) / output_alpha_numerator) as u8;
+    }
+    background[3] = ((output_alpha_numerator + 127) / 255) as u8;
+}
+
+fn split_apng_canvas(
+    canvas: &[u8],
+    color_space: AssetColorSpace,
+    pixel_count: usize,
+) -> Result<(Vec<u8>, Option<Vec<u8>>), ImagePdfError> {
+    if canvas.len() != pixel_count * 4 {
+        return Err(ImagePdfError::Invalid(
+            "Canvas APNG không khớp kích thước".to_string(),
+        ));
+    }
+    let has_alpha = canvas.chunks_exact(4).any(|pixel| pixel[3] != u8::MAX);
+    let components = color_space.components() as usize;
+    let mut color = Vec::with_capacity(pixel_count * components);
+    let mut alpha = has_alpha.then(|| Vec::with_capacity(pixel_count));
+    for pixel in canvas.chunks_exact(4) {
+        if matches!(color_space, AssetColorSpace::Gray) {
+            color.push(pixel[0]);
+        } else {
+            color.extend_from_slice(&pixel[..3]);
+        }
+        if let Some(channel) = alpha.as_mut() {
+            channel.push(pixel[3]);
+        }
+    }
+    Ok((color, alpha))
+}
+
 fn prepare_png(bytes: &[u8], source: &ImageSourceSpec) -> Result<PreparedAsset, ImagePdfError> {
     let parsed = parse_png(bytes)?;
     ensure_pixel_parity(parsed.width, parsed.height, source)?;
     if parsed.has_animation {
-        return Err(ImagePdfError::QualityGuard(
-            "APNG nhiều frame chưa có đường ghép bảo toàn đầy đủ".to_string(),
+        return Err(ImagePdfError::Invalid(
+            "APNG phải đi qua đường tách frame".to_string(),
         ));
     }
     if parsed.has_unhandled_color_metadata {
@@ -1049,28 +1365,54 @@ fn signed_byte_score(value: u8) -> u64 {
 
 fn build_document(
     request: &ImageManifestRequest,
-    assets: Vec<Option<PreparedAsset>>,
+    assets: Vec<Option<Vec<PreparedAsset>>>,
     hooks: &CallbackHooks,
 ) -> Result<Document, ImagePdfError> {
-    let mut document = Document::with_version("1.7");
-    let mut image_ids: Vec<Option<ObjectId>> = (0..request.sources.len()).map(|_| None).collect();
+    let expanded_page_count = request.pages.iter().try_fold(0usize, |count, page| {
+        let added = if page.blank {
+            1
+        } else {
+            let source_index = page.file_index.expect("đã validate file_index");
+            assets[source_index]
+                .as_ref()
+                .ok_or_else(|| ImagePdfError::Runtime("Nguồn ảnh chưa được chuẩn bị".to_string()))?
+                .len()
+        };
+        count
+            .checked_add(added)
+            .filter(|&value| value <= MAX_MANIFEST_ITEMS)
+            .ok_or_else(|| {
+                ImagePdfError::Invalid(
+                    "Tổng số trang sau khi tách frame APNG vượt giới hạn Combine".to_string(),
+                )
+            })
+    })?;
 
-    for (source_index, asset) in assets.into_iter().enumerate() {
-        let Some(asset) = asset else {
+    let mut document = Document::with_version("1.7");
+    let mut image_ids: Vec<Option<Vec<ObjectId>>> =
+        (0..request.sources.len()).map(|_| None).collect();
+
+    for (source_index, source_assets) in assets.into_iter().enumerate() {
+        let Some(source_assets) = source_assets else {
             continue;
         };
         hooks.check_cancelled()?;
-        image_ids[source_index] = Some(add_image_object(&mut document, asset));
+        image_ids[source_index] = Some(
+            source_assets
+                .into_iter()
+                .map(|asset| add_image_object(&mut document, asset))
+                .collect(),
+        );
     }
 
     let pages_id = document.new_object_id();
-    let mut kids = Vec::with_capacity(request.pages.len());
+    let mut kids = Vec::with_capacity(expanded_page_count);
     let mut first_visible_size: Option<(f64, f64)> = None;
 
     for page in &request.pages {
         hooks.check_cancelled()?;
         let rotation = normalize_rotation(page.rotation)?;
-        let (width_pt, height_pt, image_id) = if page.blank {
+        if page.blank {
             let size = if page.width.is_some() || page.height.is_some() {
                 (
                     page.width.unwrap_or(A4_WIDTH_PT),
@@ -1079,66 +1421,47 @@ fn build_document(
             } else {
                 first_visible_size.unwrap_or((A4_WIDTH_PT, A4_HEIGHT_PT))
             };
-            (size.0, size.1, None)
-        } else {
-            let source_index = page.file_index.expect("đã validate file_index");
-            let source = &request.sources[source_index];
-            (
+            let page_id = add_pdf_page(&mut document, pages_id, size.0, size.1, rotation, None);
+            kids.push(Object::Reference(page_id));
+            if first_visible_size.is_none() {
+                first_visible_size = Some(rotated_page_size(size.0, size.1, rotation));
+            }
+            continue;
+        }
+
+        let source_index = page.file_index.expect("đã validate file_index");
+        let source = &request.sources[source_index];
+        let source_image_ids = image_ids[source_index]
+            .as_ref()
+            .ok_or_else(|| ImagePdfError::Runtime("Nguồn ảnh chưa được chuẩn bị".to_string()))?;
+        for &image_id in source_image_ids {
+            hooks.check_cancelled()?;
+            let page_id = add_pdf_page(
+                &mut document,
+                pages_id,
                 source.width_pt,
                 source.height_pt,
-                Some(image_ids[source_index].ok_or_else(|| {
-                    ImagePdfError::Runtime("Nguồn ảnh chưa được chuẩn bị".to_string())
-                })?),
-            )
-        };
-
-        let content = image_id
-            .map(|_| {
-                format!("q\n{width_pt:.6} 0 0 {height_pt:.6} 0 0 cm\n/Im0 Do\nQ\n").into_bytes()
-            })
-            .unwrap_or_default();
-        let content_id = document.add_object(Stream::new(dictionary! {}, content));
-        let resources = if let Some(image_id) = image_id {
-            dictionary! {
-                "XObject" => dictionary! { "Im0" => Object::Reference(image_id) }
+                rotation,
+                Some(image_id),
+            );
+            kids.push(Object::Reference(page_id));
+            if first_visible_size.is_none() {
+                first_visible_size = Some(rotated_page_size(
+                    source.width_pt,
+                    source.height_pt,
+                    rotation,
+                ));
             }
-        } else {
-            Dictionary::new()
-        };
-        let resources_id = document.add_object(resources);
-        let mut page_dictionary = dictionary! {
-            "Type" => "Page",
-            "Parent" => Object::Reference(pages_id),
-            "Contents" => Object::Reference(content_id),
-            "Resources" => Object::Reference(resources_id),
-            "MediaBox" => Object::Array(vec![
-                Object::Integer(0),
-                Object::Integer(0),
-                Object::Real(width_pt as f32),
-                Object::Real(height_pt as f32),
-            ]),
-        };
-        if rotation != 0 {
-            page_dictionary.set("Rotate", rotation);
-        }
-        let page_id = document.add_object(page_dictionary);
-        kids.push(Object::Reference(page_id));
-
-        if first_visible_size.is_none() {
-            first_visible_size = Some(if matches!(rotation, 90 | 270) {
-                (height_pt, width_pt)
-            } else {
-                (width_pt, height_pt)
-            });
         }
     }
 
+    let page_count = kids.len() as i64;
     document.set_object(
         pages_id,
         dictionary! {
             "Type" => "Pages",
             "Kids" => Object::Array(kids),
-            "Count" => request.pages.len() as i64,
+            "Count" => page_count,
         },
     );
     let catalog_id = document.add_object(dictionary! {
@@ -1151,6 +1474,52 @@ fn build_document(
     document.trailer.set("Root", Object::Reference(catalog_id));
     document.trailer.set("Info", Object::Reference(info_id));
     Ok(document)
+}
+
+fn add_pdf_page(
+    document: &mut Document,
+    pages_id: ObjectId,
+    width_pt: f64,
+    height_pt: f64,
+    rotation: i64,
+    image_id: Option<ObjectId>,
+) -> ObjectId {
+    let content = image_id
+        .map(|_| format!("q\n{width_pt:.6} 0 0 {height_pt:.6} 0 0 cm\n/Im0 Do\nQ\n").into_bytes())
+        .unwrap_or_default();
+    let content_id = document.add_object(Stream::new(dictionary! {}, content));
+    let resources = if let Some(image_id) = image_id {
+        dictionary! {
+            "XObject" => dictionary! { "Im0" => Object::Reference(image_id) }
+        }
+    } else {
+        Dictionary::new()
+    };
+    let resources_id = document.add_object(resources);
+    let mut page_dictionary = dictionary! {
+        "Type" => "Page",
+        "Parent" => Object::Reference(pages_id),
+        "Contents" => Object::Reference(content_id),
+        "Resources" => Object::Reference(resources_id),
+        "MediaBox" => Object::Array(vec![
+            Object::Integer(0),
+            Object::Integer(0),
+            Object::Real(width_pt as f32),
+            Object::Real(height_pt as f32),
+        ]),
+    };
+    if rotation != 0 {
+        page_dictionary.set("Rotate", rotation);
+    }
+    document.add_object(page_dictionary)
+}
+
+fn rotated_page_size(width_pt: f64, height_pt: f64, rotation: i64) -> (f64, f64) {
+    if matches!(rotation, 90 | 270) {
+        (height_pt, width_pt)
+    } else {
+        (width_pt, height_pt)
+    }
 }
 
 fn add_image_object(document: &mut Document, asset: PreparedAsset) -> ObjectId {
@@ -1309,6 +1678,10 @@ mod tests {
     use image::codecs::jpeg::JpegEncoder;
     use image::codecs::png::PngEncoder;
     use image::{ColorType, ImageEncoder};
+    use png::{
+        BitDepth as PngBitDepth, BlendOp, ColorType as PngColorType, DisposeOp,
+        Encoder as ApngEncoder,
+    };
 
     fn unique_path(name: &str, extension: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -1343,6 +1716,84 @@ mod tests {
         PngEncoder::new(file)
             .write_image(&raw, width, height, ColorType::Rgba16.into())
             .unwrap();
+    }
+
+    fn write_composited_apng(path: &Path) {
+        let file = fs::File::create(path).unwrap();
+        let mut encoder = ApngEncoder::new(file, 2, 1);
+        encoder.set_color(PngColorType::Rgba);
+        encoder.set_depth(PngBitDepth::Eight);
+        encoder.set_animated(4, 0).unwrap();
+        let mut writer = encoder.write_header().unwrap();
+
+        writer.set_blend_op(BlendOp::Source).unwrap();
+        writer.set_dispose_op(DisposeOp::None).unwrap();
+        writer
+            .write_image_data(&[255, 0, 0, 255, 255, 0, 0, 255])
+            .unwrap();
+
+        writer.set_frame_dimension(1, 1).unwrap();
+        writer.set_frame_position(1, 0).unwrap();
+        writer.set_blend_op(BlendOp::Over).unwrap();
+        writer.set_dispose_op(DisposeOp::Background).unwrap();
+        writer.write_image_data(&[0, 0, 255, 128]).unwrap();
+
+        writer.set_frame_position(0, 0).unwrap();
+        writer.set_blend_op(BlendOp::Source).unwrap();
+        writer.set_dispose_op(DisposeOp::Previous).unwrap();
+        writer.write_image_data(&[0, 255, 0, 255]).unwrap();
+
+        writer.set_frame_position(1, 0).unwrap();
+        writer.set_dispose_op(DisposeOp::None).unwrap();
+        writer.write_image_data(&[255, 255, 0, 255]).unwrap();
+        writer.finish().unwrap();
+    }
+
+    fn write_rgba16_apng(path: &Path) {
+        let file = fs::File::create(path).unwrap();
+        let mut encoder = ApngEncoder::new(file, 1, 1);
+        encoder.set_color(PngColorType::Rgba);
+        encoder.set_depth(PngBitDepth::Sixteen);
+        encoder.set_animated(2, 0).unwrap();
+        let mut writer = encoder.write_header().unwrap();
+        writer
+            .write_image_data(&[0xff, 0xff, 0, 0, 0, 0, 0xff, 0xff])
+            .unwrap();
+        writer
+            .write_image_data(&[0, 0, 0xff, 0xff, 0, 0, 0xff, 0xff])
+            .unwrap();
+        writer.finish().unwrap();
+    }
+
+    fn inflate_predictor_rows(
+        compressed: &[u8],
+        width: usize,
+        height: usize,
+        channels: usize,
+    ) -> Vec<u8> {
+        let mut decoder = ZlibDecoder::new(compressed);
+        let mut filtered = Vec::new();
+        decoder.read_to_end(&mut filtered).unwrap();
+        let row_bytes = width * channels;
+        assert_eq!(filtered.len(), height * (row_bytes + 1));
+        let mut output = Vec::with_capacity(height * row_bytes);
+        for row in filtered.chunks_exact(row_bytes + 1) {
+            match row[0] {
+                0 => output.extend_from_slice(&row[1..]),
+                1 => {
+                    for (index, &value) in row[1..].iter().enumerate() {
+                        let left = if index >= channels {
+                            output[output.len() - channels]
+                        } else {
+                            0
+                        };
+                        output.push(value.wrapping_add(left));
+                    }
+                }
+                filter => panic!("Bộ lọc Predictor không mong đợi: {filter}"),
+            }
+        }
+        output
     }
 
     fn insert_png_chunk_after_ihdr(path: &Path, chunk_type: &[u8; 4], data: &[u8]) {
@@ -1496,6 +1947,76 @@ mod tests {
         let asset = prepare_png(&bytes, &source(&path, 1, 1)).unwrap();
         assert_eq!(asset.icc_profile.as_deref(), Some(SRGB_ICC_PROFILE));
         assert_iccbased_asset(asset, SRGB_ICC_PROFILE);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn apng_composites_frames_and_expands_each_manifest_item() {
+        let image_path = unique_path("apng", "png");
+        let output_path = unique_path("apng_output", "pdf");
+        write_composited_apng(&image_path);
+        insert_png_chunk_after_ihdr(&image_path, b"sRGB", &[0]);
+        let bytes = fs::read(&image_path).unwrap();
+        let assets = prepare_png_source(&bytes, &source(&image_path, 2, 1)).unwrap();
+        assert_eq!(assets.len(), 4);
+        assert!(assets
+            .iter()
+            .all(|asset| asset.icc_profile.as_deref() == Some(SRGB_ICC_PROFILE)));
+
+        assert_eq!(
+            inflate_predictor_rows(&assets[0].data, 2, 1, 3),
+            [255, 0, 0, 255, 0, 0]
+        );
+        assert!(assets[0].alpha.is_none());
+        assert_eq!(
+            inflate_predictor_rows(&assets[1].data, 2, 1, 3),
+            [255, 0, 0, 127, 0, 128]
+        );
+        assert!(assets[1].alpha.is_none());
+        assert_eq!(
+            inflate_predictor_rows(&assets[2].data, 2, 1, 3),
+            [0, 255, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            inflate_predictor_rows(&assets[2].alpha.as_ref().unwrap().data, 2, 1, 1),
+            [255, 0]
+        );
+        assert_eq!(
+            inflate_predictor_rows(&assets[3].data, 2, 1, 3),
+            [255, 0, 0, 255, 255, 0]
+        );
+        assert!(assets[3].alpha.is_none());
+
+        let request = ImageManifestRequest {
+            sources: vec![source(&image_path, 2, 1)],
+            pages: vec![ImagePageSpec {
+                blank: false,
+                file_index: Some(0),
+                width: None,
+                height: None,
+                rotation: 90,
+            }],
+        };
+        combine_impl(request, output_path.clone(), 1, &CallbackHooks::default()).unwrap();
+        let document = Document::load(&output_path).unwrap();
+        let pages = document.get_pages();
+        assert_eq!(pages.len(), 4);
+        for page_id in pages.values() {
+            let page = document.get_object(*page_id).unwrap().as_dict().unwrap();
+            assert_eq!(page.get(b"Rotate").unwrap().as_i64().unwrap(), 90);
+        }
+
+        let _ = fs::remove_file(image_path);
+        let _ = fs::remove_file(output_path);
+    }
+
+    #[test]
+    fn apng_16_bit_stops_at_quality_guard() {
+        let path = unique_path("apng16", "png");
+        write_rgba16_apng(&path);
+        let bytes = fs::read(&path).unwrap();
+        let error = prepare_png_source(&bytes, &source(&path, 1, 1)).unwrap_err();
+        assert!(matches!(error, ImagePdfError::QualityGuard(_)));
         let _ = fs::remove_file(path);
     }
 
