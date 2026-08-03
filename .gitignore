@@ -127,7 +127,11 @@ terminals/
 
 # Build scratch / diagnostics (not source)
 tmp/
+backend/scratch/
 backend/nuitka-crash-report.xml
+
+# Bản sao môi trường Python cục bộ giữ để rollback, không phải source/release input.
+backend/venv-*-backup-*/
 
 # Icon backups (kept locally before white/transparent conversion)
 desktop/src-tauri/icons/_backup_before_white/
