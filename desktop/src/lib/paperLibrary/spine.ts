@@ -80,6 +80,7 @@ const COEFFICIENTS: Record<'coated' | 'uncoated', Record<BindingMethod, BindingC
     },
     uncoated: {
         thread:  { factor: 0.4,  add: true,  timesPagesPerSheet: false },  // BG
+        // RELEASE QA (audit 2026-08-03 §REL.01): giữ đúng hệ số BF=0.3 của workbook.
         hotmelt: { factor: 0.3,  add: true,  timesPagesPerSheet: false },  // BF
         mounted: { factor: 0.65, add: true,  timesPagesPerSheet: true },   // BH
         saddle:  { factor: 0,    add: true,  timesPagesPerSheet: false },  // không bù ép

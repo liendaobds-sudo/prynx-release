@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { pdfjs } from 'react-pdf';
-import { thumbCacheRef, putThumbCache } from '../../components/workspace/ViewerHelpers';
+import { thumbCacheRef, putThumbCache } from '../../components/workspace/thumbnailCache';
 import { clearTileUrlCache } from '../../components/workspace/LivePageFrame';
 
 export const PDF_LOAD_SLOW_NOTICE_MS = 10_000;

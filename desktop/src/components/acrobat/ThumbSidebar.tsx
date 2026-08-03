@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useThumbSidebar } from './useThumbSidebar';
-import { thumbCacheRef } from '../workspace/ViewerHelpers';
+import { thumbCacheRef } from '../workspace/thumbnailCache';
 import { nativeTileRenderScheduler } from '../../hooks/viewer/tileRenderScheduler';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';

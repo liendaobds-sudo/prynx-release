@@ -45,40 +45,12 @@ import {
 } from './verticalScroll';
 import { buildPropertyAffine, mmToPt, pickTopmostObjectAtPoint, ptToMm, selectionBounds } from './editTransformMath';
 import { previewPerfLog } from '../../lib/previewPerfLog';
+import { computeRenderZoomPure, RENDER_BUDGET_PX } from './renderZoomPolicy';
 
 // Mảng rỗng ỔN ĐỊNH — không tạo `[]` mới mỗi effect (tránh cascade setState).
 const EMPTY_OBJECT_IDS: string[] = [];
 // Offset lệch cố định (mm) cho mỗi lần dán — cộng dồn theo pasteCount.
 const PASTE_OFFSET_MM = 3;
-
-// Công thức renderZoom TÁCH ra hàm thuần để PREFETCH (AcrobatViewer) tính ĐÚNG cùng
-// giá trị mà view chính dùng → cache key tile Rust khớp bit-chính-xác → cuộn tới là
-// cache HIT thật (trả tức thì), không phải chỉ warm decode. Lệch 1 ULP float là miss.
-/** Ngân sách cạnh dài bitmap nền (px) theo cài đặt "Chất lượng xem trước". */
-export const RENDER_BUDGET_PX = { high: 6000, fast: 3000 } as const;
-
-export function computeRenderZoomPure(
-    z: number,
-    actualWidth100: number,
-    pageDimW?: number,
-    pageDimH?: number,
-    /**
-     * PERF (audit độ nét 2026-07-28 §R.9): trần cạnh dài bitmap, nối với cài đặt
-     * `previewQuality`. Trước đây hằng 6000 cứng trong hàm nên tuỳ chọn "Chất lượng xem
-     * trước" trong Cài đặt là NÚT CHẾT — có UI, có mô tả, nhưng không đường render nào đọc.
-     * 'fast' = 3000 → số pixel nền giảm 4× ở zoom cao (chi phí render tỉ lệ với pixel).
-     * Mặc định vẫn 6000 ('high') → máy mạnh không bị hạ gì, đúng nguyên tắc hiệu năng của
-     * dự án (chỉ giảm khi người dùng CHỦ ĐỘNG chọn, không tự cap).
-     */
-    budgetPx: number = RENDER_BUDGET_PX.high,
-): number {
-    const dpr = (window.devicePixelRatio || 1);
-    const target = Math.max(dpr, z * dpr);
-    const w100 = actualWidth100 || 800;
-    const ratio = (pageDimW && pageDimW > 0) ? Math.max(1, (pageDimH || 0) / pageDimW) : 1.414;
-    const capByBudget = (budgetPx || RENDER_BUDGET_PX.high) / (w100 * ratio);
-    return Math.max(dpr, Math.min(24, target, capByBudget));
-}
 
 // ─── Edit PDF Object (task 10.1) ─────────────────────────────────────────────
 // Object do GET /edit/objects trả về, SAU khi đã convert bbox PDF (bottom-left)

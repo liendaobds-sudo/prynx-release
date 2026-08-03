@@ -4,7 +4,7 @@
 // (trước đợt này nó là nút chết, không đường render nào đọc).
 import { describe, expect, it } from 'vitest';
 
-import { computeRenderZoomPure, RENDER_BUDGET_PX } from './LivePageFrame';
+import { computeRenderZoomPure, RENDER_BUDGET_PX } from './renderZoomPolicy';
 
 // A4 dọc: 595×842 pt → px@96 (usePdfLoader dựng dims bằng widthPt × 96/72).
 const A4_W = 595 * 96 / 72;   // ≈ 793.7

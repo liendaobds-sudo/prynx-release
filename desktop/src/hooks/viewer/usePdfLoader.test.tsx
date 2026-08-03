@@ -16,7 +16,7 @@ vi.mock('react-pdf', () => ({
     },
 }));
 
-vi.mock('../../components/workspace/ViewerHelpers', () => ({
+vi.mock('../../components/workspace/thumbnailCache', () => ({
     thumbCacheRef: { current: new Map() },
     putThumbCache: vi.fn(),
 }));
