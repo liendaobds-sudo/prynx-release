@@ -9,7 +9,7 @@ import logging
 import os
 
 logger = logging.getLogger(__name__)
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 # ── Chính sách Rust/fallback (Req 7) ────────────────────────
 # Mặc định: Rust là bắt buộc. Nếu Rust thiếu → FAIL-FAST (không âm thầm cho kết
@@ -305,6 +305,189 @@ def compute_ratio_stack_alloc(capacity: int, qtys: List[int]) -> Dict[str, Any]:
             "(cd native && cargo build --release, copy .dll → .pyd trong venv)."
         )
     return _rust_solve_ratio_stack(int(capacity), [int(q) for q in qtys])
+
+
+def compute_ratio_stack_templates(
+    capacity: int, qtys: List[int]
+) -> List[Dict[str, Any]]:
+    """[RATIO-STACK FIX 2026-08-03] Lập toàn bộ tờ mẫu khi số loại vượt sức chứa.
+
+    Bộ giải Rust :func:`compute_ratio_stack_alloc` cố ý chỉ giải *một* tờ và trả
+    các loại chưa có ô trong ``unplaced``. Tầng điều phối này gọi bộ giải nhiều
+    lần, nhưng mỗi loại chỉ thuộc một tờ mẫu để vị trí ô luôn cố định xuyên suốt
+    chồng giấy.
+
+    Khi mọi loại có cùng số lượng và bị tràn tờ, mỗi loại nhận đúng một ô. Các ô
+    thừa ở tờ cuối được để trống vì lấp chúng bằng bản sao chỉ làm in dư, không
+    giảm số lượt chạy tờ. Trường hợp tất cả loại vừa một tờ vẫn giữ nguyên cách
+    chia đầy tờ hiện có để không đổi hành vi cũ.
+    """
+    capacity = max(0, int(capacity))
+    normalized_qtys = [max(0, int(q)) for q in qtys]
+    if capacity <= 0 or not normalized_qtys:
+        return []
+
+    active = [i for i, q in enumerate(normalized_qtys) if q > 0]
+    auto_fill = not active
+    candidates = list(range(len(normalized_qtys))) if auto_fill else active
+
+    # Một tờ vẫn dùng nguyên bộ giải cũ: tỷ lệ và hành vi tự lấp đầy không đổi.
+    if len(candidates) <= capacity:
+        alloc = compute_ratio_stack_alloc(capacity, normalized_qtys)
+        cells = [int(value) for value in alloc.get('cellsPerPage', [])]
+        return [{
+            'cellsPerPage': cells,
+            'nSheets': max(1, int(alloc.get('nSheets') or 1)),
+            'unplaced': list(alloc.get('unplaced', [])),
+            'pageIndices': [i for i, count in enumerate(cells) if count > 0],
+        }]
+
+    templates: List[Dict[str, Any]] = []
+    pending = list(candidates)
+    while pending:
+        pending_values = [
+            (1 if auto_fill else normalized_qtys[i]) for i in pending
+        ]
+        equal_quantities = len(set(pending_values)) == 1
+
+        if equal_quantities:
+            # Không lấp ô thừa bằng bản sao: mọi loại vẫn cần cùng số lượt in.
+            placed = pending[:capacity]
+            cells = [0] * len(normalized_qtys)
+            for page_idx in placed:
+                cells[page_idx] = 1
+            run_count = 1 if auto_fill else pending_values[0]
+        else:
+            pending_set = set(pending)
+            masked_qtys = [
+                normalized_qtys[i] if i in pending_set else 0
+                for i in range(len(normalized_qtys))
+            ]
+            alloc = compute_ratio_stack_alloc(capacity, masked_qtys)
+            cells = [int(value) for value in alloc.get('cellsPerPage', [])]
+            placed = [i for i in pending if i < len(cells) and cells[i] > 0]
+            run_count = max(1, int(alloc.get('nSheets') or 1))
+
+        if not placed:
+            # Phòng thủ chống vòng lặp vô hạn nếu binding native trả dữ liệu lỗi.
+            raise RuntimeError("Không thể phân mẫu sang tờ ratio_stack tiếp theo.")
+
+        templates.append({
+            'cellsPerPage': cells,
+            'nSheets': max(1, int(run_count)),
+            'unplaced': [],
+            'pageIndices': list(placed),
+        })
+        placed_set = set(placed)
+        pending = [i for i in pending if i not in placed_set]
+
+    return templates
+
+
+def build_guillotine_preview_sheet(
+    cells: List[Dict[str, Any]],
+    page_indices: List[int],
+    *,
+    usable_w: float,
+    usable_h: float,
+    margin_left: float = 0.0,
+    margin_right: float = 0.0,
+    margin_bottom: float = 0.0,
+    margin_top: float = 0.0,
+    sheet_w: float = 0.0,
+    sheet_h: float = 0.0,
+    align: str = 'center',
+    run_count: Optional[int] = None,
+    physical_sheet_index: Optional[int] = None,
+) -> Dict[str, Any]:
+    """BUILD (audit 2026-08-03 §REL.02): dựng một tờ preview tuyệt đối.
+
+    Hàm thuần dùng chung cho ratio-stack, sequential và cut-stacks. Tọa độ ô
+    của solver có gốc trên-trái trong khối; ``absY`` được đổi sang hệ gốc dưới
+    của tờ in đúng như route cũ.
+    """
+    used_cells = cells[:min(len(cells), len(page_indices))]
+    block_w = max((c['x'] + c['width'] for c in used_cells), default=0.0)
+    block_h = max((c['y'] + c['height'] for c in used_cells), default=0.0)
+    align = align if isinstance(align, str) else 'center'
+
+    if 'left' in align:
+        base_x = margin_left
+    elif 'right' in align and sheet_w > 0:
+        base_x = sheet_w - margin_right - block_w
+    else:
+        base_x = margin_left + (usable_w - block_w) / 2
+    if 'top' in align and sheet_h > 0:
+        base_y = sheet_h - margin_top - block_h
+    elif 'bottom' in align:
+        base_y = margin_bottom
+    else:
+        base_y = margin_bottom + (usable_h - block_h) / 2
+
+    items = []
+    placed_by_page: Dict[str, int] = {}
+    overall_w = 0.0
+    overall_h = 0.0
+    for cell, page_idx in zip(used_cells, page_indices):
+        abs_x = base_x + cell['x']
+        abs_y = base_y + (block_h - cell['y'] - cell['height'])
+        items.append({
+            'x': cell['x'], 'y': cell['y'],
+            'absX': abs_x, 'absY': abs_y,
+            'width': cell['width'], 'height': cell['height'],
+            'isRotated': bool(cell.get('isRotated', False)),
+            'isRotated180': False,
+            'pageIdx': page_idx,
+        })
+        page_key = str(page_idx)
+        placed_by_page[page_key] = placed_by_page.get(page_key, 0) + 1
+        overall_w = max(overall_w, abs_x + cell['width'])
+        overall_h = max(overall_h, abs_y + cell['height'])
+
+    result = {
+        'cells': items,
+        'overallWidth': overall_w,
+        'overallHeight': overall_h,
+        'totalItems': len(items),
+        'placedByPage': placed_by_page,
+    }
+    if run_count is not None:
+        result['runCount'] = max(1, int(run_count))
+    if physical_sheet_index is not None:
+        result['physicalSheetIndex'] = int(physical_sheet_index)
+    return result
+
+
+def build_mixed_preview_response(
+    sheet: Dict[str, Any],
+    strategy: str,
+    sheets_needed: int,
+    *,
+    ratio_unplaced: Optional[List[int]] = None,
+    output_pages_needed: Optional[int] = None,
+    template_sheets: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Bọc dữ liệu tờ thành contract API preview mà không phụ thuộc FastAPI."""
+    result = {
+        'success': True,
+        'cells': sheet['cells'],
+        'overallWidth': sheet['overallWidth'],
+        'overallHeight': sheet['overallHeight'],
+        'totalItems': sheet['totalItems'],
+        'strategyUsed': strategy,
+        'isMixedPreview': True,
+        'absPlacement': True,
+        'sheetsNeeded': max(1, int(sheets_needed)),
+        'ratioUnplaced': list(ratio_unplaced or []),
+        'placedByPage': sheet['placedByPage'],
+    }
+    if output_pages_needed is not None:
+        result['outputPagesNeeded'] = max(1, int(output_pages_needed))
+    if template_sheets is not None:
+        result['templateCount'] = len(template_sheets)
+        if len(template_sheets) > 1:
+            result['sheets'] = template_sheets
+    return result
 
 
 def compute_cluster_type_alloc(

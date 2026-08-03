@@ -161,6 +161,8 @@ interface BackendLayoutResult {
   totalContentItems?: number;
   /** ratio_stack: chỉ số mẫu có SL>0 nhưng không đủ chỗ trên tờ. */
   ratioUnplaced?: number[];
+  /** Số ô đã gán theo trang nguồn trên tờ đại diện. */
+  placedByPage?: Record<string, number>;
   /** chia cụm: kiểu ghép đã dùng (replicate_mixed / zone_per_type / zone_ratio). */
   clusterCombineMode?: string;
   /** chia cụm: đường xén guillotine giữa các cụm/vùng (pt, cùng không gian abs với cells). */
@@ -1644,16 +1646,20 @@ export default function GridPreview(props: GridPreviewProps) {
             if (onCapacityChangeRef.current)
               onCapacityChangeRef.current(convertedResult.totalItems);
             if (onMixedPlacedByPageRef.current) {
-              const pbp = (data as any).placedByPage;
+              const pbp = data.placedByPage;
               if (
                 layoutType === "ratio_stack" &&
                 viewerPageCount > 0 &&
                 cells.some((c) => c.pageIdx != null)
               ) {
-                // Đếm từ cells đã (có thể) gán lại.
+                // Nhiều tờ mẫu: gộp toàn bộ tờ để không làm mất capacity của
+                // các mẫu nằm sau tờ đầu. Một tờ vẫn dùng cells đã gán lại.
+                const ratioCells = Array.isArray(data.sheets)
+                  ? data.sheets.flatMap((sheet) => sheet.cells || [])
+                  : cells;
                 const m: Record<number, number> = {};
-                for (const cell of cells) {
-                  const pi = (cell as any).pageIdx;
+                for (const cell of ratioCells) {
+                  const pi = cell.pageIdx;
                   if (typeof pi === "number" && pi < viewerPageCount) {
                     m[pi] = (m[pi] || 0) + 1;
                   }
@@ -2050,9 +2056,11 @@ export default function GridPreview(props: GridPreviewProps) {
                   </span>{" "}
                   {t('imposition.gridPreview:to')}
                   {_isRatioStack && (
-                    <span className="text-[11px] text-slate-400 ml-1">
-                      {t('imposition.gridPreview:1_to_mau_x_ban', { n: totalSheets })}
-                    </span>
+                    (!layoutResult.sheets || layoutResult.sheets.length <= 1) && (
+                      <span className="text-[11px] text-slate-400 ml-1">
+                        {t('imposition.gridPreview:1_to_mau_x_ban', { n: totalSheets })}
+                      </span>
+                    )
                   )}
                 </div>
               </>
@@ -2105,8 +2113,10 @@ export default function GridPreview(props: GridPreviewProps) {
               typeof layoutResult.totalContentItems === "number"
               ? layoutResult.totalContentItems
               : new Set(
-                  (layoutResult.cells || [])
-                    .map((c) => (c as any).pageIdx)
+                  ((layoutResult.sheets && layoutResult.sheets.length > 1)
+                    ? layoutResult.sheets.flatMap((sheet) => sheet.cells || [])
+                    : (layoutResult.cells || []))
+                    .map((c) => c.pageIdx)
                     .filter((p) => typeof p === "number"),
                 ).size;
             if (_isClusterType && _nTypes > 0) {

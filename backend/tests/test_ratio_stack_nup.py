@@ -62,7 +62,25 @@ def _canned_layout_8(*_a, **_k):
     }
 
 
-def _run_capture(monkeypatch, n_pages, settings):
+def _canned_layout_20(*_a, **_k):
+    """Lưới 20 ô (5×4) để khóa ca thực tế 72 mẫu."""
+    cells = []
+    for i in range(20):
+        r = i // 5
+        c = i % 5
+        cells.append({
+            "c": c, "r": r,
+            "x": float(c * 60), "y": float(r * 60),
+            "width": 50.0, "height": 50.0, "isRotated": False,
+        })
+    return {
+        "totalItems": 20, "cells": cells,
+        "overallWidth": 290.0, "overallHeight": 230.0,
+        "cols": 5, "rows": 4, "isRotated": False, "strategyUsed": "canned",
+    }
+
+
+def _run_capture(monkeypatch, n_pages, settings, layout_factory=_canned_layout_8):
     """Chạy engine (ép 1-chunk inline), chặn ở process_chunk, trả precalc (args[37])."""
     captured = {}
 
@@ -72,7 +90,7 @@ def _run_capture(monkeypatch, n_pages, settings):
 
     # Ép 1 chunk inline: cpu_count=2 → available_cores=1; layout tất định 8 ô.
     monkeypatch.setattr(os, "cpu_count", lambda: 2)
-    monkeypatch.setattr(nup_engine, "solve_optimal_layout", _canned_layout_8)
+    monkeypatch.setattr(nup_engine, "solve_optimal_layout", layout_factory)
     monkeypatch.setattr(nup_engine, "process_chunk", _capture_chunk)
 
     with tempfile.TemporaryDirectory() as td:
@@ -148,6 +166,123 @@ def test_ratio_stack_khong_dung_round_robin(monkeypatch):
     # Round-robin thuần sẽ là [0,1,0,1,...]; ratio_stack gom liền [0,0,0,0,1,1,1,1].
     switches = sum(1 for a, b in zip(pages_seq, pages_seq[1:]) if a != b)
     assert switches <= 1, f"ô cùng mẫu phải liền nhau (switches={switches}, seq={pages_seq})"
+
+
+def test_ratio_stack_72_mau_tu_dong_sang_4_to_mau(monkeypatch):
+    """72 loại × 110, sức chứa 20 → 20+20+20+12; không mất loại nào."""
+    settings = _base_settings(
+        targetQuantity=110,
+        exportUniqueSheets=True,
+    )
+    precalc = _run_capture(
+        monkeypatch, 72, settings, layout_factory=_canned_layout_20
+    )
+
+    assert sorted(precalc) == [0, 1, 2, 3]
+    assert [len(precalc[i]) for i in range(4)] == [20, 20, 20, 12]
+    pages_by_sheet = [
+        [placement["src_page_idx"] for placement in precalc[i]]
+        for i in range(4)
+    ]
+    assert pages_by_sheet == [
+        list(range(0, 20)),
+        list(range(20, 40)),
+        list(range(40, 60)),
+        list(range(60, 72)),
+    ]
+
+
+def test_ratio_stack_planner_giu_nguyen_ca_vua_mot_to():
+    """Planner nhiều tờ không đổi phân bổ tỷ lệ cũ khi mọi loại đã vừa tờ."""
+    from app.workers.nup_layout_solver import (
+        compute_ratio_stack_alloc,
+        compute_ratio_stack_templates,
+    )
+
+    legacy = compute_ratio_stack_alloc(8, [10, 2, 4])
+    templates = compute_ratio_stack_templates(8, [10, 2, 4])
+
+    assert len(templates) == 1
+    assert templates[0]["cellsPerPage"] == legacy["cellsPerPage"]
+    assert templates[0]["nSheets"] == legacy["nSheets"]
+    assert templates[0]["unplaced"] == legacy["unplaced"]
+
+
+def test_preview_sheet_builder_giu_toa_do_va_contract():
+    """Helper tách khỏi route phải giữ canh phải/trên và contract nhiều tờ."""
+    from app.workers.nup_layout_solver import (
+        build_guillotine_preview_sheet,
+        build_mixed_preview_response,
+    )
+
+    cells = [
+        {"x": 0.0, "y": 0.0, "width": 10.0, "height": 20.0},
+        {"x": 15.0, "y": 5.0, "width": 5.0, "height": 10.0,
+         "isRotated": True},
+    ]
+    sheet = build_guillotine_preview_sheet(
+        cells, [2, 2], usable_w=80.0, usable_h=60.0,
+        margin_right=7.0, margin_top=11.0,
+        sheet_w=100.0, sheet_h=90.0, align="right_top",
+        run_count=3, physical_sheet_index=1,
+    )
+
+    assert [(c["absX"], c["absY"]) for c in sheet["cells"]] == [
+        pytest.approx((73.0, 59.0)), pytest.approx((88.0, 64.0)),
+    ]
+    assert sheet["placedByPage"] == {"2": 2}
+    assert sheet["runCount"] == 3
+    assert sheet["physicalSheetIndex"] == 1
+
+    result = build_mixed_preview_response(
+        sheet, "ratio_stack", 3,
+        output_pages_needed=6, template_sheets=[sheet],
+    )
+    assert result["templateCount"] == 1
+    assert result["outputPagesNeeded"] == 6
+    assert "sheets" not in result
+
+
+def test_ratio_stack_preview_72_mau_co_du_4_to(tmp_path):
+    """Preview phải cho lật đủ bốn tờ và báo tổng 440 lượt in."""
+    from app.api.routes.imposition import PreviewLayoutRequest, preview_layout
+    from tests.license_helpers import PRO_LICENSE
+
+    source = str(tmp_path / "ratio-stack-72.pdf")
+    _make_blank_pdf(source, 72)
+    req = PreviewLayoutRequest(
+        usable_w=1000.0,
+        usable_h=800.0,
+        item_w=200.0,
+        item_h=200.0,
+        gap_x=0.0,
+        gap_y=0.0,
+        strategy="optimal_auto",
+        shape_type="RECTANGLE",
+        sheet_w=1000.0,
+        sheet_h=800.0,
+        path=source,
+        task_mode="nup",
+        layout_type="ratio_stack",
+        is_die_cut=False,
+        page_sheet_mode=True,
+        total_pages=72,
+        target_quantity=110,
+    )
+
+    result = preview_layout(req, PRO_LICENSE)
+    sheets = result["sheets"]
+
+    assert result["templateCount"] == len(sheets) == 4
+    assert result["sheetsNeeded"] == 440
+    assert result["ratioUnplaced"] == []
+    assert [sheet["totalItems"] for sheet in sheets] == [20, 20, 20, 12]
+    assert [sheet["runCount"] for sheet in sheets] == [110, 110, 110, 110]
+    assert {
+        cell["pageIdx"]
+        for sheet in sheets
+        for cell in sheet["cells"]
+    } == set(range(72))
 
 
 def test_sequential_lan_luot_theo_sl(monkeypatch):

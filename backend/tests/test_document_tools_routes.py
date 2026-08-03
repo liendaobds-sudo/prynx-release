@@ -8,6 +8,7 @@ import pytest
 from fastapi import HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pypdf import PdfReader, PdfWriter
+from pypdf.generic import RectangleObject
 
 from app.api.routes import document_tools as routes
 
@@ -59,6 +60,23 @@ def test_unlock_worker_writes_valid_pdf_to_path(tmp_path):
     assert routes._unlock_pdf_to_path(str(source), str(output)) == str(output)
     assert output.read_bytes().startswith(b"%PDF-")
     assert len(PdfReader(str(output)).pages) == 1
+
+
+def test_pdf_meta_returns_guillotine_footprint_for_every_page(tmp_path):
+    source = tmp_path / "mixed-guillotine-meta.pdf"
+    writer = PdfWriter()
+    first = writer.add_blank_page(width=200, height=100)
+    first.trimbox = RectangleObject((10, 10, 190, 90))
+    second = writer.add_blank_page(width=120, height=70)
+    with source.open("wb") as stream:
+        writer.write(stream)
+
+    result = routes._get_pdf_meta({"path": str(source)})
+
+    assert [
+        (page["guillotine_width_pt"], page["guillotine_height_pt"])
+        for page in result["pages"]
+    ] == [(180.0, 80.0), (120.0, 70.0)]
 
 
 @pytest.mark.asyncio

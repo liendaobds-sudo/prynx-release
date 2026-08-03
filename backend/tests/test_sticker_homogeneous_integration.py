@@ -291,15 +291,19 @@ def test_homogeneous_active_with_quantities_not_autofill(monkeypatch):
     captured = {}
 
     def _capture_chunk(args):
-        captured.setdefault("precalc", {}).update(args[37])
+        precalc = captured.setdefault("precalc", {})
+        precalc.update(args[37])
         captured["homogeneous_mode"] = args[-3]
         captured["master_idx"] = args[-2]
         captured["page_sheet_mode"] = args[-1]
+        # BUILD (audit 2026-08-03 §REL.04): dừng sau khi capture đủ mọi chunk inline.
+        if len(precalc) >= args[44]:
+            raise _StopEngine()
         return b""
 
     monkeypatch.setattr(nup_engine, "process_chunk", _capture_chunk)
     monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", _CaptureAllPool)
-    # 1 core → 1 chunk (tránh ProcessPool pickle local _capture_chunk).
+    # 1 worker → chạy inline nhiều chunk, tránh ProcessPool pickle local _capture_chunk.
     monkeypatch.setattr(os, "cpu_count", lambda: 2)
 
     with tempfile.TemporaryDirectory() as td:
@@ -369,7 +373,11 @@ def test_homogeneous_mixed_uses_global_target_quantity(monkeypatch):
     captured = {}
 
     def _capture_chunk(args):
-        captured.setdefault("precalc", {}).update(args[37])
+        precalc = captured.setdefault("precalc", {})
+        precalc.update(args[37])
+        # BUILD (audit 2026-08-03 §REL.04): dừng sau khi capture đủ mọi chunk inline.
+        if len(precalc) >= args[44]:
+            raise _StopEngine()
         return b""
 
     monkeypatch.setattr(nup_engine, "process_chunk", _capture_chunk)

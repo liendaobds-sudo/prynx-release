@@ -267,6 +267,7 @@ def _get_pdf_meta(body: dict):
     """
     from app.workers import pdf_wrapper as pdf_lib
     from app.core.imposition_page_box import effective_imposition_box
+    from app.workers.mixed_guillotine_adapter import resolve_guillotine_trim
 
     pdf_path = _validate_file_path(body.get("path"))
 
@@ -284,6 +285,10 @@ def _get_pdf_meta(body: dict):
         detected_bleed_mm = 0.0  # bleed suy ra từ (MediaBox - TrimBox)/2 của trang đầu
         for i in range(scan_limit):
             page = pdf[i]
+            # UIUX (audit 2026-08-03 §MG-AUTO): trả đúng footprint mà preview/export
+            # Bình cắt xén dùng để frontend phân loại cùng khổ/khác khổ trước khi gọi solver.
+            # Bleed không ảnh hưởng phép so sánh vì mọi trang đều trừ cùng một giá trị.
+            guillotine_w, guillotine_h = resolve_guillotine_trim(page, 0.0)
             # MediaBox giữ bleed khi chênh lệch nhỏ; CropBox là trang logic khi
             # MediaBox thực chất là canvas lớn chứa nhiều trang đặt cạnh nhau.
             src_box = effective_imposition_box(page)
@@ -335,6 +340,8 @@ def _get_pdf_meta(body: dict):
                 "height_pt": round(visual_h, 2),
                 "media_width_pt": round(media_visual_w, 2),
                 "media_height_pt": round(media_visual_h, 2),
+                "guillotine_width_pt": round(guillotine_w, 2),
+                "guillotine_height_pt": round(guillotine_h, 2),
                 "rotation": rot,
             })
 

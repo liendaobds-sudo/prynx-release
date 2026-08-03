@@ -56,6 +56,7 @@ from app.workers.nup_sticker import compute_sticker_layout_for_page
 from app.workers.imposition_finalize import finalize_placements
 
 from app.workers.nup_process_chunk import process_chunk
+from app.workers.nup_output_finalize import NupOutputContext, finalize_nup_output
 
 def _build_repeat_sheet_metadata(sheet_mapping):
     """Return ``sheet -> (source page, ordinal for that page)`` in O(S)."""
@@ -352,12 +353,7 @@ def _run_nup_engine_impl(
     _perf_stages=None,
 
 ) -> str:
-
-    from concurrent.futures import ProcessPoolExecutor
-
     import math
-
-    import pypdfium2 as pdfium
 
     page_sheet_mode = settings.get("page_sheet_mode", False) is True
     _mixed_mode_requested = settings.get("layoutType") == "mixed_guillotine"
@@ -685,6 +681,9 @@ def _run_nup_engine_impl(
     # Report state (spec: binh-tem-be-report) — luôn tồn tại để khối finalize đọc được.
     _reports_by_sheet = {}
     _report_rows = []
+    _ratio_stack_template_count = 1
+    _ratio_stack_export_unique = True
+    _ratio_stack_duplex = False
     _ratio_stack_warnings = []  # cảnh báo ratio_stack (unplaced…) → message hoàn tất
 
     target_quantity = settings.get('targetQuantity', 0)
@@ -3125,7 +3124,7 @@ def _run_nup_engine_impl(
         #    LỆ số lượng; MỌI tờ giống HỆT nhau (cùng vị trí ô = cùng mẫu xuyên cả
         #    chồng) → dao xén guillotine chém cả chồng ra mỗi xấp MỘT loại sạch.
         #    Khác round-robin của 'sequential' (mỗi tờ khác nhau → xén ra lẫn lộn).
-        from app.workers.nup_layout_solver import compute_ratio_stack_alloc
+        from app.workers.nup_layout_solver import compute_ratio_stack_templates
         _align_rs = settings.get('align', 'center')
         _cells_rs = layout['cells']
 
@@ -3138,6 +3137,7 @@ def _run_nup_engine_impl(
             and page_count >= 2
             and page_count % 2 == 0  # chẵn — đã chặn ở đầu; phòng thủ kép
         )
+        _ratio_stack_duplex = _duplex_rs
         _n_units_rs = (page_count // 2) if _duplex_rs else page_count
 
         # SL mỗi ĐƠN VỊ (2 mặt: key trang chẵn 2u; 1 mặt: key trang u).
@@ -3151,107 +3151,157 @@ def _run_nup_engine_impl(
                 _q = 0
             _qtys.append(max(0, _q))
 
-        _alloc = compute_ratio_stack_alloc(capacity, _qtys)
-        _cpp = _alloc['cellsPerPage']
-        n_sheets = max(1, int(_alloc['nSheets']))
-        if _alloc.get('unplaced'):
-            logger.warning("[RATIO_STACK] Mẫu không đủ chỗ trên tờ (nên tách bài in): idx=%s", _alloc['unplaced'])
+        _template_allocs_rs = compute_ratio_stack_templates(capacity, _qtys)
+        _ratio_stack_template_count = len(_template_allocs_rs)
+        # Giữ contract cũ của ratio_stack: PDF chỉ chứa các tờ mẫu duy nhất;
+        # runCount nằm trong lệnh in, không nhân hàng trăm trang giống hệt nhau.
+        _ratio_stack_export_unique = True
 
-        # Gán ô → đơn vị: đơn vị 0 chiếm _cpp[0] ô ĐẦU, đơn vị 1 kế tiếp... (ô cùng đơn
-        # vị liền nhau → dễ xén). Vị trí ô CỐ ĐỊNH giữa mọi tờ (cả mặt trước↔sau).
-        _slot_to_unit = []
-        for _ui, _cnt in enumerate(_cpp):
-            _slot_to_unit.extend([_ui] * int(_cnt))
-        _n_used = min(len(_slot_to_unit), len(_cells_rs))
+        # Dựng một tờ mẫu: các ô cùng đơn vị nằm liền nhau và giữ nguyên vị trí
+        # xuyên suốt chồng giấy. Mỗi template tự canh theo số ô thật của nó.
+        def _build_template_rs(_cells_per_unit, _page_of_unit):
+            _slot_to_unit_rs = []
+            for _ui_rs, _cnt_rs in enumerate(_cells_per_unit):
+                _slot_to_unit_rs.extend([_ui_rs] * int(_cnt_rs))
+            _n_used_rs = min(len(_slot_to_unit_rs), len(_cells_rs))
+            _sc_rs = _cells_rs[:_n_used_rs]
+            _bw_rs = max((c['x'] + c['width'] for c in _sc_rs), default=0.0)
+            _bh_rs = max((c['y'] + c['height'] for c in _sc_rs), default=0.0)
+            if 'left' in _align_rs:
+                _bx_rs = margin_left
+            elif 'right' in _align_rs:
+                _bx_rs = sheet_w - margin_right - _bw_rs
+            else:
+                _bx_rs = margin_left + (sheet_usable_w - _bw_rs) / 2
+            if 'top' in _align_rs:
+                _byb_rs = sheet_h - margin_top - _bh_rs
+            elif 'bottom' in _align_rs:
+                _byb_rs = margin_bottom
+            else:
+                _byb_rs = margin_bottom + (sheet_usable_h - _bh_rs) / 2
 
-        _sc = _cells_rs[:_n_used]
-        _bw = max((c['x'] + c['width'] for c in _sc), default=0.0)
-        _bh = max((c['y'] + c['height'] for c in _sc), default=0.0)
-        if 'left' in _align_rs:
-            _bx = margin_left
-        elif 'right' in _align_rs:
-            _bx = sheet_w - margin_right - _bw
-        else:
-            _bx = margin_left + (sheet_usable_w - _bw) / 2
-        if 'top' in _align_rs:
-            _byb = sheet_h - margin_top - _bh
-        elif 'bottom' in _align_rs:
-            _byb = margin_bottom
-        else:
-            _byb = margin_bottom + (sheet_usable_h - _bh) / 2
-
-        # Dựng template 1 tờ: ô j → trang nguồn theo hàm _page_of_unit (đơn vị của slot j).
-        # MỌI tờ cùng mặt dùng CHUNG template (giống hệt nhau → xén chồng ra 1 loại).
-        def _build_template_rs(_page_of_unit):
             _tpl = []
-            for _j in range(_n_used):
-                _c = _sc[_j]
-                _ax = _bx + _c['x']
-                _ayb = _byb + (_bh - _c['y'] - _c['height'])
+            for _j_rs in range(_n_used_rs):
+                _c_rs = _sc_rs[_j_rs]
+                _ax_rs = _bx_rs + _c_rs['x']
+                _ayb_rs = _byb_rs + (
+                    _bh_rs - _c_rs['y'] - _c_rs['height']
+                )
                 _tpl.append({
                     'cluster_idx': 0,
-                    'cell': dict(_c),
-                    'src_page_idx': _page_of_unit(_slot_to_unit[_j]),
-                    'abs_x': _ax,
-                    'abs_y': _ayb,
-                    'width': _c['width'],
-                    'height': _c['height'],
-                    'original_cell_y': sheet_h - _ayb - _c['height'],
+                    'cell': dict(_c_rs),
+                    'src_page_idx': _page_of_unit(_slot_to_unit_rs[_j_rs]),
+                    'abs_x': _ax_rs,
+                    'abs_y': _ayb_rs,
+                    'width': _c_rs['width'],
+                    'height': _c_rs['height'],
+                    'original_cell_y': sheet_h - _ayb_rs - _c_rs['height'],
                 })
             return _tpl
 
-        # XUẤT tờ mẫu — mọi tờ cùng mặt GIỐNG HỆT nhau nên nhân bản n_sheets tờ là lãng
-        # phí thuần. Máy in chạy n_sheets lượt từ 1 tờ mẫu (1 mặt) / 1 cặp tờ mẫu (2 mặt)
-        # → chỉ cần 1 tờ (hoặc 2 tờ front/back) + report "in n_sheets tờ".
-        if _duplex_rs:
-            # Tờ 0 = mặt trước (trang chẵn 2u), tờ 1 = mặt sau (trang lẻ 2u+1).
-            def _back_page_rs(_u):
-                _bp = _u * 2 + 1
-                # Trang lẻ thiếu (bất khả vì page_count chẵn) → tái dùng mặt trước.
-                return _bp if _bp < page_count else _u * 2
-            precalculated_placements = {
-                0: _build_template_rs(lambda _u: _u * 2),
-                1: _build_template_rs(_back_page_rs),
-            }
-            total_sheets = 2
-        else:
-            precalculated_placements = {0: _build_template_rs(lambda _u: _u)}
-            total_sheets = 1
+        # Chỉ xuất mỗi tờ mẫu một lần; duplex đan front/back của từng mẫu liền nhau.
+        precalculated_placements = {}
+        _front_output_indices_rs = []
+        _template_render_data_rs = []
+        from copy import deepcopy as _deepcopy_rs
+        for _template_idx_rs, _alloc_rs in enumerate(_template_allocs_rs):
+            _cpp_rs = _alloc_rs['cellsPerPage']
+            _run_count_rs = max(1, int(_alloc_rs.get('nSheets') or 1))
+            _front_tpl_rs = _build_template_rs(
+                _cpp_rs, (lambda _u_rs: _u_rs * 2) if _duplex_rs else (lambda _u_rs: _u_rs)
+            )
+            _back_tpl_rs = None
+            if _duplex_rs:
+                _back_tpl_rs = _build_template_rs(
+                    _cpp_rs,
+                    lambda _u_rs: (
+                        _u_rs * 2 + 1
+                        if _u_rs * 2 + 1 < page_count
+                        else _u_rs * 2
+                    ),
+                )
 
-        # Luôn ghi 1 dòng lệnh in (sheet_count=n_sheets) → message hoàn tất hiện
-        # "in N tờ" dù reportDisplay tắt. Stamp lên PDF chỉ khi report bật.
-        # KHÔNG thêm mỗi mẫu 1 dòng (bảng tổng hợp cộng sheet_count → nhân sai).
-        _n_types_rs = sum(1 for q in _qtys if q > 0)
+            _front_indices_rs = []
+            for _ in range(1):
+                _front_idx_rs = len(precalculated_placements)
+                precalculated_placements[_front_idx_rs] = _deepcopy_rs(_front_tpl_rs)
+                _front_indices_rs.append(_front_idx_rs)
+                if _back_tpl_rs is not None:
+                    precalculated_placements[len(precalculated_placements)] = _deepcopy_rs(
+                        _back_tpl_rs
+                    )
+            _front_output_indices_rs.append(_front_indices_rs)
+            _template_render_data_rs.append({
+                'alloc': _alloc_rs,
+                'front': _front_tpl_rs,
+                'run_count': _run_count_rs,
+            })
+
+        total_sheets = len(precalculated_placements)
+        _ratio_stack_physical_sheets = sum(
+            int(data_rs['run_count']) for data_rs in _template_render_data_rs
+        )
+        logger.info(
+            "[RATIO_STACK] %s loại → %s tờ mẫu, cần in %s tờ vật lý",
+            _n_units_rs, _ratio_stack_template_count, _ratio_stack_physical_sheets,
+        )
+
+        # Một dòng lệnh in cho mỗi tờ mẫu để tổng số tờ vật lý không bị nhập nhằng.
+        _n_types_rs = sum(1 for q in _qtys if q > 0) or _n_units_rs
         _sides_lbl_rs = " · 2 mặt" if _duplex_rs else ""
-        _label_rs = (settings.get('reportDisplay') or {}).get('labelNameText') or f"Bình tỷ lệ ({_n_types_rs} mẫu{_sides_lbl_rs})"
-        _req_qty_rs = sum(max(0, q) for q in _qtys)
-        _report_rows.append({
-            'label': _label_rs,
-            'items_per_sheet': _n_used,
-            'requested_qty': _req_qty_rs,
-            'sheet_count': n_sheets,
+        _base_label_rs = ((settings.get('reportDisplay') or {}).get('labelNameText')
+                          or f"Bình tỷ lệ ({_n_types_rs} mẫu{_sides_lbl_rs})")
+        _unplaced_rs = sorted({
+            int(page_idx_rs)
+            for alloc_rs in _template_allocs_rs
+            for page_idx_rs in alloc_rs.get('unplaced', [])
         })
-        if _alloc.get('unplaced'):
-            _up_pages = ", ".join(str(i + 1) for i in _alloc['unplaced'])
+        if _unplaced_rs:
+            _up_pages = ", ".join(str(i + 1) for i in _unplaced_rs)
             _ratio_stack_warnings.append(
                 f"⚠ Không đủ chỗ trên tờ cho trang {_up_pages} — nên tách sang bài in khác."
             )
 
         _rcfg_rs = settings.get('reportDisplay') or {}
-        if _rcfg_rs.get('enabled'):
-            try:
+        try:
+            _nr_rs = None
+            if _rcfg_rs.get('enabled'):
                 from app.workers import nup_report as _nr_rs
-                _paper_rs = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
-                _PT_MM_rs = 1.0 / MM_TO_PTS
+            _paper_rs = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
+            _PT_MM_rs = 1.0 / MM_TO_PTS
+            for _template_idx_rs, _data_tpl_rs in enumerate(_template_render_data_rs):
+                _alloc_tpl_rs = _data_tpl_rs['alloc']
+                _page_indices_rs = list(_alloc_tpl_rs.get('pageIndices', []))
+                _n_types_tpl_rs = len(_page_indices_rs)
+                _req_qty_tpl_rs = sum(_qtys[i] for i in _page_indices_rs)
+                _run_count_tpl_rs = int(_data_tpl_rs['run_count'])
+                _items_tpl_rs = len(_data_tpl_rs['front'])
+                _label_tpl_rs = _base_label_rs
+                if _ratio_stack_template_count > 1:
+                    _label_tpl_rs = (
+                        f"{_base_label_rs} · Tờ mẫu {_template_idx_rs + 1}/"
+                        f"{_ratio_stack_template_count} ({_n_types_tpl_rs} mẫu)"
+                    )
+                _report_rows.append({
+                    'label': _label_tpl_rs,
+                    'items_per_sheet': _items_tpl_rs,
+                    'requested_qty': _req_qty_tpl_rs,
+                    'sheet_count': _run_count_tpl_rs,
+                })
+
+                if _nr_rs is None:
+                    continue
                 _ps_report_rs = (
-                    _page_sheet_report_fields()
+                    _page_sheet_report_fields(
+                        f"Tờ mẫu {_template_idx_rs + 1}/{_ratio_stack_template_count}"
+                    )
                     if page_sheet_mode else {}
                 )
                 _data_rs = _nr_rs.compute_report_data(
-                    label_name=_label_rs,
+                    label_name=_label_tpl_rs,
                     width_mm=trim_w * _PT_MM_rs, height_mm=trim_h * _PT_MM_rs,
                     paper_size=_paper_rs,
-                    items_per_sheet=_n_used, requested_qty=_req_qty_rs,
+                    items_per_sheet=_items_tpl_rs, requested_qty=_req_qty_tpl_rs,
                     material=settings.get('reportMaterial', '') or '',
                     lamination_type=settings.get('reportLamination', 0) or 0,
                     lamination_sides=settings.get('reportLaminationSides', 1) or 1,
@@ -3264,14 +3314,19 @@ def _run_nup_engine_impl(
                     identifier=(
                         _ps_report_rs.get("identifier", "")
                         if page_sheet_mode
-                        else f"{_n_types_rs} mẫu{_sides_lbl_rs}"
+                        else (
+                            f"Tờ mẫu {_template_idx_rs + 1}/{_ratio_stack_template_count}"
+                            f" · {_n_types_tpl_rs} mẫu{_sides_lbl_rs}"
+                        )
                     ),
                     gang_count=_ps_report_rs.get("gang_count", 0),
-                    sheet_count_override=n_sheets,
+                    sheet_count_override=_run_count_tpl_rs,
                 )
-                _reports_by_sheet[0] = _nr_rs.build_report_string(_rcfg_rs, _data_rs)
-            except Exception as _e_rs:
-                logger.warning(f"[RATIO_STACK] dựng report lỗi: {_e_rs}")
+                _report_text_rs = _nr_rs.build_report_string(_rcfg_rs, _data_rs)
+                for _front_idx_rs in _front_output_indices_rs[_template_idx_rs]:
+                    _reports_by_sheet[_front_idx_rs] = _report_text_rs
+        except Exception as _e_rs:
+            logger.warning(f"[RATIO_STACK] dựng report lỗi: {_e_rs}")
 
     else:
 
@@ -3632,402 +3687,26 @@ def _run_nup_engine_impl(
 
         chunk_idx += 1
 
-    if _perf_stages is not None:
-        _perf_stages.mark("plan_s")
-    chunk_paths = []
-
-    if len(args_list) > 0:
-
-        if len(args_list) == 1 or planned_worker_count <= 1:
-
-            # Job nhỏ chạy nội tuyến để tránh chi phí khởi tạo ProcessPool.
-
-            for args in args_list:
-
-                chunk_paths.append(process_chunk(args))
-
-        else:
-
-            # Parallel processing across multiple CPU cores
-
-            num_workers = min(len(args_list), planned_worker_count)
-
-            with ProcessPoolExecutor(max_workers=num_workers) as pool:
-
-                chunk_paths = list(pool.map(process_chunk, args_list))
-
-    if _perf_stages is not None:
-        _perf_stages.mark("render_chunks_s")
-    # Mốc tiến trình finalize (để chẩn đoán nếu kẹt ở bước nào)
-    def _stage(msg):
-        if prog_file:
-            try:
-                with open(prog_file, 'w', encoding='utf-8') as f:
-                    f.write(msg)
-            except OSError:
-                pass
-
-    _stage("Đang gộp các tờ in...")
-    def _remove_consumed_chunk(path):
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-
-
-
-    # --- FAST ASSEMBLY ---
-
-    if len(chunk_paths) == 1:
-        # Optimization: no merge needed, preserves all layers perfectly
-        import shutil
-        shutil.copyfile(chunk_paths[0], output_path)
-        _remove_consumed_chunk(chunk_paths[0])
-        chunk_paths.clear()
-    elif is_die_cut or page_sheet_mode:
-        # PDFium import_pages strips Document Catalog /OCProperties (layers).
-        # We must use pikepdf to merge chunks to preserve layers.
-        # This is slightly slower but die-cut jobs rarely exceed 100 pages.
-        import pikepdf
-        final_doc = pikepdf.Pdf.open(chunk_paths[0])
-        for chunk_path in chunk_paths[1:]:
-            src_pdf = pikepdf.Pdf.open(chunk_path)
-            
-            # Merge OCGs and /Order structure from source chunk into final document
-            src_oc_props = src_pdf.Root.get("/OCProperties")
-            if src_oc_props:
-                final_oc_props = final_doc.Root.get("/OCProperties")
-                if final_oc_props:
-                    # Import all OCGs from source into /OCGs and /ON
-                    ocg_remap = {}  # src objgen -> final ocg ref (for remapping /Order)
-                    chunk_ocg_map = {} # name -> final ocg ref (for remapping Properties of pages in this chunk)
-                    for src_ocg in src_oc_props.get("/OCGs", []):
-                        try:
-                            new_ocg = final_doc.copy_foreign(src_ocg)
-                            final_oc_props["/OCGs"].append(new_ocg)
-                            d = final_oc_props.get("/D", {})
-                            if "/ON" in d:
-                                d["/ON"].append(new_ocg)
-                            if hasattr(src_ocg, 'objgen'):
-                                ocg_remap[src_ocg.objgen] = new_ocg
-                            name = str(src_ocg.get("/Name", ""))
-                            if name:
-                                chunk_ocg_map[name] = new_ocg
-                        except Exception:
-                            pass
-                    
-                    # Copy /Order items (preserving nested groups)
-                    src_d = src_oc_props.get("/D", {})
-                    src_order = src_d.get("/Order", [])
-                    final_d = final_oc_props.get("/D", {})
-                    if "/Order" in final_d and src_order:
-                        def _copy_order_item(item):
-                            if isinstance(item, pikepdf.Array):
-                                return pikepdf.Array([_copy_order_item(sub) for sub in item])
-                            elif hasattr(item, 'objgen') and item.objgen in ocg_remap:
-                                return ocg_remap[item.objgen]
-                            else:
-                                return final_doc.copy_foreign(item)
-                        
-                        for item in src_order:
-                            try:
-                                final_d["/Order"].append(_copy_order_item(item))
-                            except Exception:
-                                pass
-            
-            start_idx = len(final_doc.pages)
-            final_doc.pages.extend(src_pdf.pages)
-            
-            # Remap orphaned OCGs for the newly appended pages using chunk_ocg_map
-            if src_oc_props:
-                for page in final_doc.pages[start_idx:]:
-                    try:
-                        if "/Resources" in page and "/Properties" in page.Resources:
-                            props = page.Resources["/Properties"]
-                            for key in list(props.keys()):
-                                val = props[key]
-                                if isinstance(val, pikepdf.Dictionary) and val.get("/Type") == "/OCG":
-                                    name = str(val.get("/Name", ""))
-                                    if name in chunk_ocg_map:
-                                        props[key] = chunk_ocg_map[name]
-                    except Exception:
-                        pass
-                        
-            src_pdf.close()
-            _remove_consumed_chunk(chunk_path)
-            
-        final_doc.save(output_path)
-        final_doc.close()
-        _remove_consumed_chunk(chunk_paths[0])
-        chunk_paths.clear()
-    else:
-        # Merge chunks using C++ PDFium (avoids O(N^2) resource deduplication freeze for huge jobs)
-        final_doc = pdfium.PdfDocument.new()
-        for chunk_path in chunk_paths:
-            src_pdf = pdfium.PdfDocument(chunk_path)
-            final_doc.import_pages(src_pdf)
-            src_pdf.close()
-            _remove_consumed_chunk(chunk_path)
-        final_doc.save(output_path)
-        final_doc.close()
-        chunk_paths.clear()
-
-    for chunk_path in chunk_paths:
-        try:
-            os.remove(chunk_path)
-        except OSError:
-            pass
-
-    if _perf_stages is not None:
-        _perf_stages.mark("merge_save_s")
-    _shared_master_cut = (
-        homogeneous_master_idx is not None
-        or (layout_type == 'repeat' and single_mold_master_idx is not None)
+    # BUILD (audit 2026-08-03 §REL.03): engine chỉ chuyển kế hoạch đã chốt sang
+    # module kết xuất; các trường ratio-stack được truyền rõ, không dò qua locals().
+    return finalize_nup_output(
+        NupOutputContext(
+            args_list=args_list, planned_worker_count=planned_worker_count,
+            output_path=output_path, prog_file=prog_file, perf_stages=_perf_stages,
+            is_die_cut=is_die_cut, page_sheet_mode=page_sheet_mode,
+            homogeneous_master_idx=homogeneous_master_idx,
+            single_mold_master_idx=single_mold_master_idx, layout_type=layout_type,
+            settings=settings, reports_by_sheet=_reports_by_sheet,
+            report_rows=_report_rows, total_sheets=total_sheets,
+            page_count=page_count, capacity=capacity,
+            precalculated_placements=precalculated_placements,
+            page_sheet_report_fields=_page_sheet_report_fields,
+            progress_callback=progress_callback,
+            ratio_stack_template_count=_ratio_stack_template_count,
+            ratio_stack_export_unique=_ratio_stack_export_unique,
+            ratio_stack_duplex=_ratio_stack_duplex,
+            ratio_stack_warnings=_ratio_stack_warnings,
+            layout=layout, strategy=strategy, total_capacity=total_capacity,
+        ),
+        chunk_processor=process_chunk,
     )
-
-    # ══════════════════════════════════════════════════════════════
-    # SHARED MASTER: dồn 1 trang khuôn duy nhất xuống CUỐI file
-    # ══════════════════════════════════════════════════════════════
-    # Chế độ dùng chung 1 khuôn + tách trang khuôn riêng: process_chunk chỉ sinh trang
-    # khuôn cho TỜ 0 (đầy đủ mọi ô) và gắn marker /PSHomogCut. Ở đây tìm trang có marker,
-    # chuyển xuống CUỐI file rồi xoá marker. Kết quả: ...artwork1, artwork2, ..., khuôn.
-    # Xử lý trên output_path (mọi nhánh assembly, kể cả 1-chunk ghi thẳng bytes).
-    if is_die_cut and _shared_master_cut and settings.get('separateCutPage', False):
-        try:
-            import pikepdf
-            with pikepdf.Pdf.open(output_path, allow_overwriting_input=True) as _pdf:
-                _cut_idx = None
-                for _i, _pg in enumerate(_pdf.pages):
-                    if _pg.obj.get('/PSHomogCut'):
-                        _cut_idx = _i
-                        break
-                if _cut_idx is not None:
-                    _cut_pg = _pdf.pages[_cut_idx]
-                    try:
-                        del _cut_pg.obj['/PSHomogCut']  # dọn marker (không để lẫn vào file cuối)
-                    except Exception:
-                        pass
-                    if _cut_idx != len(_pdf.pages) - 1:  # chưa ở cuối → dời xuống cuối
-                        _pdf.pages.remove(_cut_pg)
-                        _pdf.pages.append(_cut_pg)
-                        _pdf.save(output_path)
-        except Exception as _e_move:
-            logger.warning(f"[SHARED-MASTER] dời trang khuôn xuống cuối thất bại ({_e_move}); giữ nguyên vị trí.")
-
-    # ══════════════════════════════════════════════════════════════
-    # SECURITY: Stealth watermark — hashed license trace in XMP + invisible text
-    # ══════════════════════════════════════════════════════════════
-    _wm_license = settings.get('_license_key', '') or settings.get('watermarkKey', '')
-    _wm_hwid = settings.get('_hwid', '')
-    if _wm_license:
-        _stage("Đang đóng dấu bản quyền...")
-        try:
-            import pikepdf
-            import os as _os, tempfile as _tempfile
-            from app.core.watermark import embed_watermark
-            with pikepdf.Pdf.open(output_path, allow_overwriting_input=True) as pdf:
-                embed_watermark(pdf, _wm_license, _wm_hwid)
-                # Ghi atomic: temp cùng thư mục rồi os.replace (tránh hỏng output nếu chết giữa chừng).
-                _fd, _tmp = _tempfile.mkstemp(suffix=".pdf", dir=_os.path.dirname(output_path) or ".")
-                _os.close(_fd)
-                pdf.save(_tmp)
-            _os.replace(_tmp, output_path)
-        except Exception as e:
-            logger.error(f"Failed to write watermark: {e}")
-
-    if prog_file:
-
-        try:
-
-            with open(prog_file, 'w') as f:
-
-                f.write(f"{page_count}/{page_count}")
-
-        except OSError: pass
-
-    # ── Report fallback (cắt xén HOẶC die-cut nếu nhánh chính quên dựng) ──
-    # Cắt xén: 1 trang/tờ (không có trang khuôn) → key report = chỉ số trang output.
-    # Die-cut: các nhánh homogeneous/repeat/auto-fill/multi-sheet đã dựng sẵn; chỉ
-    # fallback khi _reports_by_sheet còn rỗng nhưng user bật reportDisplay.
-    if not _reports_by_sheet:
-        try:
-            _gcfg = settings.get('reportDisplay') or {}
-            if _gcfg.get('enabled') and total_sheets:
-                from app.workers import nup_report as _nrg
-                _g_paper = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
-                _g_label = _gcfg.get('labelNameText') or ""
-                _g_cap = int(capacity or 0)
-                _ps_report_fallback = (
-                    _page_sheet_report_fields()
-                    if page_sheet_mode else {}
-                )
-                _g_mode = (
-                    'Bình nguyên tấm decal'
-                    if page_sheet_mode
-                    else ('Bế tem' if is_die_cut else 'Cắt xén')
-                )
-                # Die-cut: total_sheets = số tờ logic; capacity có thể = 1 (zone path).
-                # Ưu tiên đếm từ precalculated_placements nếu có.
-                _g_n = int(total_sheets)
-                if is_die_cut and precalculated_placements:
-                    _g_n = max(precalculated_placements.keys()) + 1 if precalculated_placements else _g_n
-                    _g_cap = max((len(v) for v in precalculated_placements.values()), default=_g_cap)
-                # Cắt xén 2 mặt: tờ CHẴN = mặt trước, tờ LẺ = mặt sau (sequential dựng
-                # precalc 2s/2s+1). Report CHỈ đóng mặt TRƯỚC → chỉ set key chẵn, và số
-                # tờ VẬT LÝ = total_sheets/2 (2 mặt = 1 tờ giấy). Không lọc → report
-                # rơi cả mặt sau (bug: user thấy report lặp ở mặt sau).
-                _g_duplex = (
-                    not is_die_cut
-                    and settings.get('duplexFlow', 'single') == 'double'
-                    and _g_n >= 2
-                    and _g_n % 2 == 0
-                )
-                _g_phys = (_g_n // 2) if _g_duplex else _g_n
-                for _gs in range(max(1, _g_phys)):
-                    _sheet_identifier = f"Tờ {_gs + 1}/{max(1, _g_phys)}"
-                    if page_sheet_mode:
-                        _sheet_identifier = " · ".join(filter(None, (
-                            _ps_report_fallback.get("identifier", ""),
-                            _sheet_identifier,
-                        )))
-                    _gd = _nrg.compute_report_data(
-                        label_name=_g_label,
-                        width_mm=_ps_report_fallback.get("width_mm", 0),
-                        height_mm=_ps_report_fallback.get("height_mm", 0),
-                        paper_size=_g_paper,
-                        items_per_sheet=_g_cap,
-                        requested_qty=_ps_report_fallback.get("requested_qty", 0),
-                        material=settings.get('reportMaterial', '') or '',
-                        lamination_type=settings.get('reportLamination', 0) or 0,
-                        lamination_sides=settings.get('reportLaminationSides', 1) or 1,
-                        mode_label=_g_mode,
-                        order_code=settings.get('reportOrderCode', '') or '',
-                        identifier=_sheet_identifier,
-                        gang_count=_ps_report_fallback.get("gang_count", 0),
-                        sheet_count_override=max(1, _g_phys),
-                    )
-                    # Duplex: key = tờ mặt trước (chẵn) = _gs*2; 1 mặt: key = _gs.
-                    _reports_by_sheet[(_gs * 2) if _g_duplex else _gs] = _nrg.build_report_string(_gcfg, _gd)
-                if page_sheet_mode:
-                    _report_rows.append({
-                        'label': _g_label or 'Bình nguyên tấm decal',
-                        'items_per_sheet': _g_cap,
-                        'requested_qty': _ps_report_fallback.get("requested_qty", 0),
-                        'sheet_count': max(1, _g_phys),
-                    })
-        except Exception as _ge:
-            logger.warning(f"[REPORT] fallback dựng report lỗi: {_ge}")
-
-    # ── Stamp report lên từng tờ + bảng tổng hợp (spec: binh-tem-be-report) ──
-    if _reports_by_sheet:
-        _stage("Đang ghi report lên tờ...")
-        try:
-            from app.workers import nup_report as _nr
-            _rd = settings.get('reportDisplay') or {}
-            # Report CHỈ vẽ trên trang IN.
-            #  - Non-homogeneous + tách khuôn: xen kẽ [in, khuôn, in, khuôn…] → in ở s*2.
-            #  - Shared-master + tách khuôn: chỉ 1 trang khuôn ở CUỐI → artwork liền 0..N-1,
-            #    không xen kẽ → stamp đúng index tờ logic (s), KHÔNG *2 (bug cũ: report
-            #    rơi vào trang khuôn / trượt mất tờ sau).
-            #  - Không tách khuôn: 1 trang/tờ → key = s.
-            _sep_cut = (
-                bool(settings.get('separateCutPage'))
-                and (is_die_cut or page_sheet_mode)
-            )
-            _shared_cut = _sep_cut and _shared_master_cut
-            if _sep_cut and not _shared_cut:
-                _reports_to_stamp = {s_idx * 2: txt for s_idx, txt in _reports_by_sheet.items()}
-            else:
-                _reports_to_stamp = _reports_by_sheet
-            _nr.stamp_reports_on_pdf(
-                output_path, output_path, _reports_to_stamp,
-                position=_rd.get('position', 'top'),
-                offset_x_mm=float(_rd.get('offsetX', 5.0)),
-                offset_y_mm=float(_rd.get('offsetY', 5.0)),
-                font_size=float(_rd.get('fontSize', 8.0)),
-                centered=bool(_rd.get('centered', True)),
-            )
-        except Exception as e:
-            logger.warning(f"[REPORT] stamp lỗi: {e}")
-
-    if progress_callback:
-
-        progress_callback(page_count, page_count, "Hoàn tất")
-
-    out_sheets = len(args_list) if args_list else 0
-
-    report_lines = [f"✅ Hoàn tất! Xuất thành công file kẽm."]
-
-    # Bảng tổng hợp lệnh in (spec: binh-tem-be-report, Yêu cầu 5)
-    if _report_rows:
-        _total_sheets = sum(r['sheet_count'] for r in _report_rows)
-        report_lines.append("")
-        report_lines.append("📋 LỆNH IN (tổng hợp):")
-        _product_unit = "tấm decal" if page_sheet_mode else "tem"
-        for r in _report_rows:
-            report_lines.append(
-                f"  • {r['label']}: {r['requested_qty']} {_product_unit} — SL/tờ {r['items_per_sheet']} → in {r['sheet_count']} tờ"
-            )
-        report_lines.append(f"  ⇒ Tổng số tờ cần in: {_total_sheets}")
-        if layout_type == 'ratio_stack' and _total_sheets > 1:
-            if locals().get('_duplex_rs'):
-                report_lines.append(
-                    f"  (File chỉ 1 CẶP tờ mẫu (mặt trước + sau) — máy in chạy {_total_sheets} lượt duplex giống hệt.)"
-                )
-            else:
-                report_lines.append(
-                    f"  (File chỉ 1 tờ mẫu — máy in chạy {_total_sheets} bản giống hệt.)"
-                )
-    for _w in _ratio_stack_warnings:
-        report_lines.append(_w)
-
-
-    if is_die_cut and 'strategyUsed' in layout:
-
-        strategy_used = layout['strategyUsed']
-
-        s_map = {
-
-            'dumbbell_illustrator': 'Khuôn tạ (Đầu đuôi xen kẽ)',
-
-            'hammer_illustrator': 'Khuôn búa (Chữ T xen kẽ)',
-
-            'grid': 'Lưới đơn giản',
-
-            'staggered': 'So le (Tổ ong)',
-
-            'head_to_tail': 'Đầu đuôi (Ghép ngàm)',
-
-            'l_shape': 'Ghép L-Shape',
-
-            'row_alt': 'Xoay xen kẽ dòng',
-
-            'col_alt': 'Xoay xen kẽ cột',
-
-            'pentagon_advanced': 'Ghép Ngũ Giác (Đầu đuôi ngàm)',
-
-        }
-
-        vn_strategy = strategy_used
-
-        for k, v in s_map.items():
-
-            if k in strategy_used:
-
-                vn_strategy = strategy_used.replace(k, v)
-
-                break
-
-        if strategy == 'optimal_auto':
-
-            report_lines.append(f"🤖 Máy tính đã tự động tối ưu và chọn kiểu: {vn_strategy}")
-
-        else:
-
-            report_lines.append(f"Chiến lược dàn: {vn_strategy}")
-
-        report_lines.append(f"Hiệu suất: {total_capacity} tem / tấm kẽm.")
-
-    if _perf_stages is not None:
-        _perf_stages.mark("postprocess_s")
-    return "\n".join(report_lines)

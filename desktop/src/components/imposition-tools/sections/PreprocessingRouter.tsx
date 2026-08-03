@@ -151,7 +151,11 @@ export default function PreprocessingRouter({
             
             {activeTool === 'resize' && (
                 <div>
-                    <PageResizerTool settings={s.resizeSettings} onChange={s.setResizeSettings} />
+                    <PageResizerTool
+                        settings={s.resizeSettings}
+                        onChange={s.setResizeSettings}
+                        pdfFile={pdfFile}
+                    />
                     <div className="mt-4 mb-2">
                         <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label={t('imposition.preprocessingRouter:mo_ket_qua_sang_tab_moi')} />
                     </div>

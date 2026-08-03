@@ -82,6 +82,54 @@ const BOOK_REPORT_BINDING_LABELS: Record<string, string> = {
     flush_mount: 'Dán đôi lưng',
 };
 
+type SameSizeNupLayoutType = 'sequential' | 'cut_stacks' | 'ratio_stack';
+type GuillotineSizeClass = 'unknown' | 'uniform' | 'mixed';
+interface ImpositionPdfMetaPage {
+    width_pt: number;
+    height_pt: number;
+    media_width_pt?: number;
+    media_height_pt?: number;
+    guillotine_width_pt?: number;
+    guillotine_height_pt?: number;
+}
+
+function isSameSizeNupLayoutType(value: string): value is SameSizeNupLayoutType {
+    return value === 'sequential' || value === 'cut_stacks' || value === 'ratio_stack';
+}
+
+function classifyGuillotinePageSizes(
+    dimensionsByPage: Record<number, { w: number; h: number }>,
+    pageCount: number,
+    tolerancePt = 0.5,
+): GuillotineSizeClass {
+    if (!Number.isInteger(pageCount) || pageCount <= 0) return 'unknown';
+
+    const tolerance = Math.max(0, tolerancePt);
+    let first: { w: number; h: number } | null = null;
+    for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+        const dimension = dimensionsByPage[pageIndex];
+        if (
+            !dimension
+            || !Number.isFinite(dimension.w)
+            || !Number.isFinite(dimension.h)
+            || dimension.w <= 0
+            || dimension.h <= 0
+        ) {
+            return 'unknown';
+        }
+        if (!first) {
+            first = dimension;
+            continue;
+        }
+        if (
+            Math.abs(dimension.w - first.w) > tolerance
+            || Math.abs(dimension.h - first.h) > tolerance
+        ) {
+            return 'mixed';
+        }
+    }
+    return 'uniform';
+}
 
 export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge, onStartCatalogPlan, initialFeature, lockedMode, onBleedUpdate, onFileFixed, systemMergeFiles, officeSourceFile, officeSourceFiles, getWorkingFile, ensureCropFileId, onCropApplied, onCropClose }: ImposerDashboardProps) {
   const { t } = useTranslation();
@@ -118,6 +166,11 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
 
     // ═══ Imposition Settings Store ═══
     const s = useImposerSettingsStore();
+    const [guillotineMetadata, setGuillotineMetadata] = useState<{
+        source: File | null;
+        dimensions: Array<{ w: number; h: number }>;
+        complete: boolean;
+    }>({ source: null, dimensions: [], complete: false });
 
     // Quantities follow stable thumbnail instances, not numeric positions.
     // Reordering/deleting pages therefore moves the entered quantity with the
@@ -250,6 +303,83 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         () => projectPageRecordToViewer(sourceDimensionsByPage, viewerPageOrder),
         [sourceDimensionsByPage, viewerPageOrder],
     );
+    const guillotineDimensionsByPage = useMemo(
+        () => Object.fromEntries(
+            (guillotineMetadata.source === pdfFile ? guillotineMetadata.dimensions : [])
+                .map((dimension, index) => [index, dimension]),
+        ),
+        [guillotineMetadata, pdfFile],
+    );
+    const previewGuillotineDimensionsByPage = useMemo(
+        () => projectPageRecordToViewer(guillotineDimensionsByPage, viewerPageOrder),
+        [guillotineDimensionsByPage, viewerPageOrder],
+    );
+    const guillotinePageCount = viewerPageOrder?.length || sourceTotalPages;
+    const guillotineSizeClass = useMemo(
+        () => classifyGuillotinePageSizes(
+            previewGuillotineDimensionsByPage,
+            guillotinePageCount,
+        ),
+        [previewGuillotineDimensionsByPage, guillotinePageCount],
+    );
+    const autoGuillotineSizeApplies = activeTool === 'nup'
+        && s.taskMode === 'nup'
+        && !pageSheetMode;
+    const waitingForGuillotineSize = autoGuillotineSizeApplies
+        && !!pdfFile
+        && (
+            guillotineMetadata.source !== pdfFile
+            || !guillotineMetadata.complete
+        );
+    const currentLayoutType = s.layoutType;
+    const setLayoutType = s.setLayoutType;
+    const lastSameSizeLayoutRef = useRef<SameSizeNupLayoutType>(
+        isSameSizeNupLayoutType(currentLayoutType) ? currentLayoutType : 'sequential',
+    );
+    const lastGuillotineSizeClassRef = useRef<GuillotineSizeClass>('unknown');
+    const layoutSourceRef = useRef<File | null | undefined>(undefined);
+
+    useEffect(() => {
+        if (isSameSizeNupLayoutType(currentLayoutType)) {
+            lastSameSizeLayoutRef.current = currentLayoutType;
+        }
+    }, [currentLayoutType]);
+
+    useEffect(() => {
+        if (layoutSourceRef.current === pdfFile) return;
+        layoutSourceRef.current = pdfFile;
+        lastGuillotineSizeClassRef.current = 'unknown';
+        // UIUX (audit 2026-08-03 §MG-AUTO): mixed là trạng thái suy ra theo tài liệu,
+        // không phải sở thích được mang sang file kế tiếp.
+        if (currentLayoutType === 'mixed_guillotine') {
+            setLayoutType(lastSameSizeLayoutRef.current);
+        }
+    }, [currentLayoutType, pdfFile, setLayoutType]);
+
+    useEffect(() => {
+        if (!autoGuillotineSizeApplies) {
+            lastGuillotineSizeClassRef.current = 'unknown';
+            return;
+        }
+        if (guillotineSizeClass === 'unknown') return;
+
+        const sizeClassChanged = lastGuillotineSizeClassRef.current !== guillotineSizeClass;
+        lastGuillotineSizeClassRef.current = guillotineSizeClass;
+        if (guillotineSizeClass === 'mixed' && currentLayoutType !== 'mixed_guillotine') {
+            setLayoutType('mixed_guillotine');
+            return;
+        }
+        // Backend preview vẫn là chốt dự phòng và có thể tự promote khi metadata cũ.
+        // Chỉ tự hạ mixed → mode cùng khổ khi chính tập kích thước vừa đổi sang uniform,
+        // tránh hai effect giằng co trong lúc working PDF đang được materialize.
+        if (
+            guillotineSizeClass === 'uniform'
+            && sizeClassChanged
+            && currentLayoutType === 'mixed_guillotine'
+        ) {
+            setLayoutType(lastSameSizeLayoutRef.current);
+        }
+    }, [autoGuillotineSizeApplies, currentLayoutType, guillotineSizeClass, setLayoutType]);
     const previewDetectedShapeParamsByPage = useMemo(
         () => projectShapeParamsToViewer(detectedShapeParamsByPage, viewerPageOrder),
         [detectedShapeParamsByPage, viewerPageOrder],
@@ -578,6 +708,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
 
     // Auto Catalog: fetch page dimensions + plan
     useEffect(() => {
+        setGuillotineMetadata({ source: pdfFile, dimensions: [], complete: false });
         if (!pdfFile) return;
         let isActive = true;
         s.setSourcePageDim(null); // Clear old cache immediately
@@ -586,6 +717,9 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         s.setSourceMediaPageDims([]);
         const loadPdfMetadata = async () => {
             if (pdfFile && !(pdfFile.type === 'application/pdf' || pdfFile.name.toLowerCase().endsWith('.pdf'))) {
+                if (isActive) {
+                    setGuillotineMetadata({ source: pdfFile, dimensions: [], complete: true });
+                }
                 return; // Do not attempt to load metadata for non-PDFs (like images)
             }
             try {
@@ -601,17 +735,26 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                         });
                         
                         if (res.ok) {
-                            const meta = await res.json();
+                            const meta = await res.json() as { pages?: ImpositionPdfMetaPage[] };
                             if (isActive && meta.pages && meta.pages.length > 0) {
+                                const pages = meta.pages;
                                 // meta.pages[0].width_pt is already TrimBox & UserUnit adjusted by Python backend
-                                s.setSourcePageDim({ w: meta.pages[0].width_pt, h: meta.pages[0].height_pt });
-                                s.setSourcePageDims(meta.pages.map((p: any) => ({ w: p.width_pt, h: p.height_pt })));
-                                const mediaDims = meta.pages.map((p: any) => ({
+                                s.setSourcePageDim({ w: pages[0].width_pt, h: pages[0].height_pt });
+                                s.setSourcePageDims(pages.map((p) => ({ w: p.width_pt, h: p.height_pt })));
+                                const mediaDims = pages.map((p) => ({
                                     w: p.media_width_pt ?? p.width_pt,
                                     h: p.media_height_pt ?? p.height_pt,
                                 }));
                                 s.setSourceMediaPageDim(mediaDims[0]);
                                 s.setSourceMediaPageDims(mediaDims);
+                                setGuillotineMetadata({
+                                    source: pdfFile,
+                                    dimensions: pages.map((p) => ({
+                                        w: p.guillotine_width_pt ?? p.media_width_pt ?? p.width_pt,
+                                        h: p.guillotine_height_pt ?? p.media_height_pt ?? p.height_pt,
+                                    })),
+                                    complete: true,
+                                });
                                 return; // Success, skip fallback
                             }
                         } else {
@@ -635,11 +778,15 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                             const resolvedDims = dimsArr.length > 0 ? dimsArr : [{ w: metadata.widthPt, h: metadata.heightPt }];
                             s.setSourcePageDims(resolvedDims);
                             s.setSourceMediaPageDims(resolvedDims);
+                            setGuillotineMetadata({ source: pdfFile, dimensions: resolvedDims, complete: true });
                         } else {
                             const resolvedDims = [{ w: metadata.widthPt, h: metadata.heightPt }];
                             s.setSourcePageDims(resolvedDims);
                             s.setSourceMediaPageDims(resolvedDims);
+                            setGuillotineMetadata({ source: pdfFile, dimensions: resolvedDims, complete: true });
                         }
+                    } else if (isActive) {
+                        setGuillotineMetadata({ source: pdfFile, dimensions: [], complete: true });
                     }
                     return; // DO NOT run pdf-lib on dummy File objects, it will crash!
                 }
@@ -671,9 +818,20 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                         s.setSourcePageDims(pageDims);
                         s.setSourceMediaPageDim(mediaPageDims[0]);
                         s.setSourceMediaPageDims(mediaPageDims);
+                        setGuillotineMetadata({ source: pdfFile, dimensions: mediaPageDims, complete: true });
+                    } else if (isActive) {
+                        setGuillotineMetadata({ source: pdfFile, dimensions: [], complete: true });
                     }
+                } else if (isActive) {
+                    setGuillotineMetadata({ source: pdfFile, dimensions: [], complete: true });
                 }
-            } catch (e) { console.error('Failed to load PDF dimensions', e); }
+            } catch (e) {
+                console.error('Failed to load PDF dimensions', e);
+                if (isActive) {
+                    // Giữ đường preview/backend cũ làm fallback; không khóa nút Bình vĩnh viễn.
+                    setGuillotineMetadata({ source: pdfFile, dimensions: [], complete: true });
+                }
+            }
         };
         loadPdfMetadata();
         return () => { isActive = false; };
@@ -972,6 +1130,10 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         // UIUX (audit 2026-07-27 §B-21) fix-verify: Enter từ ô SL (onRequestExecute)
         // từng bypass guard disabled của nút Bình — chặn cùng điều kiện với nút.
         if (isProcessing || !pdfFile) return;
+        if (waitingForGuillotineSize) {
+            toast.info(t('lib.pdfImposer:dang_tinh_toan_kich_thuoc_tu_dong'));
+            return;
+        }
         if (s.taskMode === 'booklet') {
             const buildActiveBookReport = (sheetWidth: number, sheetHeight: number) => toBookReportRenderConfig(
                 s.bookReportDisplay,
@@ -1189,7 +1351,17 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         paper: { formsize: s.formsize, customSheetWidth: s.customSheetWidth, customSheetHeight: s.customSheetHeight, bleed: s.bleed, gapX: s.gapX, gapY: s.gapY, spreadDistribution: s.spreadDistribution, marginTop: s.marginTop, marginBottom: s.marginBottom, marginLeft: s.marginLeft, marginRight: s.marginRight, marginMode: s.marginMode },
         marks: { markType: s.markType, markOffset: s.marksConfig.distance, markLength: s.marksConfig.length, markThickness: s.marksConfig.thickness, markStyle: s.marksConfig.style === 2 ? 'style2' as const : 'style1' as const },
         booklet: s.taskMode === 'booklet' ? { signatureMode: s.signatureMode, foliosize: s.foliosize, paperThickness: s.paperThickness, gutterMargin: s.gutterMargin, blankPlacement: s.blankPlacement, scaleMode: s.paperClassification === 'offset' ? 'chain_nup' : s.scaleMode, interleave: s.interleave, foldPattern: s.paperClassification === 'offset' ? (s.foldPattern || undefined) : undefined, gripperMargin: s.paperClassification === 'offset' ? s.gripperMargin : undefined } : undefined,
-        nup: s.taskMode !== 'booklet' ? { layoutType: s.layoutType, columns: s.columns, rows: s.rows, gridStrategy: s.gridStrategy, groupingStrategy: s.groupingStrategy, duplexFlow: s.duplexFlow, align: s.align, clusterMode: s.clusterMode, clusterCount: s.clusterCount, clusterGap: s.clusterGap, clusterGapMode: s.clusterGapMode } : undefined,
+        nup: s.taskMode !== 'booklet' ? {
+            // UIUX (audit 2026-08-03 §MG-AUTO): preset nhớ ý định ráp cùng khổ;
+            // mixed được suy lại từ file lúc nạp, không trở thành sở thích dính lâu dài.
+            layoutType: s.layoutType === 'mixed_guillotine'
+                ? lastSameSizeLayoutRef.current
+                : s.layoutType,
+            columns: s.columns, rows: s.rows, gridStrategy: s.gridStrategy,
+            groupingStrategy: s.groupingStrategy, duplexFlow: s.duplexFlow,
+            align: s.align, clusterMode: s.clusterMode, clusterCount: s.clusterCount,
+            clusterGap: s.clusterGap, clusterGapMode: s.clusterGapMode,
+        } : undefined,
     }), [s]);
 
     const handleLoadPreset = useCallback((preset: ImpositionPreset) => {
@@ -1211,7 +1383,12 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             if (preset.booklet.gripperMargin) s.setGripperMargin(preset.booklet.gripperMargin);
         }
         if (preset.nup) {
-            s.setLayoutType(preset.nup.layoutType); s.setColumns(preset.nup.columns); s.setRows(preset.nup.rows);
+            s.setLayoutType(
+                preset.nup.layoutType === 'mixed_guillotine'
+                    ? 'sequential'
+                    : preset.nup.layoutType,
+            );
+            s.setColumns(preset.nup.columns); s.setRows(preset.nup.rows);
             s.setGridStrategy(preset.nup.gridStrategy || 'optimal_auto'); s.setDuplexFlow(preset.nup.duplexFlow);
             s.setAlign(preset.nup.align as any);
             s.setClusterMode(preset.nup.clusterMode); s.setClusterCount(preset.nup.clusterCount);
@@ -1616,8 +1793,12 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                             </div>
                         )}
                         {/* UIUX (audit 2026-07-27 §B-22): chưa mở file → khóa nút Bình + title giải thích */}
-                        <button onClick={handleExecute} disabled={isProcessing || !pdfFile}
-                            title={!pdfFile ? t('imposition.imposerDashboard:mo_file_pdf_truoc_khi_binh', 'Mở file PDF trước khi bình') : undefined}
+                        <button onClick={handleExecute} disabled={isProcessing || !pdfFile || waitingForGuillotineSize}
+                            title={!pdfFile
+                                ? t('imposition.imposerDashboard:mo_file_pdf_truoc_khi_binh', 'Mở file PDF trước khi bình')
+                                : waitingForGuillotineSize
+                                    ? t('lib.pdfImposer:dang_tinh_toan_kich_thuoc_tu_dong')
+                                    : undefined}
                             className="w-full h-11 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-1">
                             {t('preprocess.common:run')}{isProcessing ? '…' : ''}
                         </button>

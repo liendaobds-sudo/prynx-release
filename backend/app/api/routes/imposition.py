@@ -2746,7 +2746,10 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     and _live_preview_page_count > 1
                     and _tm in ('nup', 'step_repeat', 'booklet')):
                 from app.workers.nup_layout_solver import (
-                    solve_optimal_layout, solve_manual, compute_ratio_stack_alloc,
+                    solve_optimal_layout, solve_manual,
+                    compute_ratio_stack_templates,
+                    build_guillotine_preview_sheet,
+                    build_mixed_preview_response,
                 )
                 import math as _math_mp
                 _bleed_mp = req.bleed or 0
@@ -2773,6 +2776,17 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 _n_src = max(1, _live_preview_page_count)
                 _tqbp_mp = getattr(req, 'target_quantities_by_page', None) or {}
                 _gq_mp = getattr(req, 'target_quantity', 0) or 0
+                _sheet_kwargs_mp = {
+                    'usable_w': req.usable_w,
+                    'usable_h': req.usable_h,
+                    'margin_left': getattr(req, 'margin_left', 0) or 0,
+                    'margin_right': getattr(req, 'margin_right', 0) or 0,
+                    'margin_bottom': getattr(req, 'margin_bottom', 0) or 0,
+                    'margin_top': getattr(req, 'margin_top', 0) or 0,
+                    'sheet_w': getattr(req, 'sheet_w', 0) or 0,
+                    'sheet_h': getattr(req, 'sheet_h', 0) or 0,
+                    'align': getattr(req, 'align', None) or 'center',
+                }
 
                 def _qty_mp(_pi):
                     _q = _tqbp_mp.get(str(_pi), _tqbp_mp.get(_pi, _gq_mp))
@@ -2784,6 +2798,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 _slot_page = []
                 _sheets_needed = 1
                 _strategy_label = _lt or 'sequential'
+                _unplaced_mp = []
 
                 if _lt == 'ratio_stack' and _mp_cap > 0:
                     # 2 mặt: đơn vị = cặp trang (2u trước | 2u+1 sau); chia tỷ lệ theo
@@ -2800,17 +2815,35 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         _qty_mp((_u * 2) if _duplex_rs_mp else _u)
                         for _u in range(_n_units_mp)
                     ]
-                    _alloc_mp = compute_ratio_stack_alloc(_mp_cap, _qtys_mp)
-                    _cpp_mp = _alloc_mp['cellsPerPage']
-                    for _ui, _cnt in enumerate(_cpp_mp):
-                        _pg_mp = (_ui * 2) if _duplex_rs_mp else _ui
-                        _slot_page.extend([_pg_mp] * int(_cnt))
-                    # 2 mặt = 1 tờ giấy vật lý chạy duplex (mặt trước + sau cùng 1 tờ),
-                    # KHÔNG nhân đôi số tờ. Khớp engine report (sheet_count=n_sheets) —
-                    # total_sheets=2 bên engine chỉ là 2 TRANG PDF mẫu, không phải 2 tờ in.
-                    _sheets_needed = max(1, int(_alloc_mp.get('nSheets') or 1))
-                    _unplaced_mp = _alloc_mp.get('unplaced', [])
                     _strategy_label = 'ratio_stack_duplex' if _duplex_rs_mp else 'ratio_stack'
+                    _template_allocs_mp = compute_ratio_stack_templates(
+                        _mp_cap, _qtys_mp
+                    )
+                    _ratio_sheets_mp = []
+                    for _template_idx_mp, _alloc_mp in enumerate(_template_allocs_mp):
+                        _slot_template_mp = []
+                        for _ui, _cnt in enumerate(_alloc_mp['cellsPerPage']):
+                            _pg_mp = (_ui * 2) if _duplex_rs_mp else _ui
+                            _slot_template_mp.extend([_pg_mp] * int(_cnt))
+                        if _slot_template_mp:
+                            _ratio_sheets_mp.append(build_guillotine_preview_sheet(
+                                _mp_cells, _slot_template_mp, **_sheet_kwargs_mp,
+                                run_count=_alloc_mp.get('nSheets', 1),
+                                physical_sheet_index=_template_idx_mp,
+                            ))
+
+                    if _ratio_sheets_mp:
+                        # 2 mặt vẫn chỉ tính một lần chạy giấy cho mỗi cặp front/back.
+                        _sheets_needed = sum(
+                            int(_sheet_mp['runCount'])
+                            for _sheet_mp in _ratio_sheets_mp
+                        )
+                        doc.close()
+                        return build_mixed_preview_response(
+                            _ratio_sheets_mp[0], _strategy_label, _sheets_needed,
+                            output_pages_needed=_sheets_needed * (2 if _duplex_rs_mp else 1),
+                            template_sheets=_ratio_sheets_mp,
+                        )
                 elif _lt == 'cut_stacks' and _mp_cap > 0:
                     # Tờ 0: cell j → page j * n_sheets (cọc đầu mỗi stack)
                     _n_sheets_cs = max(1, _math_mp.ceil(_n_src / _mp_cap))
@@ -2819,7 +2852,6 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         if _src < _n_src:
                             _slot_page.append(_src)
                     _sheets_needed = _n_sheets_cs
-                    _unplaced_mp = []
                     _strategy_label = 'cut_stacks'
                 elif _mp_cap > 0:
                     # sequential lần lượt.
@@ -2877,70 +2909,16 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         _slot_page = list(_chunk)
                         _sheets_needed = _n_front_mp
                         _strategy_label = 'sequential'
-                    _unplaced_mp = []
-                else:
-                    _unplaced_mp = []
 
                 if _mp_cap > 0 and _slot_page:
-                    _n_used = min(len(_slot_page), _mp_cap)
-                    _sc = _mp_cells[:_n_used]
-                    _bw = max((c['x'] + c['width'] for c in _sc), default=0.0)
-                    _bh = max((c['y'] + c['height'] for c in _sc), default=0.0)
-                    _ml = getattr(req, 'margin_left', 0) or 0
-                    _mb = getattr(req, 'margin_bottom', 0) or 0
-                    _align_mp = (getattr(req, 'align', None) or 'center')
-                    if not isinstance(_align_mp, str):
-                        _align_mp = 'center'
-                    _mr = getattr(req, 'margin_right', 0) or 0
-                    _mt = getattr(req, 'margin_top', 0) or 0
-                    _sheet_w = getattr(req, 'sheet_w', 0) or 0
-                    _sheet_h = getattr(req, 'sheet_h', 0) or 0
-                    if 'left' in _align_mp:
-                        _bx = _ml
-                    elif 'right' in _align_mp and _sheet_w > 0:
-                        _bx = _sheet_w - _mr - _bw
-                    else:
-                        _bx = _ml + (req.usable_w - _bw) / 2
-                    if 'top' in _align_mp and _sheet_h > 0:
-                        _byb = _sheet_h - _mt - _bh
-                    elif 'bottom' in _align_mp:
-                        _byb = _mb
-                    else:
-                        _byb = _mb + (req.usable_h - _bh) / 2
-                    _items = []
-                    _ov_w = 0.0
-                    _ov_h = 0.0
-                    _placed_by_page = {}
-                    for _j in range(_n_used):
-                        _c = _sc[_j]
-                        _ax = _bx + _c['x']
-                        _ay = _byb + (_bh - _c['y'] - _c['height'])
-                        _pi = _slot_page[_j]
-                        _items.append({
-                            'x': _c['x'], 'y': _c['y'],
-                            'absX': _ax, 'absY': _ay,
-                            'width': _c['width'], 'height': _c['height'],
-                            'isRotated': bool(_c.get('isRotated', False)),
-                            'isRotated180': False,
-                            'pageIdx': _pi,
-                        })
-                        _placed_by_page[str(_pi)] = _placed_by_page.get(str(_pi), 0) + 1
-                        _ov_w = max(_ov_w, _ax + _c['width'])
-                        _ov_h = max(_ov_h, _ay + _c['height'])
+                    _sheet_mp = build_guillotine_preview_sheet(
+                        _mp_cells, _slot_page, **_sheet_kwargs_mp,
+                    )
                     doc.close()
-                    return {
-                        "success": True,
-                        "cells": _items,
-                        "overallWidth": _ov_w,
-                        "overallHeight": _ov_h,
-                        "totalItems": len(_items),
-                        "strategyUsed": _strategy_label,
-                        "isMixedPreview": True,
-                        "absPlacement": True,
-                        "sheetsNeeded": max(1, int(_sheets_needed)),
-                        "ratioUnplaced": _unplaced_mp if _lt == 'ratio_stack' else [],
-                        "placedByPage": _placed_by_page,
-                    }
+                    return build_mixed_preview_response(
+                        _sheet_mp, _strategy_label, _sheets_needed,
+                        ratio_unplaced=_unplaced_mp if _lt == 'ratio_stack' else [],
+                    )
 
             # ── SINGLE-PAGE PREVIEW (S&R or single-page N-Up) ──
             # Determine shape override from frontend

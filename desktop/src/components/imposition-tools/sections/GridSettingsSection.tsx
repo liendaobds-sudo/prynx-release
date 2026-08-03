@@ -46,6 +46,12 @@ export interface GridSettingsProps {
   onRequestExecute?: () => void;
 }
 
+type SameSizeNupLayoutType = "sequential" | "cut_stacks" | "ratio_stack";
+
+function isSameSizeNupLayoutType(value: string): value is SameSizeNupLayoutType {
+  return value === "sequential" || value === "cut_stacks" || value === "ratio_stack";
+}
+
 export default function GridSettingsSection(props: GridSettingsProps) {
   const { t } = useTranslation();
   const {
@@ -72,7 +78,6 @@ export default function GridSettingsSection(props: GridSettingsProps) {
     gapX,
     setGapX,
     // UIUX (2026-07-27): gộp lại 1 ô hở dùng chung — gapY luôn bám theo gapX
-    gapY,
     setGapY,
 
 
@@ -319,26 +324,38 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 {t('imposition.gridSettings:cach_thuc_rap')}
               </label>
               <div className="flex flex-1 items-center gap-2 min-w-0">
-                <select
-                  value={s.layoutType}
-                  onChange={(e) => {
-                    const v = e.target.value as typeof s.layoutType;
-                    s.setLayoutType(v);
-                    // cut_stacks không hỗ trợ 2 mặt → tự về 1 mặt (mirror tờ lẻ phá
-                    // collate). ratio_stack GIỜ hỗ trợ 2 mặt (cặp trang trước/sau).
-                    if (v === "cut_stacks" && duplexFlow === "double") {
-                      setDuplexFlow("normal");
-                    }
-                  }}
-                  className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
-                >
-                  <option value="sequential">{t('imposition.gridSettings:xep_lan_luot')}</option>
-                  <option value="cut_stacks">{t('imposition.gridSettings:xep_chong_up_xap_dung_thu_tu')}</option>
-                  <option value="ratio_stack">{t('imposition.gridSettings:chia_ty_le_xep_chong_nhieu_mau_sl_rieng')}</option>
-                  {activeTool === "nup" && !pageSheetMode && (
-                    <option value="mixed_guillotine">{t('imposition.gridSettings:dan_nhieu_kich_thuoc')}</option>
-                  )}
-                </select>
+                {s.layoutType === "mixed_guillotine" && activeTool === "nup" && !pageSheetMode ? (
+                  <div
+                    role="status"
+                    data-testid="mixed-guillotine-auto-status"
+                    title={t('imposition.gridSettings:dan_nhieu_kich_thuoc_mo_ta')}
+                    className="flex-1 min-w-0 h-8 px-2 border border-indigo-200 dark:border-indigo-500/30 rounded bg-indigo-50 dark:bg-indigo-500/10 text-sm text-indigo-700 dark:text-indigo-300 font-medium flex items-center gap-1.5"
+                  >
+                    <span aria-hidden="true">✨</span>
+                    <span>{t('preprocess.pageResizer:tu_dong')}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{t('imposition.gridSettings:dan_nhieu_kich_thuoc')}</span>
+                  </div>
+                ) : (
+                  <select
+                    value={isSameSizeNupLayoutType(s.layoutType) ? s.layoutType : "sequential"}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (!isSameSizeNupLayoutType(v)) return;
+                      s.setLayoutType(v);
+                      // cut_stacks không hỗ trợ 2 mặt → tự về 1 mặt (mirror tờ lẻ phá
+                      // collate). ratio_stack GIỜ hỗ trợ 2 mặt (cặp trang trước/sau).
+                      if (v === "cut_stacks" && duplexFlow === "double") {
+                        setDuplexFlow("normal");
+                      }
+                    }}
+                    className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+                  >
+                    <option value="sequential">{t('imposition.gridSettings:xep_lan_luot')}</option>
+                    <option value="cut_stacks">{t('imposition.gridSettings:xep_chong_up_xap_dung_thu_tu')}</option>
+                    <option value="ratio_stack">{t('imposition.gridSettings:chia_ty_le_xep_chong_nhieu_mau_sl_rieng')}</option>
+                  </select>
+                )}
                 {/* UIUX (audit 2026-07-27 §B-17): div onClick → button có aria-label + focus-visible */}
                 <button
                   type="button"

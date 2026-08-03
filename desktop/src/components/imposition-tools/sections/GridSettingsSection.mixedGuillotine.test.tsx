@@ -105,12 +105,26 @@ function renderAdvancedSettings({
 }
 
 describe('GridSettingsSection — Dàn nhiều kích thước', () => {
-    it('chỉ đưa lựa chọn Dàn nhiều kích thước vào công cụ Bình cắt xén', () => {
+    it('dropdown cùng khổ chỉ giữ ba cách ráp nghiệp vụ', () => {
         renderGridSettings({ activeTool: 'nup' });
 
-        expect(
-            screen.getByRole('option', { name: 'Dàn nhiều kích thước' }),
-        ).toBeTruthy();
+        const select = screen.getByRole('option', { name: 'Xếp lần lượt' }).closest('select');
+        expect(select).toBeTruthy();
+        expect(Array.from((select as HTMLSelectElement).options).map((option) => option.value)).toEqual([
+            'sequential',
+            'cut_stacks',
+            'ratio_stack',
+        ]);
+        expect(screen.queryByRole('option', { name: 'Dàn nhiều kích thước' })).toBeNull();
+    });
+
+    it('hiển thị trạng thái tự động thay cho dropdown khi tài liệu khác khổ', () => {
+        renderGridSettings({ activeTool: 'nup', layoutType: 'mixed_guillotine' });
+
+        const status = screen.getByTestId('mixed-guillotine-auto-status');
+        expect(status.textContent).toContain('Tự động');
+        expect(status.textContent).toContain('Dàn nhiều kích thước');
+        expect(screen.queryByRole('option', { name: 'Dàn nhiều kích thước' })).toBeNull();
     });
 
     it.each([
@@ -118,11 +132,12 @@ describe('GridSettingsSection — Dàn nhiều kích thước', () => {
         ['CNC', 'cnc_imposer', 'sticker'],
         ['Nguyên tấm decal', 'sticker_imposer', 'page_sheet'],
     ] as const)('không hiện Dàn nhiều kích thước trong %s', (_label, activeTool, impositionUnit) => {
-        renderGridSettings({ activeTool, impositionUnit });
+        renderGridSettings({ activeTool, impositionUnit, layoutType: 'mixed_guillotine' });
 
         expect(
             screen.queryByRole('option', { name: 'Dàn nhiều kích thước' }),
         ).toBeNull();
+        expect(screen.queryByTestId('mixed-guillotine-auto-status')).toBeNull();
     });
 
     it('chỉ chuyển cạnh lật vào Thiết lập mở rộng và tự động hóa mức in dư', () => {

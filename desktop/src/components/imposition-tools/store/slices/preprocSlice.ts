@@ -13,6 +13,8 @@ export const DEFAULT_RESIZE_SETTINGS = {
     // targetDpi: undefined = tự động giảm mẫu khi thu nhỏ
     // RESIZE (audit 2026-07-31 §B.2): state hiển thị và state thực thi phải trùng.
     autoTrimBefore: false,
+    // RESIZE (audit 2026-08-03 §TR.4): mặc định giữ toàn bộ khổ trang có alpha.
+    resizeByContent: false,
     bgFillMode: 'mirror' as const,
     bgFillColor: '#ffffff',
 };
