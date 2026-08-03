@@ -231,6 +231,7 @@ async def logo_rebuild_preview(
 
     warnings_result = list(dict.fromkeys([*_preflight_warnings(source), *result.warnings]))
     return LogoRebuildPreviewResponse(
+        status=result.status,
         job_id=job_id,
         svg=result.svg,
         width_px=result.width_px,
@@ -238,6 +239,9 @@ async def logo_rebuild_preview(
         warnings=warnings_result,
         engine=result.engine,
         engine_version=result.engine_version,
+        complexity=result.complexity,
+        review_reasons=result.review_reasons,
+        review_actions=result.review_actions,
     )
 
 

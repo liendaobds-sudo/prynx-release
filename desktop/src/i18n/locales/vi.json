@@ -286,6 +286,7 @@
   },
   "dieline.variant": {
     "group_nap_cai": "Hộp nắp cài",
+    "group_nap_lat": "Hộp nắp lật",
     "group_day_gai_dan": "Hộp đáy gài & đáy dán",
     "group_khay_hai_manh": "Khay & hộp hai mảnh",
     "group_cua_so": "Hộp có cửa sổ",
@@ -327,6 +328,8 @@
     "env_pocket_desc": "Bì thư kiểu pocket — nắp ở cạnh ngắn, dáng bì lì xì đứng",
     "env_window_name": "Bì thư có cửa sổ",
     "env_window_desc": "Bì thư kiểu wallet — khoét cửa sổ dán màng, hiện địa chỉ bên trong",
+    "ftt_self_lock_name": "Hộp nắp lật tự khóa, gài mặt trước",
+    "ftt_self_lock_desc": "Hộp một mảnh — thành tự khóa, nắp lật liền thân và lưỡi gài mặt trước",
     "tray_std_name": "Hộp khay 4 góc dán",
     "tray_std_desc": "Khay giấy 4 góc dán kèm vỏ bao — hộp diêm, khay đựng thực phẩm",
     "dtray_std_name": "Hộp âm dương (khay + nắp chụp)",
@@ -4059,8 +4062,10 @@
     "cung_chieu_cao_desc": "Chiều rộng tự tính theo tỷ lệ từng tem.",
     "chieu_rong": "Chiều rộng",
     "chieu_cao": "Chiều cao",
-    "kich_thuoc_con_lai_tu_dong": "Kích thước còn lại tự động theo nội dung từng trang sau khi xén viền trắng.",
-    "canh_bao_nhieu_kho": "PDF đầu ra sẽ có nhiều khổ trang; một số chế độ dàn chỉ nhận các trang cùng kích thước."
+    "kich_thuoc_con_lai_tu_dong": "Kích thước còn lại tự động theo tỷ lệ từng trang; vùng trong suốt được giữ nếu không bật Resize theo nội dung.",
+    "canh_bao_nhieu_kho": "PDF đầu ra sẽ có nhiều khổ trang; một số chế độ dàn chỉ nhận các trang cùng kích thước.",
+    "resize_theo_noi_dung": "Resize theo nội dung",
+    "resize_theo_noi_dung_desc": "Chỉ áp dụng cho {{count}} trang có vùng trong suốt: bỏ phần trong suốt bên ngoài và tính tỷ lệ theo con tem. Tắt để giữ toàn bộ khổ trang."
   },
   "preprocess.pageTools": {
     "help_b7": "Xoay, xóa, nhân bản, chèn/trích trang trong file đang mở. Copy/move sang file khác: chuột phải thumbnail trang → Copy/Move.",
@@ -4158,7 +4163,15 @@
     "can_xac_nhan": "Hãy áp dụng bảng màu gợi ý hoặc chỉnh màu thủ công trước.",
     "bang_mau_logo": "Bảng màu logo",
     "do_muot": "Độ mượt đường cong",
-    "do_muot_help": "0 = trung thực nét; 1 = mượt và gọn node hơn."
+    "do_muot_help": "0 = trung thực nét; 1 = mượt và gọn node hơn.",
+    "khu_hat_nho_px": "Khử hạt nhỏ (px)",
+    "preview_bi_tu_choi": "Preview bị từ chối vì không có hình vector dùng được.",
+    "preview_can_kiem_tra": "Preview cần kiểm tra trước khi cho phép xuất SVG.",
+    "do_phuc_tap_svg": "Độ phức tạp SVG",
+    "mang_du_da_don": "mảng dư đã dọn",
+    "khong_the_xuat_svg": "Không thể xuất SVG",
+    "can_kiem_tra_svg": "Cần kiểm tra SVG",
+    "xac_nhan_da_kiem_tra": "Tôi đã kiểm tra và vẫn muốn xuất"
   },
   "preprocess.preflight": {
     "anh_chua_embed_mat_link": "Ảnh chưa Embed (Mất Link)",

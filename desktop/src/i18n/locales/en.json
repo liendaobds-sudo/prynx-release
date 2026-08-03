@@ -286,6 +286,7 @@
   },
   "dieline.variant": {
     "group_nap_cai": "Tuck End boxes",
+    "group_nap_lat": "Flip-top boxes",
     "group_day_gai_dan": "Snap-Lock & Auto-Bottom boxes",
     "group_khay_hai_manh": "Trays & two-piece boxes",
     "group_cua_so": "Window boxes",
@@ -327,6 +328,8 @@
     "env_pocket_desc": "Pocket envelope — flap on the short edge, upright lucky-money shape",
     "env_window_name": "Window envelope",
     "env_window_desc": "Wallet envelope — die-cut window with film, shows the address inside",
+    "ftt_self_lock_name": "Self-locking flip-top front-tuck box",
+    "ftt_self_lock_desc": "One-piece box — self-locking walls, hinged flip-top lid and front tuck closure",
     "tray_std_name": "Four-corner glued tray",
     "tray_std_desc": "Four-corner glued paper tray with sleeve — matchbox style, food tray",
     "dtray_std_name": "Two-piece box (tray + telescoping lid)",
@@ -4059,8 +4062,10 @@
     "cung_chieu_cao_desc": "Width is calculated from each label's aspect ratio.",
     "chieu_rong": "Width",
     "chieu_cao": "Height",
-    "kich_thuoc_con_lai_tu_dong": "The other dimension is calculated from each page's content after trimming white borders.",
-    "canh_bao_nhieu_kho": "The output PDF will contain multiple page sizes; some layout modes only accept pages of the same size."
+    "kich_thuoc_con_lai_tu_dong": "The other dimension follows each page's aspect ratio; transparent canvas is kept unless Resize by content is enabled.",
+    "canh_bao_nhieu_kho": "The output PDF will contain multiple page sizes; some layout modes only accept pages of the same size.",
+    "resize_theo_noi_dung": "Resize by content",
+    "resize_theo_noi_dung_desc": "Applies only to {{count}} page(s) with transparency: removes the outer transparent area and calculates the ratio from visible artwork. Turn it off to keep the full page size."
   },
   "preprocess.pageTools": {
     "help_b7": "Rotate, delete, duplicate, insert/extract pages in the open file. Cross-file copy/move: right-click page thumbnail → Copy/Move.",
@@ -4158,7 +4163,15 @@
     "can_xac_nhan": "Apply the suggested palette or edit colors manually first.",
     "bang_mau_logo": "Logo palette",
     "do_muot": "Curve smoothing",
-    "do_muot_help": "0 = faithful edges; 1 = smoother paths with fewer nodes."
+    "do_muot_help": "0 = faithful edges; 1 = smoother paths with fewer nodes.",
+    "khu_hat_nho_px": "Remove small speckles (px)",
+    "preview_bi_tu_choi": "Preview was rejected because it has no usable vector geometry.",
+    "preview_can_kiem_tra": "Review this preview before SVG export is enabled.",
+    "do_phuc_tap_svg": "SVG complexity",
+    "mang_du_da_don": "redundant fragments removed",
+    "khong_the_xuat_svg": "SVG export unavailable",
+    "can_kiem_tra_svg": "SVG review required",
+    "xac_nhan_da_kiem_tra": "I reviewed it and still want to export"
   },
   "preprocess.preflight": {
     "anh_chua_embed_mat_link": "Image not embedded (broken link)",

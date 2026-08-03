@@ -8,7 +8,7 @@ import math
 import threading
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Any
+from typing import Any, Literal
 from xml.etree import ElementTree
 
 from PIL import Image, ImageCms, ImageOps
@@ -41,6 +41,7 @@ class PreparedLogo:
     warnings: list[str]
     physical_width_mm: float | None = None
     physical_height_mm: float | None = None
+    work_area_scale: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,10 @@ class LogoPreviewResult:
     warnings: list[str]
     engine: str
     engine_version: str
+    status: Literal["ready", "review", "rejected"]
+    complexity: dict[str, int | float]
+    review_reasons: list[str]
+    review_actions: list[str]
 
 
 _ACTIVE_JOBS_LOCK = threading.Lock()
@@ -59,6 +64,7 @@ _PALETTE_KMEANS_LOCK = threading.Lock()
 _MAX_PALETTE_SAMPLE_PIXELS = 40_000
 _MIN_PALETTE_COVERAGE = 0.01
 _MERGE_PALETTE_DISTANCE_RGB = 18.0
+_MAX_ENGINE_DESPECKLE_AREA_PX = 128
 
 
 def _load_native_module() -> Any:
@@ -327,6 +333,65 @@ def _correct_illumination(image: Image.Image) -> Image.Image:
     return Image.fromarray(corrected)
 
 
+def _otsu_threshold(grayscale: Image.Image) -> int | None:
+    """Tìm ngưỡng tách hai lớp sáng/tối; ảnh phẳng trả ``None`` để QC từ chối sau."""
+
+    histogram = grayscale.histogram()[:256]
+    populated = [index for index, count in enumerate(histogram) if count]
+    if len(populated) < 2:
+        return None
+    total = sum(histogram)
+    weighted_total = sum(index * count for index, count in enumerate(histogram))
+    background_weight = 0
+    background_sum = 0.0
+    best_threshold = populated[0]
+    best_variance = -1.0
+    for threshold, count in enumerate(histogram):
+        background_weight += count
+        if background_weight == 0:
+            continue
+        foreground_weight = total - background_weight
+        if foreground_weight == 0:
+            break
+        background_sum += threshold * count
+        background_mean = background_sum / background_weight
+        foreground_mean = (weighted_total - background_sum) / foreground_weight
+        variance = (
+            background_weight
+            * foreground_weight
+            * (background_mean - foreground_mean) ** 2
+        )
+        if variance > best_variance:
+            best_variance = variance
+            best_threshold = threshold
+    return best_threshold
+
+
+def _normalize_monochrome_polarity(image: Image.Image) -> tuple[Image.Image, bool]:
+    """Đưa nền về trắng và mực về đen theo Otsu + lớp chiếm đa số ở khung ảnh."""
+
+    grayscale = image.convert("L")
+    threshold = _otsu_threshold(grayscale)
+    if threshold is None:
+        return Image.new("RGBA", image.size, (255, 255, 255, 255)), False
+    pixels = grayscale.load()
+    width, height = grayscale.size
+    border_values = [pixels[x, 0] for x in range(width)]
+    if height > 1:
+        border_values.extend(pixels[x, height - 1] for x in range(width))
+    if width > 1:
+        border_values.extend(pixels[0, y] for y in range(1, height - 1))
+        border_values.extend(pixels[width - 1, y] for y in range(1, height - 1))
+    low_is_background = (
+        sum(value <= threshold for value in border_values) * 2 >= len(border_values)
+    )
+    lookup = [
+        255 if ((value <= threshold) == low_is_background) else 0
+        for value in range(256)
+    ]
+    return grayscale.point(lookup).convert("RGBA"), True
+
+
 def suggest_logo_palette(
     source_bytes: bytes,
     settings: LogoRebuildSettings,
@@ -435,6 +500,7 @@ def prepare_logo_image(source_bytes: bytes, settings: LogoRebuildSettings) -> Pr
         physical_width_mm = image.width * 25.4 / source_dpi[0]
         physical_height_mm = image.height * 25.4 / source_dpi[1]
 
+    source_work_area = image.width * image.height
     requested_size = _upscale_target_dimensions(*image.size)
     planned_size, memory_warnings = _plan_work_size(*requested_size)
     warnings.extend(memory_warnings)
@@ -450,7 +516,13 @@ def prepare_logo_image(source_bytes: bytes, settings: LogoRebuildSettings) -> Pr
                 f"{planned_size[0]}×{planned_size[1]} px trước khi dựng nét."
             )
     rgba = image.convert("RGBA")
-    alpha_minimum, _alpha_maximum = rgba.getchannel("A").getextrema()
+    alpha_minimum, alpha_maximum = rgba.getchannel("A").getextrema()
+    if alpha_maximum == 0:
+        # LOGO-REBUILD (audit 2026-08-02 §LR2.02): VTracer không có cluster
+        # khi toàn bộ alpha bằng 0 và dependency có thể panic trước khi trả lỗi.
+        raise LogoInputError(
+            "Ảnh hoặc vùng đã chọn không có pixel nhìn thấy; hãy chọn lại vùng có nội dung."
+        )
     has_transparency = alpha_minimum < 255
     if settings.illumination_correction:
         if has_transparency:
@@ -462,11 +534,19 @@ def prepare_logo_image(source_bytes: bytes, settings: LogoRebuildSettings) -> Pr
         else:
             rgba = _correct_illumination(rgba).convert("RGBA")
 
-    if settings.mode == "monochrome" and has_transparency:
-        # Binary frontend của VTracer chỉ đọc RGB. Ghép alpha lên trắng để pixel
-        # trong suốt không bị hiểu nhầm là mực đen và vẫn giữ rìa anti-alias.
-        white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
-        rgba = Image.alpha_composite(white, rgba)
+    if settings.mode == "monochrome":
+        if has_transparency:
+            # Binary frontend của VTracer chỉ đọc RGB. Ghép alpha lên trắng để
+            # pixel trong suốt không bị hiểu nhầm là mực đen.
+            white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+            rgba = Image.alpha_composite(white, rgba)
+        rgba, normalized = _normalize_monochrome_polarity(rgba)
+        if normalized:
+            # LOGO-REBUILD (audit 2026-08-03 §LR2.04): fixed threshold 128 làm
+            # mất logo sáng hoặc nuốt nền tối. Chuẩn hóa hai lớp trước khi vào native.
+            warnings.append(
+                "Đã tự xác định nền sáng/tối và chuẩn hóa mực đen cho chế độ đơn sắc."
+            )
 
     return PreparedLogo(
         width_px=rgba.width,
@@ -475,7 +555,20 @@ def prepare_logo_image(source_bytes: bytes, settings: LogoRebuildSettings) -> Pr
         warnings=warnings,
         physical_width_mm=physical_width_mm,
         physical_height_mm=physical_height_mm,
+        work_area_scale=(rgba.width * rgba.height) / source_work_area,
     )
+
+
+def _scaled_despeckle_size(
+    source_size_px: int,
+    work_area_scale: float,
+) -> int:
+    """Quy đổi cạnh hạt từ ảnh nguồn sang ảnh làm việc; VTracer tự bình phương cạnh."""
+
+    if source_size_px <= 0:
+        return 0
+    scaled = max(1, round(source_size_px * math.sqrt(work_area_scale)))
+    return min(_MAX_ENGINE_DESPECKLE_AREA_PX, scaled)
 
 
 def _format_svg_number(value: float) -> str:
@@ -519,13 +612,22 @@ def _strip_svg_background(svg: str, background_color: str) -> tuple[str, int]:
     if not matches:
         return svg, 0
 
-    # VTracer stacked luôn vẽ vùng phủ nền trước. Các vùng cùng màu xuất hiện sau
-    # logo là phần nền nhìn xuyên qua (counter/hole), phải KHOÉT chứ không chỉ ẩn.
-    hole_shapes = [deepcopy(child) for _, child in matches[1:]]
+    # LOGO-REBUILD (audit 2026-08-02 §LR2.01): VTracer có thể gộp nền ngoài
+    # và counter/hole vào MỘT compound path. Khi đó phải dùng nguyên topology
+    # path làm vùng khoét; xóa cả thẻ sẽ làm lộ layer màu phủ kín bên dưới.
+    cutout_shapes = [
+        deepcopy(child)
+        for index, (_, child) in enumerate(matches)
+        if index > 0
+        or (
+            child.tag == qualified("path")
+            and sum(command in "Mm" for command in child.attrib.get("d", "")) > 1
+        )
+    ]
     for parent, child in matches:
         parent.remove(child)
 
-    if hole_shapes:
+    if cutout_shapes:
         drawable_tags = {qualified("path"), qualified("g")}
         drawable = [child for child in list(root) if child.tag in drawable_tags]
         if drawable:
@@ -557,7 +659,7 @@ def _strip_svg_background(svg: str, background_color: str) -> tuple[str, int]:
                     "fill": "#ffffff",
                 },
             )
-            for shape in hole_shapes:
+            for shape in cutout_shapes:
                 shape.set("fill", "#000000")
                 mask.append(shape)
             group = ElementTree.Element(
@@ -588,6 +690,17 @@ def process_logo_preview(
         prepared = prepare_logo_image(source_bytes, settings)
         if token.is_cancelled():
             raise LogoJobCancelled("Đã hủy preview logo.")
+        warnings = list(prepared.warnings)
+        effective_despeckle_size = _scaled_despeckle_size(
+            settings.despeckle_size_px,
+            prepared.work_area_scale,
+        )
+        if effective_despeckle_size != settings.despeckle_size_px:
+            warnings.append(
+                "Khử hạt đã quy đổi từ "
+                f"{settings.despeckle_size_px} px ảnh nguồn thành "
+                f"{effective_despeckle_size} px ở kích thước dựng nét."
+            )
         try:
             engine_palette = list(settings.palette)
             if settings.background_color is not None:
@@ -599,7 +712,7 @@ def process_logo_preview(
                 settings.mode,
                 palette=engine_palette or None,
                 smoothing=settings.smoothing,
-                despeckle_size_px=settings.despeckle_size_px,
+                despeckle_size_px=effective_despeckle_size,
                 cancel=token,
             )
         except RuntimeError as exc:
@@ -609,13 +722,48 @@ def process_logo_preview(
         # LOGO-REBUILD (audit 2026-07-30 §LG.06): mọi SVG có viewBox;
         # ảnh có DPI còn giữ đúng kích thước vật lý khi mở trong phần mềm chế bản.
         svg = _apply_svg_geometry(svg, prepared)
-        warnings = list(prepared.warnings)
+        if "<svg" not in svg or "<script" in svg.lower():
+            raise RuntimeError("Engine trả về SVG không hợp lệ.")
+
+        # LOGO-REBUILD (audit 2026-08-03 §LR2.03): dọn từng path nhỏ chỉ khi lớp
+        # nhìn thấy bên dưới đã cùng màu; không union toàn artwork nên giữ counter và lớp xen giữa.
+        from app.workers.logo_svg_cleanup import (
+            LogoSvgCleanupCancelled,
+            LogoSvgCleanupError,
+            analyze_logo_svg,
+            cleanup_redundant_logo_paths,
+        )
+
+        try:
+            cleaned = cleanup_redundant_logo_paths(
+                svg,
+                prepared.width_px,
+                prepared.height_px,
+                token.is_cancelled,
+            )
+        except LogoSvgCleanupCancelled as exc:
+            raise LogoJobCancelled("Đã hủy preview logo.") from exc
+        except LogoSvgCleanupError as exc:
+            raise RuntimeError("Engine trả về path SVG không hợp lệ.") from exc
+        svg = cleaned.svg
+        if cleaned.removed_path_count:
+            warnings.append(
+                f"Đã dọn {cleaned.removed_path_count} mảng vector nhỏ bị lớp cùng màu phủ kín."
+            )
         if settings.background_color is not None:
             svg, removed = _strip_svg_background(svg, settings.background_color)
             if removed == 0:
                 warnings.append("Không tìm thấy vùng nền khớp màu đã xác nhận trong SVG.")
-        if "<svg" not in svg or "<script" in svg.lower():
-            raise RuntimeError("Engine trả về SVG không hợp lệ.")
+        try:
+            quality = analyze_logo_svg(
+                svg,
+                prepared.width_px,
+                prepared.height_px,
+                cleaned.removed_path_count,
+            )
+        except LogoSvgCleanupError as exc:
+            raise RuntimeError("Không thể kiểm tra chất lượng SVG đầu ra.") from exc
+        warnings.extend(reason for reason in quality.reasons if reason not in warnings)
         return LogoPreviewResult(
             svg=svg,
             width_px=prepared.width_px,
@@ -623,6 +771,10 @@ def process_logo_preview(
             warnings=warnings,
             engine=str(info.get("engine", "vtracer")),
             engine_version=str(info.get("version", "unknown")),
+            status=quality.status,
+            complexity=quality.complexity.to_dict(),
+            review_reasons=quality.reasons,
+            review_actions=quality.actions,
         )
     finally:
         _discard_job(job_id, token)

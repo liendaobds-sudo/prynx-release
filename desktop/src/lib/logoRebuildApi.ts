@@ -57,7 +57,7 @@ export interface LogoRebuildPreflight {
 }
 
 export interface LogoRebuildPreview {
-  status: 'ready';
+  status: 'ready' | 'review' | 'rejected';
   job_id: string;
   svg: string;
   width_px: number;
@@ -65,6 +65,17 @@ export interface LogoRebuildPreview {
   warnings: string[];
   engine: string;
   engine_version: string;
+  complexity: {
+    path_count: number;
+    drawable_path_count: number;
+    node_count: number;
+    tiny_path_count: number;
+    tiny_path_ratio: number;
+    svg_bytes: number;
+    removed_redundant_paths: number;
+  };
+  review_reasons: string[];
+  review_actions: string[];
 }
 
 async function responseError(response: Response, fallback: string): Promise<Error> {

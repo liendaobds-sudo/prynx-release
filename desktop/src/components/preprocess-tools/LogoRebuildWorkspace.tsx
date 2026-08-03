@@ -101,6 +101,7 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
   const [isRunning, setIsRunning] = useState(false);
   const [isPreflighting, setIsPreflighting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [reviewAccepted, setReviewAccepted] = useState(false);
   const [, setHistoryVersion] = useState(0);
   const activeJobRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -134,6 +135,7 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
     }
     setPreviewUrl('');
     setPreview(null);
+    setReviewAccepted(false);
   }, []);
 
   const invalidatePreview = useCallback(() => {
@@ -288,10 +290,16 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
 
   const replacePreview = (result: LogoRebuildPreview) => {
     if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
-    const url = URL.createObjectURL(new Blob([result.svg], { type: 'image/svg+xml' }));
-    previewUrlRef.current = url;
-    setPreviewUrl(url);
+    if (result.status !== 'rejected' && result.svg) {
+      const url = URL.createObjectURL(new Blob([result.svg], { type: 'image/svg+xml' }));
+      previewUrlRef.current = url;
+      setPreviewUrl(url);
+    } else {
+      previewUrlRef.current = '';
+      setPreviewUrl('');
+    }
     setPreview(result);
+    setReviewAccepted(result.status === 'ready');
   };
 
   const buildSettings = (source: EditorState = editorRef.current): LogoRebuildSettings => {
@@ -362,7 +370,15 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
       return;
     }
     invalidatePreview();
-    const nextEditor = { ...editorRef.current, paletteConfirmed: false };
+    // LOGO-REBUILD (audit 2026-08-03 §LR2.03): JPEG dùng Cutout + simplify để
+    // gọn lớp và mượt biên; không tăng despeckle vì sẽ làm rơi dấu tiếng Việt.
+    const jpegSource = selected.type === 'image/jpeg' || /\.jpe?g$/i.test(selected.name);
+    const nextEditor = {
+      ...editorRef.current,
+      paletteConfirmed: false,
+      smoothing: jpegSource ? 1 : 0,
+      despeckle: 4,
+    };
     editorRef.current = nextEditor;
     setEditor(nextEditor);
     resetHistory();
@@ -425,7 +441,13 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
         && !controller.signal.aborted
       ) {
         replacePreview(result);
-        setStatus(tv('Preview đã sẵn sàng. Hãy phóng to và kiểm tra chữ, nét nhỏ trước khi in.'));
+        if (result.status === 'rejected') {
+          setStatus(tv('Preview bị từ chối vì không có hình vector dùng được.'));
+        } else if (result.status === 'review') {
+          setStatus(tv('Preview cần kiểm tra trước khi cho phép xuất SVG.'));
+        } else {
+          setStatus(tv('Preview đã sẵn sàng. Hãy phóng to và kiểm tra chữ, nét nhỏ trước khi in.'));
+        }
       }
     } catch (reason) {
       if (revisionRef.current !== requestRevision) {
@@ -481,7 +503,12 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
   };
 
   const exportSvg = async () => {
-    if (!preview || !file) return;
+    if (
+      !preview
+      || !file
+      || preview.status === 'rejected'
+      || (preview.status === 'review' && !reviewAccepted)
+    ) return;
     setIsSaving(true);
     setError('');
     try {
@@ -509,6 +536,11 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
 
   const canUndo = pastRef.current.length > 0;
   const canRedo = futureRef.current.length > 0;
+  const canExport = Boolean(
+    preview
+    && preview.status !== 'rejected'
+    && (preview.status === 'ready' || reviewAccepted),
+  );
 
   return (
     <div tabIndex={-1} className="h-full w-full overflow-auto bg-slate-100 p-4 text-slate-800 outline-none dark:bg-zinc-950 dark:text-zinc-100">
@@ -807,7 +839,7 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
             <figure className="flex min-h-[420px] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
               <figcaption className="flex items-center justify-between border-b border-slate-200 px-4 py-3 text-xs font-bold uppercase tracking-wide text-slate-500 dark:border-zinc-800">
                 <span>{tv('Kết quả vector')}</span>
-                <button type="button" disabled={!preview || isSaving} onClick={() => void exportSvg()} className="flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1.5 text-[11px] font-bold normal-case text-white disabled:opacity-40">
+                <button type="button" disabled={!canExport || isSaving} onClick={() => void exportSvg()} className="flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1.5 text-[11px] font-bold normal-case text-white disabled:opacity-40">
                   {isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} {tv('Tải SVG')}
                 </button>
               </figcaption>
@@ -819,6 +851,21 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
               {preview && (
                 <div className="border-t border-slate-200 px-4 py-3 text-xs text-slate-500 dark:border-zinc-800 dark:text-zinc-400">
                   <p>{preview.width_px}×{preview.height_px} px · {preview.engine} {preview.engine_version}</p>
+                  <p className="mt-1">
+                    {tv('Độ phức tạp SVG')}: {preview.complexity.path_count} path · {preview.complexity.node_count} node · {preview.complexity.removed_redundant_paths} {tv('mảng dư đã dọn')}
+                  </p>
+                  {preview.status !== 'ready' && (
+                    <div className={`mt-2 rounded-lg px-3 py-2 ${preview.status === 'rejected' ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300' : 'bg-amber-50 text-amber-800 dark:bg-amber-950/30 dark:text-amber-200'}`}>
+                      <strong>{preview.status === 'rejected' ? tv('Không thể xuất SVG') : tv('Cần kiểm tra SVG')}</strong>
+                      {preview.review_reasons.map((reason, index) => <p key={`reason-${index}`} className="mt-1">{reason}</p>)}
+                      {preview.review_actions.map((action, index) => <p key={`action-${index}`} className="mt-1">→ {action}</p>)}
+                      {preview.status === 'review' && !reviewAccepted && (
+                        <button type="button" onClick={() => setReviewAccepted(true)} className="mt-2 rounded border border-amber-400 px-2 py-1 font-semibold">
+                          {tv('Tôi đã kiểm tra và vẫn muốn xuất')}
+                        </button>
+                      )}
+                    </div>
+                  )}
                   {preview.warnings.map((warning, index) => <p key={index} className="mt-1 text-amber-700 dark:text-amber-300">⚠ {warning}</p>)}
                 </div>
               )}

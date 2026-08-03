@@ -6,7 +6,7 @@ import {
     DEFAULT_CROP_TO_STICKER,
     normalizeStickerBleedColorType,
     shouldCropStickerPage,
-} from './StickerTool';
+} from './stickerToolPolicy';
 
 
 describe('StickerTool — màu bù xén Bế tem nhãn', () => {

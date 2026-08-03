@@ -350,6 +350,10 @@ _EDGE_COLOR_TRANSITION_RGB = 48
 _EDGE_COLOR_TRANSITION_RATIO = 0.05
 _EDGE_COLOR_LUMA_SPAN = 30.0
 _EDGE_COLOR_MIN_SAMPLES = 64
+_EDGE_COLOR_BRIGHT_TAIL_PERCENTILE = 99.0
+_EDGE_COLOR_BRIGHT_TAIL_DELTA = 20.0
+_EDGE_COLOR_BRIGHT_TAIL_MIN_RATIO = 0.005
+_EDGE_COLOR_BRIGHT_TAIL_MAX_RATIO = 0.08
 _EDGE_COLOR_ADAPTIVE_MAX_MM = 0.60
 _EDGE_COLOR_ADAPTIVE_ACCEPT_RATIO = 0.75
 _EDGE_COLOR_DEPTH_PENALTY = 0.002
@@ -435,11 +439,23 @@ def _edge_color_instability_metrics(
         or img.ndim != 3
         or img.shape[2] < 3
     ):
-        return {"sample_count": 0.0, "transition_ratio": 0.0, "luma_span": 0.0}
+        return {
+            "sample_count": 0.0,
+            "transition_ratio": 0.0,
+            "luma_span": 0.0,
+            "bright_tail_span": 0.0,
+            "bright_tail_ratio": 0.0,
+        }
 
     ys, xs = np.where(source_mask > 0)
     if ys.size == 0:
-        return {"sample_count": 0.0, "transition_ratio": 0.0, "luma_span": 0.0}
+        return {
+            "sample_count": 0.0,
+            "transition_ratio": 0.0,
+            "luma_span": 0.0,
+            "bright_tail_span": 0.0,
+            "bright_tail_ratio": 0.0,
+        }
 
     stride = max(1, int(math.ceil(ys.size / _EDGE_COLOR_MAX_SAMPLES)))
     ys = ys[::stride]
@@ -451,6 +467,13 @@ def _edge_color_instability_metrics(
         + 0.0722 * rgb[:, 2]
     )
     luma_span = float(np.percentile(luma, 90) - np.percentile(luma, 10))
+    luma_median = float(np.percentile(luma, 50))
+    bright_tail_span = float(
+        np.percentile(luma, _EDGE_COLOR_BRIGHT_TAIL_PERCENTILE) - luma_median
+    )
+    bright_tail_ratio = float(
+        np.mean(luma >= luma_median + _EDGE_COLOR_BRIGHT_TAIL_DELTA)
+    )
 
     changed_pairs = 0
     total_pairs = 0
@@ -476,6 +499,8 @@ def _edge_color_instability_metrics(
         "sample_count": float(ys.size),
         "transition_ratio": changed_pairs / total_pairs if total_pairs else 0.0,
         "luma_span": luma_span,
+        "bright_tail_span": bright_tail_span,
+        "bright_tail_ratio": bright_tail_ratio,
     }
 
 
@@ -488,11 +513,35 @@ def _edge_color_is_unstable(metrics: dict[str, float]) -> bool:
     )
 
 
+def _edge_color_has_sparse_bright_fringe(metrics: dict[str, float]) -> bool:
+    """True khi chỉ một ít pixel shell sáng vọt lên như AA bị pha nền trắng.
+
+    QUALITY (fix 2026-08-03 §EDGE-SAMPLE.1): dùng cả độ lệch sáng và tỷ lệ thưa.
+    Mảng màu sáng có chủ đích kéo dài quanh viền sẽ vượt trần tỷ lệ; nếu nó chỉ là
+    một cung nhỏ nhưng tiếp tục vào sâu, điểm ổn định của các shell sau không giảm
+    đủ nên adaptive vẫn giữ shell nông ban đầu.
+    """
+    sample_count = metrics.get("sample_count", 0.0)
+    bright_tail_span = metrics.get("bright_tail_span", 0.0)
+    bright_tail_ratio = metrics.get("bright_tail_ratio", 0.0)
+    return (
+        sample_count >= _EDGE_COLOR_MIN_SAMPLES
+        and bright_tail_span >= _EDGE_COLOR_BRIGHT_TAIL_DELTA
+        and _EDGE_COLOR_BRIGHT_TAIL_MIN_RATIO
+        <= bright_tail_ratio
+        <= _EDGE_COLOR_BRIGHT_TAIL_MAX_RATIO
+    )
+
+
 def _edge_color_stability_score(metrics: dict[str, float]) -> float:
     """Điểm thấp hơn = shell ổn định hơn; ưu tiên giảm đổi màu từng pixel."""
     transition = max(0.0, float(metrics.get("transition_ratio", 0.0)))
     luma = min(255.0, max(0.0, float(metrics.get("luma_span", 0.0)))) / 255.0
-    return transition + 0.02 * luma
+    bright_tail = (
+        min(255.0, max(0.0, float(metrics.get("bright_tail_span", 0.0))))
+        / 255.0
+    )
+    return transition + 0.02 * luma + 0.02 * bright_tail
 
 
 def _build_adaptive_edge_color_source_mask(
@@ -524,7 +573,11 @@ def _build_adaptive_edge_color_source_mask(
         exclude_near_white=exclude_near_white,
     )
     initial_metrics = _edge_color_instability_metrics(initial, img)
-    if not _edge_color_is_unstable(initial_metrics):
+    sparse_bright_fringe = _edge_color_has_sparse_bright_fringe(initial_metrics)
+    if not (
+        _edge_color_is_unstable(initial_metrics)
+        or sparse_bright_fringe
+    ):
         return initial, initial_peel
 
     deepest_peel = max(initial_peel, int(max_peel_px))
@@ -536,13 +589,20 @@ def _build_adaptive_edge_color_source_mask(
         min(deepest_peel, initial_peel + band),
         deepest_peel,
     })
+    # Fringe sáng thưa thường chiếm trọn lớp AA đầu tiên. Khi đã nhận ra mẫu này,
+    # lùi tối thiểu một bề dày shell để không chọn lại lớp kế cận vẫn còn pha nền.
+    minimum_candidate_peel = (
+        min(deepest_peel, initial_peel + band)
+        if sparse_bright_fringe
+        else initial_peel + 1
+    )
 
     best_mask = initial
     best_peel = initial_peel
     initial_score = _edge_color_stability_score(initial_metrics)
     best_score = initial_score
     for candidate_peel in candidate_peels:
-        if candidate_peel <= initial_peel:
+        if candidate_peel < minimum_candidate_peel:
             continue
         candidate = _build_edge_color_source_mask(
             silhouette,
@@ -3326,7 +3386,34 @@ class StickerEngine:
                                 )
 
                         close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_px*2+1, close_px*2+1))
-                        closed_mask = cv2.morphologyEx(padded_original_mask, cv2.MORPH_CLOSE, close_kernel)
+                        # QUALITY (fix 2026-08-03 §CARDINAL.1): khi tem chạm mép trang và
+                        # bleed < bán kính close 1,5 mm, kernel bị cắt bởi biên canvas đệm.
+                        # Phép erode sau dilation khi đó để lại bốn gai ở các tiếp tuyến;
+                        # các gai đục thủng bleed_ring thành bốn khe trắng. Đóng mask trên
+                        # một vành 0 tạm đủ rộng rồi cắt về kích thước cũ để morphology
+                        # không phụ thuộc độ dày bleed/padding của ảnh màu.
+                        close_guard_px = close_px + 1
+                        guarded_footprint_mask = np.pad(
+                            padded_original_mask,
+                            pad_width=close_guard_px,
+                            mode="constant",
+                            constant_values=0,
+                        )
+                        # Tái dùng chính buffer có guard để không giữ thêm một mask
+                        # full-page trong suốt phần xử lý còn lại của trang.
+                        cv2.morphologyEx(
+                            guarded_footprint_mask,
+                            cv2.MORPH_CLOSE,
+                            close_kernel,
+                            dst=guarded_footprint_mask,
+                        )
+                        closed_mask = np.ascontiguousarray(
+                            guarded_footprint_mask[
+                                close_guard_px:-close_guard_px,
+                                close_guard_px:-close_guard_px,
+                            ]
+                        )
+                        del guarded_footprint_mask
                         foot_contours, _ = cv2.findContours(closed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                         sticker_footprint = np.zeros_like(padded_original_mask)
                         cv2.drawContours(sticker_footprint, foot_contours, -1, 255, cv2.FILLED)

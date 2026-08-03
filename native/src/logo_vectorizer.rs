@@ -7,6 +7,7 @@
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use vtracer::progress::CancelToken;
 use vtracer::{Clustering, Color, ColorImage, Config, FitMode, Hierarchical};
 
@@ -56,6 +57,9 @@ fn build_image(width: usize, height: usize, rgba: Vec<u8>) -> Result<ColorImage,
             height,
             expected
         ));
+    }
+    if rgba.chunks_exact(4).all(|pixel| pixel[3] == 0) {
+        return Err("Ảnh hoặc vùng đã chọn không có pixel nhìn thấy".to_string());
     }
     Ok(ColorImage {
         pixels: rgba,
@@ -114,6 +118,10 @@ fn build_config(
                 return Err("Chế độ màu cần palette engine gồm 1–13 màu".to_string());
             }
             config.clustering = Clustering::ColorCluster;
+            // LOGO-REBUILD (audit 2026-08-03 §LR2.03): Cutout tạo các vùng màu
+            // không chồng lớp. Stacked từng sinh hàng nghìn path con trên một
+            // mảng kín và buộc despeckle cao đến mức làm rơi dấu tiếng Việt.
+            config.hierarchical = Hierarchical::Cutout;
             config.palette = palette
                 .iter()
                 .map(|value| parse_hex_color(value))
@@ -124,18 +132,29 @@ fn build_config(
     Ok(config)
 }
 
+fn run_vtracer_guarded<T>(operation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    // LOGO-REBUILD (audit 2026-08-02 §LR2.02): dependency VTracer/VisionCortex
+    // từng panic với cluster rỗng. Chuyển unwind thành lỗi thường ngay tại biên Rust.
+    match catch_unwind(AssertUnwindSafe(operation)) {
+        Ok(result) => result,
+        Err(_) => Err("VTracer gặp lỗi nội bộ khi vector hóa ảnh".to_string()),
+    }
+}
+
 fn render_svg(image: ColorImage, config: Config, cancel: CancelToken) -> Result<String, String> {
-    let pipeline = config
-        .build()
-        .map_err(|error| format!("Không dựng được pipeline VTracer: {error}"))?;
-    let mut ignore_progress = |_| {};
-    let document = pipeline
-        .run_with_progress(&image, &cancel, &mut ignore_progress)
-        .map_err(|error| match error {
-            vtracer::Error::Cancelled => "Đã hủy vector hóa logo".to_string(),
-            _ => format!("VTracer không thể vector hóa ảnh: {error}"),
-        })?;
-    Ok(pipeline.writer.write(&document))
+    run_vtracer_guarded(|| {
+        let pipeline = config
+            .build()
+            .map_err(|error| format!("Không dựng được pipeline VTracer: {error}"))?;
+        let mut ignore_progress = |_| {};
+        let document = pipeline
+            .run_with_progress(&image, &cancel, &mut ignore_progress)
+            .map_err(|error| match error {
+                vtracer::Error::Cancelled => "Đã hủy vector hóa logo".to_string(),
+                _ => format!("VTracer không thể vector hóa ảnh: {error}"),
+            })?;
+        Ok(pipeline.writer.write(&document))
+    })
 }
 
 /// Vector hóa một ảnh đã tiền xử lý; phần tính toán chạy ngoài Python GIL.
@@ -202,6 +221,22 @@ mod tests {
     }
 
     #[test]
+    fn rejects_image_without_visible_pixels() {
+        let error = match build_image(2, 2, vec![0; 16]) {
+            Ok(_) => panic!("ảnh trong suốt hoàn toàn phải bị từ chối"),
+            Err(error) => error,
+        };
+        assert!(error.contains("không có pixel nhìn thấy"));
+    }
+
+    #[test]
+    fn dependency_panic_is_mapped_to_regular_error() {
+        let error = run_vtracer_guarded::<()>(|| panic!("panic mô phỏng từ dependency"))
+            .expect_err("panic dependency phải được đổi thành lỗi thường");
+        assert!(error.contains("lỗi nội bộ"));
+    }
+
+    #[test]
     fn fixed_palette_is_mapped_to_vtracer_colors() {
         let config = build_config(
             "fixed_palette",
@@ -211,6 +246,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.clustering, Clustering::ColorCluster);
+        assert_eq!(config.hierarchical, Hierarchical::Cutout);
         assert_eq!(config.palette.len(), 2);
         assert_eq!(config.filter_speckle, 48);
         assert_eq!(config.simplify, Some(1.0));

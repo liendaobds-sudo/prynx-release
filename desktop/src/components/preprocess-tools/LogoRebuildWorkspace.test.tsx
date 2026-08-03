@@ -27,6 +27,20 @@ async function selectFileAndApplySuggestedPalette(filename: string): Promise<Fil
   return file;
 }
 
+const READY_QC = {
+  complexity: {
+    path_count: 12,
+    drawable_path_count: 12,
+    node_count: 240,
+    tiny_path_count: 0,
+    tiny_path_ratio: 0,
+    svg_bytes: 4096,
+    removed_redundant_paths: 3,
+  },
+  review_reasons: [],
+  review_actions: [],
+};
+
 describe('LogoRebuildWorkspace', () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -81,8 +95,57 @@ describe('LogoRebuildWorkspace', () => {
     expect(screen.getByRole('button', { name: 'Đen trắng' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Logo màu' }).getAttribute('aria-pressed')).toBe('true');
     expect((screen.getByLabelText('Độ mượt đường cong') as HTMLInputElement).value).toBe('0');
+    expect((screen.getByLabelText('Khử hạt nhỏ') as HTMLInputElement).value).toBe('4');
     expect(screen.queryByText(/auto.?color/i)).toBeNull();
     expect((screen.getByLabelText('Cân bằng ánh sáng trên vải/ảnh chụp') as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('dùng làm mượt Cutout cho JPEG mà không tăng khử hạt', async () => {
+    render(<LogoRebuildWorkspace />);
+    await waitFor(() => expect(screen.getByText(/vtracer 1.0.0-alpha.2/i)).toBeTruthy());
+
+    const jpeg = new File(['jpeg-data'], 'logo-noisy.jpg', { type: 'image/jpeg' });
+    fireEvent.change(screen.getByLabelText('Chọn ảnh có logo'), { target: { files: [jpeg] } });
+    expect((screen.getByLabelText('Khử hạt nhỏ') as HTMLInputElement).value).toBe('4');
+    expect((screen.getByLabelText('Độ mượt đường cong') as HTMLInputElement).value).toBe('1');
+
+    const png = new File(['png-data'], 'logo-flat.png', { type: 'image/png' });
+    fireEvent.change(screen.getByLabelText('Chọn ảnh khác'), { target: { files: [png] } });
+    expect((screen.getByLabelText('Khử hạt nhỏ') as HTMLInputElement).value).toBe('4');
+    expect((screen.getByLabelText('Độ mượt đường cong') as HTMLInputElement).value).toBe('0');
+  });
+
+  it('khóa xuất SVG review cho đến khi người dùng xác nhận đã kiểm tra', async () => {
+    vi.mocked(createLogoRebuildPreview).mockResolvedValue({
+      status: 'review',
+      job_id: 'review-job',
+      svg: '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0H10V10H0Z"/></svg>',
+      width_px: 100,
+      height_px: 100,
+      warnings: [],
+      engine: 'vtracer',
+      engine_version: '1.0.0-alpha.2',
+      complexity: {
+        ...READY_QC.complexity,
+        path_count: 1200,
+        node_count: 24000,
+        removed_redundant_paths: 418,
+      },
+      review_reasons: ['SVG còn nhiều mảng nhỏ, khó chỉnh sửa.'],
+      review_actions: ['Tăng mức khử hạt rồi tạo lại preview.'],
+    });
+    render(<LogoRebuildWorkspace />);
+    await waitFor(() => expect(screen.getByText(/vtracer 1.0.0-alpha.2/i)).toBeTruthy());
+    await selectFileAndApplySuggestedPalette('review.jpg');
+    fireEvent.click(screen.getByRole('button', { name: 'Tạo preview SVG' }));
+
+    expect(await screen.findByText('Cần kiểm tra SVG')).toBeTruthy();
+    expect(screen.getByText(/1200 path · 24000 node · 418/)).toBeTruthy();
+    const download = screen.getByRole('button', { name: /Tải SVG/ }) as HTMLButtonElement;
+    expect(download.disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tôi đã kiểm tra và vẫn muốn xuất' }));
+    expect(download.disabled).toBe(false);
   });
 
   it('gửi palette người dùng xác nhận và hiển thị SVG preview', async () => {
@@ -95,6 +158,7 @@ describe('LogoRebuildWorkspace', () => {
       warnings: [],
       engine: 'vtracer',
       engine_version: '1.0.0-alpha.2',
+      ...READY_QC,
     });
     render(<LogoRebuildWorkspace />);
     await waitFor(() => expect(screen.getByText(/vtracer 1.0.0-alpha.2/i)).toBeTruthy());
@@ -218,6 +282,7 @@ describe('LogoRebuildWorkspace', () => {
       warnings: [],
       engine: 'vtracer',
       engine_version: '1.0.0-alpha.2',
+      ...READY_QC,
     });
     render(<LogoRebuildWorkspace />);
     await waitFor(() => expect(screen.getByText(/vtracer 1.0.0-alpha.2/i)).toBeTruthy());
@@ -262,6 +327,7 @@ describe('LogoRebuildWorkspace', () => {
       warnings: [],
       engine: 'vtracer',
       engine_version: '1.0.0-alpha.2',
+      ...READY_QC,
     });
 
     await waitFor(() => expect(screen.queryByAltText('SVG vector đã dựng')).toBeNull());
@@ -299,6 +365,7 @@ describe('LogoRebuildWorkspace', () => {
         warnings: [],
         engine: 'vtracer',
         engine_version: '1.0.0-alpha.2',
+        ...READY_QC,
       });
       resolveCancel(true);
       await Promise.resolve();
@@ -317,6 +384,7 @@ describe('LogoRebuildWorkspace', () => {
         warnings: [],
         engine: 'vtracer',
         engine_version: '1.0.0-alpha.2',
+        ...READY_QC,
       });
     });
     expect(await screen.findByAltText('SVG vector đã dựng')).toBeTruthy();
@@ -346,6 +414,7 @@ describe('LogoRebuildWorkspace', () => {
         warnings: [],
         engine: 'vtracer',
         engine_version: '1.0.0-alpha.2',
+        ...READY_QC,
       });
     });
     expect(URL.createObjectURL).toHaveBeenCalledTimes(objectUrlCallsBeforeUnmount);
@@ -363,6 +432,7 @@ describe('LogoRebuildWorkspace', () => {
         warnings: [],
         engine: 'vtracer',
         engine_version: '1.0.0-alpha.2',
+        ...READY_QC,
       });
       render(<LogoRebuildWorkspace />);
       await waitFor(() => expect(screen.getByText(/vtracer 1.0.0-alpha.2/i)).toBeTruthy());

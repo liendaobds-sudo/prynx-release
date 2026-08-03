@@ -181,8 +181,18 @@ class LogoRebuildCapabilitiesResponse(BaseModel):
     limitations: list[str]
 
 
+class LogoSvgComplexity(BaseModel):
+    path_count: int = Field(ge=0)
+    drawable_path_count: int = Field(ge=0)
+    node_count: int = Field(ge=0)
+    tiny_path_count: int = Field(ge=0)
+    tiny_path_ratio: float = Field(ge=0.0, le=1.0)
+    svg_bytes: int = Field(ge=0)
+    removed_redundant_paths: int = Field(ge=0)
+
+
 class LogoRebuildPreviewResponse(BaseModel):
-    status: Literal["ready"] = "ready"
+    status: Literal["ready", "review", "rejected"] = "ready"
     job_id: UUID
     svg: str
     width_px: int = Field(gt=0)
@@ -190,6 +200,9 @@ class LogoRebuildPreviewResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     engine: str
     engine_version: str
+    complexity: LogoSvgComplexity
+    review_reasons: list[str] = Field(default_factory=list)
+    review_actions: list[str] = Field(default_factory=list)
 
 
 class LogoRebuildCancelResponse(BaseModel):

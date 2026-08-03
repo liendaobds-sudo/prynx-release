@@ -174,6 +174,49 @@ def _make_white_outline_pdf(path: str, *, transparent: bool) -> None:
     pdf.save()
 
 
+def _make_page_touching_circle_pdf(path: str, *, transparent: bool) -> None:
+    """Tem tròn xanh chạm đúng bốn mép trang, nền trắng hoặc trong suốt."""
+    import io
+    import numpy as np
+    from PIL import Image
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+
+    size = 600
+    page_points = 144.0
+    yy, xx = np.mgrid[:size, :size]
+    center = (size - 1) / 2.0
+    radius = (size - 1) / 2.0
+    circle = (xx - center) ** 2 + (yy - center) ** 2 <= radius ** 2
+    rgb = np.full((size, size, 3), 255, dtype=np.uint8)
+    rgb[circle] = (12, 125, 203)
+
+    if transparent:
+        alpha = np.where(circle, 255, 0).astype(np.uint8)
+        image = Image.fromarray(np.dstack((rgb, alpha)), mode="RGBA")
+    else:
+        image = Image.fromarray(rgb, mode="RGB")
+
+    png = io.BytesIO()
+    image.save(png, format="PNG")
+    png.seek(0)
+    pdf = canvas.Canvas(
+        path,
+        pagesize=(page_points, page_points),
+        pageCompression=0,
+    )
+    pdf.drawImage(
+        ImageReader(png),
+        0,
+        0,
+        width=page_points,
+        height=page_points,
+        mask="auto",
+    )
+    pdf.showPage()
+    pdf.save()
+
+
 def _read_all_content(page) -> bytes:
     raw = page.obj.get("/Contents")
     if isinstance(raw, pikepdf.Array):
@@ -621,6 +664,84 @@ def test_alpha_cut_mode_keeps_rgb_order_for_image_bleed(tmp_path):
     assert float(median_rgb[1]) > float(median_rgb[2]) + 100.0, median_rgb.tolist()
 
 
+@pytest.mark.parametrize(
+    "cut_mode,transparent,remove_white_bg",
+    [
+        ("alpha", True, False),
+        ("original", False, True),
+    ],
+    ids=["alpha", "original-remove-white"],
+)
+def test_narrow_image_bleed_keeps_cardinal_points_closed(
+    tmp_path, cut_mode, transparent, remove_white_bg
+):
+    """Bleed hẹp hơn close-mask 1,5 mm không được thủng ở bốn tiếp tuyến."""
+    import numpy as np
+
+    src = str(tmp_path / f"page_touching_circle_{cut_mode}_source.pdf")
+    out = str(tmp_path / f"page_touching_circle_{cut_mode}_bleed.pdf")
+    _make_page_touching_circle_pdf(src, transparent=transparent)
+
+    dpi = 300
+    bleed_mm = 1.0
+    success, meta = StickerEngine(dpi=dpi).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode=cut_mode,
+        offset_mm=0.0,
+        corner_style="preserve",
+        bleed_mm=bleed_mm,
+        fill_holes=True,
+        remove_white_bg=remove_white_bg,
+        bleed_color_type="image",
+        draw_cut_contour=False,
+        rectangle_mode=False,
+        shape_mode="contour",
+    )
+    assert success is True
+    assert meta.get("warning") is None
+
+    with pikepdf.Pdf.open(out) as result:
+        xobjects = result.pages[0].Resources.get("/XObject", {})
+        bleed_images = [
+            xobjects[name]
+            for name in xobjects
+            if str(xobjects[name].get("/Subtype")) == "/Image"
+            and xobjects[name].get("/SMask") is not None
+        ]
+        assert len(bleed_images) == 1
+        bleed_image = bleed_images[0]
+        width = int(bleed_image.get("/Width"))
+        height = int(bleed_image.get("/Height"))
+        bleed_rgb = np.frombuffer(
+            bleed_image.read_bytes(), dtype=np.uint8
+        ).reshape(height, width, 3)
+        bleed_alpha = np.frombuffer(
+            bleed_image.get("/SMask").read_bytes(), dtype=np.uint8
+        ).reshape(height, width)
+
+    center_y, center_x = height // 2, width // 2
+    cardinal_rays = {
+        "trên": (bleed_alpha[:center_y, center_x], bleed_rgb[:center_y, center_x]),
+        "dưới": (bleed_alpha[center_y:, center_x], bleed_rgb[center_y:, center_x]),
+        "trái": (bleed_alpha[center_y, :center_x], bleed_rgb[center_y, :center_x]),
+        "phải": (bleed_alpha[center_y, center_x:], bleed_rgb[center_y, center_x:]),
+    }
+    minimum_opaque_pixels = int(np.ceil(bleed_mm * dpi / 25.4))
+    gaps = {}
+    wrong_colors = {}
+    for direction, (alpha_ray, rgb_ray) in cardinal_rays.items():
+        opaque = alpha_ray >= 128
+        if np.count_nonzero(opaque) < minimum_opaque_pixels:
+            gaps[direction] = alpha_ray.tolist()
+            continue
+        median_rgb = np.median(rgb_ray[opaque], axis=0).tolist()
+        if not (median_rgb[0] < 80 and median_rgb[1] > 90 and median_rgb[2] > 170):
+            wrong_colors[direction] = median_rgb
+    assert not gaps, gaps
+    assert not wrong_colors, wrong_colors
+
+
 def test_alpha_cut_mode_falls_back_to_uniform_corner_background(tmp_path):
     """PNG đã phẳng nền tối vẫn được tách bằng nền nối từ bốn góc và có cảnh báo."""
     src = str(tmp_path / "opaque_white_outline.pdf")
@@ -1036,6 +1157,84 @@ def test_edge_color_source_skips_near_white_aa():
     rim = img[csm > 0]
     assert float(rim.min(axis=1).mean()) < 240, "nguồn vẫn toàn pixel trắng/AA"
     assert float(rim[:, 0].mean()) > 100
+
+
+def test_adaptive_edge_color_peels_sparse_bright_fringe():
+    """Fringe xanh pha trắng thưa phải tự lùi thêm, không bị kéo thành nan bù xén."""
+    import cv2
+    import numpy as np
+    from app.workers.sticker_engine import _build_edge_color_source_mask
+
+    height = width = 240
+    center_y = center_x = 120
+    yy, xx = np.ogrid[:height, :width]
+    radius = np.sqrt((xx - center_x) ** 2 + (yy - center_y) ** 2)
+    angle = (
+        np.degrees(np.arctan2(yy - center_y, xx - center_x)) + 360.0
+    ) % 360.0
+    silhouette = np.zeros((height, width), np.uint8)
+    silhouette[radius <= 80] = 255
+    blue = np.array([10, 124, 200], np.uint8)
+    pale_blue = np.array([90, 165, 208], np.uint8)
+    image = np.full((height, width, 3), 255, np.uint8)
+    image[radius <= 80] = blue
+
+    # Mô phỏng vài cụm AA bị pha nền trắng ở lớp pixel thứ hai. Chúng chỉ chiếm
+    # khoảng 2% shell nên ngưỡng nhiễu cao tần cũ không kích hoạt dò sâu.
+    sparse_arcs = (angle % 30.0) < 2.0
+    fringe = (radius > 77.5) & (radius <= 79.5) & sparse_arcs
+    image[fringe] = pale_blue
+
+    initial = _build_edge_color_source_mask(
+        silhouette,
+        image,
+        band_px=3,
+        peel_px=1,
+        kernel_type=cv2.MORPH_RECT,
+    )
+    initial_metrics = _edge_color_instability_metrics(initial, image)
+    assert initial_metrics["transition_ratio"] < 0.05
+    assert initial_metrics["luma_span"] < 30.0
+    assert np.any(np.all(image[initial > 0] == pale_blue, axis=1))
+
+    adaptive, selected_peel = _build_adaptive_edge_color_source_mask(
+        silhouette,
+        image,
+        band_px=3,
+        peel_px=1,
+        max_peel_px=7,
+        kernel_type=cv2.MORPH_RECT,
+    )
+    assert selected_peel == 4
+    assert not np.any(np.all(image[adaptive > 0] == pale_blue, axis=1))
+
+    # Một cung xanh nhạt có chủ đích kéo dài vào trong phải được giữ: shell sâu
+    # không ổn định hơn shell nông nên adaptive không được tự ăn mất dải màu đó.
+    intentional = np.full((height, width, 3), 255, np.uint8)
+    intentional[radius <= 80] = blue
+    intentional[(radius <= 80) & (angle < 8.0)] = pale_blue
+    intentional_initial = _build_edge_color_source_mask(
+        silhouette,
+        intentional,
+        band_px=3,
+        peel_px=1,
+        kernel_type=cv2.MORPH_RECT,
+    )
+    intentional_adaptive, intentional_peel = (
+        _build_adaptive_edge_color_source_mask(
+            silhouette,
+            intentional,
+            band_px=3,
+            peel_px=1,
+            max_peel_px=7,
+            kernel_type=cv2.MORPH_RECT,
+        )
+    )
+    assert intentional_peel == 1
+    assert np.array_equal(intentional_adaptive, intentional_initial)
+    assert np.any(
+        np.all(intentional[intentional_adaptive > 0] == pale_blue, axis=1)
+    )
 
 
 def test_edge_color_warning_detects_radial_halo_but_keeps_long_color_segments():

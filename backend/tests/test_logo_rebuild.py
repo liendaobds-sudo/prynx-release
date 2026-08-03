@@ -215,6 +215,53 @@ def test_fully_transparent_image_returns_no_palette_with_warning():
     assert any("không có pixel nhìn thấy" in warning for warning in warnings)
 
 
+def test_fully_transparent_preview_is_rejected_before_native(monkeypatch):
+    calls = {"trace": 0}
+
+    class FakeCancel:
+        def cancel(self):
+            return None
+
+        def is_cancelled(self):
+            return False
+
+    class FakeNative:
+        LogoVectorizerCancel = FakeCancel
+
+        @staticmethod
+        def logo_vectorizer_info():
+            return {"engine": "fake-vtracer", "version": "test"}
+
+        @staticmethod
+        def logo_vectorize_rgba(*_args, **_kwargs):
+            calls["trace"] += 1
+            return '<svg xmlns="http://www.w3.org/2000/svg"/>'
+
+    source = Image.new("RGBA", (32, 32), (12, 34, 56, 0))
+    monkeypatch.setattr(logo_worker, "_load_native_module", lambda: FakeNative)
+    monkeypatch.setattr(logo_worker, "read_memory_status_mb", lambda: (None, None))
+    monkeypatch.setattr(
+        logo_worker, "_upscale_target_dimensions", lambda width, height: (width, height)
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/logo-rebuild/preview",
+            files={"file": ("transparent.png", _image_bytes(source), "image/png")},
+            data={
+                "settings_json": '{"mode":"fixed_palette","palette":["#111111"]}',
+                "job_id": "708f7941-86d3-4e2d-8eb9-e0c7c59c7829",
+            },
+        )
+        health = client.get("/health")
+
+    assert response.status_code == 422, response.text
+    assert "không có pixel nhìn thấy" in response.json()["detail"]
+    assert calls["trace"] == 0
+    assert health.status_code == 200
+    assert "708f7941-86d3-4e2d-8eb9-e0c7c59c7829" not in logo_worker._ACTIVE_JOBS
+
+
 def test_jpeg_exif_orientation_is_reflected_in_reported_dimensions():
     exif = Image.Exif()
     exif[274] = 6
@@ -264,6 +311,18 @@ def test_preview_returns_svg_from_scheduled_adapter(monkeypatch):
             warnings=["preview-test"],
             engine="vtracer",
             engine_version="1.0.0-alpha.2",
+            status="review",
+            complexity={
+                "path_count": 1200,
+                "drawable_path_count": 1200,
+                "node_count": 6000,
+                "tiny_path_count": 1100,
+                "tiny_path_ratio": 0.916667,
+                "svg_bytes": 123456,
+                "removed_redundant_paths": 42,
+            },
+            review_reasons=["SVG còn nhiều mảng nhỏ, khó chỉnh sửa."],
+            review_actions=["Tăng mức khử hạt rồi tạo lại preview."],
         )
 
     monkeypatch.setattr(logo_route, "process_logo_preview", fake_preview)
@@ -280,6 +339,11 @@ def test_preview_returns_svg_from_scheduled_adapter(monkeypatch):
     payload = response.json()
     assert payload["job_id"] == str(job_id)
     assert payload["svg"].startswith("<svg")
+    assert payload["status"] == "review"
+    assert payload["complexity"]["path_count"] == 1200
+    assert payload["complexity"]["removed_redundant_paths"] == 42
+    assert payload["review_reasons"] == ["SVG còn nhiều mảng nhỏ, khó chỉnh sửa."]
+    assert payload["review_actions"] == ["Tăng mức khử hạt rồi tạo lại preview."]
     assert payload["engine_version"] == "1.0.0-alpha.2"
     assert "preview-test" in payload["warnings"]
 
@@ -346,8 +410,55 @@ def test_small_logo_uses_nearest_upscale_before_trace(monkeypatch):
         "RGBA", (prepared.width_px, prepared.height_px), prepared.rgba
     )
     assert resized.getpixel((399, 600))[:3] == (255, 255, 255)
-    assert resized.getpixel((400, 600))[:3] == (10, 20, 30)
+    assert resized.getpixel((400, 600))[:3] == (0, 0, 0)
     assert any("nội suy giữ biên" in warning for warning in prepared.warnings)
+
+
+def test_worker_scales_despeckle_area_with_upscale(monkeypatch):
+    calls = {}
+
+    class FakeCancel:
+        def cancel(self):
+            return None
+
+        def is_cancelled(self):
+            return False
+
+    class FakeNative:
+        LogoVectorizerCancel = FakeCancel
+
+        @staticmethod
+        def logo_vectorizer_info():
+            return {"engine": "fake-vtracer", "version": "test"}
+
+        @staticmethod
+        def logo_vectorize_rgba(width, height, _rgba, _mode, **kwargs):
+            calls.update(
+                width=width,
+                height=height,
+                despeckle_size_px=kwargs["despeckle_size_px"],
+            )
+            return (
+                '<svg xmlns="http://www.w3.org/2000/svg">'
+                '<path d="M0 0H200V100H0Z" fill="#000000"/>'
+                "</svg>"
+            )
+
+    monkeypatch.setattr(logo_worker, "_load_native_module", lambda: FakeNative)
+    monkeypatch.setattr(logo_worker, "read_memory_status_mb", lambda: (None, None))
+    monkeypatch.setattr(
+        logo_worker, "_upscale_target_dimensions", lambda _width, _height: (200, 100)
+    )
+
+    result = logo_worker.process_logo_preview(
+        _encoded_image("PNG", size=(100, 50)),
+        LogoRebuildSettings(mode="monochrome", despeckle_size_px=4),
+        "scaled-despeckle-test",
+    )
+
+    assert calls == {"width": 200, "height": 100, "despeckle_size_px": 8}
+    assert result.status == "ready"
+    assert any("4 px" in warning and "8 px" in warning for warning in result.warnings)
 
 
 def test_cmyk_icc_transform_runs_before_rgb_conversion(monkeypatch):
@@ -406,7 +517,11 @@ def test_worker_crops_rgba_and_passes_confirmed_palette(monkeypatch):
                 palette=kwargs["palette"],
                 smoothing=kwargs["smoothing"],
             )
-            return '<svg xmlns="http://www.w3.org/2000/svg"/>'
+            return (
+                '<svg xmlns="http://www.w3.org/2000/svg">'
+                '<path d="M0 0H50V40H0Z" fill="#ff0000"/>'
+                "</svg>"
+            )
 
     monkeypatch.setattr(logo_worker, "_load_native_module", lambda: FakeNative)
     monkeypatch.setattr(logo_worker, "read_memory_status_mb", lambda: (None, None))
@@ -462,7 +577,11 @@ def test_transparent_monochrome_preserves_solid_fill_and_ignores_illumination(mo
             center_offset = ((height // 2) * width + width // 2) * 4
             calls["center"] = tuple(rgba[center_offset : center_offset + 4])
             calls["outside"] = tuple(rgba[0:4])
-            return '<svg xmlns="http://www.w3.org/2000/svg"/>'
+            return (
+                '<svg xmlns="http://www.w3.org/2000/svg">'
+                '<path d="M16 16H48V48H16Z" fill="#000000"/>'
+                "</svg>"
+            )
 
     source = Image.new("RGBA", (64, 64), (255, 255, 255, 0))
     for y in range(16, 48):
@@ -486,6 +605,70 @@ def test_transparent_monochrome_preserves_solid_fill_and_ignores_illumination(mo
     assert calls["outside"] == (255, 255, 255, 255)
     assert any("bỏ qua cân bằng ánh sáng" in warning for warning in result.warnings)
     assert "transparent-monochrome-test" not in logo_worker._ACTIVE_JOBS
+
+
+@pytest.mark.parametrize(
+    ("background", "logo"),
+    [
+        ((255, 255, 255), (255, 220, 0)),
+        ((24, 24, 24), (245, 245, 245)),
+    ],
+)
+def test_monochrome_detects_background_polarity_and_light_ink(
+    monkeypatch, background, logo
+):
+    monkeypatch.setattr(logo_worker, "read_memory_status_mb", lambda: (None, None))
+    monkeypatch.setattr(
+        logo_worker, "_upscale_target_dimensions", lambda width, height: (width, height)
+    )
+    source = Image.new("RGB", (64, 64), background)
+    source.paste(logo, (16, 16, 48, 48))
+
+    prepared = logo_worker.prepare_logo_image(
+        _image_bytes(source),
+        LogoRebuildSettings(mode="monochrome"),
+    )
+    bitmap = Image.frombytes("RGBA", (prepared.width_px, prepared.height_px), prepared.rgba)
+
+    assert bitmap.getpixel((0, 0))[:3] == (255, 255, 255)
+    assert bitmap.getpixel((32, 32))[:3] == (0, 0, 0)
+    assert any("nền sáng/tối" in warning for warning in prepared.warnings)
+
+
+def test_monochrome_empty_svg_is_returned_as_rejected(monkeypatch):
+    class FakeCancel:
+        def cancel(self):
+            return None
+
+        def is_cancelled(self):
+            return False
+
+    class FakeNative:
+        LogoVectorizerCancel = FakeCancel
+
+        @staticmethod
+        def logo_vectorizer_info():
+            return {"engine": "fake-vtracer", "version": "test"}
+
+        @staticmethod
+        def logo_vectorize_rgba(*_args, **_kwargs):
+            return '<svg xmlns="http://www.w3.org/2000/svg"/>'
+
+    monkeypatch.setattr(logo_worker, "_load_native_module", lambda: FakeNative)
+    monkeypatch.setattr(logo_worker, "read_memory_status_mb", lambda: (None, None))
+    monkeypatch.setattr(
+        logo_worker, "_upscale_target_dimensions", lambda width, height: (width, height)
+    )
+
+    result = logo_worker.process_logo_preview(
+        _encoded_image("PNG", size=(64, 64)),
+        LogoRebuildSettings(mode="monochrome"),
+        "empty-monochrome-test",
+    )
+
+    assert result.status == "rejected"
+    assert result.complexity["drawable_path_count"] == 0
+    assert result.review_actions
 
 
 def test_reserved_job_can_be_cancelled_before_worker_starts(monkeypatch):
@@ -576,6 +759,115 @@ def test_worker_removes_confirmed_background_color_from_svg(monkeypatch):
     assert mask_rect.attrib["width"] == "10"
     assert mask_rect.attrib["height"] == "10"
     assert "background-strip-test" not in logo_worker._ACTIVE_JOBS
+
+
+def test_worker_masks_compound_background_path_with_counters():
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+        '<path d="M0 0H10V10H0Z" fill="#EF4444"/>'
+        '<path d="M0 0H10V10H0Z M2 2H8V8H2Z M4 4H6V6H4Z" '
+        'fill="#233D69" fill-rule="evenodd"/>'
+        "</svg>"
+    )
+
+    stripped, removed = logo_worker._strip_svg_background(svg, "#233d69")
+
+    assert removed == 1
+    assert "#233D69" not in stripped
+    root = logo_worker.ElementTree.fromstring(stripped)
+    namespace = "{http://www.w3.org/2000/svg}"
+    mask = root.find(f".//{namespace}mask")
+    assert mask is not None
+    mask_path = mask.find(f"{namespace}path")
+    assert mask_path is not None
+    assert mask_path.attrib["fill"] == "#000000"
+    assert mask_path.attrib["fill-rule"] == "evenodd"
+    assert mask_path.attrib["d"].count("M") == 3
+    masked_group = root.find(f"./{namespace}g")
+    assert masked_group is not None
+    assert masked_group.attrib["mask"] == "url(#prynx-background-cutout)"
+
+
+def test_svg_cleanup_removes_only_redundant_same_color_fragments():
+    from app.workers.logo_svg_cleanup import cleanup_redundant_logo_paths
+
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+        '<path d="M0 0H100V100H0Z" fill="#0066cc"/>'
+        '<path d="M10 10H10.5V10.5H10Z" fill="#0066cc"/>'
+        '<path d="M20 20H20.5V20.5H20Z" fill="#0066cc"/>'
+        "</svg>"
+    )
+
+    result = cleanup_redundant_logo_paths(svg, 100, 100)
+
+    assert result.removed_path_count == 2
+    root = logo_worker.ElementTree.fromstring(result.svg)
+    paths = root.findall(".//{http://www.w3.org/2000/svg}path")
+    assert len(paths) == 1
+
+
+def test_svg_cleanup_keeps_fragment_that_restores_color_over_another_layer():
+    from app.workers.logo_svg_cleanup import cleanup_redundant_logo_paths
+
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+        '<path d="M0 0H100V100H0Z" fill="#0066cc"/>'
+        '<path d="M9 9H12V12H9Z" fill="#ffffff"/>'
+        '<path d="M10 10H10.5V10.5H10Z" fill="#0066cc"/>'
+        "</svg>"
+    )
+
+    result = cleanup_redundant_logo_paths(svg, 100, 100)
+
+    assert result.removed_path_count == 0
+    root = logo_worker.ElementTree.fromstring(result.svg)
+    paths = root.findall(".//{http://www.w3.org/2000/svg}path")
+    assert len(paths) == 3
+
+
+def test_svg_quality_preserves_counter_and_rejects_empty_geometry():
+    from app.workers.logo_svg_cleanup import analyze_logo_svg, cleanup_redundant_logo_paths
+
+    ring = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+        '<path d="M10 10H90V90H10Z M40 40V60H60V40Z" fill="#0066cc"/>'
+        "</svg>"
+    )
+    cleaned = cleanup_redundant_logo_paths(ring, 100, 100)
+    assert cleaned.removed_path_count == 0
+    assert cleaned.svg.count("M") == 2
+
+    rejected = analyze_logo_svg(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"/>',
+        100,
+        100,
+    )
+    assert rejected.status == "rejected"
+    assert rejected.complexity.drawable_path_count == 0
+    assert any("không có mảng vector" in reason for reason in rejected.reasons)
+
+
+def test_svg_quality_marks_excessive_object_count_for_review():
+    from app.workers.logo_svg_cleanup import analyze_logo_svg
+
+    paths = "".join(
+        f'<path d="M{x} {y}H{x + 1}V{y + 1}H{x}Z" fill="#0066cc"/>'
+        for index in range(1001)
+        for x, y in [(index % 100, index // 100)]
+    )
+    quality = analyze_logo_svg(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">'
+        + paths
+        + "</svg>",
+        200,
+        200,
+    )
+
+    assert quality.status == "review"
+    assert quality.complexity.path_count == 1001
+    assert quality.reasons
+    assert quality.actions
 
 
 def test_svg_has_viewbox_and_physical_size_from_dpi(monkeypatch):
