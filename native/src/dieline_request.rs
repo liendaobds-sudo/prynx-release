@@ -56,7 +56,7 @@ pub fn validate_request_json(request_json: &str) -> Result<Value, String> {
     // chạy TRƯỚC Boa. Thiếu loại hộp ở đây làm route trả 422 "Không thể tạo khuôn
     // với thông số này." — thông báo mờ, không chỉ ra tầng nào chặn. Thêm loại hộp
     // mới phải sửa ĐỦ BA ĐẦU.
-    one_of(params.get("boxType"), "params.boxType", &["rte", "slb", "auto_bottom", "gable", "paper_bag", "cup_sleeve", "pizza", "envelope", "tray", "double_tray", "hanging_window"])?;
+    one_of(params.get("boxType"), "params.boxType", &["rte", "slb", "auto_bottom", "gable", "paper_bag", "cup_sleeve", "pizza", "envelope", "tray", "double_tray", "hanging_window", "flip_top_tuck"])?;
     one_of(params.get("glueSide"), "params.glueSide", &["left", "right"])?;
     one_of(params.get("panelOrder"), "params.panelOrder", &["WLWL", "LWLW"])?;
     one_of(params.get("handleShape"), "params.handleShape", &["oval", "roundRect"])?;
@@ -136,6 +136,16 @@ mod tests {
         value["params"]["boxType"] = serde_json::json!("hanging_window");
         assert!(super::validate_request_json(&value.to_string()).is_ok());
     }
+    /// [FLIP-TOP-TUCK 2026-08-02 §FTT.3] Loại hộp mới phải qua validation
+    /// Rust trước khi bundle TypeScript được gọi.
+    #[test]
+    fn accepts_flip_top_tuck() {
+        let valid = include_str!("../tests/fixtures/dieline_default_request.json");
+        let mut value: serde_json::Value = serde_json::from_str(valid).unwrap();
+        value["params"]["boxType"] = serde_json::json!("flip_top_tuck");
+        assert!(super::validate_request_json(&value.to_string()).is_ok());
+    }
+
 
     /// Fixture phải mang đủ mọi khoá mới, nếu không NUMERIC/BOOLEAN_PARAMS mở rộng
     /// sẽ làm mọi request thiếu khoá bị từ chối.

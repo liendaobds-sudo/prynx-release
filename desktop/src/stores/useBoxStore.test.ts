@@ -194,6 +194,17 @@ describe('useBoxStore generation consistency', () => {
         expect(useBoxStore.getState().variantId).toBe('hgb_solid');
     });
 
+    it('đổi túi có quai ↔ túi trơn đồng bộ cả lỗ quai và mí gập miệng', () => {
+        useBoxStore.getState().setVariant('bag_holes');
+        expect(useBoxStore.getState().params).toMatchObject({ handleHoles: true, TH: 30 });
+
+        useBoxStore.getState().setVariant('bag_plain');
+        expect(useBoxStore.getState().params).toMatchObject({ handleHoles: false, TH: 0 });
+
+        useBoxStore.getState().setVariant('bag_holes');
+        expect(useBoxStore.getState().params).toMatchObject({ handleHoles: true, TH: 30 });
+    });
+
     // Req 2.2: hai biến thể cùng boxType vẫn phải làm mới ô nhập ⇒ clampVersion
     // phải tăng dù boxType không đổi (ô nhập dùng clampVersion trong key để remount).
     it('đổi biến thể cùng loại vẫn tăng clampVersion để ô nhập remount', async () => {
@@ -229,6 +240,7 @@ describe('useBoxStore generation consistency', () => {
         const boxTypes: BoxParams['boxType'][] = [
             'rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve',
             'pizza', 'envelope', 'tray', 'double_tray', 'hanging_window',
+            'flip_top_tuck',
         ];
         for (const boxType of boxTypes) {
             useBoxStore.getState().setParam('boxType', boxType);
@@ -260,4 +272,25 @@ describe('useBoxStore generation consistency', () => {
         useBoxStore.getState().setAdvancedMode(true);
         expect(useBoxStore.getState().isAdvancedMode).toBe(true);
     });
+    it('flip-top tuck nạp preset 200×200×60 và đặt panel gốc nằm ngang', async () => {
+        const fttParams = {
+            ...DEFAULT_PARAMS,
+            boxType: 'flip_top_tuck' as const,
+            L: 200,
+            W: 200,
+            D: 60,
+            T: 0.5,
+            C: 0.5,
+        };
+        generateDielineRemote.mockResolvedValue(response(fttParams, 'ftt'));
+        useBoxStore.setState({ isStanding: true });
+
+        useBoxStore.getState().setVariant('ftt_self_lock');
+        expect(useBoxStore.getState().params).toMatchObject(fttParams);
+        await vi.advanceTimersByTimeAsync(70);
+
+        expect(useBoxStore.getState().isStanding).toBe(false);
+        expect(useBoxStore.getState().dieline?.name).toBe('ftt');
+    });
+
 });

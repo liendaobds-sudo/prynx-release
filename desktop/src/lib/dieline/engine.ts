@@ -11,6 +11,8 @@ import { generateMatchboxTray } from './MatchboxTray';
 import { generateDoubleTray, splitDoubleTrayDieline } from './DoubleTray';
 // [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ — dùng chung hợp đồng hình học RTE
 import { generateHangingWindowBox } from './HangingWindowBox';
+// [FLIP-TOP-TUCK 2026-08-02 §FTT.2] Hộp nắp lật tự khóa từ khuon-01.svg
+import { generateFlipTopTuckBox } from './FlipTopTuckBox';
 import { validateParams } from './validateParams';
 import { attachWarnings } from './attachWarnings';
 import { NestingConfig, NestingResult } from './nestingTypes';
@@ -43,6 +45,8 @@ function dispatchGenerator(params: BoxParams): DielineModel {
         // [HANGING-WINDOW 2026-07-27] Định tuyến loại hộp treo có cửa sổ
         case 'hanging_window':
             return generateHangingWindowBox(params);
+        case 'flip_top_tuck':
+            return generateFlipTopTuckBox(params);
         case 'rte':
         default:
             return generateReverseTuckEnd(params);

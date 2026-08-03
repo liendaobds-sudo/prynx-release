@@ -20,6 +20,9 @@
 import { describe, it, expect } from 'vitest';
 import * as fc from 'fast-check';
 import * as THREE from 'three';
+import { arbBoxParams } from '../../dieline/arbitraries';
+import { generateFlipTopTuckBox } from '../../dieline/FlipTopTuckBox';
+import { DEFAULT_PARAMS } from '../../dieline/types';
 import { buildPanelSolid, clampThickness } from '../panelSolid';
 import type { Panel, Point2D } from '../types';
 
@@ -161,6 +164,89 @@ function analyzeManifold(geometry: THREE.BufferGeometry): ManifoldStats {
 }
 
 describe('buildPanelSolid — Property 1: Panel solid khép kín dọc chu vi và mọi lỗ khoét', () => {
+    it('dựng đủ 13 solid theo outline cong thật của flip-top tuck', () => {
+        const model = generateFlipTopTuckBox({
+            ...DEFAULT_PARAMS,
+            boxType: 'flip_top_tuck',
+            L: 200,
+            W: 200,
+            D: 60,
+            T: 0.5,
+            C: 0.5,
+        });
+
+        expect(model.panels).toHaveLength(13);
+        for (const panel of model.panels) {
+            const geometry = buildPanelSolid(panel, model.params.T);
+            try {
+                const stats = analyzeManifold(geometry);
+                expect(stats.triangleCount, panel.name).toBeGreaterThan(0);
+                expect(stats.boundaryEdges, panel.name).toBe(0);
+                expect(stats.nonManifoldEdges, panel.name).toBe(0);
+            } finally {
+                geometry.dispose();
+            }
+        }
+    });
+
+    it('flip-top tuck khoét xuyên hai khe hông và khe nhận khóa trước', () => {
+        const model = generateFlipTopTuckBox({
+            ...DEFAULT_PARAMS,
+            boxType: 'flip_top_tuck',
+            L: 200,
+            W: 200,
+            D: 60,
+            T: 0.5,
+            C: 0.5,
+        });
+        const byName = new Map(model.panels.map((panel) => [panel.name, panel]));
+        const slots = [
+            { panel: byName.get('base_side_left')!, point: { x: -28.5, y: 359.5 } },
+            { panel: byName.get('base_side_right')!, point: { x: 229.5, y: 359.5 } },
+            { panel: byName.get('lid_front')!, point: { x: 100.5, y: -10 } },
+        ];
+
+        for (const { panel, point } of slots) {
+            expect(panel.holes, panel.name).toHaveLength(1);
+            const geometry = buildPanelSolid(panel, model.params.T);
+            const material = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+            const mesh = new THREE.Mesh(geometry, material);
+            const raycaster = new THREE.Raycaster(
+                new THREE.Vector3(point.x, point.y, 10),
+                new THREE.Vector3(0, 0, -1),
+            );
+            try {
+                expect(raycaster.intersectObject(mesh), panel.name).toHaveLength(0);
+            } finally {
+                geometry.dispose();
+                material.dispose();
+            }
+        }
+    });
+
+    it('ba khe cài flip-top tuck giữ solid khép kín trên miền tham số hợp lệ', () => {
+        fc.assert(
+            fc.property(arbBoxParams('flip_top_tuck'), (params) => {
+                const model = generateFlipTopTuckBox(params);
+                for (const name of ['base_side_left', 'base_side_right', 'lid_front']) {
+                    const panel = model.panels.find((candidate) => candidate.name === name)!;
+                    const hole = panel.holes?.[0];
+                    expect(hole, name).toBeDefined();
+                    const geometry = buildPanelSolid(panel, model.params.T);
+                    try {
+                        const stats = analyzeManifold(geometry);
+                        const context = `${name} hole=${JSON.stringify(hole)}`;
+                        expect(stats.boundaryEdges, context).toBe(0);
+                        expect(stats.nonManifoldEdges, context).toBe(0);
+                    } finally {
+                        geometry.dispose();
+                    }
+                }
+            }),
+            { numRuns: NUM_RUNS },
+        );
+    });
+
     it('không có cạnh biên hở: mọi cạnh được chia sẻ bởi đúng 2 tam giác', () => {
         fc.assert(
             fc.property(

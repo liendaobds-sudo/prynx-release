@@ -34,9 +34,11 @@ import { generateCupSleeve } from './CupSleeve';
 import { generatePizzaBox } from './PizzaBox';
 import { generateEnvelope } from './Envelope';
 import { generateMatchboxTray } from './MatchboxTray';
+import { generateFlipTopTuckBox } from './FlipTopTuckBox';
 
 const ALL_TYPES: GeneratorBoxType[] = [
     'rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray',
+    'flip_top_tuck',
 ];
 
 /** Dispatch params → DielineModel (giống dispatchGenerator trong useBoxStore). */
@@ -58,6 +60,8 @@ function dispatchGenerator(params: BoxParams): DielineModel {
             return generateEnvelope(params);
         case 'tray':
             return generateMatchboxTray(params);
+        case 'flip_top_tuck':
+            return generateFlipTopTuckBox(params);
         case 'rte':
         default:
             return generateReverseTuckEnd(params);

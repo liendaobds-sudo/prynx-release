@@ -38,8 +38,9 @@ Các quan hệ đo được và được phép tổng quát hóa:
 | Relief cut góc | 12 mm | `D / 5` |
 | Đoạn thẳng khe khóa cạnh | 140 mm | `W - D` |
 | Đầu chéo khe khóa | 3 mm | `D / 20` |
-| Bù ngang panel nắp | 0,5 mm mỗi bên | `C` mỗi bên |
-| Bù dọc panel nắp | 0,5 mm | `C` |
+| Bề ngang thân/đáy | 201 mm | `L + 2T` |
+| Chiều sâu đáy | 199,5 mm | `W - T` |
+| Kích thước panel nắp | 200 × 200 mm | `L × W` |
 | Tràn lề tham chiếu | 5 mm | cấu hình BLEED khi xuất, không hardcode vào CUT |
 
 Không khóa `W = L` và không suy `D = 0,3L`; đây chỉ là tỷ lệ của fixture chuẩn.
@@ -52,16 +53,23 @@ Mức: P0 · Effort: L
 - Dispatch nguồn hình học nằm tại `desktop/src/lib/dieline/engine.ts:23`.
 - Generator gần nhất là `PizzaBox.ts`, nhưng mẫu mới có mép trước thấp, khe khóa cạnh dài, bốn relief cut và contour khóa riêng.
 
-Cây panel dự kiến được khóa bằng test cấu trúc:
+Cây panel đã triển khai và được khóa bằng test cấu trúc:
 
-- `bottom` — panel gốc.
-- `bottom_front_wall`, `bottom_left_wall`, `bottom_right_wall`.
-- `bottom_front_lock_left`, `bottom_front_lock_right`.
-- `back_wall`.
-- `lid`.
-- `lid_left_wall`, `lid_right_wall`.
-- `lid_front_tuck`.
-- `lid_front_lock_left`, `lid_front_lock_right`.
+```text
+bottom
+├─ front_lip
+├─ base_side_left
+├─ base_side_right
+└─ back_wall
+   ├─ back_lock_left
+   ├─ back_lock_right
+   └─ lid
+      ├─ lid_side_left
+      ├─ lid_side_right
+      └─ lid_front
+         ├─ lid_front_lock_left
+         └─ lid_front_lock_right
+```
 
 Mọi `pivotEdge` phải là cạnh chung hình học thật; trình tự gập chi tiết khóa trước, vách khay sau, rồi nắp ở pha cuối.
 
@@ -121,3 +129,15 @@ Mỗi lô tối đa 5 file; hết lô phải chạy verify hẹp trước khi ti
 ## 5. Chốt duyệt
 
 Người dùng đã xác nhận “ok làm đi” ngày 2026-08-02 sau khi được thông báo preset, tham số chỉnh độc lập và quy trình theo lô. Đợt triển khai được phép bắt đầu trong đúng phạm vi báo cáo này.
+
+## 6. Kết quả triển khai
+
+- [VERIFIED] Generator `generateFlipTopTuckBox` sinh 13 panel, 12 CREASE, một contour CUT ngoài kín và bảy CUT hở có chủ đích. Fixture chuẩn có bbox `(-60, -20) → (261, 519,5)`, tức `321 × 539,5 mm`.
+- [VERIFIED] Catalog/i18n/form/store đã nhận `flip_top_tuck`; preset là `200 × 200 × 60 mm`, `T=C=0,5 mm`, panel gốc nằm ngang và `L/W` chỉnh độc lập.
+- [VERIFIED] Mặt in 3D dùng cap âm Z. Property test đã phát hiện outline `lid_front` thu sai theo bù nắp ở ca biên; outline được sửa về đúng bề rộng vách `0→B`, mọi pivot lại nằm trên biên cha.
+- [VERIFIED] Xuất PDF có nhánh chú thích riêng chỉ ghi `L/W/D`; không rơi vào chú thích mép keo `G` của hộp nắp cài.
+- [VERIFIED] Thumbnail `PRYNX-FTT-01.svg`, hai golden master và bundle `native/src/generated/dieline_engine.bundle.js` đã được sinh từ generator; diff snapshot chỉ thêm baseline của loại mới.
+- [VERIFIED] Typecheck, 574 test khuôn bế, 86 test UI/store/3D, 16 pytest validation, `cargo check`, 5 test Rust và kiểm tra WebView sidecar đều đạt.
+- [VERIFIED] Thumbnail 2D đã được raster hóa và đối chiếu trực quan với ảnh mẫu: thứ tự mép trước thấp → đáy → vách sau → nắp → vách trước nắp và các khóa hai bên khớp.
+- [LIMITATION] Phiên web localhost đang yêu cầu đăng nhập bản quyền nên chưa mở được công cụ PRO để kéo fold progress và xuất PDF trực tiếp trong app. Không bypass đăng nhập; bước kiểm tay runtime vẫn cần chạy trong phiên đã đăng nhập.
+- [BASELINE] Lint toàn repo vẫn vượt ngân sách do backlog ngoài phạm vi (`1461` lỗi, `106` cảnh báo; rule budget `react-refresh/only-export-components`). Generator mới tự thân đạt lint; typecheck và test liên quan đều xanh.

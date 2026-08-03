@@ -16,6 +16,7 @@ import { generatePaperBag } from '../../dieline/PaperBag';
 import { generatePizzaBox } from '../../dieline/PizzaBox';
 import { generateMatchboxTray } from '../../dieline/MatchboxTray';
 import { generateDoubleTray } from '../../dieline/DoubleTray';
+import { generateFlipTopTuckBox } from '../../dieline/FlipTopTuckBox';
 import { DEFAULT_PARAMS, type BoxParams, type DielineModel, type Panel } from '../../dieline/types';
 import { applyFoldCompensation } from '../foldCompensation';
 
@@ -55,6 +56,10 @@ function structuralPanels(model: DielineModel): Panel[] {
         if (model.params.boxType === 'tray') {
             if (/_(beam|sec|tab)$/.test(p.name)) return false;
         }
+        // Flip-top: bốn tai khóa góc chèn vào khe, không phải mặt ngoài cấu trúc.
+        if (model.params.boxType === 'flip_top_tuck') {
+            if (p.name.startsWith('back_lock_') || p.name.startsWith('front_lock_')) return false;
+        }
         // [AUTO-BOTTOM FIX 2026-07-27] Tam giác dán gập 180° vào trong để
         // áp lên tai hông; đây không phải mặt cấu trúc phải hướng ảnh in ra ngoài.
         if (model.params.boxType === 'auto_bottom' && p.name.startsWith('bottom_tab_')) return false;
@@ -84,9 +89,13 @@ function evaluateOutward(model: DielineModel): { inverted: string[]; sideways: s
             cy /= n;
         }
         const localC = new THREE.Vector3(cx, cy, 0).applyMatrix4(fold.matrix);
-        // Pizza gấp thể tích về +Z: mặt vật lý bên ngoài là cap local −Z.
+        // Hộp có đáy làm panel gốc gấp thể tích về +Z: mặt ngoài là cap local −Z.
         // Renderer đổi material/UV sang cap này, không được đảo cơ cấu foldDirection.
-        const printNormalZ = model.params.boxType === 'pizza' || model.params.boxType === 'tray' ? -1 : 1;
+        const printNormalZ = model.params.boxType === 'pizza'
+            || model.params.boxType === 'tray'
+            || model.params.boxType === 'flip_top_tuck'
+            ? -1
+            : 1;
         const worldN = new THREE.Vector3(0, 0, printNormalZ).transformDirection(fold.matrix);
         placed.push({ name: panel.name, pos: localC, n: worldN });
     }
@@ -223,6 +232,82 @@ describe('foldPrintOutward — physical print face points outside after full fol
         expect(r.inverted, `inverted: ${r.inverted.join(', ')}`).toEqual([]);
         // bottom + 4 walls + lid at minimum
         expect(r.ok.length).toBeGreaterThanOrEqual(5);
+    });
+
+    it('Flip-top tuck giữ đúng cây 13 panel và hoàn tất mọi pha gấp sau mốc 95%', () => {
+        const model = generateFlipTopTuckBox(
+            makeParams({ boxType: 'flip_top_tuck', L: 200, W: 200, D: 60, T: 0.5, C: 0.5 }),
+        );
+        const byName = new Map(model.panels.map((panel) => [panel.name, panel]));
+
+        expect(model.panels).toHaveLength(13);
+        expect(byName.get('bottom')).toMatchObject({ parent: null, foldAngle: 0 });
+        expect(byName.get('base_side_left')).toMatchObject({ parent: 'bottom', foldAngle: 90, foldDirection: 1 });
+        expect(byName.get('base_side_right')).toMatchObject({ parent: 'bottom', foldAngle: -90, foldDirection: 1 });
+        expect(byName.get('front_wall')).toMatchObject({ parent: 'bottom', foldAngle: 90, foldDirection: 1 });
+        expect(byName.get('front_lock_left')).toMatchObject({ parent: 'front_wall', foldAngle: 90, foldDirection: 1 });
+        expect(byName.get('front_lock_right')).toMatchObject({ parent: 'front_wall', foldAngle: -90, foldDirection: 1 });
+        expect(byName.get('back_wall')).toMatchObject({ parent: 'bottom', foldAngle: -90, foldDirection: 1 });
+        expect(byName.get('back_lock_left')).toMatchObject({ parent: 'back_wall', foldAngle: 90, foldDirection: 1 });
+        expect(byName.get('back_lock_right')).toMatchObject({ parent: 'back_wall', foldAngle: -90, foldDirection: 1 });
+        expect(byName.get('lid')).toMatchObject({ parent: 'back_wall', foldAngle: -90, foldDirection: 1 });
+        expect(byName.get('lid_side_left')).toMatchObject({ parent: 'lid', foldAngle: 90, foldDirection: 1 });
+        expect(byName.get('lid_side_right')).toMatchObject({ parent: 'lid', foldAngle: -90, foldDirection: 1 });
+        expect(byName.get('lid_front')).toMatchObject({ parent: 'lid', foldAngle: -90, foldDirection: 1 });
+
+        const { depthMap, maxD } = buildDepthMap(model.panels);
+        for (const panel of model.panels) {
+            const atFinalPhase = applyFoldCompensation(panel, model.panels, 0.96, depthMap, maxD, model.params.T);
+            const atOne = applyFoldCompensation(panel, model.panels, 1, depthMap, maxD, model.params.T);
+            expect(atFinalPhase.matrix.elements, panel.name).toEqual(atOne.matrix.elements);
+        }
+    });
+
+    it('Flip-top tuck structural panels: print outward', () => {
+        const model = generateFlipTopTuckBox(
+            makeParams({ boxType: 'flip_top_tuck', L: 200, W: 200, D: 60, T: 0.5, C: 0.5 }),
+        );
+        const r = evaluateOutward(model);
+        expect(r.inverted, `inverted: ${r.inverted.join(', ')}`).toEqual([]);
+        expect(r.ok.length).toBeGreaterThanOrEqual(5);
+    });
+
+    it('Flip-top tuck đặt đáy thật làm root và đóng nắp lên cao độ D', () => {
+        const model = generateFlipTopTuckBox(
+            makeParams({ boxType: 'flip_top_tuck', L: 200, W: 200, D: 60, T: 0.5, C: 0.5 }),
+        );
+        const byName = new Map(model.panels.map((panel) => [panel.name, panel]));
+        const bottom = byName.get('bottom')!;
+        const lid = byName.get('lid')!;
+        expect(bottom.parent).toBeNull();
+        expect(bottom.outline).toContainEqual({ x: 0.5, y: 259.5 });
+        expect(lid.parent).toBe('back_wall');
+        expect(lid.outline).toContainEqual({ x: 0, y: 0 });
+        expect(byName.get('back_wall')).toMatchObject({ parent: 'bottom', foldAngle: -90 });
+        expect(lid).toMatchObject({ foldAngle: -90 });
+
+        const { depthMap, maxD } = buildDepthMap(model.panels);
+        const transformedCenter = (panel: Panel) => {
+            const ring = panel.outline!;
+            const local = new THREE.Vector3(
+                ring.reduce((sum, point) => sum + point.x, 0) / ring.length,
+                ring.reduce((sum, point) => sum + point.y, 0) / ring.length,
+                0,
+            );
+            const fold = applyFoldCompensation(panel, model.panels, 1, depthMap, maxD, model.params.T);
+            return {
+                point: local.applyMatrix4(fold.matrix),
+                plusZ: new THREE.Vector3(0, 0, 1).transformDirection(fold.matrix),
+            };
+        };
+        const bottomPose = transformedCenter(bottom);
+        const lidPose = transformedCenter(lid);
+        expect(lidPose.point.x).toBeCloseTo(bottomPose.point.x, 0);
+        expect(lidPose.point.y).toBeCloseTo(bottomPose.point.y, 0);
+        expect(bottomPose.point.z).toBeCloseTo(0, 1);
+        expect(lidPose.point.z).toBeCloseTo(60, 0);
+        expect(bottomPose.plusZ.z).toBeGreaterThan(0.999);
+        expect(lidPose.plusZ.z).toBeLessThan(-0.999);
     });
 
     it('Matchbox tray and sleeve keep original fold kinematics', () => {

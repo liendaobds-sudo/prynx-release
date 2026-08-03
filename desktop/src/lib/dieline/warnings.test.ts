@@ -30,6 +30,7 @@ import { generateAutoBottomBox } from './AutoBottomBox';
 import { generateGableBox } from './GableBox';
 import { generatePaperBag } from './PaperBag';
 import { generateCupSleeve } from './CupSleeve';
+import { generateFlipTopTuckBox } from './FlipTopTuckBox';
 import { generatePizzaBox } from './PizzaBox';
 import { generateEnvelope } from './Envelope';
 import { generateMatchboxTray } from './MatchboxTray';
@@ -53,6 +54,8 @@ function dispatchGenerator(params: BoxParams): DielineModel {
             return generateEnvelope(params);
         case 'tray':
             return generateMatchboxTray(params);
+        case 'flip_top_tuck':
+            return generateFlipTopTuckBox(params);
         case 'rte':
         default:
             return generateReverseTuckEnd(params);
@@ -94,6 +97,7 @@ function dedupe(items: string[]): string[] {
 
 const ALL_BOX_TYPES: GeneratorBoxType[] = [
     'rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray',
+    'flip_top_tuck',
 ];
 
 // ============================================================

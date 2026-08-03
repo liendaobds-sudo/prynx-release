@@ -160,8 +160,8 @@ export interface BoxParams {
     TH: number;
     /** Vị trí tai dán: 'left' hoặc 'right', mặc định 'left' */
     glueSide: 'left' | 'right';
-    /** Loại hộp: 'rte' = Reverse Tuck End, 'slb' = Snap-Lock Bottom, 'auto_bottom' = Hộp đáy dán tự động, 'gable' = Gable Box, 'paper_bag' = Túi giấy SOS, 'cup_sleeve' = Bọc ly, 'pizza' = Pizza Box FEFCO 0426, 'envelope' = Bì thư, 'tray' = Hộp diêm / Khay, 'double_tray' = Hộp âm dương (khay + nắp chụp), 'hanging_window' = Hộp treo có cửa sổ (nắp gài + tai treo euro) */
-    boxType: 'rte' | 'slb' | 'auto_bottom' | 'gable' | 'paper_bag' | 'cup_sleeve' | 'pizza' | 'envelope' | 'tray' | 'double_tray' | 'hanging_window';
+    /** Loại hộp: 'rte' = Reverse Tuck End, 'slb' = Snap-Lock Bottom, 'auto_bottom' = Hộp đáy dán tự động, 'gable' = Gable Box, 'paper_bag' = Túi giấy SOS, 'cup_sleeve' = Bọc ly, 'pizza' = Pizza Box FEFCO 0426, 'envelope' = Bì thư, 'tray' = Hộp diêm / Khay, 'double_tray' = Hộp âm dương (khay + nắp chụp), 'hanging_window' = Hộp treo có cửa sổ (nắp gài + tai treo euro), 'flip_top_tuck' = Hộp nắp lật tự khóa, gài mặt trước */
+    boxType: 'rte' | 'slb' | 'auto_bottom' | 'gable' | 'paper_bag' | 'cup_sleeve' | 'pizza' | 'envelope' | 'tray' | 'double_tray' | 'hanging_window' | 'flip_top_tuck';
     /** Thứ tự panel: 'WLWL' = Hông→Mặt→Hông→Lưng, 'LWLW' = Mặt→Hông→Lưng→Hông */
     panelOrder: 'WLWL' | 'LWLW';
     /** Chiều cao phần tay cầm vượt khỏi cạnh trên thân hộp (mm), mặc định 40 */

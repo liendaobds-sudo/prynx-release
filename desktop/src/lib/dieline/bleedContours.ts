@@ -219,6 +219,36 @@ function panelUnionOuterRings(model: DielineModel): Point2D[][] {
 }
 
 /**
+ * Lấy contour CUT ngoài khép kín trực tiếp, giữ nguyên các cung Bezier đã sample.
+ * Chỉ dùng khi generator cam kết có một contour CUT ngoài hoàn chỉnh; các CUT hở
+ * nội bộ sẽ bị loại bởi phép chọn silhouette ngoài cùng.
+ */
+function closedCutOuterRings(model: DielineModel): Point2D[][] {
+    const candidates = connectedCutGroups(model.allPaths)
+        .map((group) => extractOuterSilhouette(group))
+        .filter((silhouette): silhouette is NonNullable<typeof silhouette> =>
+            !!silhouette && silhouette.closed && silhouette.vertices.length >= 3 && silhouette.area > 0.001,
+        )
+        .map((silhouette) => {
+            const vertices = ptEq(
+                silhouette.vertices[0],
+                silhouette.vertices[silhouette.vertices.length - 1],
+            )
+                ? silhouette.vertices.slice(0, -1)
+                : silhouette.vertices;
+            return { vertices, area: Math.abs(signedArea(vertices)) };
+        });
+
+    return candidates
+        .filter((candidate, index) => !candidates.some((other, otherIndex) =>
+            index !== otherIndex
+            && other.area > candidate.area
+            && candidate.vertices.every((point) => pointInPolygon(point, other.vertices)),
+        ))
+        .map(({ vertices }) => vertices);
+}
+
+/**
  * Build one virtual material region before taking its exterior bleed boundary.
  * Edge strips and round vertex caps form an exact no-stretch buffer without
  * offsetting or reconnecting individual CUT segments.
@@ -295,6 +325,15 @@ export function computeBleedContours(
     bleedMm: number = DEFAULT_DIELINE_BLEED_MM,
 ): Point2D[][] {
     const offset = Number.isFinite(bleedMm) ? Math.max(0, bleedMm) : DEFAULT_DIELINE_BLEED_MM;
+
+    // [FLIP-TOP-TUCK FIX 2026-08-03 §FTT.8] Mẫu này có một contour CUT ngoài
+    // khép kín chứa nhiều cung khóa. Outline panel phục vụ 3D chỉ là đa giác giản
+    // lược, nên nếu hợp panel trước thì BLEED sẽ đi tắt và không bám đường bế thật.
+    if (model.params?.boxType === 'flip_top_tuck') {
+        const cutRings = closedCutOuterRings(model);
+        if (cutRings.length > 0) return bufferMaterialRings(cutRings, offset);
+    }
+
     const panelRings = panelUnionOuterRings(model);
     if (panelRings.length > 0) {
         return bufferMaterialRings(panelRings, offset);

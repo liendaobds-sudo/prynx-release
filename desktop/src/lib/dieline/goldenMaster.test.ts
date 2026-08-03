@@ -29,6 +29,7 @@ import { generateMatchboxTray } from './MatchboxTray';
 import { generateDoubleTray } from './DoubleTray';
 // [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ — khoá baseline hình học
 import { generateHangingWindowBox } from './HangingWindowBox';
+import { generateFlipTopTuckBox } from './FlipTopTuckBox';
 
 /** Dung sai kích thước theo Requirement 4.6 */
 const DIM_TOLERANCE = 0.001; // mm
@@ -107,6 +108,15 @@ const FIXTURES: { name: string; generate: (p: BoxParams) => DielineModel; params
             hgbWindow: true, WNW: 0, WNH: 0, HTH: 0,
         }),
     },
+    {
+        // [FLIP-TOP-TUCK 2026-08-02] Fixture chuẩn đo từ khuon-01.svg.
+        name: 'flip_top_tuck (Hộp nắp lật tự khóa)',
+        generate: generateFlipTopTuckBox,
+        params: make({
+            boxType: 'flip_top_tuck',
+            L: 200, W: 200, D: 60, T: 0.5, C: 0.5,
+        }),
+    },
 ];
 
 /** Dựng mảng chuỗi SVG `d` từ model qua module dùng chung. */
@@ -148,6 +158,7 @@ describe('golden-master: ổn định giá trị kích thước (computeEnvelope
         // [HANGING-WINDOW 2026-07-27] FH/SF do computeEnvelopeDims lấy từ params
         // chung (không phụ thuộc loại hộp) nên baseline giống các mẫu còn lại.
         'hanging_window (Hộp treo có cửa sổ)': { FH: 50, SF: 13 },
+        'flip_top_tuck (Hộp nắp lật tự khóa)': { FH: 50, SF: 13 },
     };
 
     for (const fx of FIXTURES) {

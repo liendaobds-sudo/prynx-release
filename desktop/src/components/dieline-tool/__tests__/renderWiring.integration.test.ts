@@ -340,6 +340,21 @@ describe('DielineScene3D — composition wiring (Yêu cầu 3.1, 3.5, 7.2)', () 
         expect(h.solidPanelProps.length).toBeGreaterThan(0);
         expect(h.solidPanelProps.every((props) => props.outerFaceNegativeZ === true)).toBe(true);
     });
+    it('hộp nắp lật tự khóa chuyển artwork ngoài sang cap âm Z', async () => {
+        const params = {
+            ...DEFAULT_PARAMS,
+            boxType: 'flip_top_tuck' as const,
+            L: 200, W: 200, D: 60, T: 0.5, C: 0.5,
+        };
+        useBoxStore.setState({ params, dieline: generateDieline(params), isModelCurrent: true });
+
+        await act(async () => {
+            render(e(DielineScene3D, null));
+        });
+
+        expect(h.solidPanelProps.every((props) => props.outerFaceNegativeZ === true)).toBe(true);
+    });
+
     // [HANGING-WINDOW 2026-07-27] Màng cửa sổ trong suốt: chỉ dựng cho panel mặt
     // trước CÓ lỗ khoét, và tắt được bằng công tắc `showWindowFilm` (thuần hiển
     // thị — không đụng khuôn bế nên không có gì phải kiểm ở generator).

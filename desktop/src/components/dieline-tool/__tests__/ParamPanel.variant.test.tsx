@@ -142,6 +142,18 @@ describe('ParamPanel — ẩn thuộc tính đã chốt theo biến thể', () =
         expect(screen.getByText(/cao_day_bf/)).toBeTruthy();
     });
 
+    it('túi trơn không quai: tắt và ẩn mí gập miệng, chế độ chuyên gia mở lại được', () => {
+        pickVariant('bag_plain');
+        expect(useBoxStore.getState().params.TH).toBe(0);
+        render(<ParamPanel />);
+
+        openSection(/thong_so_nang_cao/);
+        expect(screen.queryByText(/mi_gap_mieng/)).toBeNull();
+
+        fireEvent.click(screen.getByText(/tuy_chinh_nang_cao/));
+        expect(screen.getByText(/mi_gap_mieng/)).toBeTruthy();
+    });
+
     it('bọc ly: ẩn vị trí vạt dán, giữ loại chiều cao', () => {
         pickVariant('sleeve_glued');
         render(<ParamPanel />);
@@ -168,4 +180,21 @@ describe('ParamPanel — ẩn thuộc tính đã chốt theo biến thể', () =
         expect(useBoxStore.getState().variantId).toBe('slb_lock');
         expect(useBoxStore.getState().params.lockTab).toBe(true);
     });
+    it('flip-top tuck chỉ hiện L/W/D/T và C, không hiện tham số keo/tai đút', () => {
+        pickVariant('ftt_self_lock');
+        render(<ParamPanel />);
+
+        expect(screen.getByText('Dài (L)')).toBeTruthy();
+        expect(screen.getByText('Rộng (W)')).toBeTruthy();
+        expect(screen.getByText('Cao (D)')).toBeTruthy();
+        expect(screen.getByText('Dày (T)')).toBeTruthy();
+        expect(screen.queryByText(/vi_tri_tai_dan_g/)).toBeNull();
+        expect(screen.queryByText(/thu_tu_mat/)).toBeNull();
+
+        openSection(/thong_so_nang_cao/);
+        expect(screen.getByText('Dung sai (C)')).toBeTruthy();
+        expect(screen.queryByText('Mép keo (G)')).toBeNull();
+        expect(screen.queryByText('Tai đút (TH)')).toBeNull();
+    });
+
 });

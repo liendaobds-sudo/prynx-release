@@ -38,6 +38,7 @@ import { generateCupSleeve } from './CupSleeve';
 import { generatePizzaBox } from './PizzaBox';
 import { generateEnvelope } from './Envelope';
 import { generateMatchboxTray } from './MatchboxTray';
+import { generateFlipTopTuckBox } from './FlipTopTuckBox';
 
 /** Dung sai tọa độ hồi quy hình học theo Requirement 7.3 (GEOMETRY_TOLERANCE). */
 const GEOMETRY_TOLERANCE = 0.001; // mm
@@ -53,6 +54,7 @@ const GENERATORS: { boxType: GeneratorBoxType; name: string; generate: (p: BoxPa
     { boxType: 'pizza', name: 'generatePizzaBox', generate: generatePizzaBox },
     { boxType: 'envelope', name: 'generateEnvelope', generate: generateEnvelope },
     { boxType: 'tray', name: 'generateMatchboxTray', generate: generateMatchboxTray },
+    { boxType: 'flip_top_tuck', name: 'generateFlipTopTuckBox', generate: generateFlipTopTuckBox },
 ];
 
 /** Làm tròn tọa độ về 0.001 mm, triệt tiêu -0 để snapshot ổn định. */
@@ -181,6 +183,7 @@ const FIXTURES: { name: string; generate: (p: BoxParams) => DielineModel; params
     { name: 'pizza (Pizza Box FEFCO 0426)', generate: generatePizzaBox, params: make({ boxType: 'pizza', L: 300, W: 300, D: 40 }) },
     { name: 'envelope (Bì thư DL)', generate: generateEnvelope, params: make({ boxType: 'envelope', envW: 220, envH: 110 }) },
     { name: 'tray (Hộp diêm / Khay)', generate: generateMatchboxTray, params: make({ boxType: 'tray', L: 100, W: 60, D: 30 }) },
+    { name: 'flip_top_tuck (PRYNX-FTT-01)', generate: generateFlipTopTuckBox, params: make({ boxType: 'flip_top_tuck', L: 200, W: 200, D: 60, T: 0.5, C: 0.5 }) },
 ];
 
 // ─── Tầng 1: Xác định (determinism) — Property 9 (PBT) ───────────────

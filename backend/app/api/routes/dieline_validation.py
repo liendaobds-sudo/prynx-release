@@ -31,7 +31,7 @@ ENUM_PARAMS: dict[str, set[str]] = {
     # "params.boxType không hợp lệ." dù engine TS/bundle sidecar đã hỗ trợ.
     # Enum này là BẢN SAO của ENUM_VALUES trong desktop/src/lib/dieline/runtimeValidation.ts
     # — thêm loại hộp mới phải sửa ĐỦ HAI ĐẦU.
-    "boxType": {"rte", "slb", "auto_bottom", "gable", "paper_bag", "cup_sleeve", "pizza", "envelope", "tray", "double_tray", "hanging_window"},
+    "boxType": {"rte", "slb", "auto_bottom", "gable", "paper_bag", "cup_sleeve", "pizza", "envelope", "tray", "double_tray", "hanging_window", "flip_top_tuck"},
     "panelOrder": {"WLWL", "LWLW"},
     "handleShape": {"oval", "roundRect"},
     "handleY": {"bottom", "center"},

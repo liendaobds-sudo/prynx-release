@@ -436,6 +436,13 @@ function BoxScene() {
     const thickness = dieline.standardCode === 'ENV' ? 0.25 : (params.T || 0.5);
 
     // ── Hộp hai mảnh: LỒNG/CHỤP mảnh động vào mảnh tĩnh ở cuối hoạt ảnh ──
+    // [FLIP-TOP-TUCK 2026-08-02 §FTT.2] Các hộp có panel gốc là đáy nằm ngang
+    // phải đặt mặt in ở cap âm Z để mặt ngoài hướng ra ngoài sau khi gấp.
+    const outerFaceNegativeZ = params.boxType === 'pizza'
+        || params.boxType === 'tray'
+        || params.boxType === 'double_tray'
+        || params.boxType === 'flip_top_tuck';
+
     // Khi có `nesting`, dồn toàn bộ GẬP vào [0, NEST_START], rồi dùng đoạn
     // [NEST_START, 1] để chạy choreography lắp khay/nắp. Hộp khác giữ nguyên (foldT =
     // foldProgress).
@@ -506,7 +513,7 @@ function BoxScene() {
                 globalBBox={partBBox}
                 texture={partTextureUrl ? partTexture : null}
                 innerTexture={innerUrl ? innerTexture : null}
-                outerFaceNegativeZ={dieline.params.boxType === 'pizza' || dieline.params.boxType === 'tray' || dieline.params.boxType === 'double_tray'}
+                outerFaceNegativeZ={outerFaceNegativeZ}
                 artworkPart={artworkPart}
                 spotUvTexture={spotUvMaskUrl ? spotUvTexture : null}
                 embossTexture={embossMaskUrl ? embossTexture : null}

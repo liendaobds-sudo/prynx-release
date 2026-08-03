@@ -97,8 +97,8 @@ export function validateParams(
         }
     }
 
-    // --- 2. Ràng buộc: W ≤ L (bỏ qua cho pizza, tray, double_tray — hộp hình chữ nhật ngang hợp lệ) ---
-    if (p.W > p.L && p.boxType !== 'pizza' && p.boxType !== 'tray' && p.boxType !== 'double_tray') {
+    // --- 2. Ràng buộc: W ≤ L (các loại khay/nắp lật cho phép L, W độc lập) ---
+    if (p.W > p.L && p.boxType !== 'pizza' && p.boxType !== 'tray' && p.boxType !== 'double_tray' && p.boxType !== 'flip_top_tuck') {
         if (changedKey === 'W') {
             // Nếu user đang chỉnh W → tự động tăng L lên bằng W
             p.L = clamp(p.W, LIMITS.L.min, LIMITS.L.max);

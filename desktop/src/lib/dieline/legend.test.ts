@@ -31,6 +31,7 @@ import { generateMatchboxTray } from './MatchboxTray';
 import { generateDoubleTray } from './DoubleTray';
 // [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ
 import { generateHangingWindowBox } from './HangingWindowBox';
+import { generateFlipTopTuckBox } from './FlipTopTuckBox';
 // ─── Dispatch boxType → generator ───────────────────────────
 const GENERATORS: Record<GeneratorBoxType, (p: BoxParams) => DielineModel> = {
     rte: generateReverseTuckEnd,
@@ -45,12 +46,14 @@ const GENERATORS: Record<GeneratorBoxType, (p: BoxParams) => DielineModel> = {
     tray: generateMatchboxTray,
     // [HANGING-WINDOW 2026-07-27] Đăng ký generator hộp treo có cửa sổ
     hanging_window: generateHangingWindowBox,
+    flip_top_tuck: generateFlipTopTuckBox,
 };
 
 const ALL_TYPES: GeneratorBoxType[] = [
     'rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray', 'double_tray',
     // [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ vào chung tầng chú giải
     'hanging_window',
+    'flip_top_tuck',
 ];
 
 /** Tập tag thực sự xuất hiện trên các PathSegment trong allPaths (nguồn sự thật). */

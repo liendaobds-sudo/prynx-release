@@ -31,7 +31,7 @@ import {
     type ExportScale,
 } from '../../lib/mockup3d';
 import { HDRI_PRESETS } from './EnvironmentRig';
-import { BACKGROUND_PRESETS } from './ShadowFloor';
+import { BACKGROUND_PRESETS } from './backgroundPresets';
 import CollapsibleSection from './CollapsibleSection';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';

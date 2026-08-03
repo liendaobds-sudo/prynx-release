@@ -49,6 +49,7 @@ import { generateMatchboxTray } from './MatchboxTray';
 import { generateDoubleTray } from './DoubleTray';
 // [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ
 import { generateHangingWindowBox } from './HangingWindowBox';
+import { generateFlipTopTuckBox } from './FlipTopTuckBox';
 
 // ─── Dispatch boxType → generator ───────────────────────────
 const GENERATORS: Record<GeneratorBoxType, (p: BoxParams) => DielineModel> = {
@@ -64,18 +65,22 @@ const GENERATORS: Record<GeneratorBoxType, (p: BoxParams) => DielineModel> = {
     tray: generateMatchboxTray,
     // [HANGING-WINDOW 2026-07-27] Đăng ký generator hộp treo có cửa sổ
     hanging_window: generateHangingWindowBox,
+    flip_top_tuck: generateFlipTopTuckBox,
 };
 
 const ALL_TYPES: GeneratorBoxType[] = [
     'rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray', 'double_tray',
     // [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ chịu chung mọi bất biến hình học
     'hanging_window',
+    'flip_top_tuck',
 ];
 
 // ─── Dung sai (tập trung, theo design Data Models) ──────────
 const GEOMETRY_TOLERANCE = 0.001;     // mm — khép kín, fold kinematics
 const OVERLAP_AREA_TOLERANCE = 0.01;  // mm² — chồng lấn panel
 const NUM_RUNS = 100;                 // ≥ 100 iterations (vượt mức tối thiểu 50/generator)
+// RELEASE QA (audit 2026-08-03 §REL.05): chỉ nới ca tray khi full suite tranh CPU; giữ nguyên 100 lượt và mọi assertion.
+const TRAY_OVERLAP_TIMEOUT_MS = 15_000;
 
 // ─── Helper dùng chung ──────────────────────────────────────
 
@@ -220,7 +225,7 @@ describe('Property 2 — Mọi Cut_Piece do generator sinh ra đều khép kín'
 
     // Ghi nhận tường minh 3 loại bị loại khỏi khẳng định khép-kín-toàn-phần.
     it('documents intentionally-open generators (rte, slb, auto_bottom, envelope) — scoped out with rationale', () => {
-        const intentionallyOpen: GeneratorBoxType[] = ['rte', 'slb', 'auto_bottom', 'envelope'];
+        const intentionallyOpen: GeneratorBoxType[] = ['rte', 'slb', 'auto_bottom', 'envelope', 'flip_top_tuck'];
         expect(intentionallyOpen).not.toContain(CLOSEABLE_TYPES[0]);
         // Không khẳng định allClosed cho các loại này (xem ghi chú phạm vi ở trên).
     });
@@ -295,7 +300,7 @@ describe('Property 3 — Các Panel không chồng lấn', () => {
                 }),
                 { numRuns: NUM_RUNS },
             );
-        });
+        }, boxType === 'tray' ? TRAY_OVERLAP_TIMEOUT_MS : undefined);
     }
 });
 
@@ -344,7 +349,7 @@ function measuredFlatArea(model: DielineModel): number {
 }
 
 /** Generator dạng hộp có chiều sâu D ảnh hưởng trực tiếp diện tích thân. */
-const DEPTH_TYPES: GeneratorBoxType[] = ['rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'pizza', 'tray'];
+const DEPTH_TYPES: GeneratorBoxType[] = ['rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'pizza', 'tray', 'flip_top_tuck'];
 
 describe('Property 4 — Diện tích phẳng khớp công thức kỳ vọng', () => {
     // (1) Bất biến hữu-hạn & dương trên toàn miền — cả 8 generator.
@@ -441,8 +446,8 @@ describe('Property 4 — Diện tích phẳng khớp công thức kỳ vọng', 
 // (đường gập) giữa panel và cha.
 //
 // Đo thực nghiệm: bất biến này đúng CHÍNH XÁC (d = 0.0000 mm) cho
-// 'paper_bag' và 'pizza' — các generator có cây gập phân cấp với pivotEdge
-// đặt đúng trên biên outline của panel cha.
+// 'paper_bag', 'pizza' và 'flip_top_tuck' — các generator có cây gập phân cấp
+// với pivotEdge đặt đúng trên biên outline của panel cha.
 //
 // Các generator còn lại được ghi chú và scope-out có lý do:
 //   • rte, slb, gable, tray: chứa panel ĐẶC TRƯNG (tuck/closure, handle,
@@ -454,7 +459,7 @@ describe('Property 4 — Diện tích phẳng khớp công thức kỳ vọng', 
 //     panel cha khai báo outline → không có gì để kiểm (ghi chú).
 // ============================================================
 
-const PIVOT_TYPES: GeneratorBoxType[] = ['paper_bag', 'pizza'];
+const PIVOT_TYPES: GeneratorBoxType[] = ['paper_bag', 'pizza', 'flip_top_tuck'];
 
 describe('Property 5 — Nhất quán động học gập (fold kinematics)', () => {
     for (const boxType of PIVOT_TYPES) {

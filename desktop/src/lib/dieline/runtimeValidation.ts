@@ -12,7 +12,7 @@ const ENUM_VALUES: Partial<Record<keyof BoxParams, readonly string[]>> = {
     // Công tắc `hgbWindow` không cần khai ở đây: vòng lặp assertBoxParams suy
     // kiểu theo DEFAULT_PARAMS, nên mọi khoá có mặc định boolean (gồm
     // `hgbWindow`) đều bị bắt buộc là boolean.
-    boxType: ['rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray', 'double_tray', 'hanging_window'],
+    boxType: ['rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray', 'double_tray', 'hanging_window', 'flip_top_tuck'],
     panelOrder: ['WLWL', 'LWLW'],
     handleShape: ['oval', 'roundRect'],
     handleY: ['bottom', 'center'],

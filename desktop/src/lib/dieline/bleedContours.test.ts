@@ -38,6 +38,32 @@ function bounds(points: Point2D[]) {
     };
 }
 
+function pointToRingDistance(point: Point2D, ring: Point2D[]): number {
+    let min = Infinity;
+    for (let index = 0; index < ring.length; index += 1) {
+        const a = ring[index];
+        const b = ring[(index + 1) % ring.length];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const lengthSquared = dx * dx + dy * dy || 1;
+        const projection = ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared;
+        const t = Math.max(0, Math.min(1, projection));
+        min = Math.min(min, Math.hypot(
+            point.x - (a.x + t * dx),
+            point.y - (a.y + t * dy),
+        ));
+    }
+    return min;
+}
+
+function bezierMidpoint(segment: PathSegment): Point2D {
+    const [p0, cp1, cp2, p3] = segment.controlPoints!;
+    return {
+        x: (p0.x + 3 * cp1.x + 3 * cp2.x + p3.x) / 8,
+        y: (p0.y + 3 * cp1.y + 3 * cp2.y + p3.y) / 8,
+    };
+}
+
 describe('computeBleedContours', () => {
     it('offset đúng 3 mm ra ngoài contour CUT', () => {
         const contours = computeBleedContours(model(rectangle(10, 20, 40, 30)), 3);
@@ -105,10 +131,31 @@ describe('computeBleedContours', () => {
         expect(contour.length).toBeGreaterThan(20);
         expect(Math.max(...contour.map((point) => point.y))).toBeGreaterThan(74);
     });
+
+    it('flip_top_tuck: contour vật liệu bám các cung CUT thật, không đi tắt qua outline 3D', () => {
+        const generated = generateDieline({
+            ...DEFAULT_PARAMS,
+            boxType: 'flip_top_tuck',
+            L: 200,
+            W: 200,
+            D: 60,
+            T: 0.5,
+            C: 0.5,
+        });
+        const material = computeBleedContours(generated, 0);
+        const curveMidpoints = generated.allPaths
+            .filter((path) => path.tag === 'CUT' && path.type === 'bezier' && path.controlPoints)
+            .map(bezierMidpoint);
+
+        expect(material).toHaveLength(1);
+        expect(curveMidpoints.length).toBeGreaterThan(10);
+        const distances = curveMidpoints.map((point) => pointToRingDistance(point, material[0]));
+        expect(Math.max(...distances)).toBeLessThan(0.15);
+    });
     it('tạo contour hữu hạn cho mọi loại khuôn hiện có', () => {
         // [HANGING-WINDOW 2026-07-27] Thêm 'hanging_window' — tràn lề phải bao được
         // cả cụm tai treo euro nhô lên trên mặt sau.
-        const boxTypes = ['rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray', 'double_tray', 'hanging_window'] as const;
+        const boxTypes = ['rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray', 'double_tray', 'hanging_window', 'flip_top_tuck'] as const;
         for (const boxType of boxTypes) {
             const generated = generateDieline({ ...DEFAULT_PARAMS, boxType });
             const contours = computeBleedContours(generated, 3);

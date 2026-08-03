@@ -169,6 +169,18 @@ describe('variants — tầng 1: toàn vẹn catalog', () => {
         }
     });
 
+    it('túi có quai giữ mí gia cường, túi trơn không quai tắt hẳn mí gập', () => {
+        const withHandle = getVariant('bag_holes')!;
+        const plain = getVariant('bag_plain')!;
+        expect(withHandle.lockedParams).toMatchObject({ handleHoles: true, TH: 30 });
+        expect(plain.lockedParams).toMatchObject({ handleHoles: false, TH: 0 });
+
+        const withHandleModel = generateDieline(paramsOf(withHandle));
+        const plainModel = generateDieline(paramsOf(plain));
+        expect(withHandleModel.panels.some((panel) => panel.name.startsWith('lip_'))).toBe(true);
+        expect(plainModel.panels.some((panel) => panel.name.startsWith('lip_'))).toBe(false);
+    });
+
     // Property 5: phủ kín loại hộp.
     // `Record<BoxParams['boxType'], true>` là chốt ở TẦNG TYPECHECK: thêm một
     // boxType mới vào union mà quên khai ở đây thì `tsc` đỏ ngay ("missing
@@ -187,6 +199,7 @@ describe('variants — tầng 1: toàn vẹn catalog', () => {
             tray: true,
             double_tray: true,
             hanging_window: true,
+            flip_top_tuck: true,
         };
         const covered = new Set(BOX_VARIANTS.map(v => v.boxType));
         for (const boxType of Object.keys(ALL_BOX_TYPES) as BoxParams['boxType'][]) {

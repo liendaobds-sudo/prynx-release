@@ -192,3 +192,33 @@ export const PIZZA_FAN_FILLET_MAX = 5;
 export const PIZZA_LID_FLAP_INSET_RATIO = 0.2;
 /** Tỷ lệ xiên dust flap pizza so với chiều cao panel */
 export const PIZZA_DUST_SKEW_RATIO = 0.05;
+
+// --- Flip-Top Tuck Box (Hộp nắp lật tự khóa, gài mặt trước) ---
+// [FLIP-TOP-TUCK 2026-08-02 §FTT.1] Tỷ lệ đo từ khuon-01.svg, fixture
+// thành phẩm 200×200×60 mm; không khóa W=L hoặc D=0,3L.
+/** Cao mép trước thấp = tỷ lệ này × D (mẫu 20/60). */
+export const FTT_FRONT_LIP_DEPTH_RATIO = 1 / 3;
+/** Chiều dài bốn relief cut = tỷ lệ này × D (mẫu 12/60). */
+export const FTT_CORNER_SLOT_RATIO = 1 / 5;
+/** Đầu chéo khe khóa cạnh = tỷ lệ này × D (mẫu 3/60). */
+export const FTT_SLOT_LEAD_RATIO = 1 / 20;
+/** Bề rộng hiển thị 3D của rãnh xẻ không có diện tích trong khuôn 2D (mm). */
+export const FTT_3D_SLIT_PREVIEW_WIDTH_MM = 0.6;
+/** Khe khóa cạnh bắt đầu cách hai đầu panel một nửa D. */
+export const FTT_SLOT_INSET_RATIO = 1 / 2;
+/** Vai ngang cánh đáy = D/2, phần khóa ngoài = D/4. */
+export const FTT_BASE_SIDE_SHOULDER_RATIO = 1 / 2;
+export const FTT_BASE_SIDE_LOCK_DEPTH_RATIO = 1 / 4;
+/** Bán kính bo cánh đáy = D/8 (mẫu 7,5 mm). */
+export const FTT_BASE_SIDE_RADIUS_RATIO = 1 / 8;
+/** Bán kính bo tai khóa trước/sau = D/12 (mẫu 5 mm). */
+export const FTT_CORNER_LOCK_FILLET_RATIO = 1 / 12;
+/** Bề rộng khóa giữa lấy giá trị nhỏ hơn L/5 và 2D/3. */
+export const FTT_CENTER_LOCK_L_RATIO = 1 / 5;
+export const FTT_CENTER_LOCK_D_RATIO = 2 / 3;
+/** Bán kính vai khóa giữa = 1/10 bề rộng khóa. */
+export const FTT_CENTER_SHOULDER_RATIO = 1 / 10;
+/** Góc nghiêng cạnh mép trước thấp theo mẫu (độ). */
+export const FTT_FRONT_LIP_TAPER_DEG = 10;
+/** Bán kính bo mép trước thấp = D/6 (mẫu 10 mm). */
+export const FTT_FRONT_LIP_RADIUS_RATIO = 1 / 6;

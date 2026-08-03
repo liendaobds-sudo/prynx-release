@@ -317,6 +317,33 @@ export function arbBoxParams(boxType: GeneratorBoxType): fc.Arbitrary<BoxParams>
                 );
         }
 
+        case 'flip_top_tuck': {
+            // [FLIP-TOP-TUCK 2026-08-02 §FTT.5] L/W độc lập; D giữ trong miền
+            // cánh khóa đáy còn đoạn đứng thật để property test không sinh khuôn
+            // phi sản xuất rồi quy kết nhầm thành lỗi topology.
+            return fc
+                .record({
+                    lw: arbLW(60, 500, 60, 400, true),
+                    T: arbT(),
+                    C: arbT(),
+                })
+                .chain(r => {
+                    const dMax = Math.max(
+                        10,
+                        Math.min(200, Math.floor((r.lw.W - r.T) / 1.3)),
+                    );
+                    return arbBiasedInt(10, dMax).map(D =>
+                        buildValid('flip_top_tuck', {
+                            L: r.lw.L,
+                            W: r.lw.W,
+                            D,
+                            T: r.T,
+                            C: r.C,
+                        }),
+                    );
+                });
+        }
+
         default: {
             // Bảo đảm exhaustiveness ở compile-time
             const _exhaustive: never = boxType;

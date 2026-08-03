@@ -85,6 +85,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
     const isTray = params.boxType === 'tray';
     const isDoubleTray = params.boxType === 'double_tray'; // [DOUBLE-TRAY 2026-07-26]
     const isHangingWindow = params.boxType === 'hanging_window'; // [HANGING-WINDOW 2026-07-27]
+    const isFlipTopTuck = params.boxType === 'flip_top_tuck'; // [FLIP-TOP-TUCK 2026-08-02 §FTT.4]
     // [HANGING-WINDOW 2026-07-27] Hộp treo dùng chung thân/mí keo/thứ tự mặt với RTE
     // nên vào cùng nhóm "hộp truyền thống" để hiện toggle vị trí tai dán & thứ tự mặt.
     const isBox = isRTE || isSLB || isAutoBottom || isGable || isPizza || isTray || isHangingWindow; // Traditional box types
@@ -832,10 +833,14 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                                 { key: 'G' as const, label: t('dieline.param:mep_keo_g'), min: 8, max: 25, step: 1, unit: 'mm' },
                                 { key: 'TH' as const, label: t('dieline.param:mi_gap_mieng'), min: 0, max: 80, step: 1, unit: 'mm' },
                             ]
+                            : isFlipTopTuck
+                                ? ADVANCED_PARAMS.filter(p => p.key === 'C')
                             : isGable
                                 ? ADVANCED_PARAMS.filter(p => p.key !== 'TH') // Gable không có tai đút
                                 : ADVANCED_PARAMS
-                        ).map((cfg) => (
+                        // [PAPER-BAG FIX 2026-08-03 §PB.1] TH là quyết định hình
+                        // của biến thể túi; ẩn khi đã khóa, mở lại ở chế độ chuyên gia.
+                        ).filter((cfg) => show(cfg.key)).map((cfg) => (
                             <div key={cfg.key} className="dt-param-cell">
                                 <label className="dt-param-cell-label">{tv(cfg.label)}</label>
                                 <input

@@ -165,6 +165,7 @@ describe('triangulate', () => {
 describe('expectedFlatArea', () => {
     const types: GeneratorBoxType[] = [
         'rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray',
+        'flip_top_tuck',
     ];
 
     it('returns a positive finite area for every box type', () => {
@@ -181,6 +182,19 @@ describe('expectedFlatArea', () => {
         const large = validateParams({ ...DEFAULT_PARAMS, boxType: 'rte', L: 200, W: 100, D: 300 }).params;
         expect(expectedFlatArea(large)).toBeGreaterThan(expectedFlatArea(small));
     });
+
+    it('giữ baseline diện tích gần đúng cho fixture flip-top 200×200×60', () => {
+        const params = validateParams({
+            ...DEFAULT_PARAMS,
+            boxType: 'flip_top_tuck',
+            L: 200,
+            W: 200,
+            D: 60,
+            T: 0.5,
+            C: 0.5,
+        }).params;
+        expect(expectedFlatArea(params)).toBeCloseTo(151_808.5, 6);
+    });
 });
 
 // ─── arbBoxParams (fast-check generator) ────────────────────
@@ -188,6 +202,7 @@ describe('expectedFlatArea', () => {
 describe('arbBoxParams', () => {
     const types: GeneratorBoxType[] = [
         'rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray',
+        'flip_top_tuck',
     ];
 
     for (const boxType of types) {
@@ -204,7 +219,7 @@ describe('arbBoxParams', () => {
                     expect(params.T).toBeGreaterThanOrEqual(0.2);
                     expect(params.T).toBeLessThanOrEqual(3);
                     // W ≤ L for box types that enforce it
-                    if (boxType !== 'pizza' && boxType !== 'tray') {
+                    if (boxType !== 'pizza' && boxType !== 'tray' && boxType !== 'flip_top_tuck') {
                         expect(params.W).toBeLessThanOrEqual(params.L);
                     }
                 }),

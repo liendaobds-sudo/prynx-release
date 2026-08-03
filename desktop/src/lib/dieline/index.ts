@@ -13,6 +13,9 @@ export { generateDoubleTray, splitDoubleTrayDieline } from './DoubleTray';
 // [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ: generator + hàm suy kích thước phụ
 export { generateHangingWindowBox, hangingWindowDims } from './HangingWindowBox';
 export type { HangingWindowDims } from './HangingWindowBox';
+// [FLIP-TOP-TUCK 2026-08-02 §FTT.2] Generator + kích thước dẫn xuất PRYNX-FTT-01
+export { generateFlipTopTuckBox, flipTopTuckDims } from './FlipTopTuckBox';
+export type { FlipTopTuckDims } from './FlipTopTuckBox';
 export { downloadPDF } from './exportPDF';
 export * from './types';
 export * from './utils';

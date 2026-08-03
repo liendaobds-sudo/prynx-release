@@ -333,6 +333,24 @@ export function expectedFlatArea(params: BoxParams): number {
             return piece(L, W, D) + piece(L + delta, W + delta, lidDepth);
         }
 
+        case 'flip_top_tuck': {
+            // [FLIP-TOP-TUCK 2026-08-02 §FTT.5] Mô hình gần đúng theo 13 panel:
+            // đáy + mép trước thấp + vách sau + nắp + hai hông nắp +
+            // vách trước nắp + hai cánh đáy + bốn tai khóa góc.
+            const B = L + 2 * T;
+            const BW = Math.max(2, W - T);
+            const bottom = B * BW;
+            const frontLip = B * D / 3;
+            const backWall = B * D;
+            const lid = L * W;
+            const lidSides = 2 * W * D;
+            const lidFront = B * D;
+            const baseSides = 2 * BW * (D / 2 + T + params.C);
+            const cornerLocks = 4 * D * D * 0.5;
+            return bottom + frontLip + backWall + lid + lidSides
+                + lidFront + baseSides + cornerLocks;
+        }
+
         default:
             return NaN;
     }

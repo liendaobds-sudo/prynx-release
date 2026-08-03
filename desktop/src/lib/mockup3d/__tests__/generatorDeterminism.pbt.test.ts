@@ -32,11 +32,12 @@ import {
     generatePizzaBox,
     generateEnvelope,
     generateMatchboxTray,
+    generateFlipTopTuckBox,
 } from '../../dieline';
 
 const NUM_RUNS = 100;
 
-/** 8 generator công khai ↔ boxType. Chạy riêng để counterexample chỉ rõ tên. */
+/** Các generator công khai ↔ boxType. Chạy riêng để counterexample chỉ rõ tên. */
 const GENERATORS: { boxType: GeneratorBoxType; name: string; generate: (p: BoxParams) => DielineModel }[] = [
     { boxType: 'rte', name: 'generateReverseTuckEnd', generate: generateReverseTuckEnd },
     { boxType: 'slb', name: 'generateSnapLockBottom', generate: generateSnapLockBottom },
@@ -47,6 +48,7 @@ const GENERATORS: { boxType: GeneratorBoxType; name: string; generate: (p: BoxPa
     { boxType: 'pizza', name: 'generatePizzaBox', generate: generatePizzaBox },
     { boxType: 'envelope', name: 'generateEnvelope', generate: generateEnvelope },
     { boxType: 'tray', name: 'generateMatchboxTray', generate: generateMatchboxTray },
+    { boxType: 'flip_top_tuck', name: 'generateFlipTopTuckBox', generate: generateFlipTopTuckBox },
 ];
 
 describe('Property 22: Generator tất định & byte-identical giữa các lần chạy (Req 9.1)', () => {

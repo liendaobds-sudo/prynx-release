@@ -48,6 +48,7 @@ import { normalizeSearch } from '../textSearch';
  *  tung. Giống về kết cấu thân KHÔNG có nghĩa là cùng họ hộp khi đi mua hàng. */
 export type BoxGroup =
     | 'nap_cai'
+    | 'nap_lat'
     | 'day_gai_dan'
     | 'khay_hai_manh'
     | 'cua_so'
@@ -67,6 +68,7 @@ export interface BoxGroupInfo {
 /** Thứ tự hiển thị ở sidebar: các họ hộp trước, nhóm cắt ngang xuống cuối. */
 export const BOX_GROUPS: readonly BoxGroupInfo[] = [
     { id: 'nap_cai', nameVi: 'Hộp nắp cài', nameEn: 'Tuck End' },
+    { id: 'nap_lat', nameVi: 'Hộp nắp lật', nameEn: 'Flip-Top Boxes' },
     { id: 'day_gai_dan', nameVi: 'Hộp đáy gài & đáy dán', nameEn: 'Auto / Snap-Lock Bottom' },
     { id: 'khay_hai_manh', nameVi: 'Khay & hộp hai mảnh', nameEn: 'Tray & Lid' },
     { id: 'thuc_pham', nameVi: 'Hộp thực phẩm', nameEn: 'Food' },
@@ -200,8 +202,9 @@ export const BOX_VARIANTS: readonly BoxVariant[] = [
     },
 
     // ── Túi giấy SOS (Paper Bag) ──
-    // Trục tách: `handleHoles`. Có/không lỗ xỏ dây quai là hai mặt hàng khác nhau
-    // (túi có quai vs túi đựng bánh), nhìn ảnh là biết ngay.
+    // [PAPER-BAG FIX 2026-08-03 §PB.1] Túi có quai cần mí miệng gia cường;
+    // túi trơn không quai dùng miệng cắt thẳng, không sinh panel `lip_*`.
+    // Khóa cả TH để đổi hai card cùng boxType không giữ nhầm hình của card trước.
     {
         id: 'bag_holes',
         code: 'PRYNX-PB-01',
@@ -210,8 +213,7 @@ export const BOX_VARIANTS: readonly BoxVariant[] = [
         nameVi: 'Túi giấy có lỗ xỏ quai',
         descVi: 'Túi giấy SOS — đáy gấp vuông, có lỗ xỏ dây quai',
         aliases: ['paper bag', 'sos bag', 'tui giay co quai', 'tui xach giay', 'lo xo day'],
-        lockedParams: { handleHoles: true },
-        preset: { TH: 30 },
+        lockedParams: { handleHoles: true, TH: 30 },
     },
     {
         id: 'bag_plain',
@@ -221,8 +223,7 @@ export const BOX_VARIANTS: readonly BoxVariant[] = [
         nameVi: 'Túi giấy trơn không quai',
         descVi: 'Túi giấy SOS — miệng trơn, dùng đựng bánh mì, thực phẩm',
         aliases: ['paper bag no handle', 'tui giay tron', 'tui banh mi', 'tui dung thuc pham'],
-        lockedParams: { handleHoles: false },
-        preset: { TH: 30 },
+        lockedParams: { handleHoles: false, TH: 0 },
     },
 
     // ── Hộp quai xách (Gable Box) ──
@@ -345,6 +346,21 @@ export const BOX_VARIANTS: readonly BoxVariant[] = [
         lockedParams: { envStyle: 'wallet', envWindow: true },
     },
 
+    // ── Hộp nắp lật tự khóa, gài mặt trước ──
+    {
+        id: 'ftt_self_lock',
+        code: 'PRYNX-FTT-01',
+        boxType: 'flip_top_tuck',
+        groups: ['nap_lat'],
+        nameVi: 'Hộp nắp lật tự khóa, gài mặt trước',
+        descVi: 'Hộp một mảnh — thành tự khóa, nắp lật liền thân và lưỡi gài mặt trước',
+        aliases: [
+            'self-locking flip top', 'flip top tuck', 'front tuck box',
+            'hop nap lat tu khoa', 'hop gai mat truoc',
+        ],
+        lockedParams: {},
+        preset: { L: 200, W: 200, D: 60, T: 0.5, C: 0.5 },
+    },
     // ── Khay & hộp hai mảnh ──
     {
         id: 'tray_std',

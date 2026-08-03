@@ -46,6 +46,14 @@ interface BoxStore {
 type StoreSet = (partial: Partial<BoxStore> | ((state: BoxStore) => Partial<BoxStore>)) => void;
 type StoreGet = () => BoxStore;
 
+/** Hộp có panel gốc nằm ngang trên sàn ở tư thế dựng hoàn chỉnh. */
+function isStandingBoxType(boxType: BoxParams['boxType']): boolean {
+    return boxType !== 'pizza'
+        && boxType !== 'tray'
+        && boxType !== 'double_tray'
+        && boxType !== 'flip_top_tuck';
+}
+
 let generationTimer: ReturnType<typeof setTimeout> | null = null;
 let generationVersion = 0;
 let activeController: AbortController | null = null;
@@ -98,7 +106,7 @@ function scheduleGeneration(
                     ? state.clampVersion + 1
                     : state.clampVersion,
                 ...(forceRerender
-                    ? { isStanding: !['pizza', 'tray', 'double_tray'].includes(result.params.boxType) }
+                    ? { isStanding: isStandingBoxType(result.params.boxType) }
                     : {}),
             }));
         } catch (error) {
@@ -222,7 +230,7 @@ export const useBoxStore = create<BoxStore>((set, get) => ({
     nestingResult: null,
     sleeveNestingResult: null,
     mockupTextureUrl: null,
-    isStanding: !['pizza', 'tray', 'double_tray'].includes(DEFAULT_PARAMS.boxType),
+    isStanding: isStandingBoxType(DEFAULT_PARAMS.boxType),
     isGenerating: false,
     isModelCurrent: false,
     generationError: null,

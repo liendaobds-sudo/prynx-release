@@ -146,13 +146,30 @@ function dimLine(
 }
 
 /** Tạo SVG markup cho tất cả dimension annotations */
-function buildDimensionSvg(model: DielineModel): string {
+export function buildDimensionSvg(model: DielineModel): string {
     const { params } = model;
-    const { L, W, D, G, TH, boxType, panelOrder } = params;
+    const { L, W, D, T, G, TH, boxType, panelOrder } = params;
     const bb = model.boundingBox;
     const offset = 8;
 
     if (boxType === 'cup_sleeve') return '';
+
+    // [FLIP-TOP-TUCK 2026-08-02 §FTT.5] Kích thước thành phẩm phải bám
+    // ba panel thật; không rơi vào chú thích G/bốn mặt của hộp nắp cài.
+    if (boxType === 'flip_top_tuck') {
+        const bodyLength = L + 2 * T;
+        const bottomWidth = Math.max(2, W - T);
+        const lidY0 = bottomWidth + D;
+        const lidY1 = lidY0 + W;
+        const topY = bb.maxY + offset * 3;
+        const rightX = bb.maxX + offset * 3;
+        let svg = '';
+        svg += dimLine(T, topY, bodyLength - T, topY, `L=${L}`, 'top');
+        svg += dimLine(rightX, lidY0, rightX, lidY1, `W=${W}`, 'right');
+        svg += dimLine(rightX + offset * 3, bottomWidth, rightX + offset * 3, lidY0, `D=${D}`, 'right');
+        return svg;
+    }
+
 
     // ── ENVELOPE ──
     if (boxType === 'envelope') {

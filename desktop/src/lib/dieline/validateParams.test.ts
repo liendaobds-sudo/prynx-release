@@ -196,4 +196,13 @@ describe('validateParams', () => {
         );
         expect(warnings.some(w => w.includes('D='))).toBe(true);
     });
+    it('cho phép W > L với hộp nắp lật tự khóa', () => {
+        const { params, warnings } = validateParams(
+            make({ boxType: 'flip_top_tuck', L: 150, W: 240, D: 60 })
+        );
+        expect(params.L).toBe(150);
+        expect(params.W).toBe(240);
+        expect(warnings.some(w => w.includes('W') && w.includes('L'))).toBe(false);
+    });
+
 });

@@ -986,3 +986,261 @@ describe('generateHangingWindowBox', () => {
         expect(model.params.hgbWindow).toBe(true);
     });
 });
+
+// ─── Flip-Top Tuck Box (PRYNX-FTT-01) ──────────────────────
+
+import { generateFlipTopTuckBox, flipTopTuckDims } from './FlipTopTuckBox';
+
+describe('generateFlipTopTuckBox', () => {
+    const P = {
+        boxType: 'flip_top_tuck' as const,
+        L: 200,
+        W: 200,
+        D: 60,
+        T: 0.5,
+        C: 0.5,
+    };
+
+    it('khớp fixture 200×200×60 và bbox khuon-01.svg', () => {
+        const params = make(P);
+        const dims = flipTopTuckDims(params);
+        expect(dims.bodyLength).toBe(201);
+        expect(dims.bottomWidth).toBe(199.5);
+        expect(dims.frontLipDepth).toBe(20);
+        expect(dims.cornerSlot).toBe(12);
+
+        const model = generateFlipTopTuckBox(params);
+        assertValidDieline(model);
+        expect(model.standardCode).toBe('PRYNX-FTT-01');
+        expect(model.boundingBox).toMatchObject({
+            minX: -60,
+            minY: -20,
+            maxX: 261,
+            maxY: 519.5,
+            width: 321,
+            height: 539.5,
+        });
+        expect(model.warnings).toEqual([]);
+    });
+
+    it('có đúng 13 panel, 12 CREASE và cây cha-con đã chốt', () => {
+        const model = generateFlipTopTuckBox(make(P));
+        expect(model.panels.map(panel => panel.name)).toEqual([
+            'bottom',
+            'base_side_left',
+            'base_side_right',
+            'front_wall',
+            'front_lock_left',
+            'front_lock_right',
+            'back_wall',
+            'back_lock_left',
+            'back_lock_right',
+            'lid',
+            'lid_side_left',
+            'lid_side_right',
+            'lid_front',
+        ]);
+        expect(model.allPaths.filter(path => path.tag === 'CREASE')).toHaveLength(12);
+
+        const byName = new Map(model.panels.map(panel => [panel.name, panel]));
+        expect(byName.get('lid')).toMatchObject({
+            parent: 'back_wall',
+            pivotEdge: [{ x: 0, y: 199.5 }, { x: 201, y: 199.5 }],
+        });
+        expect(byName.get('lid_front')).toMatchObject({ parent: 'lid' });
+        expect(byName.get('front_wall')).toMatchObject({ parent: 'bottom' });
+        expect(byName.get('front_lock_left')).toMatchObject({ parent: 'front_wall' });
+        expect(byName.get('front_lock_right')).toMatchObject({ parent: 'front_wall' });
+    });
+
+    it('gán đúng panel 200×200 làm đáy và panel 201×199,5 làm nắp', () => {
+        const model = generateFlipTopTuckBox(make(P));
+        const byName = new Map(model.panels.map((panel) => [panel.name, panel]));
+        const ringBounds = (name: string) => {
+            const ring = byName.get(name)!.outline!;
+            return {
+                minX: Math.min(...ring.map((point) => point.x)),
+                minY: Math.min(...ring.map((point) => point.y)),
+                maxX: Math.max(...ring.map((point) => point.x)),
+                maxY: Math.max(...ring.map((point) => point.y)),
+            };
+        };
+
+        expect(ringBounds('bottom')).toEqual({ minX: 0.5, minY: 259.5, maxX: 200.5, maxY: 459.5 });
+        expect(ringBounds('lid')).toEqual({ minX: 0, minY: 0, maxX: 201, maxY: 199.5 });
+        expect(byName.get('back_wall')).toMatchObject({
+            parent: 'bottom',
+            foldAngle: -90,
+            pivotEdge: [{ x: 0.5, y: 259.5 }, { x: 200.5, y: 259.5 }],
+        });
+        expect(byName.get('lid')).toMatchObject({
+            parent: 'back_wall',
+            foldAngle: -90,
+            pivotEdge: [{ x: 0, y: 199.5 }, { x: 201, y: 199.5 }],
+        });
+        expect(byName.get('front_wall')).toMatchObject({ parent: 'bottom' });
+        expect(byName.get('lid_front')).toMatchObject({ parent: 'lid' });
+    });
+
+    it('mọi nét CUT ngoài thuộc panel 3D và các outline cong bám đúng khuôn 2D', () => {
+        const model = generateFlipTopTuckBox(make(P));
+        const ownerOf = (segment: (typeof model.allPaths)[number]) =>
+            model.panels.find((panel) => panel.paths.includes(segment));
+        const cuts = model.allPaths.filter((path) => path.tag === 'CUT');
+        expect(cuts.filter((segment) => !ownerOf(segment))).toEqual([]);
+
+        const pointToRing = (point: { x: number; y: number }, ring: { x: number; y: number }[]) => {
+            let min = Infinity;
+            for (let index = 0; index < ring.length; index += 1) {
+                const a = ring[index];
+                const b = ring[(index + 1) % ring.length];
+                const dx = b.x - a.x;
+                const dy = b.y - a.y;
+                const len2 = dx * dx + dy * dy || 1;
+                const raw = ((point.x - a.x) * dx + (point.y - a.y) * dy) / len2;
+                const t = Math.max(0, Math.min(1, raw));
+                min = Math.min(min, Math.hypot(point.x - a.x - t * dx, point.y - a.y - t * dy));
+            }
+            return min;
+        };
+        for (const curve of cuts.filter((path) => path.type === 'bezier' && path.controlPoints)) {
+            const [p0, cp1, cp2, p3] = curve.controlPoints!;
+            const midpoint = {
+                x: (p0.x + 3 * cp1.x + 3 * cp2.x + p3.x) / 8,
+                y: (p0.y + 3 * cp1.y + 3 * cp2.y + p3.y) / 8,
+            };
+            const owner = ownerOf(curve)!;
+            expect(pointToRing(midpoint, owner.outline!), owner.name).toBeLessThan(0.05);
+        }
+    });
+
+    it('giữ 2 khe cạnh dài 140mm, 4 relief 12mm và khe nhận thẳng 39mm', () => {
+        const model = generateFlipTopTuckBox(make(P));
+        const byName = new Map(model.panels.map(panel => [panel.name, panel]));
+
+        for (const [name, slotX] of [
+            ['base_side_left', -28.5],
+            ['base_side_right', 229.5],
+        ] as const) {
+            const cuts = byName.get(name)!.paths.filter(path => path.tag === 'CUT');
+            const vertical = cuts.find(path =>
+                path.type === 'line'
+                && Math.abs(path.points[0].x - path.points[1].x) < 1e-6
+                && Math.abs(path.points[0].x - slotX) < 1e-6
+            );
+            expect(vertical, name).toBeDefined();
+            expect(Math.abs(vertical!.points[1].y - vertical!.points[0].y), name).toBe(140);
+        }
+
+        const reliefs = model.allPaths.filter(path =>
+            path.tag === 'CUT'
+            && path.type === 'line'
+            && Math.abs(path.points[0].y - path.points[1].y) < 1e-6
+            && Math.abs(path.points[1].x - path.points[0].x) === 12
+        );
+        expect(reliefs).toHaveLength(4);
+
+        const receiverStraight = byName.get('lid_front')!.paths.find(path =>
+            path.tag === 'CUT'
+            && Math.abs(path.points[0].y - path.points[1].y) < 1e-6
+            && Math.abs(path.points[0].y + 10) < 1e-6
+        );
+        expect(receiverStraight).toBeDefined();
+        expect(Math.abs(receiverStraight!.points[1].x - receiverStraight!.points[0].x)).toBe(39);
+    });
+
+    it('tạo đúng ba vòng khoét 3D cho hai khe hông và khe nhận khóa trước', () => {
+        const model = generateFlipTopTuckBox(make(P));
+        const byName = new Map(model.panels.map((panel) => [panel.name, panel]));
+        const holeBounds = (name: string) => {
+            const hole = byName.get(name)!.holes![0];
+            return {
+                width: Math.max(...hole.map((point) => point.x)) - Math.min(...hole.map((point) => point.x)),
+                height: Math.max(...hole.map((point) => point.y)) - Math.min(...hole.map((point) => point.y)),
+            };
+        };
+
+        expect(model.panels.reduce((sum, panel) => sum + (panel.holes?.length ?? 0), 0)).toBe(3);
+        const left = holeBounds('base_side_left');
+        const right = holeBounds('base_side_right');
+        const front = holeBounds('lid_front');
+        expect(left.width).toBeCloseTo(0.6, 6);
+        expect(left.height).toBeCloseTo(140, 6);
+        expect(right.width).toBeCloseTo(0.6, 6);
+        expect(right.height).toBeCloseTo(140, 6);
+        expect(front.width).toBeCloseTo(39, 6);
+        expect(front.height).toBeCloseTo(0.6, 6);
+    });
+
+    it('có đủ sáu chú thích điểm chính A–F', () => {
+        const model = generateFlipTopTuckBox(make(P));
+        const annotations = model.panels.flatMap((panel) =>
+            (panel.annotations ?? []).map((annotation) => ({
+                panel: panel.name,
+                ...annotation,
+            })),
+        );
+        const byKey = new Map(annotations.map((annotation) => [
+            annotation.text.split('—')[0].trim(),
+            annotation,
+        ]));
+
+        expect(annotations).toHaveLength(6);
+        expect(byKey.get('A')).toMatchObject({ panel: 'bottom', point: { x: 0.5, y: 259.5 } });
+        expect(byKey.get('B')).toMatchObject({ panel: 'bottom', point: { x: 200.5, y: 259.5 } });
+        expect(byKey.get('C')).toMatchObject({ panel: 'base_side_left', point: { x: -28.5, y: 289.5 } });
+        expect(byKey.get('D')).toMatchObject({ panel: 'base_side_right', point: { x: 229.5, y: 289.5 } });
+        expect(byKey.get('E')).toMatchObject({ panel: 'front_wall', point: { x: 100.5, y: 519 } });
+        expect(byKey.get('F')).toMatchObject({ panel: 'lid_front', point: { x: 100.5, y: -10 } });
+        expect(annotations.every(({ point }) => Number.isFinite(point.x) && Number.isFinite(point.y))).toBe(true);
+    });
+
+    it('bo vai #25/#34 tiếp tuyến ra ngoài, không khuyết vào lưỡi khóa', () => {
+        const curves = generateFlipTopTuckBox(make(P)).allPaths
+            .filter((path) => path.type === 'bezier' && path.controlPoints)
+            .map((path) => path.controlPoints!);
+        const matches = (actual: number, expected: number) => Math.abs(actual - expected) < 0.001;
+        const right = curves.find(([p0, , , p3]) =>
+            matches(p0.x, 124.5) && matches(p0.y, 519.5)
+            && matches(p3.x, 120.5) && matches(p3.y, 515.5),
+        );
+        const left = curves.find(([p0, , , p3]) =>
+            matches(p0.x, 80.5) && matches(p0.y, 515.5)
+            && matches(p3.x, 76.5) && matches(p3.y, 519.5),
+        );
+
+        expect(right).toBeDefined();
+        expect(left).toBeDefined();
+        const [rightStart, rightCp1, rightCp2, rightEnd] = right!;
+        expect(rightCp1.y).toBeCloseTo(rightStart.y, 4);
+        expect(rightCp1.x).toBeLessThan(rightStart.x);
+        expect(rightCp2.x).toBeCloseTo(rightEnd.x, 4);
+        expect(rightCp2.y).toBeGreaterThan(rightEnd.y);
+
+        const [leftStart, leftCp1, leftCp2, leftEnd] = left!;
+        expect(leftCp1.x).toBeCloseTo(leftStart.x, 4);
+        expect(leftCp1.y).toBeGreaterThan(leftStart.y);
+        expect(leftCp2.y).toBeCloseTo(leftEnd.y, 4);
+        expect(leftCp2.x).toBeGreaterThan(leftEnd.x);
+    });
+
+    it('mọi Bezier đồng bộ points với controlPoints', () => {
+        const model = generateFlipTopTuckBox(make(P));
+        for (const segment of model.allPaths.filter(path => path.type === 'bezier')) {
+            expect(segment.controlPoints).toBeDefined();
+            expect(segment.points[0]).toEqual(segment.controlPoints![0]);
+            expect(segment.points[segment.points.length - 1]).toEqual(segment.controlPoints![3]);
+        }
+    });
+
+    it('hộp chữ nhật giữ L/W độc lập và bbox tăng theo kích thước', () => {
+        const wide = generateFlipTopTuckBox(make({ ...P, L: 150, W: 240 }));
+        expect(wide.params.L).toBe(150);
+        expect(wide.params.W).toBe(240);
+
+        const small = generateFlipTopTuckBox(make({ ...P, L: 120, W: 140, D: 30 }));
+        const large = generateFlipTopTuckBox(make({ ...P, L: 300, W: 260, D: 70 }));
+        expect(large.boundingBox.width).toBeGreaterThan(small.boundingBox.width);
+        expect(large.boundingBox.height).toBeGreaterThan(small.boundingBox.height);
+    });
+});

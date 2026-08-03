@@ -62,8 +62,9 @@ const { toastMock } = vi.hoisted(() => ({
 vi.mock('sonner', () => ({ toast: toastMock }));
 
 // Import SAU khi khai báo mock (vi.mock được hoisted).
-import { downloadPDF, decideExportGate } from './exportPDF';
+import { buildDimensionSvg, downloadPDF, decideExportGate } from './exportPDF';
 import type { ContourValidationResult, OpenContourWarning } from './contourValidator';
+import { generateFlipTopTuckBox } from './FlipTopTuckBox';
 
 // ── Helpers ──
 
@@ -111,6 +112,22 @@ function makeModel(segments: PathSegment[]): DielineModel {
         warnings: [],
     };
 }
+describe('buildDimensionSvg — chú thích kích thước hộp nắp lật', () => {
+    it('chỉ ghi L/W/D thành phẩm, không ghi mép keo G', () => {
+        const params = {
+            ...DEFAULT_PARAMS,
+            boxType: 'flip_top_tuck' as const,
+            L: 200, W: 200, D: 60, T: 0.5, C: 0.5,
+        };
+        const svg = buildDimensionSvg(generateFlipTopTuckBox(params));
+
+        expect(svg).toContain('>L=200</text>');
+        expect(svg).toContain('>W=200</text>');
+        expect(svg).toContain('>D=60</text>');
+        expect(svg).not.toContain('>G=');
+    });
+});
+
 
 beforeEach(() => {
     vi.clearAllMocks();

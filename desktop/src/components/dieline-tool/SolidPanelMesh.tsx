@@ -63,8 +63,9 @@ import {
 } from '../../lib/mockup3d/materialLibrary';
 import { getKraftGrainBumpTexture } from '../../lib/mockup3d/proceduralTextures';
 import { applyFoldCompensation, type FoldCompensationScratch } from '../../lib/mockup3d/foldCompensation';
-import { applyExplodedOffset, type Vec3 } from '../../lib/mockup3d/explodedView';
+import { applyExplodedOffset } from '../../lib/mockup3d/explodedView';
 import { foldLive, seedFoldLiveFromStore } from '../../lib/mockup3d/foldLive';
+import { bufferToCadFaceSegPoints } from './cadFace';
 import { moveToMockupVisualOnlyLayer } from './renderLayers';
 import { useDisposableResource } from './useDisposeResources';
 
@@ -506,24 +507,6 @@ function textureImageAspect(texture: THREE.Texture | null): number | undefined {
         : undefined;
 }
 
-/**
- * Trích mảng điểm (mỗi cặp liên tiếp = 1 đoạn) từ geometry lineSegments để
- * truyền vào drei <Line segments>. Gán `z` cố định (lượng nâng nét) cho mọi
- * điểm. Trả [] nếu rỗng.
- */
-function bufferToSegPoints(
-    geo: THREE.BufferGeometry | null,
-    z: number,
-): [number, number, number][] {
-    const pos = geo?.getAttribute('position') as THREE.BufferAttribute | undefined;
-    if (!pos || pos.count === 0) return [];
-    const out: [number, number, number][] = new Array(pos.count);
-    for (let i = 0; i < pos.count; i++) {
-        out[i] = [pos.getX(i), pos.getY(i), z];
-    }
-    return out;
-}
-
 // ─── Component ───────────────────────────────────────────────────────────────
 /**
  * SolidPanelMesh — panel solid có độ dày, finish PBR, ảnh nghệ thuật,
@@ -829,12 +812,19 @@ export default function SolidPanelMesh({
         moveToMockupVisualOnlyLayer(cadVisualsRef.current);
     }, [cutGeo, creaseGeo, hideCadLines, resolvedFoldProgress]);
 
-    // Điểm cho FAT LINE (drei <Line segments>) — đặt nét NGAY TRÊN mặt ngoài
-    // panel (z = offsetZ), KHÔNG nâng hình học (nâng nhiều → nét lềnh bềnh tách
-    // khỏi mặt khi gập). Tránh z-fighting bằng polygonOffset ở material (lệch
-    // độ sâu, không dời hình) → nét bám mặt, không chìm, không trôi.
-    const cutOuterPts = useMemo(() => bufferToSegPoints(cutGeo, offsetZ), [cutGeo, offsetZ]);
-    const creaseOuterPts = useMemo(() => bufferToSegPoints(creaseGeo, offsetZ), [creaseGeo, offsetZ]);
+    // [FLIP-TOP-TUCK FIX 2026-08-03 §FTT.10] Điểm cho FAT LINE
+    // (drei <Line segments>) — đặt nét NGAY TRÊN mặt ngoài
+    // panel, kể cả khi mặt ngoài nằm ở cap −Z. KHÔNG nâng hình học
+    // (nâng nhiều → nét lềnh bềnh tách khỏi mặt khi gập). Tránh z-fighting
+    // bằng polygonOffset ở material (lệch độ sâu, không dời hình) → nét bám mặt.
+    const cutOuterPts = useMemo(
+        () => bufferToCadFaceSegPoints(cutGeo, offsetZ, outerFaceNegativeZ),
+        [cutGeo, offsetZ, outerFaceNegativeZ],
+    );
+    const creaseOuterPts = useMemo(
+        () => bufferToCadFaceSegPoints(creaseGeo, offsetZ, outerFaceNegativeZ),
+        [creaseGeo, offsetZ, outerFaceNegativeZ],
+    );
 
     // ── 4–5. Ma trận gập + exploded ──
     // Khi animation driver chạy: đọc `foldLive` trong useFrame (60fps) — KHÔNG
@@ -992,13 +982,6 @@ export default function SolidPanelMesh({
             0,
         ]
         : [0, 0, 0];
-
-    // Nâng nhẹ đường CAD ra khỏi mặt cap để không trùng mặt phẳng (tránh
-    // Z-fighting line↔mặt). Lượng nâng nhỏ so với kích thước hộp nên không
-    // gây cảm giác đường bị tách rời.
-    const lineLift = Math.max(depth * 0.5, 0.12);
-    const outerLineZ = offsetZ + lineLift;
-    const innerLineZ = -(offsetZ + lineLift);
 
     return (
         <group ref={groupRef} matrixAutoUpdate={false}>

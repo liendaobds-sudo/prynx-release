@@ -30,6 +30,7 @@ import { generateMatchboxTray } from './MatchboxTray';
 import { generateDoubleTray } from './DoubleTray';
 // [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ
 import { generateHangingWindowBox } from './HangingWindowBox';
+import { generateFlipTopTuckBox } from './FlipTopTuckBox';
 
 // ─── Phase 2 additions ──────────────────────────────────────
 // `vi` + module mocks cho phép import `decideExportGate` từ
@@ -73,6 +74,7 @@ const GENERATORS: Record<GeneratorBoxType, (p: BoxParams) => DielineModel> = {
     double_tray: generateDoubleTray,
     // [HANGING-WINDOW 2026-07-27] Đăng ký generator hộp treo có cửa sổ
     hanging_window: generateHangingWindowBox,
+    flip_top_tuck: generateFlipTopTuckBox,
 };
 
 // ─── Phạm vi Property 1 ─────────────────────────────────────
@@ -526,6 +528,7 @@ const ALL_GENERATOR_TYPES: GeneratorBoxType[] = [
     // [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ — biên ngoài phải khép kín như
     // mọi loại hộp khác (khe gài của nắp là nét hở NỘI BỘ, không thuộc biên ngoài).
     'hanging_window',
+    'flip_top_tuck',
 ];
 
 // ─── Helpers dựng model tổng hợp (chỉ dùng nội bộ file test) ──
