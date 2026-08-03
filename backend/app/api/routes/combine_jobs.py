@@ -500,6 +500,7 @@ def get_job_result(job_id: str):
         return {
             "path": os.path.abspath(snapshot.result_path),
             "filename": "merged_output.pdf",
+            "size": os.path.getsize(snapshot.result_path),
         }
     return FileResponse(
         path=snapshot.result_path,

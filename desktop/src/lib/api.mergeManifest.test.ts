@@ -81,6 +81,7 @@ describe('backend merge native transport', () => {
         return new Response(JSON.stringify({
           path: 'C:\\results\\combined.pdf',
           filename: 'Combined.pdf',
+          size: 419430,
         }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -125,6 +126,7 @@ describe('backend merge native transport', () => {
     )).resolves.toEqual({
       path: 'C:\\results\\combined.pdf',
       filename: 'Combined.pdf',
+      size: 419430,
     });
 
     expect(onProgress).toHaveBeenCalledTimes(2);

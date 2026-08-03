@@ -445,14 +445,18 @@ describe('Combine/Interleave transport', () => {
     expect(document.querySelector('[data-combine-complete="true"]')).toBeNull();
 
     await act(async () => {
-      job.resolve({ path: 'D:\\output\\Combined.pdf', filename: 'Combined.pdf' });
+      job.resolve({
+        path: 'D:\\output\\Combined.pdf',
+        filename: 'Combined.pdf',
+        size: 401_185,
+      });
       await job.promise;
     });
 
     await waitFor(() => expect(onSpawnTab).toHaveBeenCalledTimes(1));
     const resultFile = onSpawnTab.mock.calls[0][0] as File & { path?: string };
     expect(resultFile.name).toBe('Combined.pdf');
-    expect(resultFile.size).toBe(0);
+    expect(resultFile.size).toBe(401_185);
     expect(resultFile.path).toBe('D:\\output\\Combined.pdf');
   });
 
@@ -580,14 +584,18 @@ describe('Combine/Interleave transport', () => {
     expect(document.querySelector('[data-combine-complete="true"]')).toBeNull();
 
     await act(async () => {
-      job.resolve({ path: 'D:\\output\\Interleaved.pdf', filename: 'server-name.pdf' });
+      job.resolve({
+        path: 'D:\\output\\Interleaved.pdf',
+        filename: 'server-name.pdf',
+        size: 2_097_152,
+      });
       await job.promise;
     });
 
     await waitFor(() => expect(onSpawnTab).toHaveBeenCalledTimes(1));
     const resultFile = onSpawnTab.mock.calls[0][0] as File & { path?: string };
     expect(resultFile.name).toBe('Interleaved.pdf');
-    expect(resultFile.size).toBe(0);
+    expect(resultFile.size).toBe(2_097_152);
     expect(resultFile.path).toBe('D:\\output\\Interleaved.pdf');
   });
 

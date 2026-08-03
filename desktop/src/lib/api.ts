@@ -673,6 +673,7 @@ export type BackendMergeManifestItem = {
 export type BackendMergeManifestResult = {
   blob?: Blob;
   path?: string;
+  size?: number;
   filename: string;
 };
 
@@ -824,8 +825,13 @@ export async function backendMergeManifestJob(
     );
     if (!result.ok) throw await combineJobError(result, 'Không tải được kết quả ghép PDF.');
     if (result.headers.get('content-type')?.includes('application/json')) {
-      const payload = await result.json() as { path: string; filename?: string };
-      return { path: payload.path, filename: payload.filename || 'Combined.pdf' };
+      const payload = await result.json() as { path: string; filename?: string; size?: number };
+      const size = Number(payload.size);
+      return {
+        path: payload.path,
+        filename: payload.filename || 'Combined.pdf',
+        ...(Number.isFinite(size) && size > 0 ? { size } : {}),
+      };
     }
     return { blob: await result.blob(), filename: 'Combined.pdf' };
   } catch (error) {

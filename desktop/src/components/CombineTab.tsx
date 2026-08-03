@@ -40,6 +40,24 @@ function createPdfFileFromBytes(bytes: Uint8Array, name: string, invalidMessage:
   return new File([toExactArrayBuffer(bytes)], name, { type: 'application/pdf' });
 }
 
+function createDelegatedResultFile(
+  result: { blob?: Blob; path?: string; size?: number },
+  name: string,
+): File {
+  const file = result.path
+    ? new File([], name, { type: 'application/pdf' })
+    : new File([result.blob as Blob], name, { type: 'application/pdf' });
+  if (result.path) {
+    Object.defineProperty(file, 'path', { value: result.path });
+    // UIUX (audit 2026-08-03 §COMB.SIZE): file path-backed không chứa blob trong
+    // WebView; gắn số byte backend đã stat để thanh viewer không hiện 0.00 MB.
+    if (Number.isFinite(result.size) && Number(result.size) > 0) {
+      Object.defineProperty(file, 'size', { value: Number(result.size) });
+    }
+  }
+  return file;
+}
+
 export type CombineNode = {
   id: string;
   type: 'single' | 'collapsed_group' | 'blank';
@@ -644,10 +662,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
           delegatedController.signal.aborted
           || combineJobGenerationRef.current !== requestGeneration
         ) return;
-        const finalFile = result.path
-          ? new File([], 'Interleaved.pdf', { type: 'application/pdf' })
-          : new File([result.blob as Blob], 'Interleaved.pdf', { type: 'application/pdf' });
-        if (result.path) Object.defineProperty(finalFile, 'path', { value: result.path });
+        const finalFile = createDelegatedResultFile(result, 'Interleaved.pdf');
         if (onSpawnTab) {
           onSpawnTab(finalFile);
           onResultsOpened?.();
@@ -1076,10 +1091,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
             delegatedController.signal.aborted
             || combineJobGenerationRef.current !== requestGeneration
           ) return;
-          const finalFile = result.path
-            ? new File([], result.filename, { type: 'application/pdf' })
-            : new File([result.blob as Blob], result.filename, { type: 'application/pdf' });
-          if (result.path) Object.defineProperty(finalFile, 'path', { value: result.path });
+          const finalFile = createDelegatedResultFile(result, result.filename);
           if (onSpawnTab) {
             onSpawnTab(finalFile);
             onResultsOpened?.();
