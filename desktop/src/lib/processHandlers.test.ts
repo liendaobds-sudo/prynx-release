@@ -178,6 +178,7 @@ describe('runResize unified dynamic-background pipeline', () => {
         scaleMode: 'fit',
         bgFillMode: 'mirror',
         bgFillColor: '#ffffff',
+        resizeByContent: false,
         spawnNewTab: false,
     };
 
@@ -216,6 +217,7 @@ describe('runResize unified dynamic-background pipeline', () => {
             '#ffffff',
             'D:\\clean.pdf',
             'fixed',
+            false,
         );
         expect(getWorkingBytes).not.toHaveBeenCalled();
         expect(api.uploadPDF).not.toHaveBeenCalled();
@@ -245,6 +247,7 @@ describe('runResize unified dynamic-background pipeline', () => {
             '#ffffff',
             undefined,
             'fixed',
+            false,
         );
         expect(api.backendResizePages.mock.calls[0][0]).not.toBe(file);
         expect(api.uploadPDF).not.toHaveBeenCalled();
@@ -306,6 +309,7 @@ describe('runResize unified dynamic-background pipeline', () => {
             '#ffffff',
             undefined,
             'fixed',
+            false,
         );
         expect(api.authenticatedFetch).not.toHaveBeenCalled();
         expect(api.uploadPDF).not.toHaveBeenCalled();
@@ -344,6 +348,7 @@ describe('runResize unified dynamic-background pipeline', () => {
             '#ffffff',
             undefined,
             'fixed',
+            false,
         );
         expect(context.setError).toHaveBeenCalledTimes(1);
         expect(context.setError).toHaveBeenCalledWith('');
@@ -380,6 +385,7 @@ describe('runResize unified dynamic-background pipeline', () => {
                 '#ffffff',
                 undefined,
                 'fixed',
+                false,
             );
             expect(api.uploadPDF).not.toHaveBeenCalled();
             expect(api.authenticatedFetch).not.toHaveBeenCalled();
@@ -415,6 +421,7 @@ describe('runResize unified dynamic-background pipeline', () => {
             '#12a34b',
             undefined,
             'fixed',
+            false,
         );
         expect(api.uploadPDF).not.toHaveBeenCalled();
         expect(api.authenticatedFetch).not.toHaveBeenCalled();
@@ -456,11 +463,40 @@ describe('runResize unified dynamic-background pipeline', () => {
                 '#ffffff',
                 'D:\\ratio.pdf',
                 pageSizeMode,
+                false,
             );
             expect(getWorkingBytes).not.toHaveBeenCalled();
             expect(context.commitWorkingFile).toHaveBeenCalled();
         },
     );
+
+    it('routes resize-by-content through backend and forwards the explicit choice', async () => {
+        const file = new File(['source'], 'alpha.pdf', { type: 'application/pdf' });
+        const context = makeContext(file, vi.fn(async () => new Uint8Array([1, 2, 3])));
+        context.getWorkingSourcePath = vi.fn().mockResolvedValue('D:\\alpha.pdf');
+
+        await runResize(context, {
+            ...resizeSettings,
+            bgFillMode: 'white',
+            resizeByContent: true,
+        });
+
+        expect(api.backendResizePages).toHaveBeenCalledWith(
+            file,
+            210,
+            297,
+            'fit',
+            'even',
+            0,
+            'auto',
+            'white',
+            '#ffffff',
+            'D:\\alpha.pdf',
+            'fixed',
+            true,
+        );
+        expect(context.getWorkingBytes).not.toHaveBeenCalled();
+    });
 
     it.each([
         ['dynamic background', { bgFillMode: 'mirror' }],

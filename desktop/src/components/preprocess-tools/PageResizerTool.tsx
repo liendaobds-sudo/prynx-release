@@ -6,6 +6,8 @@ import {
 import { RichSelect } from '../imposition-tools/SharedUI';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
+import { useEffect, useState } from 'react';
+import { inspectResizeTransparency } from '../../lib/api';
 
 const inputCls = "w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500";
 const selectCls = "w-full h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm font-medium focus:outline-none focus:border-indigo-500";
@@ -46,6 +48,8 @@ export interface PageResizerSettings extends ResizeOptions {
     // Khử viền trắng trước khi resize (auto-trim → resize)
     autoTrimBefore?: boolean;
     autoTrimMarginMm?: number;
+    // Chỉ bỏ canvas alpha ngoài nội dung khi người dùng chủ động bật.
+    resizeByContent?: boolean;
 }
 
 const DPI_PRESETS = [150, 300, 600];
@@ -53,6 +57,7 @@ const DPI_PRESETS = [150, 300, 600];
 interface Props {
     settings: PageResizerSettings;
     onChange: (settings: PageResizerSettings) => void;
+    pdfFile?: File | null;
 }
 
 export function shouldShowBackgroundFill(
@@ -77,9 +82,36 @@ export function applyPageSizeMode(
     };
 }
 
-export default function PageResizerTool({ settings, onChange }: Props) {
+export default function PageResizerTool({ settings, onChange, pdfFile }: Props) {
   const { t } = useTranslation();
     const pageSizeMode: PageSizeMode = settings.pageSizeMode || 'fixed';
+    const [transparentPages, setTransparentPages] = useState<number[]>([]);
+
+    useEffect(() => {
+        setTransparentPages([]);
+        if (!pdfFile) return;
+        const controller = new AbortController();
+        const isTauri = !!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+        const nativePath = isTauri
+            ? (pdfFile as File & { path?: string }).path
+            : undefined;
+        // RESIZE (audit 2026-08-03 §TR.4): nhận diện object graph của PDF đang mở,
+        // không suy đoán theo tên PNG/JPEG/PDF.
+        void inspectResizeTransparency(pdfFile, nativePath, controller.signal)
+            .then((result) => {
+                if (!controller.signal.aborted) {
+                    setTransparentPages(result.transparent_pages);
+                }
+            })
+            .catch((error: unknown) => {
+                if ((error as { name?: string })?.name !== 'AbortError') {
+                    // Inspection chỉ điều khiển lựa chọn bổ sung; backend Resize vẫn
+                    // tự kiểm tra alpha để không làm giảm chất lượng nếu UI không tải được.
+                    setTransparentPages([]);
+                }
+            });
+        return () => controller.abort();
+    }, [pdfFile]);
     
     const handlePresetChange = (presetId: string) => {
         const preset = COMMON_SIZES.find(p => p.id === presetId);
@@ -177,6 +209,26 @@ export default function PageResizerTool({ settings, onChange }: Props) {
                     </div>
                 )}
             </div>
+
+
+            {transparentPages.length > 0 && (
+                <div className="relative z-[65]">
+                    <ToolCheckboxOption
+                        selected={settings.resizeByContent === true}
+                        onClick={() => onChange({
+                            ...settings,
+                            resizeByContent: settings.resizeByContent !== true,
+                        })}
+                        label={t('preprocess.pageResizer:resize_theo_noi_dung', {
+                            defaultValue: 'Resize theo nội dung',
+                        })}
+                        desc={t('preprocess.pageResizer:resize_theo_noi_dung_desc', {
+                            count: transparentPages.length,
+                            defaultValue: 'Chỉ áp dụng cho trang có vùng trong suốt: bỏ phần trong suốt bên ngoài và tính tỷ lệ theo con tem. Tắt để giữ toàn bộ khổ trang.',
+                        })}
+                    />
+                </div>
+            )}
 
 
 

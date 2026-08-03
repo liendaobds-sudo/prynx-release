@@ -503,6 +503,7 @@ async def resize_pages_endpoint(
     bg_fill_mode: str = Form("white"),
     bg_fill_color: str = Form("#ffffff"),
     page_size_mode: str = Form("fixed"),
+    resize_by_content: bool = Form(False),
     license_info: dict = Depends(require_license),
 ):
     """Resize PDF pages to a new format.
@@ -523,6 +524,10 @@ async def resize_pages_endpoint(
         # tham số; request HTTP thật luôn đưa chuỗi. Giữ tương thích call site cũ.
         raw_page_size_mode = page_size_mode if isinstance(page_size_mode, str) else "fixed"
         page_size_mode = normalize_page_size_mode(raw_page_size_mode)
+        # Caller Python cũ có thể nhận FormInfo khi gọi thẳng endpoint.
+        resize_by_content = (
+            resize_by_content if isinstance(resize_by_content, bool) else False
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if page_size_mode != "fixed" and scale_mode != "fit":
@@ -574,6 +579,7 @@ async def resize_pages_endpoint(
                 scale_mode, apply_to, target_dpi=target_dpi, mode=mode,
                 bg_fill_mode=bg_fill_mode, bg_fill_color=bg_fill_color,
                 page_size_mode=page_size_mode,
+                resize_by_content=resize_by_content,
             )
             engine_finished = time.perf_counter()
         except ValueError as exc:
@@ -617,6 +623,65 @@ async def resize_pages_endpoint(
                 os.remove(source_path)
             except OSError:
                 pass
+
+
+@router.post("/resize/inspect-transparency")
+async def inspect_resize_transparency_endpoint(
+    file: Optional[UploadFile] = File(None),
+    file_path: str = Form(""),
+):
+    """Nhận diện trang còn transparency để UI chỉ hiện lựa chọn phù hợp."""
+    from starlette.concurrency import run_in_threadpool as run_light_in_threadpool
+
+    from app.core.pdf_actions_native import detect_transparent_pages
+
+    source_path: Optional[str] = None
+    delete_source = False
+    try:
+        path_arg = file_path.strip().strip('"') if isinstance(file_path, str) else ""
+        if path_arg:
+            real_path = os.path.realpath(path_arg)
+            if (
+                not os.path.isabs(path_arg)
+                or not os.path.isfile(real_path)
+                or not real_path.lower().endswith(".pdf")
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Không tìm thấy file PDF nguồn trên máy.",
+                )
+            source_path = real_path
+        elif file is not None:
+            if not (file.filename or "").lower().endswith(".pdf"):
+                raise HTTPException(
+                    status_code=415,
+                    detail="File cần kiểm tra phải là PDF.",
+                )
+            source_path = await save_upload(file)
+            delete_source = True
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Thiếu file PDF cần kiểm tra transparency.",
+            )
+
+        # RESIZE (audit 2026-08-03 §TR.5): inspection chỉ duyệt object graph,
+        # không chiếm heavy-job slot vốn dành cho render/bình bản.
+        transparent_pages = await run_light_in_threadpool(
+            detect_transparent_pages,
+            source_path,
+        )
+        return {
+            "has_transparency": bool(transparent_pages),
+            "transparent_pages": transparent_pages,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise_http(exc, "Không kiểm tra được transparency của PDF")
+    finally:
+        if delete_source and source_path:
+            _cleanup_file(source_path)
 
 
 @router.post("/trim-shift")

@@ -578,7 +578,8 @@ def resize_pages_smart(source_path: str, output_path: str,
                        target_dpi: int = 0, mode: str = "auto",
                        bg_fill_mode: str = "white",
                        bg_fill_color: str = "#ffffff",
-                       page_size_mode: str = "fixed") -> str:
+                       page_size_mode: str = "fixed",
+                       resize_by_content: bool = False) -> str:
     """Resize trang + (tuỳ chọn) giảm dữ liệu theo khổ mới.
 
     target_dpi<=0 hoặc mode='xobject' → chỉ đổi hình học (hành vi cũ).
@@ -592,11 +593,23 @@ def resize_pages_smart(source_path: str, output_path: str,
     target_dpi = int(target_dpi or 0)
     page_size_mode = normalize_page_size_mode(page_size_mode)
     variable_page_size = page_size_mode != "fixed"
+    from app.core.pdf_actions_native import detect_transparent_pages
+
+    transparent_page_indexes = {
+        page_number - 1
+        for page_number in detect_transparent_pages(source_path)
+        if page_number > 0
+    }
+    has_transparency = bool(transparent_page_indexes)
     dynamic_background = (
         is_dynamic_background_mode(bg_fill_mode)
         and scale_mode in {"fit", "center_no_scale"}
     )
-    content_aware_resize = dynamic_background or variable_page_size
+    content_aware_resize = (
+        dynamic_background
+        or variable_page_size
+        or (bool(resize_by_content) and has_transparency)
+    )
     background_dpi = target_dpi if target_dpi > 0 else 300
 
     def _resize_geometry(destination_path: str) -> str:
@@ -612,6 +625,8 @@ def resize_pages_smart(source_path: str, output_path: str,
                 background_dpi=background_dpi,
                 background_color=bg_fill_color,
                 page_size_mode=page_size_mode,
+                resize_by_content=bool(resize_by_content),
+                transparent_page_indexes=transparent_page_indexes,
             )
         return resize_pages(
             source_path, destination_path, target_w_mm, target_h_mm, scale_mode, apply_to,
@@ -624,10 +639,13 @@ def resize_pages_smart(source_path: str, output_path: str,
 
     # RESIZE (audit 2026-08-01 §B.1): artwork đã là Form vector nằm trên
     # nền raster; không được rơi vào _raster_resize dù UI chọn "raster".
-    # RESIZE (audit 2026-08-01 §R.4): khóa một chiều cũng cần contentBox theo
-    # từng trang, nên luôn dựng geometry vector trước rồi mới giảm mẫu ảnh.
-    chosen = "vector" if content_aware_resize else mode
-    if mode == "auto" and not content_aware_resize:
+    # RESIZE (audit 2026-08-01 §R.4): khóa một chiều luôn dựng geometry vector
+    # trước rồi mới giảm mẫu ảnh; §TR.1 quyết định contentBox hay page box theo alpha.
+    # RESIZE (audit 2026-08-03 §TR.3): raster RGB và pdfwrite có thể flatten
+    # alpha. Kể cả user còn preset "raster" cũ, trang có transparency phải đi
+    # Form/XObject; downsample object-level bên dưới hạ ảnh và SMask cùng tỷ lệ.
+    chosen = "vector" if content_aware_resize or has_transparency else mode
+    if mode == "auto" and not content_aware_resize and not has_transparency:
         chosen = _choose_auto_mode(
             apply_to=apply_to,
             has_text=_doc_has_text_fonts(source_path),
@@ -657,13 +675,17 @@ def resize_pages_smart(source_path: str, output_path: str,
                     return output_path
             except OSError:
                 return output_path
-        if _gs_downsample(tmp_geom, output_path, int(target_dpi)):
+        if not has_transparency and _gs_downsample(tmp_geom, output_path, int(target_dpi)):
             # Chỉ giữ kết quả downsample nếu THỰC SỰ nhỏ hơn; GS đôi khi phình file.
             try:
                 if os.path.getsize(output_path) < os.path.getsize(tmp_geom):
                     return output_path
             except OSError:
                 return output_path
+        if has_transparency:
+            _pt_logger.info(
+                "resize downsample: bỏ qua Ghostscript để giữ transparency/SMask."
+            )
         # Fallback: dùng bản chỉ-đổi-hình-học.
         os.replace(tmp_geom, output_path)
         tmp_geom = None

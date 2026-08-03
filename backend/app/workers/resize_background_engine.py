@@ -363,8 +363,14 @@ def resize_pages_with_background(
     background_color: str = "#ffffff",
     sample_inset_mm: float = DEFAULT_SAMPLE_INSET_MM,
     page_size_mode: str = "fixed",
+    resize_by_content: bool = False,
+    transparent_page_indexes: set[int] | None = None,
 ) -> str:
-    """Dò contentBox, tính khổ theo trang rồi đặt artwork vector lên canvas đích."""
+    """Tính khổ theo trang rồi đặt artwork vector lên canvas đích.
+
+    Trang opaque giữ content-aware hiện có. Trang có transparency chỉ bỏ vùng alpha
+    bên ngoài khi người dùng bật ``resize_by_content``; mặc định dùng toàn page box.
+    """
     # PERF (audit 2026-08-01 §RT.12): đo từng stage nhưng không đổi worker/DPI.
     perf_started = time.perf_counter()
     stage_seconds = {
@@ -381,6 +387,20 @@ def resize_pages_with_background(
     if mode not in CONTENT_AWARE_BACKGROUND_MODES:
         raise ValueError("Kiểu nền vùng trống không hợp lệ.")
     size_mode = normalize_page_size_mode(page_size_mode)
+    if transparent_page_indexes is None:
+        from app.core.pdf_actions_native import detect_transparent_pages
+
+        transparent_indexes = {
+            page_number - 1
+            for page_number in detect_transparent_pages(source_path)
+            if page_number > 0
+        }
+    else:
+        transparent_indexes = {
+            int(index)
+            for index in transparent_page_indexes
+            if isinstance(index, int) and index >= 0
+        }
     if size_mode != "fixed" and scale_mode != "fit":
         raise ValueError(
             "Giữ tỷ lệ từng trang chỉ hỗ trợ kiểu Thu vừa khít."
@@ -423,8 +443,9 @@ def resize_pages_with_background(
         processed_selected = 0
         logger.info(
             "[RESIZE_TIMING] engine_start mode=%s page_size_mode=%s pages=%d "
-            "selected=%d dpi=%d",
+            "selected=%d dpi=%d resize_by_content=%s transparent_pages=%d",
             mode, size_mode, len(source.pages), selected_total, dpi,
+            bool(resize_by_content), len(transparent_indexes),
         )
         try:
             from app.workers.sticker_engine import _copy_output_intents
@@ -454,26 +475,40 @@ def resize_pages_with_background(
                 fallback=_get_page_box(source_page, "/MediaBox"),
             )
             rotation = int(source_page.get("/Rotate", 0) or 0) % 360
-            detected_rgb = _render_path_page_rgb(
-                source_path, page_index, DETECT_DPI / 72.0
-            )
-            min_side_px = max(2, int(0.3 * PT_PER_MM * (DETECT_DPI / 72.0)))
-            detection = _find_nonwhite_content_bbox(detected_rgb, min_side_px * min_side_px)
-            if detection is None:
+            page_has_transparency = page_index in transparent_indexes
+            # RESIZE (audit 2026-08-03 §TR.1/§TR.2): alpha ngoài con tem là một
+            # phần có chủ đích của khổ PNG/PDF. Chỉ crop nó khi user bật lựa chọn;
+            # trang opaque vẫn giữ hành vi xén trắng/nền động đã có.
+            should_detect_content = not page_has_transparency or bool(resize_by_content)
+            if not should_detect_content:
                 crop = visible
             else:
-                (x0, y0, x1, y1), _pixels = detection
-                crop = _pixel_bbox_to_cropbox(
-                    x0,
-                    y0,
-                    x1,
-                    y1,
-                    detected_rgb.shape[1],
-                    detected_rgb.shape[0],
-                    visible,
-                    rotation,
-                    0.0,
+                detected_rgb = _render_path_page_rgb(
+                    source_path, page_index, DETECT_DPI / 72.0
                 )
+                min_side_px = max(
+                    2,
+                    int(0.3 * PT_PER_MM * (DETECT_DPI / 72.0)),
+                )
+                detection = _find_nonwhite_content_bbox(
+                    detected_rgb,
+                    min_side_px * min_side_px,
+                )
+                if detection is None:
+                    crop = visible
+                else:
+                    (x0, y0, x1, y1), _pixels = detection
+                    crop = _pixel_bbox_to_cropbox(
+                        x0,
+                        y0,
+                        x1,
+                        y1,
+                        detected_rgb.shape[1],
+                        detected_rgb.shape[0],
+                        visible,
+                        rotation,
+                        0.0,
+                    )
             page_stage["detect"] = time.perf_counter() - detect_started
             stage_seconds["detect"] += page_stage["detect"]
 

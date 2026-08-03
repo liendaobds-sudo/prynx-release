@@ -10,6 +10,7 @@ import pikepdf
 import pytest
 from PIL import Image
 
+from app.core.pdf_actions_native import detect_transparent_pages
 from app.workers.resize_background_engine import resize_pages_with_background
 
 
@@ -61,6 +62,115 @@ def _make_artwork_pdf(
         crop_box=crop_box,
         rotate=rotate,
     )
+    pdf.save(path)
+    pdf.close()
+
+
+def _add_alpha_image_resource(
+    pdf: pikepdf.Pdf,
+    page,
+    *,
+    nested_in_form: bool = False,
+) -> None:
+    """Tạo ảnh RGB 2×2 có SMask như PDF do PNG alpha/ứng dụng ngoài sinh ra."""
+    smask = pikepdf.Stream(pdf, bytes((0, 255, 255, 0)))
+    smask.Type = pikepdf.Name.XObject
+    smask.Subtype = pikepdf.Name.Image
+    smask.Width = 2
+    smask.Height = 2
+    smask.ColorSpace = pikepdf.Name.DeviceGray
+    smask.BitsPerComponent = 8
+
+    image = pikepdf.Stream(
+        pdf,
+        bytes((255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0)),
+    )
+    image.Type = pikepdf.Name.XObject
+    image.Subtype = pikepdf.Name.Image
+    image.Width = 2
+    image.Height = 2
+    image.ColorSpace = pikepdf.Name.DeviceRGB
+    image.BitsPerComponent = 8
+    image.SMask = smask
+
+    if not nested_in_form:
+        image_name = page.add_resource(image, pikepdf.Name.XObject)
+        page.contents_add(
+            pikepdf.Stream(pdf, f"q 100 0 0 100 0 0 cm {image_name} Do Q".encode("ascii"))
+        )
+        return
+
+    form = pikepdf.Stream(pdf, b"q 1 0 0 1 0 0 cm /ImAlpha Do Q")
+    form.Type = pikepdf.Name.XObject
+    form.Subtype = pikepdf.Name.Form
+    form.BBox = pikepdf.Array((0, 0, 100, 100))
+    form.Resources = pikepdf.Dictionary(
+        XObject=pikepdf.Dictionary(ImAlpha=image),
+    )
+    form_name = page.add_resource(form, pikepdf.Name.XObject)
+    page.contents_add(
+        pikepdf.Stream(pdf, f"q 1 0 0 1 0 0 cm {form_name} Do Q".encode("ascii"))
+    )
+
+
+def _make_mixed_transparency_pdf(path: str) -> None:
+    pdf = pikepdf.Pdf.new()
+    pdf.add_blank_page(page_size=(100.0, 100.0))
+    direct_page = pdf.add_blank_page(page_size=(100.0, 100.0))
+    _add_alpha_image_resource(pdf, direct_page)
+    nested_page = pdf.add_blank_page(page_size=(100.0, 100.0))
+    _add_alpha_image_resource(pdf, nested_page, nested_in_form=True)
+    pdf.save(path)
+    pdf.close()
+
+
+def _add_alpha_canvas_page(pdf: pikepdf.Pdf, *, page_size=(100.0, 100.0)):
+    """Trang vuông có canvas alpha toàn trang, nội dung nhìn thấy tỷ lệ 2:3 ở giữa."""
+    width_px = height_px = 20
+    alpha = np.zeros((height_px, width_px), dtype=np.uint8)
+    alpha[4:16, 6:14] = 255
+    rgb = np.zeros((height_px, width_px, 3), dtype=np.uint8)
+    rgb[:, :, :] = (24, 156, 70)
+
+    smask = pikepdf.Stream(pdf, alpha.tobytes())
+    smask.Type = pikepdf.Name.XObject
+    smask.Subtype = pikepdf.Name.Image
+    smask.Width = width_px
+    smask.Height = height_px
+    smask.ColorSpace = pikepdf.Name.DeviceGray
+    smask.BitsPerComponent = 8
+
+    image = pikepdf.Stream(pdf, rgb.tobytes())
+    image.Type = pikepdf.Name.XObject
+    image.Subtype = pikepdf.Name.Image
+    image.Width = width_px
+    image.Height = height_px
+    image.ColorSpace = pikepdf.Name.DeviceRGB
+    image.BitsPerComponent = 8
+    image.SMask = smask
+
+    page = pdf.add_blank_page(page_size=page_size)
+    image_name = page.add_resource(image, pikepdf.Name.XObject)
+    page.contents_add(
+        pikepdf.Stream(
+            pdf,
+            (
+                f"q {page_size[0]} 0 0 {page_size[1]} 0 0 cm "
+                f"{image_name} Do Q"
+            ).encode("ascii"),
+        )
+    )
+    return page
+
+
+def _make_mixed_resize_pdf(path: str) -> None:
+    pdf = pikepdf.Pdf.new()
+    _add_artwork_page(
+        pdf,
+        page_size=(100.0, 100.0),
+        content_box=(10.0, 40.0, 90.0, 60.0),
+    )
+    _add_alpha_canvas_page(pdf)
     pdf.save(path)
     pdf.close()
 
@@ -551,6 +661,75 @@ def test_locked_width_uses_detected_contentbox_not_white_pagebox(tmp_path):
     assert height_mm == pytest.approx(40.0, abs=0.5)
 
 
+def test_transparent_page_keeps_full_page_ratio_until_resize_by_content_is_enabled(
+    tmp_path,
+):
+    src = str(tmp_path / "alpha_canvas.pdf")
+    keep_out = str(tmp_path / "alpha_canvas_keep.pdf")
+    crop_out = str(tmp_path / "alpha_canvas_crop.pdf")
+    pdf = pikepdf.Pdf.new()
+    _add_alpha_canvas_page(pdf)
+    pdf.save(src)
+    pdf.close()
+
+    common = {
+        "scale_mode": "fit",
+        "background_mode": "white",
+        "background_dpi": 72,
+        "page_size_mode": "fixed_width",
+    }
+    resize_pages_with_background(
+        src,
+        keep_out,
+        50.0,
+        50.0,
+        resize_by_content=False,
+        **common,
+    )
+    resize_pages_with_background(
+        src,
+        crop_out,
+        50.0,
+        50.0,
+        resize_by_content=True,
+        **common,
+    )
+
+    assert _page_sizes_mm(keep_out)[0] == pytest.approx((50.0, 50.0), abs=0.12)
+    crop_width, crop_height = _page_sizes_mm(crop_out)[0]
+    assert crop_width == pytest.approx(50.0, abs=0.12)
+    assert crop_height == pytest.approx(75.0, abs=1.5)
+    assert detect_transparent_pages(keep_out) == [1]
+    assert detect_transparent_pages(crop_out) == [1]
+
+
+def test_resize_by_content_only_changes_transparent_pages_in_mixed_pdf(tmp_path):
+    src = str(tmp_path / "mixed_resize.pdf")
+    keep_out = str(tmp_path / "mixed_resize_keep.pdf")
+    crop_out = str(tmp_path / "mixed_resize_crop.pdf")
+    _make_mixed_resize_pdf(src)
+
+    common = {
+        "scale_mode": "fit",
+        "background_mode": "white",
+        "background_dpi": 72,
+        "page_size_mode": "fixed_width",
+    }
+    resize_pages_with_background(
+        src, keep_out, 50.0, 50.0, resize_by_content=False, **common
+    )
+    resize_pages_with_background(
+        src, crop_out, 50.0, 50.0, resize_by_content=True, **common
+    )
+
+    keep_sizes = _page_sizes_mm(keep_out)
+    crop_sizes = _page_sizes_mm(crop_out)
+    assert crop_sizes[0] == pytest.approx(keep_sizes[0], abs=0.12)
+    assert keep_sizes[1] == pytest.approx((50.0, 50.0), abs=0.12)
+    assert crop_sizes[1][0] == pytest.approx(50.0, abs=0.12)
+    assert crop_sizes[1][1] == pytest.approx(75.0, abs=1.5)
+
+
 @pytest.mark.parametrize("rotate", [0, 90, 180, 270])
 def test_locked_width_uses_display_ratio_after_rotation(tmp_path, rotate):
     src = str(tmp_path / f"ratio_rotated_{rotate}.pdf")
@@ -669,6 +848,49 @@ def test_smart_resize_locked_axis_forces_content_aware_vector_path(tmp_path, mon
     assert calls[0]["background_color"] == "#123456"
 
 
+def test_smart_resize_never_uses_rgb_or_ghostscript_for_transparent_page(
+    tmp_path,
+    monkeypatch,
+):
+    from app.workers import pdf_tools_engine
+
+    src = str(tmp_path / "alpha_smart_src.pdf")
+    out = str(tmp_path / "alpha_smart_out.pdf")
+    pdf = pikepdf.Pdf.new()
+    _add_alpha_canvas_page(pdf)
+    pdf.save(src)
+    pdf.close()
+
+    monkeypatch.setattr(
+        pdf_tools_engine,
+        "_raster_resize",
+        lambda *args, **kwargs: pytest.fail("trang alpha không được raster hóa RGB"),
+    )
+    monkeypatch.setattr(pdf_tools_engine, "_native_downsample", lambda *args: False)
+    monkeypatch.setattr(
+        pdf_tools_engine,
+        "_gs_downsample",
+        lambda *args: pytest.fail("trang alpha không được fallback Ghostscript"),
+    )
+
+    pdf_tools_engine.resize_pages_smart(
+        src,
+        out,
+        50.0,
+        50.0,
+        scale_mode="fit",
+        apply_to="all",
+        target_dpi=144,
+        mode="raster",
+        bg_fill_mode="white",
+        page_size_mode="fixed",
+        resize_by_content=False,
+    )
+
+    assert os.path.isfile(out)
+    assert detect_transparent_pages(out) == [1]
+
+
 async def test_resize_route_forwards_page_size_mode(tmp_path, monkeypatch):
     from app.api.routes import pdf_tools
 
@@ -699,6 +921,7 @@ async def test_resize_route_forwards_page_size_mode(tmp_path, monkeypatch):
         bg_fill_mode="image",
         bg_fill_color="#ffffff",
         page_size_mode="fixed_width",
+        resize_by_content=True,
         license_info={"license_key": "DEV_MODE"},
     )
 
@@ -714,7 +937,7 @@ async def test_resize_route_forwards_page_size_mode(tmp_path, monkeypatch):
         response.headers["access-control-expose-headers"]
         == "X-PrynX-Resize-Timing"
     )
-    assert captured == [{"target_dpi": 0, "mode": "auto", "bg_fill_mode": "image", "bg_fill_color": "#ffffff", "page_size_mode": "fixed_width"}]
+    assert captured == [{"target_dpi": 0, "mode": "auto", "bg_fill_mode": "image", "bg_fill_color": "#ffffff", "page_size_mode": "fixed_width", "resize_by_content": True}]
 
 
 async def test_resize_route_rejects_locked_axis_with_non_fit_mode():
@@ -737,3 +960,29 @@ async def test_resize_route_rejects_locked_axis_with_non_fit_mode():
             license_info={"license_key": "DEV_MODE"},
         )
     assert raised.value.status_code == 422
+
+
+def test_detect_transparent_pages_handles_direct_and_nested_png_alpha(tmp_path):
+    src = str(tmp_path / "mixed_transparency.pdf")
+    _make_mixed_transparency_pdf(src)
+
+    assert detect_transparent_pages(src) == [2, 3]
+
+
+async def test_resize_transparency_inspection_returns_page_level_contract(
+    tmp_path,
+):
+    from app.api.routes import pdf_tools
+
+    src = str(tmp_path / "inspect_transparency.pdf")
+    _make_mixed_transparency_pdf(src)
+
+    result = await pdf_tools.inspect_resize_transparency_endpoint(
+        file=None,
+        file_path=src,
+    )
+
+    assert result == {
+        "has_transparency": True,
+        "transparent_pages": [2, 3],
+    }

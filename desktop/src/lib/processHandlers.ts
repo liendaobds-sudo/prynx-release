@@ -532,6 +532,7 @@ export async function runResize(ctx: ProcessContext, settings: any) {
         scaleMode: effectiveScaleMode,
         pageSizeMode,
         bgFillMode: settings.bgFillMode || 'mirror',
+        resizeByContent: settings.resizeByContent === true,
         targetDpi: typeof settings.targetDpi === 'number' ? settings.targetDpi : 0,
     });
     // pdf-lib nạp CẢ file vào RAM rồi embedPages (nhân bản nội dung trang thành Form
@@ -581,6 +582,7 @@ export async function runResize(ctx: ProcessContext, settings: any) {
             ['mirror', 'trajectory', 'inpaint', 'image'].includes(fillMode) && hasGapMode;
         const wantSolidFill =
             fillMode === 'solid' && hasGapMode;
+        const wantResizeByContent = settings.resizeByContent === true;
         // RESIZE (audit 2026-08-01 §R.5): nền đã bị ẩn trong mode khóa một
         // chiều thì state cũ không được âm thầm đổi transparency/màu output.
         const effectiveFillMode = lockedAxis ? 'white' : fillMode;
@@ -591,7 +593,7 @@ export async function runResize(ctx: ProcessContext, settings: any) {
             wantEdgeFill, wantSolidFill,
         });
 
-        if (wantEdgeFill || lockedAxis) {
+        if (wantEdgeFill || lockedAxis || wantResizeByContent) {
             // RESIZE (audit 2026-08-01 §RT.11): một backend job duy nhất tự dò
             // contentBox, fit, lấp vùng trống và đặt lại artwork vector.
             setProcessStatus(processingStatus);
@@ -619,6 +621,7 @@ export async function runResize(ctx: ProcessContext, settings: any) {
                 settings.applyToStr || 'all', targetDpi, resizeMode,
                 effectiveFillMode, '#ffffff', sourcePath,
                 pageSizeMode,
+                wantResizeByContent,
             ));
             return;
         }
@@ -638,6 +641,7 @@ export async function runResize(ctx: ProcessContext, settings: any) {
                 wantSolidFill ? (settings.bgFillColor || '#ffffff') : '#ffffff',
                 undefined,
                 pageSizeMode,
+                wantResizeByContent,
             ));
             return;
         }
@@ -681,6 +685,7 @@ export async function runResize(ctx: ProcessContext, settings: any) {
                 wantSolidFill ? (settings.bgFillColor || '#ffffff') : '#ffffff',
                 undefined,
                 pageSizeMode,
+                wantResizeByContent,
             );
         };
 

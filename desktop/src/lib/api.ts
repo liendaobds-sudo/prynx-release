@@ -869,12 +869,48 @@ export async function backendSplitPdf(file: File, mode: string, config: unknown)
   return await res.blob();
 }
 
+export interface ResizeTransparencyInspection {
+  has_transparency: boolean;
+  transparent_pages: number[];
+}
+
+export async function inspectResizeTransparency(
+  file: File,
+  sourcePath?: string,
+  signal?: AbortSignal,
+): Promise<ResizeTransparencyInspection> {
+  const formData = new FormData();
+  if (sourcePath) {
+    formData.append('file_path', sourcePath);
+  } else {
+    formData.append('file', await prepareFileForUpload(file), file.name);
+  }
+  const res = await authenticatedFetch(
+    `${API_BASE}/api/pdf-tools/resize/inspect-transparency`,
+    { method: 'POST', body: formData, signal },
+  );
+  if (!res.ok) {
+    throw new Error('Không kiểm tra được vùng trong suốt: ' + await res.text());
+  }
+  const payload = await res.json() as Partial<ResizeTransparencyInspection>;
+  const transparentPages = Array.isArray(payload.transparent_pages)
+    ? payload.transparent_pages.filter(
+      (page): page is number => Number.isInteger(page) && page > 0,
+    )
+    : [];
+  return {
+    has_transparency: payload.has_transparency === true && transparentPages.length > 0,
+    transparent_pages: transparentPages,
+  };
+}
+
 export async function backendResizePages(
   file: File, targetW: number, targetH: number, scaleMode: string, applyTo: string,
   targetDpi: number = 0, mode: string = 'auto',
   bgFillMode: string = 'white', bgFillColor: string = '#ffffff',
   sourcePath?: string,
   pageSizeMode: string = 'fixed',
+  resizeByContent: boolean = false,
 ): Promise<Blob> {
   // PERF (audit 2026-08-01 §RT.12): mốc end-to-end để tách chuẩn bị payload,
   // chờ backend và tải response; không đổi nội dung request.
@@ -902,6 +938,7 @@ export async function backendResizePages(
   formData.append('bg_fill_mode', bgFillMode);
   formData.append('bg_fill_color', bgFillColor);
   formData.append('page_size_mode', pageSizeMode);
+  formData.append('resize_by_content', String(resizeByContent));
 
   const payloadReady = perfNow();
   const roundMs = (value: number) => Math.round(value * 10) / 10;
@@ -915,6 +952,7 @@ export async function backendResizePages(
     scaleMode,
     bgFillMode,
     pageSizeMode,
+    resizeByContent,
     targetDpi,
   });
 

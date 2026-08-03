@@ -1730,78 +1730,81 @@ def _replace_spot_ops(
         return None
 
 
-def detect_transparency(pdf_path: str) -> list[str]:
-    """Liệt kê dấu hiệu trong suốt trong file (rỗng = không có gì để flatten).
+def _detect_transparency_by_page(pdf_path: str) -> dict[int, list[str]]:
+    """Trả dấu hiệu transparency theo số trang 1-based trong cây nội dung thật."""
+    found_by_page: dict[int, list[str]] = {}
 
-    Bốn dấu hiệu theo §11: transparency group (`/Group /S /Transparency`), soft
-    mask trong gstate (`/SMask` khác `/None`), alpha hằng (`/ca`,`/CA` < 1), và
-    blend mode khác `/Normal`. Ảnh có `/SMask` cũng tính — nó là alpha per-pixel.
-    """
-    found: list[str] = []
-
-    def note(msg: str) -> None:
-        if msg not in found:
-            found.append(msg)
-
-    # Duyệt từ CÂY TRANG, không quét `pdf.objects`: một file đã flatten vẫn còn
-    # object mồ côi mang `/Group` nằm lại trong xref, và quét thô sẽ báo "vẫn
-    # còn trong suốt" cho chính file mình vừa làm sạch. Câu hỏi cần trả lời là
-    # "nội dung SẼ RENDER có trong suốt không".
-    seen: set[tuple[int, int]] = set()
-
-    def visit_resources(resources, depth: int) -> None:
-        if resources is None or depth > _MAX_FORM_DEPTH:
-            return
-        resources = _deref(resources)
-        try:
-            gs_dict = _deref(resources.get("/ExtGState"))
-            if gs_dict is not None:
-                for _n, gs in dict(gs_dict).items():
-                    gs = _deref(gs)
-                    sm = gs.get("/SMask")
-                    if sm is not None and str(_deref(sm)) != "/None":
-                        note("soft mask trong ExtGState")
-                    for key in ("/ca", "/CA"):
-                        val = gs.get(key)
-                        if val is not None and float(val) < 1.0:
-                            note("alpha hằng < 1")
-                    bm = gs.get("/BM")
-                    if bm is not None:
-                        names = (
-                            [str(b) for b in bm]
-                            if isinstance(bm, pikepdf.Array)
-                            else [str(bm)]
-                        )
-                        if any(n not in ("/Normal", "/Compatible") for n in names):
-                            note("blend mode khác Normal")
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            xobjects = _deref(resources.get("/XObject"))
-            if xobjects is None:
-                return
-            for _n, xo in dict(xobjects).items():
-                xo = _deref(xo)
-                key = _objkey(xo)
-                if key is not None:
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                subtype = str(xo.get("/Subtype", ""))
-                if subtype == "/Image":
-                    if xo.get("/SMask") is not None:
-                        note("ảnh có /SMask")
-                    continue
-                group = _deref(xo.get("/Group"))
-                if group is not None and str(group.get("/S", "")) == "/Transparency":
-                    note("transparency group")
-                visit_resources(xo.get("/Resources"), depth + 1)
-        except Exception:  # noqa: BLE001
-            pass
-
+    # RESIZE (audit 2026-08-03 §TR.5): duyệt từ CÂY TRANG, không quét
+    # `pdf.objects`; object mồ côi không được phép làm UI báo nhầm trang còn alpha.
     try:
         with pikepdf.open(pdf_path) as pdf:
-            for page in pdf.pages:
+            for page_number, page in enumerate(pdf.pages, start=1):
+                found: list[str] = []
+                seen: set[tuple[int, int]] = set()
+
+                def note(msg: str) -> None:
+                    if msg not in found:
+                        found.append(msg)
+
+                def visit_resources(resources, depth: int) -> None:
+                    if resources is None or depth > _MAX_FORM_DEPTH:
+                        return
+                    resources = _deref(resources)
+                    try:
+                        gs_dict = _deref(resources.get("/ExtGState"))
+                        if gs_dict is not None:
+                            for _name, gs in dict(gs_dict).items():
+                                gs = _deref(gs)
+                                smask = gs.get("/SMask")
+                                if smask is not None and str(_deref(smask)) != "/None":
+                                    note("soft mask trong ExtGState")
+                                for key in ("/ca", "/CA"):
+                                    value = gs.get(key)
+                                    if value is not None and float(value) < 1.0:
+                                        note("alpha hằng < 1")
+                                blend_mode = gs.get("/BM")
+                                if blend_mode is not None:
+                                    names = (
+                                        [str(item) for item in blend_mode]
+                                        if isinstance(blend_mode, pikepdf.Array)
+                                        else [str(blend_mode)]
+                                    )
+                                    if any(
+                                        name not in ("/Normal", "/Compatible")
+                                        for name in names
+                                    ):
+                                        note("blend mode khác Normal")
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                    try:
+                        xobjects = _deref(resources.get("/XObject"))
+                        if xobjects is None:
+                            return
+                        for _name, xobject in dict(xobjects).items():
+                            xobject = _deref(xobject)
+                            object_key = _objkey(xobject)
+                            if object_key is not None:
+                                if object_key in seen:
+                                    continue
+                                seen.add(object_key)
+                            subtype = str(xobject.get("/Subtype", ""))
+                            if subtype == "/Image":
+                                if xobject.get("/SMask") is not None:
+                                    note("ảnh có /SMask")
+                                if xobject.get("/Mask") is not None:
+                                    note("ảnh có /Mask")
+                                continue
+                            group = _deref(xobject.get("/Group"))
+                            if (
+                                group is not None
+                                and str(group.get("/S", "")) == "/Transparency"
+                            ):
+                                note("transparency group")
+                            visit_resources(xobject.get("/Resources"), depth + 1)
+                    except Exception:  # noqa: BLE001
+                        pass
+
                 try:
                     group = _deref(page.get("/Group"))
                     if group is not None and str(group.get("/S", "")) == "/Transparency":
@@ -1810,29 +1813,51 @@ def detect_transparency(pdf_path: str) -> list[str]:
                     annots = _deref(page.get("/Annots"))
                     if annots is not None:
                         for annot in annots:
-                            ap = _deref(_deref(annot).get("/AP"))
-                            if ap is None:
+                            appearance = _deref(_deref(annot).get("/AP"))
+                            if appearance is None:
                                 continue
-                            for _slot, val in dict(ap).items():
-                                val = _deref(val)
+                            for _slot, value in dict(appearance).items():
+                                value = _deref(value)
                                 streams = (
-                                    [val]
-                                    if isinstance(val, pikepdf.Stream)
-                                    else [_deref(v) for v in dict(val).values()]
-                                    if isinstance(val, pikepdf.Dictionary)
+                                    [value]
+                                    if isinstance(value, pikepdf.Stream)
+                                    else [_deref(item) for item in dict(value).values()]
+                                    if isinstance(value, pikepdf.Dictionary)
                                     else []
                                 )
-                                for st in streams:
-                                    if not isinstance(st, pikepdf.Stream):
+                                for stream in streams:
+                                    if not isinstance(stream, pikepdf.Stream):
                                         continue
-                                    g = _deref(st.get("/Group"))
-                                    if g is not None and str(g.get("/S", "")) == "/Transparency":
+                                    stream_group = _deref(stream.get("/Group"))
+                                    if (
+                                        stream_group is not None
+                                        and str(stream_group.get("/S", ""))
+                                        == "/Transparency"
+                                    ):
                                         note("transparency group")
-                                    visit_resources(st.get("/Resources"), 1)
+                                    visit_resources(stream.get("/Resources"), 1)
                 except Exception:  # noqa: BLE001
-                    continue
+                    pass
+
+                if found:
+                    found_by_page[page_number] = found
     except Exception as exc:  # noqa: BLE001
         logger.debug("detect_transparency lỗi: %s", exc)
+    return found_by_page
+
+
+def detect_transparent_pages(pdf_path: str) -> list[int]:
+    """Liệt kê trang 1-based còn transparency trong object graph đang được dùng."""
+    return list(_detect_transparency_by_page(pdf_path))
+
+
+def detect_transparency(pdf_path: str) -> list[str]:
+    """Liệt kê dấu hiệu trong suốt toàn file (rỗng = không có gì để flatten)."""
+    found: list[str] = []
+    for page_signs in _detect_transparency_by_page(pdf_path).values():
+        for sign in page_signs:
+            if sign not in found:
+                found.append(sign)
     return found
 
 
