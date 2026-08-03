@@ -44,12 +44,32 @@ param(
 $ErrorActionPreference = "Stop"
 $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
+# SEC (audit 2026-08-03 §REL.SECRET): nếu CI/CLI cũ truyền key qua env, lấy ra
+# và xóa NGAY trước bất kỳ git/node/rust/python process con nào. Launcher chuẩn
+# không dùng env; nó để build đọc kho DPAPI đúng tại bước REST bên dưới.
+$script:CapturedReleaseSupabaseSecret = [string]$env:PRYNX_SUPABASE_SECRET_KEY
+$script:CapturedLegacySupabaseServiceKey = [string]$env:PRYNX_SUPABASE_SERVICE_KEY
+$script:CapturedTauriSigningPrivateKey = [string]$env:TAURI_SIGNING_PRIVATE_KEY
+$script:CapturedTauriSigningKeyFile = [string]$env:PRYNX_TAURI_SIGNING_KEY_FILE
+$script:CapturedTauriSigningPrivateKeyPassword = [string]$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+Remove-Item Env:PRYNX_SUPABASE_SECRET_KEY -ErrorAction SilentlyContinue
+Remove-Item Env:PRYNX_SUPABASE_SERVICE_KEY -ErrorAction SilentlyContinue
+Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
+Remove-Item Env:PRYNX_TAURI_SIGNING_KEY_FILE -ErrorAction SilentlyContinue
+Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
+
 # Release artifacts must be rebuilt from current sources and must pass the full QA gate.
 if ($Release -and $SkipNuitka) {
     throw "Release build refuses -SkipNuitka: the sidecar/native payload could be stale or unlocked."
 }
 if ($Release -and $SkipPreflightQA) {
     throw "Release build refuses -SkipPreflightQA: security regression tests are mandatory."
+}
+if ($Release -and ($SkipTauri -or $NuitkaOnly)) {
+    throw "Release build must create and verify a fresh installer; -SkipTauri/-NuitkaOnly are not allowed."
+}
+if ($Release -and -not [string]::IsNullOrWhiteSpace($Version)) {
+    throw "Release build refuses inline -Version mutation. Commit the synchronized version before release."
 }
 
 Write-Host ""
@@ -69,6 +89,103 @@ $PKG_LOCK = "$ROOT\desktop\package-lock.json"
 $CARGO_TOML = "$ROOT\desktop\src-tauri\Cargo.toml"
 $CARGO_LOCK = "$ROOT\desktop\src-tauri\Cargo.lock"
 
+function ConvertTo-BuildToolVersion {
+    param([string]$VersionText)
+
+    $match = [regex]::Match($VersionText, '(?<!\d)(\d+)\.(\d+)\.(\d+)')
+    if (-not $match.Success) { return $null }
+    try {
+        return [version]::Parse(("{0}.{1}.{2}" -f @(
+            $match.Groups[1].Value,
+            $match.Groups[2].Value,
+            $match.Groups[3].Value
+        )))
+    } catch {
+        return $null
+    }
+}
+
+function Test-PythonDistribution {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    # BUILD (audit 2026-08-03 REL.PY311): `pip show` ghi warning ra stderr khi
+    # package chua cai; Windows PowerShell 5 + ErrorActionPreference=Stop bien
+    # phep probe binh thuong thanh NativeCommandError. Metadata probe nay im lang
+    # va chi tra exit code de nhanh cai dat tu xu ly dung hop dong.
+    & $VENV_PYTHON -c @'
+import importlib.metadata as metadata
+import sys
+
+name = sys.argv[1].lower()
+found = any((dist.metadata.get('Name') or '').lower() == name for dist in metadata.distributions())
+sys.exit(0 if found else 1)
+'@ $Name
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Assert-BuildToolchain {
+    # BUILD (audit 2026-08-03 REL.07/REL.08): fail early, before QA or file mutation.
+    $requiredNode = '^20.19.0 || >=22.12.0'
+    $pkg = Get-Content -LiteralPath $PKG_JSON -Raw | ConvertFrom-Json
+    if ([string]$pkg.engines.node -ne $requiredNode) {
+        throw "desktop/package.json engines.node drifted from the audited contract: $requiredNode"
+    }
+
+    $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $nodeCmd) { throw "Node.js not found. Required: $requiredNode" }
+    $nodeText = (& node --version 2>&1 | Select-Object -First 1)
+    $nodeVersion = ConvertTo-BuildToolVersion "$nodeText"
+    $nodeOk = $null -ne $nodeVersion -and (
+        ($nodeVersion.Major -eq 20 -and $nodeVersion -ge [version]'20.19.0') -or
+        ($nodeVersion -ge [version]'22.12.0')
+    )
+    if (-not $nodeOk) {
+        throw "Node.js $nodeText is unsupported. Required: $requiredNode"
+    }
+
+    $cargoText = Get-Content -LiteralPath $CARGO_TOML -Raw
+    $rustMatch = [regex]::Match($cargoText, '(?m)^rust-version\s*=\s*"([^"]+)"')
+    if (-not $rustMatch.Success) {
+        throw "desktop/src-tauri/Cargo.toml must declare rust-version."
+    }
+    $requiredRust = ConvertTo-BuildToolVersion ($rustMatch.Groups[1].Value + '.0')
+    $rustCmd = Get-Command rustc -ErrorAction SilentlyContinue
+    if (-not $rustCmd) { throw "rustc not found. Required: >=$($rustMatch.Groups[1].Value)" }
+    $rustText = (& rustc --version 2>&1 | Select-Object -First 1)
+    $rustVersion = ConvertTo-BuildToolVersion "$rustText"
+    if ($null -eq $requiredRust -or $null -eq $rustVersion -or $rustVersion -lt $requiredRust) {
+        throw "Rust $rustText is unsupported. Required: >=$($rustMatch.Groups[1].Value)"
+    }
+
+    Write-Host "  Toolchain: Node $nodeVersion | Rust $rustVersion" -ForegroundColor Green
+}
+
+function Assert-ReleaseSourceState {
+    param([switch]$CaptureCommit)
+
+    if (-not $Release) { return }
+    $inside = @(& git -C $ROOT rev-parse --is-inside-work-tree 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $inside.Count -ne 1 -or $inside[0].Trim() -ne "true") {
+        throw "Release build requires a valid Git worktree."
+    }
+    $dirty = @(& git -C $ROOT status --porcelain=v1 --untracked-files=all 2>$null)
+    if ($LASTEXITCODE -ne 0) { throw "Cannot verify release worktree cleanliness." }
+    if ($dirty.Count -gt 0) {
+        throw "Release build requires a clean committed worktree; found $($dirty.Count) dirty entries."
+    }
+    $commitOutput = @(& git -C $ROOT rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $commitOutput.Count -ne 1) {
+        throw "Cannot resolve the release source commit."
+    }
+    $commit = $commitOutput[0].Trim()
+    if ($CaptureCommit) {
+        $script:ReleaseSourceCommit = $commit
+    } elseif ([string]::IsNullOrWhiteSpace($script:ReleaseSourceCommit) -or
+        $commit -ne $script:ReleaseSourceCommit) {
+        throw "Release source commit changed during the build."
+    }
+}
+
 function Copy-DirectoryWithRetry {
     param(
         [Parameter(Mandatory = $true)][string]$SourcePattern,
@@ -87,6 +204,8 @@ function Copy-DirectoryWithRetry {
     }
 }
 
+Assert-BuildToolchain
+Assert-ReleaseSourceState -CaptureCommit
 
 # ---- Optional: bump version from -Version (Build NOI BO / CLI) ----
 # Truoc day chi release_update.ps1 ghi version; build noi bo doc tauri.conf cu
@@ -175,6 +294,19 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# Public release keeps the documented Python 3.11 ABI. Internal QA may exercise
+# Python 3.12 explicitly, but that does not silently redefine the release contract.
+$PYTHON_MM = (& $VENV_PYTHON -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')").Trim()
+if ($PYTHON_MM -eq '3.11') {
+    Write-Host "  Python ABI: 3.11 (release contract)" -ForegroundColor Green
+} elseif ($PYTHON_MM -eq '3.12' -and -not $Release) {
+    Write-Host "  WARNING: Internal build uses Python 3.12; public release remains pinned to 3.11." -ForegroundColor Yellow
+} elseif ($PYTHON_MM -eq '3.12') {
+    throw "Release build requires Python 3.11; current venv is Python 3.12. Recreate backend\venv explicitly."
+} else {
+    throw "Unsupported Python ABI $PYTHON_MM. Internal build supports 3.11/3.12; release requires 3.11."
+}
+
 # Production builds must enforce the same Free/Pro entitlements in both layers.
 # Explicit values here avoid silently shipping an unrestricted build when local
 # .env files omit the rollout flags.
@@ -183,16 +315,22 @@ $env:PRYNX_FEATURE_GATING_ENABLED = "true"
 Write-Host "  Free/Pro feature gating: ENABLED (frontend + backend)" -ForegroundColor Green
 
 
-# ---- Step 0: Full release QA gate (runs before Nuitka/Tauri) ----
+# ---- Step 0: Full release QA gate -----------------------------------------
+# The gate is executed after the native wheel is staged below. Running it here
+# would validate whatever .pyd happens to be installed in the mutable dev venv.
 if (-not $SkipPreflightQA) {
-    Write-Host "[0/5] Running full release regression gate..." -ForegroundColor Yellow
-    & "$ROOT\scripts\run_release_qa.ps1"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "ERROR: Release regression gate failed. Fix tests before release." -ForegroundColor Red
-        Write-Host "  Emergency only: add -SkipPreflightQA to skip this gate." -ForegroundColor Yellow
-        exit 1
+    if ($SkipNuitka) {
+        # Internal convenience path only: no new wheel exists, so retain the old
+        # behavior and test the active dev runtime instead of silently skipping QA.
+        Write-Host "[0/5] Running internal QA against the active dev native runtime..." -ForegroundColor Yellow
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ROOT\scripts\run_release_qa.ps1"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Internal regression gate failed while -SkipNuitka was active."
+        }
+        Write-Host "  Internal regression gate passed on the active dev runtime." -ForegroundColor Green
+    } else {
+        Write-Host "[0/5] Release QA queued for the staged native wheel." -ForegroundColor DarkGray
     }
-    Write-Host "  Full release regression gate passed." -ForegroundColor Green
 } else {
     Write-Host "[0/5] Skipped ALL automated release tests (-SkipPreflightQA)." -ForegroundColor DarkGray
 }
@@ -202,8 +340,7 @@ if (-not $SkipNuitka) {
     Write-Host "[1/5] Compiling Python backend with Nuitka..." -ForegroundColor Yellow
     Write-Host "  Cache-aware build; first compile is slower. MSVC jobs: $NuitkaJobs." -ForegroundColor DarkGray
 
-    & $VENV_PYTHON -m pip show nuitka *> $null
-    if ($LASTEXITCODE -ne 0) {
+    if (-not (Test-PythonDistribution -Name "nuitka")) {
         Write-Host "  Installing Nuitka + dependencies..." -ForegroundColor DarkGray
         & $VENV_PYTHON -m pip install Nuitka==4.1.2 ordered-set==4.1.0 zstandard==0.25.0
         if ($LASTEXITCODE -ne 0) {
@@ -284,18 +421,84 @@ if (-not $SkipNuitka) {
     # ============================================================
     $env:PRYNX_DIELINE_KEY_B64 = ""
     $env:PRYNX_DIELINE_VERSION = $APP_VERSION
-    $lockDieline = $env:PRYNX_SUPABASE_URL -and $env:PRYNX_SUPABASE_SERVICE_KEY
+    # SEC (audit 2026-08-03 §REL.SECRET): public release chỉ dùng sb_secret_
+    # độc lập. service_role JWT cũ đã lộ và bị từ chối; sb_secret_ chỉ đi qua
+    # header apikey, không gửi Authorization: Bearer vì nó không phải JWT.
+    $releaseSupabaseSecret = [string]$script:CapturedReleaseSupabaseSecret
+    $legacySupabaseServiceKey = [string]$script:CapturedLegacySupabaseServiceKey
+    $secureReleaseSupabaseSecret = $null
+    $secretStoreScript = Join-Path $ROOT "scripts\release_secret_store.ps1"
+    if (-not (Test-Path -LiteralPath $secretStoreScript -PathType Leaf)) {
+        throw "Thieu script hop dong kho khoa phat hanh: $secretStoreScript"
+    }
+    . $secretStoreScript
+    $expectedReleaseSupabaseUrl = [string]$script:PrynXReleaseSupabaseUrl
+    try {
+    if ([string]::IsNullOrWhiteSpace($releaseSupabaseSecret) -and
+        [string]::IsNullOrWhiteSpace($legacySupabaseServiceKey)) {
+        $secretStorePath = Resolve-PrynXReleaseSecretStorePath
+        if (Test-Path -LiteralPath $secretStorePath -PathType Leaf) {
+            $secureReleaseSupabaseSecret = Get-PrynXReleaseSupabaseSecret -StorePath $secretStorePath
+            $releaseSupabaseSecret = ConvertFrom-PrynXSecureString -SecureValue $secureReleaseSupabaseSecret
+        }
+    }
+    if ($Release -and -not [string]::IsNullOrWhiteSpace($legacySupabaseServiceKey)) {
+        throw "Release refuses legacy PRYNX_SUPABASE_SERVICE_KEY. Configure a rotated sb_secret_ key in the DPAPI store."
+    }
+    if (-not [string]::IsNullOrWhiteSpace($releaseSupabaseSecret) -and
+        $releaseSupabaseSecret -notmatch '^sb_secret_[A-Za-z0-9_-]{20,}$') {
+        throw "PRYNX_SUPABASE_SECRET_KEY is not a valid sb_secret_ key."
+    }
+    $useLegacyServiceKey = [string]::IsNullOrWhiteSpace($releaseSupabaseSecret) -and
+        -not [string]::IsNullOrWhiteSpace($legacySupabaseServiceKey) -and -not $Release
+    $releaseSupabaseUrlCandidate = if (-not [string]::IsNullOrWhiteSpace($env:PRYNX_SUPABASE_URL)) {
+        [string]$env:PRYNX_SUPABASE_URL
+    } else {
+        $expectedReleaseSupabaseUrl
+    }
+    if ($Release) {
+        try {
+            $releaseSupabaseUri = [Uri]$releaseSupabaseUrlCandidate
+            $expectedReleaseSupabaseUri = [Uri]$expectedReleaseSupabaseUrl
+            $normalizedReleaseSupabaseUrl = $releaseSupabaseUri.AbsoluteUri.TrimEnd('/')
+            $normalizedExpectedReleaseSupabaseUrl = $expectedReleaseSupabaseUri.AbsoluteUri.TrimEnd('/')
+        } catch {
+            throw "URL Supabase phat hanh phai khop project DPAPI da cau hinh va dung HTTPS."
+        }
+        if (-not $releaseSupabaseUri.IsAbsoluteUri -or
+            $releaseSupabaseUri.Scheme -cne "https" -or
+            -not [string]::IsNullOrWhiteSpace($releaseSupabaseUri.UserInfo) -or
+            $normalizedReleaseSupabaseUrl -cne $normalizedExpectedReleaseSupabaseUrl) {
+            throw "URL Supabase phat hanh phai khop project DPAPI da cau hinh va dung HTTPS."
+        }
+        # Public release luôn dùng URL đã khóa trong store sau khi xác minh input cũ.
+        $releaseSupabaseUrl = $expectedReleaseSupabaseUrl
+    } else {
+        # Build nội bộ giữ khả năng trỏ tới Supabase/staging riêng của người phát triển.
+        $releaseSupabaseUrl = $releaseSupabaseUrlCandidate
+    }
+    $lockDieline = $releaseSupabaseUrl -and
+        (-not [string]::IsNullOrWhiteSpace($releaseSupabaseSecret) -or $useLegacyServiceKey)
     if (-not $lockDieline) {
         if ($Release -or -not $AllowPlaintextDieline) {
-            throw "Missing PRYNX_SUPABASE_URL/PRYNX_SUPABASE_SERVICE_KEY. Refusing an unlocked build. Use -AllowPlaintextDieline only for local development."
+            throw "Missing PRYNX_SUPABASE_URL/PRYNX_SUPABASE_SECRET_KEY. Refusing an unlocked build. Use -AllowPlaintextDieline only for local development."
         }
         Write-Host "  WARNING: explicit development override enabled; dieline engine is plaintext." -ForegroundColor Yellow
     } else {
-        $keyHeaders = @{
-            apikey        = $env:PRYNX_SUPABASE_SERVICE_KEY
-            Authorization = "Bearer $($env:PRYNX_SUPABASE_SERVICE_KEY)"
+        if ($useLegacyServiceKey) {
+            Write-Host "  WARNING: internal build is using deprecated service_role credentials." -ForegroundColor Yellow
+            $keyHeaders = @{
+                apikey        = $legacySupabaseServiceKey
+                Authorization = "Bearer $legacySupabaseServiceKey"
+            }
+        } else {
+            $keyHeaders = @{ apikey = $releaseSupabaseSecret }
         }
-        $restBase = $env:PRYNX_SUPABASE_URL.TrimEnd('/')
+        $restBase = $releaseSupabaseUrl.TrimEnd('/')
+        # Supabase chan sb_secret_ neu User-Agent giong browser. Windows
+        # PowerShell mac dinh dung Mozilla/...WindowsPowerShell nen phai khai
+        # bao ro day la backend release builder, khong phai renderer/client.
+        $releaseBuilderUserAgent = "PrynX-Release-Builder/1.0"
         $encodedVersion = [Uri]::EscapeDataString($APP_VERSION)
         $keyUri = "$restBase/rest/v1/release_resource_keys?select=resource_key&product_id=eq.prynx&app_version=eq.$encodedVersion&resource=eq.dieline_engine&limit=2"
 
@@ -304,7 +507,8 @@ if (-not $SkipNuitka) {
             # empty JSON array returned by Invoke-RestMethod as one non-enumerated
             # pipeline object when the call sits directly inside @(...). Assign
             # first, then normalize, otherwise "no row" looks like one blank row.
-            $existingResponse = Invoke-RestMethod -Method Get -Uri $keyUri -Headers $keyHeaders -ErrorAction Stop
+            $existingResponse = Invoke-RestMethod -Method Get -Uri $keyUri -Headers $keyHeaders `
+                -UserAgent $releaseBuilderUserAgent -ErrorAction Stop
             $existingRows = @($existingResponse)
         } catch {
             throw "Cannot query the existing dieline resource key: $($_.Exception.Message)"
@@ -337,7 +541,7 @@ if (-not $SkipNuitka) {
                     -Headers ($keyHeaders + @{
                         'Content-Type' = 'application/json'
                         Prefer = 'return=minimal'
-                    }) -Body $body -ErrorAction Stop
+                    }) -UserAgent $releaseBuilderUserAgent -Body $body -ErrorAction Stop
                 Write-Host "  Created immutable dieline resource key for version $APP_VERSION." -ForegroundColor Green
             } catch {
                 throw "Cannot create dieline resource key (existing keys are never overwritten): $($_.Exception.Message)"
@@ -348,13 +552,23 @@ if (-not $SkipNuitka) {
         }
         $env:PRYNX_DIELINE_KEY_B64 = $keyB64
     }
+    } finally {
+        # Không cho secret rò sang maturin/npm/Nuitka/Tauri và process con.
+        $releaseSupabaseSecret = $null
+        $legacySupabaseServiceKey = $null
+        $script:CapturedReleaseSupabaseSecret = $null
+        $script:CapturedLegacySupabaseServiceKey = $null
+        if ($secureReleaseSupabaseSecret) { $secureReleaseSupabaseSecret.Dispose() }
+        $secureReleaseSupabaseSecret = $null
+        Remove-Item Env:PRYNX_SUPABASE_SECRET_KEY -ErrorAction SilentlyContinue
+        Remove-Item Env:PRYNX_SUPABASE_SERVICE_KEY -ErrorAction SilentlyContinue
+    }
     # ---- Step 1a: Build the Rust/Python native extension ----
 
     # Rebuild the Rust/Python extension for the active Python ABI on every full
     # production build. Reusing an extension from an older venv can make Nuitka
     # fail or silently ship stale native PDF logic.
-    & $VENV_PYTHON -m pip show maturin *> $null
-    if ($LASTEXITCODE -ne 0) {
+    if (-not (Test-PythonDistribution -Name "maturin")) {
         Write-Host "  Installing Maturin..." -ForegroundColor DarkGray
         & $VENV_PYTHON -m pip install maturin==1.13.3
         if ($LASTEXITCODE -ne 0) {
@@ -438,10 +652,15 @@ if (-not $SkipNuitka) {
     # KHONG co wheel Linux). Ban Windows ship can DirectML de TU bat GPU (DX12:
     # NVIDIA/AMD/Intel), CPU fallback tu dong -- KHONG can khach cai CUDA/cuDNN.
     # Do thuc (RTX 3060, 1024x1024): isnet ~10x, birefnet-lite ~1.7x so voi CPU.
-    & $VENV_PYTHON -m pip show onnxruntime-directml *> $null
-    if ($LASTEXITCODE -ne 0) {
+    if (-not (Test-PythonDistribution -Name "onnxruntime-directml")) {
         Write-Host "  Installing onnxruntime-directml (GPU) into build venv..." -ForegroundColor DarkGray
-        & $VENV_PYTHON -m pip uninstall -y onnxruntime *> $null
+        if (Test-PythonDistribution -Name "onnxruntime") {
+            & $VENV_PYTHON -m pip uninstall -y onnxruntime
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "ERROR: Failed to remove CPU onnxruntime before DirectML install" -ForegroundColor Red
+                exit 1
+            }
+        }
         & $VENV_PYTHON -m pip install -r "$ROOT\backend\requirements-win-gpu.txt"
         if ($LASTEXITCODE -ne 0) {
             Write-Host "ERROR: Failed to install onnxruntime-directml" -ForegroundColor Red
@@ -476,6 +695,10 @@ if (-not $SkipNuitka) {
         $DML_FLAG = "--include-data-files=$dmlPath=onnxruntime/capi/DirectML.dll"
         Write-Host "  DirectML.dll bundled (GPU): $dmlPath" -ForegroundColor DarkGray
     } else {
+        if ($Release) {
+            Pop-Location
+            throw "Release build requires DirectML.dll from onnxruntime-directml."
+        }
         Write-Host "  DirectML.dll not found (onnxruntime CPU) - shipping CPU inference." -ForegroundColor DarkGray
     }
 
@@ -485,30 +708,38 @@ if (-not $SkipNuitka) {
     # can torch) roi gom .onnx vao app/data/models -> engine doc tu do (fallback sau
     # ~/.u2net). torch CHI o may build, KHONG bundle (app runtime chi import onnxruntime).
     $UPSCALE_MODELS_FLAG = ""
-    $MODELS_DIR = "$ROOT\backend\app\data\models"
-    $GEN_ONNX = "$MODELS_DIR\realesr-general-x4v3.onnx"
-    $QUALITY_ONNX = "$MODELS_DIR\realesrgan-x4plus.onnx"
-    $ISNET_ONNX = "$MODELS_DIR\isnet-general-use.onnx"
+    $SOURCE_MODELS_DIR = "$ROOT\backend\app\data\models"
+    $PACKAGED_MODELS_DIR = Join-Path $nativeStageFull "models"
+    New-Item -ItemType Directory -Force -Path $PACKAGED_MODELS_DIR | Out-Null
+    $SOURCE_GEN_ONNX = "$SOURCE_MODELS_DIR\realesr-general-x4v3.onnx"
+    $SOURCE_QUALITY_ONNX = "$SOURCE_MODELS_DIR\realesrgan-x4plus.onnx"
+    $SOURCE_ISNET_ONNX = "$SOURCE_MODELS_DIR\isnet-general-use.onnx"
+    $GEN_ONNX = "$PACKAGED_MODELS_DIR\realesr-general-x4v3.onnx"
+    $QUALITY_ONNX = "$PACKAGED_MODELS_DIR\realesrgan-x4plus.onnx"
+    $ISNET_ONNX = "$PACKAGED_MODELS_DIR\isnet-general-use.onnx"
     $EXPECTED_ISNET_SHA256 = "60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a"
     # RELEASE (audit 2026-07-28 §BG.02): luôn bundle model Nhanh để Tách nền
     # hoạt động offline ngay lần đầu. Helper tải `.part`, kiểm hash rồi rename atomic.
-    if (-not (Test-Path $ISNET_ONNX) -or
-        (Get-FileHash -LiteralPath $ISNET_ONNX -Algorithm SHA256).Hash.ToLowerInvariant() -ne $EXPECTED_ISNET_SHA256) {
+    # BUILD (audit 2026-08-03 REL.06): prepare the bundle under Temp. A public
+    # release must not download/copy generated data into its clean source tree.
+    $resolvedIsnet = $SOURCE_ISNET_ONNX
+    if (-not (Test-Path $resolvedIsnet) -or
+        (Get-FileHash -LiteralPath $resolvedIsnet -Algorithm SHA256).Hash.ToLowerInvariant() -ne $EXPECTED_ISNET_SHA256) {
         $resolvedIsnet = (& $VENV_PYTHON -c "from app.workers.isnet_engine import _download_model_if_needed; print(_download_model_if_needed())").Trim()
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path $resolvedIsnet)) {
             Write-Host "ERROR: Cannot prepare verified ISNet model for offline bundle." -ForegroundColor Red
             Pop-Location
             exit 1
         }
-        Copy-Item -LiteralPath $resolvedIsnet -Destination $ISNET_ONNX -Force
     }
+    Copy-Item -LiteralPath $resolvedIsnet -Destination $ISNET_ONNX -Force
     $actualIsnetHash = (Get-FileHash -LiteralPath $ISNET_ONNX -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actualIsnetHash -ne $EXPECTED_ISNET_SHA256) {
         Write-Host "ERROR: ISNet model SHA-256 mismatch: $actualIsnetHash" -ForegroundColor Red
         Pop-Location
         exit 1
     }
-    if (-not (Test-Path $GEN_ONNX) -or -not (Test-Path $QUALITY_ONNX)) {
+    if (-not (Test-Path $SOURCE_GEN_ONNX) -or -not (Test-Path $SOURCE_QUALITY_ONNX)) {
         # Try conversion when the build venv has torch.
         & $VENV_PYTHON -c "import torch" *> $null
         if ($LASTEXITCODE -eq 0) {
@@ -520,14 +751,17 @@ if (-not $SkipNuitka) {
             # Doi so nay PHAI cap nhat EXPECTED_UPSCALE_SHA256 ben duoi,
             # realesrgan_engine.MODEL_SHA256, scripts/bundled_components.json,
             # THIRD_PARTY_NOTICES.md va do lai corpus.
-            & $VENV_PYTHON "$ROOT\backend\scripts\convert_realesrgan_onnx.py" --out "$MODELS_DIR" --model all --alpha 0.5
+            & $VENV_PYTHON "$ROOT\backend\scripts\convert_realesrgan_onnx.py" --out "$PACKAGED_MODELS_DIR" --model all --alpha 0.5
         } else {
             Write-Host "  torch not in build venv; cannot generate the required upscale model." -ForegroundColor Yellow
         }
+    } else {
+        Copy-Item -LiteralPath $SOURCE_GEN_ONNX -Destination $GEN_ONNX -Force
+        Copy-Item -LiteralPath $SOURCE_QUALITY_ONNX -Destination $QUALITY_ONNX -Force
     }
     if ((Test-Path $GEN_ONNX) -and (Test-Path $QUALITY_ONNX)) {
-        $UPSCALE_MODELS_FLAG = "--include-data-dir=app/data/models=app/data/models"
-        Write-Host "  Real-ESRGAN models bundled: $MODELS_DIR" -ForegroundColor DarkGray
+        $UPSCALE_MODELS_FLAG = "--include-data-dir=$PACKAGED_MODELS_DIR=app/data/models"
+        Write-Host "  AI models staged for bundle: $PACKAGED_MODELS_DIR" -ForegroundColor DarkGray
         # RELEASE QA (audit 2026-07-28 §UP-05/11): khóa đúng model đã benchmark.
         # UPSCALE (audit 2026-07-29 §NET.02): hash doi vi model general chuyen sang
         # DNI alpha 0.5. Hash cu (alpha 1.0): 027319ffe4f00ec2550957c0957d44969638a03d2ed2f0329af9fd6cd44a457a
@@ -582,10 +816,55 @@ if (-not $SkipNuitka) {
         exit 1
     }
 
-    # MSVC /Ox exhausts compiler heap on some large Nuitka-generated modules. Keep
-    # /O1 for generated Python C code and silence the expected override warning.
+    if (-not $SkipPreflightQA) {
+        # BUILD (audit 2026-08-03 REL.09): PYTHONPATH already points at the wheel
+        # built above. The child gate also proves pdfcompare_native resolves under
+        # this exact staging directory before it runs backend/no-GS coverage.
+        Write-Host "[0/5] Running full release QA against the staged native wheel..." -ForegroundColor Yellow
+        $nativePydCandidates = @(Get-ChildItem -LiteralPath "$nativeSiteDir\pdfcompare_native" `
+            -Filter "*.pyd" -File -ErrorAction SilentlyContinue)
+        if ($nativePydCandidates.Count -ne 1) {
+            throw "Expected exactly one staged pdfcompare_native .pyd; found $($nativePydCandidates.Count)."
+        }
+        $nativeQaId = (Get-FileHash -LiteralPath $nativePydCandidates[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant().Substring(0, 16)
+        $buildNoGsAuditOut = Join-Path $ROOT "tmp\release_no_gs_audit-native-$nativeQaId.json"
+        $previousReleaseNativeSite = $env:PRYNX_RELEASE_NATIVE_SITE
+        $previousNoGsAuditOut = $env:PRYNX_NO_GS_AUDIT_OUT
+        $env:PRYNX_RELEASE_NATIVE_SITE = $nativeSiteDir
+        $env:PRYNX_NO_GS_AUDIT_OUT = $buildNoGsAuditOut
+        try {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+                -File "$ROOT\scripts\run_release_qa.ps1"
+            $releaseQaExit = $LASTEXITCODE
+        } finally {
+            if ($null -eq $previousReleaseNativeSite) {
+                Remove-Item Env:PRYNX_RELEASE_NATIVE_SITE -ErrorAction SilentlyContinue
+            } else {
+                $env:PRYNX_RELEASE_NATIVE_SITE = $previousReleaseNativeSite
+            }
+            if ($null -eq $previousNoGsAuditOut) {
+                Remove-Item Env:PRYNX_NO_GS_AUDIT_OUT -ErrorAction SilentlyContinue
+            } else {
+                $env:PRYNX_NO_GS_AUDIT_OUT = $previousNoGsAuditOut
+            }
+        }
+        if ($releaseQaExit -ne 0) {
+            if ($null -eq $previousPythonPath) { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue }
+            else { $env:PYTHONPATH = $previousPythonPath }
+            if (Test-Path -LiteralPath $nativeStageFull) {
+                Remove-Item -LiteralPath $nativeStageFull -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            Pop-Location
+            throw "Release regression gate failed against the staged native wheel."
+        }
+        Write-Host "  Full release regression gate passed on the staged native wheel." -ForegroundColor Green
+    }
+
+    # MSVC /Ox exhausts compiler heap on some large Nuitka-generated modules.
+    # Keep /O1 for generated Python C code. D9025 la command-line diagnostic,
+    # khong phai C warning; /wd9025 chi sinh them D9014 tren moi C file.
     $previousClAppend = $env:_CL_
-    $env:_CL_ = if ([string]::IsNullOrWhiteSpace($previousClAppend)) { "/O1 /wd9025" } else { "$previousClAppend /O1 /wd9025" }
+    $env:_CL_ = if ([string]::IsNullOrWhiteSpace($previousClAppend)) { "/O1" } else { "$previousClAppend /O1" }
     & $VENV_PYTHON -m nuitka `
         --standalone `
         --jobs=$NuitkaJobs `
@@ -896,10 +1175,33 @@ if (-not $SkipTauri) {
     $env:PRYNX_SIDECAR_HASH = $HASH
     $env:DEV_MODE = "false"
 
-    Push-Location "$ROOT\desktop"
+    # Re-check after generators/tests and immediately before the public bundle.
+    Assert-ReleaseSourceState
     # -Release: use config with createUpdaterArtifacts (needs TAURI_SIGNING_PRIVATE_KEY).
     # Default: externalBin-only config (manual installer, no signing required).
     $tauriConfig = if ($Release) { "src-tauri/tauri.release.conf.json" } else { "src-tauri/tauri.prod.conf.json" }
+    $nsisDir = "$ROOT\desktop\src-tauri\target\release\bundle\nsis"
+    $installerNamePattern = '^.+_' + [regex]::Escape($APP_VERSION) + '_.*-setup\.exe$'
+    $installersBeforeBuild = @{}
+    if (Test-Path -LiteralPath $nsisDir -PathType Container) {
+        foreach ($oldInstaller in @(Get-ChildItem -LiteralPath $nsisDir -Filter "*.exe" -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match $installerNamePattern })) {
+            $installersBeforeBuild[$oldInstaller.FullName.ToLowerInvariant()] = @{
+                Length = $oldInstaller.Length
+                LastWriteTimeUtc = $oldInstaller.LastWriteTimeUtc
+            }
+        }
+    }
+    # BUILD (audit 2026-08-03 REL.10): installer stale khong duoc tinh la output cua lan build nay.
+    $tauriBuildStartedAtUtc = [DateTime]::UtcNow
+    if ($Release -and
+        [string]::IsNullOrWhiteSpace($script:CapturedTauriSigningPrivateKey) -and
+        [string]::IsNullOrWhiteSpace($script:CapturedTauriSigningKeyFile)) {
+        $script:CapturedTauriSigningPrivateKey = $null
+        $script:CapturedTauriSigningKeyFile = $null
+        $script:CapturedTauriSigningPrivateKeyPassword = $null
+        throw "Build phat hanh can khoa ky updater. Hay dung launcher doc ~/.tauri/prynx.key."
+    }
     # PERF (audit 2026-07 muc 5.7): target-cpu baseline nhu buoc native (SSE4.2+).
     $previousRustFlags = $env:RUSTFLAGS
     $env:RUSTFLAGS = "-C target-cpu=x86-64-v2"
@@ -911,21 +1213,67 @@ if (-not $SkipTauri) {
     $env:CARGO_PROFILE_RELEASE_LTO = "thin"
     $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1"
     $env:CARGO_PROFILE_RELEASE_STRIP = "symbols"
-    npx @tauri-apps/cli build --config $tauriConfig
-    $tauriExit = $LASTEXITCODE
-    if ($null -eq $previousRustFlags) { Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue }
-    else { $env:RUSTFLAGS = $previousRustFlags }
-    if ($null -eq $previousLto) { Remove-Item Env:CARGO_PROFILE_RELEASE_LTO -ErrorAction SilentlyContinue } else { $env:CARGO_PROFILE_RELEASE_LTO = $previousLto }
-    if ($null -eq $previousCgu) { Remove-Item Env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS -ErrorAction SilentlyContinue } else { $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = $previousCgu }
-    if ($null -eq $previousStripSym) { Remove-Item Env:CARGO_PROFILE_RELEASE_STRIP -ErrorAction SilentlyContinue } else { $env:CARGO_PROFILE_RELEASE_STRIP = $previousStripSym }
-    Pop-Location
+    $tauriLocationPushed = $false
+    $tauriExit = $null
+    $tauriSigningPrivateKey = $null
+    try {
+        # SEC (audit 2026-08-04 §REL.SIGNING): chỉ tiến trình Tauri được kế thừa
+        # khóa ký updater; QA, Python, npm staging, Cargo test và publisher không có.
+        if ($Release) {
+            $tauriSigningPrivateKey = [string]$script:CapturedTauriSigningPrivateKey
+            if ([string]::IsNullOrWhiteSpace($tauriSigningPrivateKey)) {
+                if (-not (Test-Path -LiteralPath $script:CapturedTauriSigningKeyFile -PathType Leaf)) {
+                    throw "Khong thay khoa ky updater: $($script:CapturedTauriSigningKeyFile)"
+                }
+                # Đọc just-in-time: nội dung khóa chưa từng nằm trong env của publisher/QA.
+                $tauriSigningPrivateKey = [string](Get-Content -LiteralPath $script:CapturedTauriSigningKeyFile -Raw)
+            }
+            if ([string]::IsNullOrWhiteSpace($tauriSigningPrivateKey)) {
+                throw "Khoa ky updater rong."
+            }
+            $env:TAURI_SIGNING_PRIVATE_KEY = $tauriSigningPrivateKey
+            if (-not [string]::IsNullOrEmpty($script:CapturedTauriSigningPrivateKeyPassword)) {
+                $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $script:CapturedTauriSigningPrivateKeyPassword
+            }
+        }
+        Push-Location "$ROOT\desktop"
+        $tauriLocationPushed = $true
+        npx @tauri-apps/cli build --config $tauriConfig
+        $tauriExit = $LASTEXITCODE
+    } finally {
+        if ($tauriLocationPushed) { Pop-Location }
+        Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
+        Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
+        $tauriSigningPrivateKey = $null
+        $script:CapturedTauriSigningPrivateKey = $null
+        $script:CapturedTauriSigningKeyFile = $null
+        $script:CapturedTauriSigningPrivateKeyPassword = $null
+        if ($null -eq $previousRustFlags) { Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue }
+        else { $env:RUSTFLAGS = $previousRustFlags }
+        if ($null -eq $previousLto) { Remove-Item Env:CARGO_PROFILE_RELEASE_LTO -ErrorAction SilentlyContinue } else { $env:CARGO_PROFILE_RELEASE_LTO = $previousLto }
+        if ($null -eq $previousCgu) { Remove-Item Env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS -ErrorAction SilentlyContinue } else { $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = $previousCgu }
+        if ($null -eq $previousStripSym) { Remove-Item Env:CARGO_PROFILE_RELEASE_STRIP -ErrorAction SilentlyContinue } else { $env:CARGO_PROFILE_RELEASE_STRIP = $previousStripSym }
+    }
 
     if ($tauriExit -ne 0) {
         Write-Host "ERROR: Tauri build failed!" -ForegroundColor Red
         exit 1
     }
 
-    $installer = Get-ChildItem "$ROOT\desktop\src-tauri\target\release\bundle\nsis\*.exe" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    $installerCandidates = @(Get-ChildItem -LiteralPath $nsisDir -Filter "*.exe" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match $installerNamePattern })
+    if ($installerCandidates.Count -ne 1) {
+        throw "Tauri completed but expected exactly one NSIS installer for app version $APP_VERSION in $nsisDir; found $($installerCandidates.Count)."
+    }
+    $installer = $installerCandidates[0]
+    $oldInstaller = $installersBeforeBuild[$installer.FullName.ToLowerInvariant()]
+    $installerChangedThisRun = $null -eq $oldInstaller -or
+        $installer.Length -ne $oldInstaller.Length -or
+        $installer.LastWriteTimeUtc -gt $oldInstaller.LastWriteTimeUtc
+    $installerWrittenAfterStart = $installer.LastWriteTimeUtc -ge $tauriBuildStartedAtUtc.AddSeconds(-1)
+    if (-not $installerChangedThisRun -or -not $installerWrittenAfterStart) {
+        throw "Tauri returned success but did not create or rewrite the $APP_VERSION installer during this build. Refusing stale artifact: $($installer.FullName)"
+    }
 
     Write-Host ""
     Write-Host "  ===========================================" -ForegroundColor Green
@@ -966,6 +1314,7 @@ if (-not $SkipTauri) {
             "BUILT_AT_UTC   = $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss'))",
             "GIT_COMMIT     = $(git -C $ROOT rev-parse HEAD 2>$null)",
             "GIT_DIRTY      = $(if ((git -C $ROOT status --porcelain 2>$null)) { 'YES (artifact khong tai lap duoc tu cay da commit)' } else { 'no' })",
+            "APP_VERSION    = $APP_VERSION",
             "INSTALLER      = $($installer.Name)",
             "INSTALLER_SHA256 = $installerHash",
             "EXE_SHA256     = NOT_VERIFIED_INSTALL_PAYLOAD",
@@ -973,7 +1322,8 @@ if (-not $SkipTauri) {
             "SIDECAR_SHA256 = $HASH",
             "FRONTEND_SHA256 = $($env:PRYNX_FRONTEND_HASH)",
             "CODE_SIGNED    = no (Windows Authenticode not configured; updater .sig is separate)",
-            "DIELINE_LOCKED = $(if ($script:DIELINE_LOCKED) { $script:DIELINE_LOCKED } else { 'no' })"
+            "DIELINE_LOCKED = $(if ($script:DIELINE_LOCKED) { $script:DIELINE_LOCKED } else { 'no' })",
+            "RUNTIME_VERIFIED = no"
         )
         Set-Content -Path $manifestPath -Value $manifestLines -Encoding ASCII
         Write-Host "  Manifest:  $manifestPath" -ForegroundColor Cyan
@@ -986,8 +1336,6 @@ if (-not $SkipTauri) {
             Write-Host "  >> Da copy file cai dat ra ngoai thu muc de de lay hon..." -ForegroundColor Cyan
             Start-Process explorer.exe -ArgumentList "/select,`"$finalInstallerPath`""
         }
-    } else {
-        Write-Host "  WARNING: Khong tim thay installer trong bundle\nsis\." -ForegroundColor Yellow
     }
 } else {
     Write-Host "`n[4/5] Skipped Tauri build." -ForegroundColor DarkGray

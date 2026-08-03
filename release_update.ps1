@@ -22,6 +22,28 @@ $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $KEY_FILE = "$env:USERPROFILE\.tauri\prynx.key"
 $CONF_PATH = "$ROOT\desktop\src-tauri\tauri.conf.json"
 
+# Secret Supabase phải nằm trong kho DPAPI và chỉ được build_production giải mã
+# đúng tại bước REST. Từ chối env để git/gh/process publisher không kế thừa key.
+if (-not [string]::IsNullOrWhiteSpace($env:PRYNX_SUPABASE_SECRET_KEY) -or
+    -not [string]::IsNullOrWhiteSpace($env:PRYNX_SUPABASE_SERVICE_KEY)) {
+    Remove-Item Env:PRYNX_SUPABASE_SECRET_KEY -ErrorAction SilentlyContinue
+    Remove-Item Env:PRYNX_SUPABASE_SERVICE_KEY -ErrorAction SilentlyContinue
+    throw "Khong truyen Supabase secret qua environment cho publisher. Hay dung kho DPAPI cua PrynX."
+}
+
+# SEC (audit 2026-08-04 §REL.SIGNING): GUI có thể truyền mật khẩu qua env.
+# Chụp rồi xóa trước mọi git/gh; build_production sẽ tiếp tục cô lập khóa chỉ
+# quanh đúng tiến trình Tauri và xóa trước khi publisher chạy verifier/upload.
+$releaseSigningPassword = if (-not [string]::IsNullOrEmpty($KeyPassword)) {
+    [string]$KeyPassword
+} else {
+    [string]$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+}
+Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
+Remove-Item Env:PRYNX_TAURI_SIGNING_KEY_FILE -ErrorAction SilentlyContinue
+Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
+$KeyPassword = ""
+
 $Version = $Version.Trim()
 if ($Version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$') {
     throw "-Version phai la SemVer hop le (vd 1.0.0-beta.13), nhan duoc: $Version"
@@ -32,6 +54,53 @@ if ($Version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?(?:\+
 if ($SkipNuitka) {
     throw "-SkipNuitka khong duoc phep khi phat hanh. Hay build lai sidecar de dam bao quyen Free/Pro dong bo."
 }
+if ($SkipPreflightQA) {
+    throw "-SkipPreflightQA khong duoc phep khi phat hanh."
+}
+
+function Assert-CommittedReleaseVersion {
+    param([Parameter(Mandatory = $true)][string]$ExpectedVersion)
+
+    $dirty = @(& git -C $ROOT status --porcelain=v1 --untracked-files=all 2>$null)
+    if ($LASTEXITCODE -ne 0) { throw "Khong kiem tra duoc trang thai Git." }
+    if ($dirty.Count -gt 0) {
+        throw "Phat hanh chi duoc chay tu worktree sach da commit; tim thay $($dirty.Count) thay doi."
+    }
+
+    $tauriVersion = [string](Get-Content -LiteralPath $CONF_PATH -Raw | ConvertFrom-Json).version
+    $packageVersion = [string](Get-Content -LiteralPath "$ROOT\desktop\package.json" -Raw | ConvertFrom-Json).version
+    $packageLockText = Get-Content -LiteralPath "$ROOT\desktop\package-lock.json" -Raw
+    $packageLockMatches = [regex]::Matches(
+        $packageLockText,
+        '"name"\s*:\s*"prynx"\s*,\s*"version"\s*:\s*"([^"]+)"'
+    )
+    $cargoText = Get-Content -LiteralPath "$ROOT\desktop\src-tauri\Cargo.toml" -Raw
+    $cargoMatch = [regex]::Match($cargoText, '(?m)^version\s*=\s*"([^"]+)"')
+    $cargoLockText = Get-Content -LiteralPath "$ROOT\desktop\src-tauri\Cargo.lock" -Raw
+    $cargoLockMatch = [regex]::Match(
+        $cargoLockText,
+        '(?ms)\[\[package\]\]\s*name = "pdf-inspector"\s*version = "([^"]+)"'
+    )
+    $publisherConfig = Get-Content -LiteralPath "$ROOT\publisher.config.json" -Raw | ConvertFrom-Json
+    $publisherVersion = [string]$publisherConfig.Version
+    if ($packageLockMatches.Count -lt 1 -or -not $cargoMatch.Success -or -not $cargoLockMatch.Success) {
+        throw "Khong doc duoc day du version da commit trong npm/Cargo lockfiles."
+    }
+    $versions = @(
+        $tauriVersion,
+        $packageVersion,
+        $cargoMatch.Groups[1].Value,
+        $cargoLockMatch.Groups[1].Value,
+        $publisherVersion
+    )
+    $versions += @($packageLockMatches | ForEach-Object { $_.Groups[1].Value })
+    if (@($versions | Where-Object { $_ -ne $ExpectedVersion }).Count -gt 0) {
+        throw "Version trong source/lockfile chua dong bo voi $ExpectedVersion. Hay sua va commit truoc khi phat hanh."
+    }
+    Write-Host "  [OK] Version $ExpectedVersion da dong bo va worktree sach." -ForegroundColor Green
+}
+
+Assert-CommittedReleaseVersion -ExpectedVersion $Version
 
 # ---- NGUON CHAN LY DUY NHAT cho repo phat hanh ----
 # App khach da nung cung endpoint updater trong tauri.conf.json; bao mat/cap nhat chi chay
@@ -50,7 +119,44 @@ function Get-EndpointRepo {
     return $Matches[1]
 }
 
+function Get-ReleaseManifestField {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $hits = @(Select-String -LiteralPath $Path -Pattern ("^" + [regex]::Escape($Name) + "\s*=\s*(.*)$"))
+    if ($hits.Count -ne 1) {
+        throw "Manifest phai co dung mot truong $Name; tim thay $($hits.Count)."
+    }
+    return $hits[0].Matches[0].Groups[1].Value.Trim()
+}
+
+function Assert-StagedReleaseAssets {
+    param(
+        [Parameter(Mandatory = $true)][string]$SetupPath,
+        [Parameter(Mandatory = $true)][string]$SetupSha256,
+        [Parameter(Mandatory = $true)][string]$SignaturePath,
+        [Parameter(Mandatory = $true)][string]$SignatureSha256,
+        [Parameter(Mandatory = $true)][string]$LatestPath,
+        [Parameter(Mandatory = $true)][string]$LatestSha256
+    )
+
+    foreach ($path in @($SetupPath, $SignaturePath, $LatestPath)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Staged release asset bien mat: $path" }
+    }
+    if ((Get-FileHash -LiteralPath $SetupPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $SetupSha256 -or
+        (Get-FileHash -LiteralPath $SignaturePath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $SignatureSha256 -or
+        (Get-FileHash -LiteralPath $LatestPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $LatestSha256) {
+        throw "Staged release asset thay doi sau runtime verification; KHONG upload."
+    }
+}
+
 $endpointRepo = Get-EndpointRepo -ConfPath $CONF_PATH
+$publisherRepo = [string](Get-Content -LiteralPath "$ROOT\publisher.config.json" -Raw | ConvertFrom-Json).Repo
+if ($publisherRepo -ne $endpointRepo) {
+    throw "publisher.config.json Repo=$publisherRepo, khac updater endpoint $endpointRepo."
+}
 if ([string]::IsNullOrWhiteSpace($ReleaseRepo)) {
     $ReleaseRepo = $endpointRepo
     Write-Host "  [OK] Repo phat hanh suy tu endpoint: $ReleaseRepo" -ForegroundColor Green
@@ -73,56 +179,11 @@ if (-not $gh) { throw "Chua co GitHub CLI (gh). Cai: winget install GitHub.cli  
 & gh auth status *> $null
 if ($LASTEXITCODE -ne 0) { throw "gh chua dang nhap. Chay: gh auth login" }
 
-# ---- 1. Dat bien moi truong ky updater ----
-$env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content $KEY_FILE -Raw)
-# Chi ghi de password neu duoc truyen vao; neu khong, giu env da co (do GUI dat truoc).
-if (-not [string]::IsNullOrEmpty($KeyPassword)) {
-    $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $KeyPassword
-}
-Write-Host "  [OK] Da nap khoa ky updater." -ForegroundColor Green
+# ---- 1. Chot duong dan khoa; build chi doc noi dung ngay truoc Tauri ----
+Write-Host "  [OK] Da tim thay file khoa ky updater." -ForegroundColor Green
 
-# ---- 2. Bump version trong tauri.conf.json + package.json ----
-# LƯU Ý: ghi UTF-8 KHONG BOM. Set-Content -Encoding utf8 (PS5) them BOM -> package.json
-# hong JSON.parse cua node/vite. Dung UTF8Encoding($false).
-$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-
-$confPath = "$ROOT\desktop\src-tauri\tauri.conf.json"
-$conf = [System.IO.File]::ReadAllText($confPath, [System.Text.Encoding]::UTF8)
-$conf = [regex]::Replace($conf, '("version"\s*:\s*")[^"]*(")', "`${1}$Version`${2}", 1)
-[System.IO.File]::WriteAllText($confPath, $conf.TrimStart([char]0xFEFF), $utf8NoBom)
-Write-Host "  [OK] Da dat version=$Version trong tauri.conf.json." -ForegroundColor Green
-
-$pkgPath = "$ROOT\desktop\package.json"
-$pkg = [System.IO.File]::ReadAllText($pkgPath, [System.Text.Encoding]::UTF8)
-$pkg = [regex]::Replace($pkg, '("version"\s*:\s*")[^"]*(")', "`${1}$Version`${2}", 1)
-[System.IO.File]::WriteAllText($pkgPath, $pkg.TrimStart([char]0xFEFF), $utf8NoBom)
-
-$pkgLockPath = "$ROOT\desktop\package-lock.json"
-$pkgLock = [System.IO.File]::ReadAllText($pkgLockPath, [System.Text.Encoding]::UTF8)
-$pkgLock = [regex]::Replace(
-    $pkgLock,
-    '("name"\s*:\s*"prynx"\s*,\s*"version"\s*:\s*")[^"]*(")',
-    ('${1}' + $Version + '${2}')
-)
-[System.IO.File]::WriteAllText($pkgLockPath, $pkgLock.TrimStart([char]0xFEFF), $utf8NoBom)
-
-# Cargo.toml: dong bo version cho file properties cua PrynX.exe (Windows resource).
-# Cargo chap nhan SemVer prerelease truc tiep (1.0.0-beta.9). Replace lan-dau CHI trung
-# [package] version (dong dau), KHONG dung version cua tauri-build dependency ben duoi.
-$cargoPath = "$ROOT\desktop\src-tauri\Cargo.toml"
-$cargo = [System.IO.File]::ReadAllText($cargoPath, [System.Text.Encoding]::UTF8)
-$cargo = [regex]::Replace($cargo, '(?m)^(version\s*=\s*")[^"]*(")', "`${1}$Version`${2}", 1)
-[System.IO.File]::WriteAllText($cargoPath, $cargo.TrimStart([char]0xFEFF), $utf8NoBom)
-
-$cargoLockPath = "$ROOT\desktop\src-tauri\Cargo.lock"
-$cargoLock = [System.IO.File]::ReadAllText($cargoLockPath, [System.Text.Encoding]::UTF8)
-$cargoLock = [regex]::Replace(
-    $cargoLock,
-    '(?ms)(\[\[package\]\]\s*name = "pdf-inspector"\s*version = ")[^"]*(")',
-    ('${1}' + $Version + '${2}')
-)
-[System.IO.File]::WriteAllText($cargoLockPath, $cargoLock.TrimStart([char]0xFEFF), $utf8NoBom)
-Write-Host "  [OK] Da dat version=$Version trong npm + Cargo (gom ca lockfiles)." -ForegroundColor Green
+# ---- 2. Version da duoc dong bo/commit truoc khi vao script ----
+# Script chi xac minh; tuyet doi khong sua source/lockfile trong phien phat hanh.
 
 # ---- 3. Build day du + ky updater ----
 # Dung splatting: chi them switch khi that su bat. Truoc day dung
@@ -131,30 +192,105 @@ Write-Host "  [OK] Da dat version=$Version trong npm + Cargo (gom ca lockfiles).
 # -> $null ep int = 0 -> ValidateRange(1,8) tu choi -> build chet truoc khi chay.
 $buildArgs = @{ Release = $true }
 if ($SkipPreflightQA) { $buildArgs.SkipPreflightQA = $true }
-if ($SkipNuitka) {
-    Write-Host "  [..] Build (BO QUA Nuitka, dung lai sidecar cu) + frontend + tauri + KY updater..." -ForegroundColor Yellow
-    $sidecar = "$ROOT\desktop\src-tauri\binaries\pdf-inspector-backend-x86_64-pc-windows-msvc.exe"
-    if (-not (Test-Path $sidecar)) {
-        throw "Bat -SkipNuitka nhung khong thay sidecar cu: $sidecar . Hay build day du it nhat 1 lan truoc."
+$buildExit = $null
+try {
+    # Chỉ truyền đường dẫn không bí mật. build_production chụp/xóa ngay đầu,
+    # rồi đọc nội dung khóa just-in-time đúng lúc gọi Tauri.
+    $env:PRYNX_TAURI_SIGNING_KEY_FILE = $KEY_FILE
+    if (-not [string]::IsNullOrEmpty($releaseSigningPassword)) {
+        $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $releaseSigningPassword
     }
-    $buildArgs.SkipNuitka = $true
-    & "$ROOT\build_production.ps1" @buildArgs
-} else {
-    Write-Host "  [..] Build (Nuitka + frontend + tauri + KY updater) - co the lau..." -ForegroundColor Yellow
-    & "$ROOT\build_production.ps1" @buildArgs
+    if ($SkipNuitka) {
+        Write-Host "  [..] Build (BO QUA Nuitka, dung lai sidecar cu) + frontend + tauri + KY updater..." -ForegroundColor Yellow
+        $sidecar = "$ROOT\desktop\src-tauri\binaries\pdf-inspector-backend-x86_64-pc-windows-msvc.exe"
+        if (-not (Test-Path $sidecar)) {
+            throw "Bat -SkipNuitka nhung khong thay sidecar cu: $sidecar . Hay build day du it nhat 1 lan truoc."
+        }
+        $buildArgs.SkipNuitka = $true
+        & "$ROOT\build_production.ps1" @buildArgs
+    } else {
+        Write-Host "  [..] Build (Nuitka + frontend + tauri + KY updater) - co the lau..." -ForegroundColor Yellow
+        & "$ROOT\build_production.ps1" @buildArgs
+    }
+    $buildExit = $LASTEXITCODE
+} finally {
+    Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
+    Remove-Item Env:PRYNX_TAURI_SIGNING_KEY_FILE -ErrorAction SilentlyContinue
+    Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
+    $releaseSigningPassword = $null
 }
-if ($LASTEXITCODE -ne 0) { throw "Build that bai." }
+if ($buildExit -ne 0) { throw "Build that bai." }
 
-# ---- 4. Tim installer NSIS + file chu ky .sig ----
+# ---- 4. Tim dung installer vua build + file chu ky .sig ----
 $nsisDir = "$ROOT\desktop\src-tauri\target\release\bundle\nsis"
-$setup = Get-ChildItem "$nsisDir\*$Version*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $setup) { throw "Khong tim thay *-setup.exe trong $nsisDir" }
+$manifestPath = "$ROOT\Ban_Phat_Hanh\release-manifest.txt"
+if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+    throw "Build khong tao release manifest: $manifestPath"
+}
+$manifestVersion = Get-ReleaseManifestField -Path $manifestPath -Name "APP_VERSION"
+if ($manifestVersion -ne $Version) {
+    throw "Manifest APP_VERSION=$manifestVersion, khac release version $Version."
+}
+$setupName = Get-ReleaseManifestField -Path $manifestPath -Name "INSTALLER"
+if ([System.IO.Path]::GetFileName($setupName) -ne $setupName) {
+    throw "Manifest INSTALLER khong phai ten file an toan: $setupName"
+}
+$setupPath = Join-Path $nsisDir $setupName
+$publishedSetupPath = Join-Path "$ROOT\Ban_Phat_Hanh" $setupName
+if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf)) { throw "Khong tim thay installer vua build: $setupPath" }
+if (-not (Test-Path -LiteralPath $publishedSetupPath -PathType Leaf)) { throw "Khong tim thay ban copy de verify: $publishedSetupPath" }
+$setup = Get-Item -LiteralPath $setupPath
+$manifestInstallerHash = (Get-ReleaseManifestField -Path $manifestPath -Name "INSTALLER_SHA256").ToLowerInvariant()
+$setupHash = (Get-FileHash -LiteralPath $setup.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+$publishedSetupHash = (Get-FileHash -LiteralPath $publishedSetupPath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($setupHash -ne $manifestInstallerHash -or $publishedSetupHash -ne $manifestInstallerHash) {
+    throw "Installer bundle/publish khong khop INSTALLER_SHA256 trong manifest."
+}
 $sigFile = "$($setup.FullName).sig"
-if (-not (Test-Path $sigFile)) { throw "Khong tim thay file chu ky: $sigFile (createUpdaterArtifacts chua bat? hoac ky that bai?)" }
+if (-not (Test-Path -LiteralPath $sigFile -PathType Leaf)) { throw "Khong tim thay file chu ky: $sigFile (createUpdaterArtifacts chua bat? hoac ky that bai?)" }
+if ((Get-Item -LiteralPath $sigFile).LastWriteTimeUtc -lt $setup.LastWriteTimeUtc) {
+    throw "File chu ky cu hon installer vua build; tu choi dung chu ky stale: $sigFile"
+}
 $signature = (Get-Content $sigFile -Raw).Trim()
+if ([string]::IsNullOrWhiteSpace($signature)) { throw "File chu ky updater rong: $sigFile" }
 Write-Host "  [OK] Installer: $($setup.Name)" -ForegroundColor Green
 
-# ---- 5. Tao latest.json ----
+$stageParent = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\')
+$releaseStageDir = Join-Path $stageParent ("PrynXReleaseStage-" + [guid]::NewGuid().ToString("N"))
+if (-not ([System.IO.Path]::GetFullPath($releaseStageDir)).StartsWith($stageParent + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Release staging escaped Temp: $releaseStageDir"
+}
+try {
+New-Item -ItemType Directory -Force -Path $releaseStageDir | Out-Null
+$stagedSetupPath = Join-Path $releaseStageDir $setup.Name
+$stagedSigPath = Join-Path $releaseStageDir ((Split-Path -Leaf $sigFile))
+Copy-Item -LiteralPath $setup.FullName -Destination $stagedSetupPath -ErrorAction Stop
+Copy-Item -LiteralPath $sigFile -Destination $stagedSigPath -ErrorAction Stop
+$signature = (Get-Content -LiteralPath $stagedSigPath -Raw).Trim()
+if ([string]::IsNullOrWhiteSpace($signature)) { throw "Staged updater signature rong." }
+$stagedSignatureHash = (Get-FileHash -LiteralPath $stagedSigPath -Algorithm SHA256).Hash.ToLowerInvariant()
+
+# ---- 5. Bat buoc nghiem thu artifact da cai truoc upload ----
+# BUILD (audit 2026-08-03 REL.10): uploader khong duoc tin moi ma thoat build.
+$verifier = "$ROOT\scripts\verify_installed_artifact.ps1"
+if (-not (Test-Path -LiteralPath $verifier -PathType Leaf)) { throw "Thieu installed-artifact verifier: $verifier" }
+Write-Host "  [..] Cai tam va chay runtime smoke truoc khi cho phep upload..." -ForegroundColor Yellow
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifier `
+    -Installer $stagedSetupPath -Manifest $manifestPath -ExpectedVersion $Version -ExpectNoGhostscript
+if ($LASTEXITCODE -ne 0) { throw "Installed-artifact verifier that bai; KHONG upload GitHub." }
+
+$runtimeVerified = Get-ReleaseManifestField -Path $manifestPath -Name "RUNTIME_VERIFIED"
+$installedExeHash = Get-ReleaseManifestField -Path $manifestPath -Name "EXE_SHA256"
+$dielineLocked = Get-ReleaseManifestField -Path $manifestPath -Name "DIELINE_LOCKED"
+if ($runtimeVerified -ne "yes" -or $installedExeHash -eq "NOT_VERIFIED_INSTALL_PAYLOAD") {
+    throw "Manifest chua co bang chung runtime day du; KHONG upload GitHub."
+}
+if ($dielineLocked -ne "yes") {
+    throw "DIELINE_LOCKED khong phai yes; KHONG upload release."
+}
+Write-Host "  [OK] Runtime verifier dat; manifest da dong bang chung." -ForegroundColor Green
+
+# ---- 6. Tao latest.json ----
 $tag = "v$Version"
 $downloadUrl = "https://github.com/$ReleaseRepo/releases/download/$tag/$($setup.Name)"
 $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
@@ -175,9 +311,12 @@ $latestPath = "$nsisDir\latest.json"
 # KHONG chap nhan BOM → parse fail → client KHONG thay update. Dung .NET ghi KHONG BOM.
 $jsonText = $latest | ConvertTo-Json -Depth 6
 [System.IO.File]::WriteAllText($latestPath, $jsonText, [System.Text.UTF8Encoding]::new($false))
+$stagedLatestPath = Join-Path $releaseStageDir "latest.json"
+Copy-Item -LiteralPath $latestPath -Destination $stagedLatestPath -ErrorAction Stop
+$stagedLatestHash = (Get-FileHash -LiteralPath $stagedLatestPath -Algorithm SHA256).Hash.ToLowerInvariant()
 Write-Host "  [OK] Da tao latest.json (url -> $downloadUrl)" -ForegroundColor Green
 
-# ---- 6. Publish len GitHub Releases ----
+# ---- 7. Publish len GitHub Releases ----
 Write-Host "  [..] Tao/cap nhat release $tag tren $ReleaseRepo va upload..." -ForegroundColor Yellow
 # AN TOAN: KHONG xoa release cu truoc (tranh khoang trong neu create loi -> client mat 'latest').
 # Tam tat Stop de gh.exe stderr ("release not found") khong abort script.
@@ -189,14 +328,20 @@ $ErrorActionPreference = $prevEAP
 
 if ($releaseExists) {
     Write-Host "  [..] Release $tag da ton tai -> ghi de asset (clobber)..." -ForegroundColor Yellow
+    Assert-StagedReleaseAssets -SetupPath $stagedSetupPath -SetupSha256 $manifestInstallerHash `
+        -SignaturePath $stagedSigPath -SignatureSha256 $stagedSignatureHash `
+        -LatestPath $stagedLatestPath -LatestSha256 $stagedLatestHash
     & gh release upload $tag --repo $ReleaseRepo --clobber `
-        "$($setup.FullName)" "$sigFile" "$latestPath"
+        "$stagedSetupPath" "$stagedSigPath" "$stagedLatestPath"
     if ($LASTEXITCODE -ne 0) { throw "gh release upload (clobber) that bai." }
 }
 else {
     Write-Host "  [..] Release $tag chua ton tai -> tao moi..." -ForegroundColor Yellow
+    Assert-StagedReleaseAssets -SetupPath $stagedSetupPath -SetupSha256 $manifestInstallerHash `
+        -SignaturePath $stagedSigPath -SignatureSha256 $stagedSignatureHash `
+        -LatestPath $stagedLatestPath -LatestSha256 $stagedLatestHash
     & gh release create $tag --repo $ReleaseRepo --title "PrynX $Version" --notes $Notes `
-        "$($setup.FullName)" "$sigFile" "$latestPath"
+        "$stagedSetupPath" "$stagedSigPath" "$stagedLatestPath"
     if ($LASTEXITCODE -ne 0) { throw "gh release create that bai." }
 }
 
@@ -205,3 +350,12 @@ Write-Host "  === PHAT HANH XONG. App khach se tu thay ban $Version. ===" -Foreg
 Write-Host "  Nho: endpoint trong tauri.conf.json phai tro toi:" -ForegroundColor DarkGray
 Write-Host "       https://github.com/$ReleaseRepo/releases/latest/download/latest.json" -ForegroundColor DarkGray
 Write-Host ""
+} finally {
+    if (Test-Path -LiteralPath $releaseStageDir) {
+        $resolvedStage = [System.IO.Path]::GetFullPath($releaseStageDir)
+        if (-not $resolvedStage.StartsWith($stageParent + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Tu choi cleanup release staging ngoai Temp: $resolvedStage"
+        }
+        Remove-Item -LiteralPath $resolvedStage -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}

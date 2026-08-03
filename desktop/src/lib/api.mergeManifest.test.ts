@@ -1,6 +1,15 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+// RELEASE QA (audit 2026-08-03 §REL.09): nhóm này kiểm transport manifest,
+// còn chữ ký/auth đã có api.auth.test.ts. Mock store để cold import Supabase/Zustand
+// không bị tính vào ca đầu khi 173 file chạy song song trong staging sạch.
+vi.mock('../stores/useAuthStore', () => ({
+  useAuthStore: {
+    getState: () => ({ licenseKey: '', licenseToken: '' }),
+  },
+}));
+
 import {
   backendMergeManifest,
   backendMergeManifestJob,

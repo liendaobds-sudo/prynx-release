@@ -6,7 +6,7 @@ REM  Cach dung: double-click file nay, HOAC chay trong terminal:
 REM     PHAT_HANH.bat
 REM
 REM  Script tu dong:
-REM    1. Nap 3 bien env (Supabase URL + service_role key + Tauri signing key)
+REM    1. Nap Supabase sb_secret_ tu kho DPAPI + khoa ky updater tu file rieng
 REM    2. Chay build_production.ps1 -Release (build + khoa dieline + ky updater)
 REM    3. Tu in ket qua DIELINE_LOCKED + mo thu muc Ban_Phat_Hanh
 REM ============================================================
@@ -14,7 +14,16 @@ setlocal
 cd /d "%~dp0"
 
 powershell -NoProfile -ExecutionPolicy Bypass -NoExit -Command ^
-  ". .\scripts\set_release_env.ps1; .\build_production.ps1 -Release; ^
+  "$signingKeyFile = Join-Path $HOME '.tauri\prynx.key'; ^
+   try { ^
+     if (-not (Test-Path -LiteralPath $signingKeyFile -PathType Leaf)) { throw ('Khong thay khoa ky updater: ' + $signingKeyFile) }; ^
+     $env:PRYNX_TAURI_SIGNING_KEY_FILE = $signingKeyFile; ^
+     ^& .\build_production.ps1 -Release; ^
+   } finally { ^
+     Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue; ^
+     Remove-Item Env:PRYNX_TAURI_SIGNING_KEY_FILE -ErrorAction SilentlyContinue; ^
+     Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue; ^
+   }; ^
    Write-Host ''; ^
    Write-Host '  ===========================================' -ForegroundColor Cyan; ^
    $mf = Join-Path $PWD 'Ban_Phat_Hanh\release-manifest.txt'; ^

@@ -64,8 +64,8 @@ Script sẽ tự động: kiểm tra → tải → cài đặt tất cả tools 
 
 | Tool | Phiên bản | Download |
 |------|-----------|----------|
-| **Rust** | Stable | https://rustup.rs |
-| **Node.js** | 18+ | https://nodejs.org |
+| **Rust** | `>=1.88` | https://rustup.rs |
+| **Node.js** | `^20.19.0 \|\| >=22.12.0` | https://nodejs.org |
 | **Python** | 3.11 | https://python.org |
 | **Ghostscript** | 10+ | https://ghostscript.com |
 | **VS Build Tools** | 2022 | https://visualstudio.microsoft.com/visual-cpp-build-tools/ |

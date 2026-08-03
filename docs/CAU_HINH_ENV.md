@@ -31,6 +31,7 @@ tiến trình**; việc nặng chạy process con riêng nên trần job không 
 | `PRYNX_SECURITY_DIAG` | tắt | Bật log chẩn đoán posture bảo mật. Log có thể lộ thông tin môi trường → không bật lâu trên máy khách |
 | `PRYNX_FEATURE_GATING_ENABLED` | bật | Tắt cổng tính năng theo gói (Free/Pro) khi test |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | *(không)* | Chỉ dùng cho đường kích hoạt/kiểm tra license phía server |
+| `PRYNX_SUPABASE_URL`, `PRYNX_SUPABASE_SECRET_KEY` | *(không)* | Tương thích CI/CLI để lấy khóa resource khuôn bế; build lấy và xóa hai biến ngay đầu process, trước mọi tool con. Launcher chuẩn không dùng env: `build_production.ps1` tự giải mã kho DPAPI `%LOCALAPPDATA%\PrynX\ReleaseSecrets\secrets.clixml` đúng tại bước REST. Public release chỉ nhận khóa mới `sb_secret_` |
 
 ## 2. Trần đồng thời (concurrency)
 
@@ -101,6 +102,8 @@ hơn thì tăng **worker trong job**, không tăng **số job** — mỗi job n�
 
 ## Ghi chú vận hành
 
+- Cấu hình khóa máy build một lần bằng `scripts\setup_release_secrets.ps1`. Không dán key vào file
+  `.ps1`, `.bat`, `.env`, lịch sử lệnh hoặc chat. Kho DPAPI gắn với đúng tài khoản Windows đã lưu.
 - Log ứng dụng: `%APPDATA%\PrynX\logs\app.log` (xoay vòng 5 MB × 5) — cùng thư mục với `security.log`.
 - Biến hệ thống mà backend chỉ **đọc** (không phải cấu hình của PrynX): `APPDATA`, `HOME`, `WINDIR`.
 - Trên bản đóng gói, `/docs`, `/redoc`, `/openapi.json` bị tắt và **không** bật lại được bằng env —

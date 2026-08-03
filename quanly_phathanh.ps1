@@ -6,6 +6,9 @@ Add-Type -AssemblyName System.Drawing
 $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $CONFIG = Join-Path $ROOT "publisher.config.json"
 $KEY_FILE = "$env:USERPROFILE\.tauri\prynx.key"
+$SECRET_STORE_SCRIPT = Join-Path $ROOT "scripts\release_secret_store.ps1"
+$SECRET_SETUP_SCRIPT = Join-Path $ROOT "scripts\setup_release_secrets.ps1"
+. $SECRET_STORE_SCRIPT
 
 # ---- Doc/ghi cau hinh (nho repo + version) ----
 $cfg = @{ Repo = ""; Version = "1.0.1" }
@@ -74,16 +77,20 @@ $form.Controls.Add($chkSkipNuitka)
 
 # ---- Hang nut quan ly ----
 $btnCheck = New-Object System.Windows.Forms.Button
-$btnCheck.Text = "Kiểm tra GitHub"; $btnCheck.Location = New-Object System.Drawing.Point(15, 226); $btnCheck.Width = 150
+$btnCheck.Text = "Kiểm tra GitHub"; $btnCheck.Location = New-Object System.Drawing.Point(165, 226); $btnCheck.Width = 140
 $form.Controls.Add($btnCheck)
 
 $btnLogin = New-Object System.Windows.Forms.Button
-$btnLogin.Text = "Đăng nhập GitHub"; $btnLogin.Location = New-Object System.Drawing.Point(175, 226); $btnLogin.Width = 150
+$btnLogin.Text = "Đăng nhập GitHub"; $btnLogin.Location = New-Object System.Drawing.Point(315, 226); $btnLogin.Width = 130
 $form.Controls.Add($btnLogin)
 
 $btnList = New-Object System.Windows.Forms.Button
-$btnList.Text = "Xem bản đã phát hành"; $btnList.Location = New-Object System.Drawing.Point(335, 226); $btnList.Width = 170
+$btnList.Text = "Xem bản đã phát hành"; $btnList.Location = New-Object System.Drawing.Point(455, 226); $btnList.Width = 155
 $form.Controls.Add($btnList)
+
+$btnSecrets = New-Object System.Windows.Forms.Button
+$btnSecrets.Text = "Cấu hình khóa"; $btnSecrets.Location = New-Object System.Drawing.Point(15, 226); $btnSecrets.Width = 140
+$form.Controls.Add($btnSecrets)
 
 # ---- Nut build NOI BO (khong upload) ----
 $btnLocal = New-Object System.Windows.Forms.Button
@@ -111,11 +118,32 @@ $form.Controls.Add($txtLog)
 
 function Log($msg) { $txtLog.AppendText((Get-Date -Format "HH:mm:ss") + "  " + $msg + "`r`n") }
 
+function Test-ReleaseSecretStoreReady {
+    if (Test-Path -LiteralPath (Resolve-PrynXReleaseSecretStorePath) -PathType Leaf) { return $true }
+    Log "[LOI] Chua co kho khoa phat hanh DPAPI."
+    [System.Windows.Forms.MessageBox]::Show(
+        "Chưa có khóa phát hành an toàn. Bấm 'Cấu hình khóa', nhập sb_secret_ mới rồi thử lại.",
+        "Thiếu khóa phát hành") | Out-Null
+    return $false
+}
+
 # ---- Kiem tra ban dau ----
 if (-not (Test-Path $KEY_FILE)) { Log "[CANH BAO] Khong thay khoa ky: $KEY_FILE" } else { Log "[OK] Co khoa ky updater." }
+if (Test-Path -LiteralPath (Resolve-PrynXReleaseSecretStorePath)) {
+    Log "[OK] Co kho khoa Supabase ma hoa DPAPI."
+} else {
+    Log "[CANH BAO] Chua cau hinh Supabase sb_secret_ cho may build."
+}
 Log "Nhap phien ban + repo, roi bam PHAT HANH. Lan dau hay bam 'Kiem tra GitHub'."
 
 # ---- Su kien ----
+$btnSecrets.Add_Click({
+    Start-Process powershell -ArgumentList @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-NoExit", "-File", ('"' + $SECRET_SETUP_SCRIPT + '"')
+    )
+    Log "Da mo cua so cau hinh khoa. Sau khi nhap xong co the build lai ngay."
+})
+
 $btnCheck.Add_Click({
     Log "Dang kiem tra GitHub CLI..."
     $gh = Get-Command gh -ErrorAction SilentlyContinue
@@ -149,6 +177,7 @@ $btnLocal.Add_Click({
         "Xac nhan build noi bo", [System.Windows.Forms.MessageBoxButtons]::YesNo)
     if ($ok -ne [System.Windows.Forms.DialogResult]::Yes) { return }
     Save-Config
+    if (-not (Test-ReleaseSecretStoreReady)) { return }
     $buildScript = Join-Path $ROOT "build_production.ps1"
     $skipArg = if ($chkSkipNuitka.Checked) { " -SkipNuitka" } else { "" }
     # PHAI truyen -Version: build_production doc tauri.conf; truoc day Build NỘI BỘ
@@ -168,6 +197,7 @@ $btnPublish.Add_Click({
         "Xac nhan phat hanh", [System.Windows.Forms.MessageBoxButtons]::YesNo)
     if ($ok -ne [System.Windows.Forms.DialogResult]::Yes) { return }
     Save-Config
+    if (-not (Test-ReleaseSecretStoreReady)) { return }
     # Truyen mat khau qua bien moi truong (khong qua dong lenh)
     $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $txtPwd.Text
     $notes = $txtNotes.Text -replace '"', "'"
@@ -175,7 +205,11 @@ $btnPublish.Add_Click({
     $skipArg = if ($chkSkipNuitka.Checked) { " -SkipNuitka" } else { "" }
     # KHONG truyen -ReleaseRepo: release_update.ps1 tu suy tu endpoint (nguon chan ly duy nhat).
     $argList = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$relScript`" -Version `"$($txtVer.Text)`" -Notes `"$notes`"$skipArg"
-    Start-Process powershell -ArgumentList $argList
+    try {
+        Start-Process powershell -ArgumentList $argList
+    } finally {
+        Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
+    }
     Log "Da khoi chay build+phat hanh trong cua so rieng. Theo doi tien do o cua so do."
 })
 

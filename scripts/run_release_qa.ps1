@@ -14,7 +14,11 @@ $NO_GS_CORPUS = if ($env:PRYNX_NO_GS_CORPUS) {
 } else {
     Join-Path $ROOT "private_test_corpus\incoming"
 }
-$NO_GS_AUDIT_OUT = Join-Path $ROOT "tmp\release_no_gs_audit.json"
+$NO_GS_AUDIT_OUT = if ($env:PRYNX_NO_GS_AUDIT_OUT) {
+    [System.IO.Path]::GetFullPath($env:PRYNX_NO_GS_AUDIT_OUT)
+} else {
+    Join-Path $ROOT "tmp\release_no_gs_audit.json"
+}
 
 function Invoke-Checked {
     param(
@@ -31,6 +35,35 @@ function Invoke-Checked {
 
 if (-not (Test-Path -LiteralPath $PYTHON)) {
     throw "Python venv not found: $PYTHON"
+}
+
+# BUILD (audit 2026-08-03 REL.09): when production staging is active, prove
+# every Python/no-GS test imports the exact native wheel selected for Nuitka.
+if (-not [string]::IsNullOrWhiteSpace($env:PRYNX_RELEASE_NATIVE_SITE)) {
+    $expectedNativeSiteInput = [System.IO.Path]::GetFullPath($env:PRYNX_RELEASE_NATIVE_SITE).TrimEnd('\')
+    if (-not (Test-Path -LiteralPath $expectedNativeSiteInput -PathType Container)) {
+        throw "Staged native site not found: $expectedNativeSiteInput"
+    }
+
+    # BUILD (audit 2026-08-03 REL.09): compare both paths after pathlib resolves
+    # Windows 8.3 aliases (KHANHP~1) to their long form. GetFullPath alone does
+    # not canonicalize that alias and previously rejected the correct staged wheel.
+    $nativeOutput = @(& $PYTHON -c "import json, os, pathlib, pdfcompare_native; site=pathlib.Path(os.environ['PRYNX_RELEASE_NATIVE_SITE']).resolve(); package=pathlib.Path(pdfcompare_native.__file__).resolve().parent; print(json.dumps({'site': str(site), 'package': str(package), 'inside': package.is_relative_to(site)}))" 2>&1)
+    if ($LASTEXITCODE -ne 0 -or $nativeOutput.Count -eq 0) {
+        throw "Cannot import the staged pdfcompare_native package."
+    }
+
+    try {
+        $nativeProbe = ([string]$nativeOutput[-1]) | ConvertFrom-Json
+    } catch {
+        throw "Cannot parse staged native import probe: $([string]$nativeOutput[-1])"
+    }
+    $expectedNativeSite = [string]$nativeProbe.site
+    $actualNativePackage = [string]$nativeProbe.package
+    if (-not [bool]$nativeProbe.inside) {
+        throw "QA imported pdfcompare_native outside the staged wheel: $actualNativePackage"
+    }
+    Write-Host "  [QA] Native runtime pinned to staged wheel." -ForegroundColor Green
 }
 
 Invoke-Checked "Python dependency consistency" { & $PYTHON -m pip check }
@@ -51,7 +84,7 @@ if (-not (Test-Path -LiteralPath $NO_GS_CORPUS)) {
 }
 Invoke-Checked "No-GS dependency gate (18 files x 16 operations)" {
     & $PYTHON "$ROOT\scripts\gs_dependency_audit.py" $NO_GS_CORPUS `
-        --limit 18 --gate --out $NO_GS_AUDIT_OUT
+        --limit 18 --gate --resume --out $NO_GS_AUDIT_OUT
 }
 
 # RELEASE QA (audit 2026-07-27): Windows dev servers keep native npm DLLs locked,
@@ -66,6 +99,7 @@ if (-not $frontendQaFull.StartsWith($tempRoot + '\', [System.StringComparison]::
 New-Item -ItemType Directory -Path $frontendQaFull | Out-Null
 $frontendQaDesktop = Join-Path $frontendQaFull "desktop"
 $frontendQaNativeFixtures = Join-Path $frontendQaFull "native\tests\fixtures"
+$frontendQaImpositionFixtures = Join-Path $frontendQaFull "imposition_core\tests\fixtures"
 try {
     Write-Host "  [QA] Staging frontend source outside the live node_modules tree..." -ForegroundColor DarkGray
     & robocopy "$ROOT\desktop" $frontendQaDesktop /E /NFL /NDL /NJH /NJS /NP `
@@ -81,6 +115,11 @@ try {
     New-Item -ItemType Directory -Path $frontendQaNativeFixtures | Out-Null
     Copy-Item -LiteralPath "$ROOT\native\tests\fixtures\dieline_default_request.json" `
         -Destination $frontendQaNativeFixtures
+    # NupGridSolver.parity.test.ts resolves the shared Rust oracle through the
+    # same workspace-sibling contract; stage only the exact external fixture.
+    New-Item -ItemType Directory -Path $frontendQaImpositionFixtures | Out-Null
+    Copy-Item -LiteralPath "$ROOT\imposition_core\tests\fixtures\grid_parity_simple_auto.json" `
+        -Destination $frontendQaImpositionFixtures
 
     Push-Location $frontendQaDesktop
     try {
@@ -116,17 +155,41 @@ try {
 }
 
 $previousPyo3Python = $env:PYO3_PYTHON
+$previousPyo3EnvironmentSignature = $env:PYO3_ENVIRONMENT_SIGNATURE
+$previousNativePath = $env:PATH
+$nativePythonBase = (& $PYTHON -c "import sys; print(sys.base_prefix)").Trim()
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $nativePythonBase)) {
+    throw "Cannot resolve the base Python runtime for native tests: $nativePythonBase"
+}
+$nativePythonVersion = (& $PYTHON -c "import sys; print('.'.join(map(str, sys.version_info[:3])))").Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($nativePythonVersion)) {
+    throw "Cannot resolve the Python version for native tests."
+}
+
+# BUILD (audit 2026-08-03 REL.08): PyO3 test binaries load python3*.dll at
+# runtime. Expose only this venv's base runtime while the native gate runs.
+# pyo3-build-config intentionally tracks PYO3_ENVIRONMENT_SIGNATURE instead of
+# PYO3_PYTHON, so bind the signature to this interpreter to invalidate stale
+# cargo artifacts produced by another Python minor version.
 $env:PYO3_PYTHON = $PYTHON
+$env:PYO3_ENVIRONMENT_SIGNATURE = $PYTHON + "|" + $nativePythonVersion
+$env:PATH = $nativePythonBase + [System.IO.Path]::PathSeparator + $previousNativePath
 Push-Location "$ROOT\native"
 try {
     Invoke-Checked "Native PDF tests" { cargo test --locked }
     Invoke-Checked "Native PDF release compile" { cargo check --release --locked }
 } finally {
     Pop-Location
+    $env:PATH = $previousNativePath
     if ($null -eq $previousPyo3Python) {
         Remove-Item Env:PYO3_PYTHON -ErrorAction SilentlyContinue
     } else {
         $env:PYO3_PYTHON = $previousPyo3Python
+    }
+    if ($null -eq $previousPyo3EnvironmentSignature) {
+        Remove-Item Env:PYO3_ENVIRONMENT_SIGNATURE -ErrorAction SilentlyContinue
+    } else {
+        $env:PYO3_ENVIRONMENT_SIGNATURE = $previousPyo3EnvironmentSignature
     }
 }
 

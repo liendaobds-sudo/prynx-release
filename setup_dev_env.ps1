@@ -22,6 +22,50 @@ function Write-Err  { param($msg) Write-Host "  [FAIL] $msg" -ForegroundColor Re
 
 function Test-Cmd { param($cmd) return [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
 
+# BUILD (audit 2026-08-03 REL.07/REL.08): Kiem tra dung contract cua Vite va Cargo.
+# Giu helper thuan PowerShell 5.1 de setup khong phu thuoc module semver ben ngoai.
+function ConvertTo-ToolVersion {
+    param([string]$VersionText)
+
+    $match = [regex]::Match($VersionText, '(?<!\d)(\d+)\.(\d+)\.(\d+)')
+    if (-not $match.Success) {
+        return $null
+    }
+
+    try {
+        $normalized = "{0}.{1}.{2}" -f @(
+            $match.Groups[1].Value,
+            $match.Groups[2].Value,
+            $match.Groups[3].Value
+        )
+        return [version]::Parse($normalized)
+    } catch {
+        return $null
+    }
+}
+
+function Test-NodeVersion {
+    param([string]$VersionText)
+
+    $version = ConvertTo-ToolVersion $VersionText
+    if ($null -eq $version) {
+        return $false
+    }
+
+    if ($version.Major -eq 20) {
+        return ($version -ge [version]'20.19.0')
+    }
+
+    return ($version -ge [version]'22.12.0')
+}
+
+function Test-RustVersion {
+    param([string]$VersionText)
+
+    $version = ConvertTo-ToolVersion $VersionText
+    return ($null -ne $version -and $version -ge [version]'1.88.0')
+}
+
 function Install-WithWinget {
     param($PackageId, $Name)
     if (Test-Cmd "winget") {
@@ -59,7 +103,12 @@ Write-Step "1/7 - Rust Toolchain"
 
 if (Test-Cmd "rustc") {
     $rustVer = rustc --version
-    Write-OK "Rust: $rustVer"
+    if (Test-RustVersion $rustVer) {
+        Write-OK "Rust: $rustVer"
+    } else {
+        Write-Err "Rust $rustVer khong dat yeu cau >=1.88. Hay chay: rustup update stable"
+        $issues += "Rust >=1.88"
+    }
 } else {
     if ($SkipInstall) {
         Write-Err "Rust chua cai. Tai tu: https://rustup.rs"
@@ -73,7 +122,13 @@ if (Test-Cmd "rustc") {
         $cargoPath = Join-Path $env:USERPROFILE ".cargo\bin"
         $env:PATH = "$cargoPath;$env:PATH"
         if (Test-Cmd "rustc") {
-            Write-OK "Rust cai thanh cong: $(rustc --version)"
+            $rustVer = rustc --version
+            if (Test-RustVersion $rustVer) {
+                Write-OK "Rust cai thanh cong: $rustVer"
+            } else {
+                Write-Err "Rust $rustVer khong dat yeu cau >=1.88. Hay chay: rustup update stable"
+                $issues += "Rust >=1.88"
+            }
         } else {
             Write-Err "Cai Rust that bai. Hay cai thu cong: https://rustup.rs"
             $issues += "Rust"
@@ -86,9 +141,16 @@ if (Test-Cmd "rustc") {
 # ============================================================
 Write-Step "2/7 - Node.js"
 
+$nodeReady = $false
 if (Test-Cmd "node") {
     $nodeVer = node --version
-    Write-OK "Node.js: $nodeVer"
+    if (Test-NodeVersion $nodeVer) {
+        Write-OK "Node.js: $nodeVer"
+        $nodeReady = $true
+    } else {
+        Write-Err "Node.js $nodeVer khong dat yeu cau ^20.19.0 hoac >=22.12.0."
+        $issues += "Node.js (^20.19.0 hoac >=22.12.0)"
+    }
 } else {
     if ($SkipInstall) {
         Write-Err "Node.js chua cai. Tai tu: https://nodejs.org"
@@ -97,14 +159,21 @@ if (Test-Cmd "node") {
         $installed = Install-WithWinget "OpenJS.NodeJS.LTS" "Node.js LTS"
         if (-not $installed) {
             Write-Host "  Dang tai Node.js..." -ForegroundColor Yellow
-            $nodeUrl = "https://nodejs.org/dist/v20.18.0/node-v20.18.0-x64.msi"
+            $nodeUrl = "https://nodejs.org/dist/v20.19.5/node-v20.19.5-x64.msi"
             $nodeMsi = Join-Path $env:TEMP "node-setup.msi"
             Invoke-WebRequest -Uri $nodeUrl -OutFile $nodeMsi -UseBasicParsing
             Start-Process msiexec.exe -ArgumentList "/i","`"$nodeMsi`"","/qn" -Wait
         }
         Refresh-Path
         if (Test-Cmd "node") {
-            Write-OK "Node.js cai thanh cong: $(node --version)"
+            $nodeVer = node --version
+            if (Test-NodeVersion $nodeVer) {
+                Write-OK "Node.js cai thanh cong: $nodeVer"
+                $nodeReady = $true
+            } else {
+                Write-Err "Node.js $nodeVer khong dat yeu cau ^20.19.0 hoac >=22.12.0."
+                $issues += "Node.js (^20.19.0 hoac >=22.12.0)"
+            }
         } else {
             Write-Err "Cai Node.js that bai. Hay cai thu cong: https://nodejs.org"
             $issues += "Node.js"
@@ -271,7 +340,7 @@ Write-Step "7/7 - Desktop Node Dependencies"
 $desktopDir = Join-Path $projectRoot "desktop"
 $nodeModules = Join-Path $desktopDir "node_modules"
 
-if (Test-Cmd "npm") {
+if ($nodeReady -and (Test-Cmd "npm")) {
     if (-not (Test-Path $nodeModules)) {
         Write-Host "  Dang chay npm install (co the mat vai phut)..." -ForegroundColor Yellow
         Push-Location $desktopDir
@@ -287,7 +356,7 @@ if (Test-Cmd "npm") {
         $issues += "npm install"
     }
 } else {
-    Write-Skip "Bo qua (Node.js chua cai)"
+    Write-Skip "Bo qua (Node.js chua cai hoac khong dung phien ban)"
 }
 
 # ============================================================

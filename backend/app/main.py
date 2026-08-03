@@ -6,9 +6,33 @@ import hmac
 import logging
 import os
 import re
+import sys
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+# BUILD (audit 2026-08-03 REL.10): run the frozen-artifact self-test before
+# FastAPI/database/config imports. The verifier intentionally strips publisher
+# credentials, so this path must not need a server token or create/bind a DB.
+if __name__ == "__main__" and "--artifact-self-test" in sys.argv[1:]:
+    import json as _json
+
+    from app.core.artifact_runtime_self_test import (
+        SELF_TEST_MARKER as _SELF_TEST_MARKER,
+        run_artifact_runtime_self_test as _run_artifact_runtime_self_test,
+    )
+
+    try:
+        _payload = _run_artifact_runtime_self_test()
+        _exit_code = 0
+    except Exception as _exc:  # Khong in detail/path nhay cam tu frozen runtime.
+        _payload = {"status": "error", "error": type(_exc).__name__}
+        _exit_code = 70
+    print(
+        _SELF_TEST_MARKER + _json.dumps(_payload, ensure_ascii=True, separators=(",", ":")),
+        flush=True,
+    )
+    raise SystemExit(_exit_code)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -264,12 +288,12 @@ if __name__ == "__main__":
     # re-launch exe; freeze_support() đảm bảo con chạy worker thay vì khởi động lại server.
     multiprocessing.freeze_support()
 
-    import uvicorn
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8321)
     parser.add_argument("--host", default="127.0.0.1")
     args, _ = parser.parse_known_args()
+
+    import uvicorn
 
     # ── Lưới an toàn: port đã bị chiếm (zombie sidecar phiên trước) ──
     # Tauri host (lib.rs) đã kill zombie theo tên + chờ port free TRƯỚC khi spawn

@@ -3,7 +3,7 @@
 PrynX sử dụng các thành phần mã nguồn mở dưới đây. Bản quyền thuộc về các
 tác giả tương ứng; mỗi thành phần được phân phối theo giấy phép của nó.
 
-*Sinh tự động ngày 2026-07-29 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
+*Sinh tự động ngày 2026-08-03 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
 
 > Đây không phải tư vấn pháp lý. Tài liệu này liệt kê thành phần và giấy
 > phép để phục vụ nghĩa vụ ghi công; việc đánh giá tuân thủ là việc riêng.
@@ -128,14 +128,12 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | [aiofiles](https://github.com/Tinche/aiofiles) | 24.1.0 | Apache-2.0 | phát hành |
 | [alembic](https://alembic.sqlalchemy.org) | 1.13.0 | MIT | phát hành |
 | [amqp](http://github.com/celery/py-amqp) | 5.3.1 | BSD | build/test |
-| [annotated-doc](https://github.com/fastapi/annotated-doc) | 0.0.4 | MIT | build/test |
-| [annotated-types](https://github.com/annotated-types/annotated-types) | 0.7.0 | MIT License | build/test |
+| [annotated-doc](https://github.com/fastapi/annotated-doc) | 0.0.5 | MIT | build/test |
+| [annotated-types](https://github.com/annotated-types/annotated-types) | 0.8.0 | MIT | build/test |
 | anyio | 4.14.2 | MIT | build/test |
 | [billiard](https://github.com/celery/billiard) | 4.2.4 | BSD | build/test |
-| [boolean.py](https://github.com/bastikr/boolean.py) | 5.0 | BSD-2-Clause | build/test |
-| [CacheControl](https://pypi.org/project/CacheControl/) | 0.14.4 | Apache-2.0 | build/test |
 | [celery](https://docs.celeryq.dev/) | 5.4.0 | BSD-3-Clause | phát hành |
-| [certifi](https://github.com/certifi/python-certifi) | 2026.6.17 | MPL-2.0 | build/test |
+| [certifi](https://github.com/certifi/python-certifi) | 2026.7.22 | MPL-2.0 | build/test |
 | cffi | 2.1.0 | MIT-0 | build/test |
 | [chardet](https://github.com/chardet/chardet) | 7.4.3 | 0BSD | build/test |
 | charset-normalizer | 3.4.9 | MIT | build/test |
@@ -144,9 +142,7 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | [click-plugins](https://github.com/click-contrib/click-plugins) | 1.1.1.2 | New BSD | build/test |
 | [click-repl](https://github.com/untitaker/click-repl) | 0.3.0 | MIT | build/test |
 | [colorama](https://github.com/tartley/colorama) | 0.4.6 | BSD License | build/test |
-| [cryptography](https://github.com/pyca/cryptography) | 49.0.0 | Apache-2.0 OR BSD-3-Clause | build/test |
-| [cyclonedx-python-lib](https://github.com/CycloneDX/cyclonedx-python-lib/#readme) | 11.11.0 | Apache-2.0 | build/test |
-| [defusedxml](https://github.com/tiran/defusedxml) | 0.7.1 | PSFL | build/test |
+| [cryptography](https://github.com/pyca/cryptography) | 50.0.0 | Apache-2.0 OR BSD-3-Clause | build/test |
 | [Deprecated](https://github.com/laurent-laporte-pro/deprecated) | 1.3.1 | MIT | build/test |
 | detect-installer | 0.1.0 | 0BSD | build/test |
 | [dnspython](https://www.dnspython.org) | 2.8.0 | ISC | build/test |
@@ -154,26 +150,22 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | [et_xmlfile](https://foss.heptapod.net/openpyxl/et_xmlfile) | 2.0.0 | MIT | build/test |
 | [fastapi](https://github.com/fastapi/fastapi) | 0.138.1 | MIT | phát hành |
 | [fastapi-cli](https://github.com/fastapi/fastapi-cli) | 0.0.32 | MIT | build/test |
-| [fastapi-cloud-cli](https://github.com/fastapilabs/fastapi-cloud-cli) | 0.22.2 | MIT | build/test |
+| [fastapi-cloud-cli](https://github.com/fastapilabs/fastapi-cloud-cli) | 0.23.0 | MIT | build/test |
 | [fastar](https://github.com/DoctorJohn/fastar) | 0.11.0 | MIT | build/test |
-| [filelock](https://github.com/tox-dev/py-filelock) | 3.32.0 | MIT | build/test |
 | [flatbuffers](https://google.github.io/flatbuffers/) | 25.12.19 | Apache 2.0 | build/test |
 | [fonttools](http://github.com/fonttools/fonttools) | 4.60.2 | MIT | phát hành |
-| [fsspec](https://github.com/fsspec/filesystem_spec) | 2026.4.0 | BSD-3-Clause | build/test |
-| [greenlet](https://greenlet.readthedocs.io) | 3.5.3 | MIT AND PSF-2.0 | build/test |
+| [greenlet](https://greenlet.readthedocs.io) | 3.5.4 | MIT AND PSF-2.0 | build/test |
 | [h11](https://github.com/python-hyper/h11) | 0.16.0 | MIT | build/test |
 | [httpcore](https://www.encode.io/httpcore/) | 1.0.9 | BSD-3-Clause | build/test |
 | [httptools](https://github.com/MagicStack/httptools) | 0.8.0 | MIT | build/test |
 | [httpx](https://github.com/encode/httpx) | 0.27.0 | BSD-3-Clause | phát hành |
 | [hypothesis](https://hypothesis.works) | 6.155.3 | MPL-2.0 | phát hành |
 | [idna](https://github.com/kjd/idna) | 3.18 | BSD-3-Clause | build/test |
-| [ImageIO](https://github.com/imageio/imageio) | 2.37.3 | BSD-2-Clause | build/test |
+| [ImageIO](https://github.com/imageio/imageio) | 2.37.4 | BSD-2-Clause | build/test |
 | [iniconfig](https://github.com/pytest-dev/iniconfig) | 2.3.0 | MIT | build/test |
 | [Jinja2](https://github.com/pallets/jinja/) | 3.1.6 | BSD License | build/test |
 | [kombu](https://kombu.readthedocs.io) | 5.6.2 | BSD-3-Clause | build/test |
 | [lazy-loader](https://github.com/scientific-python/lazy-loader) | 0.5 | BSD-3-Clause | build/test |
-| [license-expression](https://github.com/aboutcode-org/license-expression) | 30.4.4 | Apache-2.0 | build/test |
-| logo_vectorizer_probe | 0.1.0 | CHƯA XÁC ĐỊNH | build/test |
 | [lxml](https://lxml.de/) | 6.1.1 | BSD-3-Clause | build/test |
 | [Mako](https://www.makotemplates.org/) | 1.3.12 | MIT | build/test |
 | [markdown-it-py](https://github.com/executablebooks/markdown-it-py) | 4.2.0 | MIT License | build/test |
@@ -181,39 +173,30 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | [maturin](https://github.com/pyo3/maturin) | 1.13.3 | MIT OR Apache-2.0 | phát hành |
 | [mdurl](https://github.com/executablebooks/mdurl) | 0.1.2 | MIT License | build/test |
 | [mpmath](http://mpmath.org/) | 1.3.0 | BSD | build/test |
-| [msgpack](https://msgpack.org/) | 1.2.1 | Apache-2.0 | build/test |
 | [networkx](https://networkx.org/) | 3.6.1 | BSD-3-Clause | build/test |
 | [Nuitka](https://nuitka.net) | 4.1.2 | GNU Affero General Public License v3 | phát hành |
 | [numpy](https://numpy.org) | 1.26.4 | BSD License | build/test |
-| [onnx](https://onnx.ai/) | 1.17.0 | Apache License v2.0 | build/test |
 | [onnxruntime-directml](https://onnxruntime.ai) | 1.24.4 | MIT License | phát hành |
 | [opencv-python-headless](https://github.com/opencv/opencv-python) | 4.10.0.84 | Apache 2.0 | phát hành |
 | [openpyxl](https://openpyxl.readthedocs.io) | 3.1.5 | MIT | phát hành |
 | ordered-set | 4.1.0 | MIT License | phát hành |
-| [packageurl-python](https://github.com/package-url/packageurl-python) | 0.17.6 | MIT | build/test |
 | [packaging](https://github.com/pypa/packaging) | 26.2 | Apache-2.0 OR BSD-2-Clause | build/test |
 | pdfcompare_native | 0.1.0 | CHƯA XÁC ĐỊNH | build/test |
 | [pdfminer.six](https://github.com/pdfminer/pdfminer.six) | 20251230 | MIT | build/test |
 | [pdfplumber](https://github.com/jsvine/pdfplumber) | 0.11.9 | MIT License | phát hành |
 | [pikepdf](https://github.com/pikepdf/pikepdf) | 9.5.0 | MPL-2.0 | phát hành |
 | [pillow](https://python-pillow.github.io) | 12.3.0 | MIT-CMU | phát hành |
-| [pip](https://pip.pypa.io/) | 26.1.2 | MIT | build/test |
-| [pip-api](http://github.com/di/pip-api) | 0.0.34 | Apache Software License | build/test |
-| [pip-requirements-parser](https://github.com/nexB/pip-requirements-parser) | 32.0.1 | MIT | build/test |
-| [pip_audit](https://pypi.org/project/pip-audit/) | 2.10.1 | Apache Software License | build/test |
-| [platformdirs](https://github.com/tox-dev/platformdirs) | 4.11.0 | MIT | build/test |
+| [pip](https://pip.pypa.io/) | 26.2 | MIT | build/test |
 | pluggy | 1.6.0 | MIT | build/test |
-| [prompt_toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit) | 3.0.52 | BSD License | build/test |
+| [prompt_toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit) | 3.0.53 | BSD License | build/test |
 | [protobuf](https://developers.google.com/protocol-buffers/) | 7.35.1 | 3-Clause BSD License | build/test |
 | [psycopg2-binary](https://psycopg.org/) | 2.9.9 | LGPL with exceptions | phát hành |
-| [py-serializable](https://github.com/madpah/serializable#readme) | 2.1.0 | Apache-2.0 | build/test |
 | [pycparser](https://github.com/eliben/pycparser) | 3.0 | BSD-3-Clause | build/test |
 | [pydantic](https://github.com/pydantic/pydantic) | 2.13.4 | MIT | build/test |
 | [pydantic-extra-types](https://github.com/pydantic/pydantic-extra-types) | 2.11.1 | MIT | build/test |
 | [pydantic-settings](https://github.com/pydantic/pydantic-settings) | 2.5.0 | MIT | phát hành |
 | [pydantic_core](https://github.com/pydantic/pydantic) | 2.46.4 | MIT | build/test |
 | [Pygments](https://pygments.org) | 2.20.0 | BSD-2-Clause | build/test |
-| [pyparsing](https://github.com/pyparsing/pyparsing/) | 3.3.2 | MIT | build/test |
 | [pypdf](https://github.com/py-pdf/pypdf) | 6.14.2 | BSD-3-Clause | phát hành |
 | [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) | 4.30.0 | (Apache-2.0 OR BSD-3-Clause) AND LicenseRef-PdfiumThirdParty | phát hành |
 | [pyserial](https://github.com/pyserial/pyserial) | 3.5 | BSD | phát hành |
@@ -228,15 +211,14 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | [PyYAML](https://pyyaml.org/) | 6.0.3 | MIT | build/test |
 | [redis](https://github.com/redis/redis-py) | 5.1.0 | MIT | phát hành |
 | [reportlab](https://www.reportlab.com/) | 4.2.0 | BSD License | phát hành |
-| [requests](https://github.com/psf/requests) | 2.34.2 | Apache-2.0 | build/test |
 | [rich](https://github.com/Textualize/rich) | 15.0.0 | MIT | build/test |
 | rich-toolkit | 0.20.3 | MIT | build/test |
 | rignore | 0.8.0 | MIT | build/test |
 | [scikit-image](https://scikit-image.org) | 0.24.0 | BSD License | phát hành |
 | [scipy](https://scipy.org/) | 1.12.0 | BSD License | phát hành |
 | [segno](https://github.com/heuer/segno/) | 1.6.6 | BSD License | phát hành |
-| [sentry-sdk](https://github.com/getsentry/sentry-python) | 2.66.0 | MIT | build/test |
-| [setuptools](https://github.com/pypa/setuptools) | 78.1.0 | MIT License | build/test |
+| [sentry-sdk](https://github.com/getsentry/sentry-python) | 2.66.1 | MIT | build/test |
+| [setuptools](https://github.com/pypa/setuptools) | 65.5.0 | MIT License | build/test |
 | [shapely](https://github.com/shapely/shapely) | 2.0.6 | BSD 3-Clause | phát hành |
 | [shellingham](https://github.com/sarugaku/shellingham) | 1.5.4 | ISC License | build/test |
 | [six](https://github.com/benjaminp/six) | 1.17.0 | MIT | build/test |
@@ -244,11 +226,8 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | [sortedcontainers](http://www.grantjenks.com/docs/sortedcontainers/) | 2.4.0 | Apache 2.0 | build/test |
 | [SQLAlchemy](https://www.sqlalchemy.org) | 2.0.35 | MIT | phát hành |
 | [starlette](https://github.com/Kludex/starlette) | 1.3.1 | BSD-3-Clause | phát hành |
-| [sympy](https://sympy.org) | 1.13.1 | BSD | build/test |
+| [sympy](https://sympy.org) | 1.14.0 | BSD | build/test |
 | [tifffile](https://www.cgohlke.com) | 2026.3.3 | BSD-3-Clause | build/test |
-| [tomli](https://github.com/hukkin/tomli) | 2.4.1 | MIT | build/test |
-| [tomli_w](https://github.com/hukkin/tomli-w) | 1.2.0 | MIT License | build/test |
-| [torch](https://pytorch.org/) | 2.6.0+cpu | BSD-3-Clause | build/test |
 | [typer](https://github.com/fastapi/typer) | 0.27.0 | MIT | build/test |
 | [typing-inspection](https://github.com/pydantic/typing-inspection) | 0.4.2 | MIT | build/test |
 | [typing_extensions](https://github.com/python/typing_extensions) | 4.16.0 | PSF-2.0 | build/test |
@@ -257,11 +236,10 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | urllib3 | 2.7.0 | MIT | build/test |
 | [uvicorn](https://www.uvicorn.org/) | 0.30.0 | BSD-3-Clause | phát hành |
 | [vine](https://github.com/celery/vine) | 5.1.0 | BSD | build/test |
-| [vtracer](http://www.visioncortex.org/vtracer) | 0.6.15 | MIT | build/test |
 | [watchfiles](https://github.com/samuelcolvin/watchfiles) | 1.2.0 | MIT | build/test |
 | [wcwidth](https://github.com/jquast/wcwidth) | 0.8.2 | MIT | build/test |
 | [websockets](https://github.com/python-websockets/websockets) | 13.0 | BSD-3-Clause | phát hành |
-| [wrapt](https://github.com/GrahamDumpleton/wrapt) | 2.2.2 | BSD-2-Clause | build/test |
+| [wrapt](https://github.com/GrahamDumpleton/wrapt) | 2.3.0 | BSD-2-Clause | build/test |
 | [zstandard](https://github.com/indygreg/python-zstandard) | 0.25.0 | BSD-3-Clause | phát hành |
 
 ## 4. Crate Rust
@@ -1606,27 +1584,27 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 ## 6. Thống kê
 
 - Nhị phân đóng gói: 6
-- Thư viện Python: 138
+- Thư viện Python: 116
 - Crate Rust: 797
 - Gói npm: 526
 
 | Giấy phép | Số thành phần |
 |---|---|
-| MIT | 625 |
+| MIT | 619 |
 | MIT OR Apache-2.0 | 382 |
 | Apache-2.0 OR MIT | 90 |
-| Apache-2.0 | 47 |
-| BSD-3-Clause | 35 |
+| Apache-2.0 | 41 |
 | MIT/Apache-2.0 | 34 |
+| BSD-3-Clause | 33 |
 | ISC | 28 |
 | Unicode-3.0 | 24 |
 | Zlib OR Apache-2.0 OR MIT | 21 |
 | MPL-2.0 | 20 |
-| BSD-2-Clause | 17 |
 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | 16 |
+| BSD-2-Clause | 16 |
 | Unlicense OR MIT | 15 |
 | BSD License | 8 |
-| MIT License | 8 |
+| Apache-2.0/MIT | 6 |
 
-4 thành phần không khai giấy phép trong metadata — cần tra thủ công trước khi phát hành.
+3 thành phần không khai giấy phép trong metadata — cần tra thủ công trước khi phát hành.
 

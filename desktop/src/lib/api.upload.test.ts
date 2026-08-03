@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { uploadPDF } from './api';
 
 const DESKTOP_ONLY = 'Chỉ khả dụng trong ứng dụng desktop';
+// RELEASE QA (audit 2026-08-03 §REL.05): ngân sách riêng cho hai ca từng timeout khi full suite tranh CPU.
+const FULL_SUITE_TIMEOUT_MS = 15_000;
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
@@ -40,7 +42,7 @@ describe('uploadPDF local-path fallback', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(String(fetchMock.mock.calls[0][0])).toContain('/api/upload/local');
     expect(fetchMock.mock.calls[1][1]?.body).toBeInstanceOf(FormData);
-  });
+  }, FULL_SUITE_TIMEOUT_MS);
 
   it('does not hide unrelated authorization failures', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(403, {
@@ -53,5 +55,5 @@ describe('uploadPDF local-path fallback', () => {
 
     await expect(uploadPDF(file)).rejects.toThrow('Invalid request signature');
     expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
+  }, FULL_SUITE_TIMEOUT_MS);
 });

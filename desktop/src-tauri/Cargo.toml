@@ -1,11 +1,12 @@
 [package]
 name = "pdf-inspector"
-version = "1.0.0-beta.14"
+version = "1.0.0-rc.1"
 description = "PDF comparison tool for print industry"
 authors = ["PrintSolutions"]
 license = "MIT"
 edition = "2021"
-rust-version = "1.77.2"
+# BUILD (audit 2026-08-03 §REL.08): MSRV khớp với cây dependency đã khóa.
+rust-version = "1.88"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

@@ -9,17 +9,17 @@ Fixture PDF: tests/preflight_fixtures/pdfs/
 Kỳ vọng:     tests/preflight_fixtures/expected_rules.json
 
 So sánh: tập rule_id thực tế phải chứa must_have và không chứa must_not_have.
-`17_tac_heavy_cmyk.pdf` skip chỉ khi máy không có Ghostscript (TAC cần GS tiffsep).
+`17_tac_heavy_cmyk.pdf` phải chạy bằng PPE trong hợp đồng no-GS và phát hiện TAC.
 """
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
 
 from app.config import settings
+from app.core import gs_usage
 from app.core.preflight_engine import PreflightEngine
 from app.core.preflight_models import ALL_RULES
 
@@ -56,19 +56,46 @@ def _fixture_ids(manifest):
 
 
 @pytest.mark.parametrize("fixture_name", _fixture_ids(_load_manifest()) if MANIFEST_PATH.exists() else [])
-def test_preflight_fixture_golden(fixture_name: str, manifest: dict, engine: PreflightEngine):
+def test_preflight_fixture_golden(
+    fixture_name: str,
+    manifest: dict,
+    engine: PreflightEngine,
+    monkeypatch,
+):
     spec = manifest["fixtures"][fixture_name]
     pdf_path = PDF_DIR / fixture_name
     assert pdf_path.exists(), f"Thiếu PDF: {pdf_path}"
 
-    if fixture_name == "17_tac_heavy_cmyk.pdf" and not os.path.isfile(settings.GHOSTSCRIPT_PATH):
-        pytest.skip(
-            f"Thiếu Ghostscript tại {settings.GHOSTSCRIPT_PATH} — không thể golden-test TAC."
-        )
+    is_tac_fixture = fixture_name == "17_tac_heavy_cmyk.pdf"
+    observed_tac_engines = []
+    if is_tac_fixture:
+        # BUILD (audit 2026-08-03 §REL.12): TAC là coverage PPE/no-GS bắt buộc,
+        # không còn là fixture optional phụ thuộc Ghostscript.
+        from app.core.separations import SeparationEngine
+
+        assert settings.GHOSTSCRIPT_PATH == ""
+        gs_usage.reset_for_tests()
+        original_extract = SeparationEngine.extract_separations
+
+        async def tracked_extract(instance, *args, **kwargs):
+            result = await original_extract(instance, *args, **kwargs)
+            observed_tac_engines.append(result.get("engine"))
+            return result
+
+        monkeypatch.setattr(SeparationEngine, "extract_separations", tracked_extract)
 
     rules = spec.get("rules") or list(ALL_RULES)
     report = engine.run(str(pdf_path), rules=rules, tac_threshold=300)
     found = _issue_rule_ids(report)
+
+    if is_tac_fixture:
+        tac_issues = [issue for issue in report.issues if issue.rule_id == "TAC_EXCEEDED"]
+        assert gs_usage.summary()["total_gs_calls"] == 0
+        assert observed_tac_engines == ["ppe"]
+        assert any(
+            issue.severity == "warning" and "TAC tối đa" in issue.description
+            for issue in tac_issues
+        ), "fixture TAC phải được PPE đo thật, không phải cảnh báo chưa đo được"
 
     must_have = set(spec.get("must_have", []))
     must_not = set(spec.get("must_not_have", []))

@@ -188,6 +188,27 @@ def test_release_qa_covers_typecheck_and_print_engine():
     ) in text
 
 
+def test_release_qa_stages_all_frontend_workspace_sibling_fixtures():
+    text = _read(RELEASE_QA)
+    assert "native\\tests\\fixtures\\dieline_default_request.json" in text
+    assert "imposition_core\\tests\\fixtures\\grid_parity_simple_auto.json" in text
+
+
+def test_staged_native_qa_uses_a_runtime_specific_no_gs_artifact():
+    qa = _read(RELEASE_QA)
+    build = _read(BUILD)
+    assert "PRYNX_NO_GS_AUDIT_OUT" in qa
+    assert "PRYNX_NO_GS_AUDIT_OUT" in build
+    assert "release_no_gs_audit-native-$nativeQaId.json" in build
+
+
+def test_staged_native_qa_canonicalizes_windows_short_path_aliases():
+    text = _read(RELEASE_QA)
+    assert "pathlib.Path(os.environ['PRYNX_RELEASE_NATIVE_SITE']).resolve()" in text
+    assert "package.is_relative_to(site)" in text
+    assert "$actualNativePackage.StartsWith(" not in text
+
+
 def test_release_uses_updater_signature_generated_for_each_version():
     build = _read(BUILD)
     release = _read(RELEASE_UPDATE)
@@ -205,12 +226,17 @@ def test_release_does_not_require_windows_authenticode():
         assert marker not in combined
 
 
-def test_release_update_keeps_automatic_version_bump():
-    text = _read(RELEASE_UPDATE)
-    assert "[System.IO.File]::WriteAllText($confPath" in text
-    assert "[System.IO.File]::WriteAllText($pkgPath" in text
-    assert "[System.IO.File]::WriteAllText($cargoPath" in text
-    assert "$buildArgs = @{ Release = $true }" in text
+def test_public_release_requires_committed_version_and_clean_source():
+    release = _read(RELEASE_UPDATE)
+    build = _read(BUILD)
+    assert "Assert-CommittedReleaseVersion -ExpectedVersion $Version" in release
+    assert "status --porcelain=v1 --untracked-files=all" in release
+    assert "[System.IO.File]::WriteAllText($confPath" not in release
+    assert "[System.IO.File]::WriteAllText($pkgPath" not in release
+    assert "[System.IO.File]::WriteAllText($cargoPath" not in release
+    assert "$buildArgs = @{ Release = $true }" in release
+    assert "Release build refuses inline -Version mutation" in build
+    assert "Assert-ReleaseSourceState -CaptureCommit" in build
 
 
 # ─────────────────────────────────────────────────────────────────────────────
