@@ -91,9 +91,14 @@ def _render_selected_objects_rgba(page, object_ids: list[str], scale: float) -> 
 # Hàm hình học đường cắt được tách sang module nhẹ (không deps nặng) để test được.
 # Re-export ở đây để giữ tương thích với code cũ import từ sticker_engine.
 from app.workers.cutline_geometry import (  # noqa: E402
+    build_bezier_segments_path_stream,
     build_contour_path_stream,
+    _catmull_rom_chord_deviation_bound,
+    _sample_catmull_rom_ring,
     _coords_to_bezier_stream,
     _coords_to_polyline_stream,
+    fit_closed_cubic_beziers,
+    sample_bezier_segments,
 )
 
 
@@ -178,6 +183,19 @@ ALPHA_CONTOUR_INSET_MM = 0.15
 ALPHA_CONTOUR_SIMPLIFY_MM = 0.02
 ALPHA_CONTOUR_THRESHOLD = 64
 
+# QUALITY (audit 2026-08-04 §ALPHA.1–2): Alpha bắt nguồn từ raster nên cần lọc
+# bậc pixel theo mm vật lý, nhưng candidate chỉ được nhận khi vẫn nằm trong ngân
+# sách sai lệch của đường lùi lý tưởng. 0,02 mm giữ làm fallback tương thích.
+_ALPHA_SAFE_SIMPLIFY_MM = 0.05
+_ALPHA_SAFE_MAX_HAUSDORFF_MM = 0.08
+_ALPHA_SAFE_CURVE_HAUSDORFF_MM = 0.08
+_ALPHA_SAFE_MIN_GAP_MM = 0.05
+_ALPHA_SAFE_BEZIER_TENSIONS = (0.15, 0.10, 0.05, 0.03)
+_ALPHA_SAFE_BEZIER_SAMPLES = 3
+_ALPHA_FIT_TOLERANCES_MM = (0.10, 0.095, 0.08, 0.06)
+_ALPHA_FIT_MAX_HAUSDORFF_MM = 0.12
+_ALPHA_FIT_SAMPLES = 10
+
 
 def _foreground_mask_from_corner_background(img: np.ndarray) -> np.ndarray | None:
     """Tách vật thể khỏi nền phẳng nối từ bốn góc khi PDF không còn Alpha.
@@ -261,6 +279,405 @@ def _round_preserved_corners(geometry, radius_pts: float, quad_segs: int = 3):
 
     rounded = _round_one(geometry)
     return rounded if isinstance(rounded, (Polygon, MultiPolygon)) else geometry
+
+
+def _polygon_topology_signature(geometry):
+    """Chữ ký số mảnh/số lỗ để chặn làm mượt Alpha đổi topology."""
+    if isinstance(geometry, Polygon):
+        parts = [geometry]
+    elif isinstance(geometry, MultiPolygon):
+        parts = list(geometry.geoms)
+    else:
+        return None
+    return len(parts), tuple(sorted(len(part.interiors) for part in parts))
+
+
+def _polygon_rings(geometry):
+    """Duyệt exterior/interior của Polygon/MultiPolygon mà không đổi thứ tự."""
+    if isinstance(geometry, Polygon):
+        parts = [geometry]
+    elif isinstance(geometry, MultiPolygon):
+        parts = list(geometry.geoms)
+    else:
+        return
+    for part in parts:
+        yield part.exterior
+        yield from part.interiors
+
+
+def _alpha_minimum_gap_pts(
+    total_offset_pts: float,
+    mm_to_pts: float,
+    max_deviation_mm: float,
+) -> float:
+    """Khoảng cách Alpha còn phải giữ sau khi trừ ngân sách làm mượt."""
+    intended_inset_pts = max(0.0, -float(total_offset_pts))
+    return min(
+        _ALPHA_SAFE_MIN_GAP_MM * mm_to_pts,
+        max(0.0, intended_inset_pts - max_deviation_mm * mm_to_pts),
+    )
+
+
+def _alpha_smoothing_candidate_is_safe(
+    alpha_geometry,
+    ideal_cut_geometry,
+    candidate,
+    *,
+    total_offset_pts: float,
+    mm_to_pts: float,
+    max_deviation_mm: float = _ALPHA_SAFE_MAX_HAUSDORFF_MM,
+    measured_deviation_pts: float | None = None,
+) -> bool:
+    """Kiểm candidate không đổi topology hoặc ăn hết khoảng lùi Alpha.
+
+    Hausdorff khóa sai lệch hai chiều so với đường cắt lý tưởng. Khi đường cắt
+    đang lùi vào trong, một safe envelope bổ sung giữ candidate cách biên Alpha
+    tối thiểu 0,05 mm ở cấu hình mặc định. Offset dương do người dùng chủ động
+    không bị ép quay vào trong silhouette.
+    """
+    if (
+        candidate is None
+        or getattr(candidate, "is_empty", True)
+        or not getattr(candidate, "is_valid", False)
+        or not isinstance(candidate, (Polygon, MultiPolygon))
+    ):
+        return False
+    if _polygon_topology_signature(candidate) != _polygon_topology_signature(
+        ideal_cut_geometry
+    ):
+        return False
+
+    max_deviation_pts = max_deviation_mm * mm_to_pts
+    if measured_deviation_pts is None:
+        measured_deviation_pts = ideal_cut_geometry.hausdorff_distance(candidate)
+    if measured_deviation_pts > max_deviation_pts + 1e-9:
+        return False
+
+    minimum_gap_pts = _alpha_minimum_gap_pts(
+        total_offset_pts,
+        mm_to_pts,
+        max_deviation_mm,
+    )
+    if minimum_gap_pts <= 0:
+        return True
+
+    safe_envelope = alpha_geometry.buffer(-minimum_gap_pts, join_style=1)
+    return (
+        not safe_envelope.is_empty
+        and safe_envelope.is_valid
+        and safe_envelope.covers(candidate)
+    )
+
+
+def _smooth_alpha_cut_contour(
+    alpha_geometry,
+    ideal_cut_geometry,
+    *,
+    total_offset_pts: float,
+    mm_to_pts: float,
+):
+    """Trả ``(geometry, Hausdorff pts)``; lỗi thì lùi về mức cũ 0,02 mm."""
+    legacy = ideal_cut_geometry.simplify(
+        ALPHA_CONTOUR_SIMPLIFY_MM * mm_to_pts,
+        preserve_topology=True,
+    )
+
+    simplified = ideal_cut_geometry.simplify(
+        _ALPHA_SAFE_SIMPLIFY_MM * mm_to_pts,
+        preserve_topology=True,
+    )
+    simplified_deviation_pts = ideal_cut_geometry.hausdorff_distance(simplified)
+    if _alpha_smoothing_candidate_is_safe(
+        alpha_geometry,
+        ideal_cut_geometry,
+        simplified,
+        total_offset_pts=total_offset_pts,
+        mm_to_pts=mm_to_pts,
+        measured_deviation_pts=simplified_deviation_pts,
+    ):
+        return simplified, simplified_deviation_pts
+    return legacy, ideal_cut_geometry.hausdorff_distance(legacy)
+
+
+def _sample_alpha_bezier_geometry(geometry, tension: float):
+    """Dựng polygon lấy mẫu đúng đường Bézier sẽ ghi vào PDF để chạy guard."""
+    if isinstance(geometry, Polygon):
+        source_parts = [geometry]
+        return_multi = False
+    elif isinstance(geometry, MultiPolygon):
+        source_parts = list(geometry.geoms)
+        return_multi = True
+    else:
+        return None
+
+    sampled_parts = []
+    for part in source_parts:
+        exterior = _sample_catmull_rom_ring(
+            list(part.exterior.coords),
+            tension=tension,
+            samples_per_segment=_ALPHA_SAFE_BEZIER_SAMPLES,
+        )
+        interiors = [
+            _sample_catmull_rom_ring(
+                list(interior.coords),
+                tension=tension,
+                samples_per_segment=_ALPHA_SAFE_BEZIER_SAMPLES,
+            )
+            for interior in part.interiors
+        ]
+        if len(exterior) < 4 or any(len(interior) < 4 for interior in interiors):
+            return None
+        sampled_parts.append(Polygon(exterior, interiors))
+
+    if return_multi:
+        return MultiPolygon(sampled_parts)
+    return sampled_parts[0] if sampled_parts else None
+
+
+def _safe_alpha_bezier_tension(
+    alpha_geometry,
+    ideal_cut_geometry,
+    anchor_geometry,
+    *,
+    total_offset_pts: float,
+    mm_to_pts: float,
+    anchor_deviation_pts: float,
+):
+    """Chọn độ căng Bézier mạnh nhất qua guard O(n); lỗi thì trả ``None``."""
+    curve_budget_pts = _ALPHA_SAFE_CURVE_HAUSDORFF_MM * mm_to_pts
+    if anchor_deviation_pts > curve_budget_pts + 1e-9:
+        return None
+
+    minimum_gap_pts = _alpha_minimum_gap_pts(
+        total_offset_pts,
+        mm_to_pts,
+        _ALPHA_SAFE_CURVE_HAUSDORFF_MM,
+    )
+    for tension in _ALPHA_SAFE_BEZIER_TENSIONS:
+        ring_bounds = [
+            _catmull_rom_chord_deviation_bound(
+                list(ring.coords),
+                tension=tension,
+            )
+            for ring in _polygon_rings(anchor_geometry)
+        ]
+        if not ring_bounds or any(bound is None for bound in ring_bounds):
+            continue
+        curve_deviation_pts = max(ring_bounds)
+        # PERF (audit 2026-08-04 §ALPHA.2): dùng bất đẳng thức tam giác
+        # Hausdorff ideal↔anchor↔cubic thay vì so mọi điểm O(n²).
+        if anchor_deviation_pts + curve_deviation_pts > curve_budget_pts + 1e-9:
+            continue
+
+        sampled_curve = _sample_alpha_bezier_geometry(anchor_geometry, tension)
+        if (
+            sampled_curve is None
+            or sampled_curve.is_empty
+            or not sampled_curve.is_valid
+            or _polygon_topology_signature(sampled_curve)
+            != _polygon_topology_signature(ideal_cut_geometry)
+        ):
+            continue
+
+        if minimum_gap_pts > 0:
+            # Anchor phải nằm sâu thêm đúng độ lệch tối đa của cubic. Khi đó
+            # toàn đường cong vẫn nằm trong safe envelope cách Alpha 0,05 mm.
+            anchor_envelope = alpha_geometry.buffer(
+                -(minimum_gap_pts + curve_deviation_pts),
+                join_style=1,
+            )
+            if (
+                anchor_envelope.is_empty
+                or not anchor_envelope.is_valid
+                or not anchor_envelope.covers(anchor_geometry)
+            ):
+                continue
+        return tension
+    return None
+
+
+def _geometry_within_hausdorff_budget(
+    first,
+    second,
+    budget_pts: float,
+    *,
+    first_envelope=None,
+) -> bool:
+    """Kiểm Hausdorff ``<= budget`` bằng hai phép bao phủ buffer tương đương."""
+    if budget_pts < 0:
+        return False
+    envelope = first_envelope
+    if envelope is None:
+        envelope = first.buffer(budget_pts, join_style=1)
+    return envelope.covers(second) and second.buffer(
+        budget_pts,
+        join_style=1,
+    ).covers(first)
+
+
+def _fit_alpha_bezier_paths(
+    alpha_geometry,
+    ideal_cut_geometry,
+    *,
+    total_offset_pts: float,
+    mm_to_pts: float,
+    _enforce_monotonic: bool = True,
+):
+    """Fit nhiều điểm raster thành ít cubic; mọi candidate phải qua guard artifact.
+
+    Ưu tiên tay nắm đơn điệu để tránh loop. Nếu toàn contour không phù hợp,
+    thử lại tay nắm giới hạn chord nhưng thoáng hơn trước khi về Catmull.
+    """
+    reference = ideal_cut_geometry.simplify(
+        ALPHA_CONTOUR_SIMPLIFY_MM * mm_to_pts,
+        preserve_topology=True,
+    )
+    comparison = ideal_cut_geometry.simplify(
+        _ALPHA_SAFE_SIMPLIFY_MM * mm_to_pts,
+        preserve_topology=True,
+    )
+    if isinstance(reference, Polygon):
+        source_parts = [reference]
+        return_multi = False
+    elif isinstance(reference, MultiPolygon):
+        source_parts = list(reference.geoms)
+        return_multi = True
+    else:
+        return None
+
+    comparison_nodes = sum(
+        len(ring.coords) - 1 for ring in _polygon_rings(comparison)
+    )
+    minimum_gap_pts = min(
+        _ALPHA_SAFE_MIN_GAP_MM * mm_to_pts,
+        max(0.0, -float(total_offset_pts)),
+    )
+    safe_envelope = (
+        alpha_geometry.buffer(-minimum_gap_pts, join_style=1)
+        if minimum_gap_pts > 0
+        else None
+    )
+    remaining_budget_pts = (
+        _ALPHA_FIT_MAX_HAUSDORFF_MM - ALPHA_CONTOUR_SIMPLIFY_MM
+    ) * mm_to_pts
+    uncertainty_limit_pts = (
+        _ALPHA_FIT_MAX_HAUSDORFF_MM + ALPHA_CONTOUR_SIMPLIFY_MM
+    ) * mm_to_pts
+    exact_budget_pts = _ALPHA_FIT_MAX_HAUSDORFF_MM * mm_to_pts
+    # PERF (audit 2026-08-05 §ALPHA.P1): với hai tập đóng A/B,
+    # H(A,B) <= r tương đương A nằm trong buffer(B,r) và ngược lại. Buffer +
+    # covers cho cùng guard Hausdorff nhưng tránh phép đo O(n×m) trên contour
+    # raster 8–12 nghìn điểm ở từng tolerance.
+    reference_remaining_envelope = reference.buffer(
+        remaining_budget_pts,
+        join_style=1,
+    )
+    reference_uncertainty_envelope = reference.buffer(
+        uncertainty_limit_pts,
+        join_style=1,
+    )
+    ideal_exact_envelope = ideal_cut_geometry.buffer(
+        exact_budget_pts,
+        join_style=1,
+    )
+
+    for tolerance_mm in _ALPHA_FIT_TOLERANCES_MM:
+        all_paths = []
+        sampled_parts = []
+        try:
+            for part in source_parts:
+                exterior_segments = fit_closed_cubic_beziers(
+                    list(part.exterior.coords),
+                    tolerance_mm * mm_to_pts,
+                    enforce_monotonic=_enforce_monotonic,
+                )
+                interior_segments = [
+                    fit_closed_cubic_beziers(
+                        list(interior.coords),
+                        tolerance_mm * mm_to_pts,
+                        enforce_monotonic=_enforce_monotonic,
+                    )
+                    for interior in part.interiors
+                ]
+                if not exterior_segments or any(
+                    not segments for segments in interior_segments
+                ):
+                    raise ValueError("Không fit được đầy đủ các ring Alpha")
+
+                exterior = sample_bezier_segments(
+                    exterior_segments,
+                    samples_per_segment=_ALPHA_FIT_SAMPLES,
+                )
+                interiors = [
+                    sample_bezier_segments(
+                        segments,
+                        samples_per_segment=_ALPHA_FIT_SAMPLES,
+                    )
+                    for segments in interior_segments
+                ]
+                sampled_parts.append(Polygon(exterior, interiors))
+                all_paths.append(exterior_segments)
+                all_paths.extend(interior_segments)
+        except (ArithmeticError, RecursionError, ValueError):
+            continue
+
+        sampled_geometry = (
+            MultiPolygon(sampled_parts)
+            if return_multi
+            else sampled_parts[0]
+        )
+        if (
+            sampled_geometry.is_empty
+            or not sampled_geometry.is_valid
+            or _polygon_topology_signature(sampled_geometry)
+            != _polygon_topology_signature(ideal_cut_geometry)
+        ):
+            continue
+        # PERF (audit 2026-08-04 §ALPHA.2): reference đã nằm trong 0,02 mm
+        # của ideal theo bảo đảm Douglas–Peucker. Phần lớn candidate được quyết
+        # định bằng bất đẳng thức tam giác; vùng sát ngưỡng mới đo contour gốc
+        # để tránh loại nhầm đường fit an toàn chỉ vì bound bảo thủ.
+        if not _geometry_within_hausdorff_budget(
+            reference,
+            sampled_geometry,
+            remaining_budget_pts,
+            first_envelope=reference_remaining_envelope,
+        ):
+            if not _geometry_within_hausdorff_budget(
+                reference,
+                sampled_geometry,
+                uncertainty_limit_pts,
+                first_envelope=reference_uncertainty_envelope,
+            ) or not _geometry_within_hausdorff_budget(
+                ideal_cut_geometry,
+                sampled_geometry,
+                exact_budget_pts,
+                first_envelope=ideal_exact_envelope,
+            ):
+                continue
+        if (
+            safe_envelope is not None
+            and (
+                safe_envelope.is_empty
+                or not safe_envelope.is_valid
+                or not safe_envelope.covers(sampled_geometry)
+            )
+        ):
+            continue
+
+        segment_count = sum(len(segments) for segments in all_paths)
+        if comparison_nodes > 0 and segment_count >= comparison_nodes * 0.85:
+            continue
+        return sampled_geometry, all_paths, tolerance_mm
+    if _enforce_monotonic:
+        return _fit_alpha_bezier_paths(
+            alpha_geometry,
+            ideal_cut_geometry,
+            total_offset_pts=total_offset_pts,
+            mm_to_pts=mm_to_pts,
+            _enforce_monotonic=False,
+        )
+    return None
 
 
 def _erode_px(mask: np.ndarray, px: int, kernel_type: int = cv2.MORPH_ELLIPSE) -> np.ndarray:
@@ -2123,46 +2540,10 @@ def _env_int_or_none(name: str) -> int | None:
 
 
 def _read_memory_status() -> tuple[float | None, float | None]:
-    """(total_mb, available_mb) — không phụ thuộc psutil."""
-    if os.name == "nt":
-        try:
-            import ctypes
-            from ctypes import wintypes
+    """(total_mb, available_mb) dùng chung chính sách toàn backend."""
+    from app.core.system_memory import read_memory_status_mb
 
-            class MEMORYSTATUSEX(ctypes.Structure):
-                _fields_ = [
-                    ("dwLength", wintypes.DWORD),
-                    ("dwMemoryLoad", wintypes.DWORD),
-                    ("ullTotalPhys", ctypes.c_uint64),
-                    ("ullAvailPhys", ctypes.c_uint64),
-                    ("ullTotalPageFile", ctypes.c_uint64),
-                    ("ullAvailPageFile", ctypes.c_uint64),
-                    ("ullTotalVirtual", ctypes.c_uint64),
-                    ("ullAvailVirtual", ctypes.c_uint64),
-                    ("ullAvailExtendedVirtual", ctypes.c_uint64),
-                ]
-
-            stat = MEMORYSTATUSEX()
-            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
-                return (
-                    float(stat.ullTotalPhys) / (1024.0 * 1024.0),
-                    float(stat.ullAvailPhys) / (1024.0 * 1024.0),
-                )
-        except Exception:
-            pass
-    # Linux
-    total = avail = None
-    try:
-        with open("/proc/meminfo", "r", encoding="utf-8") as f:
-            for line in f:
-                if line.startswith("MemTotal:"):
-                    total = float(line.split()[1]) / 1024.0
-                elif line.startswith("MemAvailable:"):
-                    avail = float(line.split()[1]) / 1024.0
-    except Exception:
-        pass
-    return total, avail
+    return read_memory_status_mb()
 
 
 def _available_ram_mb() -> float | None:
@@ -2183,14 +2564,10 @@ def _auto_sticker_hw_profile(
 ) -> dict:
     """Suy ra max_workers + sticky TTL theo cấu hình máy.
 
-    Bảng (ưu tiên ổn định in ấn; máy mạnh mới tăng tốc):
+    Bảng theo rule phần cứng của dự án:
       RAM < 8GB            → workers 1, sticky 15'
-      8–16GB               → workers 2, sticky 10'
-      16–32GB + CPU≥8      → workers 3, sticky 5'
-      16–32GB + CPU<8      → workers 2, sticky 5'
-      ≥32GB  + CPU≥12      → workers 4, sticky 1'
-      ≥32GB  + CPU≥8       → workers 3, sticky 2'
-      ≥64GB  + CPU≥16      → workers 6, sticky 0 (tắt)
+      8–16GB               → tối đa 2 workers, sticky 10'
+      ≥16GB                → CPU-1 workers, sticky tắt
 
     Env STICKER_MAX_WORKERS / STICKER_STICKY_SEQ_SEC ghi đè khi set.
     Không cache ở đây — dùng get_sticker_hw_profile() cho production cache.
@@ -2205,33 +2582,16 @@ def _auto_sticker_hw_profile(
     ram = float(total_ram_mb) if total_ram_mb is not None else 8192.0  # giả định 8GB
 
     # ── Workers theo RAM + CPU ──
+    cpu_workers = max(1, cpu_count - 1)
     if ram < 8 * 1024:
         workers, sticky, tier = 1, 900.0, "low"
     elif ram < 16 * 1024:
-        workers, sticky, tier = 2, 600.0, "mid"
-    elif ram < 32 * 1024:
-        if cpu_count >= 8:
-            workers, sticky, tier = 3, 300.0, "high"
-        else:
-            workers, sticky, tier = 2, 300.0, "high-cpu-limited"
-    elif ram < 64 * 1024:
-        if cpu_count >= 12:
-            workers, sticky, tier = 4, 60.0, "very-high"
-        elif cpu_count >= 8:
-            workers, sticky, tier = 3, 120.0, "very-high-cpu-limited"
-        else:
-            workers, sticky, tier = 2, 180.0, "very-high-cpu-limited"
+        workers, sticky, tier = min(cpu_workers, 2), 600.0, "mid"
     else:
-        # ≥64GB
-        if cpu_count >= 16:
-            workers, sticky, tier = 6, 0.0, "extreme"
-        elif cpu_count >= 12:
-            workers, sticky, tier = 4, 30.0, "extreme-cpu-limited"
-        else:
-            workers, sticky, tier = 3, 60.0, "extreme-cpu-limited"
-
-    # Không vượt quá (cpu-1) — chừa 1 nhân cho UI/backend.
-    workers = max(1, min(workers, max(1, cpu_count - 1)))
+        # PERF (audit 2026-08-05 §ALPHA.P1): máy mạnh không bị cap theo bảng
+        # cứng. Fitter Alpha chủ yếu chạy một luồng Python/GEOS mỗi process;
+        # CPU-1 mới dùng hết phần cứng mà vẫn chừa một nhân cho UI/backend.
+        workers, sticky, tier = cpu_workers, 0.0, "full"
 
     env_workers = _env_int_or_none("STICKER_MAX_WORKERS")
     env_sticky = _env_float_or_none("STICKER_STICKY_SEQ_SEC")
@@ -2378,28 +2738,18 @@ def _cap_sticker_workers(
     dpi: int = 300,
     light_path: bool = False,
 ) -> int:
-    """Giảm số worker theo file size + RAM trống + khổ trang (tránh OOM chủ động)."""
-    try:
-        file_mb = os.path.getsize(input_path) / (1024 * 1024)
-    except OSError:
-        file_mb = 0.0
+    """Chỉ giảm worker trên máy <16GB; máy mạnh giữ full theo profile."""
     cap = n_workers
-    # File combine / multi-page nặng: peak RAM ≈ workers × (raster + mask + bleed).
-    if file_mb >= 80:
-        cap = min(cap, 1)
-    elif file_mb >= 40:
-        cap = min(cap, 2)
-    elif file_mb >= 15:
-        cap = min(cap, 3)
-    # Nhiều trang nhưng file nhỏ (tem A6×N) vẫn song song bình thường.
-    if n_pages >= 40:
-        cap = min(cap, 2)
-
+    if _env_int_or_none("STICKER_MAX_WORKERS") is not None:
+        # Escape hatch vận hành luôn thắng auto/RAM gate. Caller đã chặn theo
+        # số trang và CPU khả dụng trước khi vào đây.
+        return max(1, cap)
+    total, avail = _read_memory_status()
     per_worker = _estimate_worker_ram_mb(
         page_w_pt, page_h_pt, dpi, light_path=light_path,
     )
-    avail = _available_ram_mb()
-    if avail is not None and per_worker > 0:
+    is_weak = total is not None and total < 16 * 1024
+    if is_weak and avail is not None and per_worker > 0:
         # Giữ ~35% RAM cho OS + app UI + backend cha; không dùng hết free RAM.
         budget = max(0.0, avail * 0.65)
         by_ram = max(1, int(budget // per_worker))
@@ -2411,13 +2761,16 @@ def _cap_sticker_workers(
                 page_w_pt, page_h_pt, light_path,
             )
         cap = min(cap, by_ram)
-        # RAM rất thấp: ép 1 worker (in-process path).
         if avail < 900:
             cap = 1
             logger.warning(
                 "[STICKER] low RAM avail_mb=%.0f → force 1 worker", avail,
             )
 
+    # ``input_path`` và ``n_pages`` được giữ trong signature vì caller/test cũ,
+    # nhưng dung lượng file/số trang không phản ánh peak RAM của MỘT worker.
+    # File 288MB/72 trang từng bị ép 1 worker trên máy 32GB và chậm 86 giây.
+    _ = input_path, n_pages
     return max(1, cap)
 
 
@@ -2991,6 +3344,8 @@ class StickerEngine:
                 bleed_outer_offset = 0
                 recon_meta = {"shape_mode": shape_mode, "reconstructed": False}
                 cut_draw_style = corner_style
+                cut_draw_tension = 0.33
+                alpha_fitted_paths = None
                 
                 # ── RECTANGLE MODE: dùng page bbox làm shape, skip contour detection ──
                 if rectangle_mode:
@@ -3152,13 +3507,35 @@ class StickerEngine:
                                 bleed_outer_poly = Polygon(bleed_outer_poly.exterior)
 
                         if alpha_contour_mode:
-                            # ALPHA (audit 2026-08-01 §A.2): tolerance phải nhỏ hơn
-                            # nhiều lần độ lùi 0,15 mm; simplify 0,20 mm trước đây có
-                            # thể đẩy đường cắt ngược ra gần mép Alpha.
-                            cut_poly = dieline_poly.simplify(
-                                ALPHA_CONTOUR_SIMPLIFY_MM * mm_to_pts,
-                                preserve_topology=True,
+                            # QUALITY (audit 2026-08-04 §ALPHA.1–2): ưu tiên fit
+                            # nhiều điểm raster thành ít cubic. Candidate không qua
+                            # topology/Hausdorff/khoảng lùi sẽ tự về Catmull có guard.
+                            fitted_alpha = _fit_alpha_bezier_paths(
+                                base_dieline,
+                                dieline_poly,
+                                total_offset_pts=total_offset,
+                                mm_to_pts=mm_to_pts,
                             )
+                            if fitted_alpha is not None:
+                                cut_poly, alpha_fitted_paths, _fit_tolerance_mm = fitted_alpha
+                            else:
+                                cut_poly, alpha_anchor_deviation_pts = _smooth_alpha_cut_contour(
+                                    base_dieline,
+                                    dieline_poly,
+                                    total_offset_pts=total_offset,
+                                    mm_to_pts=mm_to_pts,
+                                )
+                                alpha_bezier_tension = _safe_alpha_bezier_tension(
+                                    base_dieline,
+                                    dieline_poly,
+                                    cut_poly,
+                                    total_offset_pts=total_offset,
+                                    mm_to_pts=mm_to_pts,
+                                    anchor_deviation_pts=alpha_anchor_deviation_pts,
+                                )
+                                if alpha_bezier_tension is not None:
+                                    cut_draw_style = "alpha_smooth"
+                                    cut_draw_tension = alpha_bezier_tension
                         elif preserve_contour:
                             # Giữ hình học/góc gốc nhưng loại răng cưa raster dưới ngưỡng
                             # sản xuất. 0,20 mm lớn hơn nhiễu một pixel ở 300 DPI, nhưng
@@ -3856,28 +4233,50 @@ class StickerEngine:
                     page_content_stream.append("1.0 SCN")
                     page_content_stream.append("1.0 w")
 
-                    # cut_poly có thể là Polygon, MultiPolygon, hoặc (khi buffer âm lớn teo
-                    # tách shape) GeometryCollection/LineString KHÔNG có .exterior. Gom chỉ
-                    # các thành viên là Polygon (có .exterior) → tránh AttributeError crash.
-                    if isinstance(cut_poly, MultiPolygon):
-                        raw_geoms = list(cut_poly.geoms)
-                    elif hasattr(cut_poly, 'geoms'):  # GeometryCollection
-                        raw_geoms = list(cut_poly.geoms)
-                    else:
-                        raw_geoms = [cut_poly]
-                    geoms = [g for g in raw_geoms if g.geom_type == 'Polygon' and not g.is_empty]
-                    for p in geoms:
-                        coords = list(p.exterior.coords)
-                        if coords:
+                    if alpha_fitted_paths is not None:
+                        for segments in alpha_fitted_paths:
                             page_content_stream.extend(
-                                build_contour_path_stream(coords, page_in_height, cut_draw_style)
-                            )
-                        for inter in p.interiors:
-                            icoords = list(inter.coords)
-                            if icoords:
-                                page_content_stream.extend(
-                                    build_contour_path_stream(icoords, page_in_height, cut_draw_style)
+                                build_bezier_segments_path_stream(
+                                    segments,
+                                    page_in_height,
                                 )
+                            )
+                    else:
+                        # cut_poly có thể là Polygon, MultiPolygon, hoặc (khi buffer âm lớn teo
+                        # tách shape) GeometryCollection/LineString KHÔNG có .exterior. Gom chỉ
+                        # các thành viên là Polygon → tránh AttributeError crash.
+                        if isinstance(cut_poly, MultiPolygon):
+                            raw_geoms = list(cut_poly.geoms)
+                        elif hasattr(cut_poly, 'geoms'):  # GeometryCollection
+                            raw_geoms = list(cut_poly.geoms)
+                        else:
+                            raw_geoms = [cut_poly]
+                        geoms = [
+                            g for g in raw_geoms
+                            if g.geom_type == 'Polygon' and not g.is_empty
+                        ]
+                        for p in geoms:
+                            coords = list(p.exterior.coords)
+                            if coords:
+                                page_content_stream.extend(
+                                    build_contour_path_stream(
+                                        coords,
+                                        page_in_height,
+                                        cut_draw_style,
+                                        tension=cut_draw_tension,
+                                    )
+                                )
+                            for inter in p.interiors:
+                                icoords = list(inter.coords)
+                                if icoords:
+                                    page_content_stream.extend(
+                                        build_contour_path_stream(
+                                            icoords,
+                                            page_in_height,
+                                            cut_draw_style,
+                                            tension=cut_draw_tension,
+                                        )
+                                    )
 
                     page_content_stream.append("S")
                     page_content_stream.append("Q")
@@ -4293,30 +4692,62 @@ class StickerEngine:
                     kw.get("rectangle_mode"), pool_err,
                     exc_info=True,
                 )
-                # In liên tục: lần sau đừng spawn pool lại ngay (tránh crash lặp).
-                _mark_pool_crash_sticky()
-                try:
-                    # Peak RAM thấp hơn: một chunk một lúc trong process cha.
-                    results = self._run_sticker_chunks(
-                        args_list, n_workers=1, use_pool=False,
+                retry_error = pool_err
+                retry_workers = max(2, n_workers // 2)
+                if retry_workers < n_workers:
+                    try:
+                        # PERF (audit 2026-08-05 §ALPHA.P1): pool lớn chết không
+                        # được rơi thẳng về 1 worker. Thử lại nửa pool để vẫn tận
+                        # dụng máy mạnh; cùng args/chunk nên artifact không đổi.
+                        results = self._run_sticker_chunks(
+                            args_list,
+                            n_workers=retry_workers,
+                            use_pool=True,
+                        )
+                        used_pool = True
+                        logger.info(
+                            "[STICKER] reduced pool retry completed workers=%d "
+                            "chunks=%d s=%.2f",
+                            retry_workers,
+                            len(results),
+                            time.perf_counter() - workers_started,
+                        )
+                    except Exception as reduced_err:
+                        if not _is_process_pool_crash(reduced_err):
+                            raise
+                        retry_error = reduced_err
+                        logger.error(
+                            "[STICKER] reduced pool retry CRASH workers=%d: %s",
+                            retry_workers,
+                            reduced_err,
+                            exc_info=True,
+                        )
+
+                if not used_pool:
+                    # Chỉ sticky sau khi cả pool đầy và pool giảm đều chết.
+                    _mark_pool_crash_sticky()
+                    try:
+                        # Peak RAM thấp hơn: một chunk một lúc trong process cha.
+                        results = self._run_sticker_chunks(
+                            args_list, n_workers=1, use_pool=False,
+                        )
+                    except Exception as seq_err:
+                        logger.error(
+                            "[STICKER] sequential fallback ALSO failed: %s",
+                            seq_err, exc_info=True,
+                        )
+                        raise RuntimeError(
+                            f"[Process Parallel Workers] worker pool crashed "
+                            f"({retry_error}); sequential retry also failed ({seq_err}). "
+                            f"pages={n_pages} input_mb={input_mb:.1f}. "
+                            f"Thử giảm số trang/khổ, đóng app khác giải phóng RAM, "
+                            f"hoặc set STICKER_FORCE_SEQUENTIAL=1."
+                        ) from seq_err
+                    used_pool = False
+                    logger.info(
+                        "[STICKER] sequential fallback completed chunks=%d s=%.2f",
+                        len(results), time.perf_counter() - workers_started,
                     )
-                except Exception as seq_err:
-                    logger.error(
-                        "[STICKER] sequential fallback ALSO failed: %s",
-                        seq_err, exc_info=True,
-                    )
-                    raise RuntimeError(
-                        f"[Process Parallel Workers] worker pool crashed "
-                        f"({pool_err}); sequential retry also failed ({seq_err}). "
-                        f"pages={n_pages} input_mb={input_mb:.1f}. "
-                        f"Thử giảm số trang/khổ, đóng app khác giải phóng RAM, "
-                        f"hoặc set STICKER_FORCE_SEQUENTIAL=1."
-                    ) from seq_err
-                used_pool = False
-                logger.info(
-                    "[STICKER] sequential fallback completed chunks=%d s=%.2f",
-                    len(results), time.perf_counter() - workers_started,
-                )
             else:
                 # Lỗi Python thật từ chunk — giữ nguyên để outer wrap debug_step.
                 raise

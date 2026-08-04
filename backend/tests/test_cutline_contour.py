@@ -13,9 +13,15 @@ import math
 import pytest
 
 from app.workers.cutline_geometry import (
+    _chord_length_parameters,
     build_contour_path_stream,
     _coords_to_bezier_stream,
     _coords_to_polyline_stream,
+    _generate_fitted_bezier,
+    _vec_dot,
+    _vec_length,
+    _vec_normalize,
+    _vec_sub,
 )
 
 PAGE_H = 200.0
@@ -79,3 +85,46 @@ def test_bezier_segment_count_matches_vertices():
     stream = _coords_to_bezier_stream(SQUARE, PAGE_H)
     ops = _ops(stream)
     assert ops.count('c') == 4  # 4 đỉnh (đã bỏ điểm trùng cuối)
+
+
+def test_fitted_bezier_handles_do_not_exceed_chord():
+    """Cụm điểm raster gấp khúc không được tạo tay nắm dài gây cubic tự vòng."""
+    points = [
+        (0.0, 0.0),
+        (1.3897, 2.5680),
+        (6.0499, -7.6619),
+        (10.0, 0.0),
+    ]
+    segment = _generate_fitted_bezier(
+        points,
+        _chord_length_parameters(points),
+        _vec_normalize(_vec_sub(points[1], points[0])),
+        _vec_normalize(_vec_sub(points[-2], points[-1])),
+    )
+    chord = _vec_length(_vec_sub(segment[3], segment[0]))
+
+    assert _vec_length(_vec_sub(segment[1], segment[0])) <= chord + 1e-9
+    assert _vec_length(_vec_sub(segment[2], segment[3])) <= chord + 1e-9
+
+
+def test_fitted_bezier_handles_do_not_turn_back_along_chord():
+    """Tay nắm quay ngược phải về chord để không tạo loop trên contour kín."""
+    points = [
+        (0.0, 0.0),
+        (-1.7049, 3.8520),
+        (6.9498, -11.4928),
+        (10.0, 0.0),
+    ]
+    segment = _generate_fitted_bezier(
+        points,
+        _chord_length_parameters(points),
+        _vec_normalize(_vec_sub(points[1], points[0])),
+        _vec_normalize(_vec_sub(points[-2], points[-1])),
+    )
+    chord_vector = _vec_sub(segment[3], segment[0])
+    chord = _vec_length(chord_vector)
+    chord_unit = (chord_vector[0] / chord, chord_vector[1] / chord)
+    projection1 = _vec_dot(_vec_sub(segment[1], segment[0]), chord_unit)
+    projection2 = _vec_dot(_vec_sub(segment[2], segment[0]), chord_unit)
+
+    assert 0.0 <= projection1 <= projection2 <= chord

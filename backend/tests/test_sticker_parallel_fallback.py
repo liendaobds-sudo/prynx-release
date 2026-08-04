@@ -60,10 +60,10 @@ def test_n_pages_should_parallelize_sticky_after_crash(monkeypatch):
     [
         (4, 4, 1, 900),
         (12, 8, 2, 600),
-        (24, 8, 3, 300),
-        (24, 4, 2, 300),
-        (48, 16, 4, 60),
-        (128, 24, 6, 0),
+        (24, 8, 7, 0),
+        (24, 4, 3, 0),
+        (48, 16, 15, 0),
+        (128, 24, 23, 0),
     ],
 )
 def test_auto_hw_profile_tiers(ram_gb, cpu, want_workers, want_sticky_max):
@@ -90,7 +90,7 @@ def test_auto_hw_profile_env_override(monkeypatch):
     assert p["sticky_src"] == "env"
 
 
-def test_cap_sticker_workers_by_file_size(tmp_path, monkeypatch):
+def test_strong_machine_is_not_capped_by_file_size(tmp_path, monkeypatch):
     p = tmp_path / "f.pdf"
     p.write_bytes(b"%PDF-1.4\n")
 
@@ -103,19 +103,26 @@ def test_cap_sticker_workers_by_file_size(tmp_path, monkeypatch):
         return 1024
 
     monkeypatch.setattr(se.os.path, "getsize", _size)
-    # RAM giả cao để không bị nhánh RAM override.
-    monkeypatch.setattr(se, "_available_ram_mb", lambda: 16000.0)
+    monkeypatch.setattr(
+        se,
+        "_read_memory_status",
+        lambda: (32 * 1024.0, 16 * 1024.0),
+    )
     assert se._cap_sticker_workers(8, n_pages=10, input_path=str(p)) == 8
-    assert se._cap_sticker_workers(8, n_pages=10, input_path="x/large") == 2
-    assert se._cap_sticker_workers(8, n_pages=10, input_path="x/huge") == 1
+    assert se._cap_sticker_workers(8, n_pages=10, input_path="x/large") == 8
+    assert se._cap_sticker_workers(8, n_pages=10, input_path="x/huge") == 8
 
 
-def test_cap_sticker_workers_many_pages(tmp_path, monkeypatch):
+def test_strong_machine_is_not_capped_by_page_count(tmp_path, monkeypatch):
     p = tmp_path / "many.pdf"
     p.write_bytes(b"%PDF-1.4\n")
     monkeypatch.setattr(se.os.path, "getsize", lambda path: 2048)
-    monkeypatch.setattr(se, "_available_ram_mb", lambda: 16000.0)
-    assert se._cap_sticker_workers(8, n_pages=50, input_path=str(p)) == 2
+    monkeypatch.setattr(
+        se,
+        "_read_memory_status",
+        lambda: (32 * 1024.0, 16 * 1024.0),
+    )
+    assert se._cap_sticker_workers(8, n_pages=500, input_path=str(p)) == 8
 
 
 def test_cap_sticker_workers_by_ram(tmp_path, monkeypatch):
@@ -123,15 +130,60 @@ def test_cap_sticker_workers_by_ram(tmp_path, monkeypatch):
     p.write_bytes(b"%PDF-1.4\n")
     monkeypatch.setattr(se.os.path, "getsize", lambda path: 1024)
     # Trang SRA3 ~320×450mm ≈ 907×1276 pt; 300 DPI ~ nặng.
-    monkeypatch.setattr(se, "_available_ram_mb", lambda: 1200.0)
+    monkeypatch.setattr(
+        se,
+        "_read_memory_status",
+        lambda: (12 * 1024.0, 1200.0),
+    )
     capped = se._cap_sticker_workers(
         8, n_pages=12, input_path=str(p),
         page_w_pt=907.0, page_h_pt=1276.0, dpi=300, light_path=False,
     )
     assert capped <= 2
     # RAM rất thấp → 1
-    monkeypatch.setattr(se, "_available_ram_mb", lambda: 500.0)
+    monkeypatch.setattr(
+        se,
+        "_read_memory_status",
+        lambda: (12 * 1024.0, 500.0),
+    )
     assert se._cap_sticker_workers(8, n_pages=12, input_path=str(p)) == 1
+
+
+def test_strong_machine_does_not_silently_cap_on_available_ram(tmp_path, monkeypatch):
+    p = tmp_path / "strong.pdf"
+    p.write_bytes(b"%PDF-1.4\n")
+    monkeypatch.setattr(
+        se,
+        "_read_memory_status",
+        lambda: (32 * 1024.0, 500.0),
+    )
+    assert se._cap_sticker_workers(
+        8,
+        n_pages=72,
+        input_path=str(p),
+        page_w_pt=907.0,
+        page_h_pt=1276.0,
+        dpi=300,
+    ) == 8
+
+
+def test_worker_env_override_wins_weak_machine_ram_gate(tmp_path, monkeypatch):
+    p = tmp_path / "forced.pdf"
+    p.write_bytes(b"%PDF-1.4\n")
+    monkeypatch.setenv("STICKER_MAX_WORKERS", "5")
+    monkeypatch.setattr(
+        se,
+        "_read_memory_status",
+        lambda: (8 * 1024.0, 500.0),
+    )
+    assert se._cap_sticker_workers(
+        5,
+        n_pages=20,
+        input_path=str(p),
+        page_w_pt=907.0,
+        page_h_pt=1276.0,
+        dpi=300,
+    ) == 5
 
 
 def test_estimate_worker_ram_light_path_lighter():
@@ -214,6 +266,65 @@ def test_process_parallel_falls_back_on_pool_crash(tmp_path, monkeypatch):
     assert call_modes == [True, False], "phải thử pool rồi fallback sequential"
     assert os.path.exists(out) and os.path.getsize(out) > 0
     assert "pages" in meta
+
+
+def test_process_parallel_retries_smaller_pool_before_sequential(tmp_path, monkeypatch):
+    """Pool lớn chết trên máy mạnh phải thử nửa pool, không rơi thẳng về 1 worker."""
+    pikepdf = pytest.importorskip("pikepdf")
+    pytest.importorskip("pypdfium2")
+
+    src = tmp_path / "multi-8.pdf"
+    pdf = pikepdf.Pdf.new()
+    for _ in range(8):
+        pdf.add_blank_page(page_size=(200, 200))
+    pdf.save(str(src))
+    out = str(tmp_path / "out-8.pdf")
+    engine = se.StickerEngine(dpi=72)
+    calls = []
+
+    def fail_once_then_succeed(args_list, n_workers, use_pool):
+        calls.append((n_workers, use_pool))
+        if len(calls) == 1:
+            raise BrokenProcessPool("terminated abruptly")
+        results = []
+        for index, args in enumerate(args_list):
+            chunk = pikepdf.Pdf.new()
+            for _ in args["page_indices"]:
+                chunk.add_blank_page(page_size=(100, 100))
+            buf = __import__("io").BytesIO()
+            chunk.save(buf)
+            metas = [
+                {"width_mm": 10.0, "height_mm": 10.0}
+                for _ in args["page_indices"]
+            ]
+            results.append((index, (buf.getvalue(), metas, [], True)))
+        return results
+
+    monkeypatch.setattr(se, "_cap_sticker_workers", lambda *a, **k: 4)
+    monkeypatch.setattr(engine, "_run_sticker_chunks", fail_once_then_succeed)
+
+    success, meta = engine._process_parallel(
+        input_path=str(src),
+        output_path=out,
+        cut_mode="none",
+        offset_mm=0.0,
+        corner_style="miter",
+        cut_color=(0, 1, 0, 0),
+        bleed_mm=0.0,
+        fill_holes=True,
+        remove_white_bg=False,
+        bleed_color_type="image",
+        solid_bleed_color=(255, 255, 255),
+        draw_cut_contour=False,
+        rectangle_mode=True,
+        edge_bite_mm=0.0,
+        cut_first_page_only=False,
+        shape_mode="contour",
+    )
+
+    assert success is True
+    assert len(meta["pages"]) == 8
+    assert calls == [(4, True), (2, True)]
 
 
 def test_process_parallel_raises_clear_error_if_fallback_also_fails(tmp_path, monkeypatch):

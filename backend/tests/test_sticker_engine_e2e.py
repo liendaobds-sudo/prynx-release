@@ -28,8 +28,12 @@ pytest.importorskip("skimage")
 from shapely.geometry import Polygon
 from app.workers.sticker_engine import (
     ALPHA_CONTOUR_INSET_MM,
+    ALPHA_CONTOUR_SIMPLIFY_MM,
     ALPHA_CONTOUR_THRESHOLD,
     StickerEngine,
+    _ALPHA_SAFE_MAX_HAUSDORFF_MM,
+    _ALPHA_SAFE_MIN_GAP_MM,
+    _ALPHA_FIT_MAX_HAUSDORFF_MM,
     _PRESERVE_CORNER_QUAD_SEGS,
     _axis_aligned_rectangle_bbox,
     _PRESERVE_CORNER_RADIUS_MM,
@@ -38,7 +42,11 @@ from app.workers.sticker_engine import (
     _compose_sticker_warning,
     _edge_color_instability_metrics,
     _edge_color_sampling_warning,
+    _fit_alpha_bezier_paths,
+    _geometry_within_hausdorff_budget,
     _round_preserved_corners,
+    _safe_alpha_bezier_tension,
+    _smooth_alpha_cut_contour,
 )
 
 
@@ -278,6 +286,105 @@ def test_preserve_corner_rounding_is_softer_without_node_explosion():
     assert softened.bounds == pytest.approx(contour.bounds)
     assert softened.area > previous.area + 0.10
     assert len(softened.exterior.coords) <= 32
+
+
+def test_alpha_safe_smoothing_reduces_raster_nodes_within_error_budget():
+    """Alpha cong/lỗ phải bớt node nhưng không vượt biên hoặc đổi topology."""
+    import cv2
+    import numpy as np
+    from skimage import measure
+
+    size = 600
+    mask = np.zeros((size, size), dtype=np.uint8)
+    cv2.circle(mask, (300, 300), 220, 255, cv2.FILLED)
+    cv2.circle(mask, (300, 300), 75, 0, cv2.FILLED)
+
+    rings = [
+        Polygon((contour - 1)[:, [1, 0]] * (72.0 / 300.0))
+        for contour in measure.find_contours(np.pad(mask, 1), 127.5)
+    ]
+    rings.sort(key=lambda polygon: polygon.area, reverse=True)
+    alpha_geometry = Polygon(
+        rings[0].exterior.coords,
+        [rings[1].exterior.coords],
+    )
+    mm_to_pts = 72.0 / 25.4
+    total_offset_pts = -ALPHA_CONTOUR_INSET_MM * mm_to_pts
+    ideal_cut = alpha_geometry.buffer(total_offset_pts, join_style=1).buffer(
+        0.01, join_style=1
+    )
+    legacy = ideal_cut.simplify(
+        ALPHA_CONTOUR_SIMPLIFY_MM * mm_to_pts,
+        preserve_topology=True,
+    )
+    smoothed, anchor_deviation_pts = _smooth_alpha_cut_contour(
+        alpha_geometry,
+        ideal_cut,
+        total_offset_pts=total_offset_pts,
+        mm_to_pts=mm_to_pts,
+    )
+
+    def node_count(polygon) -> int:
+        return (
+            len(polygon.exterior.coords) - 1
+            + sum(len(interior.coords) - 1 for interior in polygon.interiors)
+        )
+
+    assert smoothed.is_valid
+    assert len(smoothed.interiors) == len(ideal_cut.interiors) == 1
+    assert node_count(smoothed) <= node_count(legacy) * 0.40
+    assert ideal_cut.hausdorff_distance(smoothed) / mm_to_pts <= (
+        _ALPHA_SAFE_MAX_HAUSDORFF_MM + 1e-6
+    )
+    assert alpha_geometry.boundary.distance(smoothed.boundary) / mm_to_pts >= (
+        _ALPHA_SAFE_MIN_GAP_MM - 1e-6
+    )
+    assert smoothed.difference(alpha_geometry).area <= 1e-9
+    assert _safe_alpha_bezier_tension(
+        alpha_geometry,
+        ideal_cut,
+        smoothed,
+        total_offset_pts=total_offset_pts,
+        mm_to_pts=mm_to_pts,
+        anchor_deviation_pts=anchor_deviation_pts,
+    ) is not None
+
+    fitted = _fit_alpha_bezier_paths(
+        alpha_geometry,
+        ideal_cut,
+        total_offset_pts=total_offset_pts,
+        mm_to_pts=mm_to_pts,
+    )
+    assert fitted is not None
+    fitted_geometry, fitted_paths, _tolerance_mm = fitted
+    assert fitted_geometry.is_valid
+    assert len(fitted_geometry.interiors) == 1
+    assert ideal_cut.hausdorff_distance(fitted_geometry) / mm_to_pts <= (
+        _ALPHA_FIT_MAX_HAUSDORFF_MM + 1e-6
+    )
+    assert alpha_geometry.boundary.distance(fitted_geometry.boundary) / mm_to_pts >= (
+        _ALPHA_SAFE_MIN_GAP_MM - 1e-6
+    )
+    assert sum(len(path) for path in fitted_paths) < node_count(smoothed)
+
+
+@pytest.mark.parametrize("budget", [0.05, 0.20])
+def test_buffer_guard_matches_exact_hausdorff_for_polygon_with_hole(budget):
+    """Guard nhanh phải cùng kết luận với Hausdorff GEOS, kể cả geometry có lỗ."""
+    geometry = Polygon(
+        [(0, 0), (10, 0), (10, 10), (0, 10)],
+        [[(3, 3), (7, 3), (7, 7), (3, 7)]],
+    )
+    candidate = geometry.buffer(-0.10, join_style=1)
+    expected = geometry.hausdorff_distance(candidate) <= budget
+
+    assert _geometry_within_hausdorff_budget(
+        geometry,
+        candidate,
+        budget,
+        first_envelope=geometry.buffer(budget, join_style=1),
+    ) is expected
+
 
 def test_preserve_mode_bypasses_reconstruction_smoothing_and_bezier(src_pdf, tmp_path):
     """Giữ nguyên phải bám contour raster, kể cả khi client gửi auto_safe."""
@@ -622,6 +729,37 @@ def test_alpha_cut_mode_uses_pdf_smask_and_keeps_white_outline(tmp_path):
     assert box["w_pt"] < 120.0, "không được lấy nguyên trang 144 pt làm contour"
     with pikepdf.Pdf.open(out) as result:
         assert b"/CutContour CS" in _read_all_content(result.pages[0])
+
+
+def test_alpha_cutline_filters_raster_steps_in_exported_pdf(tmp_path):
+    """Circle 300 DPI không được xuất nguyên hàng trăm bậc pixel thành điểm dao."""
+    src = str(tmp_path / "alpha_raster_circle.pdf")
+    out = str(tmp_path / "alpha_raster_circle_cut.pdf")
+    _make_page_touching_circle_pdf(src, transparent=True)
+
+    success, _meta = StickerEngine(dpi=300).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="alpha",
+        offset_mm=0.0,
+        corner_style="round",
+        bleed_mm=0.0,
+        fill_holes=True,
+        remove_white_bg=False,
+        draw_cut_contour=True,
+        shape_mode="contour",
+    )
+
+    assert success is True
+    with pikepdf.Pdf.open(out) as result:
+        cut_stream = _read_all_content(result.pages[0]).split(
+            b"/CutContour CS", 1
+        )[1]
+        line_count = cut_stream.count(b" l\n")
+        curve_count = cut_stream.count(b" c\n")
+        assert line_count == 0
+        assert 8 < curve_count < 100
+
 
 def test_alpha_cut_mode_keeps_rgb_order_for_image_bleed(tmp_path):
     """Render Alpha phải giữ đúng RGB khi lấy màu ảnh kéo ra vùng bù xén."""
