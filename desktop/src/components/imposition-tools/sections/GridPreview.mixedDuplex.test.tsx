@@ -134,6 +134,42 @@ function renderMixedPreview(cutBorder?: CutBorderConfig, bleed = 0, targetQuanti
   );
 }
 
+function StrictWorkingSourcePreview({
+  previewSourceKey,
+  getWorkingFile,
+}: {
+  previewSourceKey: string;
+  getWorkingFile: () => Promise<File>;
+}) {
+  return (
+    <GridPreview
+      taskMode="nup"
+      isDieCut={false}
+      layoutType="mixed_guillotine"
+      duplexFlow="normal"
+      gridStrategy="optimal_auto"
+      columns={0}
+      rows={0}
+      gapX={0}
+      gapY={0}
+      sheetWidth={100}
+      sheetHeight={80}
+      marginTop={0}
+      marginBottom={0}
+      marginLeft={0}
+      marginRight={0}
+      align="center"
+      shapeType="CUSTOM"
+      itemW={20}
+      itemH={20}
+      sourceTotalPages={2}
+      filePath="C:\\original-three-pages.pdf"
+      previewSourceKey={previewSourceKey}
+      getWorkingFile={getWorkingFile}
+    />
+  );
+}
+
 function AutoDetectPreviewHarness() {
   const layoutType = useImposerSettingsStore((state) => state.layoutType);
   return (
@@ -312,5 +348,25 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
       String(authenticatedFetchMock.mock.calls[1]?.[1]?.body),
     );
     expect(retryBody.layout_type).toBe("mixed_guillotine");
+  });
+
+  it.each([
+    ["reorder", { o: [3, 1], r: [0, 0] }],
+    ["rotation", { o: [1, 2], r: [90, 0] }],
+  ])("dừng preview khi %s cần bake nhưng tạo PDF làm việc thất bại", async (_label, state) => {
+    const getWorkingFile = vi.fn().mockRejectedValue(new Error("forced bake failure"));
+
+    render(
+      <StrictWorkingSourcePreview
+        previewSourceKey={JSON.stringify(state)}
+        getWorkingFile={getWorkingFile}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Không thể tạo PDF làm việc/)).toBeTruthy();
+    }, { timeout: 3_000 });
+    expect(getWorkingFile).toHaveBeenCalled();
+    expect(authenticatedFetchMock).not.toHaveBeenCalled();
   });
 });

@@ -284,6 +284,21 @@ def test_duplex_preview_rejects_odd_page_count_with_vietnamese_error(tmp_path):
     assert "từng cặp trang trước/sau" in str(exc_info.value.detail)
 
 
+def test_mixed_preview_rejects_unmaterialized_live_page_count(tmp_path):
+    """PREVIEW (audit 2026-08-04 §W2.PA2): không tái dùng trang đã xóa."""
+    source = str(tmp_path / "mixed-stale-three-pages.pdf")
+    _make_pdf(source, [(100.0, 80.0), (60.0, 40.0), (30.0, 20.0)])
+
+    with pytest.raises(HTTPException) as exc_info:
+        preview_layout(
+            _request(source, total_pages=2),
+            PRO_LICENSE,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert "PDF làm việc" in str(exc_info.value.detail)
+
+
 def test_duplex_preview_rejects_pair_mismatch_over_half_point(tmp_path):
     source = str(tmp_path / "mixed-duplex-mismatch.pdf")
     _make_pdf(source, [(100.0, 80.0), (100.6, 80.0)])

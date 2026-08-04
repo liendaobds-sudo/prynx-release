@@ -1,13 +1,13 @@
 # Báo cáo Deep Audit W2 — Preview so với PDF xuất
 
-> Ngày audit: 2026-08-04 · Baseline code: `1bf8621` · Phạm vi: W2-U01/W2-U02 · Chưa sửa finding trong báo cáo này.
+> Ngày audit: 2026-08-04 · Baseline code: `1bf8621` · Phạm vi: W2-U01/W2-U02 · Mục 8 ghi kết quả sau khi user duyệt sửa.
 
 ## 1. Tóm tắt điều hành
 
 | Mã | Trạng thái | Mức | Finding | Effort |
 |---|---|---:|---|---|
-| `§W2.PA1` | `[CONFIRMED]` | P2 | Preview Booklet “In nhanh” bỏ qua `marginBottom`, PDF plan vẫn dùng tham số. | S |
-| `§W2.PA2` | `[SUSPECTED]` | — | Mixed Guillotine có thể tái dùng trang đã xóa khi materialize preview thất bại. | M |
+| `§W2.PA1` | `[CONFIRMED]` · đã sửa | P2 | Preview Booklet “In nhanh” bỏ qua `marginBottom`, PDF plan vẫn dùng tham số. | S |
+| `§W2.PA2` | `[CONFIRMED]` · đã sửa | P1 | Preview có thể tái dùng trang đã xóa khi materialize working PDF thất bại. | M |
 
 W2 chưa được nâng quá `AUTO`: finding PA1 đã tái hiện bằng helper production, nhưng chưa có corpus chung preview → serialized plan → PDF output → reopen/raster cho toàn N-Up/Booklet/Sticker/Mixed Guillotine.
 
@@ -38,7 +38,7 @@ Kết quả đã được khóa bằng một test audit tạm thời chạy tr�
 
 ## 3. `§W2.PA2` — Fallback Mixed Guillotine sau lỗi materialize
 
-**Trạng thái:** `[SUSPECTED]` · chưa xếp severity.
+**Trạng thái sau fault-injection:** `[CONFIRMED]` · **P1** · đã sửa.
 
 Đường trace:
 
@@ -83,4 +83,12 @@ So sánh tối thiểu: page count, placement count, source page index, trim rec
 - Reproducer PA1 dùng production `computeSpreadGrid`: `1` test đạt.
 - Chưa tạo PDF artifact cùng corpus PA1 và chưa fault-inject PA2; chưa nâng mức runtime.
 
-**Chốt:** dừng ở báo cáo, chưa sửa finding. Cần user duyệt lô PA1 và thứ tự so với W1.
+**Chốt baseline:** báo cáo đã được user duyệt; kết quả sửa nằm ở mục 8 và nhật ký fixes W2.
+
+## 8. Kết quả sau khi duyệt sửa
+
+- `PA1`: truyền `marginBottom` xuyên Dashboard → SheetViewerDialog → `computeSpreadGrid`; test khóa ngưỡng đổi số hàng.
+- `PA2`: preview materialize strict và dừng nếu bake page edits thất bại; không fallback PDF gốc. Backend Mixed Guillotine cũng từ chối khi `total_pages` khác `doc.page_count`.
+- Frontend: nhóm preview/working PDF đạt trong bộ `51` test liên quan; typecheck đạt; full Vitest `1.857` đạt, `2` skip; ngân sách lint đạt.
+- Backend: `test_mixed_guillotine_preview.py` và ratchet liên quan đạt; full backend cuối đạt `2.238`, skip `4`.
+- Chưa thao tác app desktop thật hoặc so toàn corpus marks/bleed/report/duplex; W2 giữ mức `AUTO`.

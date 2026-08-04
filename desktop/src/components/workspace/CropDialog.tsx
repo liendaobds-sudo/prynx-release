@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { authenticatedFetch, getApiUrl } from '../../lib/api';
-import { roundMm2, validateRectUnit } from '../preprocess-tools/setPageBoxesUtils';
+import { validateRectUnit } from '../preprocess-tools/setPageBoxesUtils';
 import { useTranslation } from 'react-i18next';
-import { fracToRectMm, rectMmToFrac, resizeCropFrac, type BoxMm, type Frac, type HorizontalCropAlign, type RectMm, type VerticalCropAlign } from '../../lib/cropDialogGeometry';
+import { fracToDisplayRectMm, fracToRectMm, rectDisplaySizeMm, rectMmToFrac, resizeCropFrac, rotateCropFracForMaterializedPage, rotateDisplayBoxMm, restoreCropFracForViewer, type BoxMm, type Frac, type HorizontalCropAlign, type RectMm, type VerticalCropAlign } from '../../lib/cropDialogGeometry';
 
 interface PageBoxesResponse {
     page: number;
@@ -12,6 +12,7 @@ interface PageBoxesResponse {
     trimbox: BoxMm;
     bleedbox: BoxMm;
     artbox: BoxMm;
+    rotation: number;
 }
 interface CropOpenDetail {
     tabId?: string;
@@ -23,6 +24,8 @@ interface CropOpenDetail {
     frac?: Frac;
     pageBox?: BoxMm;
     totalPages?: number;
+    /** Góc CSS của Viewer sẽ được bake vào PDF làm việc trước khi crop. */
+    viewerRotation?: number;
 }
 
 interface CropSelectionDetail {
@@ -138,6 +141,7 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
     const [open, setOpen] = useState(false);
     const [pageNum, setPageNum] = useState(1);
     const [ownerId, setOwnerId] = useState('');
+    const [viewerRotation, setViewerRotation] = useState(0);
     const [fileId, setFileId] = useState('');
     const [boxes, setBoxes] = useState<PageBoxesResponse | null>(null);
     const [boxesVerified, setBoxesVerified] = useState(false);
@@ -203,6 +207,7 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
         committingRef.current = false;
         suppressPreviewBroadcastRef.current = false;
         setOwnerId('');
+        setViewerRotation(0);
         setOpen(false);
         setFileId('');
         setBoxes(null);
@@ -234,7 +239,11 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
             if (list.length === 0) return;
 
             abortPending();
-            const scannedFracs = list.map((frac) => ({ ...frac }));
+            const nextViewerRotation = Number(detail.viewerRotation) || 0;
+            // PAGEBOX (audit 2026-08-04 §W1.PB5): canvas lưu frac trước CSS
+            // rotation; PDF làm việc đã bake góc đó vào /Rotate nên phải đổi hệ.
+            const scannedFracs = list.map((frac) =>
+                rotateCropFracForMaterializedPage(frac, nextViewerRotation));
             const requestId = ++openRequestIdRef.current;
             previousFocusRef.current = document.activeElement as HTMLElement | null;
 
@@ -247,7 +256,9 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
             setApplyScope(reusableScope);
             setRangeFrom(detail.pageNum);
             setRangeTo(reusableScope === 'range' ? Math.min(totalPages, detail.pageNum + 1) : detail.pageNum);
-            const initialPageBox = detail.pageBox || null;
+            const initialPageBox = detail.pageBox
+                ? rotateDisplayBoxMm(detail.pageBox, nextViewerRotation)
+                : null;
             const initialBoxes: PageBoxesResponse | null = initialPageBox ? {
                 page: detail.pageNum,
                 total_pages: Math.max(1, detail.totalPages || 1),
@@ -256,6 +267,8 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
                 trimbox: initialPageBox,
                 bleedbox: initialPageBox,
                 artbox: initialPageBox,
+                // pageBox do Viewer truyền đã ở đúng hướng hiển thị.
+                rotation: 0,
             } : null;
             setPhase(initialBoxes ? 'idle' : 'preparing');
             setOpen(true);
@@ -264,6 +277,7 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
             setFileId('');
             setPageNum(detail.pageNum);
             setOwnerId(detail.ownerId || '');
+            setViewerRotation(nextViewerRotation);
             setFracs(scannedFracs);
             setSourceFracs(scannedFracs.map((frac) => ({ ...frac })));
             setRegionAlignments(scannedFracs.map(() => ({ horizontal: reusablePreferences.horizontalAlignment, vertical: reusablePreferences.verticalAlignment })));
@@ -340,7 +354,8 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
             const detail = (event as CustomEvent<CropSelectionDetail>).detail;
             if (!detail || detail.tabId !== tabId || detail.ownerId !== ownerId || detail.pageNum !== pageNum) return;
             if (Array.isArray(detail.fracs) && detail.fracs.length > 0) {
-                const nextFracs = detail.fracs.map((frac) => ({ ...frac }));
+                const nextFracs = detail.fracs.map((frac) =>
+                    rotateCropFracForMaterializedPage(frac, viewerRotation));
                 const sameFracs = fracsRef.current.length === nextFracs.length
                     && fracsRef.current.every((frac, index) => {
                         const next = nextFracs[index];
@@ -367,15 +382,16 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
         };
         window.addEventListener('prynx-crop-selection-change', onSelectionChange as EventListener);
         return () => window.removeEventListener('prynx-crop-selection-change', onSelectionChange as EventListener);
-    }, [open, ownerId, pageNum, tabId]);
+    }, [open, ownerId, pageNum, tabId, viewerRotation]);
 
     // PDF.js displays CropBox. Using MediaBox here shifts and rescales selections on cropped PDFs.
     const pageBox = boxes?.cropbox || boxes?.mediabox || null;
+    const pageRotation = boxes?.rotation || 0;
 
     const rectsMm = useMemo(() => {
         if (!pageBox || fracs.length === 0) return [];
-        return fracs.map((frac) => fracToRectMm(frac, pageBox));
-    }, [pageBox, fracs]);
+        return fracs.map((frac) => fracToRectMm(frac, pageBox, pageRotation));
+    }, [pageBox, pageRotation, fracs]);
 
     // Keep the common path (draw -> size/alignment) local and instant. The
     // potentially expensive file upload starts only when edge processing is
@@ -475,8 +491,8 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
 
     const visualFracs = useMemo(() => {
         if (!pageBox || effectiveRects.length !== fracs.length) return fracs;
-        return effectiveRects.map((rect) => rectMmToFrac(rect, pageBox));
-    }, [effectiveRects, fracs, pageBox]);
+        return effectiveRects.map((rect) => rectMmToFrac(rect, pageBox, pageRotation));
+    }, [effectiveRects, fracs, pageBox, pageRotation]);
 
     useEffect(() => {
         if (!open || visualFracs.length === 0) return;
@@ -487,18 +503,17 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
         window.dispatchEvent(new CustomEvent('prynx-crop-preview-change', {
             detail: {
                 tabId, ownerId, pageNum,
-                fracs: visualFracs.map((frac) => ({ ...frac })),
+                // Panel dùng hệ PDF đã materialize; overlay vẫn nằm trước CSS rotate.
+                fracs: visualFracs.map((frac) =>
+                    restoreCropFracForViewer(frac, viewerRotation)),
                 selectedIndex: selectedIdx,
             },
         }));
-    }, [open, ownerId, pageNum, selectedIdx, visualFracs, tabId]);
+    }, [open, ownerId, pageNum, selectedIdx, viewerRotation, visualFracs, tabId]);
     const selectedSourceFrac = sourceFracs[selectedIdx] || selectedFrac;
     const selectedRect = effectiveRects[selectedIdx] || null;
     const selectedAlignment = regionAlignments[selectedIdx] || { horizontal: horizontalAlignment, vertical: verticalAlignment };
-    const exactSizeValues = selectedRect ? {
-        width: roundMm2(selectedRect.x1 - selectedRect.x0),
-        height: roundMm2(selectedRect.y1 - selectedRect.y0),
-    } : null;
+    const exactSizeValues = selectedRect ? rectDisplaySizeMm(selectedRect, pageRotation) : null;
     // Edge processing is a safe enhancement. If detection fails, keep the
     // user's original rectangles instead of blocking the crop operation.
     const detectionReady = !processEdges || !detectingEdges;
@@ -521,7 +536,7 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
         setProcessEdges(false);
         setDetectError('');
         setFracs((prev) => prev.map((frac, index) => index === selectedIdx
-            ? resizeCropFrac(selectedSourceFrac, pageBox, widthMm, heightMm, alignment.horizontal, alignment.vertical)
+            ? resizeCropFrac(selectedSourceFrac, pageBox, widthMm, heightMm, alignment.horizontal, alignment.vertical, pageRotation)
             : frac));
     };
 
@@ -573,7 +588,9 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
             }
 
             const verifiedPageBox = verifiedBoxes.cropbox || verifiedBoxes.mediabox;
-            const rectsToApply = visualFracs.map((frac) => fracToRectMm(frac, verifiedPageBox));
+            const verifiedRotation = verifiedBoxes.rotation || 0;
+            const rectsToApply = visualFracs.map((frac) => fracToRectMm(frac, verifiedPageBox, verifiedRotation));
+            const displayRectsToApply = visualFracs.map((frac) => fracToDisplayRectMm(frac, verifiedPageBox, verifiedRotation));
             for (let i = 0; i < rectsToApply.length; i++) {
                 const valErr = validateRectUnit(rectsToApply[i]);
                 if (valErr) {
@@ -588,6 +605,7 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
                     file_id: currentFileId,
                     page: pageNum,
                     rects_mm: rectsToApply,
+                    display_rects_mm: targetPages.length > 1 ? displayRectsToApply : undefined,
                     keep_other_pages: outputMode === 'keep_document',
                     pages: targetPages,
                 }),
@@ -727,8 +745,9 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
                         </div>
                         {fracs.map((_, i) => {
                             const rect = effectiveRects[i];
-                            const width = rect ? roundMm2(rect.x1 - rect.x0) : 0;
-                            const height = rect ? roundMm2(rect.y1 - rect.y0) : 0;
+                            const displaySize = rect ? rectDisplaySizeMm(rect, pageRotation) : null;
+                            const width = displaySize?.width || 0;
+                            const height = displaySize?.height || 0;
                             const active = i === selectedIdx;
                             const detected = processEdges ? detectedRegions?.[i] : null;
                             return (

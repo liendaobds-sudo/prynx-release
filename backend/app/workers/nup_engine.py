@@ -61,8 +61,8 @@ from app.workers.nup_cut_border import resolve_cut_border_config
 from app.workers.nup_repeat_metadata import (
     build_repeat_sheet_metadata as _build_repeat_sheet_metadata,
 )
+from app.workers.page_space_canonicalization import canonicalize_page_space_file
 from app.workers.mixed_guillotine_adapter import (
-    canonicalize_pikepdf_page_boxes,
     resolve_guillotine_trim,
 )
 
@@ -79,109 +79,8 @@ def _plan_nup_chunking(total_sheets: int, available_workers: int) -> tuple[int, 
 
 
 def _canonicalize_page_space(source_path: str, job_id: str = None) -> tuple:
-    """Bake /Rotate ≠ 0 VÀ gốc MediaBox ≠ (0,0) vào content stream, để mọi bước hạ
-    nguồn (die detection, trim, layout, placement) thấy trang không xoay, gốc (0,0).
-    Trả (path, is_temp).
-
-    Vì sao phần /Rotate: engine bình đọc kích thước trang qua page_rect = MediaBox
-    CHƯA xoay (không nhánh nào đọc page.rotation), nhưng show_pdf_page dùng
-    as_form_xobject() lại bake /Rotate vào /Matrix → trang có /Rotate=90 (MediaBox
-    portrait, nhìn thực tế landscape) bị dựng ô sai + tràn/méo. Bản vá canonicalize
-    của VDP chỉ áp cho VDP; luồng nup/CNC trước đây bỏ sót (audit bảo toàn nội dung
-    2026-07-07).
-
-    Vì sao phần GỐC TOẠ ĐỘ [ORIGIN-CANON 2026-07-28]: cả tầng đặt tem giả định trang
-    bắt đầu tại (0,0) — `pdf_ops.page_rect()` trả Rect(0, 0, w, h) và bỏ hẳn
-    mb[0]/mb[1]; `pdf_ops.show_pdf_page` tính tâm nguồn bằng `clip.x0 + clip_w/2`;
-    `pdf_content_parser` lật y quanh `mb[3]-mb[1]` thay vì `mb[3]`. Đo trên trang
-    MediaBox [50,30,250,130]: nhánh KHÔNG die-cut lệch đúng (+50, +30) pt, còn parser
-    trả bbox đường bế y âm (-20, 60). Trang có gốc lệch đến từ nhiều nguồn thật: bù
-    xén lật gương (trước khi sửa), file Illustrator/Corel xuất giữ gốc artboard,
-    trang đã crop chỉ đổi box.
-    Chuẩn hoá tại ĐÚNG MỘT chỗ ở cửa vào pipeline an toàn hơn nhiều so với dạy từng
-    tầng hạ nguồn cách đọc gốc: nhánh die-cut hiện đang TỰ TRIỆT TIÊU sai số (rel_tx0
-    dùng x raw, show_pdf_page map content-0 → mép ô), nên sửa riêng show_pdf_page sẽ
-    làm nhánh đó lệch đúng một lượng mb. Đã đo: sau chuẩn hoá cả hai nhánh đều đúng.
-
-    CHỈ đụng khi có trang /Rotate ≠ 0 hoặc gốc MediaBox ≠ 0 → file đã chuẩn giữ
-    NGUYÊN byte (bảo toàn hành vi hiện tại). Dùng MediaBox làm hệ quy chiếu (khớp cách
-    nup đọc kích thước); bake cả 4 box phụ qua cùng ma trận.
-    """
-    import pikepdf
-    # Dưới ngưỡng này thì lệch gốc không có ý nghĩa in ấn (0.01pt ≈ 0.0035mm) —
-    # không rewrite file chỉ vì nhiễu số thực.
-    origin_eps = 0.01
-    try:
-        needs = False
-        _p = pikepdf.Pdf.open(source_path)
-        try:
-            for page in _p.pages:
-                if int(page.get("/Rotate", 0) or 0) % 360 != 0:
-                    needs = True
-                    break
-                try:
-                    _mb = [float(x) for x in page.MediaBox]
-                except Exception:
-                    continue
-                if abs(_mb[0]) > origin_eps or abs(_mb[1]) > origin_eps:
-                    needs = True
-                    break
-            if not needs:
-                _p.close()
-                return source_path, False
-            for page in _p.pages:
-                rotate = int(page.get("/Rotate", 0) or 0) % 360
-                mb = [float(x) for x in page.MediaBox]
-                mx0, my0, mx1, my1 = mb
-                mw = mx1 - mx0
-                mh = my1 - my0
-                if rotate == 0 and abs(mx0) <= origin_eps and abs(my0) <= origin_eps:
-                    continue
-                if rotate == 0:
-                    # Chỉ dịch gốc về (0,0). Các ma trận xoay bên dưới đã tự gánh
-                    # phần dịch gốc rồi (vd 90°: mtx e=-my0, f=mx0+mw).
-                    mtx = (1.0, 0.0, 0.0, 1.0, -mx0, -my0)
-                    new_w, new_h = mw, mh
-                elif rotate == 90:
-                    mtx = (0.0, -1.0, 1.0, 0.0, -my0, mx0 + mw)
-                    new_w, new_h = mh, mw
-                elif rotate == 180:
-                    mtx = (-1.0, 0.0, 0.0, -1.0, mx0 + mw, my0 + mh)
-                    new_w, new_h = mw, mh
-                else:  # 270
-                    mtx = (0.0, 1.0, -1.0, 0.0, my0 + mh, -mx0)
-                    new_w, new_h = mh, mw
-                ma, mb_, mc, md, me, mf = mtx
-                prefix = (
-                    f"q {ma:.6g} {mb_:.6g} {mc:.6g} {md:.6g} {me:.4f} {mf:.4f} cm\n"
-                ).encode("ascii")
-                if "/Contents" in page.obj:
-                    page.contents_coalesce()
-                    stream = page.obj["/Contents"]
-                    old = stream.read_bytes()
-                    stream.write(prefix + old + b"\nQ")
-                else:
-                    # A rotated or offset blank page legitimately has no content stream.
-                    page.obj["/Contents"] = pikepdf.Stream(_p, prefix + b"Q")
-                canonicalize_pikepdf_page_boxes(page, mtx, (new_w, new_h))
-            owner = "".join(
-                char for char in str(job_id or "")
-                if char.isalnum() or char in "-_"
-            ) or "direct"
-            out = os.path.join(tempfile.gettempdir(), f"nup_canon_{owner}_{uuid.uuid4().hex}.pdf")
-            _p.save(out)
-            _p.close()
-            return out, True
-        finally:
-            try:
-                _p.close()
-            except Exception:
-                pass
-    except Exception as e:
-        logger.warning(
-            f"[PAGE-CANON] bỏ qua canonicalize /Rotate + gốc MediaBox ({e}); dùng file gốc."
-        )
-        return source_path, False
+    """Wrapper tương thích; phần chuẩn hóa được tách khỏi file N-Up quá dài."""
+    return canonicalize_page_space_file(source_path, job_id)
 
 
 @contextlib.contextmanager

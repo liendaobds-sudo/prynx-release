@@ -1,18 +1,21 @@
 # Báo cáo Deep Audit W1 — Kích thước, đơn vị và PDF PageBox
 
-> Ngày audit: 2026-08-04 · Baseline code: `1bf8621` · Phạm vi: W1-U01 · Chưa sửa finding trong báo cáo này.
+> Ngày audit: 2026-08-04 · Baseline code: `1bf8621` · Phạm vi: W1-U01 · Phần 2–7 giữ bằng chứng baseline; mục 9 ghi kết quả sau khi user duyệt sửa toàn bộ finding.
 
 ## 1. Tóm tắt điều hành
 
-Audit dọc các đường tạo/đọc/crop/bình PDF xác nhận hai lỗi và giữ một nghi vấn cần artifact N-Up:
+Audit dọc và các vòng review chéo đã xác nhận sáu lỗi; tất cả đã được sửa trên worktree:
 
 | Mã | Trạng thái | Mức | Finding | Effort |
 |---|---|---:|---|---|
-| `§W1.PB1` | `[CONFIRMED]` | P1 | Crop thủ công ánh xạ sai vùng khi PDF có `/Rotate=90/270`. | M |
-| `§W1.PB2` | `[CONFIRMED]` | P2 | Viewer primary PDFium và HTTP fallback chọn PageBox khác nhau. | M |
-| `§W1.PB3` | `[SUSPECTED]` | — | `/UserUnit` được metadata nhân vào kích thước nhưng N-Up resolver dùng box raw. | M |
+| `§W1.PB1` | `[CONFIRMED]` · đã sửa | P1 | Crop thủ công ánh xạ sai vùng khi PDF có `/Rotate=90/270`. | M |
+| `§W1.PB2` | `[CONFIRMED]` · đã sửa | P2 | Viewer primary PDFium và HTTP fallback chọn PageBox khác nhau. | M |
+| `§W1.PB3` | `[CONFIRMED]` · đã sửa | P1 | `/UserUnit` bị áp lặp ở N-Up/Booklet, làm sai khổ và số placement. | M |
+| `§W1.PB4` | `[CONFIRMED]` · đã sửa | P1 | Range/all sao chép tọa độ raw nên sai vùng khi các trang có rotation khác nhau. | M |
+| `§W1.PB5` | `[CONFIRMED]` · đã sửa | P1 | Crop/auto-trim dùng file gốc, bỏ state reorder/delete/duplicate/rotation chưa bake. | M |
+| `§W1.PB6` | `[CONFIRMED]` · đã sửa | P1 | Viewer, PageBox, Crop và bleed hiểu `/UserUnit` không đồng nhất. | L |
 
-W1 vẫn ở mức `AUTO` cho toàn wave: có nhiều test/artifact lát cắt nhưng corpus PageBox × rotate × UserUnit × mọi consumer chưa hoàn chỉnh. Không finding nào được sửa trước chốt duyệt.
+W1 vẫn giữ mức toàn wave là `AUTO`: các nhánh trọng yếu đã đạt `ARTIFACT`, nhưng chưa thao tác lại toàn ma trận trên app desktop thật nên chưa thể nâng `RUNTIME`.
 
 ## 2. Phương pháp và audit unit
 
@@ -77,7 +80,7 @@ Khi command Rust lỗi, cùng file có thể đổi khổ canvas/overlay dù ng�
 
 ### `§W1.PB3` — `/UserUnit` có dấu hiệu lệch giữa preview và N-Up
 
-**Trạng thái:** `[SUSPECTED]` · chưa xếp severity.
+**Trạng thái sau tái hiện:** `[CONFIRMED]` · **P1** · đã sửa.
 
 Bằng chứng trace:
 
@@ -90,7 +93,7 @@ Harness với MediaBox `100×50 pt`, `/UserUnit=2`:
 - Metadata frontend: `200×100 pt`.
 - N-Up resolver: `100×50 pt`.
 
-Đây là chênh lệch hợp đồng đã tái hiện, nhưng chưa tạo/raster/reopen PDF N-Up thật nên chưa nâng thành bug xác nhận.
+Artifact N-Up sau đó xác nhận hai PDF vật lý tương đương tạo `16` và `4` placement. Sau sửa, cả hai tạo `4`, raster giống tuyệt đối; PlanExecutor cũng chuẩn hóa đúng một lần cho booklet, phase-2 và trang bìa tách riêng.
 
 ## 4. Hành vi đã loại khỏi finding
 
@@ -128,3 +131,42 @@ Mỗi writer/consumer phải được so bằng pikepdf raw boxes, PDFium raster
 - Chưa thao tác Crop/Viewer/N-Up trên app cài đặt; mức runtime còn thiếu.
 
 **Chốt:** dừng ở báo cáo, chưa sửa finding. Cần user duyệt thứ tự lô.
+
+## 8. Phụ lục phát hiện trong lúc sửa PB1
+
+### `§W1.PB4` — Áp dụng range/all sai vùng khi các trang có `/Rotate` khác nhau
+
+**Trạng thái:** `[CONFIRMED]` · **P1** · Effort M · đã sửa.
+
+Frontend gửi một danh sách `rects_mm` trong hệ CropBox raw của trang tham chiếu,
+backend sau đó dùng nguyên các offset raw này cho mọi trang trong `pages`. Với tài
+liệu hai trang cùng nội dung bốn màu, trang 1 xoay 0° và trang 2 xoay 90°:
+
+- chọn góc trên-trái trang 1 tương ứng màu xanh lá;
+- Apply cho cả hai trang tạo page 1 màu xanh lá đúng;
+- page 2 cũng thành màu xanh lá, trong khi góc trên-trái nhìn thấy của page 2 là màu đỏ.
+
+Artifact đã raster xác nhận đây là sai vùng thật, không phải khác biệt metadata.
+Cần chốt semantics cho trang khác kích thước trước khi sửa: cùng khung nhìn theo tỉ lệ,
+hay cùng kích thước/vị trí vật lý trên từng hướng hiển thị. Không được tiếp tục sao chép
+tọa độ raw giữa các rotation.
+
+### `§W1.PB5` — Trạng thái trang chưa materialize có thể không đi vào Crop
+
+**Trạng thái sau artifact:** `[CONFIRMED]` · **P1** · đã sửa.
+
+Crop chuẩn bị file từ nguồn gốc trong Viewer, trong khi thứ tự/xoay trang có thể đang
+chỉ tồn tại trong state chưa ghi ra PDF. Cần trace và tạo artifact cho chuỗi
+reorder/rotate trong Viewer → Crop → reopen trước khi gọi đây là bug. Artifact sau đó
+xác nhận trang đã xóa quay lại và crop sai page/rotation; bản sửa dùng working PDF strict,
+ánh xạ lại fraction cho đủ 16 tổ hợp rotation và dừng nếu không materialize được.
+
+## 9. Kết quả sau khi duyệt sửa
+
+- `PB1/PB4`: Crop theo đúng hệ hiển thị của từng trang; artifact raster 0/90/180/270 và mixed rotation đạt.
+- `PB2`: metadata Viewer primary/fallback cùng policy PageBox nhìn thấy; forced-fallback test đạt.
+- `PB3`: N-Up và PlanExecutor canonicalize `/UserUnit`, `/Rotate`, gốc MediaBox đúng một lần; đầu vào không hợp lệ dừng an toàn.
+- `PB5`: Crop và auto-trim dùng PDF làm việc đã bake reorder/delete/duplicate/rotation; không fallback file gốc.
+- `PB6`: API PageBox/Crop/detect/auto-trim/bleed dùng mm vật lý; structural score bỏ sàn raw-unit và đã khóa artifact cực trị `/UserUnit=1/100`; Viewer native nhân `/UserUnit` đúng một lần, invalid cache khi file cùng path đổi identity, đọc bytes một lần, RAM-gate giải nén, fail-closed khi parser lệch và đọc đúng metadata sau trang 2.000.
+- Bằng chứng cuối: frontend typecheck + `51` test liên quan đạt; full Vitest `1.857` đạt, `2` skip; backend full `2.238` đạt, `4` skip; Rust Tauri `56/56` test đạt và `cargo check --offline --locked` đạt; ngân sách lint đạt.
+- Chưa chạy thao tác app desktop thật hoặc build release; trạng thái cao nhất của các luồng có artifact là `ARTIFACT`, không phải `RUNTIME`.

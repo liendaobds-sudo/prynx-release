@@ -1,6 +1,6 @@
 [package]
 name = "pdf-inspector"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 description = "PDF comparison tool for print industry"
 authors = ["PrintSolutions"]
 license = "MIT"
@@ -28,6 +28,9 @@ tauri-plugin-process = "2"
 tauri-plugin-dialog = "2.7.0"
 tauri-plugin-fs = "2.5.0"
 pdfium-render = { version = "0.8", features = ["thread_safe", "pdfium_use_win32"] }
+# PAGEBOX (audit 2026-08-04 §W1.PB6): PDFium đi kèm bỏ qua /UserUnit;
+# dùng parser độc lập để đọc hệ số vật lý theo từng trang cho Viewer native.
+lopdf = { version = "0.44", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp", "webp", "gif"] }
 urlencoding = "2"
 tauri-plugin-single-instance = "2.4.2"

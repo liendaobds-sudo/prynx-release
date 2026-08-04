@@ -362,7 +362,9 @@ export function usePdfLoader({
                         const res = await fetch(`${apiUrl}/api/imposition/pdf-meta`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ path: filePath }),
+                            // PAGEBOX (audit 2026-08-04 §W1.PB2): nhánh lỗi phải
+                            // lấy cùng CropBox nhìn thấy như metadata PDFium chính.
+                            body: JSON.stringify({ path: filePath, page_box_policy: 'visible' }),
                             signal: httpAbortController.signal,
                         });
                         console.warn(`[PERF-META] HTTP pdf-meta fallback=${(performance.now()-__tf).toFixed(0)}ms ok=${res.ok}`);

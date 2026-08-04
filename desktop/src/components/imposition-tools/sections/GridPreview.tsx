@@ -4,7 +4,7 @@ import { previewPerfLog } from "../../../lib/previewPerfLog";
 import { getFileArrayBuffer } from "../../../lib/utils";
 import type { ActiveToolType, CutBorderConfig, NupSettings } from "../types";
 import { inheritedSingleMoldMaster } from "../shapeDetectionPolicy";
-import { materializePreviewViewerPdf, parsePreviewViewerState, resolvePreviewCellType, resolvePreviewPageCount, shouldDeferPreviewLayout } from "../previewSourcePolicy";
+import { materializePreviewViewerPdf, parsePreviewViewerState, previewViewerStateRequiresMaterialization, resolvePreviewCellType, resolvePreviewPageCount, shouldDeferPreviewLayout } from "../previewSourcePolicy";
 import { canUseCutBorder } from "../cutBorderPolicy";
 import { useTranslation } from 'react-i18next';
 import { ImposerSettingsContext } from "../useImposerSettingsStore";
@@ -929,6 +929,15 @@ export default function GridPreview(props: GridPreviewProps) {
   /** Max order length đã thấy — giảm length = đã xóa trang → ưu tiên bake. */
   const maxOrderLenSeenRef = useRef(0);
 
+  const workingPdfError = (cause?: unknown): Error => {
+    const error = new Error(t(
+      'imposition.gridPreview:khong_tao_duoc_pdf_lam_viec',
+      'Không thể tạo PDF làm việc từ thứ tự hoặc góc xoay trang hiện tại. Hãy thử lại hoặc hoàn tác thay đổi trang.',
+    ));
+    (error as Error & { cause?: unknown }).cause = cause;
+    return error;
+  };
+
   const resolvePreviewSource = async (): Promise<{ path?: string; file_id?: string }> => {
     const cacheKey = previewSourceKey ?? "default";
     const viewerState = parsePreviewViewerState(cacheKey);
@@ -940,19 +949,18 @@ export default function GridPreview(props: GridPreviewProps) {
       if (previewPathCacheRef.current.fileId) return { file_id: previewPathCacheRef.current.fileId };
     }
 
-    // Có xóa/sắp trang? → cố bake; nếu bake/ghi temp lỗi vẫn fallback path
-    // (đúng số loại nhờ total_pages + reassign client).
-    let mustBake = false;
+    // PREVIEW (audit 2026-08-04 §W2.PA2): mọi sửa trang phải có artifact riêng.
+    // Nếu tạo artifact thất bại, dừng preview; dùng file gốc sẽ dựng sai trang/cut tree.
     const order = viewerState.order;
     if (order.length > 0) {
       if (order.length > maxOrderLenSeenRef.current) {
         maxOrderLenSeenRef.current = order.length;
       }
-      if (!order.every((p, i) => p === i + 1)) mustBake = true;
-      if (maxOrderLenSeenRef.current > 0 && order.length < maxOrderLenSeenRef.current) {
-        mustBake = true;
-      }
     }
+    let mustBake = previewViewerStateRequiresMaterialization(
+      viewerState,
+      maxOrderLenSeenRef.current,
+    );
     if (
       typeof sourceTotalPages === "number" &&
       sourceTotalPages > 0 &&
@@ -1015,17 +1023,22 @@ export default function GridPreview(props: GridPreviewProps) {
           }
         }
 
-        // Fallback: path gốc (có thể còn 10 trang) — total_pages + client reassign lo số loại.
+        // Chỉ file identity mới được phép rơi về path gốc.
         if (nativePath) {
+          if (mustBake) throw workingPdfError();
           previewPathCacheRef.current = { key: cacheKey, path: nativePath };
           return { path: nativePath };
         }
       } catch (e) {
         console.warn("[GridPreview] resolvePreviewSource getWorkingFile failed:", e);
+        if (mustBake) throw workingPdfError(e);
       }
     }
 
-    // Fallback cuối: prop từ dashboard.
+    // Không được fallback sang prop gốc khi thứ tự/xoay/xóa trang chưa materialize.
+    if (mustBake) throw workingPdfError();
+
+    // Fallback cuối chỉ dành cho trạng thái trang identity.
     if (filePath) return { path: filePath };
     if (fileId) return { file_id: fileId };
     return {};

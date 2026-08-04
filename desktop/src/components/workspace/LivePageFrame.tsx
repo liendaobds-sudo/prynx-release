@@ -1856,7 +1856,11 @@ export const LivePageFrame = (props: any) => {
             if (e.key === 'Enter') {
                 e.preventDefault();
                 window.dispatchEvent(new CustomEvent('prynx-crop-open', {
-                    detail: { tabId, ownerId: cropOwnerId, pageNum: originalPageNum, totalPages, pageBox: cropPageBox, fracs: cropSels, frac: cropSels[0] },
+                    detail: {
+                        tabId, ownerId: cropOwnerId, pageNum: previewFramePage,
+                        totalPages, pageBox: cropPageBox, viewerRotation: rotation || 0,
+                        fracs: cropSels, frac: cropSels[0],
+                    },
                 }));
             } else if (e.key === 'Escape') {
                 commitCropSelection(null);
@@ -1877,7 +1881,7 @@ export const LivePageFrame = (props: any) => {
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [isCropMode, cropSels, cropOwnerId, selectedCropIdx, commitCropSelection, originalPageNum, totalPages, cropPageBox, tabId, isViewerActive]);
+    }, [isCropMode, cropSels, cropOwnerId, selectedCropIdx, commitCropSelection, previewFramePage, totalPages, cropPageBox, rotation, tabId, isViewerActive]);
 
     // Crop panel -> page overlay: keep the selected frame visible and live.
     // ownerId prevents updates from reaching a duplicate instance of the same page.
@@ -1971,12 +1975,12 @@ export const LivePageFrame = (props: any) => {
             detail: {
                 tabId,
                 ownerId: cropOwnerId,
-                pageNum: originalPageNum,
+                pageNum: previewFramePage,
                 fracs: regions.map((frac) => ({ ...frac })),
                 selectedIndex,
             },
         }));
-    }, [cropOwnerId, originalPageNum, tabId]);
+    }, [cropOwnerId, previewFramePage, tabId]);
 
     const cropDrawing = useCropPointerDrawing({
         enabled: isCropInteractionEnabled,
@@ -1994,14 +1998,15 @@ export const LivePageFrame = (props: any) => {
             const regions = [...cropSels, frac];
             commitCropSelection({
                 ownerId: cropOwnerId,
-                pageNum: originalPageNum,
+                pageNum: previewFramePage,
                 regions,
                 selectedIndex: regions.length - 1,
             });
             window.dispatchEvent(new CustomEvent('prynx-crop-open', {
                 detail: {
                     tabId, ownerId: cropOwnerId, totalPages, pageBox: cropPageBox,
-                    pageNum: originalPageNum,
+                    pageNum: previewFramePage,
+                    viewerRotation: rotation || 0,
                     fracs: regions,
                     frac: regions[0],
                 },
@@ -2510,7 +2515,7 @@ export const LivePageFrame = (props: any) => {
         if ((!isObjectEditMode && !isVdpMode && !isCropMode) || !containerRef.current) return;
         if (isCropMode && cropSelection?.ownerId !== cropOwnerId) {
             setCropSelection({
-                ownerId: cropOwnerId, pageNum: originalPageNum,
+                ownerId: cropOwnerId, pageNum: previewFramePage,
                 regions: [], selectedIndex: -1,
             });
         }
@@ -2606,7 +2611,7 @@ export const LivePageFrame = (props: any) => {
                 const regions = [...current, frac];
                 return {
                     ownerId: cropOwnerId,
-                    pageNum: originalPageNum,
+                    pageNum: previewFramePage,
                     regions,
                     selectedIndex: regions.length - 1,
                 };

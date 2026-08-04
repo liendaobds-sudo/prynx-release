@@ -29,16 +29,26 @@ def _pike_box_to_list(box):
     return [float(box[0]), float(box[1]), float(box[2]), float(box[3])]
 
 
-def _box_to_mm(box_list: list) -> dict:
-    """Convert box [x0, y0, x1, y1] in points to mm dict."""
+def _page_user_unit(page) -> float:
+    """Hệ số đổi một đơn vị tọa độ trang sang point vật lý 1/72 inch."""
+    try:
+        value = float(page.get("/UserUnit", 1) or 1)
+    except (TypeError, ValueError, OverflowError):
+        return 1.0
+    return value if math.isfinite(value) and 0 < value <= 75000 else 1.0
+
+
+def _box_to_mm(box_list: list, user_unit: float = 1.0) -> dict:
+    """Đổi PageBox raw sang milimét vật lý, có tính `/UserUnit`."""
     x0, y0, x1, y1 = box_list
+    scale = user_unit / PT_PER_MM
     return {
-        "x0": round(x0 / PT_PER_MM, 2),
-        "y0": round(y0 / PT_PER_MM, 2),
-        "x1": round(x1 / PT_PER_MM, 2),
-        "y1": round(y1 / PT_PER_MM, 2),
-        "width": round((x1 - x0) / PT_PER_MM, 2),
-        "height": round((y1 - y0) / PT_PER_MM, 2),
+        "x0": round(x0 * scale, 2),
+        "y0": round(y0 * scale, 2),
+        "x1": round(x1 * scale, 2),
+        "y1": round(y1 * scale, 2),
+        "width": round((x1 - x0) * scale, 2),
+        "height": round((y1 - y0) * scale, 2),
     }
 
 
@@ -229,6 +239,9 @@ def _normalise_crop_rects(page, rects_mm: list[dict]) -> tuple[list[float], list
     media = _get_page_box(page, "/MediaBox")
     visible = _get_page_box(page, "/CropBox", fallback=media)
     vx0, vy0, vx1, vy1 = visible
+    user_unit = _page_user_unit(page)
+    raw_pt_per_mm = PT_PER_MM / user_unit
+    min_crop_size = MIN_CROP_SIZE_PT / user_unit
     normalised: list[list[float]] = []
 
     for idx, rect in enumerate(rects_mm):
@@ -239,12 +252,66 @@ def _normalise_crop_rects(page, rects_mm: list[dict]) -> tuple[list[float], list
         if not all(math.isfinite(value) for value in values):
             raise ValueError(f"Vùng #{idx + 1} chứa tọa độ không hữu hạn")
 
-        x0, y0, x1, y1 = (value * PT_PER_MM for value in values)
+        x0, y0, x1, y1 = (value * raw_pt_per_mm for value in values)
         x0, x1 = max(vx0, x0), min(vx1, x1)
         y0, y1 = max(vy0, y0), min(vy1, y1)
-        if x1 - x0 < MIN_CROP_SIZE_PT or y1 - y0 < MIN_CROP_SIZE_PT:
+        if x1 - x0 < min_crop_size or y1 - y0 < min_crop_size:
             raise ValueError(f"Vùng #{idx + 1} nằm ngoài trang hoặc quá nhỏ")
         normalised.append([x0, y0, x1, y1])
+
+    return visible, normalised
+
+
+def _normalise_display_crop_rects(page, rects_mm: list[dict]) -> tuple[list[float], list[list[float]]]:
+    """Đổi vùng mm trên trang hiển thị về CropBox raw riêng của từng trang."""
+    if not rects_mm:
+        raise ValueError("Cần ít nhất 1 vùng crop hiển thị")
+    if len(rects_mm) > MAX_CROP_REGIONS:
+        raise ValueError(f"Chỉ xử lý tối đa {MAX_CROP_REGIONS} vùng mỗi lần")
+
+    media = _get_page_box(page, "/MediaBox")
+    visible = _get_page_box(page, "/CropBox", fallback=media)
+    vx0, vy0, vx1, vy1 = visible
+    width, height = vx1 - vx0, vy1 - vy0
+    rotation = int(page.get("/Rotate", 0) or 0) % 360
+    if rotation not in (0, 90, 180, 270):
+        rotation = 0
+    display_width, display_height = (
+        (height, width) if rotation in (90, 270) else (width, height)
+    )
+    user_unit = _page_user_unit(page)
+    raw_pt_per_mm = PT_PER_MM / user_unit
+    min_crop_size = MIN_CROP_SIZE_PT / user_unit
+    normalised: list[list[float]] = []
+
+    for idx, rect in enumerate(rects_mm):
+        try:
+            values = [float(rect[key]) for key in ("x0", "y0", "x1", "y1")]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Vùng hiển thị #{idx + 1} thiếu hoặc sai tọa độ") from exc
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError(f"Vùng hiển thị #{idx + 1} chứa tọa độ không hữu hạn")
+
+        dx0, dy0, dx1, dy1 = (value * raw_pt_per_mm for value in values)
+        dx0, dx1 = max(0.0, dx0), min(display_width, dx1)
+        dy0, dy1 = max(0.0, dy0), min(display_height, dy1)
+        if dx1 - dx0 < min_crop_size or dy1 - dy0 < min_crop_size:
+            raise ValueError(f"Vùng crop nằm ngoài trang hiển thị hoặc quá nhỏ ở vùng #{idx + 1}")
+
+        # PAGEBOX (audit 2026-08-04 §W1.PB4): range/all giữ cùng tọa độ
+        # hiển thị theo mm, nhưng mỗi trang phải đảo /Rotate riêng về hệ PDF raw.
+        if rotation == 90:
+            u0, u1, v0, v1 = dy0, dy1, dx0, dx1
+        elif rotation == 180:
+            u0, u1 = width - dx1, width - dx0
+            v0, v1 = dy0, dy1
+        elif rotation == 270:
+            u0, u1 = width - dy1, width - dy0
+            v0, v1 = height - dx1, height - dx0
+        else:
+            u0, u1 = dx0, dx1
+            v0, v1 = height - dy1, height - dy0
+        normalised.append([vx0 + u0, vy0 + v0, vx0 + u1, vy0 + v1])
 
     return visible, normalised
 
@@ -342,13 +409,17 @@ def _choose_structural_crop_box(
     rough: list[float],
     candidates: list[tuple[list[float], int]],
     max_trim_pt: float,
+    user_unit: float = 1.0,
 ) -> list[float] | None:
     """Prefer a page/image/form boundary that lies just inside the rough selection."""
     import pypdfium2.raw as pdfium_c
 
     rx0, ry0, rx1, ry1 = rough
     rough_area = (rx1 - rx0) * (ry1 - ry0)
-    tolerance = 0.6 * PT_PER_MM
+    # PAGEBOX (audit 2026-08-04 §W1.PB6): mọi ngưỡng nghiệp vụ là kích thước
+    # vật lý; tọa độ object PDF vẫn là đơn vị raw nên phải chia `/UserUnit`.
+    raw_pt_per_mm = PT_PER_MM / user_unit
+    tolerance = 0.6 * raw_pt_per_mm
     priorities = {
         int(pdfium_c.FPDF_PAGEOBJ_IMAGE): 4,
         int(pdfium_c.FPDF_PAGEOBJ_FORM): 3,
@@ -363,7 +434,7 @@ def _choose_structural_crop_box(
         if any(gap < -tolerance or gap > max_trim_pt + tolerance for gap in gaps):
             continue
         width, height = x1 - x0, y1 - y0
-        if width < 10 * PT_PER_MM or height < 10 * PT_PER_MM:
+        if width < 10 * raw_pt_per_mm or height < 10 * raw_pt_per_mm:
             continue
         ratio = (width * height) / rough_area if rough_area else 0.0
         if ratio < 0.45:
@@ -373,7 +444,11 @@ def _choose_structural_crop_box(
             continue
         # The outermost painted boundary is safest for print: an inner form must
         # never beat a larger image/path and accidentally remove its bleed.
-        trim_ratio = sum(max(0.0, gap) for gap in gaps) / max(1.0, max_trim_pt)
+        # Không dùng sàn `1.0` theo raw unit: với `/UserUnit` lớn, cùng hình học
+        # vật lý sẽ bị đổi điểm và có thể chọn nhầm boundary khác.
+        # Sàn epsilon cũng biểu diễn theo mm vật lý, không theo raw unit.
+        score_denominator = max(max_trim_pt, raw_pt_per_mm * 1e-9)
+        trim_ratio = sum(max(0.0, gap) for gap in gaps) / score_denominator
         score = ratio * 1000.0 - trim_ratio + priorities.get(raw_type, 0) * 0.001
         if best is None or score > best[0]:
             best = (score, clipped)
@@ -402,6 +477,7 @@ def _detect_uniform_background_rect_box(
     cb: list[float],
     rotate: int,
     max_trim_pt: float,
+    user_unit: float = 1.0,
 ) -> list[float] | None:
     """Detect a solid rectangular card on a uniform raster background.
 
@@ -498,7 +574,7 @@ def _detect_uniform_background_rect_box(
         pix_w, pix_h, cb, rotate, 0.0,
     )
     gaps = [candidate[0] - rough[0], candidate[1] - rough[1], rough[2] - candidate[2], rough[3] - candidate[3]]
-    tolerance = 0.6 * PT_PER_MM
+    tolerance = 0.6 * PT_PER_MM / user_unit
     if any(gap < -tolerance or gap > max_trim_pt + tolerance for gap in gaps):
         return None
     rough_area = (rough[2] - rough[0]) * (rough[3] - rough[1])
@@ -516,6 +592,7 @@ def _detect_raster_crop_box(
     cb: list[float],
     rotate: int,
     max_trim_pt: float,
+    user_unit: float = 1.0,
 ) -> list[float] | None:
     """Fallback edge detector. It is accepted only when every removed edge is small."""
     import cv2
@@ -560,7 +637,7 @@ def _detect_raster_crop_box(
         pix_w, pix_h, cb, rotate, 0.0,
     )
     gaps = [candidate[0] - rough[0], candidate[1] - rough[1], rough[2] - candidate[2], rough[3] - candidate[3]]
-    tolerance = 0.6 * PT_PER_MM
+    tolerance = 0.6 * PT_PER_MM / user_unit
     if any(gap < -tolerance or gap > max_trim_pt + tolerance for gap in gaps):
         return None
     rough_area = (rough[2] - rough[0]) * (rough[3] - rough[1])
@@ -632,21 +709,28 @@ class PageBoxesEngine:
         trimbox = _get_page_box(page, "/TrimBox", fallback=mediabox)
         bleedbox = _get_page_box(page, "/BleedBox", fallback=mediabox)
         artbox = _get_page_box(page, "/ArtBox", fallback=mediabox)
+        user_unit = _page_user_unit(page)
+        rotation = int(page.get("/Rotate", 0) or 0) % 360
+        if rotation not in (0, 90, 180, 270):
+            rotation = 0
 
         page_str = str(page.obj)
 
         result = {
             "page": page_num,
             "total_pages": len(doc.pages),
-            "mediabox": _box_to_mm(mediabox),
-            "cropbox": _box_to_mm(cropbox),
-            "trimbox": _box_to_mm(trimbox),
-            "bleedbox": _box_to_mm(bleedbox),
-            "artbox": _box_to_mm(artbox),
+            "mediabox": _box_to_mm(mediabox, user_unit),
+            "cropbox": _box_to_mm(cropbox, user_unit),
+            "trimbox": _box_to_mm(trimbox, user_unit),
+            "bleedbox": _box_to_mm(bleedbox, user_unit),
+            "artbox": _box_to_mm(artbox, user_unit),
             "has_trimbox": "/TrimBox" in page_str,
             "has_bleedbox": "/BleedBox" in page_str,
             "has_artbox": "/ArtBox" in page_str,
             "has_cropbox": "/CropBox" in page_str,
+            # PAGEBOX (audit 2026-08-04 §W1.PB1): CropBox ở hệ PDF gốc,
+            # frontend cần /Rotate để đảo đúng vùng người dùng vẽ trên trang hiển thị.
+            "rotation": rotation,
         }
 
         doc.close()
@@ -677,18 +761,18 @@ class PageBoxesEngine:
         """
         doc = pikepdf.Pdf.open(file_path)
 
-        x0_pt = float(rect_mm["x0"]) * PT_PER_MM
-        y0_pt = float(rect_mm["y0"]) * PT_PER_MM
-        x1_pt = float(rect_mm["x1"]) * PT_PER_MM
-        y1_pt = float(rect_mm["y1"]) * PT_PER_MM
-        if x1_pt <= x0_pt or y1_pt <= y0_pt:
+        try:
+            rect_values_mm = [float(rect_mm[key]) for key in ("x0", "y0", "x1", "y1")]
+        except (KeyError, TypeError, ValueError) as exc:
+            doc.close()
+            raise ValueError("rect_mm thiếu hoặc sai tọa độ") from exc
+        if not all(math.isfinite(value) for value in rect_values_mm):
+            doc.close()
+            raise ValueError("rect_mm chứa tọa độ không hữu hạn")
+        x0_mm, y0_mm, x1_mm, y1_mm = rect_values_mm
+        if x1_mm <= x0_mm or y1_mm <= y0_mm:
             doc.close()
             raise ValueError("rect_mm không hợp lệ (x1<=x0 hoặc y1<=y0)")
-
-        w_pt = x1_pt - x0_pt
-        h_pt = y1_pt - y0_pt
-        target_rect_pt = [x0_pt, y0_pt, x1_pt, y1_pt]
-        zero_origin_rect = [0.0, 0.0, w_pt, h_pt]
 
         box_key_map = {
             "mediabox": "/MediaBox",
@@ -719,6 +803,13 @@ class PageBoxesEngine:
             if not (1 <= pnum <= len(doc.pages)):
                 continue
             page = doc.pages[pnum - 1]
+            raw_pt_per_mm = PT_PER_MM / _page_user_unit(page)
+            x0_pt, y0_pt, x1_pt, y1_pt = (
+                value * raw_pt_per_mm for value in rect_values_mm
+            )
+            w_pt = x1_pt - x0_pt
+            h_pt = y1_pt - y0_pt
+            target_rect_pt = [x0_pt, y0_pt, x1_pt, y1_pt]
 
             if do_physical and box_type_l in ("cropbox", "mediabox"):
                 # ── Hard crop: form XObject + trang mới [0,0,w,h] ──
@@ -813,6 +904,7 @@ class PageBoxesEngine:
             rotate = int(page.get("/Rotate", 0) or 0) % 360
             explicit_bleed = page.get("/BleedBox")
             bleed_box = _pike_box_to_list(explicit_bleed) if explicit_bleed is not None else None
+            user_unit = _page_user_unit(page)
         finally:
             doc.close()
 
@@ -830,7 +922,9 @@ class PageBoxesEngine:
         visible_height = visible[3] - visible[1]
         if rotate in (90, 270):
             visible_width, visible_height = visible_height, visible_width
-        render_scale = 200.0 / 72.0
+        # PDFium đi kèm PrynX trả/render theo đơn vị raw và không tự áp `/UserUnit`.
+        # Nhân scale để 200 DPI vẫn là 200 DPI vật lý.
+        render_scale = (200.0 / 72.0) * user_unit
         projected_pixels = visible_width * visible_height * render_scale * render_scale
         if projected_pixels > MAX_CROP_DETECT_PIXELS:
             render_scale *= math.sqrt(MAX_CROP_DETECT_PIXELS / projected_pixels)
@@ -860,7 +954,7 @@ class PageBoxesEngine:
                 render_error = True
                 logger.warning("crop edge raster detection failed: %s", exc)
 
-        max_trim_pt = float(max_trim_mm) * PT_PER_MM
+        max_trim_pt = float(max_trim_mm) * PT_PER_MM / user_unit
         results = []
         for rough in rough_rects:
             check_cancelled()
@@ -870,11 +964,15 @@ class PageBoxesEngine:
             detected = None
             method = "unchanged"
             if bleed_box is not None:
-                detected = _choose_structural_crop_box(rough, [(bleed_box, -1)], max_trim_pt)
+                detected = _choose_structural_crop_box(
+                    rough, [(bleed_box, -1)], max_trim_pt, user_unit,
+                )
                 if detected is not None:
                     method = "bleedbox"
             if detected is None:
-                detected = _choose_structural_crop_box(rough, object_candidates, max_trim_pt)
+                detected = _choose_structural_crop_box(
+                    rough, object_candidates, max_trim_pt, user_unit,
+                )
                 if detected is not None:
                     method = "object"
             confidence = "high" if detected is not None else "low"
@@ -884,6 +982,7 @@ class PageBoxesEngine:
                 if image_arr is not None:
                     detected = _detect_uniform_background_rect_box(
                         image_arr, rough, pix_w, pix_h, visible, rotate, max_trim_pt,
+                        user_unit,
                     )
                     if detected is not None:
                         # A nearly solid rectangle against a uniform surrounding
@@ -894,6 +993,7 @@ class PageBoxesEngine:
                 if image_arr is not None and detected is None:
                     raster_suggestion = _detect_raster_crop_box(
                         image_arr, rough, pix_w, pix_h, visible, rotate, max_trim_pt,
+                        user_unit,
                     )
                     if raster_suggestion is not None:
                         # Pixel colour cannot distinguish unwanted whitespace from
@@ -909,7 +1009,10 @@ class PageBoxesEngine:
                 max(0.0, rough[2] - final_rect[2]),
                 max(0.0, rough[3] - final_rect[3]),
             ]
-            changed = detected is not None and max(trim_values) >= 0.15 * PT_PER_MM
+            changed = (
+                detected is not None
+                and max(trim_values) >= 0.15 * PT_PER_MM / user_unit
+            )
             if not changed:
                 final_rect = rough
                 if raster_suggestion is None:
@@ -918,23 +1021,26 @@ class PageBoxesEngine:
                 trim_values = [0.0, 0.0, 0.0, 0.0]
 
             results.append({
-                "rect_mm": _box_to_mm(final_rect),
+                "rect_mm": _box_to_mm(final_rect, user_unit),
                 "changed": changed,
                 "method": method,
                 "confidence": confidence,
                 "trim_mm": {
-                    "left": round(trim_values[0] / PT_PER_MM, 2),
-                    "bottom": round(trim_values[1] / PT_PER_MM, 2),
-                    "right": round(trim_values[2] / PT_PER_MM, 2),
-                    "top": round(trim_values[3] / PT_PER_MM, 2),
+                    "left": round(trim_values[0] * user_unit / PT_PER_MM, 2),
+                    "bottom": round(trim_values[1] * user_unit / PT_PER_MM, 2),
+                    "right": round(trim_values[2] * user_unit / PT_PER_MM, 2),
+                    "top": round(trim_values[3] * user_unit / PT_PER_MM, 2),
                 },
                 "safe_to_apply": bool(changed and method in ("bleedbox", "object", "background")),
-                "suggested_rect_mm": _box_to_mm(raster_suggestion) if raster_suggestion is not None else None,
+                "suggested_rect_mm": (
+                    _box_to_mm(raster_suggestion, user_unit)
+                    if raster_suggestion is not None else None
+                ),
             })
 
         return {
             "page": page_num,
-            "cropbox": _box_to_mm(visible),
+            "cropbox": _box_to_mm(visible, user_unit),
             "max_trim_mm": float(max_trim_mm),
             "regions": results,
         }
@@ -946,6 +1052,7 @@ class PageBoxesEngine:
         rects_mm: list[dict],
         keep_other_pages: bool = False,
         pages: list[int] | None = None,
+        display_rects_mm: list[dict] | None = None,
     ) -> str:
         """Crop the selected regions on one or more source pages."""
         if page_num < 1:
@@ -959,22 +1066,50 @@ class PageBoxesEngine:
             target_pages = sorted(set(pages or [page_num]))
             if not target_pages or any(page < 1 or page > page_count for page in target_pages):
                 raise ValueError(f"Danh sách trang crop không hợp lệ: {target_pages}")
-            reference_visible, reference_rects = _normalise_crop_rects(check_doc.pages[page_num - 1], rects_mm)
-            rvx0, rvy0, _, _ = reference_visible
-            relative_rects = [[x0 - rvx0, y0 - rvy0, x1 - rvx0, y1 - rvy0] for x0, y0, x1, y1 in reference_rects]
             rects_by_index: dict[int, list[list[float]]] = {}
-            for page in target_pages:
-                target_page = check_doc.pages[page - 1]
-                target_visible = _get_page_box(target_page, "/CropBox", fallback=_get_page_box(target_page, "/MediaBox"))
-                tvx0, tvy0, tvx1, tvy1 = target_visible
-                target_rects: list[list[float]] = []
-                for dx0, dy0, dx1, dy1 in relative_rects:
-                    x0, x1 = max(tvx0, tvx0 + dx0), min(tvx1, tvx0 + dx1)
-                    y0, y1 = max(tvy0, tvy0 + dy0), min(tvy1, tvy0 + dy1)
-                    if x1 - x0 < MIN_CROP_SIZE_PT or y1 - y0 < MIN_CROP_SIZE_PT:
-                        raise ValueError(f"Vùng crop nằm ngoài trang {page} hoặc quá nhỏ")
-                    target_rects.append([x0, y0, x1, y1])
-                rects_by_index[page - 1] = target_rects
+            if display_rects_mm is not None:
+                if len(display_rects_mm) != len(rects_mm):
+                    raise ValueError("Số vùng crop raw và hiển thị không khớp")
+                for page in target_pages:
+                    _, target_rects = _normalise_display_crop_rects(
+                        check_doc.pages[page - 1], display_rects_mm,
+                    )
+                    rects_by_index[page - 1] = target_rects
+            else:
+                reference_visible, reference_rects = _normalise_crop_rects(
+                    check_doc.pages[page_num - 1], rects_mm,
+                )
+                reference_user_unit = _page_user_unit(check_doc.pages[page_num - 1])
+                rvx0, rvy0, _, _ = reference_visible
+                relative_rects_mm = [
+                    [
+                        (x0 - rvx0) * reference_user_unit / PT_PER_MM,
+                        (y0 - rvy0) * reference_user_unit / PT_PER_MM,
+                        (x1 - rvx0) * reference_user_unit / PT_PER_MM,
+                        (y1 - rvy0) * reference_user_unit / PT_PER_MM,
+                    ]
+                    for x0, y0, x1, y1 in reference_rects
+                ]
+                for page in target_pages:
+                    target_page = check_doc.pages[page - 1]
+                    target_visible = _get_page_box(
+                        target_page, "/CropBox",
+                        fallback=_get_page_box(target_page, "/MediaBox"),
+                    )
+                    tvx0, tvy0, tvx1, tvy1 = target_visible
+                    target_user_unit = _page_user_unit(target_page)
+                    raw_pt_per_mm = PT_PER_MM / target_user_unit
+                    min_crop_size = MIN_CROP_SIZE_PT / target_user_unit
+                    target_rects: list[list[float]] = []
+                    for dx0_mm, dy0_mm, dx1_mm, dy1_mm in relative_rects_mm:
+                        x0 = max(tvx0, tvx0 + dx0_mm * raw_pt_per_mm)
+                        x1 = min(tvx1, tvx0 + dx1_mm * raw_pt_per_mm)
+                        y0 = max(tvy0, tvy0 + dy0_mm * raw_pt_per_mm)
+                        y1 = min(tvy1, tvy0 + dy1_mm * raw_pt_per_mm)
+                        if x1 - x0 < min_crop_size or y1 - y0 < min_crop_size:
+                            raise ValueError(f"Vùng crop nằm ngoài trang {page} hoặc quá nhỏ")
+                        target_rects.append([x0, y0, x1, y1])
+                    rects_by_index[page - 1] = target_rects
         finally:
             check_doc.close()
 
@@ -1041,8 +1176,6 @@ class PageBoxesEngine:
             pdf_render = pdfium.PdfDocument(file_path)
 
         target_pages = pages if pages else list(range(1, len(doc.pages) + 1))
-        margin_pt = margin_mm * PT_PER_MM
-
         # 200 DPI đủ nét cho tem nhỏ mà vẫn nhanh (dò lề, không phải xuất).
         DETECT_SCALE = 200.0 / 72.0
 
@@ -1054,6 +1187,9 @@ class PageBoxesEngine:
                 # CropBox rồi áp /Rotate. .cropbox tự fallback về MediaBox.
                 cb = _get_page_box(page, "/CropBox", fallback=_get_page_box(page, "/MediaBox"))
                 rotate = int(page.get("/Rotate", 0) or 0) % 360
+                user_unit = _page_user_unit(page)
+                render_scale = DETECT_SCALE * user_unit
+                margin_pt = margin_mm * PT_PER_MM / user_unit
 
                 # Copy thẳng bitmap → NumPy để bỏ vòng bitmap→PIL→bytes→NumPy.
                 # Mọi handle PDFium được đóng ngay trong khóa; OpenCV chạy ngoài khóa.
@@ -1062,7 +1198,7 @@ class PageBoxesEngine:
                     bitmap = None
                     try:
                         render_page = pdf_render[pnum - 1]
-                        bitmap = render_page.render(scale=DETECT_SCALE)
+                        bitmap = render_page.render(scale=render_scale)
                         arr = np.array(bitmap.to_numpy(), copy=True)
                         pix_h, pix_w = arr.shape[:2]
                     finally:
@@ -1135,16 +1271,16 @@ class PageBoxesEngine:
         doc = pikepdf.Pdf.open(file_path)
 
         target_pages = pages if pages else list(range(1, len(doc.pages) + 1))
-        bleed_pt = bleed_mm * PT_PER_MM
         side_l, side_r, side_b, side_t = normalize_bleed_sides(sides)
-        b_l = bleed_pt if side_l else 0.0
-        b_r = bleed_pt if side_r else 0.0
-        b_b = bleed_pt if side_b else 0.0
-        b_t = bleed_pt if side_t else 0.0
 
         for pnum in target_pages:
             if 1 <= pnum <= len(doc.pages):
                 page = doc.pages[pnum - 1]
+                bleed_pt = bleed_mm * PT_PER_MM / _page_user_unit(page)
+                b_l = bleed_pt if side_l else 0.0
+                b_r = bleed_pt if side_r else 0.0
+                b_b = bleed_pt if side_b else 0.0
+                b_t = bleed_pt if side_t else 0.0
                 # TrimBox là chuẩn để cộng bleed. Nếu file CHƯA có TrimBox (vd vừa
                 # qua auto_trim — chỉ set CropBox), fallback sang CropBox rồi MediaBox.
                 # Trước đây fallback thẳng MediaBox → bỏ qua kết quả auto_trim (bù xén
@@ -1206,16 +1342,16 @@ class PageBoxesEngine:
         """
         doc = pikepdf.Pdf.open(file_path)
         target_pages = pages if pages else list(range(1, len(doc.pages) + 1))
-        bleed_pt = bleed_mm * PT_PER_MM
         side_l, side_r, side_b, side_t = normalize_bleed_sides(sides)
-        if not (side_l or side_r or side_b or side_t):
-            # Không chọn cạnh nào = không bù xén → rơi vào nhánh fallback chỉ set box.
-            bleed_pt = 0.0
 
         for pnum in target_pages:
             if not (1 <= pnum <= len(doc.pages)):
                 continue
             page = doc.pages[pnum - 1]
+            bleed_pt = bleed_mm * PT_PER_MM / _page_user_unit(page)
+            if not (side_l or side_r or side_b or side_t):
+                # Không chọn cạnh nào = không bù xén → rơi vào nhánh fallback chỉ set box.
+                bleed_pt = 0.0
             if bleed_pt > 0:
                 _canonicalize_rotated_page_for_mirror(doc, page)
 

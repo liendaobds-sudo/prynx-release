@@ -1172,6 +1172,7 @@
     "tem_thanh_pham": "Tem thành phẩm:",
     "goi_y_qua_kho": " — thử giảm số hàng/cột, tăng khổ giấy hoặc giảm lề.",
     "khong_dung_duoc_preview_bo_cuc": "Không dựng được preview bố cục",
+    "khong_tao_duoc_pdf_lam_viec": "Không thể tạo PDF làm việc từ thứ tự hoặc góc xoay trang hiện tại. Hãy thử lại hoặc hoàn tác thay đổi trang.",
     "khong_the_tinh_bo_cuc_preview": "Không thể tính bố cục preview."
   },
   "imposition.gridSettings": {

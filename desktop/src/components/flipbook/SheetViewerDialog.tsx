@@ -56,6 +56,7 @@ interface SheetViewerDialogProps {
     marginLeft?: number;
     marginRight?: number;
     marginTop?: number;
+    marginBottom: number;
     blankPlacement?: 'end' | 'center';
     separateCover?: boolean;
     coverPageCount?: number;
@@ -318,6 +319,43 @@ const BlueprintGrid: React.FC<{
 };
 
 // ─── Digital Press Sheet Simulation Grid (SSOT: dùng computeSpreadGrid như output) ───
+// PREVIEW (audit 2026-08-04 §W2.PA1): export helper thuần để test khóa parity preview ↔ artifact.
+// eslint-disable-next-line react-refresh/only-export-components
+export function computeDigitalPreviewGrid({
+    spreadWpt,
+    spreadHpt,
+    sheetWmm,
+    sheetHmm,
+    gapX,
+    gapY,
+    marginLeft,
+    marginRight,
+    marginTop,
+    marginBottom,
+    gripperMargin,
+}: {
+    spreadWpt: number;
+    spreadHpt: number;
+    sheetWmm: number;
+    sheetHmm: number;
+    gapX: number;
+    gapY: number;
+    marginLeft: number;
+    marginRight: number;
+    marginTop: number;
+    marginBottom: number;
+    gripperMargin: number;
+}) {
+    return computeSpreadGrid(
+        spreadWpt, spreadHpt,
+        (sheetWmm || 0) * MM_TO_PT, (sheetHmm || 0) * MM_TO_PT,
+        (gapX || 0) * MM_TO_PT, (gapY || 0) * MM_TO_PT,
+        (marginLeft || 0) * MM_TO_PT, (marginRight || 0) * MM_TO_PT,
+        (marginTop || 0) * MM_TO_PT, (gripperMargin || 0) * MM_TO_PT,
+        (marginBottom || 0) * MM_TO_PT,
+    );
+}
+
 const DigitalPressSheetGrid: React.FC<{
     sheets: VirtualSheet[];
     currentSheetIdx: number;
@@ -335,9 +373,10 @@ const DigitalPressSheetGrid: React.FC<{
     marginLeft: number;
     marginRight: number;
     marginTop: number;
+    marginBottom: number;
     gripperMargin: number;
     singleSided?: boolean;
-}> = ({ sheets, currentSheetIdx, pageOrder, pageRotations = [], pdfFile, scaleMode, pageWpt, pageHpt, sheetWmm, sheetHmm, bleed, gapX, gapY, marginLeft, marginRight, marginTop, gripperMargin, singleSided = false }) => {
+}> = ({ sheets, currentSheetIdx, pageOrder, pageRotations = [], pdfFile, scaleMode, pageWpt, pageHpt, sheetWmm, sheetHmm, bleed, gapX, gapY, marginLeft, marginRight, marginTop, marginBottom, gripperMargin, singleSided = false }) => {
   const { t } = useTranslation();
     const cs = sheets[currentSheetIdx];
 
@@ -358,13 +397,11 @@ const DigitalPressSheetGrid: React.FC<{
     const spreadWpt = Math.max(1, pageWpt * 2 - 2 * bleedPt);
     const spreadHpt = Math.max(1, pageHpt);
 
-    const { frameW, frameH, cols, rows, cellPos } = useMemo(() => computeSpreadGrid(
-        spreadWpt, spreadHpt,
-        (sheetWmm || 0) * MM_TO_PT, (sheetHmm || 0) * MM_TO_PT,
-        (gapX || 0) * MM_TO_PT, (gapY || 0) * MM_TO_PT,
-        (marginLeft || 0) * MM_TO_PT, (marginRight || 0) * MM_TO_PT,
-        (marginTop || 0) * MM_TO_PT, (gripperMargin || 0) * MM_TO_PT,
-    ), [spreadWpt, spreadHpt, sheetWmm, sheetHmm, gapX, gapY, marginLeft, marginRight, marginTop, gripperMargin]);
+    // UIUX (audit 2026-08-04 §W2.PA1): preview phải dùng đủ bốn lề như phase-2 output.
+    const { frameW, frameH, cols, rows, cellPos } = useMemo(() => computeDigitalPreviewGrid({
+        spreadWpt, spreadHpt, sheetWmm, sheetHmm, gapX, gapY,
+        marginLeft, marginRight, marginTop, marginBottom, gripperMargin,
+    }), [spreadWpt, spreadHpt, sheetWmm, sheetHmm, gapX, gapY, marginLeft, marginRight, marginTop, marginBottom, gripperMargin]);
 
     // Spread nội dung cho ô thứ i của 1 mặt. Step&Repeat: mọi ô = spread hiện tại.
     // Cut&Stack: các ô là những tờ booklet KHÁC nhau (mô phỏng — lấp lưới tuần tự).
@@ -434,7 +471,7 @@ const DigitalPressSheetGrid: React.FC<{
 
 export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
     isOpen, onClose, pdfFile, pageOrder, pageRotations = [], bindingMode, foliosize, sheetWidth, sheetHeight, scaleMode = '100', foldPattern = '', catalogJobs, isDigital = false, gripperMargin = 0,
-    pageWpt = 0, pageHpt = 0, bleed = 0, gapX = 0, gapY = 0, marginLeft = 0, marginRight = 0, marginTop = 0,
+    pageWpt = 0, pageHpt = 0, bleed = 0, gapX = 0, gapY = 0, marginLeft = 0, marginRight = 0, marginTop = 0, marginBottom,
     blankPlacement = 'end', separateCover = false, coverPageCount = 4,
 }) => {
   const { t } = useTranslation();
@@ -659,6 +696,7 @@ export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
                                 marginLeft={marginLeft}
                                 marginRight={marginRight}
                                 marginTop={marginTop}
+                                marginBottom={marginBottom}
                                 gripperMargin={gripperMargin}
                                 singleSided={bindingMode === 'flush_mount'}
                             />

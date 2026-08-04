@@ -1172,6 +1172,7 @@
     "tem_thanh_pham": "Finished label:",
     "goi_y_qua_kho": " — try fewer rows/columns, a larger sheet, or smaller margins.",
     "khong_dung_duoc_preview_bo_cuc": "Could not build the layout preview",
+    "khong_tao_duoc_pdf_lam_viec": "Could not create the working PDF from the current page order or rotations. Try again or undo the page changes.",
     "khong_the_tinh_bo_cuc_preview": "Could not calculate the layout preview."
   },
   "imposition.gridSettings": {

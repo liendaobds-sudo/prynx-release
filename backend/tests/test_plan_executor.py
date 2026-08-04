@@ -14,7 +14,7 @@ import os
 import pytest
 
 from app.workers import pdf_wrapper as pdf_lib
-from app.core.plan_executor import PlanExecutor
+from app.core.plan_executor import PlanExecutionError, PlanExecutor
 from app.core.imposition_page_box import effective_imposition_box
 
 
@@ -47,6 +47,308 @@ def _plan(src, out_dir, sheets):
 
 def _run(plan, src):
     return asyncio.run(PlanExecutor.execute(plan, src))
+
+
+def _make_user_unit_source(tmp_path, *, rotate=0, user_unit=2.0):
+    """Tạo trang có bốn mốc góc để bắt lỗi phóng/cắt lặp `/UserUnit`."""
+    import pikepdf
+
+    src = str(tmp_path / f'user-unit-{user_unit}-r{rotate}.pdf')
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(100, 50))
+    page.obj[pikepdf.Name('/UserUnit')] = user_unit
+    if rotate:
+        page.obj[pikepdf.Name('/Rotate')] = rotate
+    page.obj[pikepdf.Name('/Contents')] = pdf.make_stream(
+        b'0 g '
+        b'2 2 10 10 re f 88 2 10 10 re f '
+        b'2 38 10 10 re f 88 38 10 10 re f\n'
+    )
+    pdf.save(src)
+    pdf.close()
+    return src
+
+
+def _dark_fraction_by_quadrant(path, content_rect):
+    """Đo artifact raster; mỗi góc nguồn phải còn hiện trong một phần tư đích."""
+    pdfium = pytest.importorskip('pypdfium2')
+
+    doc = pdfium.PdfDocument(path)
+    image = doc[0].render(scale=2.0).to_pil().convert('L')
+    doc.close()
+    x0, y0, x1, y1 = (int(round(value * 2.0)) for value in content_rect)
+    mid_x = (x0 + x1) // 2
+    mid_y = (y0 + y1) // 2
+    pixels = image.load()
+
+    def dark_fraction(bounds):
+        left, top, right, bottom = bounds
+        dark = sum(
+            pixels[x, y] < 80
+            for y in range(top, bottom)
+            for x in range(left, right)
+        )
+        return dark / max(1, (right - left) * (bottom - top))
+
+    return [
+        dark_fraction(bounds)
+        for bounds in (
+            (x0, y0, mid_x, mid_y),
+            (mid_x, y0, x1, mid_y),
+            (x0, mid_y, mid_x, y1),
+            (mid_x, mid_y, x1, y1),
+        )
+    ]
+
+
+def _capture_show_pdf_page_rotations(monkeypatch):
+    """Ghi đúng góc đến sink; bổ sung cho artifact bốn góc vốn đối xứng."""
+    captured = []
+    original = pdf_lib.Page.show_pdf_page
+
+    def recording_show_pdf_page(self, *args, **kwargs):
+        rotate = kwargs.get("rotate", args[3] if len(args) > 3 else 0)
+        captured.append(int(rotate) % 360)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(pdf_lib.Page, "show_pdf_page", recording_show_pdf_page)
+    return captured
+
+
+@pytest.mark.parametrize('rotate', [0, 90, 180, 270])
+def test_user_unit_is_applied_once_for_booklet_placements(tmp_path, rotate):
+    """PAGEBOX (audit 2026-08-04 §W1.PB3): không phóng/cắt lặp UserUnit."""
+    src = _make_user_unit_source(tmp_path, rotate=rotate)
+    content_w, content_h = ((100, 200) if rotate in (90, 270) else (200, 100))
+    plan = _plan(src, str(tmp_path / 'out'), [{
+        'sheet_index': 0,
+        'width_pt': content_w + 20,
+        'height_pt': content_h + 20,
+        'front': {'placements': [{
+            'source_page': 0,
+            'x_pt': 10,
+            'y_pt': 10,
+            'scale': 1.0,
+            'rotation_deg': 0,
+            'native_angle': rotate,
+        }], 'marks': []},
+    }])
+
+    output = _run(plan, src)
+    fractions = _dark_fraction_by_quadrant(
+        output,
+        (10, 10, 10 + content_w, 10 + content_h),
+    )
+    assert min(fractions) > 0.02, fractions
+
+
+@pytest.mark.parametrize('rotate', [90, 180, 270])
+def test_native_rotation_is_applied_once_for_booklet_placements(tmp_path, rotate):
+    """Matrix của Form đã có /Rotate; sink không được xoay nội dung lần hai."""
+    src = _make_user_unit_source(tmp_path, rotate=rotate, user_unit=1.0)
+    content_w, content_h = ((50, 100) if rotate in (90, 270) else (100, 50))
+    plan = _plan(src, str(tmp_path / 'out'), [{
+        'sheet_index': 0,
+        'width_pt': content_w + 20,
+        'height_pt': content_h + 20,
+        'front': {'placements': [{
+            'source_page': 0,
+            'x_pt': 10,
+            'y_pt': 10,
+            'scale': 1.0,
+            'rotation_deg': 0,
+            'native_angle': rotate,
+        }], 'marks': []},
+    }])
+
+    output = _run(plan, src)
+    fractions = _dark_fraction_by_quadrant(
+        output,
+        (10, 10, 10 + content_w, 10 + content_h),
+    )
+    assert min(fractions) > 0.02, fractions
+
+
+def test_user_rotation_survives_page_space_canonicalization(tmp_path):
+    """Góc người dùng phải còn nguyên sau khi bỏ phần /Rotate đã bake."""
+    src = _make_user_unit_source(tmp_path, rotate=90, user_unit=2.0)
+    plan = _plan(src, str(tmp_path / 'out'), [{
+        'sheet_index': 0,
+        'width_pt': 220,
+        'height_pt': 120,
+        'front': {'placements': [{
+            'source_page': 0,
+            'x_pt': 10,
+            'y_pt': 10,
+            'scale': 1.0,
+            'rotation_deg': 0,
+            # /Rotate gốc 90° + góc người dùng 90°.
+            'native_angle': 180,
+        }], 'marks': []},
+    }])
+
+    output = _run(plan, src)
+    fractions = _dark_fraction_by_quadrant(output, (10, 10, 210, 110))
+    assert min(fractions) > 0.02, fractions
+
+
+@pytest.mark.parametrize('native_rotation', [0, 90, 180, 270])
+@pytest.mark.parametrize('user_rotation', [0, 90, 180, 270])
+def test_user_rotation_reaches_booklet_sink_exactly_once(
+    tmp_path,
+    monkeypatch,
+    native_rotation,
+    user_rotation,
+):
+    """Góc sink phải đúng hướng, không chỉ giữ được nội dung đối xứng bốn góc."""
+    captured = _capture_show_pdf_page_rotations(monkeypatch)
+    src = _make_user_unit_source(tmp_path, rotate=native_rotation, user_unit=2.0)
+    plan = _plan(src, str(tmp_path / 'out'), [{
+        'sheet_index': 0,
+        'width_pt': 240,
+        'height_pt': 240,
+        'front': {'placements': [{
+            'source_page': 0,
+            'x_pt': 10,
+            'y_pt': 10,
+            'scale': 1.0,
+            'rotation_deg': 0,
+            'native_angle': native_rotation + user_rotation,
+        }], 'marks': []},
+    }])
+
+    _run(plan, src)
+
+    assert captured == [user_rotation]
+
+
+def test_user_unit_is_applied_once_through_phase2(tmp_path):
+    """Step & Repeat hai pha phải dùng cùng trang nguồn đã chuẩn hóa."""
+    src = _make_user_unit_source(tmp_path, user_unit=2.0)
+    plan = _plan(src, str(tmp_path / 'out'), [{
+        'sheet_index': 0,
+        'width_pt': 220,
+        'height_pt': 120,
+        'front': {'placements': [{
+            'source_page': 0,
+            'x_pt': 10,
+            'y_pt': 10,
+            'scale': 1.0,
+            'rotation_deg': 0,
+            'native_angle': 0,
+        }], 'marks': []},
+    }])
+    plan['phase2'] = {
+        'mode': 'step_repeat',
+        'spread_w_pt': 220,
+        'spread_h_pt': 120,
+        'plates': [{
+            'width_pt': 220,
+            'height_pt': 120,
+            'placements': [{
+                'spread_index': 0,
+                'x_pt': 0,
+                'y_pt': 0,
+                'rotation_deg': 0,
+            }],
+            'marks': [],
+        }],
+    }
+
+    output = _run(plan, src)
+    fractions = _dark_fraction_by_quadrant(output, (10, 10, 210, 110))
+    assert min(fractions) > 0.02, fractions
+
+
+def test_user_rotation_reaches_phase2_source_sink_exactly_once(tmp_path, monkeypatch):
+    captured = _capture_show_pdf_page_rotations(monkeypatch)
+    src = _make_user_unit_source(tmp_path, rotate=90, user_unit=2.0)
+    plan = _plan(src, str(tmp_path / 'out'), [{
+        'sheet_index': 0,
+        'width_pt': 220,
+        'height_pt': 120,
+        'front': {'placements': [{
+            'source_page': 0,
+            'x_pt': 10,
+            'y_pt': 10,
+            'scale': 1.0,
+            'rotation_deg': 0,
+            'native_angle': 360,  # /Rotate gốc 90° + góc người dùng 270°.
+        }], 'marks': []},
+    }])
+    plan['phase2'] = {
+        'mode': 'step_repeat',
+        'spread_w_pt': 220,
+        'spread_h_pt': 120,
+        'plates': [{
+            'width_pt': 220,
+            'height_pt': 120,
+            'placements': [{
+                'spread_index': 0, 'x_pt': 0, 'y_pt': 0, 'rotation_deg': 0,
+            }],
+            'marks': [],
+        }],
+    }
+
+    _run(plan, src)
+
+    assert captured == [270, 0]
+
+
+@pytest.mark.parametrize('rotate', [0, 90])
+def test_user_unit_is_applied_once_for_detached_pages(tmp_path, rotate):
+    """Trang bìa tách riêng cũng phải giữ đủ bốn góc và đúng khổ vật lý."""
+    src = _make_user_unit_source(tmp_path, rotate=rotate)
+    expected_w, expected_h = ((100, 200) if rotate == 90 else (200, 100))
+    plan = _plan(src, str(tmp_path / 'out'), [])
+    plan['append_source_pages'] = [{'source_page': 0, 'rotation_deg': 0}]
+
+    output = _run(plan, src)
+    doc = pdf_lib.open(output)
+    assert (doc[0].rect.width, doc[0].rect.height) == pytest.approx(
+        (expected_w, expected_h),
+    )
+    doc.close()
+    fractions = _dark_fraction_by_quadrant(output, (0, 0, expected_w, expected_h))
+    assert min(fractions) > 0.02, fractions
+
+
+def test_user_rotation_reaches_detached_page_sink_exactly_once(tmp_path, monkeypatch):
+    captured = _capture_show_pdf_page_rotations(monkeypatch)
+    src = _make_user_unit_source(tmp_path, rotate=90, user_unit=2.0)
+    plan = _plan(src, str(tmp_path / 'out'), [])
+    plan['append_source_pages'] = [{'source_page': 0, 'rotation_deg': 270}]
+
+    _run(plan, src)
+
+    assert captured == [270]
+
+
+def test_invalid_source_rotation_fails_closed(tmp_path):
+    """Không được ép `/Rotate=45` thành 0 ở validator rồi thành 270 ở canonicalizer."""
+    src = _make_user_unit_source(tmp_path, rotate=45, user_unit=2.0)
+    plan = _plan(src, str(tmp_path / 'out'), [])
+    plan['append_source_pages'] = [{'source_page': 0, 'rotation_deg': 0}]
+
+    with pytest.raises(PlanExecutionError, match=r"Trang 1 có /Rotate không hợp lệ: 45"):
+        PlanExecutor._execute_sync(plan, src)
+
+
+def test_page_space_canonicalization_failure_stops_wrong_output(tmp_path, monkeypatch):
+    """Không được âm thầm dùng file thô khi chốt chuẩn hóa UserUnit thất bại."""
+    from app.workers import nup_engine
+
+    src = _make_user_unit_source(tmp_path, user_unit=2.0)
+    monkeypatch.setattr(
+        nup_engine,
+        '_canonicalize_page_space',
+        lambda source_path, job_id=None: (source_path, False),
+    )
+    plan = _plan(src, str(tmp_path / 'out'), [])
+    plan['append_source_pages'] = [{'source_page': 0, 'rotation_deg': 0}]
+
+    with pytest.raises(PlanExecutionError, match='dừng để tránh xuất sai kích thước'):
+        PlanExecutor._execute_sync(plan, src)
 
 
 def test_renders_one_page_per_nonempty_side(tmp_path):

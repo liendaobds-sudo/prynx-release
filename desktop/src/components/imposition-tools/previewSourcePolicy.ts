@@ -27,6 +27,23 @@ export function parsePreviewViewerState(key?: string): PreviewViewerState {
 }
 
 /**
+ * Trạng thái thumbnail chỉ được phép dùng PDF gốc khi hoàn toàn đồng nhất.
+ * Reorder/delete/duplicate/trang trắng hoặc xoay đều đổi artifact mà backend đọc.
+ */
+export function previewViewerStateRequiresMaterialization(
+  state: PreviewViewerState,
+  maxOrderLengthSeen = 0,
+): boolean {
+  const hasPageTransform = state.order.some((pageNumber, index) => pageNumber !== index + 1);
+  const hasDeletedPage = maxOrderLengthSeen > 0 && state.order.length < maxOrderLengthSeen;
+  const hasRotation = state.rotations.some((rotation) => {
+    const normalized = ((Number(rotation) % 360) + 360) % 360;
+    return Number.isFinite(normalized) && normalized !== 0;
+  });
+  return hasPageTransform || hasDeletedPage || hasRotation;
+}
+
+/**
  * The thumbnail order and the viewer page counter are updated through separate
  * UI paths. During a duplicate operation either one may arrive first, so use
  * the larger count instead of allowing a stale order array to hide new pages.

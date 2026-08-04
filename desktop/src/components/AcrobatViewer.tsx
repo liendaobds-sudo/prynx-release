@@ -164,16 +164,21 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     const setSelectionFileId = useWorkspaceStore(s => s.setSelectionFileId);
     const setIsCropMode = useWorkspaceStore(s => s.setIsCropMode);
     const setIsObjectEditMode = useWorkspaceStore(s => s.setIsObjectEditMode);
+    const getWorkingFile = useWorkingPdf();
 
     const ensureCropFileId = useCallback(async (signal?: AbortSignal) => {
         // LUÔN upload lại file ĐANG XEM (bytes hiện tại). Reuse selectionFileId cũ
         // dễ trỏ Working_File / edit session TRƯỚC ĐÓ → crop chạy trên file sai
         // (user thấy “cắt lệch / lún vào object” so với vùng quét trên màn).
         if (!file) throw new Error(t('misc.acrobatViewer:chua_co_file_de_cat_kho'));
-        const res = await uploadPDF(file, { signal });
+        // PAGEBOX (audit 2026-08-04 §W1.PB5): Auto-trim và mọi consumer của
+        // callback này phải dùng trang đã reorder/delete/duplicate/rotate.
+        const workingFile = await getWorkingFile(file);
+        if (!workingFile) throw new Error(t('misc.acrobatViewer:chua_co_file_de_cat_kho'));
+        const res = await uploadPDF(workingFile, { signal });
         setSelectionFileId(res.id);
         return res.id;
-    }, [file, setSelectionFileId]);
+    }, [file, getWorkingFile, setSelectionFileId, t]);
 
     const onVdpBoxSelect = (fieldIds: string[]) => {}; // Handled directly in LivePageFrame now
     const onVdpFieldsChange = setVdpFields;
@@ -183,8 +188,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     const [exportFileId, setExportFileId] = useState<string | undefined>(undefined);
     const [exportImageInitialTab, setExportImageInitialTab] = useState<ExportImageTab>('export');
     const [exportFilePath, setExportFilePath] = useState<string | undefined>(undefined);
-    // EXPORT (audit 2026-07-30 §IMG-04): bake page-order/rotation/delete trước khi xuất
-    const getWorkingFile = useWorkingPdf();
+    // EXPORT (audit 2026-07-30 §IMG-04): getWorkingFile ở trên bake
+    // page-order/rotation/delete trước khi xuất.
     const openExportImage = useCallback(async (initialTab: ExportImageTab = 'export') => {
         if (!file) { toast.info(t('misc.acrobatViewer:chua_co_file_de_xuat_anh')); return; }
         try {

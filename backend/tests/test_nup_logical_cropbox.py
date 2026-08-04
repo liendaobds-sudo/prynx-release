@@ -31,6 +31,19 @@ def _make_cropbox_pdf(path, media_box, crop_box):
     return str(path)
 
 
+def _make_user_unit_pdf(path, user_unit):
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(100.0, 50.0))
+    if user_unit != 1.0:
+        page.obj[pikepdf.Name("/UserUnit")] = user_unit
+    page.obj[pikepdf.Name("/Contents")] = pdf.make_stream(
+        b"0 0 0 rg 0 0 100 50 re f\n",
+    )
+    pdf.save(str(path))
+    pdf.close()
+    return str(path)
+
+
 def _box(path, name):
     with pikepdf.Pdf.open(path) as pdf:
         return [float(value) for value in pdf.pages[0].obj[name]]
@@ -121,6 +134,55 @@ def test_explicit_trimbox_remains_finished_size_even_when_difference_is_small(tm
         assert resolve_guillotine_trim(doc[0], 0.0) == pytest.approx((194.0, 94.0))
     finally:
         doc.close()
+
+
+def test_user_unit_output_uses_physical_size_once(tmp_path):
+    """PAGEBOX (audit 2026-08-04 §W1.PB3): không xếp chồng `/UserUnit=2`."""
+    settings = {
+        "imposerMode": "guillotine",
+        "isDieCutMode": False,
+        "sheetWidth": 141.2,
+        "sheetHeight": 70.6,
+        "bleed": 0.0,
+        "gapX": 0.0,
+        "gapY": 0.0,
+        "marginTop": 0.0,
+        "marginBottom": 0.0,
+        "marginLeft": 0.0,
+        "marginRight": 0.0,
+        "gripperMargin": 0.0,
+        "markType": "none",
+        "pontType": "none",
+        "gridStrategy": "simple_auto",
+        "layoutType": "repeat",
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": {},
+    }
+    counts = []
+    for user_unit in (2.0, 1.0):
+        source = _make_user_unit_pdf(
+            tmp_path / f"unit-{user_unit}.pdf",
+            user_unit,
+        )
+        if user_unit == 1.0:
+            with pikepdf.Pdf.open(source, allow_overwriting_input=True) as pdf:
+                page = pdf.pages[0].obj
+                page[pikepdf.Name("/MediaBox")] = pikepdf.Array([0, 0, 200, 100])
+                page[pikepdf.Name("/CropBox")] = pikepdf.Array([0, 0, 200, 100])
+                page[pikepdf.Name("/Contents")].write(
+                    b"0 0 0 rg 0 0 200 100 re f\n",
+                )
+                pdf.save(source)
+        output = tmp_path / f"out-unit-{user_unit}.pdf"
+        nup_engine.run_nup_engine(
+            source,
+            str(output),
+            settings,
+            job_id=f"unit-{user_unit}",
+        )
+        counts.append(_do_count(output))
+
+    assert counts == [4, 4]
 
 
 @pytest.mark.parametrize("layout_type", ["sequential", "repeat"])

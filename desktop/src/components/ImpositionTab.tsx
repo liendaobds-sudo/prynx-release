@@ -7,6 +7,7 @@ import PDFUploader from './PDFUploader';
 import AcrobatViewer from './AcrobatViewer';
 import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
 import { useEditSession } from '../hooks/useEditSession';
+import { useWorkingPdf } from '../hooks/useWorkingPdf';
 import { ImpositionMode, type ProcessingSettings } from '../lib/pdfImposer';
 import { Button } from './Button';
 import { Printer, Scissors, Settings, Star } from 'lucide-react';
@@ -131,6 +132,7 @@ export function isEphemeralBackendPath(p?: string | null): boolean {
 
 function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onSpawnTab, initialFile, initialReport, initialFeature, lockedMode, batchOutput: initialBatchOutput, systemMergeFiles, officeSourceFile, officeSourceFiles, initialRecovery, onRequestHome, imposerStoreRef }: Props & { imposerStoreRef: React.MutableRefObject<ReturnType<typeof createImposerSettingsStore> | null> }) {
   const { t } = useTranslation();
+    const getCropWorkingFile = useWorkingPdf();
     //#region State & Hooks
     // ═══ All state from Zustand store ═══
     const {
@@ -830,10 +832,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     }, [file, originalFileName, onTitleChange]);
     const ensureCropFileId = useCallback(async (signal?: AbortSignal) => {
         if (!file) throw new Error(t('misc.acrobatViewer:chua_co_file_de_cat_kho'));
-        const res = await uploadPDF(file, { signal });
+        // PAGEBOX (audit 2026-08-04 §W1.PB5): Crop phải đọc đúng artifact người
+        // dùng đang thấy sau reorder/delete/duplicate/rotate; hook này fail-closed.
+        const workingFile = await getCropWorkingFile(file);
+        if (!workingFile) throw new Error(t('misc.acrobatViewer:chua_co_file_de_cat_kho'));
+        const res = await uploadPDF(workingFile, { signal });
         setSelectionFileId(res.id);
         return res.id;
-    }, [file, setSelectionFileId, t]);
+    }, [file, getCropWorkingFile, setSelectionFileId, t]);
 
     const handleCropApplied = useCallback(async (blob: Blob, filename: string, openInNewTab: boolean) => {
         if (openInNewTab && onSpawnTab) {
@@ -1860,12 +1866,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         if (viewerPageOrder && file && !(await isViewerOrderIdentityForSource(file, viewerPageOrder))) {
             const bakedBlob = await applyAcrobatEdits();
             if (bakedBlob) return new Uint8Array(await bakedBlob.arrayBuffer());
+            throw new Error('Không thể tạo PDF làm việc từ thứ tự trang hiện tại.');
         } else if (viewerPageOrder && file) {
             // Identity order nhưng có thể còn xoay — bake nếu có góc ≠ 0.
             const hasRot = !!(viewerPageRotations && Object.values(viewerPageRotations).some((r: any) => ((((r as number) % 360) + 360) % 360) !== 0));
             if (hasRot) {
                 const bakedBlob = await applyAcrobatEdits();
                 if (bakedBlob) return new Uint8Array(await bakedBlob.arrayBuffer());
+                throw new Error('Không thể tạo PDF làm việc từ góc xoay trang hiện tại.');
             }
         }
         // getFileArrayBuffer đọc từ path (protocol localfile) nếu file đã strip bytes sau undo,
@@ -1906,8 +1914,16 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     // KHÔNG gắn .path gốc — resolvePreviewSource ghi temp từ bytes bake.
                     return new File([baked], file.name, { type: 'application/pdf' });
                 }
+                throw new Error('Không nhận được dữ liệu PDF sau khi áp dụng thay đổi trang.');
             } catch (e) {
-                console.warn('[getWorkingFile] bake failed, return original file:', e);
+                // PREVIEW (audit 2026-08-04 §W2.PA2): fail-closed. File gốc có thể
+                // chứa trang đã xóa hoặc thứ tự cũ; trả nó sẽ tạo preview sai âm thầm.
+                console.error('[getWorkingFile] bake failed:', e);
+                const failure = new Error(
+                    'Không thể tạo PDF làm việc từ thứ tự hoặc góc xoay trang hiện tại.',
+                );
+                (failure as Error & { cause?: unknown }).cause = e;
+                throw failure;
             }
         }
         return file!;

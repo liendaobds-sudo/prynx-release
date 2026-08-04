@@ -68,6 +68,18 @@ def _raw_content(path):
         return bytes(contents.read_bytes()).decode("latin-1")
 
 
+def _make_user_unit_source(path, user_unit=2.0):
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(TRIM_W, TRIM_H))
+    page.obj[pikepdf.Name("/UserUnit")] = user_unit
+    page.obj[pikepdf.Name("/TrimBox")] = pikepdf.Array([0, 0, TRIM_W, TRIM_H])
+    page.obj[pikepdf.Name("/Contents")] = pdf.make_stream(
+        b"1 0 0 rg 0 0 100 50 re f\n",
+    )
+    pdf.save(str(path))
+    pdf.close()
+
+
 # ------------------------------------------------------------------ hình học
 
 def test_page_origin_is_zero(mirrored):
@@ -100,6 +112,45 @@ def test_imposition_reads_bleed_from_boxes(mirrored):
     mb, tb = boxes["/MediaBox"], boxes["/TrimBox"]
     assert ((mb[2] - mb[0]) - (tb[2] - tb[0])) / 2 == pytest.approx(BLEED_PT, abs=1e-4)
     assert ((mb[3] - mb[1]) - (tb[3] - tb[1])) / 2 == pytest.approx(BLEED_PT, abs=1e-4)
+
+
+def test_declared_bleed_uses_physical_mm_with_user_unit(tmp_path):
+    source = str(tmp_path / "unit2-declared.pdf")
+    _make_user_unit_source(source)
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path
+
+    output = engine.add_bleed_from_trim(source, BLEED_MM)
+    with pikepdf.Pdf.open(output) as pdf:
+        page = pdf.pages[0].obj
+        unit = float(page["/UserUnit"])
+        bleed = [float(value) for value in page["/BleedBox"]]
+    assert (0.0 - bleed[0]) * unit / PT_PER_MM == pytest.approx(BLEED_MM, abs=1e-4)
+    assert (bleed[2] - TRIM_W) * unit / PT_PER_MM == pytest.approx(BLEED_MM, abs=1e-4)
+
+
+def test_mirror_bleed_uses_physical_mm_with_user_unit(tmp_path):
+    source = str(tmp_path / "unit2-mirror.pdf")
+    _make_user_unit_source(source)
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path
+
+    output = engine.add_mirror_bleed(source, BLEED_MM)
+    with pikepdf.Pdf.open(output) as pdf:
+        page = pdf.pages[0].obj
+        unit = float(page["/UserUnit"])
+        media = [float(value) for value in page["/MediaBox"]]
+        trim = [float(value) for value in page["/TrimBox"]]
+    assert trim[0] * unit / PT_PER_MM == pytest.approx(BLEED_MM, abs=1e-4)
+    assert trim[1] * unit / PT_PER_MM == pytest.approx(BLEED_MM, abs=1e-4)
+    assert (
+        ((media[2] - media[0]) - (trim[2] - trim[0]))
+        * unit / (2 * PT_PER_MM)
+    ) == pytest.approx(BLEED_MM, abs=1e-4)
+    assert (
+        ((media[3] - media[1]) - (trim[3] - trim[1]))
+        * unit / (2 * PT_PER_MM)
+    ) == pytest.approx(BLEED_MM, abs=1e-4)
 
 
 def test_content_is_translated_not_just_reboxed(mirrored):

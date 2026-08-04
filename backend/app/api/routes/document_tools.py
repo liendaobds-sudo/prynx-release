@@ -263,13 +263,17 @@ def _get_pdf_meta(body: dict):
     This allows the TypeScript Planner to get the info it needs for computation
     WITHOUT loading the entire PDF into the Webview's RAM.
 
-    Expects body: { "path": "C:/Users/.../catalog.pdf" }
+    Expects body: {
+        "path": "C:/Users/.../catalog.pdf",
+        "page_box_policy": "imposition" | "visible"  # tùy chọn
+    }
     """
     from app.workers import pdf_wrapper as pdf_lib
     from app.core.imposition_page_box import effective_imposition_box
     from app.workers.mixed_guillotine_adapter import resolve_guillotine_trim
 
     pdf_path = _validate_file_path(body.get("path"))
+    use_visible_page_box = body.get("page_box_policy") == "visible"
 
     try:
         pdf = pdf_lib.open(pdf_path)
@@ -285,13 +289,30 @@ def _get_pdf_meta(body: dict):
         detected_bleed_mm = 0.0  # bleed suy ra từ (MediaBox - TrimBox)/2 của trang đầu
         for i in range(scan_limit):
             page = pdf[i]
+            user_unit = 1.0
+            try:
+                if "/UserUnit" in page._page:
+                    user_unit = float(page._page["/UserUnit"])
+                if not (0 < user_unit <= 75000):
+                    user_unit = 1.0
+            except (TypeError, ValueError, OverflowError):
+                user_unit = 1.0
             # UIUX (audit 2026-08-03 §MG-AUTO): trả đúng footprint mà preview/export
             # Bình cắt xén dùng để frontend phân loại cùng khổ/khác khổ trước khi gọi solver.
             # Bleed không ảnh hưởng phép so sánh vì mọi trang đều trừ cùng một giá trị.
             guillotine_w, guillotine_h = resolve_guillotine_trim(page, 0.0)
-            # MediaBox giữ bleed khi chênh lệch nhỏ; CropBox là trang logic khi
-            # MediaBox thực chất là canvas lớn chứa nhiều trang đặt cạnh nhau.
-            src_box = effective_imposition_box(page)
+            # PAGEBOX (audit 2026-08-04 §W1.PB3): resolver trả tọa độ raw;
+            # metadata còn lại đã là point vật lý nên footprint phải cùng hệ.
+            guillotine_w *= user_unit
+            guillotine_h *= user_unit
+            # PAGEBOX (audit 2026-08-04 §W1.PB2): fallback của Viewer phải dùng
+            # đúng vùng trang nhìn thấy như PDFium; caller bình bản không truyền
+            # policy này nên vẫn giữ nguyên quy tắc MediaBox/CropBox hiện hữu.
+            src_box = (
+                page.cropbox
+                if use_visible_page_box
+                else effective_imposition_box(page)
+            )
             w = src_box.width
             h = src_box.height
             rot = page.rotation
@@ -302,19 +323,20 @@ def _get_pdf_meta(body: dict):
                 try:
                     _tb = page.trimbox
                     _mb = page.mediabox
-                    _bx = (float(_mb.width) - float(_tb.width)) / 2.0
-                    _by = (float(_mb.height) - float(_tb.height)) / 2.0
+                    _bx = (
+                        (float(_mb.width) - float(_tb.width))
+                        * user_unit
+                        / 2.0
+                    )
+                    _by = (
+                        (float(_mb.height) - float(_tb.height))
+                        * user_unit
+                        / 2.0
+                    )
                     if _bx > 0.5 and _by > 0.5 and abs(_bx - _by) < 3.0:
                         detected_bleed_mm = round(((_bx + _by) / 2.0) * _PT_TO_MM, 2)
                 except Exception:
                     detected_bleed_mm = 0.0
-
-            user_unit = 1.0
-            try:
-                if "/UserUnit" in page._page:
-                    user_unit = float(page._page["/UserUnit"])
-            except Exception:
-                pass
 
             w *= user_unit
             h *= user_unit

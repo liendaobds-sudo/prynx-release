@@ -5,6 +5,7 @@ import {
   parsePreviewViewerState,
   resolvePreviewCellType,
   resolvePreviewPageCount,
+  previewViewerStateRequiresMaterialization,
   shouldDeferPreviewLayout,
 } from './previewSourcePolicy';
 
@@ -21,6 +22,15 @@ describe('previewSourcePolicy', () => {
 
     expect(resolvePreviewPageCount(staleOrder, 45)).toBe(45);
     expect(resolvePreviewPageCount(staleOrder, 20)).toBe(28);
+  });
+
+  it('requires a standalone PDF for reorder, deletion, duplication, blank or rotation', () => {
+    expect(previewViewerStateRequiresMaterialization({ order: [1, 2], rotations: [0, 0] }, 2)).toBe(false);
+    expect(previewViewerStateRequiresMaterialization({ order: [2, 1], rotations: [0, 0] }, 2)).toBe(true);
+    expect(previewViewerStateRequiresMaterialization({ order: [1, 1], rotations: [0, 0] }, 2)).toBe(true);
+    expect(previewViewerStateRequiresMaterialization({ order: [1, -1], rotations: [0, 0] }, 2)).toBe(true);
+    expect(previewViewerStateRequiresMaterialization({ order: [1, 2], rotations: [90, 0] }, 2)).toBe(true);
+    expect(previewViewerStateRequiresMaterialization({ order: [1, 2], rotations: [0, 0] }, 3)).toBe(true);
   });
 
   it('labels guillotine step-repeat cells from the live selected thumbnail', () => {

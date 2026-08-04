@@ -190,3 +190,42 @@ def test_auto_trim_fast_path_preserves_geometry_for_all_rotations(tmp_path):
             media_box = [float(value) for value in page.obj["/MediaBox"]]
             assert media_box == pytest.approx([40.0, 10.0, 160.0, 90.0], abs=0.5)
             assert int(page.get("/Rotate", 0) or 0) == rotate
+
+
+def test_auto_trim_user_unit_keeps_physical_dpi_margin_and_box(tmp_path):
+    """PB6: `/UserUnit` không được làm đổi DPI dò mép hoặc nhân đôi margin vật lý."""
+    pytest.importorskip("pypdfium2")
+    source = tmp_path / "auto-trim-user-unit.pdf"
+    pdf = pikepdf.Pdf.new()
+    for user_unit in (1.0, 2.0):
+        page = pdf.add_blank_page(page_size=(200.0 / user_unit, 100.0 / user_unit))
+        page.obj[pikepdf.Name("/Contents")] = pikepdf.Stream(
+            pdf,
+            (
+                "0 0 0 rg "
+                f"{40 / user_unit:g} {10 / user_unit:g} "
+                f"{120 / user_unit:g} {80 / user_unit:g} re f\n"
+            ).encode("ascii"),
+        )
+        page.obj[pikepdf.Name("/Rotate")] = 90
+        if user_unit != 1.0:
+            page.obj[pikepdf.Name("/UserUnit")] = user_unit
+    pdf.save(source)
+    pdf.close()
+
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path
+    output = engine.auto_trim(str(source), margin_mm=3.0)
+
+    physical_boxes = []
+    with pikepdf.Pdf.open(output) as result:
+        for page in result.pages:
+            unit = float(page.get("/UserUnit", 1) or 1)
+            physical_boxes.append([
+                float(value) * unit for value in page.obj["/MediaBox"]
+            ])
+
+    margin_pt = 3.0 * PT_PER_MM
+    expected = [40.0 - margin_pt, 10.0 - margin_pt, 160.0 + margin_pt, 90.0 + margin_pt]
+    assert physical_boxes[0] == pytest.approx(expected, abs=0.8)
+    assert physical_boxes[1] == pytest.approx(expected, abs=0.8)

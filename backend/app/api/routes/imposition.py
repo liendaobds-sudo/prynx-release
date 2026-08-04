@@ -1234,6 +1234,12 @@ def _build_mixed_guillotine_preview(doc: Any, req: PreviewLayoutRequest) -> dict
     duplex = duplex_flow == "double"
     flip_edge = str(getattr(req, "duplex_flip_edge", "long") or "long")
 
+    live_page_count = int(getattr(req, "total_pages", 0) or 0)  # PREVIEW (audit 2026-08-04 §W2.PA2)
+    if live_page_count > 0 and live_page_count != int(doc.page_count):
+        raise MixedGuillotineError(
+            f"PDF làm việc có {doc.page_count} trang nhưng giao diện có {live_page_count}; thay đổi trang chưa được áp dụng đầy đủ. Hãy thử lại hoặc hoàn tác thay đổi trang."
+        )
+
     bleed_pt = float(getattr(req, "bleed", 0.0) or 0.0)
     trim_sizes = [
         resolve_guillotine_trim(doc[page_idx], bleed_pt)

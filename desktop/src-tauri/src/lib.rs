@@ -17,8 +17,7 @@ mod external_app;
 mod pdf_engine;
 mod security;
 
-
-// Document Handle Pool - Capped to 1 to eliminate the massive 
+// Document Handle Pool - Capped to 1 to eliminate the massive
 // sequential initialization overhead of `load_pdf_from_file` for large VDP files.
 // Tile rendering is fast enough (10ms) that sequential Mutex rendering on 1 handle
 // is orders of magnitude faster than initializing 8 handles (which takes 500ms each).
@@ -30,6 +29,45 @@ fn get_doc_pool_size() -> usize {
 // Lưu tile đã render ra ĐĨA (thư mục temp — luôn ghi được kể cả bản đóng gói) để
 // mở lại / cuộn lại / zoom về mức cũ là LẤY TỪ ĐĨA, không render lại (file nặng ~1s).
 static DISK_CACHE_WRITES: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct PdfFileIdentity {
+    size: u64,
+    modified_nanos: u128,
+    created_nanos: Option<u128>,
+}
+
+fn timestamp_nanos(timestamp: std::time::SystemTime, label: &str) -> Result<u128, String> {
+    timestamp
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .map_err(|_| format!("Mốc thời gian {label} của file PDF không hợp lệ."))
+}
+
+fn pdf_file_identity(file_path: &str) -> Result<PdfFileIdentity, String> {
+    let metadata = std::fs::metadata(file_path)
+        .map_err(|error| format!("Không đọc được thông tin file PDF: {error}"))?;
+    if !metadata.is_file() {
+        return Err("Đường dẫn PDF không phải là một file.".to_string());
+    }
+
+    let modified_nanos = timestamp_nanos(
+        metadata
+            .modified()
+            .map_err(|error| format!("Không đọc được thời điểm sửa file PDF: {error}"))?,
+        "chỉnh sửa",
+    )?;
+    let created_nanos = metadata
+        .created()
+        .ok()
+        .and_then(|timestamp| timestamp_nanos(timestamp, "tạo").ok());
+
+    Ok(PdfFileIdentity {
+        size: metadata.len(),
+        modified_nanos,
+        created_nanos,
+    })
+}
 
 // STARTUP (fix 2026-08-04): cửa sổ chính chỉ được hiện sau khi Rust setup và
 // sidecar đã sẵn sàng. Nếu user mở shortcut lần hai trong lúc cold-start, callback
@@ -211,12 +249,7 @@ fn verify_sidecar_startup(secret: &str, sidecar_exited: &AtomicBool) -> Result<(
     let address = "127.0.0.1:8321"
         .parse()
         .map_err(|e| format!("address: {e}"))?;
-    verify_sidecar_startup_at(
-        address,
-        secret,
-        SIDECAR_STARTUP_TIMEOUT,
-        sidecar_exited,
-    )
+    verify_sidecar_startup_at(address, secret, SIDECAR_STARTUP_TIMEOUT, sidecar_exited)
 }
 
 #[cfg(test)]
@@ -247,13 +280,16 @@ mod sidecar_startup_tests {
 
     #[test]
     fn proof_backend_hop_le_duoc_nhan_va_proof_bi_sua_bi_tu_choi() {
-        let challenge =
-            "0000000000000000000000000000000000000000000000000000000000000000";
+        let challenge = "0000000000000000000000000000000000000000000000000000000000000000";
         let proof = "0b857df7768b9fc957d9a5df81f2b509e8e2c9bfbb9a08a39195fb7ff3cce17e";
 
-        assert_eq!(verify_startup_proof("test-secret", challenge, proof), Ok(()));
-        assert!(verify_startup_proof("test-secret", challenge, &format!("{}0", &proof[..63]))
-            .is_err());
+        assert_eq!(
+            verify_startup_proof("test-secret", challenge, proof),
+            Ok(())
+        );
+        assert!(
+            verify_startup_proof("test-secret", challenge, &format!("{}0", &proof[..63])).is_err()
+        );
         assert!(verify_startup_proof("test-secret", challenge, "khong-phai-hex").is_err());
     }
 }
@@ -269,6 +305,38 @@ fn tile_disk_path(cache_key: &str) -> std::path::PathBuf {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     cache_key.hash(&mut h);
     tile_cache_dir().join(format!("{:016x}.jpg", h.finish()))
+}
+
+const TILE_RENDER_CACHE_VERSION: &str = "v6_userunit_q90";
+
+#[allow(clippy::too_many_arguments)]
+fn tile_render_cache_key(
+    file_path: &str,
+    file_identity: PdfFileIdentity,
+    page: i32,
+    zoom: f32,
+    rotation: i32,
+    clip_x: Option<i32>,
+    clip_y: Option<i32>,
+    clip_w: Option<i32>,
+    clip_h: Option<i32>,
+) -> String {
+    let zoom_key = format!("{zoom:.3}");
+    format!(
+        "{}_{}_{}_{}_{}_{}_{}_{}_{}_{}_{}_{}",
+        TILE_RENDER_CACHE_VERSION,
+        file_path,
+        file_identity.size,
+        file_identity.modified_nanos,
+        file_identity.created_nanos.unwrap_or(0),
+        page,
+        zoom_key,
+        rotation,
+        clip_x.unwrap_or(0),
+        clip_y.unwrap_or(0),
+        clip_w.unwrap_or(0),
+        clip_h.unwrap_or(0)
+    )
 }
 
 // Giữ tối đa `max_files` tile mới nhất trên đĩa; xoá cũ nhất khi vượt.
@@ -381,7 +449,23 @@ impl<T> DocumentCache<T> {
 
 struct CachedDocument {
     pool: Vec<OnceLock<DocHandle>>,
+    user_units: Vec<f32>,
+    file_identity: PdfFileIdentity,
     next: AtomicUsize, // Round-robin index
+}
+
+impl CachedDocument {
+    fn user_unit(&self, page_index: u16) -> Result<f32, String> {
+        self.user_units
+            .get(page_index as usize)
+            .copied()
+            .ok_or_else(|| {
+                format!(
+                    "Thiếu /UserUnit đã kiểm chứng cho trang {}.",
+                    page_index as usize + 1
+                )
+            })
+    }
 }
 
 impl Drop for CachedDocument {
@@ -406,6 +490,122 @@ unsafe impl Sync for SyncPdfium {}
 static PDFIUM_STATIC: OnceLock<SyncPdfium> = OnceLock::new();
 static DOC_CACHE: OnceLock<Mutex<DocumentCache<Arc<CachedDocument>>>> = OnceLock::new();
 
+const DEFAULT_PDF_USER_UNIT: f32 = 1.0;
+const MAX_PDF_USER_UNIT: f32 = 75_000.0;
+const MIB: usize = 1024 * 1024;
+const LOW_RAM_LOPDF_STREAM_LIMIT: usize = 64 * MIB;
+const MID_RAM_LOPDF_STREAM_LIMIT: usize = 256 * MIB;
+
+fn valid_pdf_user_unit(value: &lopdf::Object, document: &lopdf::Document) -> Option<f32> {
+    let (_, resolved) = document.dereference(value).ok()?;
+    let user_unit = resolved.as_float().ok()?;
+    (user_unit.is_finite() && user_unit > 0.0 && user_unit <= MAX_PDF_USER_UNIT)
+        .then_some(user_unit)
+}
+
+fn collect_pdf_user_units(document: &lopdf::Document) -> Vec<f32> {
+    document
+        .get_pages()
+        .values()
+        .map(|page_id| {
+            document
+                .get_dictionary(*page_id)
+                .ok()
+                .and_then(|page| page.get(b"UserUnit").ok())
+                .and_then(|value| valid_pdf_user_unit(value, document))
+                .unwrap_or(DEFAULT_PDF_USER_UNIT)
+        })
+        .collect()
+}
+
+fn lopdf_decompression_limit_for_total_ram(total_bytes: Option<u64>) -> Option<usize> {
+    match total_bytes {
+        Some(bytes) if bytes < 8 * GIB => Some(LOW_RAM_LOPDF_STREAM_LIMIT),
+        Some(bytes) if bytes < 16 * GIB => Some(MID_RAM_LOPDF_STREAM_LIMIT),
+        // PERF (audit 2026-08-04 §W1.PB6): máy >=16GB giữ nguyên toàn năng;
+        // không xác định được RAM cũng không tự ý hạ khả năng đọc PDF hợp lệ.
+        _ => None,
+    }
+}
+
+fn lopdf_load_options_for_total_ram(total_bytes: Option<u64>) -> lopdf::LoadOptions {
+    lopdf::LoadOptions {
+        max_decompressed_size: lopdf_decompression_limit_for_total_ram(total_bytes),
+        ..Default::default()
+    }
+}
+
+fn parse_pdf_user_units(bytes: &[u8], total_bytes: Option<u64>) -> Result<Vec<f32>, String> {
+    // PAGEBOX (audit 2026-08-04 §W1.PB6): parse ngay trên buffer sẽ chuyển cho
+    // PDFium; Document lopdf được drop trước khi PDFium mở để không giữ hai bản PDF.
+    let document = lopdf::Document::load_mem_with_options(
+        bytes,
+        lopdf_load_options_for_total_ram(total_bytes),
+    )
+    .map_err(|error| {
+        format!("Không thể đọc cấu trúc trang PDF an toàn để xác định /UserUnit: {error}")
+    })?;
+    Ok(collect_pdf_user_units(&document))
+}
+
+fn validate_pdf_user_unit_page_count(
+    user_units: Vec<f32>,
+    pdfium_page_count: usize,
+) -> Result<Vec<f32>, String> {
+    if user_units.len() != pdfium_page_count {
+        return Err(format!(
+            "Số trang PDF không nhất quán giữa bộ đọc cấu trúc ({}) và bộ hiển thị ({}); từ chối hiển thị để tránh sai kích thước.",
+            user_units.len(),
+            pdfium_page_count
+        ));
+    }
+    Ok(user_units)
+}
+
+fn physical_page_dimension(raw_points: f32, user_unit: f32, fallback_points: f32) -> f32 {
+    if raw_points.is_finite() && raw_points >= 1.0 {
+        raw_points * user_unit
+    } else {
+        fallback_points
+    }
+}
+
+fn viewer_render_scale(zoom: f32, user_unit: f32) -> f32 {
+    let mut render_scale = (96.0 / 72.0) * zoom * user_unit;
+    if !render_scale.is_finite() {
+        render_scale = 1.0;
+    }
+    render_scale.max(0.01)
+}
+
+fn collect_physical_page_dimensions<F>(
+    page_count: u16,
+    user_units: &[f32],
+    fallback_width: f32,
+    fallback_height: f32,
+    mut page_size: F,
+) -> Result<Vec<(f32, f32)>, String>
+where
+    F: FnMut(u16) -> Option<(f32, f32)>,
+{
+    if user_units.len() != page_count as usize {
+        return Err("Bảng /UserUnit không khớp số trang PDF.".to_string());
+    }
+
+    Ok((0..page_count)
+        .map(|page_index| match page_size(page_index) {
+            Some((raw_width, raw_height)) => {
+                let user_unit = user_units[page_index as usize];
+                (
+                    physical_page_dimension(raw_width, user_unit, 595.0),
+                    physical_page_dimension(raw_height, user_unit, 842.0),
+                )
+            }
+            None => (fallback_width, fallback_height),
+        })
+        .collect())
+}
+
 /// Bind thư viện pdfium MỘT LẦN (OnceLock). Tách hàm để vừa dùng trong các lệnh
 /// Tìm & bind pdfium.dll. Thử các đường dẫn TUYỆT ĐỐI cạnh executable trước
 /// (release: working-dir là thư mục cài đặt, không phải thư mục exe → "./bin/" sai),
@@ -414,11 +614,11 @@ fn bind_pdfium() -> Result<Box<dyn PdfiumLibraryBindings>, String> {
     let mut dirs: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
-            dirs.push(parent.to_path_buf());            // <exe_dir>/pdfium.dll
-            dirs.push(parent.join("bin"));              // <exe_dir>/bin/pdfium.dll (resource bundle)
+            dirs.push(parent.to_path_buf()); // <exe_dir>/pdfium.dll
+            dirs.push(parent.join("bin")); // <exe_dir>/bin/pdfium.dll (resource bundle)
         }
     }
-    dirs.push(std::path::PathBuf::from("./bin"));        // dev: working-dir = src-tauri
+    dirs.push(std::path::PathBuf::from("./bin")); // dev: working-dir = src-tauri
     dirs.push(std::path::PathBuf::from("."));
     for dir in &dirs {
         let lib = Pdfium::pdfium_platform_library_name_at_path(dir);
@@ -444,7 +644,10 @@ pub fn ensure_pdfium() -> Result<&'static Pdfium, String> {
     let leaked: &'static Pdfium = Box::leak(Box::new(Pdfium::new(bindings)));
     // Nếu thread khác đã set trước (race), bản leaked này bị bỏ qua (rò rỉ nhỏ, vô hại).
     let _ = PDFIUM_STATIC.set(SyncPdfium(leaked));
-    Ok(PDFIUM_STATIC.get().map(|s| s.0).ok_or_else(|| "PDFium OnceLock empty".to_string())?)
+    Ok(PDFIUM_STATIC
+        .get()
+        .map(|s| s.0)
+        .ok_or_else(|| "PDFium OnceLock empty".to_string())?)
 }
 
 /// Mutex lock không panic khi poisoned (thread trước panic) — recover guard.
@@ -595,24 +798,62 @@ fn document_cache() -> &'static Mutex<DocumentCache<Arc<CachedDocument>>> {
     })
 }
 
-fn load_pdf_document(
-    pdfium: &'static Pdfium,
+fn read_pdf_bytes_for_identity(
     file_path: &str,
+    expected_identity: PdfFileIdentity,
+) -> Result<Vec<u8>, String> {
+    let bytes =
+        std::fs::read(file_path).map_err(|error| format!("Không đọc được file PDF: {error}"))?;
+    let observed_identity = pdf_file_identity(file_path)?;
+    if observed_identity != expected_identity || bytes.len() as u64 != expected_identity.size {
+        return Err(
+            "File PDF đã thay đổi trong lúc đang mở; vui lòng thử lại để tránh dùng dữ liệu cũ."
+                .to_string(),
+        );
+    }
+    Ok(bytes)
+}
+
+fn load_pdf_document_from_bytes(
+    pdfium: &'static Pdfium,
+    bytes: Vec<u8>,
 ) -> Result<PdfDocument<'static>, String> {
-    // I/O không giữ cache mutex; chỉ serialize đoạn thật sự chạm PDFium.
-    let bytes = std::fs::read(file_path).map_err(|e| format!("Failed to read file: {}", e))?;
+    // Buffer đã được parse /UserUnit và lopdf đã drop; chỉ còn một bản byte khi
+    // chuyển quyền sở hữu sang PDFium.
     let _load_guard = lock_mutex(&LOAD_LOCK);
     let _pdfium_guard = lock_mutex(&RENDER_LOCK);
     pdfium
         .load_pdf_from_byte_vec(bytes, None)
-        .map_err(|e| format!("Failed to open PDF: {:?}", e))
+        .map_err(|error| format!("Không mở được PDF bằng bộ hiển thị: {error:?}"))
+}
+
+fn drop_pdf_document_safely(document: PdfDocument<'static>) {
+    let _load_guard = lock_mutex(&LOAD_LOCK);
+    let _pdfium_guard = lock_mutex(&RENDER_LOCK);
+    drop(document);
 }
 
 fn build_cached_document(
     pdfium: &'static Pdfium,
     file_path: &str,
+    file_identity: PdfFileIdentity,
 ) -> Result<Arc<CachedDocument>, String> {
-    let doc = load_pdf_document(pdfium, file_path)?;
+    // I/O và parse không giữ cache/PDFium mutex. Cùng buffer này được đọc đúng một
+    // lần, parse bằng lopdf, drop parser rồi mới move vào PDFium để giảm peak RAM.
+    let bytes = read_pdf_bytes_for_identity(file_path, file_identity)?;
+    let user_units = parse_pdf_user_units(&bytes, system_total_memory_bytes())?;
+    let doc = load_pdf_document_from_bytes(pdfium, bytes)?;
+    let page_count = {
+        let _pdfium_guard = lock_mutex(&RENDER_LOCK);
+        doc.pages().len() as usize
+    };
+    let user_units = match validate_pdf_user_unit_page_count(user_units, page_count) {
+        Ok(user_units) => user_units,
+        Err(error) => {
+            drop_pdf_document_safely(doc);
+            return Err(error);
+        }
+    };
     let pool_size = get_doc_pool_size().max(1);
     let mut pool = Vec::with_capacity(pool_size);
     for _ in 0..pool_size {
@@ -625,34 +866,73 @@ fn build_cached_document(
     });
     Ok(Arc::new(CachedDocument {
         pool,
+        user_units,
+        file_identity,
         next: AtomicUsize::new(0),
     }))
+}
+
+fn cached_document_for_identity(
+    cache: &mut DocumentCache<Arc<CachedDocument>>,
+    file_path: &str,
+    file_identity: PdfFileIdentity,
+) -> (Option<Arc<CachedDocument>>, Option<Arc<CachedDocument>>) {
+    match cache.get_cloned(file_path) {
+        Some(existing) if existing.file_identity == file_identity => (Some(existing), None),
+        Some(_) => (None, cache.remove(file_path)),
+        None => (None, None),
+    }
+}
+
+fn get_or_load_cached_document_with_identity(
+    pdfium: &'static Pdfium,
+    file_path: &str,
+    file_identity: PdfFileIdentity,
+) -> Result<Arc<CachedDocument>, String> {
+    let (existing, stale) = {
+        let mut cache = lock_mutex(document_cache());
+        cached_document_for_identity(&mut cache, file_path, file_identity)
+    };
+    // Document cùng path nhưng khác size/mtime phải đóng ngoài cache mutex.
+    drop(stale);
+    if let Some(existing) = existing {
+        return Ok(existing);
+    }
+
+    // Double-checked insert: đọc/parse file bên ngoài cache mutex. Hai request đua nhau
+    // có thể cùng load; chỉ một entry cùng identity thắng.
+    let candidate = build_cached_document(pdfium, file_path, file_identity)?;
+    if pdf_file_identity(file_path)? != file_identity {
+        drop(candidate);
+        return Err(
+            "File PDF đã thay đổi trong lúc đang mở; vui lòng thử lại để tải bản mới.".to_string(),
+        );
+    }
+
+    let mut cache = lock_mutex(document_cache());
+    if let Some(existing) = cache.get_cloned(file_path) {
+        drop(cache);
+        drop(candidate);
+        if existing.file_identity == file_identity {
+            return Ok(existing);
+        }
+        // Một request khác đã nạp identity mới hơn; không ghi đè ngược bằng bản cũ.
+        return Err(
+            "File PDF đã thay đổi trong lúc đang mở; vui lòng thử lại để tải bản mới.".to_string(),
+        );
+    }
+    let removed = cache.insert(file_path.to_string(), Arc::clone(&candidate));
+    drop(cache);
+    drop(removed);
+    Ok(candidate)
 }
 
 fn get_or_load_cached_document(
     pdfium: &'static Pdfium,
     file_path: &str,
 ) -> Result<Arc<CachedDocument>, String> {
-    if let Some(existing) = {
-        let mut cache = lock_mutex(document_cache());
-        cache.get_cloned(file_path)
-    } {
-        return Ok(existing);
-    }
-
-    // Double-checked insert: đọc/parse file bên ngoài cache mutex. Hai request đua nhau
-    // có thể cùng load; chỉ một entry thắng, bản thừa drop an toàn sau khi nhả mutex.
-    let candidate = build_cached_document(pdfium, file_path)?;
-    let mut cache = lock_mutex(document_cache());
-    if let Some(existing) = cache.get_cloned(file_path) {
-        drop(cache);
-        drop(candidate);
-        return Ok(existing);
-    }
-    let removed = cache.insert(file_path.to_string(), Arc::clone(&candidate));
-    drop(cache);
-    drop(removed);
-    Ok(candidate)
+    let file_identity = pdf_file_identity(file_path)?;
+    get_or_load_cached_document_with_identity(pdfium, file_path, file_identity)
 }
 
 struct SystemFilesState(Mutex<Vec<String>>);
@@ -798,46 +1078,31 @@ async fn get_pdf_metadata(file_path: String) -> Result<serde_json::Value, String
             // PERF (audit 2026-08-02 §LOAD.3): FPDF_GetPageSizeByIndex không load page
             // và đã trả kích thước sau intrinsic rotation (đã có regression test ở print.rs).
             if let Ok(size) = pages.page_size(0) {
-                let mut w = size.width().value;
-                let mut h = size.height().value;
-                if w < 1.0 {
-                    w = 595.0;
-                }
-                if h < 1.0 {
-                    h = 842.0;
-                }
-                width_pt = w;
-                height_pt = h;
+                let user_unit = document_arc.user_unit(0)?;
+                width_pt = physical_page_dimension(size.width().value, user_unit, 595.0);
+                height_pt = physical_page_dimension(size.height().value, user_unit, 842.0);
             }
 
-            let max_to_read = std::cmp::min(num_pages, 2000);
-            for i in 0..num_pages {
-                if i < max_to_read {
-                    if let Ok(size) = pages.page_size(i) {
-                        let mut pw = size.width().value;
-                        let mut ph = size.height().value;
-                        if pw < 1.0 {
-                            pw = 595.0;
-                        }
-                        if ph < 1.0 {
-                            ph = 842.0;
-                        }
-                        all_dims.insert(
-                            (i as usize + 1).to_string(),
-                            serde_json::json!({
-                                "widthPt": pw,
-                                "heightPt": ph
-                            }),
-                        );
-                        continue;
-                    }
-                }
-
+            // PAGEBOX (audit 2026-08-04 §W1.PB6): page_size() không load trang nên
+            // đọc đủ cả tài liệu; không cho trang >2.000 mượn sai kích thước trang 1.
+            let dimensions = collect_physical_page_dimensions(
+                num_pages,
+                &document_arc.user_units,
+                width_pt,
+                height_pt,
+                |page_index| {
+                    pages
+                        .page_size(page_index)
+                        .ok()
+                        .map(|size| (size.width().value, size.height().value))
+                },
+            )?;
+            for (i, (page_width, page_height)) in dimensions.into_iter().enumerate() {
                 all_dims.insert(
-                    (i as usize + 1).to_string(),
+                    (i + 1).to_string(),
                     serde_json::json!({
-                        "widthPt": width_pt,
-                        "heightPt": height_pt
+                        "widthPt": page_width,
+                        "heightPt": page_height
                     }),
                 );
             }
@@ -872,31 +1137,32 @@ fn render_tile_jpeg(
         return Err("Access to this location is not allowed".to_string());
     }
     let _total_t0 = std::time::Instant::now();
-    // RENDER_VER: đổi token này mỗi khi thay đổi cách render/encode (LCD text, JPEG
-    // quality...) → vô hiệu MỌI tile cache cũ (RAM + đĩa) render bằng cấu hình cũ.
-    // Nếu không, tile q92/không-LCD đã lưu vẫn được đọc lại, che mất thay đổi (2026-07-06).
-    const RENDER_VER: &str = "v5_q90";
+    let file_identity = pdf_file_identity(file_path)?;
+    // TILE_RENDER_CACHE_VERSION: đổi token khi thay cách render/encode. Identity
+    // size + mtime (+ creation time nếu hệ thống có) chặn tile cũ khi file cùng path bị thay.
     // zoom LÀM TRÒN 3 chữ số trong cache_key: prefetch (FE tính computeRenderZoomPure)
     // và view chính đôi khi lệch nhau ở chữ số thập phân rất nhỏ của f32 (cùng in
     // "1.000" nhưng bit khác) → key string khác → KHÔNG trúng cache của nhau → cùng 1
     // trang render 2 lần (đo thật 2026-07-22). Gộp key theo 3 chữ số: 2 zoom chênh
     // <0.001 cho bitmap gần như giống hệt nên chia sẻ tile là an toàn → prefetch xong
     // thì view chính là CACHE HIT thật.
-    let zoom_key = format!("{:.3}", zoom);
-    let cache_key = format!(
-        "{}_{}_{}_{}_{}_{}_{}_{}_{}",
-        RENDER_VER,
+    let cache_key = tile_render_cache_key(
         file_path,
+        file_identity,
         page,
-        zoom_key,
+        zoom,
         rotation,
-        clip_x.unwrap_or(0),
-        clip_y.unwrap_or(0),
-        clip_w.unwrap_or(0),
-        clip_h.unwrap_or(0)
+        clip_x,
+        clip_y,
+        clip_w,
+        clip_h,
     );
 
-    let kind = if clip_w.is_some() && clip_h.is_some() { "tile" } else { "page" };
+    let kind = if clip_w.is_some() && clip_h.is_some() {
+        "tile"
+    } else {
+        "page"
+    };
     {
         let cache_lock = TILE_CACHE.get_or_init(|| Mutex::new(TileCache::new(500)));
         if let Ok(mut cache) = cache_lock.lock() {
@@ -904,7 +1170,11 @@ fn render_tile_jpeg(
                 let total_ms = _total_t0.elapsed().as_millis();
                 perf_log(&format!(
                     "CACHE_HIT tier=ram kind={} page={} zoom={:.3} total_ms={} bytes={}",
-                    kind, page, zoom, total_ms, data.len()
+                    kind,
+                    page,
+                    zoom,
+                    total_ms,
+                    data.len()
                 ));
                 return Ok(data);
             }
@@ -933,17 +1203,29 @@ fn render_tile_jpeg(
     }
 
     let pdfium = ensure_pdfium()?;
-    let document_arc = get_or_load_cached_document(pdfium, file_path)?;
+    let document_arc = get_or_load_cached_document_with_identity(pdfium, file_path, file_identity)?;
 
     let pool_size = document_arc.pool.len();
     let pool_idx = document_arc.next.fetch_add(1, Ordering::Relaxed) % pool_size;
-    
+
     // LAZY INITIALIZATION of the DocHandle. KHÔNG dùng get_or_init + .expect():
     // .expect() panic trong spawn_blocking → "Task panicked" che lỗi thật (file PDF
     // bị xoá/khoá/hỏng giữa phiên). Khởi tạo thủ công + propagate lỗi sạch (§15.7).
     let cell = &document_arc.pool[pool_idx];
     if cell.get().is_none() {
-        let doc = load_pdf_document(pdfium, file_path)?;
+        let bytes = read_pdf_bytes_for_identity(file_path, document_arc.file_identity)?;
+        let doc = load_pdf_document_from_bytes(pdfium, bytes)?;
+        let page_count = {
+            let _pdfium_guard = lock_mutex(&RENDER_LOCK);
+            doc.pages().len() as usize
+        };
+        if page_count != document_arc.user_units.len() {
+            drop_pdf_document_safely(doc);
+            return Err(
+                "Số trang PDF đã thay đổi trong lúc khởi tạo bộ hiển thị; vui lòng mở lại file."
+                    .to_string(),
+            );
+        }
         let candidate = DocHandle {
             pages: Mutex::new(PageLru::new(PAGE_LRU_CAP)),
             lock: Mutex::new(()),
@@ -1001,55 +1283,52 @@ fn render_tile_jpeg(
             .get(&page_index)
             .ok_or_else(|| "Page cache miss after insert".to_string())?;
 
-        let mut render_scale = (96.0 / 72.0) * zoom as f32;
-        if render_scale.is_nan() || render_scale.is_infinite() {
-            render_scale = 1.0;
-        }
+        // PAGEBOX (audit 2026-08-04 §W1.PB6): clip của frontend và metadata đều ở
+        // kích thước vật lý; nhân /UserUnit để bitmap/tile khớp đúng hệ tọa độ đó.
+        let mut render_scale = viewer_render_scale(zoom, document_arc.user_unit(page_index)?);
         // CHỈ chặn cận DƯỚI. KHÔNG clamp cận trên: clip_x/y do frontend tính ở scale
         // THẬT (zoom×dpr); nếu clamp render_scale mà translate = -x/render_scale thì tile
         // trỏ SAI vùng → mất nội dung ở zoom cao (bug viewport-tiling). An toàn OOM vì:
         // nhánh clip bị set_fixed_size ≤4000px chặn bitmap; nhánh full-page tự hạ scale
         // bằng max_dim=8000 bên dưới. Nên trần scale là THỪA và chính là thứ phá tile.
-        render_scale = render_scale.max(0.01);
-
         let render_config =
             if let (Some(x), Some(y), Some(w), Some(h)) = (clip_x, clip_y, clip_w, clip_h) {
-            let safe_w = w.clamp(1, 4000) as i32;
-            let safe_h = h.clamp(1, 4000) as i32;
-            PdfRenderConfig::new()
-                .set_clear_color(PdfColor::WHITE)
-                .set_fixed_size(safe_w, safe_h)
+                let safe_w = w.clamp(1, 4000) as i32;
+                let safe_h = h.clamp(1, 4000) as i32;
+                PdfRenderConfig::new()
+                    .set_clear_color(PdfColor::WHITE)
+                    .set_fixed_size(safe_w, safe_h)
                     .translate(
                         PdfPoints::new(-(x as f32) / render_scale),
                         PdfPoints::new(-(y as f32) / render_scale),
                     )
                     .unwrap_or_default()
-                .scale_page_by_factor(render_scale)
-                // LCD subpixel text → chữ sắc nét kiểu Acrobat (audit render 2026-07-06).
-                .use_lcd_text_rendering(true)
-        } else {
-            // VECTOR #6 FIX: Prevent PDFium OOM on extremely tall/wide documents.
-            // set_target_width scales height proportionally. If a document is 50x taller than wide,
-            // clamping width to 8000 could result in height = 400,000 (12.8GB RAM), causing STATUS_STACK_BUFFER_OVERRUN.
-            let max_dim = 8000.0_f32;
-            let width_pt = pdf_page.width().value;
-            let height_pt = pdf_page.height().value;
-            
-            if width_pt * render_scale > max_dim {
-                render_scale = max_dim / width_pt;
-            }
-            if height_pt * render_scale > max_dim {
-                render_scale = max_dim / height_pt;
-            }
-            
-            let safe_w = (width_pt * render_scale).max(1.0) as i32;
-            
-            PdfRenderConfig::new()
-                .set_clear_color(PdfColor::WHITE)
-                .set_target_width(safe_w)
-                // LCD subpixel text → chữ sắc nét kiểu Acrobat (audit render 2026-07-06).
-                .use_lcd_text_rendering(true)
-        };
+                    .scale_page_by_factor(render_scale)
+                    // LCD subpixel text → chữ sắc nét kiểu Acrobat (audit render 2026-07-06).
+                    .use_lcd_text_rendering(true)
+            } else {
+                // VECTOR #6 FIX: Prevent PDFium OOM on extremely tall/wide documents.
+                // set_target_width scales height proportionally. If a document is 50x taller than wide,
+                // clamping width to 8000 could result in height = 400,000 (12.8GB RAM), causing STATUS_STACK_BUFFER_OVERRUN.
+                let max_dim = 8000.0_f32;
+                let width_pt = pdf_page.width().value;
+                let height_pt = pdf_page.height().value;
+
+                if width_pt * render_scale > max_dim {
+                    render_scale = max_dim / width_pt;
+                }
+                if height_pt * render_scale > max_dim {
+                    render_scale = max_dim / height_pt;
+                }
+
+                let safe_w = (width_pt * render_scale).max(1.0) as i32;
+
+                PdfRenderConfig::new()
+                    .set_clear_color(PdfColor::WHITE)
+                    .set_target_width(safe_w)
+                    // LCD subpixel text → chữ sắc nét kiểu Acrobat (audit render 2026-07-06).
+                    .use_lcd_text_rendering(true)
+            };
         // RENDER_LOCK: serialize với đường in (print.rs mở doc riêng ngoài DOC_CACHE).
         // PDFium không thread-safe kể cả trên doc khác nhau.
         let _lock_t0 = std::time::Instant::now();
@@ -1133,7 +1412,11 @@ async fn render_pdf_page(
 ) -> Result<tauri::ipc::Response, String> {
     let sem = RENDER_SEMAPHORE.get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4)));
     let command_t0 = std::time::Instant::now();
-    let kind = if clip_w.is_some() && clip_h.is_some() { "tile" } else { "page" };
+    let kind = if clip_w.is_some() && clip_h.is_some() {
+        "tile"
+    } else {
+        "page"
+    };
     let sem_t0 = std::time::Instant::now();
     let _permit = sem
         .acquire()
@@ -1184,7 +1467,6 @@ async fn render_pdf_page(
         }
         Err(error) => Err(error),
     }
-
 }
 
 #[tauri::command]
@@ -1317,9 +1599,18 @@ fn supported_batch_extension(path: &std::path::Path) -> bool {
         .to_ascii_lowercase();
     matches!(
         ext.as_str(),
-        "pdf" | "doc" | "docx" | "odt" | "rtf" |
-        "xls" | "xlsx" | "ods" | "csv" |
-        "ppt" | "pptx" | "odp"
+        "pdf"
+            | "doc"
+            | "docx"
+            | "odt"
+            | "rtf"
+            | "xls"
+            | "xlsx"
+            | "ods"
+            | "csv"
+            | "ppt"
+            | "pptx"
+            | "odp"
     )
 }
 
@@ -1355,7 +1646,10 @@ fn list_batch_folder_files(folder: String) -> Result<Vec<BatchFolderFile>, Strin
     Ok(files)
 }
 
-fn unique_batch_pdf_target(output_dir: &std::path::Path, preferred_name: &str) -> Result<std::path::PathBuf, String> {
+fn unique_batch_pdf_target(
+    output_dir: &std::path::Path,
+    preferred_name: &str,
+) -> Result<std::path::PathBuf, String> {
     if !output_dir.is_dir() {
         return Err("Selected output is not a folder".to_string());
     }
@@ -1384,7 +1678,11 @@ fn unique_batch_pdf_target(output_dir: &std::path::Path, preferred_name: &str) -
     Err("Could not allocate a unique output filename".to_string())
 }
 
-fn finish_batch_temp(temp: &std::path::Path, output_dir: &std::path::Path, preferred_name: &str) -> Result<String, String> {
+fn finish_batch_temp(
+    temp: &std::path::Path,
+    output_dir: &std::path::Path,
+    preferred_name: &str,
+) -> Result<String, String> {
     // Re-check after writing the temp file so existing results are never overwritten.
     for _ in 0..10_000 {
         let target = unique_batch_pdf_target(output_dir, preferred_name)?;
@@ -1419,7 +1717,11 @@ fn batch_temp_path(output_dir: &std::path::Path) -> std::path::PathBuf {
 }
 
 #[tauri::command]
-fn write_batch_pdf(output_dir: String, preferred_name: String, contents: Vec<u8>) -> Result<String, String> {
+fn write_batch_pdf(
+    output_dir: String,
+    preferred_name: String,
+    contents: Vec<u8>,
+) -> Result<String, String> {
     if is_sensitive_write_path(&output_dir) {
         return Err("Access to this location is not allowed".to_string());
     }
@@ -1437,13 +1739,21 @@ fn write_batch_pdf(output_dir: String, preferred_name: String, contents: Vec<u8>
 }
 
 #[tauri::command]
-fn copy_batch_pdf(source: String, output_dir: String, preferred_name: String) -> Result<String, String> {
+fn copy_batch_pdf(
+    source: String,
+    output_dir: String,
+    preferred_name: String,
+) -> Result<String, String> {
     if is_sensitive_path(&source) || is_sensitive_write_path(&output_dir) {
         return Err("Access to this location is not allowed".to_string());
     }
     let source_path = std::path::Path::new(&source);
     if !source_path.is_file()
-        || !source_path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("pdf")).unwrap_or(false)
+        || !source_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("pdf"))
+            .unwrap_or(false)
     {
         return Err("Source is not a PDF file".to_string());
     }
@@ -1808,14 +2118,13 @@ fn verify_sidecar_integrity(sidecar_path: &std::path::Path) -> Result<(), String
     // Expected hash is embedded at compile time.
     // Set via: PRYNX_SIDECAR_HASH=<hash> cargo build --release
     let expected_hash = option_env!("PRYNX_SIDECAR_HASH").unwrap_or("");
-    
+
     if expected_hash.is_empty() {
-        return Err(
-            "PRYNX_SIDECAR_HASH not set at build time. \
-             Set env var before running cargo build --release.".to_string()
-        );
+        return Err("PRYNX_SIDECAR_HASH not set at build time. \
+             Set env var before running cargo build --release."
+            .to_string());
     }
-    
+
     // FAIL-CLOSED: không đọc được file sidecar = từ chối khởi động. Trên máy khách bình
     // thường file LUÔN nằm cạnh .exe nên đọc-lỗi gần như chỉ xảy ra khi bị nghịch (đổi
     // tên/chặn quyền đọc để né integrity check). Trước đây nhánh này return Ok(()) →
@@ -1847,7 +2156,7 @@ fn verify_sidecar_integrity(sidecar_path: &std::path::Path) -> Result<(), String
              The application may have been tampered with."
         ));
     }
-    
+
     log::info!("[INTEGRITY] Sidecar binary integrity verified OK");
     Ok(())
 }
@@ -1860,18 +2169,19 @@ fn verify_sidecar_integrity(sidecar_path: &std::path::Path) -> Result<(), String
 #[cfg(not(debug_assertions))]
 fn verify_frontend_integrity(app: &tauri::App) -> Result<(), String> {
     let expected_hash = option_env!("PRYNX_FRONTEND_HASH").unwrap_or("");
-    
+
     if expected_hash.is_empty() {
-        return Err(
-            "PRYNX_FRONTEND_HASH not set at build time. \
-             Set env var before running cargo build --release.".to_string()
-        );
+        return Err("PRYNX_FRONTEND_HASH not set at build time. \
+             Set env var before running cargo build --release."
+            .to_string());
     }
-    
+
     // Frontend dist is in the resource directory
-    let resource_dir = app.path().resource_dir()
+    let resource_dir = app
+        .path()
+        .resource_dir()
         .map_err(|e| format!("Cannot find resource dir: {}", e))?;
-    
+
     // Try multiple possible dist locations
     // FAIL-CLOSED: nếu KHÔNG tìm thấy nơi chứa frontend (dist/ hoặc index.html) thì
     // KHÔNG cho qua — đây là dấu hiệu bị nghịch (đổi tên/di dời file để né check).
@@ -1904,14 +2214,18 @@ fn verify_frontend_integrity(app: &tauri::App) -> Result<(), String> {
         log_self_exe_hash();
         return Ok(());
     };
-    
+
     // Hash ALL files in dist/ recursively, sorted by path for determinism
     let actual_hash = sha256_directory(&dist_dir)?;
     if actual_hash != expected_hash {
-        log::error!("[INTEGRITY] Frontend tampered! Expected={}, Got={}", expected_hash, actual_hash);
+        log::error!(
+            "[INTEGRITY] Frontend tampered! Expected={}, Got={}",
+            expected_hash,
+            actual_hash
+        );
         return Err("Security error: frontend files have been tampered with.".to_string());
     }
-    
+
     log::info!("[INTEGRITY] Frontend integrity verified OK (full directory hash)");
     Ok(())
 }
@@ -1938,18 +2252,18 @@ fn log_self_exe_hash() {
 /// Hash all files in a directory recursively, sorted by relative path.
 #[cfg(not(debug_assertions))]
 fn sha256_directory(dir: &std::path::Path) -> Result<String, String> {
-    use sha2::{Sha256, Digest};
-    
+    use sha2::{Digest, Sha256};
+
     let mut paths: Vec<std::path::PathBuf> = Vec::new();
     collect_files(dir, &mut paths)?;
     paths.sort(); // Deterministic order
-    
+
     let mut hasher = Sha256::new();
     for path in &paths {
         // Include relative path in hash (prevents file swap attacks)
         let rel = path.strip_prefix(dir).unwrap_or(path);
         hasher.update(rel.to_string_lossy().as_bytes());
-        
+
         // Include file content
         let mut file = std::fs::File::open(path)
             .map_err(|e| format!("Cannot open {}: {}", path.display(), e))?;
@@ -1965,7 +2279,7 @@ fn sha256_directory(dir: &std::path::Path) -> Result<String, String> {
             hasher.update(&buffer[..n]);
         }
     }
-    
+
     Ok(hex::encode(hasher.finalize()))
 }
 
@@ -1986,8 +2300,207 @@ fn collect_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> Re
 }
 
 #[cfg(test)]
+mod pdf_user_unit_tests {
+    use super::{
+        collect_pdf_user_units, collect_physical_page_dimensions,
+        lopdf_decompression_limit_for_total_ram, lopdf_load_options_for_total_ram,
+        parse_pdf_user_units, physical_page_dimension, tile_render_cache_key,
+        validate_pdf_user_unit_page_count, viewer_render_scale, PdfFileIdentity,
+        DEFAULT_PDF_USER_UNIT, GIB, LOW_RAM_LOPDF_STREAM_LIMIT, MID_RAM_LOPDF_STREAM_LIMIT,
+    };
+    use lopdf::{dictionary, Document, Object};
+
+    fn parsed_document_with_user_units() -> Document {
+        let mut document = Document::with_version("1.7");
+        let pages_id = document.new_object_id();
+        let indirect_unit_id = document.add_object(Object::Real(2.5));
+
+        let page_one_id = document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 100.into(), 50.into()],
+            "UserUnit" => 2,
+        });
+        let page_two_id = document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 100.into(), 50.into()],
+            "UserUnit" => indirect_unit_id,
+        });
+        let page_three_id = document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 100.into(), 50.into()],
+            "UserUnit" => 0,
+        });
+        let page_four_id = document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 100.into(), 50.into()],
+        });
+
+        document.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![
+                    page_one_id.into(),
+                    page_two_id.into(),
+                    page_three_id.into(),
+                    page_four_id.into(),
+                ],
+                "Count" => 4,
+            }),
+        );
+        let catalog_id = document.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        document.trailer.set("Root", catalog_id);
+
+        let mut bytes = Vec::new();
+        document
+            .save_to(&mut bytes)
+            .expect("ghi PDF kiểm thử vào bộ nhớ");
+        Document::load_mem(&bytes).expect("đọc lại PDF kiểm thử")
+    }
+
+    #[test]
+    fn doc_user_unit_duoc_doc_theo_tung_trang_va_gia_tri_sai_ve_mac_dinh() {
+        let document = parsed_document_with_user_units();
+
+        assert_eq!(
+            collect_pdf_user_units(&document),
+            vec![2.0, 2.5, DEFAULT_PDF_USER_UNIT, DEFAULT_PDF_USER_UNIT]
+        );
+    }
+
+    #[test]
+    fn metadata_va_render_cung_ap_dung_user_unit_mot_lan() {
+        assert_eq!(physical_page_dimension(100.0, 2.0, 595.0), 200.0);
+        assert_eq!(physical_page_dimension(50.0, 2.0, 842.0), 100.0);
+        assert_eq!(physical_page_dimension(0.0, 2.0, 595.0), 595.0);
+
+        let expected_scale = (96.0_f32 / 72.0) * 2.0;
+        assert!((viewer_render_scale(1.0, 2.0) - expected_scale).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn parser_loi_va_so_trang_lech_deu_dung_an_toan() {
+        let parse_error = parse_pdf_user_units(b"khong-phai-pdf", None).unwrap_err();
+        assert!(parse_error.contains("Không thể đọc cấu trúc trang PDF an toàn"));
+
+        let mismatch_error = validate_pdf_user_unit_page_count(vec![1.0], 2).unwrap_err();
+        assert!(mismatch_error.contains("không nhất quán"));
+        assert_eq!(
+            validate_pdf_user_unit_page_count(vec![1.0, 2.0], 2).unwrap(),
+            vec![1.0, 2.0]
+        );
+    }
+
+    #[test]
+    fn gioi_han_giai_nen_lopdf_chi_ap_dung_cho_may_it_ram() {
+        assert_eq!(
+            lopdf_decompression_limit_for_total_ram(Some(4 * GIB)),
+            Some(LOW_RAM_LOPDF_STREAM_LIMIT)
+        );
+        assert_eq!(
+            lopdf_decompression_limit_for_total_ram(Some(8 * GIB)),
+            Some(MID_RAM_LOPDF_STREAM_LIMIT)
+        );
+        assert_eq!(
+            lopdf_decompression_limit_for_total_ram(Some(15 * GIB)),
+            Some(MID_RAM_LOPDF_STREAM_LIMIT)
+        );
+        assert_eq!(
+            lopdf_decompression_limit_for_total_ram(Some(16 * GIB)),
+            None
+        );
+        assert_eq!(
+            lopdf_decompression_limit_for_total_ram(Some(64 * GIB)),
+            None
+        );
+        assert_eq!(lopdf_decompression_limit_for_total_ram(None), None);
+        assert_eq!(
+            lopdf_load_options_for_total_ram(Some(4 * GIB)).max_decompressed_size,
+            Some(LOW_RAM_LOPDF_STREAM_LIMIT)
+        );
+    }
+
+    #[test]
+    fn metadata_van_doc_kich_thuoc_sau_trang_2000() {
+        let page_count = 2_001_u16;
+        let user_units = vec![1.0; page_count as usize];
+        let mut last_page_read = None;
+
+        let dimensions =
+            collect_physical_page_dimensions(page_count, &user_units, 595.0, 842.0, |page_index| {
+                last_page_read = Some(page_index);
+                if page_index == 2_000 {
+                    Some((321.0, 654.0))
+                } else {
+                    Some((100.0, 200.0))
+                }
+            })
+            .unwrap();
+
+        assert_eq!(last_page_read, Some(2_000));
+        assert_eq!(dimensions.len(), 2_001);
+        assert_eq!(dimensions[2_000], (321.0, 654.0));
+    }
+
+    #[test]
+    fn tile_cache_tach_rieng_hai_noi_dung_cung_duong_dan() {
+        let old_identity = PdfFileIdentity {
+            size: 1_024,
+            modified_nanos: 10,
+            created_nanos: Some(1),
+        };
+        let new_identity = PdfFileIdentity {
+            size: 2_048,
+            modified_nanos: 20,
+            created_nanos: Some(2),
+        };
+
+        let old_key = tile_render_cache_key(
+            "D:/jobs/same.pdf",
+            old_identity,
+            1,
+            1.0,
+            0,
+            None,
+            None,
+            None,
+            None,
+        );
+        let new_key = tile_render_cache_key(
+            "D:/jobs/same.pdf",
+            new_identity,
+            1,
+            1.0,
+            0,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert_ne!(old_key, new_key);
+    }
+}
+
+#[cfg(test)]
 mod doc_cache_tests {
     use super::*;
+
+    fn cached_document(identity: PdfFileIdentity) -> Arc<CachedDocument> {
+        Arc::new(CachedDocument {
+            pool: Vec::new(),
+            user_units: vec![DEFAULT_PDF_USER_UNIT],
+            file_identity: identity,
+            next: AtomicUsize::new(0),
+        })
+    }
 
     #[test]
     fn lru_evicts_oldest_but_keeps_recently_touched_entry() {
@@ -2014,6 +2527,34 @@ mod doc_cache_tests {
         assert_eq!(cache.remove("doc-10"), Some(10));
         assert_eq!(cache.map.len(), 31);
         assert!(!cache.order.iter().any(|key| key == "doc-10"));
+    }
+
+    #[test]
+    fn same_path_with_new_file_identity_invalidates_cached_document() {
+        let old_identity = PdfFileIdentity {
+            size: 100,
+            modified_nanos: 1,
+            created_nanos: Some(1),
+        };
+        let new_identity = PdfFileIdentity {
+            size: 200,
+            modified_nanos: 2,
+            created_nanos: Some(2),
+        };
+        let mut cache = DocumentCache::new(Some(2));
+        assert!(cache
+            .insert(
+                "D:/jobs/same.pdf".to_string(),
+                cached_document(old_identity)
+            )
+            .is_empty());
+
+        let (hit, stale) =
+            cached_document_for_identity(&mut cache, "D:/jobs/same.pdf", new_identity);
+
+        assert!(hit.is_none());
+        assert!(stale.is_some());
+        assert!(!cache.map.contains_key("D:/jobs/same.pdf"));
     }
 
     #[test]
@@ -2062,7 +2603,8 @@ mod batch_folder_tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("prynx_{}_{}_{}", label, std::process::id(), stamp));
+        let dir =
+            std::env::temp_dir().join(format!("prynx_{}_{}_{}", label, std::process::id(), stamp));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -2071,12 +2613,13 @@ mod batch_folder_tests {
     fn batch_scan_filters_temp_and_unsupported_files() {
         let dir = test_dir("scan");
         let extension_oracle = [
-            "pdf", "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "csv",
-            "ppt", "pptx", "odp",
+            "pdf", "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "csv", "ppt", "pptx", "odp",
         ];
         for extension in extension_oracle {
             let upper = extension.to_ascii_uppercase();
-            assert!(supported_batch_extension(std::path::Path::new(&format!("source.{upper}"))));
+            assert!(supported_batch_extension(std::path::Path::new(&format!(
+                "source.{upper}"
+            ))));
             std::fs::write(dir.join(format!("source.{upper}")), b"fixture").unwrap();
         }
         std::fs::write(dir.join("~$source.DOCX"), b"lock").unwrap();
@@ -2088,7 +2631,13 @@ mod batch_folder_tests {
             .map(|extension| format!("source.{}", extension.to_ascii_uppercase()))
             .collect::<Vec<_>>();
         expected.sort_by_key(|name| name.to_ascii_lowercase());
-        assert_eq!(files.iter().map(|file| file.name.clone()).collect::<Vec<_>>(), expected);
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| file.name.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -2121,9 +2670,13 @@ mod batch_folder_tests {
             dir.to_string_lossy().to_string(),
             "report.pdf".to_string(),
             b"%PDF-new".to_vec(),
-        ).unwrap();
+        )
+        .unwrap();
 
-        assert_eq!(std::fs::read(dir.join("report.pdf")).unwrap(), b"%PDF-original");
+        assert_eq!(
+            std::fs::read(dir.join("report.pdf")).unwrap(),
+            b"%PDF-original"
+        );
         assert!(output.ends_with("report_2.pdf"));
         assert_eq!(std::fs::read(output).unwrap(), b"%PDF-new");
         std::fs::remove_dir_all(dir).unwrap();
@@ -2139,11 +2692,7 @@ mod system_file_stat_tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "prynx_stat_{}_{}",
-            std::process::id(),
-            stamp
-        ));
+        let dir = std::env::temp_dir().join(format!("prynx_stat_{}_{}", std::process::id(), stamp));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -2234,7 +2783,7 @@ pub fn run() {
                     pending.extend(args);
                 }
             }
-            
+
             if APP_STARTUP_READY.load(Ordering::Acquire) {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.unminimize();
@@ -2381,7 +2930,7 @@ pub fn run() {
             #[cfg(not(debug_assertions))]
             {
                 use tauri_plugin_shell::ShellExt;
-                
+
                 // VECTOR #3 FIX: verify tính toàn vẹn binary sidecar TRƯỚC khi chạy.
                 // FAIL-CLOSED: không phân giải được path exe (current_exe lỗi / không có parent)
                 // = từ chối chạy, KHÔNG spawn sidecar chưa verify. Trên máy thật current_exe()
@@ -2804,18 +3353,18 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("tile", |_ctx, request, responder| {
             // tile://localhost/{encoded_filepath}/{page}/{zoom}/{rot}/{cx}/{cy}/{cw}/{ch}
             let url = request.uri().to_string();
-            
+
             // Limit concurrent tile renderings to prevent STATUS_STACK_BUFFER_OVERRUN and OOM
             static TILE_SEMAPHORE: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
             let sem = TILE_SEMAPHORE.get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4)));
             let sem_clone = sem.clone();
-            
+
             tauri::async_runtime::spawn(async move {
                 let _permit = match sem_clone.acquire().await {
                     Ok(p) => p,
                     Err(_) => return, // Semaphore closed
                 };
-                
+
                 // Now we are allowed to use 1 thread from the OS blocking pool
                 let res = tauri::async_runtime::spawn_blocking(move || {
                     let mut path = url.as_str();
@@ -2828,7 +3377,7 @@ pub fn run() {
                     } else if path.starts_with("tile://") {
                         path = &path["tile://".len()..];
                     }
-                    
+
                     let parts: Vec<&str> = path.rsplitn(8, '/').collect();
                     if parts.len() < 7 {
                         return Err("Bad request".to_string());
@@ -2844,15 +3393,15 @@ pub fn run() {
                     let file_path = urlencoding::decode(&file_path_encoded)
                         .unwrap_or_else(|_| file_path_encoded.clone().into())
                         .to_string();
-                    
+
                     let clip_x = cx.filter(|&v| v != 0 || cw.unwrap_or(0) != 0);
                     let clip_y = cy.filter(|&v| v != 0 || ch.unwrap_or(0) != 0);
                     let clip_w = cw.filter(|&v| v != 0);
                     let clip_h = ch.filter(|&v| v != 0);
-                    
+
                     render_tile_jpeg(&file_path, page, zoom, rot, clip_x, clip_y, clip_w, clip_h)
                 }).await;
-                
+
                 match res {
                     Ok(Ok(jpeg_bytes)) => {
                         let resp = http::Response::builder()

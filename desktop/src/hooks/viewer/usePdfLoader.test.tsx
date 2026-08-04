@@ -57,6 +57,7 @@ describe('usePdfLoader — trạng thái tải PDF trong bộ nhớ', () => {
 
     afterEach(() => {
         vi.useRealTimers();
+        vi.unstubAllGlobals();
         delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
         vi.restoreAllMocks();
     });
@@ -184,6 +185,42 @@ describe('usePdfLoader — trạng thái tải PDF trong bộ nhớ', () => {
             { filePath: secondPath },
             undefined,
         ));
+    });
+
+    it('yêu cầu PageBox hiển thị khi Rust lỗi và phải dùng HTTP fallback', async () => {
+        Object.defineProperty(window, '__TAURI_INTERNALS__', {
+            configurable: true,
+            value: { invoke: tauriMocks.invoke },
+        });
+        tauriMocks.invoke.mockRejectedValue(new Error('PDFium metadata unavailable'));
+        const fetchMock = vi.fn().mockResolvedValue({
+            ok: true,
+            json: async () => ({
+                page_count: 1,
+                max_width_pt: 194,
+                max_height_pt: 94,
+                pages: [{ index: 0, width_pt: 194, height_pt: 94 }],
+            }),
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        const filePath = 'D:\\jobs\\cropbox.pdf';
+        const file = new File([], 'cropbox.pdf', { type: 'application/pdf' });
+        Object.defineProperty(file, 'path', { value: filePath });
+        const props = makeProps(file, 'localfile://cropbox');
+
+        const { result } = renderHook(() => usePdfLoader(props));
+
+        await waitFor(() => expect(result.current.loadStatus).toBe('ready'));
+        const [, request] = fetchMock.mock.calls[0];
+        expect(JSON.parse(request.body)).toEqual({
+            path: filePath,
+            page_box_policy: 'visible',
+        });
+        expect(result.current.pageDim).toEqual({
+            w: 194 * (96 / 72),
+            h: 94 * (96 / 72),
+        });
     });
 
     it('chỉ cảnh báo tải lâu, không tự hủy tác vụ', async () => {

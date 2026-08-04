@@ -25,6 +25,7 @@ const pageBoxes = {
     trimbox: { x0: 0, y0: 0, x1: 210, y1: 297, width: 210, height: 297 },
     bleedbox: { x0: 0, y0: 0, x1: 210, y1: 297, width: 210, height: 297 },
     artbox: { x0: 0, y0: 0, x1: 210, y1: 297, width: 210, height: 297 },
+    rotation: 0,
 };
 
 const fakeJsonResponse = (data: unknown, ok = true) => ({
@@ -99,6 +100,84 @@ describe('CropDialog interaction safety', () => {
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
         expect(onApplied).not.toHaveBeenCalled();
         expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('maps a visible /Rotate=90 selection into the raw CropBox request', async () => {
+        let cropBody: { rects_mm: Array<{ x0: number; y0: number; x1: number; y1: number }> } | undefined;
+        const rotatedBoxes = {
+            ...pageBoxes,
+            total_pages: 1,
+            mediabox: { x0: 0, y0: 0, x1: 200, y1: 100, width: 200, height: 100 },
+            cropbox: { x0: 0, y0: 0, x1: 200, y1: 100, width: 200, height: 100 },
+            rotation: 90,
+        };
+        vi.mocked(authenticatedFetch).mockImplementation((url, init) => {
+            const target = String(url);
+            if (target.includes('/page-boxes/')) return Promise.resolve(fakeJsonResponse(rotatedBoxes));
+            if (target.includes('/crop-regions')) {
+                cropBody = JSON.parse(String(init?.body));
+                return Promise.resolve(fakeJsonResponse({ success: true, output_filename: 'rotate90.pdf' }));
+            }
+            if (target.includes('/download/rotate90.pdf')) return Promise.resolve(fakeJsonResponse({}));
+            throw new Error(`Unexpected URL: ${target}`);
+        });
+
+        const onApplied = vi.fn();
+        render(<CropDialog ensureFileId={async () => 'fid'} onApplied={onApplied} onClose={vi.fn()} />);
+        openCropDialog({
+            totalPages: 1,
+            pageBox: { x0: 0, y0: 0, x1: 100, y1: 200, width: 100, height: 200 },
+            fracs: [{ x0: 0, y0: 0, x1: 1, y1: 0.5 }],
+        });
+
+        fireEvent.click(await screen.findByRole('button', { name: 'apply_crop' }));
+        await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
+
+        expect(cropBody?.rects_mm).toEqual([{ x0: 0, y0: 0, x1: 100, y1: 100 }]);
+    });
+
+    it('uses the materialized viewer page and preserves a crop through custom rotation', async () => {
+        let cropBody: {
+            page: number;
+            pages?: number[];
+            rects_mm: Array<{ x0: number; y0: number; x1: number; y1: number }>;
+        } | undefined;
+        const materializedBoxes = {
+            ...pageBoxes,
+            page: 1,
+            total_pages: 2,
+            mediabox: { x0: 0, y0: 0, x1: 200, y1: 100, width: 200, height: 100 },
+            cropbox: { x0: 0, y0: 0, x1: 200, y1: 100, width: 200, height: 100 },
+            rotation: 90,
+        };
+        vi.mocked(authenticatedFetch).mockImplementation((url, init) => {
+            const target = String(url);
+            if (target.includes('/page-boxes/')) return Promise.resolve(fakeJsonResponse(materializedBoxes));
+            if (target.includes('/crop-regions')) {
+                cropBody = JSON.parse(String(init?.body));
+                return Promise.resolve(fakeJsonResponse({ success: true, output_filename: 'working-page.pdf' }));
+            }
+            if (target.includes('/download/working-page.pdf')) return Promise.resolve(fakeJsonResponse({}));
+            throw new Error(`Unexpected URL: ${target}`);
+        });
+
+        const onApplied = vi.fn();
+        render(<CropDialog ensureFileId={async () => 'working-fid'} onApplied={onApplied} onClose={vi.fn()} />);
+        openCropDialog({
+            // Trang gốc có thể là 3, nhưng sau reorder [3,1] đây là trang làm việc số 1.
+            pageNum: 1,
+            totalPages: 2,
+            viewerRotation: 90,
+            pageBox: { x0: 0, y0: 0, x1: 200, y1: 100, width: 200, height: 100 },
+            fracs: [{ x0: 0, y0: 0, x1: 0.5, y1: 1 }],
+        });
+
+        fireEvent.click(await screen.findByRole('button', { name: 'apply_crop' }));
+        await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
+
+        expect(cropBody?.page).toBe(1);
+        expect(cropBody?.pages).toEqual([1]);
+        expect(cropBody?.rects_mm).toEqual([{ x0: 0, y0: 0, x1: 100, y1: 100 }]);
     });
 
     it('opens as a non-modal editing panel, keeps the document by default, and closes on Escape', async () => {
@@ -203,7 +282,11 @@ describe('CropDialog interaction safety', () => {
     });
     it('processes edges when enabled but never applies an unsafe pixel-only suggestion', async () => {
         let detectedMaxTrimMm: number | undefined;
-        let cropBody: { rects_mm: Array<{ x0: number; y0: number; x1: number; y1: number }>; pages?: number[] } | undefined;
+        let cropBody: {
+            rects_mm: Array<{ x0: number; y0: number; x1: number; y1: number }>;
+            display_rects_mm?: Array<{ x0: number; y0: number; x1: number; y1: number }>;
+            pages?: number[];
+        } | undefined;
         vi.mocked(authenticatedFetch).mockImplementation((url, init) => {
             const target = String(url);
             if (target.includes('/page-boxes/')) return Promise.resolve(fakeJsonResponse(pageBoxes));
@@ -252,6 +335,12 @@ describe('CropDialog interaction safety', () => {
         await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
 
         expect(cropBody?.rects_mm[0]).toEqual({
+            x0: 21,
+            y0: 29.7,
+            x1: 189,
+            y1: 267.3,
+        });
+        expect(cropBody?.display_rects_mm?.[0]).toEqual({
             x0: 21,
             y0: 29.7,
             x1: 189,

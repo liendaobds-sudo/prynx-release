@@ -24,12 +24,14 @@ MM = 2.83465
 RAW_W, RAW_H = 200.0, 100.0
 
 
-def _make_rotated(path, rotate):
+def _make_rotated(path, rotate, user_unit=1.0):
     pdf = pikepdf.Pdf.new()
     pdf.add_blank_page(page_size=(RAW_W, RAW_H))
     page = pdf.pages[0]
     if rotate:
         page.obj[pikepdf.Name("/Rotate")] = rotate
+    if user_unit != 1.0:
+        page.obj[pikepdf.Name("/UserUnit")] = user_unit
     page.obj[pikepdf.Name("/Contents")] = pdf.make_stream(
         b"0 1 0 0 K 0.5 w 10 10 180 80 re S\n"
     )
@@ -97,6 +99,32 @@ def test_preview_cell_matches_export_die_size(tmp_path, rotate):
     assert cell["height"] == pytest.approx(exp_h, abs=0.5), (
         f"/Rotate={rotate}: bề cao ô preview {cell['height']} ≠ export {exp_h}"
     )
+
+
+@pytest.mark.parametrize(
+    ("rotate", "expected_size"),
+    [
+        (0, (400.0, 200.0)),
+        (90, (200.0, 400.0)),
+        (180, (400.0, 200.0)),
+        (270, (200.0, 400.0)),
+    ],
+)
+def test_user_unit_is_baked_with_rotation(tmp_path, rotate, expected_size):
+    """`/UserUnit` phải được bake một lần rồi bỏ, kể cả khi trang có `/Rotate`."""
+    src = _make_rotated(tmp_path / f"unit2-r{rotate}.pdf", rotate, user_unit=2.0)
+
+    with nup_engine.canonical_page_space(src, f"unit2-r{rotate}") as canon:
+        assert canon != src
+        with pikepdf.Pdf.open(canon) as pdf:
+            page = pdf.pages[0].obj
+            media = [float(value) for value in page["/MediaBox"]]
+            assert (media[2] - media[0], media[3] - media[1]) == pytest.approx(
+                expected_size,
+                abs=1e-4,
+            )
+            assert int(page.get("/Rotate", 0)) == 0
+            assert "/UserUnit" not in page
 
 
 def test_rotated_page_is_the_case_that_used_to_diverge(tmp_path):

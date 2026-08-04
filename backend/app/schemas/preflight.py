@@ -149,6 +149,10 @@ class PageBoxesResponse(BaseModel):
     has_bleedbox: bool = False
     has_artbox: bool = False
     has_cropbox: bool = False
+    rotation: int = Field(
+        default=0,
+        description="Góc /Rotate nội tại của trang, đã chuẩn hóa về 0/90/180/270 độ.",
+    )
 
 
 class OcgLayerTreeResponse(BaseModel):
@@ -312,7 +316,8 @@ class CropRegionsRequest(BaseModel):
     """Crop nhiều vùng trên 1 trang → PDF nhiều trang (mỗi vùng = 1 page)."""
     file_id: str
     page: int  # 1-indexed
-    rects_mm: List[dict]  # [{x0,y0,x1,y1}, ...] mm theo CropBox đang hiển thị
+    rects_mm: List[dict]  # [{x0,y0,x1,y1}, ...] mm trong hệ CropBox PDF gốc, chưa áp /Rotate
+    display_rects_mm: Optional[List[dict]] = None  # mm theo trang hiển thị, gốc trên-trái; dùng cho range/all
     keep_other_pages: bool = False  # True = thay trang nguồn bằng N vùng, giữ phần còn lại
 
     pages: Optional[List[int]] = None  # None = chỉ page; danh sách = áp dụng cùng vùng cho các trang này

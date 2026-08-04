@@ -1,6 +1,6 @@
 # PrynX Master Audit Matrix
 
-> Cập nhật baseline: 2026-08-04 · HEAD `1bf8621` · audit W1/W2 đã được duyệt sửa theo lô.
+> Cập nhật: 2026-08-04 · branch `codex/pre-release-audit-2026-08-04` · W1 PB1–PB6 và W2 PA1–PA2 đã sửa trên worktree, chờ kiểm runtime.
 
 Tài liệu này là bản đồ độ phủ audit sống của PrynX. Nó trả lời ba câu hỏi: luồng nào đã được truy vết, bằng chứng cao nhất hiện có là gì, và khoảng trống nào cần audit tiếp. Nó **không** chứng nhận “toàn dự án không còn bug”.
 
@@ -40,8 +40,8 @@ Chỉ `[CONFIRMED]` mới được xếp severity P0–P3 trong báo cáo audit.
 
 | Wave | Trạng thái | Bằng chứng đang có | Khoảng trống còn mở | Audit unit kế tiếp |
 |---|---|---|---|---|
-| **W1 — Kích thước, đơn vị, PDF page boxes** | `AUTO` | Đợt 2026-08-04 đã xử lý 11/11 lỗi độ chính xác; formatter giữ `0,1 mm`, nhận diện `0,01 mm`; audit W1 mới xác nhận Crop rotate và Viewer fallback đang lệch. | `§W1.PB1/PB2` đã duyệt sửa; `/UserUnit` còn `[SUSPECTED]`; chưa có corpus chung Media/Crop/Trim/Bleed × rotate × mọi consumer. | Sửa lô PB1/PB2; tạo artifact N-Up `/UserUnit=2`. |
-| **W2 — Preview ↔ PDF xuất của bình bản** | `AUTO` | Mixed Guillotine dùng chung plan/`planHash`; N-Up cut-border có test artifact; audit W2 mới xác nhận Booklet preview bỏ `marginBottom`. | `§W2.PA1` đã duyệt sửa; fallback Mixed sau lỗi materialize còn `[SUSPECTED]`; thiếu corpus parity toàn bộ marks/bleed/report/duplex. | Sửa lô PA1; fault-inject materialize rồi chạy corpus preview → artifact. |
+| **W1 — Kích thước, đơn vị, PDF page boxes** | `AUTO` | PB1–PB6 đã sửa; Crop 0/90/180/270 + mixed rotation đạt artifact; N-Up `/UserUnit=1/2` cùng 4 placement/raster; backend khóa `/UserUnit=1/100`; Viewer Rust khóa identity cache, parser mismatch, RAM gate và trang 2.001. | Chưa smoke app thật; chưa có một corpus duy nhất chạy qua mọi consumer/page box; Viewer native PB6 mới ở mức tự động. | Runtime smoke Crop + Viewer `/UserUnit=2`; sau đó mở rộng corpus sang W3 utilities. |
+| **W2 — Preview ↔ PDF xuất của bình bản** | `AUTO` | PA1 truyền đủ `marginBottom`; PA2 working PDF và Mixed Guillotine fail-closed; preview/working-PDF regression đạt. | Chưa chạy app thật và chưa phủ toàn bộ marks/bleed/report/duplex bằng artifact chung. | Runtime smoke page edits → Booklet/Mixed; chạy corpus preview → artifact. |
 | **W3 — Resize/Crop/Combine/Split/Convert** | `TRACED` | Resize transparency, resize giữ tỷ lệ, Export Image, Combine và Office từng có test/artifact/runtime riêng. | Chưa có bản đồ dọc cho toàn họ công cụ; Crop/Split và nhiều nhánh convert thiếu ma trận hiện hành; thiếu corpus box/rotate/encrypted/cancel/error/large-file. Một số file resize/combine hiện đang đổi. | `W3-U01`: lập registry entry → writer → reopen cho từng PDF utility, bắt đầu Resize/Crop. |
 | **W4 — VDP và dữ liệu biến đổi** | `STALE` | Audit 2026-06 từng xác minh page-count/toạ độ/nội dung Numbering; repo có suite VDP và test gate Free/Pro mới. | `vdp.py`, DataMerge/Numbering/CoverNumbering và entitlement đã đổi sau bằng chứng artifact cũ. Chưa chạy lại CSV/XLSX/Google, rotate, multipage, barcode, preview↔output và key thật. | `W4-U01`: Data Merge CSV UTF-8/Unicode + multipage + reopen artifact; sau đó Numbering/Cover Numbering. |
 | **W5 — Dieline, nesting, export, 3D** | `AUTO` | 582 test dieline, 30/30 nesting và sidecar/WebView đã đạt trong đợt gần nhất; Flip Top Tuck có golden/property/parity; Double Tray có test pose/wiring. | Chưa nghiệm thu trực quan 2D/3D toàn catalog trên cây mã hiện tại; thiếu pixel golden WebGL, installed-sidecar và in/cắt vật lý. | `W5-U01`: catalog sweep 2D CUT/CREASE/BLEED → export PDF → fold 0–100% → installed sidecar. |
@@ -53,8 +53,8 @@ Chỉ `[CONFIRMED]` mới được xếp severity P0–P3 trong báo cáo audit.
 
 | Wave | Tài liệu chính |
 |---|---|
-| W1 | `docs/BAO_CAO_AUDIT_PAGE_BOX_W1_2026-08-04.md`; `docs/BAO_CAO_AUDIT_DO_CHINH_XAC_KICH_THUOC_UI_2026-08-04.md`; `docs/DO_CHINH_XAC_KICH_THUOC_FIXES_2026-08-04.md` |
-| W2 | `docs/BAO_CAO_AUDIT_PREVIEW_ARTIFACT_W2_2026-08-04.md`; `audit-rules.md` §6; `docs/NUP_CUT_BORDER_FIXES_2026-08-04.md`; `docs/BINH_CAT_XEN_NHIEU_KICH_THUOC_FIXES_2026-07-30.md`; `docs/DAU_XEN_MIXED_GUILLOTINE_FIXES_2026-08-01.md`; `docs/audit/AUDIT_REPORT.md` |
+| W1 | `docs/BAO_CAO_AUDIT_PAGE_BOX_W1_2026-08-04.md`; `docs/PAGE_BOX_FIXES_2026-08-04.md`; `docs/BAO_CAO_AUDIT_DO_CHINH_XAC_KICH_THUOC_UI_2026-08-04.md`; `docs/DO_CHINH_XAC_KICH_THUOC_FIXES_2026-08-04.md` |
+| W2 | `docs/BAO_CAO_AUDIT_PREVIEW_ARTIFACT_W2_2026-08-04.md`; `docs/PREVIEW_ARTIFACT_FIXES_2026-08-04.md`; `audit-rules.md` §6; `docs/NUP_CUT_BORDER_FIXES_2026-08-04.md`; `docs/BINH_CAT_XEN_NHIEU_KICH_THUOC_FIXES_2026-07-30.md`; `docs/DAU_XEN_MIXED_GUILLOTINE_FIXES_2026-08-01.md` |
 | W3 | `docs/RESIZE_TRANSPARENCY_FIXES_2026-08-03.md`; `docs/RESIZE_GIU_TY_LE_TUNG_TRANG_FIXES_2026-08-01.md`; `docs/XUAT_ANH_FIXES_2026-07-31.md`; `docs/COMBINE_PNG_LOADING_FIXES_2026-08-01.md`; `docs/LUONG_MO_FILE_FIXES_2026-08-02.md` |
 | W4 | `docs/audit/AUDIT_REPORT.md`; `docs/audit/PERFORMANCE_REAUDIT_2026-07-23.md`; `docs/BAO_CAO_AUDIT_UIUX_2026-07-27.md`; `docs/FREE_PRO_FIXES_2026-08-04.md` |
 | W5 | `audit-rules.md`; `docs/audit/PACKAGING_DIELINE_AUDIT_2026-07-19.md`; `docs/FLIP_TOP_TUCK_FIXES_2026-08-02.md`; `docs/DOUBLE_TRAY_FIXES_2026-07-27.md`; `docs/DO_CHINH_XAC_KICH_THUOC_FIXES_2026-08-04.md` |
@@ -68,8 +68,8 @@ Chỉ `[CONFIRMED]` mới được xếp severity P0–P3 trong báo cáo audit.
 
 | Thứ tự | Mã | Luồng cần chốt | Bất biến/artifact phải kiểm | Hiện trạng |
 |---:|---|---|---|---|
-| 1 | `W1-U01` | Mọi reader/writer đọc PDF page boxes | mm ↔ pt không mất số lẻ; rotate; Media/Crop/Trim/Bleed; reopen cùng kích thước | `AUTO` — PB1/PB2 mở |
-| 2 | `W2-U01` | N-Up từ form đến PDF mở lại | preview plan = placement thật; marks/bleed/cut-border đúng page box | `AUTO` — PA1 mở |
+| 1 | `W1-U01` | Mọi reader/writer đọc PDF page boxes | mm ↔ pt không mất số lẻ; rotate; Media/Crop/Trim/Bleed; reopen cùng kích thước | `AUTO`; các nhánh Crop/N-Up đạt `ARTIFACT`, PB1–PB6 đã sửa, chờ runtime Viewer/app |
+| 2 | `W2-U01` | N-Up từ form đến PDF mở lại | preview plan = placement thật; marks/bleed/cut-border đúng page box | `AUTO`; PA1/PA2 đã sửa, chờ corpus artifact/runtime chung |
 | 3 | `W2-U02` | Booklet/Step Repeat/Sticker/CNC | page order, duplex, creep, rotation, marks và report khớp artifact | `UNKNOWN` |
 | 4 | `W3-U01` | Resize + Crop | transparency, content transform, box policy, số lẻ mm, mixed pages | `STALE` |
 | 5 | `W3-U02` | Combine + Split + Convert | order, page boxes, metadata, encrypted/error/cancel và reopen | `TRACED` một phần |
@@ -179,3 +179,7 @@ Không build/publish GitHub chỉ để nâng W8. Internal build/installed smoke
 |---|---|---|
 | 2026-08-04 | Khởi tạo 8 wave, thang bằng chứng, hàng đợi audit unit và baseline scanner. | Tài liệu audit/fixes hiện có + scanner self-test 17 ca + baseline 1.157 file/0 lỗi đọc. |
 | 2026-08-04 | Audit W1/W2 trên baseline `1bf8621`; xác nhận PB1, PB2 và PA1; giữ PB3/PA2 ở mức nghi vấn. | Hai báo cáo W1/W2 + harness PageBox/UserUnit + test production `computeSpreadGrid`. |
+| 2026-08-04 | Sửa `§W1.PB1`; ánh xạ crop rotate-aware và giữ kích thước theo hướng hiển thị. | `docs/PAGE_BOX_FIXES_2026-08-04.md`; 32 test frontend + 28 test backend + artifact raster bốn góc. |
+| 2026-08-04 | Review PB1 xác nhận thêm `§W1.PB4` range/all sai vùng với mixed rotation; giữ PB5 ở mức nghi vấn. | Artifact hai trang 0°/90° có marker bốn màu; phụ lục báo cáo W1. |
+| 2026-08-04 | Xác nhận và sửa PB2–PB6, gồm working PDF strict, canonical page space và `/UserUnit` xuyên backend/Viewer native; khép cache cùng path, peak RAM/parser và metadata >2.000 trang. | `PAGE_BOX_FIXES_2026-08-04.md`; frontend full 1.857 test + typecheck + lint budget; backend full 2.238 test; Rust 56 test + cargo check locked. |
+| 2026-08-04 | Sửa PA1/PA2; preview Booklet nhận đủ lề dưới và mọi page edit fail-closed nếu không materialize được. | `PREVIEW_ARTIFACT_FIXES_2026-08-04.md`; fault-injection + Mixed page-count guard. |

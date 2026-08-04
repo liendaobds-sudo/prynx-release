@@ -62,6 +62,29 @@ def _rough_rects(positions: list[tuple[float, float]]) -> list[dict]:
     ]
 
 
+def _make_user_unit_pdf(path: Path, user_unit: float = 2.0) -> None:
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(100.0, 50.0))
+    page.obj[pikepdf.Name("/UserUnit")] = user_unit
+    page.obj[pikepdf.Name("/CropBox")] = pikepdf.Array([10.0, 5.0, 90.0, 45.0])
+    page.obj[pikepdf.Name("/Contents")] = pdf.make_stream(
+        b"0 0 0 rg 0 0 100 50 re f\n",
+    )
+    pdf.save(str(path))
+    pdf.close()
+
+
+def _physical_box_size(path: str, box_name: str = "/MediaBox") -> tuple[float, float]:
+    with pikepdf.Pdf.open(path) as pdf:
+        page = pdf.pages[0].obj
+        unit = float(page.get("/UserUnit", 1))
+        box = [float(value) for value in page[box_name]]
+        return (
+            (box[2] - box[0]) * unit / PT_PER_MM,
+            (box[3] - box[1]) * unit / PT_PER_MM,
+        )
+
+
 def test_detect_and_crop_two_card_faces_preserves_white_artwork(tmp_path: Path):
     source = tmp_path / "two-cards.pdf"
     positions = _make_two_card_pdf(source)
@@ -132,6 +155,126 @@ def test_crop_clamps_regions_to_visible_cropbox(tmp_path: Path):
         expected = [0.0, 0.0, 260.0, 180.0]
         assert list(map(float, cropped.pages[0].MediaBox)) == pytest.approx(expected, abs=0.01)
         assert list(map(float, cropped.pages[0].TrimBox)) == pytest.approx(expected, abs=0.01)
+
+
+def test_user_unit_page_boxes_and_exact_crop_use_physical_mm(tmp_path: Path):
+    """PAGEBOX (audit 2026-08-04 §W1.PB6): không nhân kích thước Crop hai lần."""
+    source = tmp_path / "user-unit-2.pdf"
+    _make_user_unit_pdf(source)
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path / "output-user-unit"
+    engine.output_dir.mkdir()
+
+    boxes = engine.get_boxes(str(source), 1)
+    assert boxes["mediabox"]["width"] == pytest.approx(200 / PT_PER_MM, abs=0.01)
+    assert boxes["mediabox"]["height"] == pytest.approx(100 / PT_PER_MM, abs=0.01)
+    assert boxes["cropbox"]["width"] == pytest.approx(160 / PT_PER_MM, abs=0.01)
+    assert boxes["cropbox"]["height"] == pytest.approx(80 / PT_PER_MM, abs=0.01)
+
+    output = engine.crop_regions_to_pages(
+        str(source),
+        1,
+        [{"x0": 10.0, "y0": 5.0, "x1": 30.0, "y1": 15.0}],
+    )
+    assert _physical_box_size(output) == pytest.approx((20.0, 10.0), abs=0.01)
+    cropped_boxes = engine.get_boxes(output, 1)
+    assert cropped_boxes["mediabox"]["width"] == pytest.approx(20.0, abs=0.01)
+    assert cropped_boxes["mediabox"]["height"] == pytest.approx(10.0, abs=0.01)
+
+
+def test_set_page_boxes_converts_physical_mm_through_user_unit(tmp_path: Path):
+    source = tmp_path / "user-unit-set-boxes.pdf"
+    _make_user_unit_pdf(source)
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path / "output-set-user-unit"
+    engine.output_dir.mkdir()
+
+    output = engine.set_boxes(
+        str(source),
+        "cropbox",
+        {"x0": 5.0, "y0": 5.0, "x1": 25.0, "y1": 15.0},
+        pages=[1],
+    )
+
+    assert _physical_box_size(output) == pytest.approx((20.0, 10.0), abs=0.01)
+
+
+def test_crop_range_keeps_physical_size_across_mixed_user_units(tmp_path: Path):
+    """PB6: cùng vùng mm không được đổi kích thước giữa các trang khác `/UserUnit`."""
+    source = tmp_path / "mixed-user-units.pdf"
+    pdf = pikepdf.Pdf.new()
+    pdf.add_blank_page(page_size=(200.0, 100.0))
+    second = pdf.add_blank_page(page_size=(100.0, 50.0))
+    second.obj[pikepdf.Name("/UserUnit")] = 2.0
+    pdf.save(source)
+    pdf.close()
+
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path / "output-mixed-user-units"
+    engine.output_dir.mkdir()
+    output = engine.crop_regions_to_pages(
+        str(source),
+        1,
+        [{"x0": 10.0, "y0": 5.0, "x1": 30.0, "y1": 15.0}],
+        pages=[1, 2],
+    )
+
+    with pikepdf.Pdf.open(output) as cropped:
+        assert len(cropped.pages) == 2
+        physical_sizes = []
+        for page in cropped.pages:
+            unit = float(page.get("/UserUnit", 1) or 1)
+            box = [float(value) for value in page.MediaBox]
+            physical_sizes.append((
+                (box[2] - box[0]) * unit / PT_PER_MM,
+                (box[3] - box[1]) * unit / PT_PER_MM,
+            ))
+    assert physical_sizes[0] == pytest.approx((20.0, 10.0), abs=0.01)
+    assert physical_sizes[1] == pytest.approx((20.0, 10.0), abs=0.01)
+
+
+def test_edge_detection_thresholds_and_results_use_physical_user_unit_mm(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """PB6: ngưỡng 3 mm và kết quả API phải là mm vật lý, không phải raw unit."""
+    import app.core.page_boxes as page_boxes
+    import pypdfium2.raw as pdfium_c
+
+    source = tmp_path / "user-unit-detect.pdf"
+    _make_user_unit_pdf(source)
+    unit = 2.0
+    visible = [10.0, 5.0, 90.0, 45.0]
+    inset_raw = 3.0 * PT_PER_MM / unit
+    candidate = [
+        visible[0] + inset_raw,
+        visible[1] + inset_raw,
+        visible[2] - inset_raw,
+        visible[3] - inset_raw,
+    ]
+    monkeypatch.setattr(
+        page_boxes,
+        "_pdfium_object_candidates",
+        lambda *_args: [(candidate, int(pdfium_c.FPDF_PAGEOBJ_PATH))],
+    )
+    rough = {
+        "x0": visible[0] * unit / PT_PER_MM,
+        "y0": visible[1] * unit / PT_PER_MM,
+        "x1": visible[2] * unit / PT_PER_MM,
+        "y1": visible[3] * unit / PT_PER_MM,
+    }
+
+    result = PageBoxesEngine().detect_crop_regions(
+        str(source), 1, [rough], max_trim_mm=5.0,
+    )["regions"][0]
+
+    assert result["changed"] is True
+    assert result["method"] == "object"
+    assert result["trim_mm"] == {
+        "left": 3.0, "bottom": 3.0, "right": 3.0, "top": 3.0,
+    }
+    assert result["rect_mm"]["x0"] == pytest.approx(rough["x0"] + 3.0, abs=0.01)
+    assert result["rect_mm"]["y0"] == pytest.approx(rough["y0"] + 3.0, abs=0.01)
 
 
 def test_crop_can_replace_source_page_and_preserve_document_order(tmp_path: Path):
@@ -244,6 +387,114 @@ def test_crop_pixel_mapping_round_trips_all_page_rotations(rotation: int):
     assert restored == pytest.approx(rect, abs=0.01)
 
 
+@pytest.mark.parametrize(
+    ("rotation", "raw_rect", "expected_rgb", "expected_display_size"),
+    [
+        (0, [0, 50, 100, 100], (30, 180, 70), (100, 50)),
+        (90, [0, 0, 100, 50], (220, 30, 30), (50, 100)),
+        (180, [100, 0, 200, 50], (30, 80, 220), (100, 50)),
+        (270, [100, 50, 200, 100], (230, 190, 20), (50, 100)),
+    ],
+)
+def test_visible_top_left_quarter_crops_and_reopens_for_every_rotation(
+    tmp_path: Path,
+    rotation: int,
+    raw_rect: list[float],
+    expected_rgb: tuple[int, int, int],
+    expected_display_size: tuple[int, int],
+):
+    """Khóa artifact cho cùng bảng ánh xạ /Rotate mà CropDialog sử dụng."""
+    source = tmp_path / f"crop-rotate-{rotation}.pdf"
+    pdf = canvas.Canvas(str(source), pagesize=(200, 100))
+    for color, x, y in (
+        (HexColor("#DC1E1E"), 0, 0),
+        (HexColor("#1E50DC"), 100, 0),
+        (HexColor("#1EB446"), 0, 50),
+        (HexColor("#E6BE14"), 100, 50),
+    ):
+        pdf.setFillColor(color)
+        pdf.rect(x, y, 100, 50, fill=1, stroke=0)
+    pdf.showPage()
+    pdf.save()
+    with pikepdf.Pdf.open(source, allow_overwriting_input=True) as doc:
+        doc.pages[0].Rotate = rotation
+        doc.save(source)
+
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path / f"output-{rotation}"
+    engine.output_dir.mkdir()
+    assert engine.get_boxes(str(source), 1)["rotation"] == rotation
+
+    x0, y0, x1, y1 = raw_rect
+    output = engine.crop_regions_to_pages(
+        str(source),
+        1,
+        [{
+            "x0": x0 / PT_PER_MM,
+            "y0": y0 / PT_PER_MM,
+            "x1": x1 / PT_PER_MM,
+            "y1": y1 / PT_PER_MM,
+        }],
+    )
+
+    rendered = pdfium.PdfDocument(output)
+    try:
+        image = np.asarray(rendered[0].render(scale=1).to_pil().convert("RGB"))
+    finally:
+        rendered.close()
+    assert (image.shape[1], image.shape[0]) == expected_display_size
+    center_patch = image[
+        image.shape[0] // 2 - 2:image.shape[0] // 2 + 3,
+        image.shape[1] // 2 - 2:image.shape[1] // 2 + 3,
+    ]
+    assert tuple(np.mean(center_patch, axis=(0, 1))) == pytest.approx(expected_rgb, abs=5)
+
+
+def test_crop_range_uses_same_display_coordinates_across_mixed_rotations(tmp_path: Path):
+    """PB4: cùng khung nhìn phải chọn đúng nội dung trên từng /Rotate."""
+    source = tmp_path / "crop-mixed-rotations.pdf"
+    pdf = canvas.Canvas(str(source), pagesize=(200, 100))
+    for _ in range(2):
+        for color, x, y in (
+            (HexColor("#DC1E1E"), 0, 0),
+            (HexColor("#1E50DC"), 100, 0),
+            (HexColor("#1EB446"), 0, 50),
+            (HexColor("#E6BE14"), 100, 50),
+        ):
+            pdf.setFillColor(color)
+            pdf.rect(x, y, 100, 50, fill=1, stroke=0)
+        pdf.showPage()
+    pdf.save()
+    with pikepdf.Pdf.open(source, allow_overwriting_input=True) as doc:
+        doc.pages[0].Rotate = 0
+        doc.pages[1].Rotate = 90
+        doc.save(source)
+
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path / "output-mixed-rotations"
+    engine.output_dir.mkdir()
+    raw_rect = {"x0": 0, "y0": 50 / PT_PER_MM, "x1": 100 / PT_PER_MM, "y1": 100 / PT_PER_MM}
+    display_rect = {"x0": 0, "y0": 0, "x1": 100 / PT_PER_MM, "y1": 50 / PT_PER_MM}
+    output = engine.crop_regions_to_pages(
+        str(source), 1, [raw_rect], pages=[1, 2], display_rects_mm=[display_rect],
+    )
+
+    rendered = pdfium.PdfDocument(output)
+    try:
+        first = np.asarray(rendered[0].render(scale=1).to_pil().convert("RGB"))
+        second = np.asarray(rendered[1].render(scale=1).to_pil().convert("RGB"))
+    finally:
+        rendered.close()
+
+    # Cả hai trang giữ đúng khung hiển thị 100×50 pt. Trang 0° lấy trọn ô xanh
+    # lá; trang 90° lấy cùng tọa độ mm nên gồm nửa đỏ bên trái, nửa xanh lá bên phải.
+    assert (first.shape[1], first.shape[0]) == (100, 50)
+    assert (second.shape[1], second.shape[0]) == (100, 50)
+    assert tuple(np.mean(first[20:30, 45:55], axis=(0, 1))) == pytest.approx((30, 180, 70), abs=5)
+    assert tuple(np.mean(second[20:30, 20:30], axis=(0, 1))) == pytest.approx((220, 30, 30), abs=5)
+    assert tuple(np.mean(second[20:30, 70:80], axis=(0, 1))) == pytest.approx((30, 180, 70), abs=5)
+
+
 def test_edge_detection_preserves_declared_bleedbox(tmp_path: Path):
     source = tmp_path / "declared-bleed.pdf"
     page_w, page_h = 110.0, 60.0
@@ -310,6 +561,34 @@ def test_structural_detection_prefers_outermost_artwork_boundary():
     detected = _choose_structural_crop_box(rough, [inner_image, outer_path], 5 * PT_PER_MM)
 
     assert detected == pytest.approx(outer_path[0])
+
+
+@pytest.mark.parametrize("user_unit", [1.0, 100.0])
+def test_structural_detection_score_is_invariant_across_user_unit(user_unit: float):
+    """PB6: cùng hai boundary vật lý phải chọn giống nhau ở mọi `/UserUnit`."""
+    import pypdfium2.raw as pdfium_c
+
+    raw_per_mm = PT_PER_MM / user_unit
+    rough = [0.0, 0.0, 100.0 * raw_per_mm, 60.0 * raw_per_mm]
+    # Hai boundary cố ý nằm hai phía của lỗi cũ: sàn `1.0` raw unit chọn B ở
+    # `/UserUnit=1` nhưng lại chọn A ở `/UserUnit=100` dù hình học vật lý như nhau.
+    candidate_a_mm = [2.0, 0.0, 98.0, 60.0]
+    candidate_b_mm = [0.0, 1.209, 100.0, 58.791]
+    candidates = [
+        ([value * raw_per_mm for value in candidate], int(pdfium_c.FPDF_PAGEOBJ_PATH))
+        for candidate in (candidate_a_mm, candidate_b_mm)
+    ]
+
+    detected = _choose_structural_crop_box(
+        rough,
+        candidates,
+        5.0 * raw_per_mm,
+        user_unit,
+    )
+    assert detected is not None
+    detected_mm = [value / raw_per_mm for value in detected]
+
+    assert detected_mm == pytest.approx(candidate_b_mm, abs=1e-6)
 
 
 def test_raster_cards_on_uniform_background_are_safely_split(tmp_path: Path):

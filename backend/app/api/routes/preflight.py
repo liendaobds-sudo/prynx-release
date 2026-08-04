@@ -1076,6 +1076,7 @@ async def crop_regions(req: CropRegionsRequest):
             req.rects_mm,
             req.keep_other_pages,
             req.pages,
+            req.display_rects_mm,
         )
         return {
             "success": True,

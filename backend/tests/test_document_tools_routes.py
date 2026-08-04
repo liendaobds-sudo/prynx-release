@@ -5,6 +5,7 @@ import threading
 from pathlib import Path
 
 import pytest
+import pikepdf
 from fastapi import HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pypdf import PdfReader, PdfWriter
@@ -77,6 +78,57 @@ def test_pdf_meta_returns_guillotine_footprint_for_every_page(tmp_path):
         (page["guillotine_width_pt"], page["guillotine_height_pt"])
         for page in result["pages"]
     ] == [(180.0, 80.0), (120.0, 70.0)]
+
+
+def test_pdf_meta_visible_policy_matches_cropbox_without_changing_imposition_default(tmp_path):
+    """Viewer fallback dùng CropBox nhìn thấy; bình bản vẫn giữ policy MediaBox."""
+    source = tmp_path / "viewer-visible-page-box.pdf"
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=200, height=100)
+    page.cropbox = RectangleObject((3, 3, 197, 97))
+    with source.open("wb") as stream:
+        writer.write(stream)
+
+    imposition = routes._get_pdf_meta({"path": str(source)})
+    visible = routes._get_pdf_meta({
+        "path": str(source),
+        "page_box_policy": "visible",
+    })
+
+    assert (
+        imposition["pages"][0]["width_pt"],
+        imposition["pages"][0]["height_pt"],
+    ) == (200.0, 100.0)
+    assert (
+        visible["pages"][0]["width_pt"],
+        visible["pages"][0]["height_pt"],
+    ) == (194.0, 94.0)
+    assert (visible["max_width_pt"], visible["max_height_pt"]) == (194.0, 94.0)
+
+
+def test_pdf_meta_applies_user_unit_to_all_physical_measurements(tmp_path):
+    """PAGEBOX (audit 2026-08-04 §W1.PB3): mọi khổ/bleed cùng hệ point vật lý."""
+    source = tmp_path / "user-unit-meta.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=100, height=50)
+    with source.open("wb") as stream:
+        writer.write(stream)
+    with pikepdf.Pdf.open(source, allow_overwriting_input=True) as pdf:
+        page = pdf.pages[0].obj
+        page[pikepdf.Name("/UserUnit")] = 2
+        page[pikepdf.Name("/TrimBox")] = pikepdf.Array([5, 5, 95, 45])
+        pdf.save(source)
+
+    result = routes._get_pdf_meta({"path": str(source)})
+    page = result["pages"][0]
+
+    assert (page["width_pt"], page["height_pt"]) == (200.0, 100.0)
+    assert (page["media_width_pt"], page["media_height_pt"]) == (200.0, 100.0)
+    assert (page["guillotine_width_pt"], page["guillotine_height_pt"]) == (
+        180.0,
+        80.0,
+    )
+    assert result["detected_bleed_mm"] == pytest.approx(3.53, abs=0.01)
 
 
 @pytest.mark.asyncio

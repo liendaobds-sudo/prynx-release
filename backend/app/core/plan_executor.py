@@ -10,6 +10,7 @@ Rewritten from pypdfium2 raw API to pikepdf for:
 This module replaces the role of pdf-lib's Renderer/SpreadPlacer
 on the Frontend, enabling near-zero RAM usage for large PDFs.
 """
+import contextlib
 import math
 import logging
 import os
@@ -23,6 +24,57 @@ logger = logging.getLogger(__name__)
 
 class PlanExecutionError(Exception):
     pass
+
+
+def _read_source_page_space(source_pdf_path: str) -> tuple[list[int], bool]:
+    """Đọc góc gốc và xác định file có cần chuẩn hóa sang point vật lý không."""
+    import pikepdf
+
+    rotations: list[int] = []
+    needs_canonicalization = False
+    with pikepdf.Pdf.open(source_pdf_path) as pdf:
+        for page_number, page in enumerate(pdf.pages, start=1):
+            raw_rotation = page.get('/Rotate', 0) or 0
+            try:
+                rotation_value = float(raw_rotation)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise PlanExecutionError(
+                    f"Trang {page_number} có /Rotate không hợp lệ: {raw_rotation}"
+                ) from exc
+            rounded_rotation = round(rotation_value)
+            if (
+                not math.isfinite(rotation_value)
+                or abs(rotation_value - rounded_rotation) > 1e-9
+            ):
+                raise PlanExecutionError(
+                    f"Trang {page_number} có /Rotate không hợp lệ: {raw_rotation}"
+                )
+            rotation = int(rounded_rotation) % 360
+            if rotation not in (0, 90, 180, 270):
+                raise PlanExecutionError(
+                    f"Trang {page_number} có /Rotate không hợp lệ: {raw_rotation}"
+                )
+            rotations.append(rotation)
+
+            try:
+                user_unit = float(page.get('/UserUnit', 1) or 1)
+            except (TypeError, ValueError, OverflowError):
+                user_unit = 1.0
+            if not math.isfinite(user_unit) or user_unit <= 0:
+                user_unit = 1.0
+
+            try:
+                media_box = [float(value) for value in page.MediaBox]
+                has_shifted_origin = (
+                    abs(media_box[0]) > 0.01 or abs(media_box[1]) > 0.01
+                )
+            except Exception:
+                has_shifted_origin = False
+
+            if rotation or abs(user_unit - 1.0) > 1e-12 or has_shifted_origin:
+                needs_canonicalization = True
+
+    return rotations, needs_canonicalization
 
 
 class PlanExecutor:
@@ -55,6 +107,10 @@ class PlanExecutor:
             Absolute path to the output PDF file.
         """
         perf_stages = None
+        cleanup_stack = contextlib.ExitStack()
+        src_doc = None
+        output_doc = None
+        temp_doc = None
         try:
             from app.core.perf_sampler import PerfStages, perf_enabled
             if perf_enabled():
@@ -77,8 +133,28 @@ class PlanExecutor:
 
             os.makedirs(output_dir, exist_ok=True)
 
-            logger.info(f"PlanExecutor: Loading source PDF from {src_path}")
-            src_doc = pdf_lib.open(src_path)
+            # PAGEBOX (audit 2026-08-04 §W1.PB3): pikepdf đưa `/UserUnit` và
+            # `/Rotate` vào Matrix của Form XObject. Planner cũng đã tính hai giá
+            # trị này vào kích thước/góc, nên mở file thô ở đây sẽ phóng và xoay
+            # lần hai rồi clip mất nội dung. Chuẩn hóa một lần trước mọi nhánh render.
+            source_native_rotations, source_needs_canonicalization = (
+                _read_source_page_space(src_path)
+            )
+            from app.workers.nup_engine import canonical_page_space
+            canonical_src_path = cleanup_stack.enter_context(
+                canonical_page_space(src_path, "booklet-plan")
+            )
+            if (
+                source_needs_canonicalization
+                and os.path.normcase(os.path.abspath(canonical_src_path))
+                == os.path.normcase(os.path.abspath(src_path))
+            ):
+                raise PlanExecutionError(
+                    "Không thể chuẩn hóa hệ tọa độ PDF; đã dừng để tránh xuất sai kích thước."
+                )
+
+            logger.info(f"PlanExecutor: Loading source PDF from {canonical_src_path}")
+            src_doc = pdf_lib.open(canonical_src_path)
             total_src_pages = src_doc.page_count
 
             logger.info(f"PlanExecutor: Source has {total_src_pages} pages. Rendering {len(sheets)} sheets.")
@@ -89,8 +165,6 @@ class PlanExecutor:
                 perf_stages.mark("source_open_s")
 
             phase2 = instruction_json.get("phase2")
-            temp_doc = None
-
             if phase2:
                 # ── Phase-2 (Step&Repeat / Fold Pattern / Cut&Stack) ──
                 # 1) Render từng "spread" (mỗi sheet.front) ra doc tạm.
@@ -101,7 +175,14 @@ class PlanExecutor:
                 for sheet_data in sheets:
                     front = sheet_data.get("front") or {"placements": [], "marks": []}
                     tp = temp_doc.new_page(width=spread_w, height=spread_h)
-                    _render_placements(tp, src_doc, front, spread_h, total_src_pages)
+                    _render_placements(
+                        tp,
+                        src_doc,
+                        front,
+                        spread_h,
+                        total_src_pages,
+                        source_native_rotations,
+                    )
 
                 n_spreads = len(sheets)
                 plates = phase2.get("plates", [])
@@ -139,7 +220,7 @@ class PlanExecutor:
                     if front and (front.get("placements") or front.get("marks")):
                         _render_side(
                             output_doc, src_doc, sheet_w, sheet_h,
-                            front, total_src_pages
+                            front, total_src_pages, source_native_rotations,
                         )
 
                     # Render back side
@@ -147,7 +228,7 @@ class PlanExecutor:
                     if back and (back.get("placements") or back.get("marks")):
                         _render_side(
                             output_doc, src_doc, sheet_w, sheet_h,
-                            back, total_src_pages
+                            back, total_src_pages, source_native_rotations,
                         )
 
             # Save output — tên file UNIQUE (uuid) để 2 job booklet đồng thời / nhiều
@@ -167,14 +248,9 @@ class PlanExecutor:
                     continue
                 src_page = src_doc[src_idx]
                 src_box = effective_imposition_box(src_page)
-                user_unit = 1.0
-                try:
-                    if '/UserUnit' in src_page._page:
-                        user_unit = float(src_page._page['/UserUnit'])
-                except Exception:
-                    pass
-                src_w = float(src_box.width) * user_unit
-                src_h = float(src_box.height) * user_unit
+                # File nguồn đã canonicalize: box ở point vật lý và /Rotate = 0.
+                src_w = float(src_box.width)
+                src_h = float(src_box.height)
                 native_rotation = int(getattr(src_page, 'rotation', 0) or 0) % 360
                 total_rotation = (native_rotation + user_rotation) % 360
                 if total_rotation in (90, 270):
@@ -218,9 +294,13 @@ class PlanExecutor:
 
             # Cleanup
             src_doc.close()
+            src_doc = None
             output_doc.close()
+            output_doc = None
             if temp_doc is not None:
                 temp_doc.close()
+                temp_doc = None
+            cleanup_stack.close()
             if perf_stages is not None:
                 perf_stages.mark("watermark_cleanup_s")
 
@@ -288,6 +368,15 @@ class PlanExecutor:
         except Exception as e:
             logger.error(f"PlanExecutor failed: {e}", exc_info=True)
             raise PlanExecutionError(f"Execution failed: {str(e)}")
+        finally:
+            for document in (temp_doc, output_doc, src_doc):
+                if document is None:
+                    continue
+                try:
+                    document.close()
+                except Exception:
+                    pass
+            cleanup_stack.close()
 
 
 def _render_side(
@@ -297,10 +386,18 @@ def _render_side(
     sheet_h: float,
     side_data: dict,
     total_src_pages: int,
+    source_native_rotations: list[int],
 ):
     """Render one side (front or back) of a press sheet using pikepdf."""
     out_page = output_doc.new_page(width=sheet_w, height=sheet_h)
-    _render_placements(out_page, src_doc, side_data, sheet_h, total_src_pages)
+    _render_placements(
+        out_page,
+        src_doc,
+        side_data,
+        sheet_h,
+        total_src_pages,
+        source_native_rotations,
+    )
 
 
 def _render_placements(
@@ -309,6 +406,7 @@ def _render_placements(
     side_data: dict,
     sheet_h: float,
     total_src_pages: int,
+    source_native_rotations: list[int],
 ):
     """Render source-page placements + marks onto an EXISTING output page."""
 
@@ -338,17 +436,6 @@ def _render_placements(
         src_w = src_box.width
         src_h = src_box.height
         
-        # Read UserUnit if present in the page dictionary
-        user_unit = 1.0
-        try:
-            if "/UserUnit" in src_page._page:
-                user_unit = float(src_page._page["/UserUnit"])
-        except Exception:
-            pass
-        
-        src_w *= user_unit
-        src_h *= user_unit
-
         # Build clip rect for source page (what area of the source to show)
         clip_rect = src_box
         output_clip_rect = None
@@ -357,7 +444,19 @@ def _render_placements(
         # The placement coordinates (x, y) define where the page goes
         # in the output coordinate system (origin bottom-left in PDF,
         # but top-left origin used here)
-        total_rotation = int((native_angle + rotation) % 360)
+        # `native_angle` trong plan = /Rotate gốc + góc người dùng. /Rotate gốc
+        # đã bake vào file canonical, nên chỉ giữ phần góc người dùng tại sink.
+        source_native_rotation = (
+            source_native_rotations[src_page_idx]
+            if src_page_idx < len(source_native_rotations)
+            else 0
+        )
+        user_rotation = (
+            int(native_angle - source_native_rotation)
+            if "native_angle" in placement
+            else 0
+        )
+        total_rotation = int((user_rotation + rotation) % 360)
         if total_rotation in (90, 270):
             dest_w = src_h * scale_factor
             dest_h = src_w * scale_factor
