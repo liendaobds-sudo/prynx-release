@@ -3,7 +3,7 @@
 PrynX sử dụng các thành phần mã nguồn mở dưới đây. Bản quyền thuộc về các
 tác giả tương ứng; mỗi thành phần được phân phối theo giấy phép của nó.
 
-*Sinh tự động ngày 2026-08-03 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
+*Sinh tự động ngày 2026-08-04 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
 
 > Đây không phải tư vấn pháp lý. Tài liệu này liệt kê thành phần và giấy
 > phép để phục vụ nghĩa vụ ghi công; việc đánh giá tuân thủ là việc riêng.
@@ -253,6 +253,7 @@ là có trong bản phát hành.
 | [aead](https://github.com/RustCrypto/traits) | 0.5.2 | MIT OR Apache-2.0 |
 | [aes](https://github.com/RustCrypto/block-ciphers) | 0.8.4 | MIT OR Apache-2.0 |
 | [aes](https://github.com/RustCrypto/block-ciphers) | 0.9.1 | MIT OR Apache-2.0 |
+| [aes](https://github.com/RustCrypto/block-ciphers) | 0.9.2 | MIT OR Apache-2.0 |
 | [aes-gcm](https://github.com/RustCrypto/AEADs) | 0.10.3 | Apache-2.0 OR MIT |
 | [ahash](https://github.com/tkaitchuck/ahash) | 0.7.8 | MIT OR Apache-2.0 |
 | [aho-corasick](https://github.com/BurntSushi/aho-corasick) | 1.1.4 | Unlicense OR MIT |
@@ -291,7 +292,6 @@ là có trong bản phát hành.
 | [bit-vec](https://github.com/contain-rs/bit-vec) | 0.6.3 | MIT/Apache-2.0 |
 | [bit-vec](https://github.com/contain-rs/bit-vec) | 0.8.0 | Apache-2.0 OR MIT |
 | [bitflags](https://github.com/bitflags/bitflags) | 1.3.2 | MIT/Apache-2.0 |
-| [bitflags](https://github.com/bitflags/bitflags) | 2.11.1 | MIT OR Apache-2.0 |
 | [bitflags](https://github.com/bitflags/bitflags) | 2.13.1 | MIT OR Apache-2.0 |
 | [bitvec](https://github.com/bitvecto-rs/bitvec) | 1.0.1 | MIT |
 | [block-buffer](https://github.com/RustCrypto/utils) | 0.10.4 | MIT OR Apache-2.0 |
@@ -512,6 +512,7 @@ là có trong bản phát hành.
 | [http-range](https://github.com/bancek/rust-http-range) | 0.1.5 | MIT |
 | [httparse](https://github.com/seanmonstar/httparse) | 1.10.1 | MIT OR Apache-2.0 |
 | [hybrid-array](https://github.com/RustCrypto/hybrid-array) | 0.4.13 | MIT OR Apache-2.0 |
+| [hybrid-array](https://github.com/RustCrypto/hybrid-array) | 0.4.14 | MIT OR Apache-2.0 |
 | [hyper](https://github.com/hyperium/hyper) | 1.10.0 | MIT |
 | [hyper-rustls](https://github.com/rustls/hyper-rustls) | 0.27.9 | Apache-2.0 OR ISC OR MIT |
 | [hyper-util](https://github.com/hyperium/hyper-util) | 0.1.20 | MIT |
@@ -1585,13 +1586,13 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 
 - Nhị phân đóng gói: 6
 - Thư viện Python: 116
-- Crate Rust: 797
+- Crate Rust: 798
 - Gói npm: 526
 
 | Giấy phép | Số thành phần |
 |---|---|
 | MIT | 619 |
-| MIT OR Apache-2.0 | 382 |
+| MIT OR Apache-2.0 | 383 |
 | Apache-2.0 OR MIT | 90 |
 | Apache-2.0 | 41 |
 | MIT/Apache-2.0 | 34 |

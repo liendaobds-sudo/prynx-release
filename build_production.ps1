@@ -1377,7 +1377,9 @@ if (-not $SkipTauri) {
         if ($manifestGitOutput.Count -ne 1) {
             throw "Cannot resolve exactly one source commit for release manifest."
         }
-        $manifestGitCommit = [string]$manifestGitOutput[0].Trim()
+        # BUILD (audit 2026-08-04 BLD.06): PowerShell unwrap mang mot phan tu thanh scalar;
+        # boc lai bang @() truoc khi lay [0] de khong goi Trim() tren System.Char.
+        $manifestGitCommit = ([string](@($manifestGitOutput)[0])).Trim()
         if ([string]::IsNullOrWhiteSpace($manifestGitCommit)) {
             throw "Cannot resolve source commit for release manifest."
         }

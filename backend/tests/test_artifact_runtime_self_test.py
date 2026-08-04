@@ -188,6 +188,16 @@ def test_build_manifest_attests_gate_abi_mode_and_fresh_sidecar():
     assert gate_set < gate_assertion < frontend_build < manifest_gate_assertion < manifest_write
 
 
+def test_build_manifest_trims_single_git_output_as_string_not_char():
+    """Manifest nội bộ phải xử lý đúng khi Git chỉ trả về một commit."""
+    source = (Path(__file__).parents[2] / "build_production.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "$manifestGitCommit = ([string](@($manifestGitOutput)[0])).Trim()" in source
+    assert "$manifestGitCommit = [string]$manifestGitOutput[0].Trim()" not in source
+
+
 def test_build_restores_owned_environment_even_after_failure():
     source = (Path(__file__).parents[2] / "build_production.ps1").read_text(
         encoding="utf-8"
