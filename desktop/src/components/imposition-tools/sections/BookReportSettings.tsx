@@ -3,6 +3,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { buildBookReportText } from '../../../lib/bookReport';
+import { formatSizeMm } from '../../../lib/measurementFormat';
 import { Checkbox, inputCls, SectionLabel } from '../SharedUI';
 import { PREDEFINED_SIZES, type BookReportFieldKey } from '../types';
 import { useImposerSettingsStore } from '../useImposerSettingsStore';
@@ -56,8 +57,9 @@ export default function BookReportSettings({ sourceTotalPages = 0 }: { sourceTot
     const preset = PREDEFINED_SIZES[s.formsize];
     const sheetWidth = (preset?.w ?? Number(s.customSheetWidth)) || 0;
     const sheetHeight = (preset?.h ?? Number(s.customSheetHeight)) || 0;
+    // UIUX (audit 2026-08-04 §DIM.5): report phải giữ khổ tờ tùy chỉnh 0,1 mm.
     const paperSizeLabel = sheetWidth > 0 && sheetHeight > 0
-        ? `${preset ? `${s.formsize} ` : ''}${Math.round(sheetWidth)} × ${Math.round(sheetHeight)} mm`
+        ? `${preset ? `${s.formsize} ` : ''}${formatSizeMm(sheetWidth, sheetHeight)}`
         : '';
     const rawWidth = s.sourcePageDim ? Number(s.sourcePageDim.w) * 0.352778 : 0;
     const rawHeight = s.sourcePageDim ? Number(s.sourcePageDim.h) * 0.352778 : 0;

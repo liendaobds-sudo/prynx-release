@@ -51,10 +51,11 @@ import AdvancedSettingsSection from './sections/AdvancedSettingsSection';
 import GridPreview from './sections/GridPreview';
 import ProductFirstPanel from './ProductFirstPanel';
 import { HIDE_PRODUCT_FIRST } from '../../lib/featureFocus';
+import { useWorkspaceToolActivationGuard } from '../../hooks/useToolActivationGuard';
 
 // Store & Types
 import { useImposerSettingsStore } from './useImposerSettingsStore';
-import { PREDEFINED_SIZES, DEFAULT_FORMSIZE, getImposerCapability, WORKSPACE_TOOL_PANEL, isWorkspaceTool, type ActiveToolType, type TaskMode, type ImposerDashboardProps } from './types';
+import { PREDEFINED_SIZES, DEFAULT_FORMSIZE, DEFAULT_CUT_BORDER_CONFIG, getImposerCapability, WORKSPACE_TOOL_PANEL, isWorkspaceTool, type ActiveToolType, type TaskMode, type ImposerDashboardProps } from './types';
 export type { BookletSettings, NupSettings } from './types';
 export { PREDEFINED_SIZES, DEFAULT_FORMSIZE } from './types';
 
@@ -73,6 +74,8 @@ import {
 } from './shapeDetectionPolicy';
 import { toBookReportRenderConfig } from '../../lib/bookReport';
 import { resolveImpositionModes, resolveImpositionSplitGap } from './pageSheetPolicy';
+import { canUseCutBorder } from './cutBorderPolicy';
+import { formatSizeMm } from '../../lib/measurementFormat';
 
 const BOOK_REPORT_BINDING_LABELS: Record<string, string> = {
     saddle: 'Bấm kim giữa',
@@ -131,7 +134,7 @@ function classifyGuillotinePageSizes(
     return 'uniform';
 }
 
-export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge, onStartCatalogPlan, initialFeature, lockedMode, onBleedUpdate, onFileFixed, systemMergeFiles, officeSourceFile, officeSourceFiles, getWorkingFile, ensureCropFileId, onCropApplied, onCropClose }: ImposerDashboardProps) {
+export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onStartNup, onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge, onStartCatalogPlan, initialFeature, lockedMode, onBleedUpdate, onFileFixed, systemMergeFiles, officeSourceFile, officeSourceFiles, getWorkingFile, ensureCropFileId, onCropApplied, onCropClose }: ImposerDashboardProps) {
   const { t } = useTranslation();
 
     // ═══ Workspace State ═══
@@ -204,9 +207,10 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     // NAV (audit điều hướng tab 2026-07-28): store theo tab là nguồn trạng thái duy nhất.
     // Không giữ bản sao useState cục bộ vì hai nguồn từng lệch nhau khi Back/restore.
     const activeTool: ActiveToolType = isWorkspaceTool(currentTool) ? currentTool : 'none';
+    const requestWorkspaceToolActivation = useWorkspaceToolActivationGuard();
     const setActiveTool = useCallback((tool: ActiveToolType) => {
-        onActiveToolChange(tool);
-    }, [onActiveToolChange]);
+        requestWorkspaceToolActivation(tool, () => onActiveToolChange(tool));
+    }, [onActiveToolChange, requestWorkspaceToolActivation]);
 
     const {
         pageSheetMode,
@@ -216,6 +220,11 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         stickerToolIdentity,
     } = resolveImpositionModes(activeTool, s.impositionUnit);
     const stickerProductMode = stickerToolIdentity || activeTool === 'cnc_imposer';
+    const cutBorderCapable = canUseCutBorder({
+        activeTool,
+        taskMode: s.taskMode,
+        pageSheetMode,
+    });
     const sourcePageDimForGeometry = pageSheetMode
         ? (s.sourceMediaPageDim || s.sourcePageDim)
         : s.sourcePageDim;
@@ -1144,8 +1153,9 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                     finishedHeightMm: s.sourcePageDim
                         ? Math.max(0, s.sourcePageDim.h * 0.352778 - 2 * (s.bleed || 0)) : undefined,
                     bindingLabel: BOOK_REPORT_BINDING_LABELS[s.signatureMode] || '',
+                    // UIUX (audit 2026-08-04 §DIM.5): khổ tờ tùy chỉnh trong report giữ 0,1 mm.
                     paperSizeLabel: sheetWidth > 0 && sheetHeight > 0
-                        ? `${Math.round(sheetWidth)} × ${Math.round(sheetHeight)} mm` : '',
+                        ? formatSizeMm(sheetWidth, sheetHeight) : '',
                 },
             );
             if (s.autoCatalog && onStartCatalogPlan && s.optimalData?.recommended) {
@@ -1291,6 +1301,9 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 markType: getImposerCapability(pageSheetMode ? 'guillotine' : activeTool === 'sticker_imposer' ? 'diecut' : activeTool === 'cnc_imposer' ? 'cnc' : 'guillotine').supportsMarks ? s.markType : 'none',
                 markOffset: s.marksConfig.distance, markLength: s.marksConfig.length, markThickness: s.marksConfig.thickness,
                 markStyle: s.marksConfig.style === 2 ? 'japanese' : 'default',
+                cutBorder: cutBorderCapable
+                    ? { ...s.cutBorder }
+                    : undefined,
                 cutType: dieGeometryMode ? s.cutType : undefined,
                 dieSizeMode: dieGeometryMode ? s.dieSizeMode : undefined,
                 dieOffsetMm: dieGeometryMode ? s.dieOffsetMm : undefined,
@@ -1361,40 +1374,47 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             groupingStrategy: s.groupingStrategy, duplexFlow: s.duplexFlow,
             align: s.align, clusterMode: s.clusterMode, clusterCount: s.clusterCount,
             clusterGap: s.clusterGap, clusterGapMode: s.clusterGapMode,
+            cutBorder: { ...s.cutBorder },
         } : undefined,
     }), [s]);
 
     const handleLoadPreset = useCallback((preset: ImpositionPreset) => {
-        s.setTaskMode(preset.taskMode);
-        setActiveTool(preset.taskMode);
-        const p = preset.paper;
-        s.setFormsize(p.formsize); s.setCustomSheetWidth(p.customSheetWidth); s.setCustomSheetHeight(p.customSheetHeight);
-        s.setBleed(p.bleed); s.setGapX(p.gapX); s.setGapY(p.gapY); s.setSpreadDistribution(p.spreadDistribution || 'clustered');
-        s.setMarginTop(p.marginTop); s.setMarginBottom(p.marginBottom); s.setMarginLeft(p.marginLeft); s.setMarginRight(p.marginRight); s.setMarginMode(p.marginMode);
-        s.setMarkType(preset.marks.markType);
-        if (preset.booklet) {
-            s.setSignatureMode(preset.booklet.signatureMode); s.setFoliosize(preset.booklet.foliosize);
-            s.setPaperThickness(preset.booklet.paperThickness); s.setScaleMode(preset.booklet.scaleMode);
-            // BOOKLET (audit 2026-07-31 §B.1): preset cũ thiếu field thì giữ mặc định hiện tại.
-            if (preset.booklet.gutterMargin !== undefined) s.setGutterMargin(preset.booklet.gutterMargin);
-            if (preset.booklet.blankPlacement !== undefined) s.setBlankPlacement(preset.booklet.blankPlacement);
-            s.setInterleave(preset.booklet.interleave);
-            if (preset.booklet.foldPattern) s.setFoldPattern(preset.booklet.foldPattern);
-            if (preset.booklet.gripperMargin) s.setGripperMargin(preset.booklet.gripperMargin);
-        }
-        if (preset.nup) {
-            s.setLayoutType(
-                preset.nup.layoutType === 'mixed_guillotine'
-                    ? 'sequential'
-                    : preset.nup.layoutType,
-            );
-            s.setColumns(preset.nup.columns); s.setRows(preset.nup.rows);
-            s.setGridStrategy(preset.nup.gridStrategy || 'optimal_auto'); s.setDuplexFlow(preset.nup.duplexFlow);
-            s.setAlign(preset.nup.align as any);
-            s.setClusterMode(preset.nup.clusterMode); s.setClusterCount(preset.nup.clusterCount);
-            s.setClusterGap(preset.nup.clusterGap); s.setClusterGapMode(preset.nup.clusterGapMode);
-        }
-    }, [s]);
+        // SEC (audit 2026-08-04 re-audit UI): không mutation một field nào
+        // trước guard; custom grant N-Up không được nạp ké preset Booklet.
+        requestWorkspaceToolActivation(preset.taskMode, () => {
+            onActiveToolChange(preset.taskMode);
+            s.setTaskMode(preset.taskMode);
+            const p = preset.paper;
+            s.setFormsize(p.formsize); s.setCustomSheetWidth(p.customSheetWidth); s.setCustomSheetHeight(p.customSheetHeight);
+            s.setBleed(p.bleed); s.setGapX(p.gapX); s.setGapY(p.gapY); s.setSpreadDistribution(p.spreadDistribution || 'clustered');
+            s.setMarginTop(p.marginTop); s.setMarginBottom(p.marginBottom); s.setMarginLeft(p.marginLeft); s.setMarginRight(p.marginRight); s.setMarginMode(p.marginMode);
+            s.setMarkType(preset.marks.markType);
+            if (preset.booklet) {
+                s.setSignatureMode(preset.booklet.signatureMode); s.setFoliosize(preset.booklet.foliosize);
+                s.setPaperThickness(preset.booklet.paperThickness); s.setScaleMode(preset.booklet.scaleMode);
+                // BOOKLET (audit 2026-07-31 §B.1): preset cũ thiếu field thì giữ mặc định hiện tại.
+                if (preset.booklet.gutterMargin !== undefined) s.setGutterMargin(preset.booklet.gutterMargin);
+                if (preset.booklet.blankPlacement !== undefined) s.setBlankPlacement(preset.booklet.blankPlacement);
+                s.setInterleave(preset.booklet.interleave);
+                if (preset.booklet.foldPattern) s.setFoldPattern(preset.booklet.foldPattern);
+                if (preset.booklet.gripperMargin) s.setGripperMargin(preset.booklet.gripperMargin);
+            }
+            if (preset.nup) {
+                s.setLayoutType(
+                    preset.nup.layoutType === 'mixed_guillotine'
+                        ? 'sequential'
+                        : preset.nup.layoutType,
+                );
+                s.setColumns(preset.nup.columns); s.setRows(preset.nup.rows);
+                s.setGridStrategy(preset.nup.gridStrategy || 'optimal_auto'); s.setDuplexFlow(preset.nup.duplexFlow);
+                s.setAlign(preset.nup.align as any);
+                s.setClusterMode(preset.nup.clusterMode); s.setClusterCount(preset.nup.clusterCount);
+                s.setClusterGap(preset.nup.clusterGap); s.setClusterGapMode(preset.nup.clusterGapMode);
+                // Preset cũ thiếu field phải TẮT viền; không giữ trạng thái đang bật.
+                s.setCutBorder(preset.nup.cutBorder || DEFAULT_CUT_BORDER_CONFIG);
+            }
+        });
+    }, [onActiveToolChange, requestWorkspaceToolActivation, s]);
 
     // ═══ Computed Values ═══
     const panelKind = WORKSPACE_TOOL_PANEL[activeTool as ActiveToolType] ?? 'external';
@@ -1439,7 +1459,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 </div>
             </div>
             <PaperSettingsDialog
-                isOpen={s.showSettings}
+                isOpen={isActive !== false && s.showSettings}
                 onClose={() => s.setShowSettings(false)}
                 width={s.customSheetWidth}
                 height={s.customSheetHeight}
@@ -1548,10 +1568,11 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                     )}
 
                     {(!HIDE_PRODUCT_FIRST && s.taskMode === 'booklet' && s.paperClassification === 'in_nhanh' && showProductFirst) ? (
+                        // UIUX (audit 2026-08-04 §DIM.10): advisor nhận số đo thật để quyết định fit sát mép.
                         <ProductFirstPanel
                             pageCount={sourceTotalPages}
-                            finishedWidthMm={s.sourcePageDim ? Math.round(s.sourcePageDim.w * 0.352778 - 2 * (s.bleed || 0)) : undefined}
-                            finishedHeightMm={s.sourcePageDim ? Math.round(s.sourcePageDim.h * 0.352778 - 2 * (s.bleed || 0)) : undefined}
+                            finishedWidthMm={s.sourcePageDim ? s.sourcePageDim.w * 0.352778 - 2 * (s.bleed || 0) : undefined}
+                            finishedHeightMm={s.sourcePageDim ? s.sourcePageDim.h * 0.352778 - 2 * (s.bleed || 0) : undefined}
                             onApplied={() => setShowProductFirst(false)}
                             onOpenAdvanced={() => setShowProductFirst(false)}
                         />
@@ -1669,6 +1690,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 );
                                 return (
                             <GridPreview
+                                activeTool={activeTool}
                                 taskMode={s.taskMode} gridStrategy={s.gridStrategy} columns={s.columns} rows={s.rows}
                                 isDieCut={stickerLike}
                                 pageSheetMode={pageSheetMode}
@@ -1767,6 +1789,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 filePath={((window as any).__TAURI_INTERNALS__) ? ((pdfFile as any)?.path || undefined) : undefined}
                                 pageIdx={shapePageIdx}
                                 bleed={s.bleed}
+                                cutBorder={cutBorderCapable ? s.cutBorder : undefined}
                                 cutType={stickerLike ? s.cutType : undefined}
                                 dieSizeMode={stickerLike ? s.dieSizeMode : undefined}
                                 dieOffsetMm={stickerLike ? s.dieOffsetMm : undefined}
@@ -1813,11 +1836,13 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             )}
 
             {/* ═══ DIALOGS ═══ */}
-            <MarksSettingsDialog isOpen={s.showMarksModal} onClose={() => s.setShowMarksModal(false)} config={s.marksConfig} onSave={(cfg) => { s.setMarksConfig(cfg); }} />
-            <PontSettingsDialog isOpen={s.showPontModal} onClose={() => s.setShowPontModal(false)} config={s.pontConfig} onSave={(cfg) => { s.setPontConfig(cfg); }} />
-            <PresetSelector isOpen={s.isPresetOpen} onClose={() => s.setIsPresetOpen(false)} onLoadPreset={handleLoadPreset} onGetCurrentSettings={getCurrentSettings} />
-            <FlipbookDialog isOpen={s.showFlipbook} onClose={() => s.setShowFlipbook(false)} pdfUrl={pdfUrl} pdfFile={pdfFile} pageOrder={viewerPageOrder || []} pageRotations={viewerPageRotations || []} bindingMode={s.signatureMode} foliosize={s.foliosize} bleed={s.bleed} blankPlacement={s.blankPlacement} />
-            <SheetViewerDialog isOpen={s.showSheetViewer} onClose={() => s.setShowSheetViewer(false)} pdfFile={pdfFile} pageOrder={viewerPageOrder || []} pageRotations={viewerPageRotations || []} bindingMode={s.signatureMode} foliosize={(s.paperClassification === 'offset' && s.foldPattern?.startsWith('sig_')) ? parseInt(s.foldPattern.split('_')[1]) : s.foliosize} sheetWidth={s.customSheetWidth} sheetHeight={s.customSheetHeight} scaleMode={s.paperClassification === 'offset' ? 'chain_nup' : s.scaleMode} foldPattern={s.paperClassification === 'offset' ? s.foldPattern : ''} catalogJobs={s.autoCatalog && s.catalogJobsState ? s.catalogJobsState : undefined} isDigital={s.paperClassification === 'in_nhanh'} gripperMargin={s.paperClassification === 'offset' ? s.gripperMargin : 0} pageWpt={s.sourcePageDim?.w} pageHpt={s.sourcePageDim?.h} bleed={s.bleed} gapX={s.gapX} gapY={s.gapY} marginLeft={s.marginLeft} marginRight={s.marginRight} marginTop={s.marginTop} blankPlacement={s.blankPlacement} separateCover={s.separateCover && (s.signatureMode === 'continuous' || s.signatureMode === 'thread')} coverPageCount={s.coverPageCount} />
+            {/* SEC/UIUX (audit 2026-08-04 re-audit UI): tab nền vẫn mounted, vì vậy
+                mọi portal phải đóng theo isActive để không nổi trên tab hiện tại. */}
+            <MarksSettingsDialog isOpen={isActive !== false && s.showMarksModal} onClose={() => s.setShowMarksModal(false)} config={s.marksConfig} onSave={(cfg) => { s.setMarksConfig(cfg); }} />
+            <PontSettingsDialog isOpen={isActive !== false && s.showPontModal} onClose={() => s.setShowPontModal(false)} config={s.pontConfig} onSave={(cfg) => { s.setPontConfig(cfg); }} />
+            <PresetSelector isOpen={isActive !== false && s.isPresetOpen} onClose={() => s.setIsPresetOpen(false)} onLoadPreset={handleLoadPreset} onGetCurrentSettings={getCurrentSettings} />
+            <FlipbookDialog isOpen={isActive !== false && s.showFlipbook} onClose={() => s.setShowFlipbook(false)} pdfUrl={pdfUrl} pdfFile={pdfFile} pageOrder={viewerPageOrder || []} pageRotations={viewerPageRotations || []} bindingMode={s.signatureMode} foliosize={s.foliosize} bleed={s.bleed} blankPlacement={s.blankPlacement} />
+            <SheetViewerDialog isOpen={isActive !== false && s.showSheetViewer} onClose={() => s.setShowSheetViewer(false)} pdfFile={pdfFile} pageOrder={viewerPageOrder || []} pageRotations={viewerPageRotations || []} bindingMode={s.signatureMode} foliosize={(s.paperClassification === 'offset' && s.foldPattern?.startsWith('sig_')) ? parseInt(s.foldPattern.split('_')[1]) : s.foliosize} sheetWidth={s.customSheetWidth} sheetHeight={s.customSheetHeight} scaleMode={s.paperClassification === 'offset' ? 'chain_nup' : s.scaleMode} foldPattern={s.paperClassification === 'offset' ? s.foldPattern : ''} catalogJobs={s.autoCatalog && s.catalogJobsState ? s.catalogJobsState : undefined} isDigital={s.paperClassification === 'in_nhanh'} gripperMargin={s.paperClassification === 'offset' ? s.gripperMargin : 0} pageWpt={s.sourcePageDim?.w} pageHpt={s.sourcePageDim?.h} bleed={s.bleed} gapX={s.gapX} gapY={s.gapY} marginLeft={s.marginLeft} marginRight={s.marginRight} marginTop={s.marginTop} blankPlacement={s.blankPlacement} separateCover={s.separateCover && (s.signatureMode === 'continuous' || s.signatureMode === 'thread')} coverPageCount={s.coverPageCount} />
         </div>
     );
 }

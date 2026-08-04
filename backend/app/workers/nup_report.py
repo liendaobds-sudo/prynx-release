@@ -16,6 +16,7 @@ Port mô hình từ script Illustrator: scripts/illustrator/1. dev - Nô lệ b�
 import math
 import re
 import unicodedata
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
 
 # ── Hằng số dùng chung (đồng bộ với frontend types.ts) ──
@@ -41,6 +42,16 @@ _SPECIAL_MAP = {"đ": "d", "Đ": "D"}
 
 # Ký tự không hợp lệ cho tên file Windows.
 _ILLEGAL_FILENAME_RE = re.compile(r'[\\/:*?"<>|]')
+
+_REPORT_MM_QUANTUM = Decimal("0.1")
+
+
+def _format_report_mm(value: float) -> str:
+    """Làm tròn kích thước đến 0,1 mm và bỏ phần ``.0`` không cần thiết."""
+    # UIUX (audit 2026-08-04 §DIM.1): Decimal từ chuỗi giữ quy tắc ROUND_HALF_UP
+    # ổn định tại các điểm giữa, thay vì phụ thuộc kiểu làm tròn chẵn của float/Python.
+    rounded = Decimal(str(value)).quantize(_REPORT_MM_QUANTUM, rounding=ROUND_HALF_UP)
+    return format(rounded, "f").rstrip("0").rstrip(".")
 
 
 def remove_diacritics(s: Optional[str]) -> str:
@@ -137,7 +148,7 @@ def compute_report_data(
 
     dims = ""
     if width_mm and height_mm:
-        dims = f"{round(width_mm)} x {round(height_mm)} mm"
+        dims = f"{_format_report_mm(width_mm)} x {_format_report_mm(height_mm)} mm"
 
     return {
         "raw": {

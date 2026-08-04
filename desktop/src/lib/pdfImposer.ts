@@ -17,6 +17,7 @@ import { ImpositionMode } from './imposerEngine/SettingsTypes';
 import type { ProcessingSettings, BaseSettings, GuillotineSettings, DieCutSettings, OffsetSettings } from './imposerEngine/SettingsTypes';
 import { tv } from '../i18n';
 import i18n from '../i18n';
+import { formatMeasurement } from './measurementFormat';
 export type { ProcessingSettings, BaseSettings, GuillotineSettings, DieCutSettings, OffsetSettings };
 export { ImpositionMode };
 
@@ -120,7 +121,9 @@ export const imposePdf = async (
         const sizeMap = new Map<string, number>();
         for (const d of srcPageDetails) {
             if (d.visualW === 0 && d.visualH === 0) continue; // blank
-            const key = `${Math.round(d.visualW / 2.83465)}×${Math.round(d.visualH / 2.83465)}mm`;
+            // UIUX (audit 2026-08-04 §DIM.8): giữ dung sai 0,01 mm để các trang
+            // lệch dưới 1 mm không bị gộp thành cùng khổ và mất cảnh báo.
+            const key = `${formatMeasurement(d.visualW / MM_TO_POINTS, 2)}×${formatMeasurement(d.visualH / MM_TO_POINTS, 2)}mm`;
             sizeMap.set(key, (sizeMap.get(key) || 0) + 1);
         }
         if (sizeMap.size > 1) {
@@ -693,7 +696,14 @@ export const imposePdfViaBackend = async (
             if (_scaleMode === 'fit') {
                 if (scaleRot > scaleAsIs) { const t = reqSheetW; reqSheetW = reqSheetH; reqSheetH = t; } // chọn hướng ít phải co hơn
             } else {
-                const warn = i18n.t('lib.pdfImposer:trang_trai_khong_vua_kho_100', { spreadW: Math.round(spreadWmm), spreadH: Math.round(spreadHmm), sheetW: Math.round(reqSheetW), sheetH: Math.round(reqSheetH) });
+                // UIUX (audit 2026-08-04 §DIM.9): thông báo phải cho thấy phần
+                // thập phân đã khiến spread không vừa khổ, tránh hai số trông bằng nhau.
+                const warn = i18n.t('lib.pdfImposer:trang_trai_khong_vua_kho_100', {
+                    spreadW: formatMeasurement(spreadWmm),
+                    spreadH: formatMeasurement(spreadHmm),
+                    sheetW: formatMeasurement(reqSheetW),
+                    sheetH: formatMeasurement(reqSheetH),
+                });
                 report = report ? `${report}\n${warn}` : warn;
             }
         }

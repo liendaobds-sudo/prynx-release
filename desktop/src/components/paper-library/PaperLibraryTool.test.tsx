@@ -1,12 +1,29 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 
 import PaperLibraryTool from './PaperLibraryTool';
 import { PAPER_STOCKS, THREAD_SEWING_LIMITS } from '../../lib/paperLibrary';
 
-afterEach(cleanup);
+const accessMocks = vi.hoisted(() => ({ allowed: true }));
+
+vi.mock('../../stores/useAuthStore', () => ({
+    useAuthStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
+        licensePlan: 'free',
+        licenseFeatures: null,
+    }),
+}));
+
+vi.mock('../../lib/license/features', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../lib/license/features')>();
+    return { ...actual, canUse: () => accessMocks.allowed };
+});
+
+afterEach(() => {
+    cleanup();
+    accessMocks.allowed = true;
+});
 
 /**
  * Bấm một mục ở sidebar theo nhãn.
@@ -279,6 +296,32 @@ describe('Giữ tham số đã nhập ở mục gáy sách', () => {
         expect(screen.queryByRole('table')).toBeNull();
         // Sidebar vẫn còn để bấm được ngay khi tab hiện lại
         expect(screen.getByRole('navigation')).toBeTruthy();
+    });
+
+    it('downgrade phủ khóa nhưng không làm mất tham số đang nhập', () => {
+        accessMocks.allowed = true;
+        const onRequestHome = vi.fn();
+        const view = render(<PaperLibraryTool isActive onRequestHome={onRequestHome} />);
+        nav(/Độ dày gáy sách/);
+        fireEvent.change(screen.getByLabelText(/Tổng số trang ruột/), { target: { value: '240' } });
+
+        accessMocks.allowed = false;
+        view.rerender(<PaperLibraryTool isActive onRequestHome={onRequestHome} />);
+        const overlay = screen.getByRole('alertdialog');
+        expect(overlay).toBeTruthy();
+        expect(view.container.contains(overlay)).toBe(false);
+        expect((screen.getByLabelText(/Tổng số trang ruột/) as HTMLInputElement).value).toBe('240');
+        fireEvent.click(screen.getByRole('button', { name: 'Về trang chính' }));
+        expect(onRequestHome).toHaveBeenCalledOnce();
+
+        view.rerender(<PaperLibraryTool isActive={false} onRequestHome={onRequestHome} />);
+        expect(screen.queryByRole('alertdialog')).toBeNull();
+        expect((screen.getByLabelText(/Tổng số trang ruột/) as HTMLInputElement).value).toBe('240');
+
+        accessMocks.allowed = true;
+        view.rerender(<PaperLibraryTool isActive onRequestHome={onRequestHome} />);
+        expect(screen.queryByRole('alertdialog')).toBeNull();
+        expect((screen.getByLabelText(/Tổng số trang ruột/) as HTMLInputElement).value).toBe('240');
     });
 });
 

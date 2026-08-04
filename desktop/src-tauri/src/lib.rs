@@ -4,7 +4,7 @@ use tauri::Manager;
 // Add state struct for PDFium
 use pdfium_render::prelude::*;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::ipc::Response;
 
@@ -31,6 +31,11 @@ fn get_doc_pool_size() -> usize {
 // mở lại / cuộn lại / zoom về mức cũ là LẤY TỪ ĐĨA, không render lại (file nặng ~1s).
 static DISK_CACHE_WRITES: AtomicUsize = AtomicUsize::new(0);
 
+// STARTUP (fix 2026-08-04): cửa sổ chính chỉ được hiện sau khi Rust setup và
+// sidecar đã sẵn sàng. Nếu user mở shortcut lần hai trong lúc cold-start, callback
+// single-instance vẫn nhận args nhưng không làm lộ khung WebView trong suốt.
+static APP_STARTUP_READY: AtomicBool = AtomicBool::new(false);
+
 // PID tiến trình sidecar Python — để KILL khi thoát app. Nếu không kill,
 // pdf-inspector-backend.exe treo ngầm sau khi đóng app → lần UPDATE, NSIS không
 // ghi đè được file đang chạy ("Error opening file for writing"). Chỉ dùng ở release
@@ -50,56 +55,207 @@ fn kill_sidecar() {
     }
 }
 
+#[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
+const SIDECAR_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+#[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
+const SIDECAR_STARTUP_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
 #[cfg(all(not(debug_assertions), target_os = "windows"))]
-fn verify_sidecar_startup(secret: &str) -> Result<(), String> {
+const SIDECAR_HEALTH_RESPONSE_LIMIT: usize = 64 * 1024;
+
+#[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
+fn startup_retry_delay(remaining: std::time::Duration) -> Option<std::time::Duration> {
+    if remaining.is_zero() {
+        None
+    } else {
+        Some(remaining.min(SIDECAR_STARTUP_POLL_INTERVAL))
+    }
+}
+
+#[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
+fn verify_startup_proof(secret: &str, challenge: &str, proof: &str) -> Result<(), String> {
     use hmac::{Hmac, Mac};
-    use rand::RngCore;
     use sha2::Sha256;
+
+    let proof_bytes =
+        hex::decode(proof).map_err(|_| "health startup proof is malformed".to_string())?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+        .map_err(|_| "cannot initialize startup proof".to_string())?;
+    mac.update(format!("startup:{challenge}").as_bytes());
+    mac.verify_slice(&proof_bytes)
+        .map_err(|_| "health startup proof does not match this PrynX instance".to_string())
+}
+
+#[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
+fn sidecar_startup_timeout_error(timeout: std::time::Duration) -> String {
+    let label = if timeout.subsec_millis() == 0 {
+        format!("{} giây", timeout.as_secs())
+    } else {
+        format!("{} ms", timeout.as_millis())
+    };
+    format!("sidecar không sẵn sàng trong vòng {label}")
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn verify_sidecar_startup_at(
+    address: std::net::SocketAddr,
+    secret: &str,
+    timeout: std::time::Duration,
+    sidecar_exited: &AtomicBool,
+) -> Result<(), String> {
+    use rand::RngCore;
     use std::io::{Read, Write};
-    use std::net::{SocketAddr, TcpStream};
-    use std::time::Duration;
+    use std::net::TcpStream;
+    use std::time::{Duration, Instant};
 
     let mut challenge_bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut challenge_bytes);
     let challenge = hex::encode(challenge_bytes);
-    let address: SocketAddr = "127.0.0.1:8321".parse().map_err(|e| format!("address: {e}"))?;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| "Thời hạn chờ sidecar không hợp lệ".to_string())?;
 
-    for _ in 0..50 {
-        let mut stream = match TcpStream::connect_timeout(&address, Duration::from_millis(100)) {
+    loop {
+        if sidecar_exited.load(Ordering::Acquire) {
+            return Err("sidecar đã thoát trước khi sẵn sàng".to_string());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let Some(connect_timeout) = startup_retry_delay(remaining) else {
+            break;
+        };
+        let mut stream = match TcpStream::connect_timeout(&address, connect_timeout) {
             Ok(stream) => stream,
             Err(_) => {
-                std::thread::sleep(Duration::from_millis(100));
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if let Some(delay) = startup_retry_delay(remaining) {
+                    std::thread::sleep(delay);
+                }
                 continue;
             }
         };
-        stream.set_read_timeout(Some(Duration::from_millis(750))).ok();
-        stream.set_write_timeout(Some(Duration::from_millis(500))).ok();
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        stream
+            .set_write_timeout(Some(remaining.min(Duration::from_millis(500))))
+            .ok();
         let request = format!(
             "GET /health?challenge={} HTTP/1.1\r\nHost: 127.0.0.1:8321\r\nConnection: close\r\n\r\n",
             challenge
         );
-        stream.write_all(request.as_bytes()).map_err(|e| format!("health write: {e}"))?;
-        let mut response = String::new();
-        stream.read_to_string(&mut response).map_err(|e| format!("health read: {e}"))?;
+        stream
+            .write_all(request.as_bytes())
+            .map_err(|e| format!("health write: {e}"))?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let mut response_bytes = Vec::with_capacity(4096);
+        let mut chunk = [0u8; 4096];
+        loop {
+            if sidecar_exited.load(Ordering::Acquire) {
+                return Err("sidecar đã thoát trước khi sẵn sàng".to_string());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(sidecar_startup_timeout_error(timeout));
+            }
+            stream
+                .set_read_timeout(Some(remaining.min(Duration::from_millis(750))))
+                .ok();
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(size) => {
+                    if response_bytes.len() + size > SIDECAR_HEALTH_RESPONSE_LIMIT {
+                        return Err("health response vượt giới hạn 64 KiB".to_string());
+                    }
+                    response_bytes.extend_from_slice(&chunk[..size]);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(format!("health read: {error}")),
+            }
+        }
+        let response = String::from_utf8(response_bytes)
+            .map_err(|_| "health response is not valid UTF-8".to_string())?;
         if !response.starts_with("HTTP/1.1 200") {
             return Err("unknown listener returned a non-200 health response".to_string());
         }
-        let body = response.split("\r\n\r\n").nth(1)
+        let body = response
+            .split("\r\n\r\n")
+            .nth(1)
             .ok_or_else(|| "health response has no body".to_string())?;
         let value: serde_json::Value = serde_json::from_str(body)
             .map_err(|_| "health response is not valid JSON".to_string())?;
-        let proof = value.get("proof").and_then(|v| v.as_str())
+        let proof = value
+            .get("proof")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| "health response has no startup proof".to_string())?;
-        let proof_bytes = hex::decode(proof)
-            .map_err(|_| "health startup proof is malformed".to_string())?;
-        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
-            .map_err(|_| "cannot initialize startup proof".to_string())?;
-        mac.update(format!("startup:{challenge}").as_bytes());
-        mac.verify_slice(&proof_bytes)
-            .map_err(|_| "health startup proof does not match this PrynX instance".to_string())?;
+        verify_startup_proof(secret, &challenge, proof)?;
         return Ok(());
     }
-    Err("sidecar did not become ready within 5 seconds".to_string())
+    Err(sidecar_startup_timeout_error(timeout))
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn verify_sidecar_startup(secret: &str, sidecar_exited: &AtomicBool) -> Result<(), String> {
+    let address = "127.0.0.1:8321"
+        .parse()
+        .map_err(|e| format!("address: {e}"))?;
+    verify_sidecar_startup_at(
+        address,
+        secret,
+        SIDECAR_STARTUP_TIMEOUT,
+        sidecar_exited,
+    )
+}
+
+#[cfg(test)]
+mod sidecar_startup_tests {
+    use super::{
+        sidecar_startup_timeout_error, startup_retry_delay, verify_startup_proof,
+        SIDECAR_STARTUP_TIMEOUT,
+    };
+    use std::time::Duration;
+
+    #[test]
+    fn retry_dung_tai_deadline_va_timeout_release_la_60_giay() {
+        assert_eq!(SIDECAR_STARTUP_TIMEOUT, Duration::from_secs(60));
+        assert_eq!(
+            startup_retry_delay(Duration::from_millis(350)),
+            Some(Duration::from_millis(100))
+        );
+        assert_eq!(
+            startup_retry_delay(Duration::from_millis(50)),
+            Some(Duration::from_millis(50))
+        );
+        assert_eq!(startup_retry_delay(Duration::ZERO), None);
+        assert_eq!(
+            sidecar_startup_timeout_error(SIDECAR_STARTUP_TIMEOUT),
+            "sidecar không sẵn sàng trong vòng 60 giây"
+        );
+    }
+
+    #[test]
+    fn proof_backend_hop_le_duoc_nhan_va_proof_bi_sua_bi_tu_choi() {
+        let challenge =
+            "0000000000000000000000000000000000000000000000000000000000000000";
+        let proof = "0b857df7768b9fc957d9a5df81f2b509e8e2c9bfbb9a08a39195fb7ff3cce17e";
+
+        assert_eq!(verify_startup_proof("test-secret", challenge, proof), Ok(()));
+        assert!(verify_startup_proof("test-secret", challenge, &format!("{}0", &proof[..63]))
+            .is_err());
+        assert!(verify_startup_proof("test-secret", challenge, "khong-phai-hex").is_err());
+    }
 }
 
 fn tile_cache_dir() -> std::path::PathBuf {
@@ -1617,23 +1773,6 @@ async fn normalize_image_bytes(bytes: Vec<u8>) -> Result<tauri::ipc::Response, S
     .unwrap_or_else(|_| Err("Task panicked".to_string()))
 }
 
-#[tauri::command]
-fn solve_layout(
-    usable_w: f64,
-    usable_h: f64,
-    orig_w: f64,
-    orig_h: f64,
-    gap_x: f64,
-    gap_y: f64,
-    strategy: String,
-) -> Result<serde_json::Value, String> {
-    // Dùng nguồn chân lý duy nhất: imposition_core (Task 9 / Req 1.3).
-    let result = imposition_core::grid::solve_optimal_layout(
-        usable_w, usable_h, orig_w, orig_h, gap_x, gap_y, &strategy, None,
-    );
-    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {}", e))
-}
-
 // ══════════════════════════════════════════════════════════════
 // VECTOR #3 FIX: Sidecar binary integrity verification
 // Computes SHA-256 of the Python sidecar and compares against
@@ -2086,7 +2225,9 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(SystemFilesState(Mutex::new(Vec::new())))
-        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_startup_args, read_system_file, get_file_size, stat_system_file, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, get_pending_system_files, write_file_atomic, copy_file_atomic, read_dir_json, append_perf_log, append_render_perf, log_frontend_error, pdf_engine::diecut::strip_diecut_lines, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
+        // SEC (audit 2026-08-04 §BE.03): không expose command nghiệp vụ không có
+        // consumer/quyền native. Mọi bình bản và xóa đường bế đi qua sidecar đã gate.
+        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_startup_args, read_system_file, get_file_size, stat_system_file, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, get_pending_system_files, write_file_atomic, copy_file_atomic, read_dir_json, append_perf_log, append_render_perf, log_frontend_error, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(state) = app.try_state::<SystemFilesState>() {
                 if let Ok(mut pending) = state.0.lock() {
@@ -2094,12 +2235,14 @@ pub fn run() {
                 }
             }
             
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_always_on_top(true);
-                let _ = window.set_always_on_top(false);
-                let _ = window.set_focus();
+            if APP_STARTUP_READY.load(Ordering::Acquire) {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.unminimize();
+                    let _ = window.show();
+                    let _ = window.set_always_on_top(true);
+                    let _ = window.set_always_on_top(false);
+                    let _ = window.set_focus();
+                }
             }
         }))
         .plugin(tauri_plugin_deep_link::init())
@@ -2344,7 +2487,8 @@ pub fn run() {
                         // không kèm token Ed25519 hợp lệ (do edge function Supabase phát).
                         // Client bị crack không giả được token → không gọi được backend.
                         ("PRYNX_ENFORCE_LICENSE_TOKEN", "true"),
-                        // Rollout Free/Pro độc lập; mặc định false để key cũ không bị khóa trước khi server migrate.
+                        // Dev thường mặc định tắt; build release nung flag true và fallback
+                        // release cũng là true. Token thiếu/sai plan đã fail-closed về Free.
                         (
                             "PRYNX_FEATURE_GATING_ENABLED",
                             option_env!("PRYNX_FEATURE_GATING_ENABLED").unwrap_or(
@@ -2377,6 +2521,8 @@ pub fn run() {
                 // dấu vết → sự cố "invalid sidecar token" khó điều tra suốt thời gian
                 // dài. Nay log Terminated{code} → bắt được "exit 48 = port bận" tức
                 // thì. Đọc rx còn tránh đầy buffer pipe làm sidecar block. Fire-and-forget.
+                let sidecar_exited = Arc::new(AtomicBool::new(false));
+                let sidecar_exited_for_events = Arc::clone(&sidecar_exited);
                 tauri::async_runtime::spawn(async move {
                     use tauri_plugin_shell::process::CommandEvent;
                     while let Some(event) = rx.recv().await {
@@ -2388,9 +2534,11 @@ pub fn run() {
                                 log::warn!("[SIDECAR-ERR] {}", String::from_utf8_lossy(&bytes).trim_end());
                             }
                             CommandEvent::Terminated(payload) => {
+                                sidecar_exited_for_events.store(true, Ordering::Release);
                                 log::error!("[SIDECAR] Terminated code={:?} signal={:?}", payload.code, payload.signal);
                             }
                             CommandEvent::Error(e) => {
+                                sidecar_exited_for_events.store(true, Ordering::Release);
                                 log::error!("[SIDECAR] Error: {}", e);
                             }
                             _ => {}
@@ -2409,7 +2557,11 @@ pub fn run() {
                     kill_sidecar();
                     std::process::exit(1);
                 }
-                if let Err(e) = verify_sidecar_startup(&sidecar_token) {
+                startup_breadcrumb(&format!(
+                    "sidecar startup proof: waiting (timeout={}s)",
+                    SIDECAR_STARTUP_TIMEOUT.as_secs()
+                ));
+                if let Err(e) = verify_sidecar_startup(&sidecar_token, sidecar_exited.as_ref()) {
                     log::error!("[SIDECAR] Startup identity check failed: {}", e);
                     startup_breadcrumb(&format!("sidecar startup proof: FAIL {e}"));
                     kill_sidecar();
@@ -2424,8 +2576,6 @@ pub fn run() {
                 log::info!("Python backend sidecar started on port 8321 (token via stdin pipe)");
                 startup_breadcrumb("sidecar: spawned on :8321 (token via stdin)");
             }
-
-            startup_breadcrumb("setup complete — app ready");
 
             // ══════════════════════════════════════════════════════════════
             // VECTOR #3 FIX: Disable DevTools + context menu in release builds.
@@ -2474,6 +2624,20 @@ pub fn run() {
                     });
                 }
             }
+
+            // STARTUP (fix 2026-08-04): config giữ window ẩn để cold-start Nuitka
+            // không hiện khung trong suốt. Chỉ công bố ready sau mọi setup bảo mật và
+            // WebView; từ đây callback single-instance mới được phép đưa window lên.
+            let main_window = app.get_webview_window("main").ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Không tìm thấy cửa sổ chính của PrynX",
+                )
+            })?;
+            main_window.show()?;
+            APP_STARTUP_READY.store(true, Ordering::Release);
+            let _ = main_window.set_focus();
+            startup_breadcrumb("setup complete — app ready");
 
             Ok(())
         })

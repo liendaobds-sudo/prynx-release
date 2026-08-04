@@ -153,6 +153,29 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
         expect(st().signatureMode).toBe('thread');
     });
 
+    it('đường viền cắt được lưu và khôi phục theo profile N-Up', () => {
+        const store = createImposerSettingsStore();
+        const st = () => store.getState();
+        st().setActiveDashboardTool('nup');
+        st().setCutBorder({
+            enabled: true,
+            position: 'bleed',
+            color: '#FF0000',
+            thickness: 0.6,
+        });
+
+        st().switchToolProfile('nup', 'booklet');
+        st().setCutBorder({ enabled: false, position: 'trim' });
+        st().switchToolProfile('booklet', 'nup');
+
+        expect(st().cutBorder).toEqual({
+            enabled: true,
+            position: 'bleed',
+            color: '#FF0000',
+            thickness: 0.6,
+        });
+    });
+
     it('switchToolProfile bỏ qua khi tool không nằm trong PROFILED_TOOLS', () => {
         localStorage.clear();
         const store = createImposerSettingsStore();

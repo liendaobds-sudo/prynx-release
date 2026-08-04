@@ -16,12 +16,12 @@ def _feature_gating_enabled() -> bool:
 FEATURE_GATING_ENABLED = _feature_gating_enabled()
 _PLAN_RANK = {"free": 1, "pro": 2, "dev": 99}
 FREE_FEATURES = {
-    "pdf.shuffle", "pdf.resize", "pdf.split", "pdf.pages", "pdf.merge",
+    "pdf.shuffle", "pdf.resize", "pdf.crop", "pdf.split", "pdf.pages", "pdf.merge",
     "pdf.encrypt", "pdf.decrypt", "pdf.metadata", "pdf.optimize", "pdf.watermark",
     "pdf.header_footer", "pdf.office_convert", "qc.compare_text",
 }
 PRO_FEATURES = {
-    "pdf.resize_batch", "pdf.office_batch", "pdf.optimize_advanced", "pdf.trim_shift",
+    "pdf.resize_batch", "pdf.office_batch", "pdf.trim_shift",
     "prepress.preflight", "prepress.convert_colors", "prepress.hairlines", "prepress.trapping",
     "prepress.cutline", "prepress.pdfx", "prepress.paper_library",
     "vdp.datamerge", "vdp.numbering", "vdp.cover_numbering",

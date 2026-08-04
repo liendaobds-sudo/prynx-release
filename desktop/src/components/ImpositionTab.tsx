@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useEffect, useRef, useState, useContext } from 'react';
 import { createPortal } from 'react-dom';
 import { localFileUrl } from '../lib/localFileTransport';
-import { TOOL_REGISTRY, TOOL_CATEGORIES, getToolsByCategory } from '../lib/toolRegistry';
+import { TOOL_REGISTRY, TOOL_CATEGORIES, findToolByUniqueKey, getToolsByCategory, getToolUniqueKey } from '../lib/toolRegistry';
 
 import PDFUploader from './PDFUploader';
 import AcrobatViewer from './AcrobatViewer';
@@ -15,7 +15,7 @@ import { imageFileToPdfIfNeeded } from '../lib/imageNormalizer';
 import ImposerDashboard from './imposition-tools/ImposerDashboard';
 import CutExportModal from './imposition-tools/cut-export/CutExportModal';
 import OpenInDesignModal from './imposition-tools/OpenInDesignModal';
-import { PREDEFINED_SIZES, resolveRightPanel, type BookletSettings, type NupSettings } from './imposition-tools/types';
+import { DEFAULT_CUT_BORDER_CONFIG, PREDEFINED_SIZES, isWorkspaceTool, resolveRightPanel, type BookletSettings, type NupSettings } from './imposition-tools/types';
 import { ImposerSettingsContext, createImposerSettingsStore, useImposerSettingsStore } from './imposition-tools/useImposerSettingsStore';
 import { resolveEffectiveSeparateCut } from './imposition-tools/pageSheetPolicy';
 import { disposeImposerPersistScope } from './imposition-tools/store/persist';
@@ -34,6 +34,7 @@ import { toast } from './ui/Toast';
 // UIUX (audit 2026-07-27 §B-20 + §B-23): phím tắt dialog + dịch lỗi kỹ thuật
 import DialogKeys from './ui/DialogKeys';
 import type { Recipe } from '../lib/recipe/recipeTypes';
+import { firstDeniedRecipeStep, recipeStepAccessError } from '../lib/recipe/recipeEntitlements';
 import DataMergeTool from './preprocess-tools/DataMergeTool';
 import NumberingTool from './preprocess-tools/NumberingTool';
 import CoverNumberingTool from './preprocess-tools/CoverNumberingTool';
@@ -55,6 +56,11 @@ import { useTranslation } from 'react-i18next';
 import { tv } from '../i18n';
 import { canToolRunWithoutPdf, LOGO_REBUILD_ENABLED, resolveDedicatedInitialTool } from './imposition-tools/sections/preprocessRouterTools';
 import { registerActiveTabFeature } from '../lib/tabNavigation';
+import { useToolActivationGuard } from '../hooks/useToolActivationGuard';
+import { canUse } from '../lib/license/features';
+import { useAuthStore } from '../stores/useAuthStore';
+import ProFeatureBadge from './license/ProFeatureBadge';
+import FeatureAccessOverlay from './license/FeatureAccessOverlay';
 
 // Phase type is now defined in useWorkspaceStore
 
@@ -82,6 +88,7 @@ interface Props {
     officeSourceFile?: File | null;
     officeSourceFiles?: File[];
     initialRecovery?: import('../lib/recovery').RecoverySnapshot;
+    onRequestHome?: () => void;
 }
 
 export default function ImpositionTab(props: Props) {
@@ -122,7 +129,7 @@ export function isEphemeralBackendPath(p?: string | null): boolean {
     return false;
 }
 
-function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onSpawnTab, initialFile, initialReport, initialFeature, lockedMode, batchOutput: initialBatchOutput, systemMergeFiles, officeSourceFile, officeSourceFiles, initialRecovery, imposerStoreRef }: Props & { imposerStoreRef: React.MutableRefObject<ReturnType<typeof createImposerSettingsStore> | null> }) {
+function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onSpawnTab, initialFile, initialReport, initialFeature, lockedMode, batchOutput: initialBatchOutput, systemMergeFiles, officeSourceFile, officeSourceFiles, initialRecovery, onRequestHome, imposerStoreRef }: Props & { imposerStoreRef: React.MutableRefObject<ReturnType<typeof createImposerSettingsStore> | null> }) {
   const { t } = useTranslation();
     //#region State & Hooks
     // ═══ All state from Zustand store ═══
@@ -203,11 +210,27 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     );
 
     const { isWorkspaceSidebarOpen: isSidebarOpen, favoriteTools, hiddenTools } = useAppSettingsStore();
+    const licensePlan = useAuthStore(state => state.licensePlan);
+    const licenseFeatures = useAuthStore(state => state.licenseFeatures);
+    const requestToolActivation = useToolActivationGuard();
     const setIsSidebarOpen = useAppSettingsStore(state => state.setWorkspaceSidebarOpen);
     const sidebarWidth = useAppSettingsStore(state => state.toolMenuWidth);
     const setSidebarWidth = useAppSettingsStore(state => state.setToolMenuWidth);
     const dedicatedInitialTool = resolveDedicatedInitialTool(initialFeature);
     const previousDashboardToolRef = useRef<string | null>(null);
+
+    // SEC (audit 2026-08-04 re-audit UI): snapshot cũ có thể chứa OCR/tool đã
+    // tắt và đi thẳng vào store, không qua click guard. Chỉ hai state nội bộ
+    // `none`/`merge` được phép thiếu registry; còn lại trả về menu an toàn.
+    useEffect(() => {
+        if (
+            activeDashboardTool !== 'none'
+            && activeDashboardTool !== 'merge'
+            && !findToolByUniqueKey(activeDashboardTool)
+        ) {
+            setActiveDashboardTool('none');
+        }
+    }, [activeDashboardTool, setActiveDashboardTool]);
 
     // NAV (fix 2026-07-29): bao trang thai cong cu THUC TE cua tung tab cho lop nhan file native.
     // payload.focusFeature chi mo ta luc mo tab va se cu khi user doi cong cu.
@@ -1441,6 +1464,16 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // ghi đè để bước sau nhận output bước trước (tránh state `file` cũ trong closure).
     const playRecipe = useCallback(async (recipe: Recipe) => {
         if (!file) { toast.error(t('tabs.imposition:hay_mo_mot_file_pdf_truoc_khi_phat_lai')); return; }
+        const initialLicense = useAuthStore.getState();
+        const denied = firstDeniedRecipeStep(
+            recipe,
+            initialLicense.licensePlan,
+            initialLicense.licenseFeatures,
+        );
+        if (denied) {
+            toast.info(denied.error);
+            return;
+        }
         const base = buildProcessContext();
         let currentBytes: Uint8Array;
         try { currentBytes = await base.getWorkingBytes(); }
@@ -1475,6 +1508,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 },
             }) as any,
             runners: RECIPE_RUNNERS,
+            authorizeStep: (step) => {
+                const currentLicense = useAuthStore.getState();
+                return recipeStepAccessError(
+                    step,
+                    currentLicense.licensePlan,
+                    currentLicense.licenseFeatures,
+                );
+            },
             requestExternalInput,
             onProgress: ({ index, total, step }) => setProcessStatus(t('tabs.imposition:phat_lai_progress_step', { cur: index + 1, total, step: step.label })),
         });
@@ -1595,6 +1636,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         const sheetW = isCustom ? config.customSheetWidth : (PREDEFINED_SIZES[config.formsize]?.w ?? config.customSheetWidth);
         const sheetH = isCustom ? config.customSheetHeight : (PREDEFINED_SIZES[config.formsize]?.h ?? config.customSheetHeight);
 
+        const cutBorder = config.cutBorder || DEFAULT_CUT_BORDER_CONFIG;
         const settings: any = {
             imposerMode: config.cncMode ? 'cnc' : (config.isDieCutMode ? 'diecut' : 'guillotine'),
             impositionMode: ImpositionMode.NUp,
@@ -1629,6 +1671,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             markLength: config.markLength,
             markThickness: config.markThickness,
             markStyle: config.markStyle,
+            cutBorderEnabled: cutBorder.enabled,
+            cutBorderPosition: cutBorder.position,
+            cutBorderColor: cutBorder.color,
+            cutBorderThickness: cutBorder.thickness,
             pageOrder: viewerPageOrder,
             pageRotations: viewerPageRotations,
             isDieCutMode: config.isDieCutMode,
@@ -2259,10 +2305,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // - Khi KHÔNG có công cụ đang chọn: cột là w-full (rộng = sidebarWidth) → hiện nhãn nếu đủ rộng (>=120px).
     // - Khi CÓ công cụ: giữ nguyên hành vi cũ theo isMiniToolbarExpanded (48px icon / 220px có nhãn).
     const showMiniLabels = activeDashboardTool === 'none' ? sidebarWidth >= 120 : isMiniToolbarExpanded;
+    const activeToolDefinition = findToolByUniqueKey(activeDashboardTool);
+    const activeToolLocked = !!activeToolDefinition
+        && !canUse(activeToolDefinition.featureId, licensePlan, licenseFeatures);
 
     //#region Render
     return (
-        <div className="w-full h-full flex flex-col bg-slate-50 dark:bg-[#1a1a1a]">
+        <div className="relative w-full h-full flex flex-col bg-slate-50 dark:bg-[#1a1a1a]">
             {phase === 'upload' && fileOpeningPhase !== 'idle' && (
                 <div className="flex-1 flex items-center justify-center px-6">
                     <div
@@ -2789,6 +2838,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                     ) : (
                                                         <ImposerDashboard
                                                             tabId={tabId || ''}
+                                                            isActive={isActive}
                                                             onStartBooklet={handleStartBooklet}
                                                             onStartNup={handleStartNup}
                                                             onStartShuffle={handleStartShuffle}
@@ -2861,11 +2911,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                     
                                                     <div className="flex flex-col items-center py-2 gap-0 w-full px-1.5">
                                                         {(() => {
-                                                            const allDashboardTools = TOOL_CATEGORIES.filter(cat => cat.id !== 'qc').flatMap(cat => getToolsByCategory(cat.id));
+                                                            const allDashboardTools = TOOL_CATEGORIES.flatMap(cat => getToolsByCategory(cat.id)).filter(tool => {
+                                                                const key = getToolUniqueKey(tool);
+                                                                return isWorkspaceTool(key) && key !== 'none';
+                                                            });
                                                             const favTools = allDashboardTools.filter(t => {
-                                                                if (t.id === 'combine_pdf') return false;
-                                                                const featureId = t.defaultPayload?.focusFeature || t.defaultPayload?.lockedMode || t.id;
-                                                                return favoriteTools.includes(featureId) && !hiddenTools.includes(featureId);
+                                                                const toolKey = getToolUniqueKey(t);
+                                                                return favoriteTools.includes(toolKey) && !hiddenTools.includes(toolKey);
                                                             });
                                                             
                                                             if (favTools.length === 0) return null;
@@ -2882,11 +2934,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                     )}
                                                                     <div className="flex flex-col items-center gap-1.5 w-full">
                                                                         {favTools.map(tool => {
-                                                                            const featureId = tool.defaultPayload?.focusFeature || tool.defaultPayload?.lockedMode || tool.id;
-                                                                            const isActive = activeDashboardTool === featureId;
+                                                                            const toolKey = getToolUniqueKey(tool);
+                                                                            const isActive = activeDashboardTool === toolKey;
                                                                             return (
                                                                                 <button
-                                                                                    key={`fav-${featureId}`}
+                                                                                    key={`fav-${toolKey}`}
                                                                                     onClick={() => {
                                                                                         if (isActive && isSidebarOpen) {
                                                                                             setIsSidebarOpen(false);
@@ -2894,12 +2946,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                                             // Chỉ đổi active tool — switchToolProfile (ImposerDashboard)
                                                                                             // sẽ lưu/nạp taskMode theo từng công cụ. Không gọi
                                                                                             // applyLockedMode ở đây (sẽ làm hỏng snapshot tool cũ).
-                                                                                            setActiveDashboardTool(featureId);
-                                                                                            if (sidebarWidth < 280) setSidebarWidth(390);
-                                                                                            setIsSidebarOpen(true);
+                                                                                            requestToolActivation(tool, () => {
+                                                                                                setActiveDashboardTool(toolKey);
+                                                                                                if (sidebarWidth < 280) setSidebarWidth(390);
+                                                                                                setIsSidebarOpen(true);
+                                                                                            });
                                                                                         }
                                                                                     }}
-                                                                                    className={`w-full h-9 rounded-lg flex items-center transition-colors shrink-0 outline-none
+                                                                                    className={`relative w-full h-9 rounded-lg flex items-center transition-colors shrink-0 outline-none
                                                                                         ${showMiniLabels ? 'justify-start px-2' : 'justify-center'}
                                                                                         ${isActive ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 shadow-sm border border-amber-300 dark:border-amber-700/50' : 'bg-amber-50/50 dark:bg-amber-900/20 text-slate-700 dark:text-zinc-300 border border-amber-200/50 dark:border-amber-700/30 hover:bg-amber-100/80 dark:hover:bg-amber-900/40 hover:text-amber-900 dark:hover:text-amber-100'}`
                                                                                     }
@@ -2908,6 +2962,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                                 >
                                                                                     <span className="text-lg shrink-0 flex items-center justify-center w-6">{tool.icon}</span>
                                                                                     {showMiniLabels && <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tv(tool.title)}</span>}
+                                                                                    <ProFeatureBadge featureId={tool.featureId} className={showMiniLabels ? 'ml-auto' : 'absolute right-0 top-0 scale-75'} />
                                                                                 </button>
                                                                             );
                                                                         })}
@@ -2915,12 +2970,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                 </div>
                                                             );
                                                         })()}
-                                                        {TOOL_CATEGORIES.filter(cat => cat.id !== 'qc').map(cat => {
+                                                        {TOOL_CATEGORIES.map(cat => {
                                                             const catTools = getToolsByCategory(cat.id).filter(t => {
-                                                                if (t.id === 'combine_pdf') return false;
-                                                                const featureId = t.defaultPayload?.focusFeature || t.defaultPayload?.lockedMode || t.id;
-                                                                if (hiddenTools.includes(featureId)) return false;
-                                                                if (favoriteTools.includes(featureId)) return false;
+                                                                const toolKey = getToolUniqueKey(t);
+                                                                if (!isWorkspaceTool(toolKey) || toolKey === 'none') return false;
+                                                                if (hiddenTools.includes(toolKey)) return false;
+                                                                if (favoriteTools.includes(toolKey)) return false;
                                                                 return true;
                                                             });
                                                             if (catTools.length === 0) return null;
@@ -2936,21 +2991,23 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                     )}
                                                                     <div className="flex flex-col items-center gap-1.5 w-full">
                                                                         {catTools.map(tool => {
-                                                                            const featureId = tool.defaultPayload?.focusFeature || tool.defaultPayload?.lockedMode || tool.id;
-                                                                            const isActive = activeDashboardTool === featureId;
+                                                                            const toolKey = getToolUniqueKey(tool);
+                                                                            const isActive = activeDashboardTool === toolKey;
                                                                             return (
                                                                                 <button
-                                                                                    key={featureId}
+                                                                                    key={toolKey}
                                                                                     onClick={() => {
                                                                                         if (isActive && isSidebarOpen) {
                                                                                             setIsSidebarOpen(false);
                                                                                         } else {
-                                                                                            setActiveDashboardTool(featureId);
-                                                                                            if (sidebarWidth < 280) setSidebarWidth(390);
-                                                                                            setIsSidebarOpen(true);
+                                                                                            requestToolActivation(tool, () => {
+                                                                                                setActiveDashboardTool(toolKey);
+                                                                                                if (sidebarWidth < 280) setSidebarWidth(390);
+                                                                                                setIsSidebarOpen(true);
+                                                                                            });
                                                                                         }
                                                                                     }}
-                                                                                    className={`w-full h-9 rounded-lg flex items-center transition-colors shrink-0 outline-none
+                                                                                    className={`relative w-full h-9 rounded-lg flex items-center transition-colors shrink-0 outline-none
                                                                                         ${showMiniLabels ? 'justify-start px-2' : 'justify-center'}
                                                                                         ${isActive ? 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 shadow-sm border border-indigo-300 dark:border-indigo-700/50' : 'hover:bg-slate-200 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-300 border border-transparent'}`
                                                                                     }
@@ -2959,6 +3016,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                                 >
                                                                                     <span className="text-lg shrink-0 flex items-center justify-center w-6">{tool.icon}</span>
                                                                                     {showMiniLabels && <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tv(tool.title)}</span>}
+                                                                                    <ProFeatureBadge featureId={tool.featureId} className={showMiniLabels ? 'ml-auto' : 'absolute right-0 top-0 scale-75'} />
                                                                                 </button>
                                                                             );
                                                                         })}
@@ -3068,6 +3126,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     </div>
                 </div>,
                 document.body
+            )}
+            {isActive !== false && activeToolLocked && activeToolDefinition && (
+                <FeatureAccessOverlay featureId={activeToolDefinition.featureId} onLeave={onRequestHome} />
             )}
         </div>
     );

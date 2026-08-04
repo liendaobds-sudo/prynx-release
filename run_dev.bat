@@ -9,6 +9,21 @@ set "ROOT_DIR=%cd%"
 :: Them poppler vao PATH he thong
 set "PATH=%ROOT_DIR%\poppler\poppler-24.08.0\Library\bin;%PATH%"
 
+:: BUILD (audit 2026-08-04 BLD.03): che do dev-gated phai dat DONG THOI
+:: co frontend va backend qua process environment. Dung: run_dev.bat --gated
+set "PRYNX_DEV_GATED_MODE=false"
+if /I "%~1"=="--gated" set "PRYNX_DEV_GATED_MODE=true"
+if /I "%PRYNX_DEV_GATED%"=="true" set "PRYNX_DEV_GATED_MODE=true"
+if /I "%PRYNX_DEV_GATED_MODE%"=="true" (
+    set "VITE_FEATURE_GATING_ENABLED=true"
+    set "PRYNX_FEATURE_GATING_ENABLED=true"
+    echo - DEV-GATED: Free/Pro gate BAT cho frontend + backend.
+) else (
+    set "VITE_FEATURE_GATING_ENABLED=false"
+    set "PRYNX_FEATURE_GATING_ENABLED=false"
+    echo - DEV thuong: Free/Pro gate TAT. Dung --gated de test nhu ban dong goi.
+)
+
 echo [1/3] Kiem tra moi truong Backend (Python)...
 if not exist "backend\venv" (
     echo - Dang thiet lap moi truong ao Python venv...

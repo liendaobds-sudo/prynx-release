@@ -66,6 +66,11 @@ export interface GuillotineSettings extends BaseSettings {
     markLength?: number; // mm
     markThickness?: number; // mm
     markStyle?: 'default' | 'japanese';
+    /** Đường viền vector để cắt tay; chỉ có hiệu lực trong N-Up guillotine. */
+    cutBorderEnabled?: boolean;
+    cutBorderPosition?: 'trim' | 'bleed';
+    cutBorderColor?: string;
+    cutBorderThickness?: number; // mm
 
     targetQuantity?: number;
     targetQuantitiesByPage?: Record<number, number>;

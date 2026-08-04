@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   FEATURE_CATALOG,
   FEATURE_MIN_PLAN,
-  featureIdForFocus,
   hasFeatureAccess,
   normalizePlan,
 } from './features';
+import { TOOL_REGISTRY, findToolByUniqueKey, getToolUniqueKey } from '../toolRegistry';
 
 describe('license feature catalog', () => {
   afterEach(() => {
@@ -53,17 +53,21 @@ describe('license feature catalog', () => {
     }
   });
 
-  it('map đủ toàn bộ tool đang hiển thị', () => {
-    const keys = [
-      'shuffle', 'resize', 'trim_shift', 'split', 'pages', 'combine_pdf',
-      'preflight', 'convertcolors', 'hairlines', 'trapping', 'sticker',
-      'datamerge', 'numbering', 'cover_numbering', 'stick_text_number',
-      'booklet', 'nup', 'sticker_imposer', 'cnc_imposer', 'dieline',
-      'bgremover', 'watermark', 'optimize', 'encrypt', 'metadata',
-      'office_convert', 'pdfx', 'paper_library', 'upscale', 'logo_rebuild', 'compare_pdf', 'compare_text',
-    ];
-    for (const key of keys) expect(featureIdForFocus(key), key).not.toBeNull();
-    expect(featureIdForFocus('paper_library')).toBe('prepress.paper_library');
-    expect(featureIdForFocus('unknown_xyz')).toBeNull();
+  it('sinh coverage trực tiếp từ registry, không dùng danh sách key viết tay', () => {
+    const enabledTools = TOOL_REGISTRY.filter((tool) => tool.isEnabled);
+    expect(enabledTools.length).toBeGreaterThan(30);
+    for (const tool of enabledTools) {
+      const key = getToolUniqueKey(tool);
+      expect(findToolByUniqueKey(key), key).toBe(tool);
+      expect(FEATURE_CATALOG[tool.featureId], `${key} thiếu capability`).toBeDefined();
+    }
+  });
+
+  it('chốt Crop là Free, Chữ & Font là Pro và bỏ capability Optimize mồ côi', () => {
+    expect(findToolByUniqueKey('crop')?.featureId).toBe('pdf.crop');
+    expect(FEATURE_CATALOG['pdf.crop'].minPlan).toBe('free');
+    expect(findToolByUniqueKey('font_tools')?.featureId).toBe('prepress.preflight');
+    expect(FEATURE_CATALOG['prepress.preflight'].minPlan).toBe('pro');
+    expect('pdf.optimize_advanced' in FEATURE_CATALOG).toBe(false);
   });
 });

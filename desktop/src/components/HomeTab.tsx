@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { TOOL_CATEGORIES, getToolsByCategory, toolMatchesQuery, type ToolDefinition, type AppToolId } from '../lib/toolRegistry';
+import { TOOL_CATEGORIES, getToolsByCategory, getToolUniqueKey, toolMatchesQuery, type ToolDefinition, type AppToolId } from '../lib/toolRegistry';
 import { OFFICE_EXTENSIONS } from '../lib/officeFileTypes';
 import { IMAGE_ACCEPT_ATTR, SUPPORTED_IMAGE_EXTENSIONS } from '../lib/imageFileTypes';
 import { createPathBackedFile, dispatchSupportedSystemFiles } from '../lib/nativeFileAccess';
@@ -9,9 +9,8 @@ import { useAppSettingsStore } from '../stores/appSettingsStore';
 import RecentFilesGrid from './RecentFiles/RecentFilesGrid';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../i18n';
-import { useAuthStore } from '../stores/useAuthStore';
-import { canUse, featureIdForFocus, isProFeature } from '../lib/license/features';
 import { appPerf } from '../lib/perfMarks';
+import ProFeatureBadge from './license/ProFeatureBadge';
 
 /** accept= dùng cùng nguồn chân lý với dispatcher và converter ảnh. */
 const HOME_FILE_ACCEPT = [
@@ -27,8 +26,7 @@ interface Props {
 
 // Khoá định danh duy nhất của 1 tool (nhiều tool dùng chung id 'imposition' nên
 // phân biệt theo focusFeature / lockedMode trước).
-const toolKey = (t: ToolDefinition): string =>
-  t.defaultPayload?.focusFeature || t.defaultPayload?.lockedMode || t.id;
+const toolKey = getToolUniqueKey;
 
 // Style khối danh sách (gom 1 chỗ thay vì lặp inline nhiều nơi).
 const listWrapStyle = (tight: boolean): React.CSSProperties => ({
@@ -52,21 +50,17 @@ interface ToolItemProps {
 function ToolItem({ tool, isFavorite, isMiniMode, isCompactMode, onOpenApp, onToggleFavorite }: ToolItemProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const licensePlan = useAuthStore((state) => state.licensePlan);
-  const licenseFeatures = useAuthStore((state) => state.licenseFeatures);
-  const featureId = featureIdForFocus(toolKey(tool));
-  const proOnly = !!featureId && isProFeature(featureId);
-  const isLocked = !!featureId && !canUse(featureId, licensePlan, licenseFeatures);
 
   if (isMiniMode) {
     return (
       <button
         onClick={() => onOpenApp(tool.id, tool.defaultPayload)}
         style={{ padding: '12px 0' }}
-        className={`w-full border ${isFavorite ? 'bg-amber-50/80 border-amber-200 dark:bg-amber-900/20 dark:border-amber-800/50' : 'bg-white dark:bg-zinc-900 border-slate-200 dark:border-white/10'} hover:shadow-sm rounded-lg flex items-center justify-center group`}
+        className={`relative w-full border ${isFavorite ? 'bg-amber-50/80 border-amber-200 dark:bg-amber-900/20 dark:border-amber-800/50' : 'bg-white dark:bg-zinc-900 border-slate-200 dark:border-white/10'} hover:shadow-sm rounded-lg flex items-center justify-center group`}
         title={tv(tool.title)}
       >
         <div className="text-[26px] flex justify-center group-hover:scale-110 transition-transform origin-center drop-shadow-sm">{tool.icon}</div>
+        <ProFeatureBadge featureId={tool.featureId} className="absolute right-1 top-1" />
       </button>
     );
   }
@@ -80,7 +74,7 @@ function ToolItem({ tool, isFavorite, isMiniMode, isCompactMode, onOpenApp, onTo
       >
         <span className="text-[18px] shrink-0 flex items-center justify-center w-6">{tool.icon}</span>
         <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tv(tool.title)}</span>
-        {proOnly && <span className="ml-auto text-[9px] font-extrabold text-amber-600 dark:text-amber-400">PRO</span>}
+        <ProFeatureBadge featureId={tool.featureId} className="ml-auto" />
       </button>
     );
   }
@@ -100,7 +94,7 @@ function ToolItem({ tool, isFavorite, isMiniMode, isCompactMode, onOpenApp, onTo
         <div className="flex-1 min-w-0">
           <div className="font-bold text-[13.5px] text-slate-800 dark:text-white leading-tight truncate">{tv(tool.title)}</div>
         </div>
-        {proOnly && <span title={isLocked ? 'Cần key PrynX Pro' : 'Tính năng PrynX Pro'} className="shrink-0 rounded-full bg-amber-100 dark:bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-extrabold text-amber-700 dark:text-amber-300">{isLocked ? '🔒 PRO' : 'PRO'}</span>}
+        <ProFeatureBadge featureId={tool.featureId} />
         <button
           type="button"
           onClick={(e) => { e.stopPropagation(); onToggleFavorite(toolKey(tool)); }}

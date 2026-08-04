@@ -34,7 +34,7 @@ from app.workers.vdp_validate import (
     build_error_report_csv,
 )
 from app.workers.vdp_preview import render_record_preview
-from app.core.license_guard import require_license, require_feature
+from app.core.license_guard import enforce_feature, require_license, require_feature
 from app.core.heavy_job_scheduler import scheduled_job
 from app.config import settings
 
@@ -42,7 +42,24 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(dependencies=[Depends(require_feature("vdp.datamerge"))])
+router = APIRouter()
+
+# SEC (audit 2026-08-04 §BE.01): ba công cụ dùng chung engine VDP, nhưng quyền
+# phải theo đúng capability mà cửa vào UI đã chọn. Không chấp nhận FeatureId
+# ngoài allowlist để caller không thể mượn một quyền Free cho engine Pro.
+VDP_EXECUTION_FEATURES = frozenset({
+    "vdp.datamerge",
+    "vdp.numbering",
+    "vdp.cover_numbering",
+})
+
+
+def enforce_vdp_execution_feature(feature_id: str, license_info: dict) -> str:
+    normalized = (feature_id or "").strip()
+    if normalized not in VDP_EXECUTION_FEATURES:
+        raise HTTPException(status_code=400, detail="Capability VDP không hợp lệ.")
+    enforce_feature(normalized, license_info)
+    return normalized
 
 UPLOAD_DIR = settings.UPLOAD_DIR
 RESULTS_DIR = settings.RESULTS_DIR
@@ -402,9 +419,11 @@ async def start_vdp_job(
     file_path: Optional[str] = Form(None),
     data_format: str = Form("json"),
     has_header: bool = Form(True),
+    feature_id: str = Form(...),
     license_info: dict = Depends(require_license),
 ):
     """Reserve capacity first, then spool queued inputs without retaining row lists."""
+    execution_feature = enforce_vdp_execution_feature(feature_id, license_info)
     logger.debug("Received POST /generate")
     _purge_old_jobs()
     if not _VDP_SUBMISSION_SLOTS.acquire(blocking=False):
@@ -476,6 +495,7 @@ async def start_vdp_job(
             "output_path": output_path,
             "future": None,
             "slot_released": False,
+            "feature_id": execution_feature,
         }
         future = _VDP_EXECUTOR.submit(
             vdp_background_task_spooled,
@@ -837,7 +857,7 @@ async def read_datasource(
     sheet: Optional[str] = Form(None),
     has_header: bool = Form(True),
     include_all_rows: bool = Form(False),
-    license_info: dict = Depends(require_license),
+    license_info: dict = Depends(require_feature("vdp.datamerge")),
 ):
     """Đọc nguồn dữ liệu (csv/xlsx/gsheet) → cột + số record + xem trước (Req 1.1, 1.3).
 
@@ -862,7 +882,7 @@ async def read_datasource(
 @router.post("/datasource/sheets")
 async def read_datasource_sheets(
     file: UploadFile = File(...),
-    license_info: dict = Depends(require_license),
+    license_info: dict = Depends(require_feature("vdp.datamerge")),
 ):
     """Liệt kê tên sheet của một file Excel ``.xlsx`` để người dùng chọn (Req 1.3)."""
     data = await file.read()
@@ -885,7 +905,7 @@ async def validate_vdp(
     rows: Optional[str] = Form(None),
     columns: Optional[str] = Form(None),
     rows_file: Optional[UploadFile] = File(None),
-    license_info: dict = Depends(require_license),
+    license_info: dict = Depends(require_feature("vdp.datamerge")),
 ):
     """Kiểm tra cấu hình field + dữ liệu TRƯỚC khi sinh lô (Req 5.*).
 
@@ -932,7 +952,7 @@ async def preview_vdp(
     columns: Optional[str] = Form(None),
     rows_file: Optional[UploadFile] = File(None),
     scale: float = Form(2.0),
-    license_info: dict = Depends(require_license),
+    license_info: dict = Depends(require_feature("vdp.datamerge")),
 ):
     """Render bản xem trước record thứ N → PNG (base64) + field_errors (Req 4.1–4.6, 4.10).
 
@@ -1034,7 +1054,7 @@ async def error_report_vdp(
     columns: Optional[str] = Form(None),
     rows_file: Optional[UploadFile] = File(None),
     issues_file: Optional[UploadFile] = File(None),
-    license_info: dict = Depends(require_license),
+    license_info: dict = Depends(require_feature("vdp.datamerge")),
 ):
     """Sinh báo cáo lỗi CSV tải về (Req 4.7, 4.8).
 

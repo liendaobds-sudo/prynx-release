@@ -112,6 +112,43 @@ describe('PlaybackRunner — lọc an toàn (P6/P7)', () => {
     });
 });
 
+describe('PlaybackRunner — entitlement fail-closed', () => {
+    it('kiểm toàn recipe trước mutation đầu tiên', async () => {
+        const runner = vi.fn(async () => {});
+        const recipe = createRecipe('R', [step('optimize'), step('booklet')]);
+        const res = await runRecipe(recipe, baseDeps({
+            runners: { optimize: runner, booklet: runner },
+            authorizeStep: (item) => item.opId === 'booklet' ? 'Cần quyền Bình sách' : null,
+        }));
+
+        expect(runner).not.toHaveBeenCalled();
+        expect(res.ok).toBe(false);
+        expect(res.completed).toBe(0);
+        expect(res.failedStep?.index).toBe(1);
+    });
+
+    it('kiểm lại trước từng runner nếu quyền đổi giữa chuỗi', async () => {
+        let revoked = false;
+        const first = vi.fn(async () => { revoked = true; });
+        const second = vi.fn(async () => {});
+        const recipe = createRecipe('R', [step('optimize'), step('booklet')]);
+        let preflight = true;
+        const res = await runRecipe(recipe, baseDeps({
+            runners: { optimize: first, booklet: second },
+            authorizeStep: (item) => {
+                if (preflight) return null;
+                return revoked && item.opId === 'booklet' ? 'Quyền vừa thay đổi' : null;
+            },
+            onProgress: ({ index }) => { if (index === 0) preflight = false; },
+        }));
+
+        expect(first).toHaveBeenCalledOnce();
+        expect(second).not.toHaveBeenCalled();
+        expect(res.completed).toBe(1);
+        expect(res.failedStep?.error).toContain('thay đổi');
+    });
+});
+
 describe('PlaybackRunner — dừng sạch khi lỗi (P8)', () => {
     it('runner throw → dừng, các bước kế không chạy', async () => {
         const calls: string[] = [];

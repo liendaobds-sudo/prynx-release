@@ -12,7 +12,7 @@ import {
     createOptionalContentTransfer,
     finishOptionalContentTransfer,
 } from './pdfOptionalContent';
-import { imposeCatalogBatchViaBackend, ImpositionMode, type ProcessingSettings } from '../lib/pdfImposer';
+import { imposeCatalogBatchViaBackend, ImpositionMode, type GuillotineSettings, type ProcessingSettings } from '../lib/pdfImposer';
 import { planCatalog, verifyCatalogPlan, type PlanConfig } from '../lib/imposerEngine/CatalogPlanner';
 import { getImposerCapability } from '../components/imposition-tools/types';
 import { applyRule, executeShuffle, parseRule, reversePages, shuffleEvenOdd } from '../lib/preprocessEngine/ShuffleEngine';
@@ -28,6 +28,42 @@ import { toast } from '../components/ui/Toast';
 // (KHÔNG thêm nút hủy: backend chưa có endpoint cancel cho các route preprocess.)
 const LONG_TASK_HINT = () =>
     i18n.t('lib.processHandlers:file_lon_co_the_mat_vai_phut', { defaultValue: '… (file lớn có thể mất vài phút — đừng đóng tab)' });
+
+const NUP_SHEET_TOO_SMALL_ERROR = 'Sheet too small for source pages. Cannot fit any items.';
+const NUP_PAGE_CANNOT_FIT_ERROR = /^Trang\s+(\d+)\s+không thể xếp vào vùng giấy sử dụng\.$/u;
+
+/**
+ * UIUX (audit 2026-08-04 §NUP-ERR): backend N-Up còn trả hai lỗi sức chứa
+ * bằng chuỗi cố định. Dịch ngay tại ranh giới handler để UI theo đúng ngôn ngữ
+ * đang chọn; giữ lỗi gốc trong `cause` cho log kỹ thuật.
+ */
+function localizeNupCapacityError(error: unknown): unknown {
+    const raw = error instanceof Error
+        ? error.message.trim()
+        : (typeof error === 'string' ? error.trim() : '');
+
+    if (raw === NUP_SHEET_TOO_SMALL_ERROR) {
+        return new Error(
+            i18n.t('lib.processHandlers:vung_giay_su_dung_qua_nho_khong_xep_duoc_trang_nguon', {
+                defaultValue: 'Vùng giấy sử dụng quá nhỏ, không xếp được trang nguồn nào. Hãy tăng khổ giấy, giảm lề hoặc kiểm tra TrimBox của file nguồn.',
+            }),
+            { cause: error },
+        );
+    }
+
+    const pageMatch = NUP_PAGE_CANNOT_FIT_ERROR.exec(raw);
+    if (pageMatch) {
+        return new Error(
+            i18n.t('lib.processHandlers:trang_page_khong_the_xep_vao_vung_giay_su_dung', {
+                page: Number(pageMatch[1]),
+                defaultValue: 'Trang {{page}} không thể xếp vào vùng giấy sử dụng. Hãy tăng khổ giấy, giảm lề hoặc kiểm tra TrimBox của file nguồn.',
+            }),
+            { cause: error },
+        );
+    }
+
+    return error;
+}
 
 
 // ─── Shared context type for all handlers ───
@@ -68,6 +104,7 @@ export async function runProcessEngine(
         const isDieCut = settings.imposerMode === 'diecut';
         const isGuillotine = settings.imposerMode === 'guillotine';
         const isCnc = settings.imposerMode === 'cnc';
+        const guillotineSettings = isGuillotine ? settings as GuillotineSettings : undefined;
         const isPageSheet = isGuillotine && settings.pageSheetMode === true;
         // Page-sheet dùng capability guillotine để giữ marks; raw UI state không đi qua boundary này.
         const caps = getImposerCapability(isPageSheet ? 'guillotine' : settings.imposerMode);
@@ -105,6 +142,14 @@ export async function runProcessEngine(
                 markLength: (settings as any).markLength || 5, markOffset: (settings as any).markOffset || 3,
                 markThickness: (settings as any).markThickness || 0.25,
                 markStyle: (settings as any).markStyle || 'default',
+                // CUT-BORDER (audit 2026-08-04 §CB.2): chỉ serialize cho Bình bài
+                // cắt xén; dấu xén và đường viền hoạt động độc lập.
+                ...(guillotineSettings && !isPageSheet ? {
+                    cutBorderEnabled: guillotineSettings.cutBorderEnabled === true,
+                    cutBorderPosition: guillotineSettings.cutBorderPosition || 'trim',
+                    cutBorderColor: guillotineSettings.cutBorderColor || '#000000',
+                    cutBorderThickness: Number(guillotineSettings.cutBorderThickness) || 0.3,
+                } : {}),
                 gridStrategy: isGuillotine || isDieCut || isCnc ? (settings as any).gridStrategy || 'simple_auto' : 'simple_auto',
                 layoutType: isGuillotine || isDieCut || isCnc ? (settings as any).layoutType || 'sequential' : 'sequential',
                 align: settings.align || 'center',
@@ -320,7 +365,13 @@ export async function runProcessEngine(
         }
         // UIUX (audit 2026-07-27 §D-15): Hủy thì im lặng; lỗi khác dịch thành câu Việt + hướng khắc phục
         if (isCanceled(e)) return;
-        setError(formatError(e, i18n.t('lib.processHandlers:khong_binh_duoc_trang', { defaultValue: 'Không bình được trang' })));
+        const localizedError = settings.impositionMode === ImpositionMode.NUp
+            ? localizeNupCapacityError(e)
+            : e;
+        if (localizedError !== e) {
+            console.warn('[N-Up] Lỗi sức chứa từ backend:', e);
+        }
+        setError(formatError(localizedError, i18n.t('lib.processHandlers:khong_binh_duoc_trang', { defaultValue: 'Không bình được trang' })));
     } finally {
         ctx.setCancelHandler?.(null);
         setIsProcessing(false);

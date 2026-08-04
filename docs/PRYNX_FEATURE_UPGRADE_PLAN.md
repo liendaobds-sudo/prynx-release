@@ -1,9 +1,13 @@
 # PrynX — Kế hoạch nâng cấp tính năng PDF (lib lõi, license tự do)
 
+> **TÀI LIỆU KẾ HOẠCH LỊCH SỬ.** Free/Pro đã được triển khai và audit lại ngày 2026-08-04.
+> Ma trận/quy trình hiện hành nằm ở `docs/PRYNX_FREE_PRO.md`; các câu “gate tắt/chưa làm” bên dưới
+> chỉ mô tả thứ tự triển khai ban đầu, không phải trạng thái sản phẩm hiện tại.
+
 > **Nguyên tắc:** chỉ dùng thư viện lõi (không ghép app/repo lạ nguyên khối).
 > **Bản quyền:** chỉ MIT / Apache-2.0 / BSD / ISC / Unlicense (và tương đương permissive).
 > **Cấm:** GPL/AGPL/LGPL “dính” vào binary phân phối nếu không rà soát kỹ; cấm clone UI app PDF khác.
-> **Free/Pro:** **chưa làm** — hoàn thiện tính năng trước, phân gói sau.
+> **Free/Pro:** xem tài liệu hiện hành nêu trên.
 
 ---
 

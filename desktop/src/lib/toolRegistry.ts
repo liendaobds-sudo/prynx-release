@@ -11,6 +11,7 @@
 import { lazy, type LazyExoticComponent, type ComponentType, type ReactNode } from 'react';
 // [VARIANT 2026-07-29] Hàm chuẩn hoá tìm kiếm ở module thuần (không React)
 import { LOGO_REBUILD_ENABLED } from '../components/imposition-tools/sections/preprocessRouterTools';
+import type { FeatureId } from './license/features';
 import { normalizeSearch } from './textSearch';
 
 // ─── Tool Category IDs ───
@@ -38,6 +39,8 @@ export interface ToolDefinition {
   component: LazyExoticComponent<ComponentType<any>>;
   /** Is this tool currently available? false = "sắp ra mắt" */
   isEnabled: boolean;
+  /** Capability Free/Pro bắt buộc; registry là nguồn chân lý duy nhất cho mọi cửa mở tool. */
+  featureId: FeatureId;
   /** Max simultaneous tab instances. undefined = unlimited */
   maxInstances?: number;
   /** Payload to pass when opening this tool */
@@ -73,6 +76,31 @@ export function getToolUniqueKey(tool: ToolDefinition): string {
   return tool.defaultPayload?.focusFeature || tool.defaultPayload?.lockedMode || tool.id;
 }
 
+/** UIUX/SEC (audit 2026-08-04 §UI.01/§UI.02): tra quyền từ chính registry, không duy trì map viết tay thứ hai. */
+export function findToolByUniqueKey(key: string): ToolDefinition | undefined {
+  return TOOL_REGISTRY.find((tool) => tool.isEnabled && getToolUniqueKey(tool) === key);
+}
+
+/**
+ * SEC (audit 2026-08-04 §UI.02): resolve đúng biến thể khi payload có tool key.
+ * App id chỉ được fallback khi registry có đúng một entry; `imposition` có nhiều
+ * biến thể nên tab kết quả chung không bị gán nhầm capability.
+ */
+export function findToolForLaunch(
+  appId: AppToolId,
+  payload?: { focusFeature?: unknown; lockedMode?: unknown } | null,
+): ToolDefinition | undefined {
+  const explicitKey = typeof payload?.focusFeature === 'string'
+    ? payload.focusFeature
+    : typeof payload?.lockedMode === 'string'
+      ? payload.lockedMode
+      : null;
+  if (explicitKey) return findToolByUniqueKey(explicitKey);
+
+  const exactMatches = TOOL_REGISTRY.filter((tool) => tool.isEnabled && tool.id === appId);
+  return exactMatches.length === 1 ? exactMatches[0] : undefined;
+}
+
 // ─── Category Definitions ───
 export interface ToolCategory {
   id: ToolCategoryId;
@@ -102,6 +130,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'file',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'pdf.shuffle',
     defaultPayload: { focusFeature: 'shuffle' },
     hoverColor: 'hover:border-amber-500 hover:text-amber-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-amber-500',
@@ -119,6 +148,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'file',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'pdf.resize',
     defaultPayload: { focusFeature: 'resize' },
     hoverColor: 'hover:border-teal-500 hover:text-teal-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-teal-500',
@@ -137,6 +167,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'file',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'pdf.crop',
     defaultPayload: { focusFeature: 'crop' },
     hoverColor: 'hover:border-orange-500 hover:text-orange-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-orange-500',
@@ -154,6 +185,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'file',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'pdf.trim_shift',
     defaultPayload: { focusFeature: 'trim_shift' },
     hoverColor: 'hover:border-teal-500 hover:text-teal-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-teal-500',
@@ -171,6 +203,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'file',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'pdf.split',
     defaultPayload: { focusFeature: 'split' },
     hoverColor: 'hover:border-amber-500 hover:text-amber-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-amber-500',
@@ -188,6 +221,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'file',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'pdf.pages',
     defaultPayload: { focusFeature: 'pages' },
     hoverColor: 'hover:border-blue-500 hover:text-blue-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-blue-500',
@@ -208,6 +242,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     // UIUX (audit 2026-07-27 §WR.1): Preflight dùng cùng workspace/menu dù mở trước hay sau PDF.
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'prepress.preflight',
     maxInstances: 1,
     defaultPayload: { focusFeature: 'preflight' },
     hoverColor: 'hover:border-teal-500 hover:text-teal-600 text-slate-800 dark:text-white',
@@ -226,6 +261,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'print',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'prepress.preflight',
     // UIUX (audit 2026-07-28 §F.2): công cụ chuyên dụng dùng chung workspace và backend Preflight.
     defaultPayload: { focusFeature: 'font_tools' },
     hoverColor: 'hover:border-indigo-500 hover:text-indigo-600 text-slate-800 dark:text-white',
@@ -244,6 +280,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'print',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'prepress.convert_colors',
     defaultPayload: { focusFeature: 'convertcolors' },
     hoverColor: 'hover:border-pink-500 hover:text-pink-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-pink-500',
@@ -261,6 +298,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'print',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'prepress.hairlines',
     defaultPayload: { focusFeature: 'hairlines' },
     hoverColor: 'hover:border-orange-500 hover:text-orange-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-orange-500',
@@ -278,6 +316,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'print',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'prepress.trapping',
     defaultPayload: { focusFeature: 'trapping' },
     hoverColor: 'hover:border-violet-500 hover:text-violet-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-violet-500',
@@ -295,6 +334,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'impo',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'prepress.cutline',
     defaultPayload: { focusFeature: 'sticker' },
     hoverColor: 'hover:border-rose-500 hover:text-rose-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-rose-500',
@@ -314,6 +354,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'vdp',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'vdp.datamerge',
     defaultPayload: { focusFeature: 'datamerge' },
     hoverColor: 'hover:border-purple-500 hover:text-purple-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-purple-500',
@@ -331,6 +372,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'vdp',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'vdp.numbering',
     defaultPayload: { focusFeature: 'numbering' },
     hoverColor: 'hover:border-indigo-500 hover:text-indigo-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-indigo-500',
@@ -348,6 +390,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'vdp',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'vdp.cover_numbering',
     defaultPayload: { focusFeature: 'cover_numbering' },
     hoverColor: 'hover:border-indigo-500 hover:text-indigo-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-indigo-500',
@@ -365,6 +408,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'file',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'pdf.header_footer',
     defaultPayload: { focusFeature: 'stick_text_number' },
     hoverColor: 'hover:border-sky-500 hover:text-sky-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-sky-500',
@@ -384,6 +428,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'impo',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'impo.booklet',
     defaultPayload: { lockedMode: 'booklet' },
     hoverColor: 'hover:border-emerald-500 hover:text-emerald-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-emerald-500',
@@ -401,6 +446,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'impo',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'impo.nup',
     defaultPayload: { lockedMode: 'nup' },
     hoverColor: 'hover:border-rose-500 hover:text-rose-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-rose-500',
@@ -418,6 +464,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'impo',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'impo.diecut',
     defaultPayload: { lockedMode: 'sticker_imposer' },
     hoverColor: 'hover:border-pink-500 hover:text-pink-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-pink-500',
@@ -435,6 +482,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'impo',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'impo.cnc',
     defaultPayload: { lockedMode: 'cnc_imposer' },
     hoverColor: 'hover:border-orange-500 hover:text-orange-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-orange-500',
@@ -454,6 +502,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'packaging',
     component: DielineTool,
     isEnabled: true,
+    featureId: 'packaging.dieline',
     maxInstances: 1,
     hoverColor: 'hover:border-violet-500 hover:text-violet-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-violet-500',
@@ -473,6 +522,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'image',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'util.bgremover',
     defaultPayload: { focusFeature: 'bgremover' },
     hoverColor: 'hover:border-violet-500 hover:text-violet-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-violet-500',
@@ -490,6 +540,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'file',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'pdf.watermark',
     defaultPayload: { focusFeature: 'watermark' },
     hoverColor: 'hover:border-sky-500 hover:text-sky-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-sky-500',
@@ -507,6 +558,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'print',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'pdf.optimize',
     defaultPayload: { focusFeature: 'optimize' },
     hoverColor: 'hover:border-emerald-500 hover:text-emerald-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-emerald-500',
@@ -524,6 +576,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'print',
     component: PaperLibraryTool,
     isEnabled: true,
+    featureId: 'prepress.paper_library',
     maxInstances: 1,
     hoverColor: 'hover:border-teal-500 hover:text-teal-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-teal-500',
@@ -541,6 +594,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'file',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'pdf.encrypt',
     defaultPayload: { focusFeature: 'encrypt' },
     hoverColor: 'hover:border-amber-500 hover:text-amber-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-amber-500',
@@ -558,6 +612,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'file',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'pdf.metadata',
     defaultPayload: { focusFeature: 'metadata' },
     hoverColor: 'hover:border-violet-500 hover:text-violet-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-violet-500',
@@ -575,6 +630,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'file',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'pdf.office_convert',
     defaultPayload: { focusFeature: 'office_convert' },
     hoverColor: 'hover:border-indigo-500 hover:text-indigo-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-indigo-500',
@@ -618,6 +674,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'print',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'prepress.pdfx',
     defaultPayload: { focusFeature: 'pdfx' },
     hoverColor: 'hover:border-emerald-500 hover:text-emerald-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-emerald-500',
@@ -635,6 +692,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'image',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'util.upscale',
     defaultPayload: { focusFeature: 'upscale' },
     hoverColor: 'hover:border-violet-500 hover:text-violet-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-violet-500',
@@ -652,6 +710,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'image',
     component: ImpositionTab,
     isEnabled: true,
+    featureId: 'util.logo_rebuild',
     defaultPayload: { focusFeature: 'logo_rebuild' },
     hoverColor: 'hover:border-violet-500 hover:text-violet-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-violet-500',
@@ -669,6 +728,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'file',
     component: CombineTab,
     isEnabled: true,
+    featureId: 'pdf.merge',
     hoverColor: 'hover:border-blue-500 hover:text-blue-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-blue-500',
     hoverShadow: 'hover:shadow-[0_8px_30px_rgb(59,130,246,0.15)]',
@@ -686,6 +746,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'qc',
     component: CompareTab,
     isEnabled: true,
+    featureId: 'qc.compare_pdf',
     maxInstances: 1,
     hoverColor: 'hover:border-blue-500 hover:text-blue-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-blue-500',
@@ -703,6 +764,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     category: 'qc',
     component: TextCompareTab,
     isEnabled: true,
+    featureId: 'qc.compare_text',
     maxInstances: 1,
     hoverColor: 'hover:border-purple-500 hover:text-purple-600 text-slate-800 dark:text-white',
     hoverBorder: 'hover:border-purple-500',

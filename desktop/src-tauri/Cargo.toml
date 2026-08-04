@@ -37,7 +37,6 @@ tauri-plugin-updater = "2"
 tauri-plugin-deep-link = "2.4.9"
 rand = "0.8"
 tokio = { version = "1.52.3", features = ["sync"] }
-imposition_core = { path = "../../imposition_core" }
 sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"

@@ -14,7 +14,6 @@ param(
     [string]$ReleaseRepo = "",                            # (TUY CHON) override; mac dinh SUY TU endpoint updater. Neu dat ma KHAC endpoint -> dung.
     [string]$KeyPassword = "",                            # mat khau cua ~/.tauri/prynx.key (de trong neu khong dat)
     [string]$Notes = "",
-    [switch]$SkipNuitka,                                  # Bo qua bien dich backend (dung lai sidecar cu khi backend khong doi)
     [switch]$SkipPreflightQA                              # KHAN CAP: bo qua pytest Preflight truoc build
 )
 $ErrorActionPreference = "Stop"
@@ -49,11 +48,6 @@ if ($Version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?(?:\+
     throw "-Version phai la SemVer hop le (vd 1.0.0-beta.13), nhan duoc: $Version"
 }
 
-# Release Free/Pro phai luon bien dich lai sidecar. Tai su dung binary cu co the
-# bo sot feature gate moi va tao mot ban cai ma UI khoa nhung backend van mo.
-if ($SkipNuitka) {
-    throw "-SkipNuitka khong duoc phep khi phat hanh. Hay build lai sidecar de dam bao quyen Free/Pro dong bo."
-}
 if ($SkipPreflightQA) {
     throw "-SkipPreflightQA khong duoc phep khi phat hanh."
 }
@@ -132,6 +126,129 @@ function Get-ReleaseManifestField {
     return $hits[0].Matches[0].Groups[1].Value.Trim()
 }
 
+function Assert-ManifestSourceState {
+    param([Parameter(Mandatory = $true)][string]$ManifestPath)
+
+    # BUILD (audit 2026-08-04 BLD.01): uploader chi chap nhan dung commit sach
+    # da duoc build chot tu dau; khong doc mot HEAD moi roi gan nham cho artifact.
+    $manifestCommit = Get-ReleaseManifestField -Path $ManifestPath -Name "GIT_COMMIT"
+    if ($manifestCommit -notmatch '^[0-9a-fA-F]{40,64}$') {
+        throw "Manifest GIT_COMMIT khong hop le."
+    }
+    if ((Get-ReleaseManifestField -Path $ManifestPath -Name "GIT_DIRTY") -ne "no") {
+        throw "Manifest khong chung minh source sach; KHONG upload."
+    }
+    $dirty = @(& git -C $ROOT status --porcelain=v1 --untracked-files=all 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $dirty.Count -gt 0) {
+        throw "Worktree thay doi sau build/verifier; KHONG upload."
+    }
+    $head = @(& git -C $ROOT rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $head.Count -ne 1 -or $head[0].Trim() -ne $manifestCommit) {
+        throw "Commit hien tai khong khop GIT_COMMIT cua artifact; KHONG upload."
+    }
+}
+
+function Assert-GitHubCommitAvailable {
+    param(
+        [Parameter(Mandatory = $true)][string]$Repo,
+        [Parameter(Mandatory = $true)][string]$Commit
+    )
+
+    # BUILD (audit 2026-08-04 re-audit BLD): tag/release chi duoc tao cho commit
+    # artifact da chot va commit do phai thuc su co tren repo dich.
+    $raw = @(& gh api "repos/$Repo/commits/$Commit" 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Commit artifact $Commit chua ton tai tren GitHub repo $Repo; KHONG upload."
+    }
+    try {
+        $remoteCommit = ($raw -join "`n") | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw "Khong doc duoc commit $Commit tu GitHub repo $Repo; KHONG upload."
+    }
+    if ([string]$remoteCommit.sha -ne $Commit) {
+        throw "GitHub tra ve commit $($remoteCommit.sha), khong khop artifact $Commit; KHONG upload."
+    }
+}
+
+function Get-GitHubTagTargetCommit {
+    param(
+        [Parameter(Mandatory = $true)][string]$Repo,
+        [Parameter(Mandatory = $true)][string]$Tag
+    )
+
+    $raw = @(& gh api "repos/$Repo/git/ref/tags/$Tag" 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Khong resolve duoc tag $Tag tren GitHub repo $Repo; KHONG upload."
+    }
+    try {
+        $ref = ($raw -join "`n") | ConvertFrom-Json -ErrorAction Stop
+        $object = $ref.object
+    }
+    catch {
+        throw "GitHub tag $Tag tra ve JSON khong hop le; KHONG upload."
+    }
+
+    # Annotated tag co the tro qua mot tag object khac; dereference co gioi han
+    # cho toi khi gap commit. Lightweight tag di thang vao nhanh commit.
+    for ($depth = 0; $depth -lt 8; $depth++) {
+        $objectType = [string]$object.type
+        $objectSha = [string]$object.sha
+        if ($objectSha -notmatch '^[0-9a-fA-F]{40,64}$') {
+            throw "Tag $Tag co object SHA khong hop le; KHONG upload."
+        }
+        if ($objectType -eq "commit") { return $objectSha }
+        if ($objectType -ne "tag") {
+            throw "Tag $Tag tro toi object $objectType thay vi commit; KHONG upload."
+        }
+
+        $tagRaw = @(& gh api "repos/$Repo/git/tags/$objectSha" 2>$null)
+        if ($LASTEXITCODE -ne 0) {
+            throw "Khong dereference duoc annotated tag $Tag; KHONG upload."
+        }
+        try {
+            $tagObject = ($tagRaw -join "`n") | ConvertFrom-Json -ErrorAction Stop
+            $object = $tagObject.object
+        }
+        catch {
+            throw "Annotated tag $Tag tra ve JSON khong hop le; KHONG upload."
+        }
+    }
+    throw "Tag $Tag co chuoi dereference qua sau; KHONG upload."
+}
+
+function Assert-GitHubTagTargetsCommit {
+    param(
+        [Parameter(Mandatory = $true)][string]$Repo,
+        [Parameter(Mandatory = $true)][string]$Tag,
+        [Parameter(Mandatory = $true)][string]$ExpectedCommit
+    )
+
+    $tagCommit = Get-GitHubTagTargetCommit -Repo $Repo -Tag $Tag
+    if ($tagCommit -ne $ExpectedCommit) {
+        throw "Tag $Tag dang tro toi $tagCommit, khong phai commit artifact $ExpectedCommit; KHONG clobber."
+    }
+}
+
+function Assert-ReleaseManifestAttestation {
+    param([Parameter(Mandatory = $true)][string]$ManifestPath)
+
+    $required = @{
+        BUILD_MODE = "public-release"
+        BUILD_PROVENANCE = "git-clean-commit"
+        SIDECAR_PROVENANCE = "compiled-this-run"
+        PYTHON_ABI = "3.11"
+        FRONTEND_FEATURE_GATE = "enabled"
+        BACKEND_FEATURE_GATE = "enabled"
+    }
+    foreach ($name in $required.Keys) {
+        $actual = Get-ReleaseManifestField -Path $ManifestPath -Name $name
+        if ($actual -ne $required[$name]) {
+            throw "Manifest $name=$actual, can $($required[$name]); KHONG upload."
+        }
+    }
+}
+
 function Assert-StagedReleaseAssets {
     param(
         [Parameter(Mandatory = $true)][string]$SetupPath,
@@ -200,18 +317,8 @@ try {
     if (-not [string]::IsNullOrEmpty($releaseSigningPassword)) {
         $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $releaseSigningPassword
     }
-    if ($SkipNuitka) {
-        Write-Host "  [..] Build (BO QUA Nuitka, dung lai sidecar cu) + frontend + tauri + KY updater..." -ForegroundColor Yellow
-        $sidecar = "$ROOT\desktop\src-tauri\binaries\pdf-inspector-backend-x86_64-pc-windows-msvc.exe"
-        if (-not (Test-Path $sidecar)) {
-            throw "Bat -SkipNuitka nhung khong thay sidecar cu: $sidecar . Hay build day du it nhat 1 lan truoc."
-        }
-        $buildArgs.SkipNuitka = $true
-        & "$ROOT\build_production.ps1" @buildArgs
-    } else {
-        Write-Host "  [..] Build (Nuitka + frontend + tauri + KY updater) - co the lau..." -ForegroundColor Yellow
-        & "$ROOT\build_production.ps1" @buildArgs
-    }
+    Write-Host "  [..] Build (Nuitka + frontend + tauri + KY updater) - co the lau..." -ForegroundColor Yellow
+    & "$ROOT\build_production.ps1" @buildArgs
     $buildExit = $LASTEXITCODE
 } finally {
     Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
@@ -231,6 +338,8 @@ $manifestVersion = Get-ReleaseManifestField -Path $manifestPath -Name "APP_VERSI
 if ($manifestVersion -ne $Version) {
     throw "Manifest APP_VERSION=$manifestVersion, khac release version $Version."
 }
+Assert-ReleaseManifestAttestation -ManifestPath $manifestPath
+Assert-ManifestSourceState -ManifestPath $manifestPath
 $setupName = Get-ReleaseManifestField -Path $manifestPath -Name "INSTALLER"
 if ([System.IO.Path]::GetFileName($setupName) -ne $setupName) {
     throw "Manifest INSTALLER khong phai ten file an toan: $setupName"
@@ -282,11 +391,15 @@ if ($LASTEXITCODE -ne 0) { throw "Installed-artifact verifier that bai; KHONG up
 $runtimeVerified = Get-ReleaseManifestField -Path $manifestPath -Name "RUNTIME_VERIFIED"
 $installedExeHash = Get-ReleaseManifestField -Path $manifestPath -Name "EXE_SHA256"
 $dielineLocked = Get-ReleaseManifestField -Path $manifestPath -Name "DIELINE_LOCKED"
+$runtimeFreeProGate = Get-ReleaseManifestField -Path $manifestPath -Name "RUNTIME_FREE_PRO_GATE"
 if ($runtimeVerified -ne "yes" -or $installedExeHash -eq "NOT_VERIFIED_INSTALL_PAYLOAD") {
     throw "Manifest chua co bang chung runtime day du; KHONG upload GitHub."
 }
 if ($dielineLocked -ne "yes") {
     throw "DIELINE_LOCKED khong phai yes; KHONG upload release."
+}
+if ($runtimeFreeProGate -ne "enabled+free-denied-prepress.preflight") {
+    throw "Artifact chua chung minh Free bi tu choi capability Pro; KHONG upload."
 }
 Write-Host "  [OK] Runtime verifier dat; manifest da dong bang chung." -ForegroundColor Green
 
@@ -318,6 +431,9 @@ Write-Host "  [OK] Da tao latest.json (url -> $downloadUrl)" -ForegroundColor Gr
 
 # ---- 7. Publish len GitHub Releases ----
 Write-Host "  [..] Tao/cap nhat release $tag tren $ReleaseRepo va upload..." -ForegroundColor Yellow
+Assert-ManifestSourceState -ManifestPath $manifestPath
+$manifestCommit = Get-ReleaseManifestField -Path $manifestPath -Name "GIT_COMMIT"
+Assert-GitHubCommitAvailable -Repo $ReleaseRepo -Commit $manifestCommit
 # AN TOAN: KHONG xoa release cu truoc (tranh khoang trong neu create loi -> client mat 'latest').
 # Tam tat Stop de gh.exe stderr ("release not found") khong abort script.
 $prevEAP = $ErrorActionPreference
@@ -328,19 +444,22 @@ $ErrorActionPreference = $prevEAP
 
 if ($releaseExists) {
     Write-Host "  [..] Release $tag da ton tai -> ghi de asset (clobber)..." -ForegroundColor Yellow
+    Assert-ManifestSourceState -ManifestPath $manifestPath
     Assert-StagedReleaseAssets -SetupPath $stagedSetupPath -SetupSha256 $manifestInstallerHash `
         -SignaturePath $stagedSigPath -SignatureSha256 $stagedSignatureHash `
         -LatestPath $stagedLatestPath -LatestSha256 $stagedLatestHash
+    Assert-GitHubTagTargetsCommit -Repo $ReleaseRepo -Tag $tag -ExpectedCommit $manifestCommit
     & gh release upload $tag --repo $ReleaseRepo --clobber `
         "$stagedSetupPath" "$stagedSigPath" "$stagedLatestPath"
     if ($LASTEXITCODE -ne 0) { throw "gh release upload (clobber) that bai." }
 }
 else {
     Write-Host "  [..] Release $tag chua ton tai -> tao moi..." -ForegroundColor Yellow
+    Assert-ManifestSourceState -ManifestPath $manifestPath
     Assert-StagedReleaseAssets -SetupPath $stagedSetupPath -SetupSha256 $manifestInstallerHash `
         -SignaturePath $stagedSigPath -SignatureSha256 $stagedSignatureHash `
         -LatestPath $stagedLatestPath -LatestSha256 $stagedLatestHash
-    & gh release create $tag --repo $ReleaseRepo --title "PrynX $Version" --notes $Notes `
+    & gh release create $tag --repo $ReleaseRepo --target $manifestCommit --title "PrynX $Version" --notes $Notes `
         "$stagedSetupPath" "$stagedSigPath" "$stagedLatestPath"
     if ($LASTEXITCODE -ne 0) { throw "gh release create that bai." }
 }

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
 import { ImpositionMode } from './pdfImposer';
 import { runProcessEngine, runResize, type ProcessContext } from './processHandlers';
+import i18n from '../i18n';
 
 const api = vi.hoisted(() => ({
     uploadFileForNup: vi.fn(),
@@ -69,6 +70,10 @@ describe('runProcessEngine N-Up native fast path', () => {
                 pontsOnCutFile: true,
                 separateCutPage: false,
                 exportUniqueSheets: true,
+                cutBorderEnabled: true,
+                cutBorderPosition: 'bleed',
+                cutBorderColor: '#FF0000',
+                cutBorderThickness: 0.6,
             } as any,
             false,
         );
@@ -88,6 +93,10 @@ describe('runProcessEngine N-Up native fast path', () => {
         expect(payload.cutType).toBeUndefined();
         expect(payload.detectedShapesByPage).toBeUndefined();
         expect(payload).not.toHaveProperty('impositionUnit');
+        expect(payload).not.toHaveProperty('cutBorderEnabled');
+        expect(payload).not.toHaveProperty('cutBorderPosition');
+        expect(payload).not.toHaveProperty('cutBorderColor');
+        expect(payload).not.toHaveProperty('cutBorderThickness');
     });
 
     it('skips source upload and result download for clean desktop files', async () => {
@@ -115,6 +124,10 @@ describe('runProcessEngine N-Up native fast path', () => {
                 bleed: 0,
                 cols: 2,
                 rows: 2,
+                cutBorderEnabled: true,
+                cutBorderPosition: 'bleed',
+                cutBorderColor: '#12A34B',
+                cutBorderThickness: 0.6,
             } as unknown as import('./pdfImposer').ProcessingSettings,
             false,
         );
@@ -126,12 +139,91 @@ describe('runProcessEngine N-Up native fast path', () => {
         expect(api.uploadFileForNup).not.toHaveBeenCalled();
         expect(getWorkingBytes).not.toHaveBeenCalled();
         expect(api.downloadNupJob).not.toHaveBeenCalled();
+        expect(api.startNupJobBackend.mock.calls[0][1]).toMatchObject({
+            cutBorderEnabled: true,
+            cutBorderPosition: 'bleed',
+            cutBorderColor: '#12A34B',
+            cutBorderThickness: 0.6,
+        });
         expect(commitWorkingFile).toHaveBeenCalledWith(
             expect.any(Blob),
             'Imposed_input_.pdf',
             'D:\\results\\nup_job-1.pdf',
         );
     });
+
+    it.each([
+        [
+            'vi',
+            'khổ giấy tổng quát',
+            'Sheet too small for source pages. Cannot fit any items.',
+            'Không bình được trang: Vùng giấy sử dụng quá nhỏ, không xếp được trang nguồn nào. Hãy tăng khổ giấy, giảm lề hoặc kiểm tra TrimBox của file nguồn.',
+        ],
+        [
+            'en',
+            'khổ giấy tổng quát',
+            'Sheet too small for source pages. Cannot fit any items.',
+            'Could not impose pages: The usable sheet area is too small to fit any source page. Increase the sheet size, reduce margins, or check the source TrimBox.',
+        ],
+        [
+            'vi',
+            'trang cụ thể',
+            'Trang 7 không thể xếp vào vùng giấy sử dụng.',
+            'Không bình được trang: Trang 7 không thể xếp vào vùng giấy sử dụng. Hãy tăng khổ giấy, giảm lề hoặc kiểm tra TrimBox của file nguồn.',
+        ],
+        [
+            'en',
+            'trang cụ thể',
+            'Trang 7 không thể xếp vào vùng giấy sử dụng.',
+            'Could not impose pages: Page 7 cannot fit within the usable sheet area. Increase the sheet size, reduce margins, or check the source TrimBox.',
+        ],
+    ] as const)(
+        'localizes the N-Up %s capacity error (%s)',
+        async (language, _caseName, backendError, expectedError) => {
+            await i18n.changeLanguage(language);
+            const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+            const context: ProcessContext = {
+                file: new File(['source'], 'input.pdf', { type: 'application/pdf' }),
+                commitWorkingFile: vi.fn().mockResolvedValue(undefined),
+                setError: vi.fn(),
+                setIsProcessing: vi.fn(),
+                setProcessStatus: vi.fn(),
+                setReportMsg: vi.fn(),
+                setBatchOutput: vi.fn(),
+                getWorkingBytes: vi.fn(),
+                getWorkingSourcePath: vi.fn().mockResolvedValue('D:\\input.pdf'),
+            };
+            api.getNupJobStatus.mockResolvedValueOnce({
+                status: 'failed',
+                error: backendError,
+            });
+
+            try {
+                await runProcessEngine(
+                    context,
+                    {
+                        impositionMode: ImpositionMode.NUp,
+                        imposerMode: 'guillotine',
+                        sheetWidth: 320,
+                        sheetHeight: 450,
+                        bleed: 0,
+                        cols: 2,
+                        rows: 2,
+                    } as unknown as import('./pdfImposer').ProcessingSettings,
+                    false,
+                );
+
+                expect(context.setError).toHaveBeenLastCalledWith(expectedError);
+                expect(warnSpy).toHaveBeenCalledWith(
+                    '[N-Up] Lỗi sức chứa từ backend:',
+                    expect.objectContaining({ message: backendError }),
+                );
+            } finally {
+                warnSpy.mockRestore();
+                await i18n.changeLanguage('vi');
+            }
+        },
+    );
 });
 
 

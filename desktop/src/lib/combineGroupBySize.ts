@@ -45,9 +45,16 @@ function fmtMm(n: number): string {
     return Number.isInteger(n) ? String(n) : String(n);
 }
 
-/** Nhãn UI / tên tab / tên file. */
+// UIUX (audit 2026-08-04 §DIM.7): khóa gom 0,5 mm chỉ là kích thước đại diện gần đúng,
+// nên nhãn UI phải thể hiện rõ đây không phải số đo chính xác của trang.
 export function sizeKeyLabel(key: string): string {
-    return `${key}mm`;
+    return `≈ ${key} mm`;
+}
+
+/** Token an toàn cho tên file, có prefix nói rõ kích thước chỉ là gần đúng. */
+export function approximateSizeKeyFilenameToken(key: string): string {
+    const safeKey = key.replace(/[^\d.x×]/gi, '_');
+    return `approx_${safeKey}mm`;
 }
 
 /**

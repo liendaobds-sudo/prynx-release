@@ -15,6 +15,32 @@ from typing import Any
 SELF_TEST_MARKER = "PRYNX_ARTIFACT_SELF_TEST="
 
 
+def _verify_entitlement_gate() -> dict[str, Any]:
+    """Chứng minh gate Free/Pro của chính runtime đóng băng đang bật."""
+
+    from app.core import feature_entitlements
+
+    if not feature_entitlements.FEATURE_GATING_ENABLED:
+        raise RuntimeError("Feature gate trong sidecar dang tat")
+    if not feature_entitlements.can_use_feature("pdf.merge", plan="free"):
+        raise RuntimeError("Goi Free bi tu choi capability Free")
+    try:
+        feature_entitlements.assert_feature(
+            "prepress.preflight",
+            {"plan": "free", "features": []},
+        )
+    except PermissionError:
+        pass
+    else:
+        raise RuntimeError("Goi Free khong bi tu choi capability Pro")
+
+    return {
+        "enabled": True,
+        "free_allowed": "pdf.merge",
+        "free_denied": "prepress.preflight",
+    }
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -59,6 +85,10 @@ def _run_cpu_inference(ort, np, path: Path, fallback_shape: tuple[int, ...]) -> 
 def run_artifact_runtime_self_test() -> dict[str, Any]:
     """Chay import/session/inference bang chinh runtime nam trong frozen sidecar."""
 
+    # BUILD (audit 2026-08-04 §BLD.02/§TEST.02): marker phải chứng minh
+    # entitlement của chính binary, không chỉ chứng minh thư viện AI nạp được.
+    feature_gate = _verify_entitlement_gate()
+
     import numpy as np
     import onnxruntime as ort
 
@@ -99,6 +129,7 @@ def run_artifact_runtime_self_test() -> dict[str, Any]:
 
     return {
         "status": "ok",
+        "feature_gate": feature_gate,
         "providers": sorted(required),
         "models": models,
     }

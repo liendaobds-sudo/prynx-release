@@ -1,6 +1,6 @@
 # PrynX — Threat model ngắn cho security review
 
-**Cập nhật:** 2026-07-30
+**Cập nhật:** 2026-08-04
 
 **Vai trò:** scan context ngắn, dùng trước mọi review/audit. `SECURITY_ARCHITECTURE.md` và code/test hiện tại giữ phần chi tiết; tài liệu này không thay thế bằng chứng.
 
@@ -39,19 +39,20 @@
 ## 5. Bất biến bảo mật
 
 - Production compiled phải fail-closed khi thiếu/sai token, signature, claim, secret hoặc cấu hình; `DEV_MODE` không được mở cổng production.
-- Authn/authz/feature gate phải cưỡng chế ở Tauri/backend/server; UI chỉ phản ánh trạng thái.
+- Authn/authz/feature gate của engine/tác vụ có giá trị phải cưỡng chế ở Tauri/backend/server; UI chỉ là lớp UX/defense-in-depth. Tool client-only phải được ghi rõ accepted risk và vẫn re-check khi quyền đổi.
 - Sidecar chỉ nghe loopback; route/WS ngoài allowlist phải xác thực mặc định. HMAC phải ràng buộc request đầy đủ, chống replay và không cho renderer ghi đè header tin cậy.
 - Claim license chỉ được dùng sau verify Ed25519; private/signing/service key không xuất hiện trong client, source map, argv hoặc log.
 - Đường dẫn phải canonicalize rồi mới so scope; chặn traversal, symlink/junction, UNC/device path, arbitrary overwrite và đọc file nhạy cảm.
 - File/result của user không được lộ qua IDOR, static mount, signed URL sai scope, exception hoặc log.
 - Input định dạng và native FFI luôn không tin cậy; giới hạn parser/process phải bảo vệ tính bí mật, toàn vẹn và ổn định.
-- Release phải có provenance/checksum/signature phù hợp; secret không nằm trong repo/artifact/log và output cũ không được tái sử dụng âm thầm.
+- Release phải chốt cùng một Git commit sạch trước/sau build, ghi hai feature gate, Python ABI, build mode và sidecar provenance vào manifest; artifact smoke phải chứng minh signed Free bị từ chối một quyền Pro. Secret không nằm trong repo/artifact/log và output cũ không được tái sử dụng âm thầm.
 - Migration/RPC/RLS phải fail-closed, chống race và không trao quyền mặc định cho anon/authenticated ngoài chủ đích.
 
 ## 6. Accepted risk và non-goal
 
 - Client Ring-3 trên máy attacker không thể chống patch/dump tuyệt đối. Mục tiêu là giữ private key/server authority, ngăn crack rẻ và nâng chi phí tấn công; không tuyên bố “không thể crack”.
 - Anti-debug/process mitigation có thể bị giới hạn để tránh crash driver/phần mềm in; phải ghi rõ đánh đổi và residual risk.
+- Paper Library hiện chạy hoàn toàn trong WebView. App có guard/downgrade overlay nhưng không coi đây là biên chống patch; đây là accepted commercial risk cho tới khi capability có giá trị được chuyển sang authority native/server.
 - DoS chỉ là security finding khi vượt trust boundary, ảnh hưởng dịch vụ/người dùng khác hoặc có tác động bảo mật cụ thể; OOM local thuần túy thường chuyển sang audit hiệu năng.
 - Không thử exploit hệ thống public/production, không dùng secret thật và không build/publish release trong audit.
 

@@ -72,10 +72,10 @@ function snapName(tabId: string): string {
 }
 
 /** Ghi (atomic) snapshot cho 1 tab. No-op nếu không có originalPath / không Tauri. */
-export async function writeSnapshot(snap: RecoverySnapshot): Promise<void> {
-    if (!snap.originalPath) return;             // phương án A: cần file gốc
+export async function writeSnapshot(snap: RecoverySnapshot): Promise<boolean> {
+    if (!snap.originalPath) return false;       // phương án A: cần file gốc
     const dir = await recoveryDir();
-    if (!dir) return;
+    if (!dir) return false;
     try {
         const { invoke } = await import('@tauri-apps/api/core');
         const json = JSON.stringify(snap);
@@ -83,8 +83,10 @@ export async function writeSnapshot(snap: RecoverySnapshot): Promise<void> {
             path: joinDir(dir, snapName(snap.tabId)),
             contents: new TextEncoder().encode(json),
         });
+        return true;
     } catch {
         // best-effort: snapshot lỗi KHÔNG được làm hỏng phiên làm việc.
+        return false;
     }
 }
 

@@ -3,6 +3,8 @@ import { getToolHelp } from '../../lib/toolHelp';
 import ToolHelpModal from '../ToolHelpModal';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
+import type { FeatureId } from '../../lib/license/features';
+import ProFeatureBadge from '../license/ProFeatureBadge';
 
 // ==================== RichSelect (Custom Dropdown) ====================
 export const RichSelect = ({ value, onChange, options, compact = false }: { value: string, onChange: (v: string) => void, options: {value: string, title: string, desc?: string}[], compact?: boolean }) => {
@@ -155,7 +157,7 @@ export const DisabledItem = ({ label }: { label: string }) => (
 );
 
 // ==================== ToolItem ====================
-export const ToolItem = ({ icon, label, desc, info, helpKey, onClick, hoverColor, active, isFavorite, onToggleFavorite }: { icon: React.ReactNode, label: string, desc?: string, info?: string, helpKey?: string, onClick: () => void, hoverColor: string, active?: boolean, isFavorite?: boolean, onToggleFavorite?: () => void }) => {
+export const ToolItem = ({ icon, label, desc, info, helpKey, featureId, onClick, hoverColor, active, isFavorite, onToggleFavorite }: { icon: React.ReactNode, label: string, desc?: string, info?: string, helpKey?: string, featureId?: FeatureId, onClick: () => void, hoverColor: string, active?: boolean, isFavorite?: boolean, onToggleFavorite?: () => void }) => {
   const { t } = useTranslation();
     const [open, setOpen] = useState(false);
     const help = getToolHelp(helpKey);
@@ -177,6 +179,7 @@ export const ToolItem = ({ icon, label, desc, info, helpKey, onClick, hoverColor
                     <div className={`font-bold text-[14px] leading-tight truncate ${active ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-800 dark:text-white'}`}>{label}</div>
                     {!info && desc && <div className="text-[12px] text-slate-500 line-clamp-1 mt-1 font-medium truncate">{desc}</div>}
                 </div>
+                {featureId && <ProFeatureBadge featureId={featureId} />}
                 {onToggleFavorite && (
                     <button
                         type="button"

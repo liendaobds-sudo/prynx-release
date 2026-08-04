@@ -2,9 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { authenticatedFetch, getApiUrl, uploadPDF } from "../../../lib/api";
 import { previewPerfLog } from "../../../lib/previewPerfLog";
 import { getFileArrayBuffer } from "../../../lib/utils";
-import type { NupSettings } from "../types";
+import type { ActiveToolType, CutBorderConfig, NupSettings } from "../types";
 import { inheritedSingleMoldMaster } from "../shapeDetectionPolicy";
 import { materializePreviewViewerPdf, parsePreviewViewerState, resolvePreviewCellType, resolvePreviewPageCount, shouldDeferPreviewLayout } from "../previewSourcePolicy";
+import { canUseCutBorder } from "../cutBorderPolicy";
 import { useTranslation } from 'react-i18next';
 import { ImposerSettingsContext } from "../useImposerSettingsStore";
 // UIUX (audit 2026-07-27 §B-05): lỗi kỹ thuật → câu Việt + hướng khắc phục
@@ -41,6 +42,7 @@ export function shouldAutoSwitchToMixedGuillotine({
 }
 
 export interface GridPreviewProps {
+  activeTool?: ActiveToolType | string;
   taskMode: string;
   isDieCut?: boolean;
   pageSheetMode?: boolean;
@@ -84,6 +86,7 @@ export interface GridPreviewProps {
   filePath?: string;
   pageIdx?: number;
   bleed?: number; // in mm
+  cutBorder?: CutBorderConfig;
   groupingStrategy?: string;
   clusterCombineMode?: string;
   clusterNesting?: boolean;
@@ -826,6 +829,7 @@ function renderCellShape(
 export default function GridPreview(props: GridPreviewProps) {
   const { t } = useTranslation();
   const {
+    activeTool = "nup",
     taskMode,
     isDieCut,
     pageSheetMode = false,
@@ -864,6 +868,7 @@ export default function GridPreview(props: GridPreviewProps) {
     filePath,
     pageIdx = 0,
     bleed = 0,
+    cutBorder,
     groupingStrategy,
     clusterCombineMode,
     clusterNesting,
@@ -2009,6 +2014,38 @@ export default function GridPreview(props: GridPreviewProps) {
     visibleCells = visibleCells.map((c) => ({ ...c, sx: c.sx + dx, sy: c.sy + dy }));
   }
 
+  // CUT-BORDER (audit 2026-08-04 §CB.5): overlay dùng chính cell tuyệt đối mà
+  // preview nhận từ backend. Bleed chỉ mở rộng rect, không gọi lại solver/layout.
+  const renderCutBorderRects = (
+    cells: typeof svgCells,
+    side: "front" | "back",
+  ) => {
+    if (!cutBorder?.enabled || !canUseCutBorder({ activeTool, taskMode, pageSheetMode }) || isDieCut) return null;
+    const borderBleed = cutBorder.position === "bleed" ? Math.max(0, bleed) * scale : 0;
+    const thickness = Math.min(2, Math.max(0.1, Number(cutBorder.thickness) || 0.3));
+    return (
+      <g
+        data-testid="cut-border-preview"
+        data-side={side}
+        data-position={cutBorder.position}
+        fill="none"
+        stroke={cutBorder.color || "#000000"}
+        strokeWidth={Math.max(0.5, thickness * scale)}
+        strokeLinejoin="miter"
+      >
+        {cells.map((cell) => (
+          <rect
+            key={`cut-border-${side}-${cell.idx}`}
+            x={cell.sx - borderBleed}
+            y={cell.sy - borderBleed}
+            width={cell.sw + borderBleed * 2}
+            height={cell.sh + borderBleed * 2}
+          />
+        ))}
+      </g>
+    );
+  };
+
   return (
     <div className="flex flex-col items-center bg-slate-50 dark:bg-zinc-900/50 rounded-lg p-3 border border-slate-200 dark:border-white/10 mt-2">
       {layoutResult ? (
@@ -2447,6 +2484,7 @@ export default function GridPreview(props: GridPreviewProps) {
                       </g>
                     );
                   })}
+                  {renderCutBorderRects(visibleCells, "front")}
                 </svg>
 
                 {/* Loading overlay */}
@@ -2709,6 +2747,7 @@ export default function GridPreview(props: GridPreviewProps) {
                           </g>
                         );
                       })}
+                      {renderCutBorderRects(cncBackCells, "back")}
                     </g>
                   </svg>
 

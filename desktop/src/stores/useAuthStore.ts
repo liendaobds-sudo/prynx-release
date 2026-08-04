@@ -180,7 +180,7 @@ interface AuthState {
   licenseKey: string | null;
   /** Token license ngắn hạn do server (edge function) ký — gắn vào request gửi sidecar. */
   licenseToken: string | null;
-  /** Gói lấy từ token/server. Mặc định Pro để key cũ không bị khóa nhầm khi rollout. */
+  /** Gói lấy từ token/server. Thiếu/sai plan luôn rơi về Free (fail-closed). */
   licensePlan: LicensePlan;
   /** Quyền cấp riêng; null nghĩa là dùng quyền mặc định theo plan. */
   licenseFeatures: string[] | null;

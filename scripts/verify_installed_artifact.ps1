@@ -26,7 +26,7 @@
     Bat buoc payload da cai KHONG chua Ghostscript.
 
 .PARAMETER StartupTimeoutSeconds
-    Thoi gian toi da doi app/sidecar san sang. Mac dinh 45 giay.
+    Thoi gian toi da doi app/sidecar san sang. Mac dinh 75 giay.
 
 .PARAMETER KeepInstall
     Giu lai thu muc da cai de kiem tay tiep. Process smoke van duoc dung.
@@ -40,7 +40,7 @@ param(
     [string]$Manifest,
     [string]$ExpectedVersion,
     [switch]$ExpectNoGhostscript,
-    [ValidateRange(10, 180)][int]$StartupTimeoutSeconds = 45,
+    [ValidateRange(10, 180)][int]$StartupTimeoutSeconds = 75,
     [switch]$KeepInstall
 )
 
@@ -170,6 +170,39 @@ function Set-ManifestField {
     if ($found -gt 1) { throw "Manifest co trung truong $Name." }
     if ($found -eq 0) { $result.Add("$Name = $Value") }
     return @($result)
+}
+
+function Assert-BuildManifestAttestation {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    # BUILD (audit 2026-08-04 BLD.02/BLD.04): verifier doc bang chung build
+    # truoc khi cai, thay vi suy gate/provenance tu ten file hoac output hien tai.
+    foreach ($field in @("FRONTEND_FEATURE_GATE", "BACKEND_FEATURE_GATE")) {
+        if ((Get-ManifestField -Path $Path -Name $field) -ne "enabled") {
+            throw "Manifest $field khong phai enabled."
+        }
+    }
+    if ((Get-ManifestField -Path $Path -Name "SIDECAR_PROVENANCE") -ne "compiled-this-run") {
+        throw "Manifest khong chung minh sidecar duoc bien dich trong luot build nay."
+    }
+    $pythonAbi = Get-ManifestField -Path $Path -Name "PYTHON_ABI"
+    $buildMode = Get-ManifestField -Path $Path -Name "BUILD_MODE"
+    $buildProvenance = Get-ManifestField -Path $Path -Name "BUILD_PROVENANCE"
+    if ($buildMode -eq "public-release") {
+        if ($pythonAbi -ne "3.11" -or $buildProvenance -ne "git-clean-commit" -or
+            (Get-ManifestField -Path $Path -Name "GIT_DIRTY") -ne "no") {
+            throw "Manifest public-release sai Python ABI hoac provenance source."
+        }
+    } elseif ($buildMode -eq "internal-full") {
+        if ($pythonAbi -notin @("3.11", "3.12") -or $buildProvenance -ne "local-working-tree") {
+            throw "Manifest internal-full sai Python ABI hoac provenance source."
+        }
+    } else {
+        throw "BUILD_MODE khong duoc verifier chap nhan: $buildMode"
+    }
+    if ((Get-ManifestField -Path $Path -Name "GIT_COMMIT") -notmatch '^[0-9a-fA-F]{40,64}$') {
+        throw "Manifest GIT_COMMIT khong hop le."
+    }
 }
 
 function Assert-NoExistingPrynXProcess {
@@ -560,6 +593,13 @@ function Assert-SidecarAiRuntimeOutput {
         throw "Frozen sidecar AI self-test marker khong phai JSON hop le."
     }
     if ($payload.status -ne "ok") { throw "Frozen sidecar AI self-test khong dat." }
+    # BUILD (audit 2026-08-04 BLD.02/TEST.02): chi tin marker khi chinh
+    # sidecar da chung minh gate bat va Free bi tu choi mot quyen Pro.
+    if ($payload.feature_gate.enabled -ne $true -or
+        [string]$payload.feature_gate.free_allowed -ne "pdf.merge" -or
+        [string]$payload.feature_gate.free_denied -ne "prepress.preflight") {
+        throw "Frozen sidecar khong chung minh duoc gate Free/Pro."
+    }
     $providers = @($payload.providers)
     foreach ($requiredProvider in @("CPUExecutionProvider", "DmlExecutionProvider")) {
         if ($providers -notcontains $requiredProvider) {
@@ -721,6 +761,7 @@ $manifestVersion = Get-ManifestField -Path $Manifest -Name "APP_VERSION"
 if ($manifestVersion -ne $ExpectedVersion) {
     throw "Manifest APP_VERSION=$manifestVersion, khac version can kiem $ExpectedVersion."
 }
+Assert-BuildManifestAttestation -Path $Manifest
 $installerLeaf = Split-Path -Leaf $Installer
 $manifestInstaller = Get-ManifestField -Path $Manifest -Name "INSTALLER"
 if ($manifestInstaller -ne $installerLeaf) {
@@ -895,7 +936,7 @@ try {
         $env:TEMP = $selfTestPreviousTemp
         $env:TMP = $selfTestPreviousTmp
     }
-    Write-OK "Frozen sidecar import ONNX + inference 3 model"
+    Write-OK "Frozen sidecar gate Free/Pro + import ONNX + inference 3 model"
     Reset-TestNuitkaCache
 
     Assert-NoExistingPrynXProcess
@@ -998,7 +1039,8 @@ try {
         @{ Name = "RUNTIME_APP_READY"; Value = "ok" },
         @{ Name = "RUNTIME_OCR"; Value = "tesseract-eng-vie-sample-ok" },
         @{ Name = "RUNTIME_ONNX_PAYLOAD"; Value = "models-ok-$onnxProvider" },
-        @{ Name = "RUNTIME_ONNX_INFERENCE"; Value = "frozen-sidecar-3-models-ok" }
+        @{ Name = "RUNTIME_ONNX_INFERENCE"; Value = "frozen-sidecar-3-models-ok" },
+        @{ Name = "RUNTIME_FREE_PRO_GATE"; Value = "enabled+free-denied-prepress.preflight" }
     )) {
         $manifestLines = @(Set-ManifestField -Lines $manifestLines -Name $field.Name -Value $field.Value)
     }

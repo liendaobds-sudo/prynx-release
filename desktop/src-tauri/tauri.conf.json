@@ -20,6 +20,7 @@
         "resizable": true,
         "fullscreen": false,
         "center": true,
+        "visible": false,
         "decorations": false,
         "transparent": true,
         "dragDropEnabled": true,

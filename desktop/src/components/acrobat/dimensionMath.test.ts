@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { findDimensionCandidate, formatDimension } from './dimensionMath';
+import {
+  findDimensionCandidate,
+  formatDimension,
+  formatPageSizeMm,
+  formatRotatedPageSizePx96,
+} from './dimensionMath';
 import type { Guide } from './GuideLayer';
 
 const guides: Guide[] = [
@@ -14,6 +19,28 @@ describe('dimensionMath', () => {
     expect(formatDimension(72, 'inch')).toBe('1 in');
     expect(formatDimension(72, 'mm')).toBe('25.4 mm');
     expect(formatDimension(72, 'cm')).toBe('2.54 cm');
+  });
+  it('giữ một chữ số thập phân cho kích thước trang PDF', () => {
+    const pointsPerMm = 72 / 25.4;
+    expect(formatPageSizeMm(147.1215 * pointsPerMm, 51.3327 * pointsPerMm))
+      .toBe('147.1 × 51.3 mm');
+    expect(formatPageSizeMm(210 * pointsPerMm, 297 * pointsPerMm))
+      .toBe('210.0 × 297.0 mm');
+    expect(formatPageSizeMm(148.55 * pointsPerMm, 50 * pointsPerMm))
+      .toBe('148.6 × 50.0 mm');
+  });
+  it('hoán rộng và cao của tooltip thumbnail sau khi xoay 90 hoặc 270 độ', () => {
+    const pxPerMm = 96 / 25.4;
+    const widthPx = 147.1215 * pxPerMm;
+    const heightPx = 51.3327 * pxPerMm;
+    const portrait = { widthMm: '147.1', heightMm: '51.3' };
+    const landscape = { widthMm: '51.3', heightMm: '147.1' };
+
+    expect(formatRotatedPageSizePx96(widthPx, heightPx, 0)).toEqual(portrait);
+    expect(formatRotatedPageSizePx96(widthPx, heightPx, 90)).toEqual(landscape);
+    expect(formatRotatedPageSizePx96(widthPx, heightPx, 180)).toEqual(portrait);
+    expect(formatRotatedPageSizePx96(widthPx, heightPx, 270)).toEqual(landscape);
+    expect(formatRotatedPageSizePx96(widthPx, heightPx, -90)).toEqual(landscape);
   });
   it('creates a horizontal DIM between vertical guides', () => {
     expect(findDimensionCandidate(guides.slice(0, 2), 0.3, 0.5, 600, 800)).toEqual({ orientation: 'horizontal', guideAId: 'v1', guideBId: 'v2' });

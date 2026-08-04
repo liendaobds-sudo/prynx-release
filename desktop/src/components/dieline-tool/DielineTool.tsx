@@ -19,6 +19,7 @@ import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
 import { usePrintDialog } from '../shared/usePrintDialog';
 import { toast } from 'sonner';
+import { useFeatureActionGuard } from '../../hooks/useToolActivationGuard';
 
 // Lazy load 3D scene (heavy Three.js bundle)
 const DielineScene3D = lazy(() => import('./DielineScene3D'));
@@ -70,6 +71,7 @@ class Scene3DErrorBoundary extends Component<{ children: ReactNode }, { hasError
 export default function DielineTool({ tabId, isActive }: { tabId?: string; isActive?: boolean } = {}) {
   const { t } = useTranslation();
     const { openPrintDialog, printDialog } = usePrintDialog();
+    const requestFeatureAction = useFeatureActionGuard();
     const [view, setView] = useState<'gallery' | 'editor'>('gallery');
     const [activeTab, setActiveTab] = useState<'2d' | '3d' | 'split' | 'nesting'>('2d');
     const [sidebarWidth, setSidebarWidth] = useState(getInitialSidebarWidth);
@@ -81,6 +83,12 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
     const sidebarWidthRef = useRef(sidebarWidth);
     const { dieline, nestingResult, sleeveNestingResult, nestingConfig, setVariant, regenerate, isGenerating, isModelCurrent, generationError } = useBoxStore();
     const canExport = Boolean(dieline && isModelCurrent && !isGenerating && !generationError);
+    const runGuardedExport = useCallback((action: () => void): boolean => {
+        if (!canExport) return false;
+        // SEC (audit 2026-08-04 §UI.03/§BE.02): WebView giữ model sau khi
+        // downgrade, vì vậy phải đọc lại quyền ngay trước lúc tạo/xuất file.
+        return requestFeatureAction('packaging.dieline', action);
+    }, [canExport, requestFeatureAction]);
 
     // [VARIANT 2026-07-29] Người dùng chọn một BIẾN THỂ trong thư viện → vào editor.
     // Store tự suy boxType từ biến thể và áp thuộc tính đã chốt.
@@ -98,6 +106,7 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
             toast.warning(tv('Khuôn đang cập nhật hoặc có lỗi; chưa thể in.'));
             return;
         }
+        if (!requestFeatureAction('packaging.dieline', () => undefined)) return;
         const toastId = toast.loading(tv('Đang tạo PDF...'));
         try {
             let numPages = 1;
@@ -118,7 +127,7 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
             const message = error instanceof Error ? error.message : String(error);
             toast.error(tv('Không thể in file: ') + message);
         }
-    }, [dieline, canExport, activeTab, nestingResult, sleeveNestingResult, nestingConfig, openPrintDialog]);
+    }, [dieline, canExport, activeTab, nestingResult, sleeveNestingResult, nestingConfig, openPrintDialog, requestFeatureAction]);
 
     useEffect(() => {
         const onTriggerPrint = (event: Event) => {
@@ -342,11 +351,11 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
                     {(activeTab === '2d' || activeTab === 'split') && dieline && (
                         <>
                             <button className="dt-export-tab" disabled={!canExport}
-                                onClick={() => { if (canExport) downloadPDF(dieline); }}>
+                                onClick={() => runGuardedExport(() => downloadPDF(dieline))}>
                                 PDF kỹ thuật
                             </button>
                             <button className="dt-export-tab" disabled={!canExport}
-                                onClick={() => { if (canExport) downloadProductionDielinePDF(dieline); }}
+                                onClick={() => runGuardedExport(() => downloadProductionDielinePDF(dieline))}
                                 title={tv('PDF sạch với màu spot và overprint, không có kích thước/chú thích')}>
                                 PDF sản xuất
                             </button>
@@ -356,20 +365,22 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
                         <>
                             <button className="dt-export-tab" disabled={!canExport}
                                 onClick={() => {
-                                    if (!canExport) return;
-                                    if ((dieline.params.boxType === 'tray' || dieline.params.boxType === 'double_tray') && sleeveNestingResult)
-                                        downloadTrayNestingPDF(dieline, nestingResult, sleeveNestingResult, nestingConfig);
-                                    else downloadNestingPDF(dieline, nestingResult, nestingConfig);
+                                    runGuardedExport(() => {
+                                        if ((dieline.params.boxType === 'tray' || dieline.params.boxType === 'double_tray') && sleeveNestingResult)
+                                            downloadTrayNestingPDF(dieline, nestingResult, sleeveNestingResult, nestingConfig);
+                                        else downloadNestingPDF(dieline, nestingResult, nestingConfig);
+                                    });
                                 }}
                                 title={t('dieline.dieline:xuat_pdf_binh_ban_xep_khuon')}>
                                 PDF kỹ thuật
                             </button>
                             <button className="dt-export-tab" disabled={!canExport}
                                 onClick={() => {
-                                    if (!canExport) return;
-                                    if ((dieline.params.boxType === 'tray' || dieline.params.boxType === 'double_tray') && sleeveNestingResult)
-                                        downloadProductionTrayNestingPDF(dieline, nestingResult, sleeveNestingResult, nestingConfig);
-                                    else downloadProductionNestingPDF(dieline, nestingResult);
+                                    runGuardedExport(() => {
+                                        if ((dieline.params.boxType === 'tray' || dieline.params.boxType === 'double_tray') && sleeveNestingResult)
+                                            downloadProductionTrayNestingPDF(dieline, nestingResult, sleeveNestingResult, nestingConfig);
+                                        else downloadProductionNestingPDF(dieline, nestingResult);
+                                    });
                                 }}
                                 title={tv('PDF xếp khuôn sạch với màu spot và overprint')}>
                                 PDF sản xuất

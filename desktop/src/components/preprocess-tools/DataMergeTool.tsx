@@ -979,7 +979,7 @@ export default function DataMergeTool({
                 }
                 try {
                     setStatusMessage(`${item.tag}: ${t('preprocess.dataMerge:dang_sinh_n_ban_ghi', { n: item.data.length })}`);
-                    const jobId = await startVdpJobBackend(templateFile, vdpFields, item.data, item.csvFile, csvHasHeader);
+                    const jobId = await startVdpJobBackend(templateFile, vdpFields, item.data, 'vdp.datamerge', item.csvFile, csvHasHeader);
                     activeVdpJobRef.current = jobId;
                     setActiveVdpJobId(jobId);
                     pollAbortRef.current = new AbortController();
@@ -1285,7 +1285,7 @@ export default function DataMergeTool({
             // record ở backend trước khi sinh lô, tránh xuất thiếu dữ liệu âm thầm.
             const fullData = await resolveFullSourceData();
             const transportFile = dataMode === 'csv' ? (lastCsvFileRef.current ?? undefined) : undefined;
-            const jobId = await startVdpJobBackend(templateFile, vdpFields, fullData, transportFile, csvHasHeader);
+            const jobId = await startVdpJobBackend(templateFile, vdpFields, fullData, 'vdp.datamerge', transportFile, csvHasHeader);
             activeVdpJobRef.current = jobId;
             setActiveVdpJobId(jobId);
 

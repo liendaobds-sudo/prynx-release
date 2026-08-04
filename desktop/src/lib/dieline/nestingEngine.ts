@@ -24,6 +24,10 @@ import { validatePlacementPositions } from './nestingCollision';
 import {
     computeCutProfile, minRowPitch, placementsTooClose, type DieProfile,
 } from './nestingProfile';
+import { formatMeasurement } from '../measurementFormat';
+
+// UIUX (audit 2026-08-04 §DIM.11): giữ 0,1 mm trong nhãn tiết kiệm, không làm tròn thành “−0 mm”.
+const formatNestingMm = (value: number): string => formatMeasurement(value, 1);
 
 interface BBox {
     width: number;
@@ -602,14 +606,14 @@ function calcRTEInterlock(
         tileWidth: dieW,
         tileHeight: snap(cellH),
         countPerTile: 1,
-        strategy: `Xen kẽ khoảng trống (−${Math.round(overlapY)}mm/hàng)`,
+        strategy: `Xen kẽ khoảng trống (−${formatNestingMm(overlapY)}mm/hàng)`,
         savedMm: snap(overlapY),
     };
 
     return {
         positions, cols,
         rows: Math.ceil(positions.length / Math.max(1, cols)),
-        label: `Xen kẽ khoảng trống (−${Math.round(overlapY)}mm/hàng)`,
+        label: `Xen kẽ khoảng trống (−${formatNestingMm(overlapY)}mm/hàng)`,
         superTile: positions.length > 0 ? superTile : null,
     };
 }
@@ -688,7 +692,7 @@ function calcProfileInterlock(
         dieH + gap - (useAlt ? (pitchUp + pitchDown) / 2 : pitchSame),
     ));
     const label = savedPerRow > 0.05
-        ? `Lồng biên dạng${useAlt ? ' 180°' : ''} (−${Math.round(savedPerRow)}mm/hàng)`
+        ? `Lồng biên dạng${useAlt ? ' 180°' : ''} (−${formatNestingMm(savedPerRow)}mm/hàng)`
         : 'Grid 0°';
 
     const superTile: SuperTileInfo = {
@@ -800,14 +804,14 @@ function calcSLBInterlock(
         tileWidth: dieW,
         tileHeight: snap(pairH),
         countPerTile: 2,
-        strategy: `Lồng cặp 180° (−${Math.round(overlapY)}mm, dịch ${shiftX}mm${lockTabH > 0 ? `, khoá ${lockTabH}mm` : ''})`,
+        strategy: `Lồng cặp 180° (−${formatNestingMm(overlapY)}mm, dịch ${shiftX}mm${lockTabH > 0 ? `, khoá ${lockTabH}mm` : ''})`,
         savedMm: snap(overlapY),
     };
 
     return {
         positions, cols,
         rows: totalRows,
-        label: `Lồng cặp 180° (−${Math.round(overlapY)}mm${lockTabH > 0 ? `, khoá` : ''})`,
+        label: `Lồng cặp 180° (−${formatNestingMm(overlapY)}mm${lockTabH > 0 ? `, khoá` : ''})`,
         superTile: positions.length > 0 ? superTile : null,
     };
 }
@@ -953,7 +957,7 @@ function calcCupSleeveInterlock(
     const label = bonusCount > 0
         ? `Tối ưu (${totalCount} khuôn, +${bonusCount} xoay ${isPlanA ? '90' : '0'}°)`
         : isPlanA
-            ? `Lồng cung (−${Math.round(effectiveOverlap)}mm/hàng)`
+            ? `Lồng cung (−${formatNestingMm(effectiveOverlap)}mm/hàng)`
             : `Grid 90°`;
 
     const superTile: SuperTileInfo = {
@@ -1062,7 +1066,7 @@ function calcPizzaInterlock(
         tileWidth: snap(pairW),
         tileHeight: dieH,
         countPerTile: 2,
-        strategy: `Lồng pizza 180° (−${Math.round(overlapX)}mm/cột, side wall D=${D})`,
+        strategy: `Lồng pizza 180° (−${formatNestingMm(overlapX)}mm/cột, side wall D=${D})`,
         savedMm: snap(overlapX),
     };
 
@@ -1070,7 +1074,7 @@ function calcPizzaInterlock(
         positions,
         cols: totalCols,
         rows: Math.ceil(positions.length / Math.max(1, totalCols)),
-        label: `Lồng pizza 180° (−${Math.round(overlapX)}mm/cột)`,
+        label: `Lồng pizza 180° (−${formatNestingMm(overlapX)}mm/cột)`,
         superTile: positions.length > 0 ? superTile : null,
     };
 }
@@ -1159,7 +1163,7 @@ function calcEnvelopeInterlock(
             tileWidth: snap(colStep * 2),
             tileHeight: dieH,
             countPerTile: 2,
-            strategy: `Lồng bì ngang 180° (−${Math.round(overlapX)}mm/cột, ↓${Math.round(shiftY)}mm)`,
+            strategy: `Lồng bì ngang 180° (−${formatNestingMm(overlapX)}mm/cột, ↓${formatNestingMm(shiftY)}mm)`,
             savedMm: snap(overlapX),
         };
 
@@ -1167,7 +1171,7 @@ function calcEnvelopeInterlock(
             positions,
             cols: totalCols,
             rows: Math.ceil(positions.length / Math.max(1, totalCols)),
-            label: `Lồng bì ngang (−${Math.round(overlapX)}mm/cột)`,
+            label: `Lồng bì ngang (−${formatNestingMm(overlapX)}mm/cột)`,
             superTile: positions.length > 0 ? superTile : null,
         };
     } else {
@@ -1223,7 +1227,7 @@ function calcEnvelopeInterlock(
             tileWidth: dieW,
             tileHeight: snap(pairStep),
             countPerTile: 2,
-            strategy: `Lồng bì dọc liên tục (−${Math.round(overlapA)}+${Math.round(overlapB)}mm, ←${Math.round(shiftX)}mm)`,
+            strategy: `Lồng bì dọc liên tục (−${formatNestingMm(overlapA)}+${formatNestingMm(overlapB)}mm, ←${formatNestingMm(shiftX)}mm)`,
             savedMm: totalSaved,
         };
 
@@ -1231,7 +1235,7 @@ function calcEnvelopeInterlock(
             positions,
             cols,
             rows: Math.ceil(positions.length / Math.max(1, cols)),
-            label: `Lồng bì dọc (−${Math.round(totalSaved)}mm/cặp)`,
+            label: `Lồng bì dọc (−${formatNestingMm(totalSaved)}mm/cặp)`,
             superTile: positions.length > 0 ? superTile : null,
         };
     }

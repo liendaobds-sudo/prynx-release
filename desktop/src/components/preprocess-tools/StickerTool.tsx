@@ -17,6 +17,8 @@ import {
     normalizeStickerBleedColorType,
     shouldCropStickerPage,
 } from './stickerToolPolicy';
+import { findToolByUniqueKey } from '../../lib/toolRegistry';
+import { useToolActivationGuard } from '../../hooks/useToolActivationGuard';
 
 interface Props {
     pdfFile: File | null;
@@ -219,12 +221,23 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         setViewerToolMode,
     } = useWorkspaceStore();
     const { setActiveDashboardTool } = useImposerSettingsStore();
+    const requestToolActivation = useToolActivationGuard();
     
     // Tab State
     const [productType, setProductType] = useState<'sticker' | 'rectangle'>(() =>
         readStickerEnum('productType', 'sticker', ['sticker', 'rectangle']) as 'sticker' | 'rectangle'
     );
     const setTaskMode = useImposerSettingsStore(s => s.setTaskMode);
+    const openImpositionTool = (toolKey: 'booklet' | 'nup' | 'sticker_imposer') => {
+        const definition = findToolByUniqueKey(toolKey);
+        if (!definition) return;
+        // SEC/UIUX (audit 2026-08-04 §UI.01): chuyển nội bộ sau khi bù xén phải
+        // đi cùng guard như Home/menu; không ghi thẳng tool Pro vào store.
+        requestToolActivation(definition, () => {
+            setActiveDashboardTool(toolKey);
+            setTaskMode(toolKey);
+        });
+    };
 
     // Số từ localStorage PHẢI ép về number hợp lệ + clamp [min,max] ngay lúc khởi tạo.
     // Build cũ (hoặc sửa tay) có thể lưu giá trị vượt giới hạn UI mới, hoặc "null"/"true"
@@ -1055,12 +1068,14 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                             <>
                                 <ToolItem 
                                     icon="📚" label={t('preprocess.sticker:binh_sach_tap_chi')} desc={t('preprocess.sticker:khau_chi_long_doi_bu_gay')}
-                                    onClick={() => { setActiveDashboardTool('booklet'); setTaskMode('booklet'); }} 
+                                    featureId="impo.booklet"
+                                    onClick={() => openImpositionTool('booklet')}
                                     hoverColor="hover:border-emerald-400 dark:hover:border-emerald-500" 
                                 />
                                 <ToolItem 
                                     icon="🎴" label={t('preprocess.sticker:binh_bai_xen_n_up')} desc={t('preprocess.sticker:n_up_nhan_ban_s_r')}
-                                    onClick={() => { setActiveDashboardTool('nup'); setTaskMode('nup'); }} 
+                                    featureId="impo.nup"
+                                    onClick={() => openImpositionTool('nup')}
                                     hoverColor="hover:border-rose-400 dark:hover:border-rose-500" 
                                 />
                             </>
@@ -1068,7 +1083,8 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                         {productType === 'sticker' && (
                             <ToolItem 
                                 icon="✂️" label={t('preprocess.sticker:binh_bai_be_tem')} desc={t('preprocess.sticker:xep_tem_be_to_ong')}
-                                onClick={() => { setActiveDashboardTool('sticker_imposer'); setTaskMode('sticker_imposer'); }} 
+                                featureId="impo.diecut"
+                                onClick={() => openImpositionTool('sticker_imposer')}
                                 hoverColor="hover:border-pink-400 dark:hover:border-pink-500" 
                             />
                         )}

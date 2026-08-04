@@ -58,6 +58,8 @@ export interface PlaybackDeps {
     onProgress?: (info: { index: number; total: number; step: RecipeStep }) => void;
     /** Cảnh báo bước bị bỏ qua. */
     onWarn?: (step: RecipeStep, reason: PlaybackSkipReason) => void;
+    /** Trả lỗi quyền hoặc null. Runner kiểm toàn recipe trước khi chạy và kiểm lại từng bước. */
+    authorizeStep?: (step: RecipeStep) => string | null;
 }
 
 export interface PlaybackResult {
@@ -82,6 +84,25 @@ export async function runRecipe(recipe: Recipe, deps: PlaybackDeps): Promise<Pla
         deps.onWarn?.(step, reason);
     };
 
+    // SEC (audit 2026-08-04 re-audit UI): kiểm toàn chuỗi trước mutation đầu
+    // tiên; tránh chạy xong bước Free rồi mới phát hiện bước Pro ở giữa recipe.
+    if (deps.authorizeStep) {
+        for (let i = 0; i < total; i++) {
+            const step = steps[i];
+            if (!step.recordable) continue;
+            const accessError = deps.authorizeStep(step);
+            if (accessError) {
+                return {
+                    ok: false,
+                    completed: 0,
+                    skipped: 0,
+                    skippedSteps: [],
+                    failedStep: { index: i, step, error: accessError },
+                };
+            }
+        }
+    }
+
     for (let i = 0; i < total; i++) {
         const step = steps[i];
 
@@ -105,6 +126,19 @@ export async function runRecipe(recipe: Recipe, deps: PlaybackDeps): Promise<Pla
         if (!runner) {
             skip(i, step, 'unsupported_op');
             continue;
+        }
+
+        // Quyền có thể đổi trong lúc recipe dài đang chạy; kiểm lại ngay trước
+        // runner để dừng sạch, không dựa vào snapshot đầu chuỗi.
+        const accessError = deps.authorizeStep?.(step);
+        if (accessError) {
+            return {
+                ok: false,
+                completed,
+                skipped: skippedSteps.length,
+                skippedSteps,
+                failedStep: { index: i, step, error: accessError },
+            };
         }
 
         deps.onProgress?.({ index: i, total, step });

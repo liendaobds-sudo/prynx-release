@@ -70,6 +70,18 @@ class TestComputeReportData:
         d = compute_report_data(items_per_sheet=10, width_mm=50, height_mm=70)
         assert d["dimensions"] == "50 x 70 mm"
 
+    def test_dimensions_keep_one_decimal_for_precise_pdf_size(self):
+        d = compute_report_data(
+            items_per_sheet=10,
+            width_mm=147.1215,
+            height_mm=51.3327,
+        )
+        assert d["dimensions"] == "147.1 x 51.3 mm"
+
+    def test_dimensions_round_half_up_and_drop_trailing_zero(self):
+        d = compute_report_data(items_per_sheet=10, width_mm=148.55, height_mm=50.0)
+        assert d["dimensions"] == "148.6 x 50 mm"
+
 
 # ── build_report_string ──
 class TestBuildReportString:

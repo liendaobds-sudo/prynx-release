@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
 import { ToolItem } from './SharedUI';
-import { TOOL_CATEGORIES, getToolsByCategory, toolMatchesQuery } from '../../lib/toolRegistry';
+import { TOOL_CATEGORIES, getToolsByCategory, getToolUniqueKey, toolMatchesQuery, type ToolDefinition } from '../../lib/toolRegistry';
 import { useAppSettingsStore } from '../../stores/appSettingsStore';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
+import { useToolActivationGuard } from '../../hooks/useToolActivationGuard';
+import { isWorkspaceTool } from './types';
 
 // UIUX (audit 2026-07-27 §B-12) fix-verify: B-12 rút lại — menu chỉ render khi
 // activeTool==='none' (menu/tool loại trừ nhau) nên prop activeTool luôn 'none',
@@ -29,23 +31,25 @@ export default function ToolMenuList({ setActiveTool, setTaskMode }: ToolMenuLis
     const collapsedSections = useAppSettingsStore(state => state.collapsedSections);
     const toggleSection = useAppSettingsStore(state => state.toggleSection);
     const [query, setQuery] = useState('');
+    const requestActivation = useToolActivationGuard();
 
     const q = query.trim().toLowerCase();
-    const matches = (t: any) => toolMatchesQuery(t, query);
+    const matches = (tool: ToolDefinition) => toolMatchesQuery(tool, query);
 
-    const keyOf = (t: any) => t.defaultPayload?.focusFeature || t.defaultPayload?.lockedMode || t.id;
-    const open = (tool: any) => {
-        const featureId = keyOf(tool);
+    const keyOf = getToolUniqueKey;
+    const isDashboardTool = (tool: ToolDefinition) => isWorkspaceTool(keyOf(tool)) && keyOf(tool) !== 'none';
+    const open = (tool: ToolDefinition) => requestActivation(tool, () => {
+        const toolKey = keyOf(tool);
         // Chỉ đổi tool — switchToolProfile (ImposerDashboard) lưu/nạp taskMode
         // theo từng công cụ. Không setTaskMode(lockedMode) ở đây (trước đây ép
         // sticker_imposer/cnc → mất Bình trang; và race với snapshot profile).
-        setActiveTool(featureId);
+        setActiveTool(toolKey);
         // Booklet không qua LAYOUT_TASK profile restore khi prev='none' đã set
         // taskMode booklet trong switchToolProfile; các tool preprocess không cần.
         if (tool.defaultPayload?.lockedMode === 'booklet') {
             setTaskMode('booklet');
         }
-    };
+    });
 
     // Filter out standalone apps (category: 'qc')
     const dashboardCategories = TOOL_CATEGORIES.filter(cat => cat.id !== 'qc');
@@ -71,7 +75,7 @@ export default function ToolMenuList({ setActiveTool, setTaskMode }: ToolMenuLis
             {/* ── Favorite Section ── */}
             {(() => {
                 const allTools = dashboardCategories.flatMap(cat => getToolsByCategory(cat.id));
-                const favTools = allTools.filter(t => t.id !== 'combine_pdf' && favoriteTools.includes(keyOf(t)) && !hiddenTools.includes(keyOf(t)) && matches(t));
+                const favTools = allTools.filter(t => isDashboardTool(t) && favoriteTools.includes(keyOf(t)) && !hiddenTools.includes(keyOf(t)) && matches(t));
                 if (favTools.length === 0) return null;
                 const isCollapsed = !q && !!collapsedSections['favorites'];
                 return (
@@ -84,6 +88,7 @@ export default function ToolMenuList({ setActiveTool, setTaskMode }: ToolMenuLis
                                 label={tv(tool.title)}
                                 info={tv(tool.longDescription)}
                                 helpKey={keyOf(tool)}
+                                featureId={tool.featureId}
                                 isFavorite
                                 onToggleFavorite={() => toggleFavoriteTool(keyOf(tool))}
                                 onClick={() => open(tool)}
@@ -96,7 +101,7 @@ export default function ToolMenuList({ setActiveTool, setTaskMode }: ToolMenuLis
 
             {dashboardCategories.map((category) => {
                 const toolsInCategory = getToolsByCategory(category.id).filter(t => {
-                    if (t.id === 'combine_pdf') return false;
+                    if (!isDashboardTool(t)) return false;
                     const featureId = keyOf(t);
                     if (hiddenTools.includes(featureId)) return false;
                     if (favoriteTools.includes(featureId)) return false;
@@ -116,6 +121,7 @@ export default function ToolMenuList({ setActiveTool, setTaskMode }: ToolMenuLis
                                 label={tv(tool.title)}
                                 info={tv(tool.longDescription)}
                                 helpKey={keyOf(tool)}
+                                featureId={tool.featureId}
                                 isFavorite={favoriteTools.includes(keyOf(tool))}
                                 onToggleFavorite={() => toggleFavoriteTool(keyOf(tool))}
                                 onClick={() => open(tool)}

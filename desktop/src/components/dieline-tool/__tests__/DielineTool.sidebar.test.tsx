@@ -4,7 +4,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import DielineTool from '../DielineTool';
 
-const mocks = vi.hoisted(() => ({ regenerate: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+    regenerate: vi.fn(),
+    requestFeatureAction: vi.fn((_featureId: string, action: () => void) => { action(); return true; }),
+    downloadPDF: vi.fn(),
+    dieline: null as any,
+}));
 
 // [VARIANT 2026-07-29] onSelect nhận `variant.id` (không phải boxType nữa)
 vi.mock('../DielineGallery', () => ({
@@ -34,7 +39,7 @@ vi.mock('../DielineScene3D', () => ({ default: () => <div>Canvas 3D</div> }));
 
 vi.mock('../../../stores/useBoxStore', () => ({
     useBoxStore: () => ({
-        dieline: null,
+        dieline: mocks.dieline,
         nestingResult: null,
         sleeveNestingResult: null,
         nestingConfig: {},
@@ -49,7 +54,7 @@ vi.mock('../../../stores/useBoxStore', () => ({
 }));
 
 vi.mock('../../../lib/dieline/exportPDF', () => ({
-    downloadPDF: vi.fn(),
+    downloadPDF: mocks.downloadPDF,
     buildDielinePdfBlob: vi.fn(),
 }));
 vi.mock('../../../lib/dieline/exportNestingPDF', () => ({
@@ -69,6 +74,9 @@ vi.mock('../../shared/usePrintDialog', () => ({
 vi.mock('../../../i18n', () => ({ tv: (value: string) => value }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (value: string) => value }) }));
 vi.mock('sonner', () => ({ toast: { warning: vi.fn(), loading: vi.fn(), dismiss: vi.fn(), error: vi.fn() } }));
+vi.mock('../../../hooks/useToolActivationGuard', () => ({
+    useFeatureActionGuard: () => mocks.requestFeatureAction,
+}));
 
 const toolRect = {
     x: 0,
@@ -86,6 +94,10 @@ describe('DielineTool movable customization panel', () => {
     beforeEach(() => {
         window.localStorage.clear();
         mocks.regenerate.mockReset();
+        mocks.downloadPDF.mockReset();
+        mocks.dieline = null;
+        mocks.requestFeatureAction.mockReset();
+        mocks.requestFeatureAction.mockImplementation((_featureId: string, action: () => void) => { action(); return true; });
         if (!window.PointerEvent) {
             Object.defineProperty(window, 'PointerEvent', { value: MouseEvent, configurable: true });
         }
@@ -144,5 +156,24 @@ describe('DielineTool movable customization panel', () => {
         expect(panel.classList.contains('dt-sidebar-floating')).toBe(false);
         expect(screen.getByTestId('param-state')).toBe(statefulControl);
         expect(panel.style.width).toBe('450px');
+    });
+
+    it('đọc lại quyền Pro ngay trước khi xuất PDF và không dùng model cũ sau downgrade', () => {
+        mocks.dieline = {
+            params: { boxType: 'rte' },
+            allPaths: [],
+            panels: [],
+        };
+        mocks.requestFeatureAction.mockImplementation(() => false);
+        render(<DielineTool />);
+        fireEvent.click(screen.getByRole('button', { name: 'Mở trình sửa' }));
+
+        fireEvent.click(screen.getByRole('button', { name: 'PDF kỹ thuật' }));
+        expect(mocks.requestFeatureAction).toHaveBeenCalledWith('packaging.dieline', expect.any(Function));
+        expect(mocks.downloadPDF).not.toHaveBeenCalled();
+
+        mocks.requestFeatureAction.mockImplementation((_featureId: string, action: () => void) => { action(); return true; });
+        fireEvent.click(screen.getByRole('button', { name: 'PDF kỹ thuật' }));
+        expect(mocks.downloadPDF).toHaveBeenCalledOnce();
     });
 });

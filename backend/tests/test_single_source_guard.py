@@ -43,9 +43,13 @@ def test_native_cargo_depends_on_core():
     assert "imposition_core" in cargo, "native/Cargo.toml phải phụ thuộc imposition_core"
 
 
-def test_tauri_cargo_depends_on_core():
+def test_tauri_does_not_reintroduce_dead_core_command():
     cargo = _read(os.path.join("desktop", "src-tauri", "Cargo.toml"))
-    assert "imposition_core" in cargo, "src-tauri/Cargo.toml phải phụ thuộc imposition_core"
+    lib_rs = _read(os.path.join("desktop", "src-tauri", "src", "lib.rs"))
+    assert "imposition_core" not in cargo, \
+        "Tauri không còn consumer layout; không kéo imposition_core chỉ cho command dead"
+    assert "fn solve_layout(" not in lib_rs, \
+        "layout nghiệp vụ phải đi qua backend/native đã gate, không expose Tauri command"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

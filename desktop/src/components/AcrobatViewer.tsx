@@ -17,6 +17,7 @@ import { toast } from './ui/Toast';
 import { QuickDeleteModal, ExtractPagesModal, InsertBlankPageModal, AcrobatToolbar, Ruler, GuideLayer, DimensionLayer, findDimensionCandidate, ThumbSidebar, ViewerContextMenu, type Guide, type DimensionMeasurement } from './acrobat';
 import { StatusBar } from './acrobat/StatusBar'; // UIUX (audit 2026-07-27 §M-1+C-05)
 import { CrossFileInsertModal, type CrossFileInsertPending } from './acrobat/CrossFileInsertModal';
+import { formatPageSizeMm } from './acrobat/dimensionMath';
 
 import { usePdfLoader, genPageId, genPageIds, flattenRotations } from '../hooks/viewer/usePdfLoader';
 import { useTileRenderer } from '../hooks/viewer/useTileRenderer';
@@ -1788,7 +1789,10 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                                 {pageDim && (
                                     <div className="absolute bottom-0 left-0 w-40 h-24 z-[50] group flex items-end p-6">
                                         <div style={{ padding: '8px 20px' }} className="bg-[#222]/95 backdrop-blur-sm text-[#e0e0e0] font-mono text-[14px] font-semibold rounded-lg border border-white/10 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none tracking-wider whitespace-nowrap">
-                                            {(() => { const d = allPageDims[activePage] || pageDim; return `${Math.round(d.w * (25.4 / 96))} x ${Math.round(d.h * (25.4 / 96))} mm`; })()}
+                                            {formatPageSizeMm(
+                                                activePagePhysical.widthPt,
+                                                activePagePhysical.heightPt,
+                                            )}
                                         </div>
                                     </div>
                                 )}

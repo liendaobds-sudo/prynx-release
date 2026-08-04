@@ -163,6 +163,27 @@ describe('nestingEngine — calculateNesting', () => {
     // ── Smart mode: RTE ─────────────────────────────────
 
     describe('Smart RTE', () => {
+        it('giữ phần thập phân trong nhãn tiết kiệm nhỏ hơn 0,5 mm', () => {
+            const bbox = { width: 100, height: 100 };
+            const params = makeParams({
+                boxType: 'rte',
+                L: 50,
+                W: 0.2,
+                T: 0.1,
+                TH: 0,
+                DFH: 0,
+                D: 0,
+            });
+            const config = makeConfig({ nestingMode: 'smart' });
+
+            const result = calculateNesting(bbox, config, params);
+
+            expect(result.label).toContain('−0.3mm/hàng');
+            expect(result.superTile?.strategy).toContain('−0.3mm/hàng');
+            expect(result.superTile?.savedMm).toBe(0.3);
+            expect(result.label).not.toContain('−0mm');
+        });
+
         it('should use interlock for RTE and fit more than grid', () => {
             const bbox = { width: 280, height: 620 };
             const params = makeParams({ boxType: 'rte', L: 100, W: 60, D: 200, T: 0.5, TH: 15, DFH: 0 });

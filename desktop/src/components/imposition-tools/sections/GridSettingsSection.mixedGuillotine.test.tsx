@@ -18,7 +18,8 @@ interface RenderOptions {
     impositionUnit?: 'sticker' | 'page_sheet';
     layoutType?: TestLayout;
     duplexFlow?: 'normal' | 'double';
-    taskMode?: 'nup' | 'step_repeat';
+    taskMode?: 'nup' | 'step_repeat' | 'booklet';
+    markType?: 'none' | 'corners' | 'guillotine';
 }
 
 afterEach(() => {
@@ -82,23 +83,27 @@ function renderGridSettings({
     return { store, ...view };
 }
 function renderAdvancedSettings({
+    activeTool = 'nup',
+    impositionUnit = 'sticker',
     layoutType = 'mixed_guillotine',
     duplexFlow = 'double',
     taskMode = 'nup',
-}: Pick<RenderOptions, 'layoutType' | 'duplexFlow' | 'taskMode'> = {}) {
+    markType = 'guillotine',
+}: RenderOptions = {}) {
     localStorage.clear();
     const store = createImposerSettingsStore();
     store.setState({
-        activeDashboardTool: 'nup',
-        impositionUnit: 'sticker',
+        activeDashboardTool: activeTool,
+        impositionUnit,
         layoutType,
         duplexFlow,
         taskMode,
+        markType,
         mixedExcessPercent: 0,
     });
     const view = render(
         <ImposerSettingsContext.Provider value={store}>
-            <AdvancedSettingsSection activeTool="nup" sourceTotalPages={4} />
+            <AdvancedSettingsSection activeTool={activeTool} sourceTotalPages={4} />
         </ImposerSettingsContext.Provider>,
     );
     return { store, ...view };
@@ -165,5 +170,48 @@ describe('GridSettingsSection — Dàn nhiều kích thước', () => {
 
         expect(screen.queryByRole('option', { name: 'Theo cạnh dài' })).toBeNull();
         expect(screen.queryByRole('option', { name: 'Theo cạnh ngắn' })).toBeNull();
+    });
+});
+
+describe('AdvancedSettingsSection — đường viền cắt thủ công', () => {
+    it.each([
+        ['Dàn nhiều mẫu', 'nup'],
+        ['Bình trang', 'step_repeat'],
+    ] as const)('hiện trong %s và độc lập với trạng thái dấu xén', (_label, taskMode) => {
+        renderAdvancedSettings({ activeTool: 'nup', taskMode, markType: 'none' });
+        expect(screen.getByRole('checkbox', { name: 'Đường viền cắt' })).toBeTruthy();
+        expect(screen.queryByTestId('cut-border-controls')).toBeNull();
+    });
+
+    it.each([
+        ['Booklet', 'nup', 'sticker', 'booklet'],
+        ['Tem bế', 'sticker_imposer', 'sticker', 'nup'],
+        ['CNC', 'cnc_imposer', 'sticker', 'nup'],
+        ['Nguyên tấm decal', 'sticker_imposer', 'page_sheet', 'nup'],
+    ] as const)('ẩn trong %s', (_label, activeTool, impositionUnit, taskMode) => {
+        renderAdvancedSettings({ activeTool, impositionUnit, taskMode });
+        expect(screen.queryByTestId('cut-border-settings')).toBeNull();
+    });
+
+    it('bật viền mới hiện điều khiển và cập nhật Trim/Bleed, màu, độ dày', () => {
+        const { store } = renderAdvancedSettings({
+            activeTool: 'nup',
+            taskMode: 'nup',
+            markType: 'none',
+        });
+        fireEvent.click(screen.getByRole('checkbox', { name: 'Đường viền cắt' }));
+        expect(screen.getByTestId('cut-border-controls')).toBeTruthy();
+
+        fireEvent.change(screen.getByLabelText('Vị trí đường viền'), { target: { value: 'bleed' } });
+        fireEvent.change(screen.getByLabelText('Màu viền'), { target: { value: '#ff0000' } });
+        fireEvent.change(screen.getByLabelText('Độ dày viền (mm)'), { target: { value: '0.6' } });
+
+        expect(store.getState().cutBorder).toEqual({
+            enabled: true,
+            position: 'bleed',
+            color: '#FF0000',
+            thickness: 0.6,
+        });
+        expect(screen.getByTestId('cut-border-overlap-warning')).toBeTruthy();
     });
 });

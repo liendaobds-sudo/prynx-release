@@ -10,7 +10,7 @@ import { scheduleWarmupPdfjs } from './lib/pdfWarmup';
 import { appPerf } from './lib/perfMarks';
 import SystemIntegrations from './components/SystemIntegrations';
 import UpdateChecker from './components/UpdateChecker';
-import { TOOL_REGISTRY, TOOL_CATEGORIES, getToolsByCategory, getToolUniqueKey, getTabTitle, getExistingInstance, isImpositionFamilyTool, type AppToolId } from './lib/toolRegistry';
+import { TOOL_REGISTRY, TOOL_CATEGORIES, findToolForLaunch, getToolsByCategory, getToolUniqueKey, getTabTitle, getExistingInstance, isImpositionFamilyTool, type AppToolId } from './lib/toolRegistry';
 import { MenuBar, type MenuDef } from './components/MenuBar';
 import AboutModal, { SUPPORT } from './components/AboutModal';
 import { useAppSettingsStore } from './stores/appSettingsStore';
@@ -31,16 +31,19 @@ import { ToastViewport, toast } from './components/ui/Toast';
 // UIUX (audit 2026-07-27 §D-13): câu lỗi tiếng Việt + hướng khắc phục thay vì "Min/Max/Close Error"
 import { formatError } from './lib/errorMessages';
 import { ConfirmDialogHost } from './components/ui/confirmDialog';
-import { listSnapshots, clearAllSnapshots, deleteSnapshot, type RecoverySnapshot } from './lib/recovery';
+import { listSnapshots, clearAllSnapshots, deleteSnapshot, writeSnapshot, type RecoverySnapshot } from './lib/recovery';
 import { ZoomIn, ZoomOut, Maximize, MoveHorizontal, FileText, ScrollText, Columns2, Rows2, Ruler, Moon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { tv } from './i18n';
-import { canUse, featureIdForFocus, FEATURE_CATALOG } from './lib/license/features';
+import { canUse, isProFeature } from './lib/license/features';
 import { getShortcutLabel, matchesShortcut } from './lib/keyboardShortcuts';
 import { buildResultTabPayload } from './lib/tabNavigation';
 import { useIncomingFileDispatcher } from './hooks/useIncomingFileDispatcher';
+import { useToolActivationGuard } from './hooks/useToolActivationGuard';
+import FeatureAccessOverlay from './components/license/FeatureAccessOverlay';
 
 type AppTabType = 'home' | AppToolId;
+type OpenAppResult = { tabId: string; created: boolean } | null;
 
 // ── BẢNG NĂNG LỰC TAB (audit menu 2026-07-28 §MB.1/§MB.2) ──────────────────
 // Menu bar phát lệnh bằng sự kiện window; tab nào KHÔNG có listener thì bấm menu
@@ -532,22 +535,23 @@ function AppInner() {
     }
   }, []);
 
-  const handleOpenApp = useCallback((appId: AppToolId, payload?: any) => {
+  const requestToolActivation = useToolActivationGuard();
+  const handleOpenApp = useCallback((appId: AppToolId, payload?: any): OpenAppResult => {
     const toolKey = payload?.focusFeature || payload?.lockedMode || appId;
-    const featureId = featureIdForFocus(toolKey);
-    if (featureId) {
-      const { licensePlan, licenseFeatures } = useAuthStore.getState();
-      if (!canUse(featureId, licensePlan, licenseFeatures)) {
-        toast.info('Tính năng ' + FEATURE_CATALOG[featureId].label + ' dành cho PrynX Pro.');
-        return;
-      }
+    const hasExplicitToolKey = typeof payload?.focusFeature === 'string' || typeof payload?.lockedMode === 'string';
+    const requestedTool = findToolForLaunch(appId, payload);
+    if (hasExplicitToolKey && !requestedTool) {
+      // Tool mới/khôi phục cũ chưa phân loại không được fail-open.
+      toast.error('Công cụ chưa được phân loại quyền Free/Pro. Vui lòng cập nhật PrynX hoặc liên hệ hỗ trợ.');
+      return null;
     }
+    if (requestedTool && !requestToolActivation(requestedTool, () => undefined)) return null;
 
     // Check single-instance tools
     const existingId = getExistingInstance(appId, tabs);
     if (existingId) {
       setActiveTabId(existingId);
-      return;
+      return { tabId: existingId, created: false };
     }
 
     // payload.title: tab Combine theo nhóm kích thước, recovery, v.v.
@@ -556,9 +560,7 @@ function AppInner() {
     // file)" — trước đây mở 5 tool khác nhau ra 5 tab trùng y tên, thanh tab và menu
     // Cửa sổ không phân biệt được cái nào. Mở kèm file thì giữ nguyên đường cũ: tool
     // tự đổi tiêu đề thành tên file qua onTitleChange.
-    const variantTool = toolKey !== appId
-      ? TOOL_REGISTRY.find(tool => tool.isEnabled && getToolUniqueKey(tool) === toolKey)
-      : undefined;
+    const variantTool = toolKey !== appId ? requestedTool : undefined;
     const title = (payload && typeof payload.title === 'string' && payload.title.trim())
       ? payload.title.trim()
       : (variantTool && !payload?.file ? tv(variantTool.title) : getTabTitle(appId));
@@ -575,7 +577,8 @@ function AppInner() {
 
     setTabs(prev => [...prev, { id: newId, type: appId, title, isClosable: true, payload, isDirty: !!isSpawnedDirty }]);
     setActiveTabId(newId);
-  }, [tabs]);
+    return { tabId: newId, created: true };
+  }, [requestToolActivation, tabs]);
 
   const tabsRef = useRef(tabs);
   const activeTabIdRef = useRef(activeTabId);
@@ -584,28 +587,34 @@ function AppInner() {
   // Khôi phục các phiên chưa lưu từ snapshot (mở lại tab + áp thao tác sửa lên file gốc).
   const restoreSnapshots = useCallback(async (snaps: RecoverySnapshot[]) => {
     setRecoverySnaps(null);
-    try {
-      const { stat } = await import('@tauri-apps/plugin-fs');
-      for (const snap of snaps) {
-        try {
-          const fileStat = await stat(snap.originalPath);
-          const fileObj = new File([], snap.originalName || 'document.pdf', { type: 'application/pdf' });
-          Object.defineProperty(fileObj, 'path', { value: snap.originalPath });
-          Object.defineProperty(fileObj, 'size', { value: (fileStat as any).size || 0 });
-          handleOpenApp('imposition', {
-            file: fileObj,
-            initialRecovery: snap,
-            lockedMode: snap.lockedMode,
-            focusFeature: snap.feature,
-          });
-        } catch {
-          // Phương án A: file gốc không còn trên đĩa → không dựng lại được.
-          toast.error(t('shell:khong_khoi_phuc_duoc', { title: snap.title }));
-        }
+    const { stat } = await import('@tauri-apps/plugin-fs');
+    for (const snap of snaps) {
+      try {
+        const fileStat = await stat(snap.originalPath);
+        const fileObj = new File([], snap.originalName || 'document.pdf', { type: 'application/pdf' });
+        Object.defineProperty(fileObj, 'path', { value: snap.originalPath });
+        Object.defineProperty(fileObj, 'size', { value: (fileStat as any).size || 0 });
+        const opened = handleOpenApp('imposition', {
+          file: fileObj,
+          initialRecovery: snap,
+          lockedMode: snap.lockedMode,
+          focusFeature: snap.feature,
+        });
+        if (!opened?.created) continue;
+
+        // DATA (audit 2026-08-04 re-audit UI): chỉ xóa snapshot cũ sau khi
+        // replacement mang tabId mới đã được ghi atomic thành công. Bị chặn
+        // entitlement, file gốc lỗi hoặc ghi thất bại đều giữ snapshot để thử lại.
+        const replacementWritten = await writeSnapshot({
+          ...snap,
+          tabId: opened.tabId,
+          savedAt: new Date().toISOString(),
+        });
+        if (replacementWritten) await deleteSnapshot(snap.tabId);
+      } catch {
+        // Phương án A: file gốc không còn trên đĩa → giữ snapshot, không làm mất dữ liệu.
+        toast.error(t('shell:khong_khoi_phuc_duoc', { title: snap.title }));
       }
-    } finally {
-      // Tab khôi phục đang-sửa sẽ tự ghi snapshot MỚI → xóa snapshot cũ cho sạch.
-      await clearAllSnapshots();
     }
   }, [handleOpenApp, t]);
 
@@ -1110,10 +1119,11 @@ function AppInner() {
     return [{
       label: tv(cat.title),
       submenu: tools.map((tool) => {
-        const featureId = featureIdForFocus(getToolUniqueKey(tool));
-        const locked = !!featureId && !canUse(featureId, licensePlan, licenseFeatures);
+        const locked = !canUse(tool.featureId, licensePlan, licenseFeatures);
+        const proOnly = isProFeature(tool.featureId);
+        const accessLabel = proOnly ? (locked ? '🔒 PRO' : 'PRO') : '';
         return {
-          label: locked ? `${tv(tool.title)}  🔒 PRO` : tv(tool.title),
+          label: accessLabel ? `${tv(tool.title)}  ${accessLabel}` : tv(tool.title),
           title: locked ? t('shell:can_key_prynx_pro', 'Cần key PrynX Pro') : tv(tool.title),
           icon: tool.icon,
           onClick: () => handleOpenApp(tool.id, tool.defaultPayload),
@@ -1415,6 +1425,7 @@ function AppInner() {
                       systemMergeFiles={tab.payload?.systemMergeFiles}
                       officeSourceFile={tab.payload?.officeSourceFile}
                       officeSourceFiles={tab.payload?.officeSourceFiles}
+                      onRequestHome={() => setActiveTabId('home')}
                       onSpawnTab={(file: any, extraPayload?: any) => handleOpenApp('imposition', buildResultTabPayload(file, extraPayload))}
                     />
                   </Suspense>
@@ -1450,6 +1461,17 @@ function AppInner() {
                   </Suspense>
                 );
               }
+              if (tab.type === 'paper_library') {
+                return (
+                  <Suspense fallback={<div className="flex items-center justify-center h-full"><div className="w-8 h-8 border-3 border-indigo-400 border-t-transparent rounded-full animate-spin" /></div>}>
+                    <ToolComponent
+                      tabId={tab.id}
+                      isActive={tab.id === activeTabId}
+                      onRequestHome={() => setActiveTabId('home')}
+                    />
+                  </Suspense>
+                );
+              }
               return (
                 <Suspense fallback={<div className="flex items-center justify-center h-full"><div className="w-8 h-8 border-3 border-indigo-400 border-t-transparent rounded-full animate-spin" /></div>}>
                   <ToolComponent
@@ -1460,6 +1482,20 @@ function AppInner() {
                   />
                 </Suspense>
               );
+            })()}
+            {tab.type !== 'home' && (() => {
+              // SEC/UIUX (audit 2026-08-04 §UI.03): tab giữ mounted để không mất
+              // dữ liệu, nhưng mọi tương tác bị phủ ngay khi plan/features đổi.
+              // Workspace dùng activeDashboardTool động và tự khóa trong
+              // ImpositionTab; payload lúc mở tab đã cũ sau khi đổi công cụ.
+              if (
+                tab.id !== activeTabId
+                || isImpositionFamilyTool(tab.type)
+                || tab.type === 'paper_library'
+              ) return null;
+              const accessTool = findToolForLaunch(tab.type, tab.payload);
+              if (!accessTool || canUse(accessTool.featureId, licensePlan, licenseFeatures)) return null;
+              return <FeatureAccessOverlay featureId={accessTool.featureId} onLeave={() => setActiveTabId('home')} />;
             })()}
           </div>
         ))}

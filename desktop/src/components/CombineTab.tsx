@@ -16,7 +16,11 @@ import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
 import 'react-pdf/dist/esm/Page/TextLayer.css';
 import { useAutoAnimate } from '@formkit/auto-animate/react';
 import { toast } from './ui/Toast';
-import { sizeKeyLabel, groupBySizeKey } from '../lib/combineGroupBySize';
+import {
+  approximateSizeKeyFilenameToken,
+  sizeKeyLabel,
+  groupBySizeKey,
+} from '../lib/combineGroupBySize';
 import { useTranslation } from 'react-i18next';
 import { usePrintDialog } from './shared/usePrintDialog';
 import {
@@ -1138,10 +1142,9 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
         const label = sizeKeyLabel(key);
         setStatusMsg(t('tabs.combine:dang_ghep_label_progress', { label, cur: gi, total: groups.size }));
         const bytes = await combineFlatNodes(groupNodes, loadedDocs, `[${label}] `, markCombineNodeCompleted);
-        const safeName = key.replace(/[^\d.x×]/gi, '_');
         const file = createPdfFileFromBytes(
           bytes,
-          `Combined_${safeName}mm.pdf`,
+          `Combined_${approximateSizeKeyFilenameToken(key)}.pdf`,
           t('lib.processHandlers:khong_ghep_duoc_pdf'),
         );
         results.push({

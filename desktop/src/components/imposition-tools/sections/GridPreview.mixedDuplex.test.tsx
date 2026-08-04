@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import GridPreview from "./GridPreview";
+import type { CutBorderConfig } from "../types";
 import {
   createImposerSettingsStore,
   ImposerSettingsContext,
@@ -86,8 +87,16 @@ function mixedResponse() {
   };
 }
 
-function renderMixedPreview() {
-  return render(
+function MixedPreview({
+  cutBorder,
+  bleed = 0,
+  targetQuantity = 1,
+}: {
+  cutBorder?: CutBorderConfig;
+  bleed?: number;
+  targetQuantity?: number;
+}) {
+  return (
     <GridPreview
       taskMode="nup"
       isDieCut={false}
@@ -109,11 +118,19 @@ function renderMixedPreview() {
       shapeType="CUSTOM"
       itemW={20}
       itemH={20}
-      targetQuantity={1}
+      targetQuantity={targetQuantity}
       targetQuantitiesByPage={{ 0: 1 }}
       sourceTotalPages={2}
       filePath="C:\\mixed-materialized.pdf"
-    />,
+      bleed={bleed}
+      cutBorder={cutBorder}
+    />
+  );
+}
+
+function renderMixedPreview(cutBorder?: CutBorderConfig, bleed = 0, targetQuantity = 1) {
+  return render(
+    <MixedPreview cutBorder={cutBorder} bleed={bleed} targetQuantity={targetQuantity} />,
   );
 }
 
@@ -203,6 +220,72 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     expect(container.querySelector('g[transform*="scale(-1, 1)"]')).toBeNull();
     expect(authenticatedFetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("vẽ viền từ cell thật, đổi Trim sang Bleed không gọi lại layout", async () => {
+    const trimBorder: CutBorderConfig = {
+      enabled: true,
+      position: "trim",
+      color: "#000000",
+      thickness: 0.3,
+    };
+    const { rerender } = renderMixedPreview(trimBorder, 3);
+
+    await waitFor(() => expect(screen.getByTestId("cut-border-preview")).toBeTruthy());
+    const trimGroup = screen.getByTestId("cut-border-preview");
+    const trimRect = trimGroup.querySelector("rect") as SVGRectElement;
+    expect(Number(trimRect.getAttribute("x"))).toBeCloseTo(26, 4);
+    expect(Number(trimRect.getAttribute("y"))).toBeCloseTo(26, 4);
+    expect(Number(trimRect.getAttribute("width"))).toBeCloseTo(36, 4);
+
+    rerender(
+      <MixedPreview
+        bleed={3}
+        cutBorder={{ ...trimBorder, position: "bleed", color: "#FF0000", thickness: 0.6 }}
+      />,
+    );
+    await waitFor(() => {
+      const group = screen.getByTestId("cut-border-preview");
+      expect(group.getAttribute("data-position")).toBe("bleed");
+      expect(group.getAttribute("stroke")).toBe("#FF0000");
+    });
+    const bleedRect = screen.getByTestId("cut-border-preview").querySelector("rect") as SVGRectElement;
+    expect(Number(bleedRect.getAttribute("x"))).toBeCloseTo(20.6, 4);
+    expect(Number(bleedRect.getAttribute("width"))).toBeCloseTo(46.8, 4);
+    expect(authenticatedFetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("giữ đúng kích thước viền cho cell xoay trong layout nhiều kích thước", async () => {
+    const response = mixedResponse();
+    const rotated = {
+      ...mixedCell(40, 1),
+      absY: pt(20),
+      width: pt(30),
+      height: pt(10),
+      isRotated: true,
+    };
+    response.cells = [response.cells[0], rotated];
+    response.totalItems = 2;
+    response.sheets[0].cells = response.cells;
+    authenticatedFetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => response,
+    });
+
+    renderMixedPreview({
+      enabled: true,
+      position: "trim",
+      color: "#000000",
+      thickness: 0.3,
+    }, 0, 2);
+    await waitFor(() => {
+      expect(screen.getByTestId("cut-border-preview").querySelectorAll("rect")).toHaveLength(2);
+    });
+    const rects = screen.getByTestId("cut-border-preview").querySelectorAll("rect");
+    expect(Number(rects[1].getAttribute("width"))).toBeCloseTo(54, 4);
+    expect(Number(rects[1].getAttribute("height"))).toBeCloseTo(18, 4);
+  });
+
   it("tự chuyển sang mixed-size và gọi lại preview khi backend phát hiện nhiều khổ", async () => {
     authenticatedFetchMock
       .mockResolvedValueOnce({

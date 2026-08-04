@@ -87,6 +87,8 @@ function cancelOfficeBackendJob(jobId?: string): void {
 type ExcelLayout = 'preserve' | 'fit_width' | 'one_page';
 type BatchResizePreset = 'none' | 'a4' | 'a3' | 'letter' | 'custom';
 
+const BATCH_ENTITLEMENT_CHANGED_ERROR = 'Quyền xử lý hàng loạt đã thay đổi. Tác vụ đã dừng; hãy kích hoạt lại key Pro rồi thử lại.';
+
 interface BatchFolderFile {
     path: string;
     name: string;
@@ -112,7 +114,11 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
     const { t } = useTranslation();
     const licensePlan = useAuthStore((state) => state.licensePlan);
     const licenseFeatures = useAuthStore((state) => state.licenseFeatures);
-    const canBatch = canUse('pdf.office_batch', licensePlan, licenseFeatures);
+    // SEC/UIUX (audit 2026-08-04 §UI.06): hai capability được cấp độc lập;
+    // không dùng office_batch để mở ké resize_batch (hoặc ngược lại).
+    const canOfficeBatch = canUse('pdf.office_batch', licensePlan, licenseFeatures);
+    const canResizeBatch = canUse('pdf.resize_batch', licensePlan, licenseFeatures);
+    const canAnyBatch = canOfficeBatch || canResizeBatch;
     const convertingRef = useRef(false);
     const lastSourceKeyRef = useRef<string>('');
     const batchCancelRef = useRef(false);
@@ -144,6 +150,59 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
     const [activeJobId, setActiveJobId] = useState<string | null>(null);
     const [canExtendLease, setCanExtendLease] = useState(false);
     const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+    const canStageBatchName = useCallback((name: string): boolean => {
+        if (/\.pdf$/i.test(name)) return canAnyBatch;
+        return canOfficeBatch && isOfficePathOrName(name);
+    }, [canAnyBatch, canOfficeBatch]);
+
+    // SEC/UIUX (audit 2026-08-04 §UI.03): không giữ quyền chụp tại thời điểm render
+    // vì key có thể bị hạ trong lúc backend đang chuyển file.
+    const hasCurrentBatchEntitlement = useCallback((name: string, needsResize: boolean): boolean => {
+        const current = useAuthStore.getState();
+        const hasOfficeBatch = canUse('pdf.office_batch', current.licensePlan, current.licenseFeatures);
+        const hasResizeBatch = canUse('pdf.resize_batch', current.licensePlan, current.licenseFeatures);
+        const isPdf = /\.pdf$/i.test(name);
+        return (!needsResize || hasResizeBatch)
+            && (isPdf ? hasOfficeBatch || hasResizeBatch : hasOfficeBatch);
+    }, []);
+
+    const cancelBatchForEntitlementChange = useCallback(() => {
+        batchCancelRef.current = true;
+        const request = batchRequestRef.current;
+        batchRequestRef.current = null;
+        batchGenerationRef.current += 1;
+        cancelOfficeBackendJob(request?.jobId);
+        request?.controller.abort();
+        clearOfficeRequestTimers(request);
+        setActiveJobId(null);
+        setCanExtendLease(false);
+        setProgress('');
+        setSuccess('');
+        setError(BATCH_ENTITLEMENT_CHANGED_ERROR);
+    }, []);
+
+    const batchContainsOffice = batchResults.some((item) => !/\.pdf$/i.test(item.name));
+
+    useEffect(() => {
+        if (!isBatchRunning) return;
+        const entitlementLost = !canAnyBatch
+            || (batchContainsOffice && !canOfficeBatch)
+            || (batchResizePreset !== 'none' && !canResizeBatch);
+        if (entitlementLost) cancelBatchForEntitlementChange();
+    }, [
+        batchContainsOffice,
+        batchResizePreset,
+        canAnyBatch,
+        canOfficeBatch,
+        canResizeBatch,
+        cancelBatchForEntitlementChange,
+        isBatchRunning,
+    ]);
+
+    useEffect(() => {
+        if (!canResizeBatch) setBatchResizePreset('none');
+    }, [canResizeBatch]);
 
 
     const isFormatSupported = useCallback((name: string): boolean => {
@@ -483,11 +542,14 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                 const supportedOfficeExtensions = capabilityStatus
                     ? capabilityStatus.supported_extensions.map((ext) => ext.replace(/^\./, ''))
                     : [...OFFICE_EXTENSIONS];
+                const pickerExtensions = [
+                    ...supportedOfficeExtensions,
+                    ...(canAnyBatch ? ['pdf'] : []),
+                ];
                 const selected = await open({
-                    multiple: canBatch,
+                    multiple: canAnyBatch,
                     filters: [
-                        { name: 'Word / Excel / PowerPoint / PDF', extensions: [...supportedOfficeExtensions, 'pdf'] },
-                        { name: 'Office / PDF', extensions: [...supportedOfficeExtensions, 'pdf'] },
+                        { name: canAnyBatch ? 'Word / Excel / PowerPoint / PDF' : 'Word / Excel / PowerPoint', extensions: pickerExtensions },
                     ],
                 });
                 if (!selected) return;
@@ -518,11 +580,14 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                 // Browser fallback
                 const input = document.createElement('input');
                 input.type = 'file';
-                input.multiple = canBatch;
+                input.multiple = canAnyBatch;
                 const browserExtensions = capabilityStatus
                     ? capabilityStatus.supported_extensions.map((ext) => ext.replace(/^\./, ''))
                     : [...OFFICE_EXTENSIONS];
-                input.accept = [...browserExtensions, 'pdf'].map((e) => '.' + e).join(',');
+                input.accept = [
+                    ...browserExtensions,
+                    ...(canAnyBatch ? ['pdf'] : []),
+                ].map((e) => '.' + e).join(',');
                 input.onchange = async () => {
                     const files = Array.from(input.files || []);
                     if (files.length > 1 || /\.pdf$/i.test(files[0]?.name || '')) await stageLooseFiles(files);
@@ -533,7 +598,7 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
         } catch (e: any) {
             setError(e?.message || t('preprocess.officeConvert:loi_khong_xac_dinh'));
         }
-    }, [canBatch, capabilityStatus, stageFile, t]);
+    }, [canAnyBatch, canOfficeBatch, capabilityStatus, stageFile, t]);
 
     const handleGoogle = useCallback(async () => {
         const url = googleUrl.trim();
@@ -650,7 +715,8 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
             });
             if (!output || typeof output !== 'string') return;
 
-            const files = await invoke<BatchFolderFile[]>('list_batch_folder_files', { folder: source });
+            const files = (await invoke<BatchFolderFile[]>('list_batch_folder_files', { folder: source }))
+                .filter((file) => canStageBatchName(file.name));
             files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
             setBatchSourceFolder(source);
             setBatchOutputFolder(output);
@@ -662,7 +728,7 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
     };
 
     async function stageLooseFiles(files: File[]) {
-        const supported = files.filter((file) => isSupportedLooseName(file.name));
+        const supported = files.filter((file) => isSupportedLooseName(file.name) && canStageBatchName(file.name));
         if (supported.length === 0) {
             setError(t('preprocess.officeConvert:batch_no_files'));
             return;
@@ -694,7 +760,7 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
     }
 
     async function stageLoosePaths(paths: string[]) {
-        const supportedPaths = paths.filter(isSupportedLooseName);
+        const supportedPaths = paths.filter((path) => isSupportedLooseName(path) && canStageBatchName(path));
         if (supportedPaths.length === 0) {
             setError(t('preprocess.officeConvert:batch_no_files'));
             return;
@@ -735,6 +801,18 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
 
     const startBatch = async () => {
         if (isBatchRunning || batchResults.length === 0 || !batchOutputFolder) return;
+        if (!canAnyBatch) {
+            setError('Quyền xử lý hàng loạt đã thay đổi. Hãy kích hoạt lại key Pro rồi thử lại.');
+            return;
+        }
+        if (!canOfficeBatch && batchResults.some((item) => !/\.pdf$/i.test(item.name))) {
+            setError('Key hiện tại chỉ có quyền resize hàng loạt PDF, không có quyền chuyển nhiều file Office.');
+            return;
+        }
+        if (!canResizeBatch && batchResizePreset !== 'none') {
+            setError('Resize hàng loạt cần quyền PrynX Pro tương ứng.');
+            return;
+        }
         let resizeTarget: { width: number; height: number } | null = null;
         if (batchResizePreset === 'a4') resizeTarget = { width: 210, height: 297 };
         if (batchResizePreset === 'a3') resizeTarget = { width: 297, height: 420 };
@@ -758,6 +836,13 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
         let wasCancelled = false;
         for (let index = 0; index < batchResults.length; index += 1) {
             const item = batchResults[index];
+            if (!hasCurrentBatchEntitlement(item.name, resizeTarget !== null)) {
+                cancelBatchForEntitlementChange();
+                setBatchResults((current) => current.map((entry, i) =>
+                    i >= index && entry.status === 'pending' ? { ...entry, status: 'cancelled' } : entry));
+                wasCancelled = true;
+                break;
+            }
             if (batchCancelRef.current) {
                 setBatchResults((current) => current.map((entry, i) =>
                     i >= index && entry.status === 'pending' ? { ...entry, status: 'cancelled' } : entry));
@@ -790,6 +875,10 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                 let outputPath: string;
 
                 if (isPdf && !resizeTarget) {
+                    if (!hasCurrentBatchEntitlement(item.name, false)) {
+                        cancelBatchForEntitlementChange();
+                        throw new DOMException('Entitlement changed', 'AbortError');
+                    }
                     outputPath = await invoke<string>('copy_batch_pdf', {
                         source: item.path,
                         outputDir: batchOutputFolder,
@@ -855,6 +944,10 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                     if (!convertedPath) throw new Error(t('preprocess.officeConvert:loi_pdf_rong'));
                     if (!isRequestCurrent('batch', request)) {
                         throw new DOMException('Cancelled', 'AbortError');
+                    }
+                    if (!hasCurrentBatchEntitlement(item.name, resizeTarget !== null)) {
+                        cancelBatchForEntitlementChange();
+                        throw new DOMException('Entitlement changed', 'AbortError');
                     }
                     outputPath = await invoke<string>('copy_batch_pdf', {
                         source: convertedPath,
@@ -1060,14 +1153,14 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                 )}
             </div>
 
-            {mode === 'file' && !canBatch && (
+            {mode === 'file' && !canAnyBatch && (
                 <div className="rounded-xl border border-amber-200 bg-amber-50/70 dark:border-amber-500/30 dark:bg-amber-500/10 p-3">
                     <div className="text-[12px] font-bold text-amber-800 dark:text-amber-300">Xử lý nhiều file và cả thư mục · PrynX Pro</div>
                     <div className="mt-1 text-[10px] text-amber-700/80 dark:text-amber-200/70">Bản Free vẫn chuyển từng file Word, Excel hoặc Google Docs bình thường.</div>
                 </div>
             )}
-            {mode === 'file' && canBatch && (
-                <div className="rounded-xl border border-slate-200 dark:border-zinc-700 p-3 space-y-3">
+            {mode === 'file' && canAnyBatch && (
+                <div data-testid="office-batch-panel" className="rounded-xl border border-slate-200 dark:border-zinc-700 p-3 space-y-3">
                     <div>
                         <div className="text-[12px] font-bold text-slate-700 dark:text-zinc-200">
                             {t('preprocess.officeConvert:batch_title')}
@@ -1075,6 +1168,9 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                         <div className="text-[10px] text-slate-400 mt-1">
                             {t('preprocess.officeConvert:batch_desc')}
                         </div>
+                        {!canOfficeBatch && canResizeBatch && (
+                            <div className="mt-1 text-[10px] font-medium text-amber-700 dark:text-amber-300">Key hiện tại chỉ xử lý hàng loạt file PDF.</div>
+                        )}
                     </div>
                     <button
                         type="button"
@@ -1109,8 +1205,8 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                             <div>{t('preprocess.officeConvert:batch_count', { count: batchResults.length })}</div>
                         </div>
                     )}
-                    {batchSourceFolder && (
-                        <div className="space-y-2">
+                    {batchSourceFolder && canResizeBatch && (
+                        <div data-testid="batch-resize-controls" className="space-y-2">
                             <ToolSectionLabel>{t('preprocess.officeConvert:batch_resize_title')}</ToolSectionLabel>
                             <select
                                 value={batchResizePreset}
@@ -1155,6 +1251,11 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                             <p className="text-[10px] text-slate-400">
                                 {t('preprocess.officeConvert:batch_resize_hint')}
                             </p>
+                        </div>
+                    )}
+                    {batchSourceFolder && !canResizeBatch && (
+                        <div data-testid="batch-resize-locked" className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-[10px] font-medium text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+                            Resize hàng loạt cần quyền PrynX Pro tương ứng.
                         </div>
                     )}
                     {batchResults.length > 0 && (

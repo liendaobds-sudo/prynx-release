@@ -68,13 +68,6 @@ $txtNotes = New-Object System.Windows.Forms.TextBox
 $txtNotes.Location = New-Object System.Drawing.Point(15, 136); $txtNotes.Width = 595; $txtNotes.Height = 50
 $txtNotes.Multiline = $true; $form.Controls.Add($txtNotes)
 
-# ---- Tuy chon build nhanh ----
-$chkSkipNuitka = New-Object System.Windows.Forms.CheckBox
-$chkSkipNuitka.Text = "Build nhanh: bỏ qua biên dịch backend (chỉ khi KHÔNG sửa code Python)"
-$chkSkipNuitka.Location = New-Object System.Drawing.Point(15, 192)
-$chkSkipNuitka.Width = 595; $chkSkipNuitka.Checked = $false
-$form.Controls.Add($chkSkipNuitka)
-
 # ---- Hang nut quan ly ----
 $btnCheck = New-Object System.Windows.Forms.Button
 $btnCheck.Text = "Kiểm tra GitHub"; $btnCheck.Location = New-Object System.Drawing.Point(165, 226); $btnCheck.Width = 140
@@ -179,12 +172,13 @@ $btnLocal.Add_Click({
     Save-Config
     if (-not (Test-ReleaseSecretStoreReady)) { return }
     $buildScript = Join-Path $ROOT "build_production.ps1"
-    $skipArg = if ($chkSkipNuitka.Checked) { " -SkipNuitka" } else { "" }
     # PHAI truyen -Version: build_production doc tauri.conf; truoc day Build NỘI BỘ
     # bo qua o phien ban -> installer van mang version cu (vd go .12 van ra .11).
     $verArg = " -Version `"$($txtVer.Text.Trim())`""
     # KHONG -Release: build installer local, khong ky updater, khong upload.
-    $argList = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$buildScript`"$verArg$skipArg"
+    # BUILD (audit 2026-08-04 BLD.04): installer noi bo luon bien dich sidecar
+    # cung source voi frontend; khong con duong QA voi backend cu.
+    $argList = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$buildScript`"$verArg"
     Start-Process powershell -ArgumentList $argList
     Log "Da khoi chay build NOI BO v$($txtVer.Text) trong cua so rieng. File cai dat se nam trong Ban_Phat_Hanh\."
 })
@@ -202,9 +196,8 @@ $btnPublish.Add_Click({
     $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $txtPwd.Text
     $notes = $txtNotes.Text -replace '"', "'"
     $relScript = Join-Path $ROOT "release_update.ps1"
-    $skipArg = if ($chkSkipNuitka.Checked) { " -SkipNuitka" } else { "" }
     # KHONG truyen -ReleaseRepo: release_update.ps1 tu suy tu endpoint (nguon chan ly duy nhat).
-    $argList = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$relScript`" -Version `"$($txtVer.Text)`" -Notes `"$notes`"$skipArg"
+    $argList = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$relScript`" -Version `"$($txtVer.Text)`" -Notes `"$notes`""
     try {
         Start-Process powershell -ArgumentList $argList
     } finally {

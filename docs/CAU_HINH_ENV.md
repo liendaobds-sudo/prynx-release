@@ -29,7 +29,7 @@ tiến trình**; việc nặng chạy process con riêng nên trần job không 
 | `PRYNX_MAX_TOKEN_LIFETIME_SECONDS` | theo `license_guard` | Siết tuổi token khi điều tra sự cố phát hành |
 | `PRYNX_CLOCK_GUARD_FILE` | theo APPDATA | Đổi chỗ lưu mốc chống lùi đồng hồ |
 | `PRYNX_SECURITY_DIAG` | tắt | Bật log chẩn đoán posture bảo mật. Log có thể lộ thông tin môi trường → không bật lâu trên máy khách |
-| `PRYNX_FEATURE_GATING_ENABLED` | bật | Tắt cổng tính năng theo gói (Free/Pro) khi test |
+| `PRYNX_FEATURE_GATING_ENABLED` | dev: tắt; binary đóng gói: bật cưỡng bức | Với source dev, đặt `true` để test Free/Pro. Binary Nuitka luôn bật và bỏ qua yêu cầu tắt. Dùng `run_dev.bat --gated` để đặt đồng thời biến này và `VITE_FEATURE_GATING_ENABLED=true` cho frontend |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | *(không)* | Chỉ dùng cho đường kích hoạt/kiểm tra license phía server |
 | `PRYNX_SUPABASE_URL`, `PRYNX_SUPABASE_SECRET_KEY` | *(không)* | Tương thích CI/CLI để lấy khóa resource khuôn bế; build lấy và xóa hai biến ngay đầu process, trước mọi tool con. Launcher chuẩn không dùng env: `build_production.ps1` tự giải mã kho DPAPI `%LOCALAPPDATA%\PrynX\ReleaseSecrets\secrets.clixml` đúng tại bước REST. Public release chỉ nhận khóa mới `sb_secret_` |
 

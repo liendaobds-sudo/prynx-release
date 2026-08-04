@@ -9,6 +9,10 @@ const authenticatedFetch = vi.fn();
 const prepareFileForUpload = vi.fn();
 const tauriOpen = vi.fn();
 const tauriInvoke = vi.fn();
+const licenseState = { licensePlan: 'pro', licenseFeatures: null as string[] | null };
+const canUseMock = vi.fn((featureId: string, plan: string, features: readonly string[] | null) => (
+  plan === 'pro' || plan === 'dev' || features?.includes('*') || features?.includes(featureId) || false
+));
 
 vi.mock('../../lib/api', () => ({
   authenticatedFetch: (...args: unknown[]) => authenticatedFetch(...args),
@@ -16,15 +20,16 @@ vi.mock('../../lib/api', () => ({
   prepareFileForUpload: (...args: unknown[]) => prepareFileForUpload(...args),
 }));
 
-vi.mock('../../stores/useAuthStore', () => ({
-  useAuthStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
-    licensePlan: 'pro',
-    licenseFeatures: ['pdf.office_batch'],
-  }),
-}));
+vi.mock('../../stores/useAuthStore', () => {
+  const useAuthStore = Object.assign(
+    (selector: (state: Record<string, unknown>) => unknown) => selector(licenseState),
+    { getState: () => licenseState },
+  );
+  return { useAuthStore };
+});
 
 vi.mock('../../lib/license/features', () => ({
-  canUse: () => true,
+  canUse: (...args: [string, string, readonly string[] | null]) => canUseMock(...args),
 }));
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({
@@ -109,6 +114,9 @@ describe('OfficeConvertTool lifecycle', () => {
     prepareFileForUpload.mockReset();
     tauriOpen.mockReset();
     tauriInvoke.mockReset();
+    licenseState.licensePlan = 'pro';
+    licenseState.licenseFeatures = null;
+    canUseMock.mockClear();
     prepareFileForUpload.mockImplementation(async (file: File) => file);
     installDefaultApi();
     delete (window as any).__TAURI_INTERNALS__;
@@ -345,5 +353,65 @@ describe('OfficeConvertTool lifecycle', () => {
 
     await waitFor(() => expect(batchSignal?.aborted).toBe(true));
     await waitFor(() => expect(authenticatedFetch.mock.calls.some(([url]) => String(url).endsWith('/cancel'))).toBe(true));
+  });
+
+  it('hạ quyền khi batch đang chờ sẽ abort request và không copy PDF cục bộ', async () => {
+    (window as any).__TAURI_INTERNALS__ = {};
+    tauriOpen.mockResolvedValue('D:\\Output');
+    let batchSignal: AbortSignal | undefined;
+    authenticatedFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith('/office-convert/status')) return Promise.resolve(jsonResponse(fullCapability));
+      if (url.endsWith('/office-convert/file')) {
+        batchSignal = init?.signal || undefined;
+        return pendingUntilAbort(init?.signal);
+      }
+      if (url.endsWith('/cancel')) return Promise.resolve(jsonResponse({ cancelled: true }));
+      if (/\/jobs\/[^/]+$/.test(url)) return Promise.resolve(jsonResponse({ phase: 'converting', terminal: false, remaining_seconds: 250 }));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const sourceFiles = [
+      pathBackedFile('one.docx', 'D:\\one.docx'),
+      pathBackedFile('two.docx', 'D:\\two.docx'),
+    ];
+    const view = render(<OfficeConvertTool officeSourceFiles={sourceFiles} onFileFixed={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'batch_choose_output' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'batch_start' }));
+    await waitFor(() => expect(batchSignal).toBeInstanceOf(AbortSignal));
+
+    licenseState.licensePlan = 'free';
+    licenseState.licenseFeatures = null;
+    view.rerender(<OfficeConvertTool officeSourceFiles={sourceFiles} onFileFixed={vi.fn()} />);
+
+    await waitFor(() => expect(batchSignal?.aborted).toBe(true));
+    await waitFor(() => expect(screen.queryByTestId('office-batch-panel')).toBeNull());
+    expect(await screen.findByText(/Quyền xử lý hàng loạt đã thay đổi/)).not.toBeNull();
+    expect(tauriInvoke.mock.calls.some(([command]) => command === 'copy_batch_pdf')).toBe(false);
+  });
+
+  it('custom grant Office batch không mở ké resize hàng loạt', async () => {
+    licenseState.licensePlan = 'free';
+    licenseState.licenseFeatures = ['pdf.office_batch'];
+    render(<OfficeConvertTool officeSourceFiles={[
+      pathBackedFile('one.docx'),
+      pathBackedFile('two.docx'),
+    ]} onFileFixed={vi.fn()} />);
+
+    expect(await screen.findByTestId('office-batch-panel')).not.toBeNull();
+    expect(await screen.findByTestId('batch-resize-locked')).not.toBeNull();
+    expect(screen.queryByTestId('batch-resize-controls')).toBeNull();
+  });
+
+  it('custom grant Resize batch mở lô PDF nhưng không mở lô Office', async () => {
+    licenseState.licensePlan = 'free';
+    licenseState.licenseFeatures = ['pdf.resize_batch'];
+    render(<OfficeConvertTool officeSourceFiles={[
+      pathBackedFile('one.pdf'),
+      pathBackedFile('two.pdf'),
+    ]} onFileFixed={vi.fn()} />);
+
+    expect(await screen.findByTestId('office-batch-panel')).not.toBeNull();
+    expect(await screen.findByTestId('batch-resize-controls')).not.toBeNull();
+    expect(screen.getByText('Key hiện tại chỉ xử lý hàng loạt file PDF.')).not.toBeNull();
   });
 });

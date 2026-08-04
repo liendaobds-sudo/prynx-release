@@ -13,7 +13,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Manifest,
     [string]$ExpectedVersion = "",
     [switch]$ExpectNoGhostscript,
-    [ValidateRange(10, 180)][int]$StartupTimeoutSeconds = 45
+    [ValidateRange(10, 180)][int]$StartupTimeoutSeconds = 90
 )
 
 $ErrorActionPreference = "Stop"

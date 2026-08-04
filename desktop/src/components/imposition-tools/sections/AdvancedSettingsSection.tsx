@@ -10,6 +10,8 @@ import { useTranslation } from 'react-i18next';
 import { tv } from '../../../i18n';
 import BookReportSettings from './BookReportSettings';
 import { resolveImpositionModes } from '../pageSheetPolicy';
+import { canUseCutBorder } from '../cutBorderPolicy';
+import { formatSizeMm } from '../../../lib/measurementFormat';
 
 const REPORT_FIELD_LABELS: Record<string, string> = {
     orderCode: 'Mã đơn hàng', identifier: 'Mẫu/Trang', gangCount: 'Số mẫu ghép',
@@ -91,6 +93,8 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
         // Marks
         markType: state.markType, setMarkType: state.setMarkType,
         setShowMarksModal: state.setShowMarksModal,
+        cutBorder: state.cutBorder, setCutBorder: state.setCutBorder,
+        gapX: state.gapX, gapY: state.gapY,
         // Boong định vị (chuyển từ OutputSettingsSection vào đây cho gọn UI)
         pontType: state.pontType, setPontType: state.setPontType,
         pontConfig: state.pontConfig, setPontConfig: state.setPontConfig,
@@ -155,6 +159,19 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
     const stickerLike = dieGeometryMode;
     const stickerProductMode = stickerToolIdentity || activeTool === 'cnc_imposer';
     const labelReportCapable = stickerProductMode || activeTool === 'nup';
+    const cutBorderCapable = canUseCutBorder({
+        activeTool,
+        taskMode: s.taskMode,
+        pageSheetMode,
+    });
+    const cutBorderOverlapRisk = cutBorderCapable
+        && s.cutBorder.enabled
+        && s.cutBorder.position === 'bleed'
+        && s.bleed > 0
+        && (
+            s.gapX < s.bleed * 2 + s.cutBorder.thickness
+            || s.gapY < s.bleed * 2 + s.cutBorder.thickness
+        );
     const [infoModal, setInfoModal] = useState<{ title: string, content: React.ReactNode } | null>(null);
     const [showClusterModal, setShowClusterModal] = useState(false);
     const [matInput, setMatInput] = useState<string | null>(null); // null = không thêm; '' = đang nhập
@@ -662,7 +679,8 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                                 heightMm: (pageSheetMode ? s.sourceMediaPageDim : s.sourcePageDim)
                                                     ? (pageSheetMode ? s.sourceMediaPageDim : s.sourcePageDim).h * 0.352778 - 2 * (s.bleed || 0)
                                                     : undefined,
-                                                paperSize: `Khổ ${Math.round(sw)}x${Math.round(sh)}mm`,
+                                                // UIUX (audit 2026-08-04 §DIM.5): preview report khớp khổ tờ thập phân thật.
+                                                paperSize: `Khổ ${formatSizeMm(sw, sh)}`,
                                                 itemsPerSheet: s.previewCapacity,
                                                 requestedQty: _pageSheetRequestedQty,
                                                 material: s.reportMaterial,
@@ -1146,6 +1164,76 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                     {s.taskMode !== 'booklet' && <option value="corners">{t('imposition.advancedSettings:xen_4_goc_ngoai_die_cut_bounds_2')}</option>}
                                     <option value="guillotine">{t('imposition.advancedSettings:xen_thanh_pham_guillotine')}</option>
                                 </select>
+                            </div>
+                        )}
+
+                        {/* CUT-BORDER (audit 2026-08-04 §CB.5): đường hướng dẫn cắt
+                            thủ công độc lập với dấu xén, chỉ thuộc N-Up guillotine. */}
+                        {cutBorderCapable && (
+                            <div
+                                data-testid="cut-border-settings"
+                                className="rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50/70 dark:bg-zinc-800/20 p-3 space-y-2.5"
+                            >
+                                <Checkbox
+                                    checked={s.cutBorder.enabled}
+                                    onChange={(enabled) => s.setCutBorder({ enabled })}
+                                    label={t('imposition.advancedSettings:duong_vien_cat')}
+                                />
+                                <p className="text-[11px] leading-snug text-slate-500 dark:text-zinc-400">
+                                    {t('imposition.advancedSettings:duong_vien_cat_mo_ta')}
+                                </p>
+                                {s.cutBorder.enabled && (
+                                    <div data-testid="cut-border-controls" className="grid grid-cols-2 gap-2 pt-1">
+                                        <label className="text-[11px] font-semibold text-slate-600 dark:text-zinc-300 space-y-1">
+                                            <span>{t('imposition.advancedSettings:mau_vien')}</span>
+                                            <div className="flex items-center gap-2 h-8">
+                                                <input
+                                                    type="color"
+                                                    aria-label={t('imposition.advancedSettings:mau_vien')}
+                                                    value={/^#[0-9a-f]{6}$/i.test(s.cutBorder.color) ? s.cutBorder.color : '#000000'}
+                                                    onChange={(event) => s.setCutBorder({ color: event.target.value.toUpperCase() })}
+                                                    className="w-10 h-8 p-0.5 rounded border border-slate-300 dark:border-white/20 bg-white dark:bg-zinc-900 cursor-pointer"
+                                                />
+                                                <span className="text-[10px] font-mono text-slate-500">{s.cutBorder.color.toUpperCase()}</span>
+                                            </div>
+                                        </label>
+                                        <label className="text-[11px] font-semibold text-slate-600 dark:text-zinc-300 space-y-1">
+                                            <span>{t('imposition.advancedSettings:do_day_vien_mm')}</span>
+                                            <input
+                                                type="number"
+                                                min="0.1"
+                                                max="2"
+                                                step="0.1"
+                                                aria-label={t('imposition.advancedSettings:do_day_vien_mm')}
+                                                value={s.cutBorder.thickness}
+                                                onChange={(event) => s.setCutBorder({ thickness: Number(event.target.value) })}
+                                                className={inputCls}
+                                            />
+                                        </label>
+                                        <label className="col-span-2 text-[11px] font-semibold text-slate-600 dark:text-zinc-300 space-y-1">
+                                            <span>{t('imposition.advancedSettings:vi_tri_duong_vien')}</span>
+                                            <select
+                                                aria-label={t('imposition.advancedSettings:vi_tri_duong_vien')}
+                                                value={s.cutBorder.position}
+                                                onChange={(event) => s.setCutBorder({ position: event.target.value as 'trim' | 'bleed' })}
+                                                className={`${inputCls} appearance-auto`}
+                                            >
+                                                <option value="trim">{t('imposition.advancedSettings:theo_thanh_pham_trim')}</option>
+                                                <option value="bleed">{t('imposition.advancedSettings:theo_mep_tran_le_bleed')}</option>
+                                            </select>
+                                        </label>
+                                        {s.cutBorder.position === 'bleed' && (
+                                            <div className="col-span-2 text-[11px] leading-snug text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded px-2 py-1.5">
+                                                {t('imposition.advancedSettings:cat_theo_bleed_lon_hon_thanh_pham', { bleed: s.bleed })}
+                                            </div>
+                                        )}
+                                        {cutBorderOverlapRisk && (
+                                            <div data-testid="cut-border-overlap-warning" className="col-span-2 text-[11px] leading-snug text-red-700 dark:text-red-400">
+                                                {t('imposition.advancedSettings:khe_khong_du_vien_bleed_co_the_chong')}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
                             </div>
                         )}
 

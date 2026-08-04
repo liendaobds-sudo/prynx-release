@@ -1,4 +1,5 @@
 import type { Guide } from './GuideLayer';
+import { roundMeasurement } from '../../lib/measurementFormat';
 
 export type MeasurementUnit = 'mm' | 'cm' | 'inch';
 export type DimensionMeasurement = { id: string; page: number; orientation: 'horizontal' | 'vertical'; guideAId: string; guideBId: string; offsetRatio: number };
@@ -26,4 +27,30 @@ export function formatDimension(points: number, unit: MeasurementUnit): string {
   const value = unit === 'mm' ? points * 25.4 / 72 : unit === 'cm' ? points * 2.54 / 72 : points / 72;
   const digits = unit === 'inch' ? 3 : 2;
   return `${value.toFixed(digits).replace(/\.?0+$/, '')} ${unit === 'inch' ? 'in' : unit}`;
+}
+
+// UIUX (fix 2026-08-04): badge kích thước trang giữ chính xác 0,1 mm,
+// đồng bộ với thumbnail, thanh trạng thái và kích thước thành phẩm Bình trang.
+export function formatPageSizeMm(widthPoints: number, heightPoints: number): string {
+  const ptToMm = 25.4 / 72;
+  return `${roundMeasurement(widthPoints * ptToMm).toFixed(1)} × ${roundMeasurement(heightPoints * ptToMm).toFixed(1)} mm`;
+}
+
+// UIUX (audit 2026-08-04 §DIM.6): tooltip thumbnail phải phản ánh khổ trang sau xoay;
+// px@96 chỉ được đổi sang mm tại tầng hiển thị và luôn giữ chính xác 0,1 mm.
+export function formatRotatedPageSizePx96(
+  widthPx: number,
+  heightPx: number,
+  rotationDegrees: number,
+): { widthMm: string; heightMm: string } {
+  const normalizedRotation = ((rotationDegrees % 360) + 360) % 360;
+  const swapsAxes = normalizedRotation === 90 || normalizedRotation === 270;
+  const displayWidthPx = swapsAxes ? heightPx : widthPx;
+  const displayHeightPx = swapsAxes ? widthPx : heightPx;
+  const pxToMm = 25.4 / 96;
+
+  return {
+    widthMm: roundMeasurement(displayWidthPx * pxToMm).toFixed(1),
+    heightMm: roundMeasurement(displayHeightPx * pxToMm).toFixed(1),
+  };
 }

@@ -745,6 +745,22 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
     ):
         raise HTTPException(status_code=422, detail="Bình nguyên tấm decal không áp dụng cho CNC.")
 
+    # CUT-BORDER (audit 2026-08-04 §CB.2): chặn cấu hình sai trước khi xếp job;
+    # renderer vẫn gate lần hai để không rò sang tem bế/CNC/nguyên tấm.
+    try:
+        from app.workers.nup_cut_border import (
+            cut_border_is_applicable,
+            normalize_cut_border_settings,
+        )
+        if cut_border_is_applicable(
+            settings,
+            is_die_cut=bool(settings.get("isDieCutMode", False)),
+            page_sheet_mode=page_sheet_raw,
+        ):
+            normalize_cut_border_settings(settings, strict=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     enforce_feature(_imposition_feature(settings), license_info or {})
     # Inject license info for stealth watermark (hashed in watermark module)
     if license_info:

@@ -320,7 +320,7 @@ export default function NumberingTool({
             setStatusMessage(t('preprocess.numbering:dang_day_du_lieu_len_may_chu', { n: csvData.length }));
             // Tuân thủ kết quả cuối cùng: dùng file đã áp dụng sửa đổi trang làm template.
             const templateFile = getWorkingFile ? await getWorkingFile() : pdfFile;
-            const jobId = await startVdpJobBackend(templateFile, vdpFields, csvData);
+            const jobId = await startVdpJobBackend(templateFile, vdpFields, csvData, 'vdp.numbering');
             activeVdpJobRef.current = jobId;
             setActiveVdpJobId(jobId);
             

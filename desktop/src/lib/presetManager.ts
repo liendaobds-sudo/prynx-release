@@ -67,6 +67,13 @@ export interface ImpositionPreset {
     clusterCount: number;
     clusterGap: number;
     clusterGapMode: 'item' | 'mark';
+    /** Tùy chọn để preset cũ vẫn nạp được và mặc định về tắt. */
+    cutBorder?: {
+      enabled: boolean;
+      position: 'trim' | 'bleed';
+      color: string;
+      thickness: number;
+    };
   };
 }
 

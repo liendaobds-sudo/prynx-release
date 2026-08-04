@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { formatSizeMm } from '../lib/measurementFormat';
 
 interface Preset {
     id: string;
@@ -143,7 +144,9 @@ export default function NewDocumentModal({ isOpen, onClose, onCreate }: Props) {
                 </div>
 
                 <p className="text-[11px] text-slate-400 mb-4">
-                    {t('misc.newDocument:kich_thuoc')} <span className="font-semibold text-slate-600 dark:text-zinc-300">{w.toFixed(0)} × {h.toFixed(0)} mm</span>
+                    {t('misc.newDocument:kich_thuoc')}{' '}
+                    {/* UIUX (audit 2026-08-04 §DIM.3): giữ 0,1 mm có nghĩa để tóm tắt khớp kích thước PDF thật. */}
+                    <span className="font-semibold text-slate-600 dark:text-zinc-300">{formatSizeMm(w, h)}</span>
                 </p>
 
                 <div className="flex justify-end gap-2">

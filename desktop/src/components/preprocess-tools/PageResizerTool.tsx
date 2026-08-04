@@ -30,7 +30,8 @@ const COMMON_SIZES = [
     { id: 'SRA3', name: 'SRA3', desc: '320 × 450 mm', w: 320, h: 450 },
     { id: 'B2', name: 'B2', desc: '500 × 707 mm', w: 500, h: 707 },
     { id: 'B3', name: 'B3', desc: '353 × 500 mm', w: 353, h: 500 },
-    { id: 'Letter', name: 'Letter', desc: '216 × 279 mm', w: 216, h: 279 },
+    // UIUX (audit 2026-08-04 §DIM.2): giữ đúng kích thước Letter chuẩn khi xuất PDF.
+    { id: 'Letter', name: 'Letter', desc: '215.9 × 279.4 mm', w: 215.9, h: 279.4 },
     { id: 'custom', name: 'Tùy chỉnh', desc: 'Nhập W × H', w: 0, h: 0 },
 ];
 

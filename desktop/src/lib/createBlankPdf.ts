@@ -3,6 +3,7 @@
  * thiết kế từ đầu (tương tự "New Document" của Illustrator).
  */
 import { PDFDocument } from 'pdf-lib';
+import { formatMeasurement } from './measurementFormat';
 
 const MM_TO_PT = 72 / 25.4; // ≈ 2.83465
 
@@ -24,9 +25,10 @@ export async function createBlankPdfFile(opts: BlankDocOptions): Promise<File> {
     }
     const bytes = await doc.save();
 
+    // UIUX (audit 2026-08-04 §DIM.3): chỉ định dạng tên; hình học PDF vẫn dùng nguyên số đo phía trên.
     const fileName = name && name.trim()
         ? (name.trim().toLowerCase().endsWith('.pdf') ? name.trim() : `${name.trim()}.pdf`)
-        : `Untitled_${Math.round(widthMm)}x${Math.round(heightMm)}mm.pdf`;
+        : `Untitled_${formatMeasurement(widthMm)}x${formatMeasurement(heightMm)}mm.pdf`;
 
     const file = new File([bytes as any], fileName, { type: 'application/pdf' });
 

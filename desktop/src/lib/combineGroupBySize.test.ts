@@ -5,6 +5,7 @@ import {
     groupBySizeKey,
     roundMm,
     sizeKeyLabel,
+    approximateSizeKeyFilenameToken,
 } from './combineGroupBySize';
 
 describe('combineGroupBySize', () => {
@@ -24,7 +25,8 @@ describe('combineGroupBySize', () => {
         // 50mm ≈ 141.732 pt, 70mm ≈ 198.425 pt
         const key = pageSizeKeyMm(50 / 0.352777778, 70 / 0.352777778, 0, 0.5);
         expect(key).toBe('50x70');
-        expect(sizeKeyLabel(key)).toBe('50x70mm');
+        expect(sizeKeyLabel(key)).toBe('≈ 50x70 mm');
+        expect(approximateSizeKeyFilenameToken(key)).toBe('approx_50x70mm');
     });
 
     it('xoay 90 đổi key (đúng kích thước hiển thị)', () => {

@@ -32,7 +32,7 @@ from app.utils.file_handler import save_upload_file
 from app.utils.subprocess_utils import run_hidden
 from app.utils.errors import raise_http
 from app.config import settings
-from app.core.license_guard import require_license, require_feature
+from app.core.license_guard import enforce_feature, require_license
 from app.database import SessionLocal
 from app.models.job import UploadedFile
 # KIENTRUC (audit 2026-07-29 §A.2): response model dùng chung của nhóm preflight.
@@ -90,7 +90,80 @@ from app.schemas.preflight import (  # noqa: F401
     ToggleLockRequest,
 )
 
-router = APIRouter(dependencies=[Depends(require_feature("prepress.preflight"))])
+_DEFAULT_PREFLIGHT_FEATURE = "prepress.preflight"
+
+# SEC (audit 2026-08-04 §BE.01): route không khai riêng sẽ fail về capability
+# Preflight. Các route hỗ trợ công cụ chuyên biệt phải dùng đúng grant; route tải
+# kết quả chỉ giữ require_license vì capability đã được enforce lúc tạo artifact.
+_PREFLIGHT_ROUTE_FEATURES: dict[str, str | None] = {
+    "/preflight/fix": None,
+    "/preflight/pipeline": None,
+    "/preflight/download/{filename}": None,
+    "/preflight/page-boxes/{file_id}/{page}": "pdf.crop",
+    "/preflight/set-page-boxes": "pdf.crop",
+    "/preflight/detect-crop-regions": "pdf.crop",
+    "/preflight/crop-regions": "pdf.crop",
+    "/preflight/auto-trim": "pdf.crop",
+    "/preflight/add-bleed": "prepress.cutline",
+    "/preflight/fix-hairlines": "prepress.hairlines",
+    "/preflight/inks/{file_id}": "prepress.convert_colors",
+    "/preflight/convert-spot": "prepress.convert_colors",
+    "/preflight/convert-colors": "prepress.convert_colors",
+    "/preflight/icc-profiles": "prepress.convert_colors",
+    "/preflight/softproof": "prepress.convert_colors",
+    "/preflight/set-overprint": "prepress.trapping",
+    "/preflight/overprint-preview": "prepress.trapping",
+    "/preflight/check-pdfx/{file_id}/{standard}": "prepress.pdfx",
+    "/preflight/export-pdfx": "prepress.pdfx",
+    "/preflight/mirror-bleed": "prepress.cutline",
+}
+
+_PREFLIGHT_ACTION_FEATURES = {
+    "CONVERT_TO_CMYK": "prepress.convert_colors",
+    "FLATTEN_TRANSPARENCY": "prepress.preflight",
+    "OUTLINE_FONTS": "prepress.preflight",
+    "EMBED_FONTS": "prepress.preflight",
+    "DOWNSCALE_IMAGES": "prepress.preflight",
+    "FIX_METADATA": "prepress.preflight",
+    "REMOVE_CHANNELS": "prepress.convert_colors",
+    "FIX_HAIRLINES": "prepress.hairlines",
+    "SET_BLACK_OVERPRINT": "prepress.trapping",
+}
+
+
+def preflight_action_feature(action_id: str) -> str:
+    """Trả capability có thẩm quyền cho một ActionEngine action."""
+    return _PREFLIGHT_ACTION_FEATURES.get(action_id, _DEFAULT_PREFLIGHT_FEATURE)
+
+
+def _local_preflight_route_path(request: Request) -> str:
+    route = request.scope.get("route")
+    route_path = str(getattr(route, "path", "") or request.url.path)
+    marker = "/preflight/"
+    index = route_path.find(marker)
+    return route_path[index:] if index >= 0 else route_path
+
+
+async def require_preflight_route_feature(
+    request: Request,
+    license_info: dict = Depends(require_license),
+) -> dict:
+    feature_id = _PREFLIGHT_ROUTE_FEATURES.get(
+        _local_preflight_route_path(request),
+        _DEFAULT_PREFLIGHT_FEATURE,
+    )
+    if feature_id is not None:
+        enforce_feature(feature_id, license_info)
+    return license_info
+
+
+def enforce_preflight_actions(action_ids: List[str], license_info: dict) -> None:
+    """Kiểm đủ mọi capability trước khi pipeline bắt đầu sửa file."""
+    for feature_id in dict.fromkeys(preflight_action_feature(item) for item in action_ids):
+        enforce_feature(feature_id, license_info)
+
+
+router = APIRouter(dependencies=[Depends(require_preflight_route_feature)])
 
 
 def _validate_local_pdf_path(file_path: str) -> str:
@@ -284,11 +357,15 @@ async def inspect_uploaded_pdf(file: UploadFile = File(...)):
 
 
 @router.post("/preflight/fix", response_model=FixResponse)
-async def fix_pdf(request: FixRequest):
+async def fix_pdf(
+    request: FixRequest,
+    license_info: dict = Depends(require_license),
+):
     """
     Thực thi một Action sửa lỗi trên file PDF.
     Trả về thông tin file đã sửa.
     """
+    enforce_preflight_actions([request.action_id], license_info)
     pdf_path, original_name = _get_file_info(request.file_id)
 
     try:
@@ -302,11 +379,15 @@ async def fix_pdf(request: FixRequest):
 
 
 @router.post("/preflight/pipeline", response_model=FixResponse)
-async def pipeline_fix(request: PipelineRequest):
+async def pipeline_fix(
+    request: PipelineRequest,
+    license_info: dict = Depends(require_license),
+):
     """
     Chạy chuỗi Actions tuần tự (Pipeline).
     Ví dụ: CONVERT_TO_CMYK → FLATTEN_TRANSPARENCY → EMBED_FONTS
     """
+    enforce_preflight_actions([action.id for action in request.actions], license_info)
     pdf_path, original_name = _get_file_info(request.file_id)
 
     try:
@@ -1546,4 +1627,3 @@ async def render_overprint_preview(req: OverprintPreviewRequest):
     except Exception as e:
         logger.exception("Lỗi khi render Overprint Preview")
         return {"success": False, "error": str(e)}
-

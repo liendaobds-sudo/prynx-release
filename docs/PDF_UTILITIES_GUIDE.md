@@ -18,5 +18,7 @@
 
 ## Free/Pro
 
-Scaffold `desktop/src/lib/license/features.ts` + `backend/app/core/feature_entitlements.py`.
-`FEATURE_GATING_ENABLED = false` → **không chặn** tool hiện tại.
+Catalog nằm tại `desktop/src/lib/license/features.ts` và
+`backend/app/core/feature_entitlements.py`, có parity test bắt buộc. Dev thường tắt gate;
+`run_dev.bat --gated` bật cả hai lớp. Sidecar đóng gói và pipeline release luôn cưỡng chế gate.
+Ma trận đầy đủ: `docs/PRYNX_FREE_PRO.md`.

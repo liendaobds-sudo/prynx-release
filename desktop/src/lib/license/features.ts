@@ -4,6 +4,7 @@ export type LicensePlan = 'free' | 'pro' | 'dev';
 export const FEATURE_CATALOG = {
   'pdf.shuffle': { minPlan: 'free', label: 'Xáo trộn trang' },
   'pdf.resize': { minPlan: 'free', label: 'Co giãn trang' },
+  'pdf.crop': { minPlan: 'free', label: 'Cắt khổ trang' },
   'pdf.split': { minPlan: 'free', label: 'Tách PDF' },
   'pdf.pages': { minPlan: 'free', label: 'Quản lý trang' },
   'pdf.merge': { minPlan: 'free', label: 'Ghép PDF' },
@@ -17,7 +18,6 @@ export const FEATURE_CATALOG = {
   'qc.compare_text': { minPlan: 'free', label: 'So sánh văn bản' },
   'pdf.resize_batch': { minPlan: 'pro', label: 'Resize hàng loạt' },
   'pdf.office_batch': { minPlan: 'pro', label: 'Office sang PDF hàng loạt' },
-  'pdf.optimize_advanced': { minPlan: 'pro', label: 'Tối ưu PDF nâng cao' },
   'pdf.trim_shift': { minPlan: 'pro', label: 'Trim & Shift' },
   'prepress.preflight': { minPlan: 'pro', label: 'Preflight chuẩn in' },
   'prepress.convert_colors': { minPlan: 'pro', label: 'Chuyển hệ màu' },
@@ -70,22 +70,4 @@ export function hasFeatureAccess(featureId: FeatureId, plan: LicensePlan | strin
 
 export function canUse(featureId: FeatureId, plan: LicensePlan | string = 'free', features: readonly string[] | null = null): boolean {
   return !FEATURE_GATING_ENABLED || hasFeatureAccess(featureId, plan, features);
-}
-
-/** toolRegistry focusFeature/lockedMode/id -> feature id ổn định. */
-export function featureIdForFocus(key: string): FeatureId | null {
-  const map: Record<string, FeatureId> = {
-    shuffle: 'pdf.shuffle', resize: 'pdf.resize', trim_shift: 'pdf.trim_shift',
-    split: 'pdf.split', pages: 'pdf.pages', combine_pdf: 'pdf.merge', merge: 'pdf.merge',
-    encrypt: 'pdf.encrypt', metadata: 'pdf.metadata', optimize: 'pdf.optimize',
-    watermark: 'pdf.watermark', stick_text_number: 'pdf.header_footer', office_convert: 'pdf.office_convert',
-    preflight: 'prepress.preflight', convertcolors: 'prepress.convert_colors', hairlines: 'prepress.hairlines',
-    trapping: 'prepress.trapping', sticker: 'prepress.cutline', pdfx: 'prepress.pdfx',
-    datamerge: 'vdp.datamerge', numbering: 'vdp.numbering', cover_numbering: 'vdp.cover_numbering',
-    booklet: 'impo.booklet', nup: 'impo.nup', sticker_imposer: 'impo.diecut', cnc_imposer: 'impo.cnc',
-    dieline: 'packaging.dieline', paper_library: 'prepress.paper_library',
-    bgremover: 'util.bgremover', upscale: 'util.upscale', logo_rebuild: 'util.logo_rebuild',
-    compare_pdf: 'qc.compare_pdf', compare_text: 'qc.compare_text',
-  };
-  return map[key] ?? null;
 }

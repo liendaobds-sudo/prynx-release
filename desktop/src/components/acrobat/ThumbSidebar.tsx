@@ -4,6 +4,7 @@ import { thumbCacheRef } from '../workspace/thumbnailCache';
 import { nativeTileRenderScheduler } from '../../hooks/viewer/tileRenderScheduler';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
+import { formatRotatedPageSizePx96 } from './dimensionMath';
 
 interface ThumbSidebarProps {
     // Page state
@@ -101,11 +102,11 @@ const MemoThumbItem = React.memo((props: any) => {
     let finalSrc: string | undefined = cachedSrc;
     if (!finalSrc && isImage) finalSrc = pdfUrl || undefined;
     if (!finalSrc && nativePreview?.key === nativeRequestKey) finalSrc = nativePreview.url;
-    // FIX (audit độ nét 2026-07-28 §R.13): `localDim.w/h` là **px@96**, không phải point →
-    // phải chia 96. Dùng /72 làm tooltip báo SAI 1.333×: A4 hiện "280.0 × 396.0 mm" thay vì
-    // "210.0 × 297.0". Cùng quy ước với StatusBar (`PX_TO_MM = 25.4/96`).
-    const dimW = localDim ? (localDim.w * 25.4 / 96).toFixed(1) : 0;
-    const dimH = localDim ? (localDim.h * 25.4 / 96).toFixed(1) : 0;
+    // UIUX (audit 2026-08-04 §DIM.6): tooltip dùng khổ hiển thị sau xoay, nên 90°/270°
+    // phải hoán rộng–cao giống thumbnail và thanh trạng thái.
+    const { widthMm: dimW, heightMm: dimH } = localDim
+        ? formatRotatedPageSizePx96(localDim.w, localDim.h, normRot)
+        : { widthMm: '0', heightMm: '0' };
     const tooltipText = originalPageNum !== -1 ? t('misc.thumbSidebar:trang_kich_thuoc_tooltip', { page: logicalPageLabel, w: dimW, h: dimH }) : t('misc.thumbSidebar:trang_trong');
     // Luôn contain: giữ tỉ lệ trang, không kéo giãn ảnh preview (tránh méo khi
     // tỉ lệ khung lệch nhẹ so với ảnh GS do làm tròn pixel, và không phóng đại mờ).

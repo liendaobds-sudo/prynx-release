@@ -92,7 +92,8 @@ def test_generate_rejects_full_queue_before_inspecting_payload(monkeypatch):
             data_file=_upload("data.csv", b"Name\nAlice\n"),
             file=_upload("template.pdf", b"%PDF-test"),
             data_format="csv",
-            license_info={},
+            feature_id="vdp.datamerge",
+            license_info={"plan": "pro"},
         ))
 
     assert exc.value.status_code == 429
@@ -114,7 +115,8 @@ def test_generate_spools_inputs_before_fixed_executor_submission(monkeypatch, tm
         file_path=None,
         data_format="csv",
         has_header=True,
-        license_info={},
+        feature_id="vdp.datamerge",
+        license_info={"plan": "pro"},
     ))
 
     job_id = response["job_id"]

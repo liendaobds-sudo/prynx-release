@@ -10,6 +10,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+import pikepdf
+
+from app.core.imposition_page_box import effective_imposition_box
 from app.workers.mixed_guillotine import (
     MixedGuillotineError,
     ProductSpec,
@@ -18,20 +21,84 @@ from app.workers.mixed_guillotine import (
 )
 
 
-def resolve_guillotine_trim(page: Any, bleed_pt: float) -> tuple[float, float]:
-    """Resolve footprint chữ nhật giống nhau cho preview và export của mode mới."""
+def canonicalize_pikepdf_page_boxes(
+    page: Any,
+    transform: tuple[float, float, float, float, float, float],
+    page_size: tuple[float, float],
+) -> None:
+    """Đưa PageBox về hệ tọa độ đã canonicalize mà không mất trang logic."""
+    # GUILLOTINE-BOX FIX (audit 2026-08-04): CropBox có thể là trang logic nhỏ
+    # trên canvas lớn; phải chụp mọi PageBox trước khi thay MediaBox.
+    original_boxes = {
+        box: [float(value) for value in page[box]]
+        for box in ("/CropBox", "/TrimBox", "/ArtBox", "/BleedBox")
+        if box in page
+    }
+    ma, mb, mc, md, me, mf = transform
+    width, height = page_size
+    page.MediaBox = pikepdf.Array([0, 0, width, height])
+    page.Rotate = 0
+    for box, bounds in original_boxes.items():
+        x0, y0, x1, y1 = bounds
+        corners = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+        xs = [ma * x + mc * y + me for x, y in corners]
+        ys = [mb * x + md * y + mf for x, y in corners]
+        page[box] = pikepdf.Array([min(xs), min(ys), max(xs), max(ys)])
+    if "/CropBox" not in original_boxes:
+        page.CropBox = pikepdf.Array([0, 0, width, height])
+
+
+def resolve_guillotine_geometry(
+    page: Any,
+    bleed_pt: float,
+) -> tuple[float, float, tuple[float, float, float, float] | None]:
+    """Trả khổ thành phẩm và vùng nguồn cho mọi chế độ bình cắt xén.
+
+    TrimBox khai báo rõ luôn là thành phẩm. Nếu không có TrimBox, chỉ chọn CropBox
+    khi nó nhỏ đáng kể so với MediaBox (trang logic trên canvas lớn); sai khác nhỏ
+    vẫn là crop/bleed thông thường. Renderer phải clip cùng hộp mà solver đã chọn.
+    Tọa độ clip trả về theo hệ top-down mà ``show_pdf_page`` tiêu thụ.
+    """
     rect = page.rect
-    trimbox = page.trimbox
-    trim_differs = (
-        abs(float(trimbox.width) - float(rect.width)) > 1.0
-        or abs(float(trimbox.height) - float(rect.height)) > 1.0
+    # TrimBox khai báo rõ là thành phẩm nên luôn được tôn trọng. Khi file không
+    # có TrimBox, wrapper rơi về CropBox; lúc đó chỉ dùng CropBox nếu nó thực sự
+    # là trang logic nhỏ trên canvas lớn. Sai khác vài pt thường chỉ là crop/bleed.
+    pike_page = getattr(page, "_page", None)
+    has_explicit_trim = pike_page is not None and "/TrimBox" in pike_page
+    logical_box = page.trimbox if has_explicit_trim else effective_imposition_box(page)
+    logical_differs = (
+        abs(float(logical_box.width) - float(rect.width)) > 1.0
+        or abs(float(logical_box.height) - float(rect.height)) > 1.0
     )
-    if trim_differs and trimbox.width > 0 and trimbox.height > 0:
-        return float(trimbox.width), float(trimbox.height)
+    if logical_differs and logical_box.width > 0 and logical_box.height > 0:
+        bleed = max(0.0, float(bleed_pt))
+        source_clip = (
+            float(logical_box.x0) - bleed,
+            float(rect.height) - float(logical_box.y1) - bleed,
+            float(logical_box.x1) + bleed,
+            float(rect.height) - float(logical_box.y0) + bleed,
+        )
+        return float(logical_box.width), float(logical_box.height), source_clip
     return (
         max(0.0, float(rect.width) - 2.0 * float(bleed_pt)),
         max(0.0, float(rect.height) - 2.0 * float(bleed_pt)),
+        None,
     )
+
+
+def resolve_guillotine_trim(page: Any, bleed_pt: float) -> tuple[float, float]:
+    """Trả footprint chữ nhật dùng chung cho preview và export."""
+    width, height, _source_clip = resolve_guillotine_geometry(page, bleed_pt)
+    return width, height
+
+
+def resolve_guillotine_source_clip(
+    page: Any,
+    bleed_pt: float,
+) -> tuple[float, float, float, float] | None:
+    """Trả vùng nguồn top-down; ``None`` nghĩa là dùng toàn bộ MediaBox."""
+    _width, _height, source_clip = resolve_guillotine_geometry(page, bleed_pt)
+    return source_clip
 
 
 def build_product_specs(
@@ -237,7 +304,10 @@ def full_span_cut_coordinates(
 
 __all__ = [
     "build_product_specs",
+    "canonicalize_pikepdf_page_boxes",
     "full_span_cut_coordinates",
     "materialize_plan_for_renderer",
+    "resolve_guillotine_geometry",
+    "resolve_guillotine_source_clip",
     "resolve_guillotine_trim",
 ]

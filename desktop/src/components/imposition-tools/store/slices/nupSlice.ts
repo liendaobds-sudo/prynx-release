@@ -1,5 +1,9 @@
 import type { ImposerSlice } from '../sliceType';
-import type { NupSettings } from '../../types';
+import {
+    DEFAULT_CUT_BORDER_CONFIG,
+    type CutBorderConfig,
+    type NupSettings,
+} from '../../types';
 
 export type ImpositionUnit = 'sticker' | 'page_sheet';
 
@@ -15,6 +19,8 @@ export interface NupSlice {
     setRows: (v: number) => void;
     gridStrategy: NupSettings['gridStrategy'];
     setGridStrategy: (v: NupSettings['gridStrategy']) => void;
+    cutBorder: CutBorderConfig;
+    setCutBorder: (v: Partial<CutBorderConfig>) => void;
     groupingStrategy: 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none';
     setGroupingStrategy: (v: 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none') => void;
     clusterCombineMode: 'replicate_mixed' | 'zone_per_type' | 'zone_ratio';
@@ -74,7 +80,7 @@ export interface NupSlice {
 
 export const NUP_PERSIST_KEYS = [
     'impositionUnit',
-    'layoutType', 'columns', 'rows', 'gridStrategy', 'groupingStrategy',
+    'layoutType', 'columns', 'rows', 'gridStrategy', 'groupingStrategy', 'cutBorder',
     'clusterCombineMode',
     'clusterTileW', 'clusterTileH', 'clusterSizingMode', 'clusterCols', 'clusterRows',
     'tileGapX', 'tileGapY', 'clusterNesting', 'duplexFlow', 'duplexFlipEdge',
@@ -110,6 +116,16 @@ export const createNupSlice: ImposerSlice<NupSlice> = (set) => ({
     setRows: (v) => set({ rows: v }),
     gridStrategy: 'optimal_auto',
     setGridStrategy: (v) => set({ gridStrategy: v }),
+    cutBorder: { ...DEFAULT_CUT_BORDER_CONFIG },
+    setCutBorder: (v) => set((state) => ({
+        cutBorder: {
+            ...state.cutBorder,
+            ...v,
+            thickness: v.thickness === undefined
+                ? state.cutBorder.thickness
+                : Math.min(2, Math.max(0.1, Number(v.thickness) || DEFAULT_CUT_BORDER_CONFIG.thickness)),
+        },
+    })),
     groupingStrategy: 'maximize_area',
     setGroupingStrategy: (v) => set({ groupingStrategy: v }),
     clusterCombineMode: 'replicate_mixed',

@@ -27,6 +27,11 @@ from app.workers.nup_artwork import (
     compute_block_bbox,
     draw_die_lines_for_placement,
 )
+from app.workers.nup_cut_border import draw_cut_borders
+from app.workers.mixed_guillotine_adapter import (
+    resolve_guillotine_source_clip,
+    resolve_guillotine_trim,
+)
 
 MM_TO_PTS = 2.83465
 logger = logging.getLogger(__name__)
@@ -148,9 +153,14 @@ def process_chunk(args):
     else:
         chunk_repeat_metadata, base_args = None, args
 
-    # New engine calls append page_sheet_mode after the legacy 56-value tuple.
+    # Engine mới nối page_sheet_mode và cut_border_config sau tuple legacy 56 giá trị.
     # Keep direct/older process_chunk callers compatible.
     page_sheet_mode = bool(base_args[56]) if len(base_args) > 56 else False
+    cut_border_config = (
+        base_args[57]
+        if len(base_args) > 57 and isinstance(base_args[57], dict)
+        else None
+    )
     base_args = base_args[:56]
 
     (source_path, job_id, chunk_idx, start_sheet, end_sheet, 
@@ -172,6 +182,19 @@ def process_chunk(args):
     local_stripped_pages = set()
 
     page_count = src_doc.page_count
+
+    # [GUILLOTINE-BOX FIX 2026-08-04] Solver và renderer phải cùng dùng vùng
+    # TrimBox/CropBox. Cache một lần mỗi trang trong worker để không đọc PageBox
+    # lại cho từng ô khi một tờ có hàng trăm sản phẩm.
+    guillotine_source_clips = {}
+    if not is_die_cut and not page_sheet_mode:
+        for source_page_idx in range(page_count):
+            clip_values = resolve_guillotine_source_clip(
+                src_doc[source_page_idx], bleed_pt,
+            )
+            guillotine_source_clips[source_page_idx] = (
+                pdf_lib.Rect(*clip_values) if clip_values is not None else None
+            )
 
     out_doc = pdf_lib.open()
 
@@ -362,6 +385,15 @@ def process_chunk(args):
                     cur_trim_w = cur_geom_rect[2] - cur_geom_rect[0]
 
                     cur_trim_h = cur_geom_rect[3] - cur_geom_rect[1]
+
+                elif not is_die_cut and not page_sheet_mode:
+
+                    # [GUILLOTINE-BOX FIX 2026-08-04] Nhánh repeat tự solve lại
+                    # trong worker nên phải dùng cùng PageBox với engine/preview.
+                    # Nếu vẫn lấy MediaBox, canvas lớn + CropBox nhỏ tạo tờ trắng.
+                    cur_trim_w, cur_trim_h = resolve_guillotine_trim(
+                        src_page, bleed_pt,
+                    )
 
                 else:
 
@@ -811,6 +843,7 @@ def process_chunk(args):
         _clip_off_y = min(gap_y / 2.0, bleed_pt) if gap_y > 0 else 0.0
 
 
+        cut_border_trim_rects = []
         for p in placements:
 
             cell = p['cell']
@@ -854,7 +887,11 @@ def process_chunk(args):
                 die_size_mode=die_size_mode, die_offset_mm=die_offset_mm,
                 page_sheet_mode=page_sheet_mode,
                 geometry_doc=geometry_doc,
+                guillotine_source_clip=guillotine_source_clips.get(
+                    p['src_page_idx']
+                ),
             )
+            cut_border_trim_rects.append(trim_rect)
 
             block_id = cell.get('blockId', 0)
 
@@ -900,6 +937,17 @@ def process_chunk(args):
                     "Không tìm thấy đường khuôn bế trên trang nguồn: "
                     f"{missing_labels}."
                 )
+
+        # CUT-BORDER (audit 2026-08-04 §CB.4): vẽ SAU toàn bộ artwork để bleed
+        # của ô đặt sau không che mất nét cắt của ô trước. Trim/Bleed đều dùng
+        # trim_rect trả từ placement thật nên tự đúng cho xoay và mixed-size.
+        if cut_border_config and not is_die_cut and not page_sheet_mode:
+            draw_cut_borders(
+                out_page,
+                cut_border_trim_rects,
+                cut_border_config,
+                bleed_pt=float(bleed_pt),
+            )
 
         # Draw guillotine marks exactly around the cut lines
 

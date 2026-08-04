@@ -200,7 +200,7 @@ export default function CoverNumberingTool({
             }
 
             setStatus(t('preprocess.coverNumbering:dang_day_len_may_chu_to_in', { n: csvData.length }));
-            const jobId = await startVdpJobBackend(template, cloned, csvData);
+            const jobId = await startVdpJobBackend(template, cloned, csvData, 'vdp.cover_numbering');
             activeVdpJobRef.current = jobId;
             setActiveVdpJobId(jobId);
             pollAbortRef.current = new AbortController();

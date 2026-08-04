@@ -57,37 +57,14 @@ from app.workers.imposition_finalize import finalize_placements
 
 from app.workers.nup_process_chunk import process_chunk
 from app.workers.nup_output_finalize import NupOutputContext, finalize_nup_output
-
-def _build_repeat_sheet_metadata(sheet_mapping):
-    """Return ``sheet -> (source page, ordinal for that page)`` in O(S)."""
-    if not sheet_mapping:
-        return {}
-
-    metadata = {}
-    seen_by_source = {}
-    if isinstance(sheet_mapping, dict):
-        def _value(index):
-            return sheet_mapping.get(index, sheet_mapping.get(str(index)))
-        indices = []
-        for index in sheet_mapping:
-            try:
-                indices.append(int(index))
-            except (TypeError, ValueError):
-                continue
-        indices = sorted(set(indices))
-    else:
-        _value = sheet_mapping.__getitem__
-        indices = range(len(sheet_mapping))
-
-    for sheet_index in indices:
-        try:
-            source_index = int(_value(sheet_index))
-        except (KeyError, TypeError, ValueError):
-            continue
-        ordinal = seen_by_source.get(source_index, 0)
-        metadata[sheet_index] = (source_index, ordinal)
-        seen_by_source[source_index] = ordinal + 1
-    return metadata
+from app.workers.nup_cut_border import resolve_cut_border_config
+from app.workers.nup_repeat_metadata import (
+    build_repeat_sheet_metadata as _build_repeat_sheet_metadata,
+)
+from app.workers.mixed_guillotine_adapter import (
+    canonicalize_pikepdf_page_boxes,
+    resolve_guillotine_trim,
+)
 
 
 def _plan_nup_chunking(total_sheets: int, available_workers: int) -> tuple[int, int]:
@@ -186,16 +163,7 @@ def _canonicalize_page_space(source_path: str, job_id: str = None) -> tuple:
                 else:
                     # A rotated or offset blank page legitimately has no content stream.
                     page.obj["/Contents"] = pikepdf.Stream(_p, prefix + b"Q")
-                page.MediaBox = pikepdf.Array([0, 0, new_w, new_h])
-                page.CropBox = pikepdf.Array([0, 0, new_w, new_h])
-                page.Rotate = 0
-                for box in ("/TrimBox", "/ArtBox", "/BleedBox"):
-                    if box in page:
-                        b4 = [float(x) for x in page[box]]
-                        corners = [(b4[0], b4[1]), (b4[2], b4[1]), (b4[2], b4[3]), (b4[0], b4[3])]
-                        xs = [ma * px + mc * py + me for px, py in corners]
-                        ys = [mb_ * px + md * py + mf for px, py in corners]
-                        page[box] = pikepdf.Array([min(xs), min(ys), max(xs), max(ys)])
+                canonicalize_pikepdf_page_boxes(page, mtx, (new_w, new_h))
             owner = "".join(
                 char for char in str(job_id or "")
                 if char.isalnum() or char in "-_"
@@ -512,8 +480,6 @@ def _run_nup_engine_impl(
 
     p5_params = p6_params = p5_row_params = p6_row_params = p5_col_params = p6_col_params = None
 
-    src_doc.close()
-
     bleed_mm = settings.get('bleed', 0)
 
     bleed_pt = bleed_mm * MM_TO_PTS
@@ -529,11 +495,19 @@ def _run_nup_engine_impl(
 
         trim_h = geom_rect[3] - geom_rect[1]
 
+    elif not is_die_cut:
+
+        # [GUILLOTINE-BOX FIX 2026-08-04] Preview lấy khổ trang logic từ
+        # TrimBox/CropBox. Export phải dùng cùng resolver thay vì luôn lấy MediaBox.
+        trim_w, trim_h = resolve_guillotine_trim(first_page, bleed_pt)
+
     else:
 
         trim_w = src_w - 2 * bleed_pt
 
         trim_h = src_h - 2 * bleed_pt
+
+    src_doc.close()
 
     sheet_w = settings.get('sheetWidth', 320) * MM_TO_PTS
 
@@ -562,6 +536,14 @@ def _run_nup_engine_impl(
 
     # Kiểu dấu xén: 'default' (nét đơn) | 'japanese' (nét đôi trim+bleed / トンボ)
     mark_style = settings.get('markStyle', 'default')
+
+    # CUT-BORDER (audit 2026-08-04 §CB.4): chuẩn hóa một lần trước khi chuyển qua
+    # ProcessPool; page-sheet/tem bế/CNC tuyệt đối không nhận đường cắt thủ công này.
+    cut_border_config = resolve_cut_border_config(
+        settings,
+        is_die_cut=bool(is_die_cut),
+        page_sheet_mode=page_sheet_mode,
+    )
 
     # ── Mép kẹp (gripper / cắn nhíp) ──
     # Cạnh nạp giấy (ĐÁY tờ) không in được → phải chừa tối thiểu = gripper. Theo ĐÚNG
@@ -2317,29 +2299,25 @@ def _run_nup_engine_impl(
                 "L\u01b0\u1edbi th\u1ee7 c\u00f4ng c\u1ea7n s\u1ed1 c\u1ed9t v\u00e0 s\u1ed1 d\u00f2ng l\u1edbn h\u01a1n 0."
             )
 
-        # Guillotine has no die geometry: keep the real trim size of every
-        # materialized source page. Mixed-size stacked layouts cannot be cut
-        # safely on one shared straight grid, so fail instead of scaling pages.
+        # Bình cắt xén không có hình học khuôn: giữ đúng khổ thành phẩm của từng
+        # trang. Dàn chồng nhiều khổ không thể cắt an toàn trên một lưới thẳng nên
+        # phải báo lỗi thay vì tự co các trang về cùng kích thước.
         _guillotine_trim_by_page = {}
         if not is_die_cut:
             _gdoc_dims = pdf_lib.open(source_path)
             try:
                 for _pi_dims in range(_gdoc_dims.page_count):
                     _pg_dims = _gdoc_dims[_pi_dims]
-                    if layout_type == 'mixed_guillotine':
-                        from app.workers.mixed_guillotine_adapter import (
-                            resolve_guillotine_trim,
-                        )
-                        _tw_dims, _th_dims = resolve_guillotine_trim(_pg_dims, bleed_pt)
-                    elif page_sheet_mode:
+                    if page_sheet_mode:
                         from app.workers.page_sheet_geometry import resolve_page_sheet_geometry
                         _geo_dims = resolve_page_sheet_geometry(
                             _pg_dims.rect.width, _pg_dims.rect.height, bleed_pt,
                         )
                         _tw_dims, _th_dims = _geo_dims.trim_width, _geo_dims.trim_height
                     else:
-                        _tw_dims = max(0.0, _pg_dims.rect.width - 2 * bleed_pt)
-                        _th_dims = max(0.0, _pg_dims.rect.height - 2 * bleed_pt)
+                        _tw_dims, _th_dims = resolve_guillotine_trim(
+                            _pg_dims, bleed_pt,
+                        )
                     _guillotine_trim_by_page[_pi_dims] = (_tw_dims, _th_dims)
             finally:
                 _gdoc_dims.close()
@@ -2550,11 +2528,8 @@ def _run_nup_engine_impl(
                             _pg.rect.width, _pg.rect.height, bleed_pt,
                         )
                         _tw, _th = _geo_gui.trim_width, _geo_gui.trim_height
-                    elif abs(_pg.trimbox.width - _pg.rect.width) > 1.0:
-                        _tw, _th = _pg.trimbox.width, _pg.trimbox.height
                     else:
-                        _tw = _pg.rect.width - 2 * bleed_pt
-                        _th = _pg.rect.height - 2 * bleed_pt
+                        _tw, _th = resolve_guillotine_trim(_pg, bleed_pt)
                     _gui_page_infos.append((_fp, _q, _tw, _th))
                     _gui_trim[_fp] = (_tw, _th)
             finally:
@@ -3682,6 +3657,13 @@ def _run_nup_engine_impl(
             page_sheet_mode,
 
         )
+
+        # CUT-BORDER (audit 2026-08-04 §CB.4): chỉ nối cấu hình khi thật sự bật.
+        # Như vậy mọi job cũ vẫn giữ nguyên ba phần tử đuôi
+        # (homogeneous_mode, master_idx, page_sheet_mode); process_chunk vẫn đọc
+        # được tuple mở rộng khi N-Up guillotine cần vẽ viền.
+        if cut_border_config is not None:
+            args = args + (cut_border_config,)
 
         args_list.append(args)
 

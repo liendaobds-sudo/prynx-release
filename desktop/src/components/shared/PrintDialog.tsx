@@ -22,6 +22,7 @@ import {
     type PrintPageSubset,
 } from '../../lib/nativePrint';
 import { buildPreviewSheets, collectPageNumbers } from '../../lib/printPreviewLayout';
+import { formatSizeMm } from '../../lib/measurementFormat';
 
 if (!pdfjs.GlobalWorkerOptions.workerSrc) {
     pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
@@ -802,7 +803,8 @@ export default function PrintDialog({
                                         : layoutMode === 'booklet' ? t('print:booklet_tab')
                                             : t('print:poster_tab')}
                             </span>
-                            <span>{geo.paper_w_mm.toFixed(0)} × {geo.paper_h_mm.toFixed(0)} mm</span>
+                            {/* UIUX (audit 2026-08-04 §DIM.4): nhãn dùng đúng geometry máy in, không làm tròn mm nguyên. */}
+                            <span>{formatSizeMm(geo.paper_w_mm, geo.paper_h_mm)}</span>
                             <span>·</span>
                             <span>{paperLandscape ? t('print:orient_landscape') : t('print:orient_portrait')}</span>
                             {printPageList.length > 0 && (

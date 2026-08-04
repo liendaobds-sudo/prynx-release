@@ -33,6 +33,27 @@ describe('PageResizerTool background-fill visibility', () => {
     it('keeps full transparent page size by default', () => {
         expect(DEFAULT_RESIZE_SETTINGS.resizeByContent).toBe(false);
     });
+
+    it('uses the exact Letter dimensions for resize output', () => {
+        const onChange = vi.fn();
+        render(React.createElement(PageResizerTool, {
+            settings: baseSettings,
+            onChange,
+        }));
+
+        fireEvent.click(screen.getByText('A4').closest('button') as HTMLButtonElement);
+        fireEvent.click(screen.getByRole('button', {
+            name: /Letter 215\.9 × 279\.4 mm/,
+        }));
+
+        expect(onChange).toHaveBeenCalledWith({
+            ...baseSettings,
+            sizePresetId: 'Letter',
+            targetW: 215.9,
+            targetH: 279.4,
+        });
+    });
+
     it.each([true, false, undefined])(
         'shows gap background independently from legacy auto-trim=%s',
         (autoTrimBefore) => {

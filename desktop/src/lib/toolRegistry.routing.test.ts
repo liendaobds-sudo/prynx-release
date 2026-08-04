@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { LOGO_REBUILD_ENABLED, PREPROCESS_ROUTER_TOOLS } from '../components/imposition-tools/sections/preprocessRouterTools';
-import { TOOL_REGISTRY, isImpositionFamilyTool } from './toolRegistry';
+import { TOOL_REGISTRY, findToolForLaunch, isImpositionFamilyTool } from './toolRegistry';
 
 describe('TOOL_REGISTRY — routing công cụ vào workspace chung', () => {
   const impositionComponent = TOOL_REGISTRY.find((tool) => tool.id === 'imposition')?.component;
@@ -46,5 +46,12 @@ describe('TOOL_REGISTRY — routing công cụ vào workspace chung', () => {
       expect(logoRebuild.component).toBe(impositionComponent);
       expect(logoRebuild.isEnabled).toBe(true);
     }
+  });
+
+  it('fail-closed tool key lạ nhưng không gán nhầm quyền cho tab kết quả chung', () => {
+    expect(findToolForLaunch('imposition', { focusFeature: 'unknown_xyz' })).toBeUndefined();
+    expect(findToolForLaunch('imposition')).toBeUndefined();
+    expect(findToolForLaunch('diecut')?.featureId).toBe('impo.diecut');
+    expect(findToolForLaunch('paper_library')?.featureId).toBe('prepress.paper_library');
   });
 });

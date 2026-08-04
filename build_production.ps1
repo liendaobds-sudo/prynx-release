@@ -58,9 +58,54 @@ Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
 Remove-Item Env:PRYNX_TAURI_SIGNING_KEY_FILE -ErrorAction SilentlyContinue
 Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
 
+# BUILD (audit 2026-08-04 BLD.05): build co the duoc goi trong mot PowerShell
+# -NoExit, nen moi bien process do pipeline so huu phai tro ve dung trang thai dau.
+$script:BuildOwnedEnvironmentSnapshot = @{}
+foreach ($environmentName in @(
+    "VITE_FEATURE_GATING_ENABLED",
+    "PRYNX_FEATURE_GATING_ENABLED",
+    "PRYNX_FRONTEND_HASH",
+    "PRYNX_SIDECAR_HASH",
+    "DEV_MODE",
+    "PYTHONIOENCODING",
+    "NUITKA_CACHE_DIR",
+    "PRYNX_DIELINE_VERSION",
+    "VIRTUAL_ENV",
+    "PYTHONPATH",
+    "PRYNX_RELEASE_NATIVE_SITE",
+    "PRYNX_NO_GS_AUDIT_OUT",
+    "_CL_",
+    "RUSTFLAGS",
+    "CARGO_PROFILE_RELEASE_LTO",
+    "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
+    "CARGO_PROFILE_RELEASE_STRIP"
+)) {
+    $environmentValue = [Environment]::GetEnvironmentVariable(
+        $environmentName,
+        [EnvironmentVariableTarget]::Process
+    )
+    $script:BuildOwnedEnvironmentSnapshot[$environmentName] = @{
+        Exists = $null -ne $environmentValue
+        Value = if ($null -ne $environmentValue) { [string]$environmentValue } else { $null }
+    }
+}
+
+function Restore-BuildOwnedEnvironment {
+    foreach ($entry in $script:BuildOwnedEnvironmentSnapshot.GetEnumerator()) {
+        $value = if ($entry.Value.Exists) { [string]$entry.Value.Value } else { $null }
+        [Environment]::SetEnvironmentVariable(
+            [string]$entry.Key,
+            $value,
+            [EnvironmentVariableTarget]::Process
+        )
+    }
+}
+
+try {
+
 # Release artifacts must be rebuilt from current sources and must pass the full QA gate.
-if ($Release -and $SkipNuitka) {
-    throw "Release build refuses -SkipNuitka: the sidecar/native payload could be stale or unlocked."
+if ($SkipNuitka) {
+    throw "-SkipNuitka has been retired: every installer must compile the sidecar from current sources."
 }
 if ($Release -and $SkipPreflightQA) {
     throw "Release build refuses -SkipPreflightQA: security regression tests are mandatory."
@@ -1133,6 +1178,13 @@ Write-Host "  PRYNX_SIDECAR_HASH = $HASH" -ForegroundColor Green
 if (-not $SkipTauri) {
     Write-Host "`n[4/5] Building frontend + computing integrity hash..." -ForegroundColor Yellow
 
+    # BUILD (audit 2026-08-04 BLD.02): manifest khong duoc tu khai gate=enabled
+    # neu process thuc te da bi mot script/agent khac doi co truoc luc Vite bundle.
+    if ([string]$env:VITE_FEATURE_GATING_ENABLED -ne "true" -or
+        [string]$env:PRYNX_FEATURE_GATING_ENABLED -ne "true") {
+        throw "Production frontend/backend feature gates must both be enabled before bundling."
+    }
+
     Push-Location "$ROOT\desktop"
     npm.cmd run build
     if ($LASTEXITCODE -ne 0) {
@@ -1260,6 +1312,10 @@ if (-not $SkipTauri) {
         exit 1
     }
 
+    # BUILD (audit 2026-08-04 BLD.01): Tauri la buoc lau nhat; IDE/agent khac co
+    # the commit hoac sua source trong luc no chay. Chot lai TRUOC khi copy/manifest.
+    Assert-ReleaseSourceState
+
     $installerCandidates = @(Get-ChildItem -LiteralPath $nsisDir -Filter "*.exe" -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -match $installerNamePattern })
     if ($installerCandidates.Count -ne 1) {
@@ -1309,11 +1365,50 @@ if (-not $SkipTauri) {
         $buildExeHash = (Get-FileHash -LiteralPath $exePath -Algorithm SHA256).Hash.ToLower()
         $installerHash = (Get-FileHash $finalInstallerPath -Algorithm SHA256).Hash.ToLower()
         $manifestPath = "$publishDir\release-manifest.txt"
+        if ([string]$env:VITE_FEATURE_GATING_ENABLED -ne "true" -or
+            [string]$env:PRYNX_FEATURE_GATING_ENABLED -ne "true") {
+            throw "Feature gate state changed before manifest creation."
+        }
+        $manifestGitOutput = if ($Release) {
+            @($script:ReleaseSourceCommit)
+        } else {
+            @(& git -C $ROOT rev-parse HEAD 2>$null)
+        }
+        if ($manifestGitOutput.Count -ne 1) {
+            throw "Cannot resolve exactly one source commit for release manifest."
+        }
+        $manifestGitCommit = [string]$manifestGitOutput[0].Trim()
+        if ([string]::IsNullOrWhiteSpace($manifestGitCommit)) {
+            throw "Cannot resolve source commit for release manifest."
+        }
+        $manifestDirtyOutput = if ($Release) {
+            @()
+        } else {
+            @(& git -C $ROOT status --porcelain=v1 --untracked-files=all 2>$null)
+        }
+        if (-not $Release -and $LASTEXITCODE -ne 0) {
+            throw "Cannot resolve source dirty state for release manifest."
+        }
+        $manifestGitDirty = if ($Release) {
+            "no"
+        } elseif ($manifestDirtyOutput.Count -gt 0) {
+            "yes"
+        } else {
+            "no"
+        }
+        $manifestBuildMode = if ($Release) { "public-release" } else { "internal-full" }
+        $manifestBuildProvenance = if ($Release) { "git-clean-commit" } else { "local-working-tree" }
         $manifestLines = @(
             "PrynX release manifest",
             "BUILT_AT_UTC   = $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss'))",
-            "GIT_COMMIT     = $(git -C $ROOT rev-parse HEAD 2>$null)",
-            "GIT_DIRTY      = $(if ((git -C $ROOT status --porcelain 2>$null)) { 'YES (artifact khong tai lap duoc tu cay da commit)' } else { 'no' })",
+            "GIT_COMMIT     = $manifestGitCommit",
+            "GIT_DIRTY      = $manifestGitDirty",
+            "BUILD_MODE     = $manifestBuildMode",
+            "BUILD_PROVENANCE = $manifestBuildProvenance",
+            "SIDECAR_PROVENANCE = compiled-this-run",
+            "PYTHON_ABI     = $PYTHON_MM",
+            "FRONTEND_FEATURE_GATE = enabled",
+            "BACKEND_FEATURE_GATE = enabled",
             "APP_VERSION    = $APP_VERSION",
             "INSTALLER      = $($installer.Name)",
             "INSTALLER_SHA256 = $installerHash",
@@ -1346,3 +1441,6 @@ if (-not $SkipTauri) {
 }
 
 Write-Host ""
+} finally {
+    Restore-BuildOwnedEnvironment
+}

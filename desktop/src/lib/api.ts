@@ -502,7 +502,26 @@ export function getResultImageUrl(path: string) {
 // hai đầu không có codegen chung nên endpoint mất đi mà client không hề biết.
 // Cần lại tính năng AI cục bộ thì thêm route ở backend TRƯỚC, rồi mới thêm hàm ở đây.
 
-export async function startVdpJobBackend(pdfFile: File, vdpFields: readonly unknown[], csvData: readonly unknown[], dataFile?: File, dataFileHasHeader = true): Promise<string> {
+export const VDP_EXECUTION_FEATURE_IDS = [
+  'vdp.datamerge',
+  'vdp.numbering',
+  'vdp.cover_numbering',
+] as const;
+export type VdpExecutionFeatureId = typeof VDP_EXECUTION_FEATURE_IDS[number];
+
+/** SEC (audit 2026-08-04 §BE.01): job VDP phải tự khai capability cụ thể để backend cưỡng chế custom grant. */
+export function appendVdpExecutionFeature(formData: FormData, featureId: VdpExecutionFeatureId): void {
+  formData.append('feature_id', featureId);
+}
+
+export async function startVdpJobBackend(
+  pdfFile: File,
+  vdpFields: readonly unknown[],
+  csvData: readonly unknown[],
+  featureId: VdpExecutionFeatureId,
+  dataFile?: File,
+  dataFileHasHeader = true,
+): Promise<string> {
   const formData = new FormData();
   if (pdfFile.path) {
     formData.append('file_path', pdfFile.path);
@@ -510,6 +529,7 @@ export async function startVdpJobBackend(pdfFile: File, vdpFields: readonly unkn
     formData.append('file', pdfFile);
   }
   formData.append('fields', JSON.stringify(vdpFields));
+  appendVdpExecutionFeature(formData, featureId);
   
   if (dataFile) {
     const realDataFile = await prepareFileForUpload(dataFile);

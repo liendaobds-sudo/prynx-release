@@ -116,6 +116,23 @@ export interface BookletSettings {
     spawnNewTab: boolean;
 }
 
+export type CutBorderPosition = 'trim' | 'bleed';
+
+/** Đường vector in quanh từng bài để cắt tay bằng kéo/dao. */
+export interface CutBorderConfig {
+    enabled: boolean;
+    position: CutBorderPosition;
+    color: string;
+    thickness: number;
+}
+
+export const DEFAULT_CUT_BORDER_CONFIG: CutBorderConfig = {
+    enabled: false,
+    position: 'trim',
+    color: '#000000',
+    thickness: 0.3,
+};
+
 export interface NupSettings {
     // MIXED-GUILLOTINE (audit 2026-07-30 §MG.8/§MG.9): mode riêng, không thay đổi hành vi các mode cũ.
     layoutType: 'repeat' | 'sequential' | 'cut_stacks' | 'ratio_stack' | 'mixed_guillotine';
@@ -163,6 +180,7 @@ export interface NupSettings {
     markLength?: number;
     markThickness?: number;
     markStyle?: 'default' | 'japanese';
+    cutBorder?: CutBorderConfig;
     cutType?: 'default' | 'one_dao';
     dieSizeMode?: 'die' | 'page';
     dieOffsetMm?: number;
@@ -428,6 +446,7 @@ export function resolveRightPanel(activeDashboardTool: string, isObjectEditMode:
 
 export interface ImposerDashboardProps {
     tabId: string;
+    isActive?: boolean;
     onStartBooklet: (settings: BookletSettings) => void;
     onStartNup: (settings: NupSettings) => void;
     onStartShuffle?: (settings: any) => void;

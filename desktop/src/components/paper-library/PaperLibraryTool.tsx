@@ -32,6 +32,9 @@ import {
 import { NavItem, NavSubItem, NumberField, ResultTile, SectionLabel, SelectField } from './parts';
 import { FAMILY_COUNTS, FAMILY_ORDER, FilmTable, fmt, fmtFull, PaperStockTable, ThreadSewingTable } from './tables';
 import { FAMILY_TONES } from './familyColors';
+import { canUse } from '../../lib/license/features';
+import { useAuthStore } from '../../stores/useAuthStore';
+import FeatureAccessOverlay from '../license/FeatureAccessOverlay';
 
 type Section = 'stock' | 'spine' | 'film' | 'thread';
 
@@ -232,11 +235,15 @@ function SpineCalculator() {
 
 export default function PaperLibraryTool({
     isActive,
-}: { tabId?: string; isActive?: boolean } = {}) {
+    onRequestHome,
+}: { tabId?: string; isActive?: boolean; onRequestHome?: () => void } = {}) {
     const { t } = useTranslation();
     const [section, setSection] = useState<Section>('stock');
     const [family, setFamily] = useState<PaperFamily | 'all'>('all');
     const [stockOpen, setStockOpen] = useState(true);
+    const licensePlan = useAuthStore(state => state.licensePlan);
+    const licenseFeatures = useAuthStore(state => state.licenseFeatures);
+    const accessLocked = !canUse('prepress.paper_library', licensePlan, licenseFeatures);
 
     const onBackground = isActive === false;
 
@@ -256,7 +263,7 @@ export default function PaperLibraryTool({
     }, [section, family, t]);
 
     return (
-        <div className="flex h-full min-h-0 bg-app-1">
+        <div className="relative flex h-full min-h-0 bg-app-1">
             {/* ── Sidebar điều hướng ── */}
             <nav
                 aria-label={t('paperLibrary:dieu_huong')}
@@ -368,6 +375,11 @@ export default function PaperLibraryTool({
                     </div>
                 </div>
             </div>
+            {/* SEC/UIUX (audit 2026-08-04 §UI.03/§BE.02): capability client-only
+                tự re-check; không unmount calculator để giữ số trang/kiểu đóng. */}
+            {isActive !== false && accessLocked && (
+                <FeatureAccessOverlay featureId="prepress.paper_library" onLeave={onRequestHome} />
+            )}
         </div>
     );
 }

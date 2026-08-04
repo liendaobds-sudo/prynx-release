@@ -655,6 +655,7 @@ def place_one_artwork(
     geometry_doc=None,
     shape_clip=True,
     shape_clip_offset_pt=None,
+    guillotine_source_clip=None,
 ):
     """Đặt MỘT placement `p` lên `out_page`. Trả về (trim_rect, src_page_idx).
 
@@ -673,6 +674,9 @@ def place_one_artwork(
     dung bằng ``show_pdf_page(rect=khuôn ô, clip=bbox artwork, keep_proportion=True)``
     → bỏ lệch vị trí trên trang gốc + co khít + căn tâm vào khuôn. Khi None (mặc định)
     GIỮ NGUYÊN hành vi cũ.
+
+    guillotine_source_clip: vùng TrimBox/CropBox nguồn theo hệ top-down. Chỉ dùng
+    cho bình cắt xén chữ nhật để khổ solver và nội dung render luôn trùng nhau.
     """
     cell = p['cell']
     cluster_idx = p['cluster_idx']
@@ -1035,13 +1039,13 @@ def place_one_artwork(
             out_page.show_pdf_page(target_rect, src_doc, src_page_idx, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y, **_clip_kw)
     else:
         if cell.get('isRotated', False) and cell.get('isRotated180', False):
-            out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, rotate=270, out_clip=cell_out_clip, mirror_x=mirror_x, mirror_y=mirror_y)
+            out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, rotate=270, clip=guillotine_source_clip, out_clip=cell_out_clip, mirror_x=mirror_x, mirror_y=mirror_y)
         elif cell.get('isRotated180', False):
-            out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, rotate=180, out_clip=cell_out_clip, mirror_x=mirror_x, mirror_y=mirror_y)
+            out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, rotate=180, clip=guillotine_source_clip, out_clip=cell_out_clip, mirror_x=mirror_x, mirror_y=mirror_y)
         elif cell.get('isRotated', False):
-            out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, rotate=90, out_clip=cell_out_clip, mirror_x=mirror_x, mirror_y=mirror_y)
+            out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, rotate=90, clip=guillotine_source_clip, out_clip=cell_out_clip, mirror_x=mirror_x, mirror_y=mirror_y)
         else:
-            out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, out_clip=cell_out_clip, mirror_x=mirror_x, mirror_y=mirror_y)
+            out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, clip=guillotine_source_clip, out_clip=cell_out_clip, mirror_x=mirror_x, mirror_y=mirror_y)
 
     return trim_rect, src_page_idx
 

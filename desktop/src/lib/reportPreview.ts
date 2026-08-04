@@ -6,6 +6,7 @@
  */
 import type { ReportDisplayConfig } from '../components/imposition-tools/types';
 import { LAMINATION_OPTIONS, DEFAULT_REPORT_CONFIG } from '../components/imposition-tools/types';
+import { formatMeasurement } from './measurementFormat';
 
 const DEFAULT_FIELD_ORDER = DEFAULT_REPORT_CONFIG.fieldOrder;
 
@@ -53,7 +54,9 @@ function computeFields(data: ReportPreviewData): Record<string, string> {
 
     let dims = '';
     if (data.widthMm && data.heightMm) {
-        dims = `${Math.round(data.widthMm)} x ${Math.round(data.heightMm)} mm`;
+        // UIUX (audit 2026-08-04 §DIM.1): report là thông tin sản xuất, không được
+        // làm mất phần thập phân của TrimBox/kích thước thành phẩm.
+        dims = `${formatMeasurement(data.widthMm)} x ${formatMeasurement(data.heightMm)} mm`;
     }
 
     const lamType = Number(data.laminationType || 0);
