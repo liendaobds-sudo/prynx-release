@@ -466,6 +466,17 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 let objUrl = '';
                 const nativePath = (openedFile as File & { path?: string }).path;
                 const isTauri = !!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+                if (isTauri && !nativePath) {
+                    // UIUX (audit 2026-08-04 §CROP.LOAD): file kết quả trong RAM sẽ được
+                    // materialize sang đường dẫn tạm ngay sau khi mở. Báo trước cho viewer để
+                    // không hiện lỗi PDF.js giả trong lúc chờ chuyển sang PDFium.
+                    try {
+                        Object.defineProperty(openedFile, '__nativePathPending', {
+                            value: true,
+                            configurable: true,
+                        });
+                    } catch { /* PDF.js vẫn là phương án dự phòng nếu không gắn được cờ. */ }
+                }
                 if (isTauri && nativePath) {
                     objUrl = localFileUrl(nativePath);
                 } else {
@@ -578,7 +589,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     // Async physical path polyfill (non-blocking via HTTP)
     useEffect(() => {
-        if (file && !(file as any).path && (window as any).__TAURI_INTERNALS__) {
+        if (file && !(file as any).path && !(file as any).__pathMaterializationFailed && (window as any).__TAURI_INTERNALS__) {
             let isCancelled = false;
             (async () => {
                 try {
@@ -591,8 +602,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         const { tempDir, join } = await import('@tauri-apps/api/path');
                         const { writeFile } = await import('@tauri-apps/plugin-fs');
                         const objUrl = URL.createObjectURL(file);
-                        const resp = await fetch(objUrl);
-                        const buffer = await resp.arrayBuffer();
+                        let buffer: ArrayBuffer;
+                        try {
+                            const resp = await fetch(objUrl);
+                            buffer = await resp.arrayBuffer();
+                        } finally {
+                            URL.revokeObjectURL(objUrl);
+                        }
                         const tDir = await tempDir();
                         tempPath = await join(tDir, `prynx_input_${Date.now()}_${file.name}`);
                         await writeFile(tempPath, new Uint8Array(buffer));
@@ -604,12 +620,17 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         // `isTempUploadPath` để Ctrl+S KHÔNG ghi đè vào temp + đổi tên tab
                         // thành chuỗi uuid, mà mở hộp thoại chọn vị trí lưu (audit: file tách
                         // trang bị đổi tên thành hash sau khi Save).
-                        Object.defineProperty(file, 'path', { value: tempPath });
-                        try { Object.defineProperty(file, 'isTempUploadPath', { value: true, configurable: true }); } catch { /* ignore */ }
-                        // Clone the file to trigger state update so LivePageFrame sees the path
-                        const newFile = new File([file], file.name, { type: file.type });
+                        // Không mutate File đang được PDF loader giữ: thay nguồn bằng một File mới
+                        // để generation fence hủy sạch lượt chờ và chuyển thẳng sang PDFium.
+                        const newFile = new File([file], file.name, {
+                            type: file.type,
+                            lastModified: file.lastModified,
+                        });
                         Object.defineProperty(newFile, 'path', { value: tempPath });
                         try { Object.defineProperty(newFile, 'isTempUploadPath', { value: true, configurable: true }); } catch { /* ignore */ }
+                        if ((file as any).isGenerated) {
+                            try { Object.defineProperty(newFile, 'isGenerated', { value: true, configurable: true }); } catch { /* ignore */ }
+                        }
                         setFile(newFile);
                         
                         // Now that we have a physical path, detectColorSpace can use the backend API
@@ -622,6 +643,19 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     }
                 } catch (e) {
                     console.error("Path polyfill failed", e);
+                    if (!isCancelled && (file as any).__nativePathPending) {
+                        // Cả upload HTTP lẫn ghi IPC đều thất bại: bỏ trạng thái chờ và cho
+                        // usePdfLoader thử PDF.js thật sự. Cờ failed ngăn effect này lặp vô hạn.
+                        const fallbackFile = new File([file], file.name, {
+                            type: file.type,
+                            lastModified: file.lastModified,
+                        });
+                        try { Object.defineProperty(fallbackFile, '__pathMaterializationFailed', { value: true, configurable: true }); } catch { /* ignore */ }
+                        if ((file as any).isGenerated) {
+                            try { Object.defineProperty(fallbackFile, 'isGenerated', { value: true, configurable: true }); } catch { /* ignore */ }
+                        }
+                        setFile(fallbackFile);
+                    }
                 }
             })();
             return () => { isCancelled = true; };

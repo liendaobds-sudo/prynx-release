@@ -268,6 +268,18 @@ export function usePdfLoader({
             }
         };
 
+        // UIUX (audit 2026-08-04 §CROP.LOAD): kết quả Crop/Combine trong RAM đang được
+        // materialize sang file tạm để PDFium đọc. Không khởi động PDF.js song song rồi lóe
+        // màn lỗi trước khi nguồn native sẵn sàng; nếu materialize thất bại, ImpositionTab
+        // bỏ cờ này và đổi File identity để lượt PDF.js dự phòng chạy bình thường.
+        if ((file as any)?.__nativePathPending
+            && pdfUrl
+            && !(file as any)?.path
+            && (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+            startSlowWatchdog();
+            return cleanupLoad;
+        }
+
         // Trang trắng mới tạo: kích thước đã biết sẵn → dựng đồng bộ, KHÔNG nạp pdfjs/pdfium.
         // Tránh cold-start "đang tải PDF" + "rendering" cho một trang trắng đơn giản.
         if ((file as any)?.isBlank) {

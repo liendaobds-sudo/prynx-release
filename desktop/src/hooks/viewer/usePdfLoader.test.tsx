@@ -138,6 +138,78 @@ describe('usePdfLoader — trạng thái tải PDF trong bộ nhớ', () => {
         expect(pdfMocks.getDocument).toHaveBeenCalledTimes(2);
     });
 
+    it('không hiện lỗi PDF.js giả khi file trong RAM đang chuyển sang đường dẫn native', async () => {
+        Object.defineProperty(window, '__TAURI_INTERNALS__', {
+            configurable: true,
+            value: { invoke: tauriMocks.invoke },
+        });
+        tauriMocks.invoke.mockImplementation(async (command: string) => {
+            if (command === 'get_pdf_metadata') {
+                return {
+                    numPages: 2,
+                    widthPt: 595,
+                    heightPt: 842,
+                    allDims: {
+                        1: { widthPt: 595, heightPt: 842 },
+                        2: { widthPt: 595, heightPt: 842 },
+                    },
+                };
+            }
+            if (command === 'close_pdf_document') return true;
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        const memoryFile = new File(['crop-result'], 'multicrop.pdf', { type: 'application/pdf' });
+        Object.defineProperty(memoryFile, '__nativePathPending', { value: true, configurable: true });
+        const initial = makeProps(memoryFile, 'blob:multicrop');
+
+        const { result, rerender } = renderHook(
+            ({ props }) => usePdfLoader(props),
+            { initialProps: { props: initial } },
+        );
+
+        expect(result.current.loadStatus).toBe('loading');
+        expect(result.current.loadError).toBeNull();
+        expect(pdfMocks.getDocument).not.toHaveBeenCalled();
+
+        const nativeFile = new File([], 'multicrop.pdf', { type: 'application/pdf' });
+        Object.defineProperty(nativeFile, 'path', { value: 'D:\\temp\\multicrop.pdf' });
+        rerender({ props: makeProps(nativeFile, 'blob:multicrop') });
+
+        await waitFor(() => expect(result.current.loadStatus).toBe('ready'));
+        expect(result.current.loadError).toBeNull();
+        expect(pdfMocks.getDocument).not.toHaveBeenCalled();
+    });
+
+    it('dùng PDF.js dự phòng nếu việc tạo đường dẫn native thất bại', async () => {
+        Object.defineProperty(window, '__TAURI_INTERNALS__', {
+            configurable: true,
+            value: { invoke: tauriMocks.invoke },
+        });
+        pdfMocks.getDocument.mockReturnValue({
+            promise: Promise.resolve(makePdfDoc(2)),
+            destroy: vi.fn(),
+        });
+
+        const pendingFile = new File(['crop-result'], 'multicrop.pdf', { type: 'application/pdf' });
+        Object.defineProperty(pendingFile, '__nativePathPending', { value: true, configurable: true });
+        const initial = makeProps(pendingFile, 'blob:multicrop');
+
+        const { result, rerender } = renderHook(
+            ({ props }) => usePdfLoader(props),
+            { initialProps: { props: initial } },
+        );
+        expect(pdfMocks.getDocument).not.toHaveBeenCalled();
+
+        const fallbackFile = new File(['crop-result'], 'multicrop.pdf', { type: 'application/pdf' });
+        Object.defineProperty(fallbackFile, '__pathMaterializationFailed', { value: true, configurable: true });
+        rerender({ props: makeProps(fallbackFile, 'blob:multicrop') });
+
+        await waitFor(() => expect(result.current.loadStatus).toBe('ready'));
+        expect(result.current.loadError).toBeNull();
+        expect(pdfMocks.getDocument).toHaveBeenCalledTimes(1);
+    });
+
     it('đóng cache native khi đổi file và khi unmount tab', async () => {
         Object.defineProperty(window, '__TAURI_INTERNALS__', {
             configurable: true,
