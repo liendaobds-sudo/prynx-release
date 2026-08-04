@@ -1,0 +1,4 @@
+interface:
+  display_name: "PrynX Deep Audit"
+  short_description: "Audit dọc toàn dự án theo mức bằng chứng"
+  default_prompt: "Use $prynx-deep-audit to audit one PrynX workflow from entry point to the produced artifact."

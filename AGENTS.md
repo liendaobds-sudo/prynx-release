@@ -20,6 +20,7 @@ Kiến thức chi tiết được tách thành các skill trong `.agents/skills/
 | Viết code mới, đặt tên, comment, text UI | `prynx-conventions` |
 | Ghi file từ phiên Claude cloud (Cowork remote) | `prynx-safe-write-cowork` |
 | Audit toàn dự án rồi sửa theo lô | `prynx-audit-workflow` |
+| Audit dọc từng luồng, săn bug ẩn, kiểm hợp đồng/đơn vị/artifact và cập nhật ma trận phủ | `prynx-deep-audit` |
 | Thêm loại hộp/khuôn bế mới | `prynx-add-boxtype` |
 
 Codex: skill tự nạp theo description, hoặc gọi tường minh `$prynx-dieline`. Claude Code: tự nạp, hoặc `/security-review`, `/audit`, `/add-boxtype`, `/verify` (xem `.claude/commands/`).

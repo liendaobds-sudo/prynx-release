@@ -1,6 +1,6 @@
 # Bộ skill AI của PrynX
 
-12 skill đóng gói kiến thức dự án cho AI coding agent, theo định dạng SKILL.md chuẩn chung (frontmatter `name` + `description`) — chạy được với cả **Claude Code**, **OpenAI Codex**, và các tool khác đọc được định dạng này (Cursor, OpenCode…).
+13 skill đóng gói kiến thức dự án cho AI coding agent, theo định dạng SKILL.md chuẩn chung (frontmatter `name` + `description`) — chạy được với cả **Claude Code**, **OpenAI Codex**, và các tool khác đọc được định dạng này (Cursor, OpenCode…).
 
 ## Cấu trúc
 
@@ -24,6 +24,7 @@
 | `prynx-conventions` | Tiếng Việt, thuật ngữ ngành in, tag comment, đặt tên |
 | `prynx-safe-write-cowork` | Ghi file an toàn từ phiên Claude cloud (đệm + md5) |
 | `prynx-audit-workflow` | Audit 2 chốt: báo cáo → duyệt → sửa theo lô |
+| `prynx-deep-audit` | Audit dọc theo mức bằng chứng, kiểm artifact và duy trì master audit matrix |
 | `prynx-add-boxtype` | Checklist thêm loại hộp/khuôn mới end-to-end |
 
 ## Bảo trì
