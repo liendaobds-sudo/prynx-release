@@ -34,6 +34,7 @@ from app.api.routes.combine_jobs import (
     validate_manifest_source_file as _validate_manifest_source_file,
 )
 from app.core.license_guard import require_license, require_feature, enforce_feature
+from app.core.sticker_cutline_policy import resolve_sticker_corner_policy
 from app.config import settings
 from app.utils.errors import raise_http
 from app.utils.file_handler import ALLOWED_EXTENSIONS, save_upload_file
@@ -1264,9 +1265,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
         compute_cut_bleed_offsets,
     )
     from app.workers.sticker_page_canvas import restore_sticker_page_canvas
-    
     form = await request.form()
-    
     file_id = form.get("file_id")
     file_path = form.get("file_path")
     source_path = None
@@ -1425,28 +1424,14 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
     if not math.isfinite(edge_sample_inset_mm):
         edge_sample_inset_mm = 0.0
     edge_sample_inset_mm = max(0.0, min(5.0, edge_sample_inset_mm))
-    
     job_id = uuid.uuid4().hex[:8]
     output_path = os.path.join(RESULTS_DIR, f"sticker_{job_id}.pdf")
-    
     do_fill_holes = fill_holes.lower() in ("true", "1", "yes")
     do_remove_bg = remove_white_bg.lower() in ("true", "1", "yes")
     do_draw_cut_contour = draw_cut_contour.lower() in ("true", "1", "yes")
-    # QUALITY (audit 2026-08-05 §EXISTING.CUT1): chỉ bật làm mượt thích ứng
-    # cho contour thật do chế độ giữ góc sinh ra. Rectangle, selection và hình
-    # chuẩn tái dựng giữ nguyên đường cũ để không đổi hợp đồng hình học.
-    adaptive_corner_policy = (
-        "adaptive"
-        if (
-            str(cut_mode or "").strip().lower() != "none"
-            and not do_rectangle_mode
-            and selected_objects_by_page is None
-            and shape_mode == "contour"
-            and str(corner_style or "").strip().lower() in {"preserve", "original"}
-        )
-        else "legacy"
+    adaptive_corner_policy = resolve_sticker_corner_policy(
+        cut_mode, do_rectangle_mode, selected_objects_by_page is not None, shape_mode, corner_style
     )
-    
     try:
         # Parse CMYK string (e.g. "100,50,0,0") or fallback to RGB HEX.
         # Bọc an toàn: chuỗi rỗng/thiếu phần tử không được làm sập request.

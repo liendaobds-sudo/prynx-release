@@ -59,7 +59,9 @@ def _build_cmyk_image_xobject(pdf, arr):
 # số kênh (4) và bộ lọc FlateDecode. Dùng direct mode để kiểm chứng deterministic:
 # Removed_Channel → 0, Kept_Channel giữ nguyên.
 # Validates: Requirements 6.1, 6.2
-@settings(max_examples=150)
+# PERF (audit 2026-08-05 §RC3.QA): lần gọi pikepdf đầu tiên có thể nạp DLL
+# hàng trăm ms; deadline thời gian không phải bất biến của phép biến đổi pixel.
+@settings(max_examples=150, deadline=None)
 @given(
     arr=_cmyk_images(),
     kept=st.lists(
