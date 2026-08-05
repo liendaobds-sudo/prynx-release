@@ -10,6 +10,7 @@ Chạy ONNX trực tiếp (không qua rembg — rembg hỏng do pymatting→cupy
 GPU→CPU fallback (DirectML có thể OOM/treo) + env PRYNX_BG_FORCE_CPU=1 ép CPU.
 """
 import os
+import gc
 import logging
 import threading
 
@@ -103,6 +104,36 @@ def _switch_to_cpu(variant: str):
     global _force_cpu
     with _session_lock:
         _force_cpu = True
+        # STABILITY (audit 2026-08-05 §AI2.RUNTIME1): phải tháo session GPU lỗi
+        # khỏi cache và giải phóng tài nguyên trước khi nạp thêm model CPU. Nếu giữ
+        # đồng thời hai session, DirectML OOM thường nối tiếp bằng bad allocation.
+        failed_session = _sessions.pop(variant, None)
+        close = getattr(failed_session, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                logger.debug(
+                    "BiRefNet[%s] không đóng được session GPU lỗi.",
+                    variant,
+                    exc_info=True,
+                )
+        # onnxruntime.InferenceSession không công khai close(); tài nguyên DirectML
+        # thật nằm trong `_sess`. Cắt tham chiếu native này trước khi gc để allocator
+        # GPU được hủy ngay, tránh CPU session tiếp tục bad allocation.
+        native_session = getattr(failed_session, "_sess", None)
+        if native_session is not None:
+            try:
+                failed_session._sess = None
+            except Exception:
+                logger.debug(
+                    "BiRefNet[%s] không tháo được native session GPU lỗi.",
+                    variant,
+                    exc_info=True,
+                )
+            native_session = None
+        failed_session = None
+        gc.collect()
         path = _download_model_if_needed(variant)
         logger.warning("Rebuilding BiRefNet[%s] on CPU only (GPU không ổn định).", variant)
         _sessions[variant] = _create_session(path, ['CPUExecutionProvider'])
@@ -136,13 +167,15 @@ def remove_background(image: Image.Image, variant: str = "full") -> Image.Image:
         except Exception as e:
             if not _force_cpu:
                 logger.warning("BiRefNet[%s] GPU lỗi (%s) → rớt về CPU.", variant, e)
+                # Không giữ thêm một tham chiếu local tới session GPU trong lúc
+                # _switch_to_cpu() giải phóng cache và dựng session CPU.
+                session = None
                 session = _switch_to_cpu(variant)
                 input_name = session.get_inputs()[0].name
                 return session.run(None, {input_name: input_tensor})
             raise
 
-    session = _get_session(variant)
-    if 'DmlExecutionProvider' in session.get_providers():
+    if 'DmlExecutionProvider' in _get_session(variant).get_providers():
         # PERF (audit 2026-07-28 §BG.01): chỉ tuần tự hoá cùng một DirectML
         # session. Variant khác và CPU/CUDA vẫn chạy song song trên máy mạnh.
         with _run_locks[variant]:

@@ -1432,6 +1432,20 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
     do_fill_holes = fill_holes.lower() in ("true", "1", "yes")
     do_remove_bg = remove_white_bg.lower() in ("true", "1", "yes")
     do_draw_cut_contour = draw_cut_contour.lower() in ("true", "1", "yes")
+    # QUALITY (audit 2026-08-05 §EXISTING.CUT1): chỉ bật làm mượt thích ứng
+    # cho contour thật do chế độ giữ góc sinh ra. Rectangle, selection và hình
+    # chuẩn tái dựng giữ nguyên đường cũ để không đổi hợp đồng hình học.
+    adaptive_corner_policy = (
+        "adaptive"
+        if (
+            str(cut_mode or "").strip().lower() != "none"
+            and not do_rectangle_mode
+            and selected_objects_by_page is None
+            and shape_mode == "contour"
+            and str(corner_style or "").strip().lower() in {"preserve", "original"}
+        )
+        else "legacy"
+    )
     
     try:
         # Parse CMYK string (e.g. "100,50,0,0") or fallback to RGB HEX.
@@ -1477,6 +1491,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                 bleed_sides=bleed_sides_raw,
                 selected_objects_by_page=selected_objects_by_page,
                 process_pages=process_pages,
+                alpha_corner_policy=adaptive_corner_policy,
             )
         engine_seconds = time.perf_counter() - engine_started
         if not success or not os.path.exists(output_path):

@@ -89,6 +89,39 @@ def test_directml_session_options_disable_unsupported_modes(monkeypatch):
     assert captured["options"].enable_mem_pattern is False
     assert captured["options"].execution_mode == engine.ort.ExecutionMode.ORT_SEQUENTIAL
 
+
+def test_birefnet_releases_failed_gpu_session_before_loading_cpu(monkeypatch):
+    from app.workers import birefnet_engine as engine
+
+    events = []
+
+    class NativeSession:
+        def __del__(self):
+            events.append("native_gpu_released")
+
+    class FailedGpuSession:
+        def __init__(self):
+            self._sess = NativeSession()
+
+    failed = FailedGpuSession()
+    monkeypatch.setattr(engine, "_sessions", {"lite": failed})
+    monkeypatch.setattr(engine, "_force_cpu", False)
+    monkeypatch.setattr(engine, "_download_model_if_needed", lambda _variant: "model.onnx")
+    monkeypatch.setattr(engine.gc, "collect", lambda: events.append("gc"))
+
+    def create_cpu(_path, providers):
+        assert providers == ["CPUExecutionProvider"]
+        assert "lite" not in engine._sessions
+        assert events == ["native_gpu_released", "gc"]
+        events.append("cpu_created")
+        return object()
+
+    monkeypatch.setattr(engine, "_create_session", create_cpu)
+
+    assert engine._switch_to_cpu("lite") is engine._sessions["lite"]
+    assert events == ["native_gpu_released", "gc", "cpu_created"]
+    assert engine._force_cpu is True
+
 def test_warmup_only_loads_sessions_without_fake_inference(monkeypatch):
     from app.workers import birefnet_engine, isnet_engine
 

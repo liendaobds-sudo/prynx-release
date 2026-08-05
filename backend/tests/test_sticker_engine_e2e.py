@@ -34,6 +34,7 @@ from app.workers.sticker_engine import (
     _ALPHA_SAFE_MAX_HAUSDORFF_MM,
     _ALPHA_SAFE_MIN_GAP_MM,
     _ALPHA_FIT_MAX_HAUSDORFF_MM,
+    _alpha_adaptive_fit_profile,
     _PRESERVE_CORNER_QUAD_SEGS,
     _axis_aligned_rectangle_bbox,
     _PRESERVE_CORNER_RADIUS_MM,
@@ -43,7 +44,11 @@ from app.workers.sticker_engine import (
     _edge_color_instability_metrics,
     _edge_color_sampling_warning,
     _fit_alpha_bezier_paths,
+    _fit_alpha_simplified_anchor_paths,
+    _fit_preserved_contour_paths,
     _geometry_within_hausdorff_budget,
+    _infer_document_image_pixel_mm,
+    _infer_full_page_image_pixel_mm,
     _round_preserved_corners,
     _safe_alpha_bezier_tension,
     _smooth_alpha_cut_contour,
@@ -225,6 +230,59 @@ def _make_page_touching_circle_pdf(path: str, *, transparent: bool) -> None:
     pdf.save()
 
 
+def _make_full_page_raster_pdf(
+    path: str,
+    *,
+    dpi: float,
+    draw_twice: bool = False,
+) -> None:
+    """Tạo PDF ảnh toàn trang có DPI biết trước để kiểm hợp đồng suy luận."""
+    import io
+    import numpy as np
+    from PIL import Image
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+
+    width, height = 720, 360
+    image = np.zeros((height, width, 3), dtype=np.uint8)
+    image[:, :, 0] = 40
+    image[:, :, 1] = 120
+    image[:, :, 2] = 220
+    payload = io.BytesIO()
+    Image.fromarray(image, mode="RGB").save(payload, format="PNG")
+    page_width = width * 72.0 / dpi
+    page_height = height * 72.0 / dpi
+    pdf = canvas.Canvas(path, pagesize=(page_width, page_height), pageCompression=0)
+    if draw_twice:
+        payload.seek(0)
+        pdf.drawImage(
+            ImageReader(payload),
+            0,
+            0,
+            width=page_width * 0.5,
+            height=page_height,
+        )
+        payload.seek(0)
+        pdf.drawImage(
+            ImageReader(payload),
+            page_width * 0.5,
+            0,
+            width=page_width * 0.5,
+            height=page_height,
+        )
+    else:
+        payload.seek(0)
+        pdf.drawImage(
+            ImageReader(payload),
+            0,
+            0,
+            width=page_width,
+            height=page_height,
+        )
+    pdf.showPage()
+    pdf.save()
+
+
 def _read_all_content(page) -> bytes:
     raw = page.obj.get("/Contents")
     if isinstance(raw, pikepdf.Array):
@@ -368,6 +426,400 @@ def test_alpha_safe_smoothing_reduces_raster_nodes_within_error_budget():
     assert sum(len(path) for path in fitted_paths) < node_count(smoothed)
 
 
+def test_adaptive_alpha_fit_locks_convex_and_concave_star_corners():
+    """Đỉnh sao phải là neo thật; Bézier không được lướt qua làm cùn góc lõm."""
+    import math
+
+    center = (60.0, 60.0)
+    vertices = []
+    for index in range(10):
+        angle = -math.pi / 2.0 + index * math.pi / 5.0
+        radius = 42.0 if index % 2 == 0 else 18.0
+        vertices.append((
+            center[0] + math.cos(angle) * radius,
+            center[1] + math.sin(angle) * radius,
+        ))
+
+    # Mô phỏng contour raster dày node trên từng cạnh; simplify vật lý sẽ bỏ
+    # các điểm thẳng này nhưng phải giữ nguyên 10 đỉnh lồi/lõm.
+    dense = []
+    for start, end in zip(vertices, vertices[1:] + vertices[:1]):
+        for step in range(18):
+            ratio = step / 18.0
+            dense.append((
+                start[0] + (end[0] - start[0]) * ratio,
+                start[1] + (end[1] - start[1]) * ratio,
+            ))
+    ideal_cut = Polygon(dense)
+    mm_to_pts = 72.0 / 25.4
+
+    fitted = _fit_alpha_bezier_paths(
+        ideal_cut,
+        ideal_cut,
+        total_offset_pts=0.0,
+        mm_to_pts=mm_to_pts,
+        corner_policy="adaptive",
+    )
+
+    assert fitted is not None
+    fitted_geometry, fitted_paths, _tolerance_mm = fitted
+    assert fitted_geometry.is_valid
+    assert len(fitted_paths) == 1
+    assert 10 <= len(fitted_paths[0]) <= 20
+    anchors = [segment[0] for segment in fitted_paths[0]]
+    for vertex in vertices:
+        assert min(math.dist(vertex, anchor) for anchor in anchors) <= 1e-6
+    assert ideal_cut.hausdorff_distance(fitted_geometry) / mm_to_pts <= (
+        _ALPHA_FIT_MAX_HAUSDORFF_MM + 1e-6
+    )
+
+
+def test_adaptive_alpha_fit_uses_guarded_whole_ring_before_node_fallback(monkeypatch):
+    """Span góc lỗi không được đẩy contour trơn về một cubic cho mỗi node."""
+    import math
+    from app.workers import sticker_engine as sticker_module
+
+    contour = Polygon([
+        (50.0 + 30.0 * math.cos(index * 2.0 * math.pi / 180.0),
+         50.0 + 30.0 * math.sin(index * 2.0 * math.pi / 180.0))
+        for index in range(180)
+    ])
+    monkeypatch.setattr(
+        sticker_module,
+        "fit_closed_cubic_beziers_adaptive",
+        lambda *_args, **_kwargs: [],
+    )
+
+    fitted = _fit_alpha_bezier_paths(
+        contour,
+        contour,
+        total_offset_pts=0.0,
+        mm_to_pts=72.0 / 25.4,
+        corner_policy="adaptive",
+    )
+
+    assert fitted is not None
+    assert sum(len(path) for path in fitted[1]) < 20
+
+
+def test_adaptive_alpha_fit_scales_with_large_low_dpi_artwork():
+    """Ảnh lớn/72 DPI phải giảm răng cưa theo pixel nguồn, không giữ ngưỡng 0,12 mm."""
+    import cv2
+    import numpy as np
+    from skimage import measure
+
+    source = np.zeros((300, 300), dtype=np.uint8)
+    cv2.circle(source, (150, 150), 110, 255, cv2.FILLED)
+    render_scale = 300.0 / 72.0
+    rendered = cv2.resize(
+        source,
+        None,
+        fx=render_scale,
+        fy=render_scale,
+        interpolation=cv2.INTER_LINEAR,
+    )
+    _, rendered = cv2.threshold(rendered, 64, 255, cv2.THRESH_BINARY)
+    alpha_geometry = max(
+        (
+            Polygon((contour - 1)[:, [1, 0]] / render_scale)
+            for contour in measure.find_contours(np.pad(rendered, 1), 127.5)
+        ),
+        key=lambda polygon: polygon.area,
+    )
+    mm_to_pts = 72.0 / 25.4
+    total_offset_pts = -ALPHA_CONTOUR_INSET_MM * mm_to_pts
+    ideal_cut = alpha_geometry.buffer(total_offset_pts, join_style=1)
+    max_hausdorff_mm, _window_mm, _separation_mm = _alpha_adaptive_fit_profile(
+        ideal_cut,
+        mm_to_pts=mm_to_pts,
+        source_pixel_mm=25.4 / 72.0,
+    )
+
+    fitted = _fit_alpha_bezier_paths(
+        alpha_geometry,
+        ideal_cut,
+        total_offset_pts=total_offset_pts,
+        mm_to_pts=mm_to_pts,
+        corner_policy="adaptive",
+        source_pixel_mm=25.4 / 72.0,
+    )
+
+    assert max_hausdorff_mm > _ALPHA_FIT_MAX_HAUSDORFF_MM
+    assert fitted is not None
+    fitted_geometry, fitted_paths, _tolerance_mm = fitted
+    assert sum(len(path) for path in fitted_paths) < 120
+    assert ideal_cut.hausdorff_distance(fitted_geometry) / mm_to_pts <= (
+        max_hausdorff_mm + 1e-6
+    )
+    assert alpha_geometry.buffer(
+        -_ALPHA_SAFE_MIN_GAP_MM * mm_to_pts,
+        join_style=1,
+    ).covers(fitted_geometry)
+
+
+def test_adaptive_alpha_fit_does_not_multiply_nodes_with_physical_size():
+    """Cùng một biên tròn 72 DPI không được khóa bậc pixel thành node khi khổ tăng."""
+    import cv2
+    import numpy as np
+
+    mm_to_pts = 72.0 / 25.4
+    source_pixel_mm = 25.4 / 72.0
+    segment_limits = {
+        50: 8,
+        200: 12,
+        500: 16,
+        1_000: 24,
+    }
+    segment_counts = []
+
+    for diameter_mm, segment_limit in segment_limits.items():
+        diameter_px = max(12, round(diameter_mm / source_pixel_mm))
+        padding = 8
+        mask = np.zeros(
+            (diameter_px + padding * 2, diameter_px + padding * 2),
+            dtype=np.uint8,
+        )
+        cv2.circle(
+            mask,
+            (diameter_px // 2 + padding, diameter_px // 2 + padding),
+            diameter_px // 2,
+            255,
+            cv2.FILLED,
+        )
+        contour = max(
+            cv2.findContours(
+                mask,
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_NONE,
+            )[0],
+            key=cv2.contourArea,
+        )
+        alpha_geometry = Polygon(
+            (float(x), float(y)) for x, y in contour[:, 0, :]
+        )
+        max_hausdorff_mm, _window_mm, _separation_mm = (
+            _alpha_adaptive_fit_profile(
+                alpha_geometry,
+                mm_to_pts=mm_to_pts,
+                source_pixel_mm=source_pixel_mm,
+            )
+        )
+
+        fitted = _fit_alpha_bezier_paths(
+            alpha_geometry,
+            alpha_geometry,
+            total_offset_pts=0.0,
+            mm_to_pts=mm_to_pts,
+            corner_policy="adaptive",
+            source_pixel_mm=source_pixel_mm,
+        )
+
+        assert fitted is not None
+        fitted_geometry, fitted_paths, _tolerance_mm = fitted
+        segment_count = sum(len(path) for path in fitted_paths)
+        segment_counts.append(segment_count)
+        assert fitted_geometry.is_valid
+        assert len(fitted_paths) == 1
+        assert segment_count <= segment_limit
+        assert alpha_geometry.hausdorff_distance(fitted_geometry) / mm_to_pts <= (
+            max_hausdorff_mm + 1e-6
+        )
+
+    # Tăng đường kính 20 lần có thể cần thêm cubic vì ngân sách sai lệch vẫn tuyệt
+    # đối theo mm, nhưng không được quay lại mức tăng gần tuyến tính theo số pixel.
+    assert segment_counts[-1] <= segment_counts[0] * 6
+
+
+def test_adaptive_alpha_fallback_smooths_dense_notches_without_losing_them():
+    """Contour nhiều góc phải giảm node nhưng vẫn giữ từng đỉnh lồi/lõm và biên an toàn."""
+    import math
+
+    mm_to_pts = 72.0 / 25.4
+    vertices = []
+    for index in range(96):
+        angle = index * 2.0 * math.pi / 96.0
+        radius = 300.0 if index % 2 == 0 else 268.0
+        vertices.append((
+            340.0 + math.cos(angle) * radius,
+            340.0 + math.sin(angle) * radius,
+        ))
+    dense = []
+    for start, end in zip(vertices, vertices[1:] + vertices[:1]):
+        for step in range(8):
+            ratio = step / 8.0
+            dense.append((
+                start[0] + (end[0] - start[0]) * ratio,
+                start[1] + (end[1] - start[1]) * ratio,
+            ))
+    alpha_geometry = Polygon(dense)
+    total_offset_pts = -ALPHA_CONTOUR_INSET_MM * mm_to_pts
+    ideal_cut = alpha_geometry.buffer(total_offset_pts, join_style=1)
+    max_hausdorff_mm, corner_window_mm, corner_separation_mm = (
+        _alpha_adaptive_fit_profile(
+            ideal_cut,
+            mm_to_pts=mm_to_pts,
+            source_pixel_mm=25.4 / 72.0,
+        )
+    )
+
+    fitted = _fit_alpha_simplified_anchor_paths(
+        alpha_geometry,
+        ideal_cut,
+        total_offset_pts=total_offset_pts,
+        mm_to_pts=mm_to_pts,
+        max_hausdorff_mm=max_hausdorff_mm,
+        corner_window_mm=corner_window_mm,
+        corner_separation_mm=corner_separation_mm,
+    )
+
+    assert fitted is not None
+    fitted_geometry, fitted_paths, _simplify_mm = fitted
+    segment_count = sum(len(path) for path in fitted_paths)
+    assert fitted_geometry.is_valid
+    assert len(fitted_paths) == 1
+    assert 90 <= segment_count <= 120
+    assert ideal_cut.hausdorff_distance(fitted_geometry) / mm_to_pts <= (
+        max_hausdorff_mm + 1e-6
+    )
+    assert alpha_geometry.buffer(
+        -_ALPHA_SAFE_MIN_GAP_MM * mm_to_pts,
+        join_style=1,
+    ).covers(fitted_geometry)
+
+
+@pytest.mark.parametrize("dpi", [72.0, 300.0])
+def test_full_page_image_dpi_inference_is_physical_and_strict(tmp_path, dpi):
+    source = tmp_path / f"full_page_{int(dpi)}.pdf"
+    _make_full_page_raster_pdf(str(source), dpi=dpi)
+
+    with pikepdf.Pdf.open(source) as document:
+        expected = 25.4 / dpi
+        assert _infer_full_page_image_pixel_mm(document.pages[0]) == pytest.approx(
+            expected,
+            rel=0.01,
+        )
+        assert _infer_document_image_pixel_mm(document) == pytest.approx(
+            expected,
+            rel=0.01,
+        )
+
+
+def test_full_page_image_dpi_inference_rejects_vector_and_multi_image(tmp_path):
+    vector_source = tmp_path / "vector.pdf"
+    multi_source = tmp_path / "multi_image.pdf"
+    page_72 = tmp_path / "page_72.pdf"
+    page_300 = tmp_path / "page_300.pdf"
+    inconsistent_source = tmp_path / "inconsistent_dpi.pdf"
+    _make_simple_pdf(str(vector_source))
+    _make_full_page_raster_pdf(str(multi_source), dpi=72.0, draw_twice=True)
+    _make_full_page_raster_pdf(str(page_72), dpi=72.0)
+    _make_full_page_raster_pdf(str(page_300), dpi=300.0)
+    combined = pikepdf.Pdf.new()
+    with pikepdf.Pdf.open(page_72) as first, pikepdf.Pdf.open(page_300) as second:
+        combined.pages.extend(first.pages)
+        combined.pages.extend(second.pages)
+    combined.save(inconsistent_source)
+    combined.close()
+
+    with pikepdf.Pdf.open(vector_source) as document:
+        assert _infer_document_image_pixel_mm(document) is None
+    with pikepdf.Pdf.open(multi_source) as document:
+        assert _infer_document_image_pixel_mm(document) is None
+    with pikepdf.Pdf.open(inconsistent_source) as document:
+        assert _infer_document_image_pixel_mm(document) is None
+
+
+def test_preserved_large_raster_contour_scales_smoothing_by_physical_size():
+    """Tem 72 DPI khổ lớn phải ít cubic, không giữ một node cho mỗi bậc pixel."""
+    import cv2
+    import numpy as np
+
+    mm_to_pts = 72.0 / 25.4
+    source_pixel_mm = 25.4 / 72.0
+    diameter_mm = 500.0
+    diameter_px = round(diameter_mm / source_pixel_mm)
+    padding = 8
+    mask = np.zeros(
+        (diameter_px + padding * 2, diameter_px + padding * 2),
+        dtype=np.uint8,
+    )
+    cv2.circle(
+        mask,
+        (diameter_px // 2 + padding, diameter_px // 2 + padding),
+        diameter_px // 2,
+        255,
+        cv2.FILLED,
+    )
+    contour = max(
+        cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)[0],
+        key=cv2.contourArea,
+    )
+    geometry = Polygon(
+        (float(x), float(y)) for x, y in contour[:, 0, :]
+    )
+
+    fitted = _fit_preserved_contour_paths(
+        geometry,
+        mm_to_pts=mm_to_pts,
+        source_pixel_mm=source_pixel_mm,
+    )
+
+    assert fitted is not None
+    fitted_geometry, fitted_paths, _simplify_mm = fitted
+    assert fitted_geometry.is_valid
+    assert len(fitted_paths) == 1
+    assert sum(len(path) for path in fitted_paths) <= 24
+    assert geometry.hausdorff_distance(fitted_geometry) / mm_to_pts <= (
+        0.45 + 1e-6
+    )
+
+
+def test_preserved_large_raster_star_keeps_convex_and_concave_corners():
+    """Làm mượt tem lớn không được lướt qua đỉnh lồi/lõm của hình sao."""
+    import cv2
+    import math
+    import numpy as np
+
+    mm_to_pts = 72.0 / 25.4
+    source_pixel_mm = 25.4 / 72.0
+    size = 900
+    center = size * 0.5
+    expected_vertices = []
+    for index in range(10):
+        angle = -math.pi / 2.0 + index * math.pi / 5.0
+        radius = 390.0 if index % 2 == 0 else 165.0
+        expected_vertices.append((
+            center + math.cos(angle) * radius,
+            center + math.sin(angle) * radius,
+        ))
+    mask = np.zeros((size, size), dtype=np.uint8)
+    cv2.fillPoly(mask, [np.asarray(expected_vertices, dtype=np.int32)], 255)
+    contour = max(
+        cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)[0],
+        key=cv2.contourArea,
+    )
+    geometry = Polygon(
+        (float(x), float(y)) for x, y in contour[:, 0, :]
+    )
+
+    fitted = _fit_preserved_contour_paths(
+        geometry,
+        mm_to_pts=mm_to_pts,
+        source_pixel_mm=source_pixel_mm,
+    )
+
+    assert fitted is not None
+    fitted_geometry, fitted_paths, _simplify_mm = fitted
+    assert fitted_geometry.is_valid
+    assert 10 <= len(fitted_paths[0]) <= 24
+    anchors = [segment[0] for segment in fitted_paths[0]]
+    for vertex in expected_vertices:
+        assert min(math.dist(vertex, anchor) for anchor in anchors) / mm_to_pts <= 0.55
+    assert geometry.hausdorff_distance(fitted_geometry) / mm_to_pts <= (
+        0.45 + 1e-6
+    )
+
+
 @pytest.mark.parametrize("budget", [0.05, 0.20])
 def test_buffer_guard_matches_exact_hausdorff_for_polygon_with_hole(budget):
     """Guard nhanh phải cùng kết luận với Hausdorff GEOS, kể cả geometry có lỗ."""
@@ -413,6 +865,90 @@ def test_preserve_mode_bypasses_reconstruction_smoothing_and_bezier(src_pdf, tmp
         trim = [float(v) for v in page.TrimBox]
         assert abs((trim[2] - trim[0]) - 140.0) < 0.6
         assert abs((trim[3] - trim[1]) - 180.0) < 0.6
+
+
+def test_preserve_adaptive_rejection_returns_exact_legacy_cut_path(
+    src_pdf,
+    tmp_path,
+    monkeypatch,
+):
+    """Candidate bị guard loại phải rơi về đúng path preserve cũ."""
+    from app.workers import sticker_engine as sticker_module
+
+    legacy_path = str(tmp_path / "preserve_legacy.pdf")
+    adaptive_path = str(tmp_path / "preserve_adaptive_fallback.pdf")
+    common = {
+        "input_path": src_pdf,
+        "cut_mode": "original",
+        "offset_mm": 0.0,
+        "corner_style": "preserve",
+        "bleed_mm": 0.0,
+        "fill_holes": True,
+        "remove_white_bg": True,
+        "draw_cut_contour": True,
+        "shape_mode": "contour",
+    }
+    success, _meta = StickerEngine(dpi=150).process_pdf(
+        output_path=legacy_path,
+        alpha_corner_policy="legacy",
+        **common,
+    )
+    assert success is True
+
+    monkeypatch.setattr(
+        sticker_module,
+        "_fit_preserved_contour_paths",
+        lambda *_args, **_kwargs: None,
+    )
+    success, _meta = StickerEngine(dpi=150).process_pdf(
+        output_path=adaptive_path,
+        alpha_corner_policy="adaptive",
+        **common,
+    )
+    assert success is True
+
+    with pikepdf.Pdf.open(legacy_path) as legacy, pikepdf.Pdf.open(adaptive_path) as adaptive:
+        legacy_cut = _read_all_content(legacy.pages[0]).split(b"/CutContour CS", 1)[1]
+        adaptive_cut = _read_all_content(adaptive.pages[0]).split(b"/CutContour CS", 1)[1]
+        assert adaptive_cut == legacy_cut
+
+
+def test_existing_cut_contour_keeps_legacy_path(tmp_path, monkeypatch):
+    """PDF đã có CutContour không được đi qua fitter raster thích ứng mới."""
+    from app.workers import sticker_engine as sticker_module
+
+    source = tmp_path / "existing_cut.pdf"
+    output = tmp_path / "existing_cut_output.pdf"
+    _make_simple_pdf(str(source))
+    with pikepdf.Pdf.open(source, allow_overwriting_input=True) as document:
+        page = document.pages[0]
+        if "/Resources" not in page:
+            page.Resources = pikepdf.Dictionary()
+        if "/ColorSpace" not in page.Resources:
+            page.Resources.ColorSpace = pikepdf.Dictionary()
+        page.Resources.ColorSpace.CutContour = pikepdf.Name.DeviceCMYK
+        document.save(source)
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("Không được fit lại PDF đã có CutContour")
+
+    monkeypatch.setattr(
+        sticker_module,
+        "_fit_preserved_contour_paths",
+        fail_if_called,
+    )
+    success, _meta = StickerEngine(dpi=150).process_pdf(
+        input_path=str(source),
+        output_path=str(output),
+        cut_mode="original",
+        corner_style="preserve",
+        remove_white_bg=True,
+        shape_mode="contour",
+        alpha_corner_policy="adaptive",
+    )
+
+    assert success is True
+    assert output.exists()
 
 
 @pytest.mark.parametrize(
@@ -1980,6 +2516,82 @@ def test_sticker_endpoint_uses_local_pdf_without_deleting_source(tmp_path, monke
     )
     assert os.path.exists(response.path)
     assert captured["edge_sample_inset_mm"] == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize(
+    "extra_form,expected_policy",
+    [
+        ({
+            "cut_mode": "original",
+            "corner_style": "preserve",
+            "shape_mode": "contour",
+        }, "adaptive"),
+        ({
+            "cut_mode": "original",
+            "corner_style": "round",
+            "shape_mode": "auto_safe",
+        }, "legacy"),
+        ({
+            "cut_mode": "none",
+            "corner_style": "miter",
+            "shape_mode": "contour",
+            "rectangle_mode": "true",
+        }, "legacy"),
+        ({
+            "cut_mode": "original",
+            "corner_style": "preserve",
+            "shape_mode": "contour",
+            "selection_json": '{"pages":[{"page":0,"object_ids":["image-0"]}]}',
+        }, "legacy"),
+    ],
+)
+def test_sticker_endpoint_enables_adaptive_only_for_preserved_contour(
+    tmp_path,
+    monkeypatch,
+    extra_form,
+    expected_policy,
+):
+    import asyncio
+    import shutil
+
+    from app.api.routes import pdf_tools
+    from app.workers import sticker_engine, sticker_page_canvas
+
+    source = tmp_path / "adaptive_route.pdf"
+    pdf = pikepdf.Pdf.new()
+    pdf.add_blank_page(page_size=(300, 200))
+    pdf.save(source)
+    pdf.close()
+    captured = {}
+
+    class StubEngine:
+        def __init__(self, dpi=300):
+            self.dpi = dpi
+
+        def process_pdf(self, input_path, output_path, **kwargs):
+            captured.update(kwargs)
+            shutil.copyfile(input_path, output_path)
+            return True, {"pages": [{"page": 1}]}
+
+    class FakeRequest:
+        async def form(self):
+            return {"file_path": str(source), **extra_form}
+
+    monkeypatch.setattr(sticker_engine, "StickerEngine", StubEngine)
+    monkeypatch.setattr(
+        sticker_page_canvas,
+        "restore_sticker_page_canvas",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(pdf_tools, "RESULTS_DIR", str(tmp_path))
+    monkeypatch.setattr(pdf_tools, "_safe_watermark", lambda *args: None)
+
+    response = asyncio.run(
+        pdf_tools.sticker_dieline_endpoint(FakeRequest(), license_info={})
+    )
+
+    assert os.path.exists(response.path)
+    assert captured["alpha_corner_policy"] == expected_policy
 
 
 @pytest.mark.parametrize("crop_to_sticker", [None, False, True])

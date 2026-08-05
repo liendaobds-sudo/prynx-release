@@ -12,7 +12,7 @@ import { ImpositionMode, type ProcessingSettings } from '../lib/pdfImposer';
 import { Button } from './Button';
 import { Printer, Scissors, Settings, Star } from 'lucide-react';
 import { PDFDocument, degrees } from 'pdf-lib';
-import { imageFileToPdfIfNeeded } from '../lib/imageNormalizer';
+import { imageFileToPdfIfNeeded, isSupportedImageFileName } from '../lib/imageNormalizer';
 import ImposerDashboard from './imposition-tools/ImposerDashboard';
 import CutExportModal from './imposition-tools/cut-export/CutExportModal';
 import OpenInDesignModal from './imposition-tools/OpenInDesignModal';
@@ -52,6 +52,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { globalPdfObjectCache } from '../stores/pdfObjectCache';
 import { BgRemoverPreview } from './preprocess-tools/BgRemoverTool';
 import { UpscalePreview } from './preprocess-tools/UpscaleTool';
+import StickerSheetWorkspace from './preprocess-tools/StickerSheetWorkspace';
+import { useStickerSheetStore } from './preprocess-tools/stickerSheetStore';
 import LogoRebuildWorkspace from './preprocess-tools/LogoRebuildWorkspace';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../i18n';
@@ -219,7 +221,16 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const sidebarWidth = useAppSettingsStore(state => state.toolMenuWidth);
     const setSidebarWidth = useAppSettingsStore(state => state.setToolMenuWidth);
     const dedicatedInitialTool = resolveDedicatedInitialTool(initialFeature);
+    const stickerSheetMode = useStickerSheetStore(
+        state => state.tabs[tabId || '']?.mode || 'existing',
+    );
+    const setStickerSheetMode = useStickerSheetStore(state => state.setMode);
+    const disposeStickerSheetTab = useStickerSheetStore(state => state.disposeTab);
     const previousDashboardToolRef = useRef<string | null>(null);
+
+    useEffect(() => () => {
+        if (tabId) disposeStickerSheetTab(tabId);
+    }, [disposeStickerSheetTab, tabId]);
 
     // SEC (audit 2026-08-04 re-audit UI): snapshot cũ có thể chứa OCR/tool đã
     // tắt và đi thẳng vào store, không qua click guard. Chỉ hai state nội bộ
@@ -400,6 +411,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // FILEIO (audit 2026-08-02 §TEST.1): chuyển ảnh có trạng thái hữu hạn. Watchdog chỉ
     // đổi thông tin UI, không hard-timeout ảnh lớn; generation fence từ chối mọi callback muộn.
     const [fileOpeningPhase, setFileOpeningPhase] = useState<FileOpeningPhase>(() => initialFile ? 'loading' : 'idle');
+    // NAV (audit 2026-08-05 §AI2.ROUTE1): giữ ảnh trước bước normalize -> PDF để
+    // chế độ Ảnh AI dùng lại đúng nguồn đang mở, không bắt người dùng chọn lần hai.
+    const [sourceImageFile, setSourceImageFile] = useState<File | null>(() => (
+        initialFile && isSupportedImageFileName(initialFile.name) ? initialFile : null
+    ));
     const [initialOpenRetryToken, setInitialOpenRetryToken] = useState(0);
     const fileOpeningAttemptRef = useRef(0);
     const fileOpeningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -450,6 +466,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             const attempt = beginFileOpeningAttempt();
             (async () => {
                 let openedFile = initialFile;
+                setSourceImageFile(isSupportedImageFileName(initialFile.name) ? initialFile : null);
                 try {
                     openedFile = await imageFileToPdfIfNeeded(initialFile, getFileArrayBuffer);
                 } catch (openError) {
@@ -1279,6 +1296,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const handleFileSelected = useCallback(async (selectedFile: File, allFiles?: File[]) => {
         // Ảnh → PDF ngay khi mở để mọi công cụ sau chỉ nhận hợp đồng PDF.
         pendingSelectedOpenRef.current = { file: selectedFile, allFiles };
+        setSourceImageFile(isSupportedImageFileName(selectedFile.name) ? selectedFile : null);
         const attempt = beginFileOpeningAttempt();
         try {
             selectedFile = await imageFileToPdfIfNeeded(selectedFile, getFileArrayBuffer);
@@ -2342,7 +2360,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     // Derive tool info for upload phase
     const effectiveTool = initialFeature || lockedMode;
-    const canSkipInitialUpload = !effectiveTool || canToolRunWithoutPdf(effectiveTool);
+    const canSkipInitialUpload = !effectiveTool || canToolRunWithoutPdf(effectiveTool) || effectiveTool === 'sticker';
     const toolInfo = effectiveTool ? TOOL_REGISTRY.find(t => 
         t.defaultPayload?.focusFeature === effectiveTool || 
         t.defaultPayload?.lockedMode === effectiveTool || 
@@ -2430,10 +2448,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             accentColor="#10b981"
                         />
                         {canSkipInitialUpload && <button
-                            onClick={() => setPhase('workspace')}
+                            onClick={() => {
+                                if (effectiveTool === 'sticker' && tabId) setStickerSheetMode(tabId, 'ai-sheet');
+                                setPhase('workspace');
+                            }}
                             className="mt-6 w-full py-2.5 rounded-lg border-2 border-dashed border-slate-300 dark:border-zinc-700 bg-transparent text-slate-500 dark:text-zinc-400 font-medium hover:bg-slate-100 dark:hover:bg-zinc-800 hover:text-slate-700 dark:hover:text-zinc-300 transition-all text-[13px]"
                         >
-                            {t('tabs.imposition:bo_qua_tai_file_vao_khong_gian_lam_viec')}
+                            {effectiveTool === 'sticker'
+                                ? tv('Tách tem từ ảnh AI')
+                                : t('tabs.imposition:bo_qua_tai_file_vao_khong_gian_lam_viec')}
                         </button>}
                     </div>
                 </div>
@@ -2588,6 +2611,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             </div>
                         )}
 
+                        {activeDashboardTool === 'sticker' && stickerSheetMode === 'ai-sheet' && (
+                            <div className="absolute top-0 left-0 bottom-0 z-40" style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}>
+                                <StickerSheetWorkspace tabId={tabId || ''} isActive={isActive === true} />
+                            </div>
+                        )}
+
                         {activeDashboardTool === 'upscale' && (
                             <div className="absolute top-0 left-0 bottom-0 z-40" style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}>
                                 <UpscalePreview tabId={tabId || ''} isActive={isActive === true} />
@@ -2601,7 +2630,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         )}
 
                         {/* Empty State Overlay — ẩn khi tool không cần PDF sẵn (AI / office convert / util) */}
-                        {!pdfUrl && !canToolRunWithoutPdf(activeDashboardTool) && (
+                        {!pdfUrl && !canToolRunWithoutPdf(activeDashboardTool) && !(activeDashboardTool === 'sticker' && stickerSheetMode === 'ai-sheet') && (
                             <div className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none" style={{ right: isSidebarOpen ? sidebarWidth : 0 }}>
                                 <div className="pointer-events-auto max-w-2xl w-full px-6">
                                     <div 
@@ -2904,6 +2933,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             systemMergeFiles={systemMergeFiles}
                                                             officeSourceFile={officeSourceFile}
                                                             officeSourceFiles={officeSourceFiles}
+                                                            sourceImageFile={sourceImageFile}
                                                             getWorkingFile={getWorkingFile}
                                                             ensureCropFileId={ensureCropFileId}
                                                             onCropApplied={handleCropApplied}

@@ -72,6 +72,7 @@ Chỉ `[CONFIRMED]` mới được xếp severity P0–P3 trong báo cáo audit.
 | 2 | `W2-U01` | N-Up từ form đến PDF mở lại | preview plan = placement thật; marks/bleed/cut-border đúng page box | `AUTO`; PA1/PA2 đã sửa, chờ corpus artifact/runtime chung |
 | 3 | `W2-U02` | Booklet/Step Repeat/Sticker/CNC | page order, duplex, creep, rotation, marks và report khớp artifact | `UNKNOWN` |
 | 3a | `W2-U03` | Bù xén → đường cắt theo biên trong suốt | bám Alpha; lùi 0,15 mm; topology/lỗ; node/mm; short-segment ratio; Hausdorff; path CutContour | `ARTIFACT`; §ALPHA.1–3 đã sửa/verify, chờ runtime; §ALPHA.4 chờ quyết định UI |
+| 3b | `W2-U04` | Ảnh AI nhiều tem → sửa mask → PDF từng tem | preview không đổi màu; pan/edit tách biệt; scale mm; góc lõm; CutContour; tái dùng ảnh đang mở | `ARTIFACT`; follow-up 72 DPI đạt 9/9 CutContour, 0 line fallback/short-segment; export không tự chuyển công cụ; native DirectML→CPU đã verify, chờ smoke UI trên app |
 | 4 | `W3-U01` | Resize + Crop | transparency, content transform, box policy, số lẻ mm, mixed pages | `STALE` |
 | 5 | `W3-U02` | Combine + Split + Convert | order, page boxes, metadata, encrypted/error/cancel và reopen | `TRACED` một phần |
 | 6 | `W4-U01` | Data Merge | schema CSV/XLSX/Google, Unicode, multipage, barcode, preview/output | `STALE` |

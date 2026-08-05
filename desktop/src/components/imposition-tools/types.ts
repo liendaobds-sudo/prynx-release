@@ -458,11 +458,13 @@ export interface ImposerDashboardProps {
     initialFeature?: string;
     lockedMode?: 'booklet' | 'nup' | 'sticker_imposer' | 'cnc_imposer';
     onBleedUpdate?: (show: boolean, mm: number) => void;
-    onFileFixed?: (blob: Blob, name: string, path?: string) => void;
+    onFileFixed?: (blob: Blob, name: string, path?: string) => void | Promise<void>;
     systemMergeFiles?: File[];
     /** Office file → PDF (Word/Excel path-stub File). */
     officeSourceFile?: File | null;
     officeSourceFiles?: File[];
+    /** Ảnh gốc trước khi workspace chuẩn hóa thành PDF một trang. */
+    sourceImageFile?: File | null;
     /** PDF đã bake sửa viewer (xoay/xóa/sắp trang) — preview dùng CÙNG nguồn với output. */
     getWorkingFile?: () => Promise<File>;
     ensureCropFileId?: (signal?: AbortSignal) => Promise<string>;

@@ -246,6 +246,64 @@ def _newton_reparameterize(segment, point, parameter):
     return max(0.0, min(1.0, updated))
 
 
+def _open_chain_samples(points, index, direction, distance):
+    """Lấy dải điểm trên chuỗi mở trong một khoảng cung cho trước."""
+    current = index
+    walked = 0.0
+    samples = [points[current]]
+    while 0 <= current + direction < len(points):
+        nxt = current + direction
+        walked += _vec_length(_vec_sub(points[nxt], points[current]))
+        current = nxt
+        samples.append(points[current])
+        if walked >= distance:
+            break
+    return samples
+
+
+def _principal_chain_direction(samples, preferred_direction):
+    """Ước lượng hướng tiếp tuyến bằng trục chính để khử nhiễu một cạnh pixel."""
+    preferred = _vec_normalize(preferred_direction)
+    if len(samples) < 3:
+        return preferred
+    center = (
+        sum(point[0] for point in samples) / len(samples),
+        sum(point[1] for point in samples) / len(samples),
+    )
+    xx = yy = xy = 0.0
+    for point in samples:
+        dx = point[0] - center[0]
+        dy = point[1] - center[1]
+        xx += dx * dx
+        yy += dy * dy
+        xy += dx * dy
+    if xx + yy <= 1e-12:
+        return preferred
+    angle = 0.5 * math.atan2(2.0 * xy, xx - yy)
+    direction = (math.cos(angle), math.sin(angle))
+    if _vec_dot(direction, preferred) < 0:
+        direction = _vec_scale(direction, -1.0)
+    return direction
+
+
+def _open_chain_endpoint_tangent(points, index, direction, distance):
+    samples = _open_chain_samples(points, index, direction, distance)
+    return _principal_chain_direction(
+        samples,
+        _vec_sub(samples[-1], samples[0]),
+    )
+
+
+def _open_chain_center_tangent(points, index, distance):
+    before = _open_chain_samples(points, index, -1, distance)
+    after = _open_chain_samples(points, index, 1, distance)
+    samples = before[1:] + after
+    return _principal_chain_direction(
+        samples,
+        _vec_sub(before[-1], after[-1]),
+    )
+
+
 def _fit_open_cubic(
     points,
     left_tangent,
@@ -255,6 +313,7 @@ def _fit_open_cubic(
     depth=0,
     *,
     enforce_monotonic=True,
+    tangent_window=0.0,
 ):
     if len(points) == 2:
         distance = _vec_length(_vec_sub(points[1], points[0])) / 3.0
@@ -302,9 +361,16 @@ def _fit_open_cubic(
                     return
 
     split = max(1, min(len(points) - 2, split))
-    center_tangent = _vec_normalize(
-        _vec_sub(points[split - 1], points[split + 1])
-    )
+    if tangent_window > 0:
+        center_tangent = _open_chain_center_tangent(
+            points,
+            split,
+            tangent_window,
+        )
+    else:
+        center_tangent = _vec_normalize(
+            _vec_sub(points[split - 1], points[split + 1])
+        )
     if center_tangent == (0.0, 0.0):
         center_tangent = _vec_normalize(
             _vec_sub(points[split - 1], points[split])
@@ -317,6 +383,7 @@ def _fit_open_cubic(
         output,
         depth + 1,
         enforce_monotonic=enforce_monotonic,
+        tangent_window=tangent_window,
     )
     _fit_open_cubic(
         points[split:],
@@ -326,10 +393,17 @@ def _fit_open_cubic(
         output,
         depth + 1,
         enforce_monotonic=enforce_monotonic,
+        tangent_window=tangent_window,
     )
 
 
-def fit_closed_cubic_beziers(coords, tolerance, *, enforce_monotonic=True):
+def fit_closed_cubic_beziers(
+    coords,
+    tolerance,
+    *,
+    enforce_monotonic=True,
+    tangent_window=0.0,
+):
     """Fit contour kín thành ít cubic hơn, theo thuật toán Schneider có guard ngoài."""
     points = [(float(x), float(y)) for x, y in coords]
     if len(points) > 1 and points[0] == points[-1]:
@@ -353,15 +427,309 @@ def fit_closed_cubic_beziers(coords, tolerance, *, enforce_monotonic=True):
     )
     output = []
     for chain in chains:
+        if tangent_window > 0:
+            left_tangent = _open_chain_endpoint_tangent(
+                chain,
+                0,
+                1,
+                tangent_window,
+            )
+            right_tangent = _open_chain_endpoint_tangent(
+                chain,
+                len(chain) - 1,
+                -1,
+                tangent_window,
+            )
+        else:
+            left_tangent = _vec_normalize(_vec_sub(chain[1], chain[0]))
+            right_tangent = _vec_normalize(_vec_sub(chain[-2], chain[-1]))
         _fit_open_cubic(
             chain,
-            _vec_normalize(_vec_sub(chain[1], chain[0])),
-            _vec_normalize(_vec_sub(chain[-2], chain[-1])),
+            left_tangent,
+            right_tangent,
             tolerance * tolerance,
             output,
             enforce_monotonic=enforce_monotonic,
+            tangent_window=tangent_window,
         )
     return output
+
+
+_ADAPTIVE_CORNER_VALIDATION_SCALES = (2.0, 3.0)
+_ADAPTIVE_CORNER_PERSISTENCE_RATIO = 0.50
+_ADAPTIVE_TANGENT_MIN_SPAN_RATIO = 5.0
+
+
+def _closed_ring_corner_indices(
+    points,
+    *,
+    corner_window,
+    minimum_turn_degrees,
+    minimum_corner_separation,
+    validate_persistence=True,
+):
+    """Tìm đỉnh có chủ đích theo góc quay đo trên một cửa sổ vật lý.
+
+    Cửa sổ theo độ dài cung làm nhiễu bậc pixel tự triệt tiêu, còn đỉnh lồi/lõm
+    của ngôi sao hoặc notch vẫn tạo góc quay lớn. Một góc chỉ được khóa khi cùng
+    chiều quay còn tồn tại ở hai cửa sổ lớn hơn; nhờ vậy bậc pixel cục bộ không
+    trở thành hàng trăm neo giả trên artwork kích thước lớn. Non-maximum
+    suppression theo chu vi giữ đúng một neo cho mỗi góc.
+    """
+    count = len(points)
+    if count < 4 or corner_window <= 0:
+        return []
+
+    edge_lengths = [
+        _vec_length(_vec_sub(points[(index + 1) % count], points[index]))
+        for index in range(count)
+    ]
+    perimeter = sum(edge_lengths)
+    if perimeter <= corner_window * 4.0:
+        return []
+
+    arc_positions = [0.0]
+    for edge_length in edge_lengths[:-1]:
+        arc_positions.append(arc_positions[-1] + edge_length)
+
+    def neighbor(index, direction, window):
+        walked = 0.0
+        current = index
+        for _ in range(count - 1):
+            nxt = (current + direction) % count
+            walked += _vec_length(_vec_sub(points[nxt], points[current]))
+            current = nxt
+            if walked >= window:
+                return points[current]
+        return points[current]
+
+    def signed_turn(index, window):
+        point = points[index]
+        before = neighbor(index, -1, window)
+        after = neighbor(index, 1, window)
+        incoming = _vec_normalize(_vec_sub(point, before))
+        outgoing = _vec_normalize(_vec_sub(after, point))
+        if incoming == (0.0, 0.0) or outgoing == (0.0, 0.0):
+            return 0.0
+        cross = incoming[0] * outgoing[1] - incoming[1] * outgoing[0]
+        return math.atan2(cross, _vec_dot(incoming, outgoing))
+
+    # QUALITY (audit 2026-08-05 §AI2.CUT2): góc thật bền qua nhiều thang đo,
+    # còn một bậc pixel chỉ quay mạnh ở cửa sổ nhỏ. Giới hạn ở 1/4 chu vi để hai
+    # phía của điểm đo không gặp nhau trên contour rất nhỏ.
+    validation_windows = []
+    if validate_persistence:
+        for scale in _ADAPTIVE_CORNER_VALIDATION_SCALES:
+            window = min(corner_window * scale, perimeter * 0.25)
+            if window >= corner_window * 1.25 and all(
+                abs(window - existing) > 1e-9 for existing in validation_windows
+            ):
+                validation_windows.append(window)
+
+    candidates = []
+    threshold = math.radians(float(minimum_turn_degrees))
+    persistent_threshold = threshold * _ADAPTIVE_CORNER_PERSISTENCE_RATIO
+    for index in range(count):
+        fine_turn = signed_turn(index, corner_window)
+        if abs(fine_turn) < threshold:
+            continue
+        score = abs(fine_turn)
+        persistent = True
+        for window in validation_windows:
+            coarse_turn = signed_turn(index, window)
+            if (
+                fine_turn * coarse_turn <= 0.0
+                or abs(coarse_turn) < persistent_threshold
+            ):
+                persistent = False
+                break
+            score = min(score, abs(coarse_turn))
+        if persistent:
+            candidates.append((score, index))
+
+    selected = []
+    separation = max(0.0, float(minimum_corner_separation))
+    for _turn, index in sorted(candidates, reverse=True):
+        position = arc_positions[index]
+        if all(
+            min(abs(position - other), perimeter - abs(position - other)) >= separation
+            for other in selected
+        ):
+            selected.append(position)
+
+    position_to_index = {position: index for index, position in enumerate(arc_positions)}
+    return sorted(position_to_index[position] for position in selected)
+
+
+def fit_closed_cubic_beziers_adaptive(
+    coords,
+    tolerance,
+    *,
+    corner_window,
+    minimum_turn_degrees=32.0,
+    minimum_corner_separation=None,
+    enforce_monotonic=True,
+    validate_corner_persistence=True,
+    smooth_raster_tangents=True,
+):
+    """Fit ring theo từng span trơn và giữ neo tại mọi góc lồi/lõm có ý nghĩa.
+
+    Hai span kề nhau dùng tiếp tuyến riêng tại neo, vì vậy đường cong được phép
+    gián đoạn tiếp tuyến đúng ở đỉnh nhọn. Nếu ring không có đủ góc rõ ràng, dùng
+    bộ fit kín cũ để giữ nguyên hành vi cho contour cong hoàn toàn.
+    """
+    points = [(float(x), float(y)) for x, y in coords]
+    if len(points) > 1 and points[0] == points[-1]:
+        points.pop()
+    deduplicated = []
+    for point in points:
+        if not deduplicated or _vec_length(_vec_sub(point, deduplicated[-1])) > 1e-12:
+            deduplicated.append(point)
+    points = deduplicated
+    if len(points) < 3 or tolerance <= 0:
+        return []
+
+    separation = (
+        float(minimum_corner_separation)
+        if minimum_corner_separation is not None
+        else float(corner_window)
+    )
+    perimeter = sum(
+        _vec_length(_vec_sub(points[(index + 1) % len(points)], points[index]))
+        for index in range(len(points))
+    )
+    tangent_window = min(
+        float(corner_window) * _ADAPTIVE_CORNER_VALIDATION_SCALES[-1],
+        perimeter * 0.25,
+    )
+    corners = _closed_ring_corner_indices(
+        points,
+        corner_window=float(corner_window),
+        minimum_turn_degrees=minimum_turn_degrees,
+        minimum_corner_separation=separation,
+        validate_persistence=validate_corner_persistence,
+    )
+    if len(corners) < 2:
+        return fit_closed_cubic_beziers(
+            points,
+            tolerance,
+            enforce_monotonic=enforce_monotonic,
+            tangent_window=tangent_window if smooth_raster_tangents else 0.0,
+        )
+
+    output = []
+    count = len(points)
+    for corner_offset, start in enumerate(corners):
+        end = corners[(corner_offset + 1) % len(corners)]
+        if end > start:
+            chain = points[start:end + 1]
+        else:
+            chain = points[start:] + points[:end + 1]
+        if len(chain) < 2:
+            continue
+        chain_length = sum(
+            _vec_length(_vec_sub(chain[index + 1], chain[index]))
+            for index in range(len(chain) - 1)
+        )
+        smooth_chain_tangents = (
+            smooth_raster_tangents
+            and chain_length >= tangent_window * _ADAPTIVE_TANGENT_MIN_SPAN_RATIO
+        )
+        if smooth_chain_tangents:
+            left_tangent = _open_chain_endpoint_tangent(
+                chain,
+                0,
+                1,
+                tangent_window,
+            )
+            right_tangent = _open_chain_endpoint_tangent(
+                chain,
+                len(chain) - 1,
+                -1,
+                tangent_window,
+            )
+        else:
+            left_tangent = _vec_normalize(_vec_sub(chain[1], chain[0]))
+            right_tangent = _vec_normalize(_vec_sub(chain[-2], chain[-1]))
+        _fit_open_cubic(
+            chain,
+            left_tangent,
+            right_tangent,
+            tolerance * tolerance,
+            output,
+            enforce_monotonic=enforce_monotonic,
+            tangent_window=tangent_window if smooth_chain_tangents else 0.0,
+        )
+    return output
+
+
+def build_corner_locked_catmull_beziers(
+    coords,
+    *,
+    tension,
+    corner_window,
+    minimum_turn_degrees=32.0,
+    minimum_corner_separation=None,
+):
+    """Làm mượt ring đã simplify nhưng giữ tiếp tuyến độc lập tại góc thật.
+
+    Đường cong vẫn đi qua mọi anchor. Ở node trơn dùng Catmull–Rom; ở góc lồi/lõm
+    tay nắm được đặt dọc theo hai cạnh kề nên đỉnh không bị lướt qua hoặc bo cùn.
+    """
+    points = [(float(x), float(y)) for x, y in coords]
+    if len(points) > 1 and points[0] == points[-1]:
+        points.pop()
+    deduplicated = []
+    for point in points:
+        if not deduplicated or _vec_length(_vec_sub(point, deduplicated[-1])) > 1e-12:
+            deduplicated.append(point)
+    points = deduplicated
+    if len(points) < 3:
+        return []
+
+    separation = (
+        float(minimum_corner_separation)
+        if minimum_corner_separation is not None
+        else float(corner_window)
+    )
+    corners = _closed_ring_corner_indices(
+        points,
+        corner_window=float(corner_window),
+        minimum_turn_degrees=minimum_turn_degrees,
+        minimum_corner_separation=separation,
+        # Anchor đã simplify mạnh; giữ cả góc nhỏ còn lại để không làm mất notch.
+        validate_persistence=False,
+    )
+    segments = list(
+        _catmull_rom_bezier_segments(points + [points[0]], tension=tension)
+    )
+    count = len(points)
+    for corner in corners:
+        previous = (corner - 1) % count
+        following = (corner + 1) % count
+        incoming_length = _vec_length(_vec_sub(points[corner], points[previous]))
+        outgoing_length = _vec_length(_vec_sub(points[following], points[corner]))
+        incoming_tangent = _vec_normalize(
+            _vec_sub(points[corner], points[previous])
+        )
+        outgoing_tangent = _vec_normalize(
+            _vec_sub(points[following], points[corner])
+        )
+
+        incoming_segment = list(segments[previous])
+        incoming_segment[2] = _vec_sub(
+            points[corner],
+            _vec_scale(incoming_tangent, incoming_length * tension),
+        )
+        segments[previous] = tuple(incoming_segment)
+
+        outgoing_segment = list(segments[corner])
+        outgoing_segment[1] = _vec_add(
+            points[corner],
+            _vec_scale(outgoing_tangent, outgoing_length * tension),
+        )
+        segments[corner] = tuple(outgoing_segment)
+    return segments
 
 
 def sample_bezier_segments(segments, samples_per_segment=8):

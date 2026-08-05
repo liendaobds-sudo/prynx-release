@@ -24,7 +24,7 @@ import SavePdfxTool from '../../preprocess-tools/SavePdfxTool';
 import DataMergeTool from '../../preprocess-tools/DataMergeTool';
 import OcrTool from '../../preprocess-tools/OcrTool';
 import OptimizeTool from '../../preprocess-tools/OptimizeTool';
-import StickerTool from '../../preprocess-tools/StickerTool';
+import StickerCutlineTool from '../../preprocess-tools/StickerCutlineTool';
 import StickerToolErrorBoundary from '../../preprocess-tools/StickerToolErrorBoundary';
 import BgRemoverTool from '../../preprocess-tools/BgRemoverTool';
 import WatermarkTool from '../../preprocess-tools/WatermarkTool';
@@ -77,6 +77,8 @@ interface PreprocessingRouterProps {
     tabId: string;
     activeTool: string;
     pdfFile: File | null;
+    sourceImageFile?: File | null;
+    isActive?: boolean;
     isProcessing: boolean;
     onStartShuffle?: (settings: any) => void;
     onStartResize?: (settings: any) => void;
@@ -86,7 +88,7 @@ interface PreprocessingRouterProps {
     onIssueSelect: (issue: any) => void;
     onOpenOutputPreview: () => void;
     onOpenTool?: (tool: string) => void;
-    onFileFixed?: (blob: Blob, name: string, path?: string) => void;
+    onFileFixed?: (blob: Blob, name: string, path?: string) => void | Promise<void>;
     officeSourceFile?: File | null;
     officeSourceFiles?: File[];
     ensureCropFileId?: (signal?: AbortSignal) => Promise<string>;
@@ -95,7 +97,7 @@ interface PreprocessingRouterProps {
 }
 
 export default function PreprocessingRouter({
-    tabId, activeTool, pdfFile, isProcessing, ensureCropFileId, onCropApplied, onCropClose,
+    tabId, activeTool, pdfFile, sourceImageFile, isProcessing, isActive, ensureCropFileId, onCropApplied, onCropClose,
     onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge,
     onIssueSelect, onOpenOutputPreview, onOpenTool, onFileFixed, officeSourceFile, officeSourceFiles,
 }: PreprocessingRouterProps) {
@@ -252,7 +254,13 @@ export default function PreprocessingRouter({
 
             {activeTool === 'sticker' && (
                 <StickerToolErrorBoundary>
-                    <StickerTool pdfFile={pdfFile} onFileFixed={(blob, name, path) => { if (onFileFixed) onFileFixed(blob, name, path); }} />
+                    <StickerCutlineTool
+                        tabId={tabId}
+                        pdfFile={pdfFile}
+                        sourceImageFile={sourceImageFile}
+                        isActive={isActive === true}
+                        onFileFixed={(blob, name, path) => onFileFixed?.(blob, name, path)}
+                    />
                 </StickerToolErrorBoundary>
             )}
 

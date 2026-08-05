@@ -134,7 +134,7 @@ function classifyGuillotinePageSizes(
     return 'uniform';
 }
 
-export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onStartNup, onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge, onStartCatalogPlan, initialFeature, lockedMode, onBleedUpdate, onFileFixed, systemMergeFiles, officeSourceFile, officeSourceFiles, getWorkingFile, ensureCropFileId, onCropApplied, onCropClose }: ImposerDashboardProps) {
+export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onStartNup, onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge, onStartCatalogPlan, initialFeature, lockedMode, onBleedUpdate, onFileFixed, systemMergeFiles, officeSourceFile, officeSourceFiles, sourceImageFile, getWorkingFile, ensureCropFileId, onCropApplied, onCropClose }: ImposerDashboardProps) {
   const { t } = useTranslation();
 
     // ═══ Workspace State ═══
@@ -1487,13 +1487,13 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             {/* ═══ PREPROCESSING TOOLS ═══ */}
             {isPreprocessing && (
                 <PreprocessingRouter
-                    tabId={tabId} activeTool={activeTool} pdfFile={pdfFile || null} isProcessing={isProcessing}
+                    tabId={tabId} activeTool={activeTool} pdfFile={pdfFile || null} isProcessing={isProcessing} isActive={isActive === true}
                     onStartShuffle={onStartShuffle} onStartResize={onStartResize}
                     onStartTrimShift={onStartTrimShift}
                     onStartSplit={onStartSplit} onStartMerge={onStartMerge}
                     onIssueSelect={onIssueSelect} onOpenOutputPreview={onOpenOutputPreview} onOpenTool={(tool) => setActiveTool(tool as ActiveToolType)} onFileFixed={onFileFixed}
                     officeSourceFile={officeSourceFile}
-                    officeSourceFiles={officeSourceFiles} ensureCropFileId={ensureCropFileId} onCropApplied={onCropApplied} onCropClose={onCropClose}
+                    officeSourceFiles={officeSourceFiles} sourceImageFile={sourceImageFile} ensureCropFileId={ensureCropFileId} onCropApplied={onCropApplied} onCropClose={onCropClose}
                 />
             )}
 
