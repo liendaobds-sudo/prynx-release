@@ -324,6 +324,11 @@ function AppInner() {
   useEffect(() => {
     appPerf.mark('app-inner-mounted');
     appPerf.measure('startup-to-app-inner', 'app-mounted', 'app-inner-mounted');
+    // PERF (audit 2026-08-05 §PERF.5): mốc cuối nối log native với lúc Home
+    // đã tương tác được. Gọi một lần, không chặn render và không gửi network.
+    void import('@tauri-apps/api/core')
+      .then(({ invoke }) => invoke('mark_frontend_interactive'))
+      .catch(() => undefined);
   }, []);
 
   // ── CRASH RECOVERY: quét snapshot còn sót lúc khởi động (chỉ có nếu lần trước

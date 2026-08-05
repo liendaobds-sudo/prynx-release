@@ -12,7 +12,6 @@ import { getFileArrayBuffer } from '../../lib/utils';
 import {
     getPrinterGeometry,
     openPrinterProperties,
-    cancelPrintJob,
     type PrinterInfo,
     type PrinterGeometry,
     type PrinterDevmode,
@@ -21,7 +20,11 @@ import {
     type PrintLayoutMode,
     type PrintPageSubset,
 } from '../../lib/nativePrint';
-import { buildPreviewSheets, collectPageNumbers } from '../../lib/printPreviewLayout';
+import {
+    buildPreviewSheets,
+    calculateSizePreview,
+    collectPageNumbers,
+} from '../../lib/printPreviewLayout';
 import { formatSizeMm } from '../../lib/measurementFormat';
 
 if (!pdfjs.GlobalWorkerOptions.workerSrc) {
@@ -53,8 +56,11 @@ export interface PrintDialogProps {
     source: Blob | File;
     numPages: number;
     printers: PrinterInfo[];
+    jobId: string;
     autoRotateDefault?: boolean;
-    onPrint: (settings: PrintSettings) => void;
+    onPrint: (settings: PrintSettings) => Promise<void>;
+    onSystemPrint?: (settings: PrintSettings) => Promise<void>;
+    onCancelPrint?: () => Promise<void>;
     onCancel: () => void;
 }
 
@@ -94,8 +100,10 @@ export default function PrintDialog({
     source,
     numPages,
     printers,
-    autoRotateDefault = false,
+    jobId,
     onPrint,
+    onSystemPrint,
+    onCancelPrint,
     onCancel,
 }: PrintDialogProps) {
     const { t } = useTranslation();
@@ -127,6 +135,7 @@ export default function PrintDialog({
     const [reverse, setReverse] = useState(false);
     const [printing, setPrinting] = useState(false);
     const [printProgress, setPrintProgress] = useState<{ current: number; total: number } | null>(null);
+    const [printError, setPrintError] = useState<string | null>(null);
 
     const [geo, setGeo] = useState<PrinterGeometry>(FALLBACK_GEO);
     /** Composite sheet preview (matches multi/booklet/poster layout). */
@@ -140,6 +149,7 @@ export default function PrintDialog({
     const pdfDocRef = useRef<PDFDocumentProxy | null>(null);
     const sheetUrlRef = useRef<string | null>(null);
     const pageRasterCache = useRef<Map<number, HTMLCanvasElement>>(new Map());
+    const pageDimensionCache = useRef<Map<number, { w: number; h: number }>>(new Map());
     const previewRequestRef = useRef(0);
     const dialogRef = useRef<HTMLDivElement>(null);
 
@@ -212,9 +222,7 @@ export default function PrintDialog({
         if (cached) return cached;
         const page = await doc.getPage(pageNum);
         const vp1 = page.getViewport({ scale: 1 });
-        if (pageNum === 1 || pageDimPt.w === 595) {
-            setPageDimPt({ w: vp1.width, h: vp1.height });
-        }
+        pageDimensionCache.current.set(pageNum, { w: vp1.width, h: vp1.height });
         const rasterScale = Math.min(1.5, 600 / Math.max(vp1.width, vp1.height));
         const vp = page.getViewport({ scale: rasterScale });
         const canvas = document.createElement('canvas');
@@ -225,7 +233,7 @@ export default function PrintDialog({
         await page.render({ canvasContext: ctx, viewport: vp }).promise;
         pageRasterCache.current.set(pageNum, canvas);
         return canvas;
-    }, [pageDimPt.w]);
+    }, []);
 
     /** Vẽ 1 tờ in composite (size / multi / booklet / poster) — khớp layout Rust. */
     const renderSheetComposite = useCallback(async () => {
@@ -272,16 +280,6 @@ export default function PrintDialog({
             ctx.strokeStyle = 'rgba(99,102,241,0.45)';
             ctx.strokeRect(printLeft, printTop, printW, printH);
             ctx.setLineDash([]);
-
-            // Scale for size layout (multi/booklet cells use fit-in-cell)
-            const pageWmm = pageDimPt.w / 72 * 25.4;
-            const pageHmm = pageDimPt.h / 72 * 25.4;
-            const fitNormal = Math.min(geo.printable_w_mm / pageWmm, geo.printable_h_mm / pageHmm);
-            let globalScale = 1;
-            if (scaleMode === 'fit' || layoutMode === 'booklet' || layoutMode === 'poster') globalScale = fitNormal;
-            else if (scaleMode === 'shrink') globalScale = Math.min(1, fitNormal);
-            else if (scaleMode === 'custom') globalScale = Math.max(0.01, Math.min(10, customPercent / 100));
-            // actual = 1
 
             for (const cell of sheet.cells) {
                 const cellX = printLeft + cell.x * printW;
@@ -342,8 +340,16 @@ export default function PrintDialog({
                     let drawW: number;
                     let drawH: number;
                     if (isSize) {
-                        const pageWpx = pageWmm * globalScale * mmToPx;
-                        const pageHpx = pageHmm * globalScale * mmToPx;
+                        // UIUX (audit 2026-08-05 §PRINT.7): mỗi trang dùng MediaBox riêng;
+                        // không lấy kích thước trang 1 áp cho toàn bộ PDF hỗn hợp khổ.
+                        const pageDim = pageDimensionCache.current.get(cell.page)
+                            ?? { w: pageCanvas.width, h: pageCanvas.height };
+                        setPageDimPt(current => (
+                            current.w === pageDim.w && current.h === pageDim.h ? current : pageDim
+                        ));
+                        const preview = calculateSizePreview(pageDim, geo, scaleMode, customPercent);
+                        const pageWpx = preview.widthMm * preview.scale * mmToPx;
+                        const pageHpx = preview.heightMm * preview.scale * mmToPx;
                         drawW = pageWpx;
                         drawH = pageHpx;
                     } else {
@@ -387,7 +393,7 @@ export default function PrintDialog({
         }
     }, [
         documentReady, previewSheets, sheetIndex, geo, scaleMode, customPercent,
-        layoutMode, pageDimPt, rasterPage,
+        layoutMode, rasterPage,
     ]);
 
     // Load tài liệu pdfjs một lần khi nguồn thay đổi.
@@ -396,7 +402,10 @@ export default function PrintDialog({
         previewRequestRef.current += 1;
         setSheetImg(null);
         setPreviewLoading(true);
-        pageRasterCache.current.clear();
+        const rasterCache = pageRasterCache.current;
+        const dimensionCache = pageDimensionCache.current;
+        rasterCache.clear();
+        dimensionCache.clear();
         if (sheetUrlRef.current) {
             URL.revokeObjectURL(sheetUrlRef.current);
             sheetUrlRef.current = null;
@@ -433,7 +442,8 @@ export default function PrintDialog({
                 pdfDocRef.current = null;
                 void doc.destroy().catch(() => undefined);
             }
-            pageRasterCache.current.clear();
+            rasterCache.clear();
+            dimensionCache.clear();
             if (sheetUrlRef.current) { URL.revokeObjectURL(sheetUrlRef.current); sheetUrlRef.current = null; }
         };
     }, [source]);
@@ -462,7 +472,7 @@ export default function PrintDialog({
             if (e.key === 'Escape') {
                 if (pageSetupOpen) {
                     setPageSetupOpen(false);
-                } else {
+                } else if (!printing) {
                     onCancel();
                 }
                 return;
@@ -491,7 +501,7 @@ export default function PrintDialog({
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [onCancel, pageSetupOpen]);
+    }, [onCancel, pageSetupOpen, printing]);
 
     // ── Hình học preview (mm → px) — composite sheet đã vẽ sẵn, chỉ hiển thị ──
     const paperLandscape = geo.paper_w_mm > geo.paper_h_mm;
@@ -500,13 +510,13 @@ export default function PrintDialog({
     const paperWpx = geo.paper_w_mm * mmToPx;
     const paperHpx = geo.paper_h_mm * mmToPx;
 
-    const pageWmm = pageDimPt.w / 72 * 25.4;
-    const pageHmm = pageDimPt.h / 72 * 25.4;
-    const fitNormal = Math.min(geo.printable_w_mm / Math.max(pageWmm, 1e-6), geo.printable_h_mm / Math.max(pageHmm, 1e-6));
-    let scale = 1;
-    if (scaleMode === 'fit' || layoutMode === 'booklet' || layoutMode === 'poster') scale = fitNormal;
-    else if (scaleMode === 'shrink') scale = Math.min(1, fitNormal);
-    else if (scaleMode === 'custom') scale = Math.max(0.01, Math.min(10, customPercent / 100));
+    const readoutPreview = calculateSizePreview(
+        pageDimPt,
+        geo,
+        layoutMode === 'booklet' || layoutMode === 'poster' ? 'fit' : scaleMode,
+        customPercent,
+    );
+    const scale = readoutPreview.scale;
     const scalePctReadout = Math.round(scale * 100);
 
     const totalSheets = Math.max(1, previewSheets.length);
@@ -530,8 +540,9 @@ export default function PrintDialog({
         void (async () => {
             try {
                 const { listen } = await import('@tauri-apps/api/event');
-                unlisten = await listen<{ current: number; total: number; done?: boolean }>('print-progress', (ev) => {
+                unlisten = await listen<{ jobId?: string; current: number; total: number; done?: boolean }>('print-progress', (ev) => {
                     const p = ev.payload;
+                    if (p?.jobId && p.jobId !== jobId) return;
                     if (p?.done) {
                         setPrintProgress(null);
                         setPrinting(false);
@@ -543,17 +554,14 @@ export default function PrintDialog({
             } catch { /* ignore */ }
         })();
         return () => { unlisten?.(); };
-    }, []);
+    }, [jobId]);
 
-    const handlePrint = () => {
-        if (!printerName || !documentReady || printing) return;
+    const buildPrintSettings = (): PrintSettings => {
         const [from, to] =
             rangeMode === 'all' ? [1, actualNumPages]
                 : rangeMode === 'current' ? [previewPage, previewPage]
                     : [Math.max(1, Math.min(rangeFrom, actualNumPages)), Math.max(1, Math.min(rangeTo, actualNumPages))];
-        setPrinting(true);
-        setPrintProgress({ current: 0, total: 0 });
-        onPrint({
+        return {
             printerName,
             copies: Math.max(1, Math.min(MAX_COPIES, copies)),
             collate,
@@ -571,20 +579,50 @@ export default function PrintDialog({
             pagesPerSheet,
             posterCols,
             posterRows,
-        });
+        };
+    };
+
+    const runPrintAction = async (action: (settings: PrintSettings) => Promise<void>): Promise<void> => {
+        if (!printerName || printing) return;
+        setPrinting(true);
+        setPrintProgress({ current: 0, total: 0 });
+        setPrintError(null);
+        try {
+            await action(buildPrintSettings());
+        } catch (error) {
+            // UIUX (audit 2026-08-05 §PRINT.4): lỗi driver phải còn thấy được để chẩn đoán.
+            setPrintError(error instanceof Error ? error.message : String(error));
+        } finally {
+            setPrinting(false);
+            setPrintProgress(null);
+        }
+    };
+
+    const handlePrint = () => {
+        // UIUX (audit 2026-08-05 §PRINT.6): preview PDF.js lỗi không được khóa engine in native.
+        void runPrintAction(onPrint);
+    };
+
+    const handleSystemPrint = () => {
+        if (onSystemPrint) void runPrintAction(onSystemPrint);
     };
 
     const handleCancelPrint = () => {
-        void cancelPrintJob();
-        setPrinting(false);
-        setPrintProgress(null);
-        onCancel();
+        void (async () => {
+            try {
+                await onCancelPrint?.();
+            } finally {
+                setPrinting(false);
+                setPrintProgress(null);
+                onCancel();
+            }
+        })();
     };
 
     return createPortal(
         <div
             className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in duration-200"
-            onClick={onCancel}
+            onClick={printing ? undefined : onCancel}
         >
             <div
                 ref={dialogRef}
@@ -822,7 +860,7 @@ export default function PrintDialog({
                                 <img src={sheetImg} alt="" className="absolute inset-0 w-full h-full object-fill select-none" draggable={false} />
                             )}
                             {previewError && !previewLoading && (
-                                <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-sm text-rose-600 dark:text-rose-400 bg-white/90">
+                                <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-sm text-amber-700 dark:text-amber-300 bg-white/90">
                                     {t('print:preview_failed')}
                                 </div>
                             )}
@@ -871,6 +909,19 @@ export default function PrintDialog({
                     </div>
                 </div>
 
+                {printError && (
+                    <div role="alert" className="px-6 py-3 border-t border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/30">
+                        <p className="text-sm font-medium text-rose-700 dark:text-rose-300">
+                            {t('print:job_failed', { error: printError })}
+                        </p>
+                        {onSystemPrint && (
+                            <p className="mt-1 text-xs text-rose-600/90 dark:text-rose-300/80">
+                                {t('print:system_dialog_hint')}
+                            </p>
+                        )}
+                    </div>
+                )}
+
                 {/* Footer */}
                 <div className="px-6 py-4 bg-slate-50 dark:bg-zinc-900 border-t border-slate-200 dark:border-zinc-700 flex justify-between items-center shrink-0 gap-3">
                     <button type="button" onClick={openPageSetup} disabled={printing}
@@ -883,11 +934,17 @@ export default function PrintDialog({
                         </span>
                     )}
                     <div className="flex gap-3 ml-auto">
+                        {printError && onSystemPrint && (
+                            <button type="button" onClick={handleSystemPrint} disabled={printing}
+                                className="px-4 py-2 rounded-lg font-medium border border-amber-400/80 text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/30 disabled:opacity-40 transition-colors">
+                                {t('print:try_system_dialog')}
+                            </button>
+                        )}
                         <button type="button" onClick={printing ? handleCancelPrint : onCancel}
                             className="px-4 py-2 rounded-lg font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-zinc-700 transition-colors">
                             {printing ? t('print:cancel_job') : t('print:cancel')}
                         </button>
-                        <button type="button" onClick={handlePrint} disabled={!printerName || !documentReady || printing}
+                        <button type="button" onClick={handlePrint} disabled={!printerName || printing}
                             className="px-5 py-2 rounded-lg font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40 transition-colors">
                             {printing ? t('print:printing') : t('print:print')}
                         </button>

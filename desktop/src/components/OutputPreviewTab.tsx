@@ -5,7 +5,11 @@ import {
     clampOutputPreviewPanelOffset,
     OUTPUT_PREVIEW_WORKSPACE_GAP_PX,
 } from '../lib/outputPreviewPanelLayout';
-import pako from 'pako';
+import type {
+    OutputPreviewWorkerRequest,
+    OutputPreviewWorkerRequestPayload,
+    OutputPreviewWorkerResponse,
+} from '../lib/outputPreviewPixels';
 import { useWorkspaceStore } from '../stores/useWorkspaceStore';
 import SoftProofPanel from './SoftProofPanel';
 import { toast } from './ui/Toast';
@@ -51,27 +55,9 @@ interface OutputPreviewTabProps {
     onFileFixed?: (blob: Blob, name: string) => void;
 }
 
-function reconstructPlateDataUrl(plate: PlateInfo, width: number, height: number): { url: string, alphaArray: Uint8ClampedArray } {
-    const compressed = Uint8Array.from(atob(plate.alpha_data), c => c.charCodeAt(0));
-    const alphaBytes = pako.inflate(compressed);
-    const alphaArray = new Uint8ClampedArray(alphaBytes.buffer);
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d')!;
-    const imgData = ctx.createImageData(width, height);
-    const [r, g, b] = plate.color;
-    for (let i = 0; i < alphaArray.length; i++) {
-        const off = i * 4;
-        imgData.data[off] = r;
-        imgData.data[off + 1] = g;
-        imgData.data[off + 2] = b;
-        imgData.data[off + 3] = alphaArray[i];
-    }
-    ctx.putImageData(imgData, 0, 0);
-    const url = canvas.toDataURL('image/png');
-    canvas.width = 0; canvas.height = 0;
-    return { url, alphaArray };
+interface PendingWorkerRequest {
+    resolve: (response: OutputPreviewWorkerResponse) => void;
+    reject: (error: Error) => void;
 }
 
 export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPages = 1, onClose, onPlatesChange, onFileFixed }: OutputPreviewTabProps) {
@@ -118,30 +104,115 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
     const plateDataRef = React.useRef<{ width: number, height: number, arrays: Record<string, Uint8ClampedArray> } | null>(null);
     const pctRefs = React.useRef<Record<string, HTMLSpanElement | null>>({});
     const tacRef = React.useRef<HTMLSpanElement | null>(null);
+    const previewWorkerRef = React.useRef<Worker | null>(null);
+    const workerRequestIdRef = React.useRef(0);
+    const pendingWorkerRequestsRef = React.useRef(new Map<number, PendingWorkerRequest>());
+    const plateObjectUrlsRef = React.useRef<string[]>([]);
+    const tacObjectUrlRef = React.useRef<string | null>(null);
+    const onPlatesChangeRef = React.useRef(onPlatesChange);
     const mappedSourcePage = viewerPageOrder?.[pageNum - 1];
     const sourcePageNum = typeof mappedSourcePage === 'number' && mappedSourcePage > 0
         ? mappedSourcePage
         : pageNum;
 
+    useEffect(() => {
+        onPlatesChangeRef.current = onPlatesChange;
+    }, [onPlatesChange]);
+
+    const disposePreviewWorker = useCallback(() => {
+        const worker = previewWorkerRef.current;
+        previewWorkerRef.current = null;
+        worker?.terminate();
+        const error = new Error('Tác vụ dựng Output Preview đã bị hủy.');
+        for (const pending of pendingWorkerRequestsRef.current.values()) {
+            pending.reject(error);
+        }
+        pendingWorkerRequestsRef.current.clear();
+    }, []);
+
+    const createPreviewWorker = useCallback(() => {
+        disposePreviewWorker();
+        const worker = new Worker(
+            new URL('../workers/outputPreview.worker.ts', import.meta.url),
+            { type: 'module' },
+        );
+        previewWorkerRef.current = worker;
+        worker.onmessage = (event: MessageEvent<OutputPreviewWorkerResponse>) => {
+            const response = event.data;
+            const pending = pendingWorkerRequestsRef.current.get(response.requestId);
+            if (!pending) return;
+            pendingWorkerRequestsRef.current.delete(response.requestId);
+            if (response.type === 'error') {
+                pending.reject(new Error(response.message));
+            } else {
+                pending.resolve(response);
+            }
+        };
+        worker.onerror = (event) => {
+            const error = new Error(event.message || 'Web Worker Output Preview gặp lỗi.');
+            for (const pending of pendingWorkerRequestsRef.current.values()) {
+                pending.reject(error);
+            }
+            pendingWorkerRequestsRef.current.clear();
+            if (previewWorkerRef.current === worker) previewWorkerRef.current = null;
+            worker.terminate();
+        };
+        return worker;
+    }, [disposePreviewWorker]);
+
+    const sendPreviewWorkerRequest = useCallback((
+        worker: Worker,
+        payload: OutputPreviewWorkerRequestPayload,
+    ): Promise<OutputPreviewWorkerResponse> => {
+        if (previewWorkerRef.current !== worker) {
+            return Promise.reject(new Error('Web Worker Output Preview không còn hoạt động.'));
+        }
+        const requestId = ++workerRequestIdRef.current;
+        const request = { ...payload, requestId } as OutputPreviewWorkerRequest;
+        return new Promise((resolve, reject) => {
+            pendingWorkerRequestsRef.current.set(requestId, { resolve, reject });
+            try {
+                worker.postMessage(request);
+            } catch (error) {
+                pendingWorkerRequestsRef.current.delete(requestId);
+                reject(error instanceof Error ? error : new Error('Không gửi được dữ liệu tới worker.'));
+            }
+        });
+    }, []);
+
+    const revokePlateObjectUrls = useCallback(() => {
+        for (const url of plateObjectUrlsRef.current) URL.revokeObjectURL(url);
+        plateObjectUrlsRef.current = [];
+    }, []);
+
+    const clearTacHeatmap = useCallback(() => {
+        if (tacObjectUrlRef.current) URL.revokeObjectURL(tacObjectUrlRef.current);
+        tacObjectUrlRef.current = null;
+        setTacHeatmapUrl(null);
+    }, [setTacHeatmapUrl]);
+
     // UIUX (fix preview đa kích thước 2026-07-28): khi đổi trang phải bỏ mọi
     // bitmap của trang cũ trước khi viewer nhận trang mới, tránh một frame nháy sai tỷ lệ.
     const clearPagePreview = useCallback(() => {
+        disposePreviewWorker();
+        revokePlateObjectUrls();
+        clearTacHeatmap();
         plateDataRef.current = null;
         setPlateList([]);
         setVisiblePlates(new Set());
-        onPlatesChange?.([]);
-        setTacHeatmapUrl(null);
+        onPlatesChangeRef.current?.([]);
         setSoftProofImageUrl(null);
         setGamutWarningUrl(null);
         setSoftProofActive(false);
         setOverprintPreviewUrl(null);
     }, [
-        onPlatesChange,
+        clearTacHeatmap,
+        disposePreviewWorker,
+        revokePlateObjectUrls,
         setGamutWarningUrl,
         setOverprintPreviewUrl,
         setSoftProofActive,
         setSoftProofImageUrl,
-        setTacHeatmapUrl,
     ]);
 
     const navigatePreviewPage = useCallback((requestedPage: number) => {
@@ -162,42 +233,38 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
         setPageNum(nextPage);
     }, [clearPagePreview, pageNum, totalPages, viewerActivePage]);
 
-    // ── TAC Heatmap Generation (client-side Canvas) ──
+    // ── TAC Heatmap Generation (Web Worker) ──
     useEffect(() => {
-        if (!showTacHeatmap || !plateDataRef.current) {
-            setTacHeatmapUrl(null);
+        const worker = previewWorkerRef.current;
+        if (!showTacHeatmap || !plateDataRef.current || !worker) {
+            clearTacHeatmap();
             return;
         }
-        const { width, height, arrays } = plateDataRef.current;
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d')!;
-        const imgData = ctx.createImageData(width, height);
-        const threshold = tacThreshold;
-
-        for (let i = 0; i < width * height; i++) {
-            let total = 0;
-            for (const name in arrays) {
-                total += Math.round((arrays[name][i] / 255) * 100);
-            }
-            const off = i * 4;
-            if (total > threshold) {
-                const severity = Math.min(1, (total - threshold) / 100);
-                // Yellow → Red gradient based on how far over threshold
-                imgData.data[off] = 255;
-                imgData.data[off + 1] = Math.round(255 * (1 - severity)); // Yellow to Red
-                imgData.data[off + 2] = 0;
-                imgData.data[off + 3] = Math.round(120 + severity * 100); // 120-220 alpha
-            } else {
-                imgData.data[off + 3] = 0; // transparent
-            }
-        }
-        ctx.putImageData(imgData, 0, 0);
-        const url = canvas.toDataURL('image/png');
-        setTacHeatmapUrl(url);
-        canvas.width = 0; canvas.height = 0;
-    }, [showTacHeatmap, tacThreshold, plateList, setTacHeatmapUrl]);
+        let cancelled = false;
+        void sendPreviewWorkerRequest(worker, { type: 'tac', threshold: tacThreshold })
+            .then((response) => {
+                if (
+                    cancelled
+                    || previewWorkerRef.current !== worker
+                    || response.type !== 'tac-rendered'
+                ) return;
+                const url = URL.createObjectURL(response.png);
+                if (tacObjectUrlRef.current) URL.revokeObjectURL(tacObjectUrlRef.current);
+                tacObjectUrlRef.current = url;
+                setTacHeatmapUrl(url);
+            })
+            .catch(() => {
+                if (!cancelled && previewWorkerRef.current === worker) clearTacHeatmap();
+            });
+        return () => { cancelled = true; };
+    }, [
+        clearTacHeatmap,
+        plateList,
+        sendPreviewWorkerRequest,
+        setTacHeatmapUrl,
+        showTacHeatmap,
+        tacThreshold,
+    ]);
 
     // --- Drag Logic ---
     const [pos, setPos] = useState({ x: 0, y: 0 });
@@ -247,11 +314,36 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                 const result: SeparationsData = await res.json();
                 if (!isMounted) return;
                 const arrays: Record<string, Uint8ClampedArray> = {};
-                const plates = result.plates.map(p => {
-                    const { url, alphaArray } = reconstructPlateDataUrl(p, result.width, result.height);
-                    arrays[p.name] = alphaArray;
-                    return { name: p.name, color: p.color, dataUrl: url, is_spot: p.is_spot };
-                });
+                let plates: { name: string; color: number[]; dataUrl: string; is_spot?: boolean }[] = [];
+                if (result.plates.length > 0) {
+                    const worker = createPreviewWorker();
+                    const response = await sendPreviewWorkerRequest(worker, {
+                        type: 'reconstruct',
+                        width: result.width,
+                        height: result.height,
+                        plates: result.plates.map((plate) => ({
+                            name: plate.name,
+                            color: plate.color,
+                            alphaData: plate.alpha_data,
+                            isSpot: plate.is_spot,
+                        })),
+                    });
+                    if (!isMounted || previewWorkerRef.current !== worker) return;
+                    if (response.type !== 'reconstructed') {
+                        throw new Error('Worker không trả dữ liệu phân tách kẽm.');
+                    }
+                    plates = response.plates.map((plate) => {
+                        const dataUrl = URL.createObjectURL(plate.png);
+                        plateObjectUrlsRef.current.push(dataUrl);
+                        arrays[plate.name] = new Uint8ClampedArray(plate.alphaBuffer);
+                        return {
+                            name: plate.name,
+                            color: plate.color,
+                            dataUrl,
+                            is_spot: plate.isSpot,
+                        };
+                    });
+                }
                 plateDataRef.current = { width: result.width, height: result.height, arrays };
                 setPlateList(plates);
                 setVisiblePlates(new Set(plates.map(p => p.name)));
@@ -270,7 +362,14 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
         };
         fetchSeparations();
         return () => { isMounted = false; };
-    }, [clearPagePreview, fileId, sourcePageNum, useRipPreview]);
+    }, [
+        clearPagePreview,
+        createPreviewWorker,
+        fileId,
+        sendPreviewWorkerRequest,
+        sourcePageNum,
+        useRipPreview,
+    ]);
 
     useEffect(() => {
         const handlePdfHover = (e: any) => {
@@ -326,7 +425,12 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
         ));
     }, [onPlatesChange, pageNum, plateList, soloPlate, sourcePageNum, visiblePlates]);
 
-    useEffect(() => { return () => { onPlatesChange?.([]); setTacHeatmapUrl(null); }; }, []);
+    useEffect(() => () => {
+        disposePreviewWorker();
+        revokePlateObjectUrls();
+        clearTacHeatmap();
+        onPlatesChangeRef.current?.([]);
+    }, [clearTacHeatmap, disposePreviewWorker, revokePlateObjectUrls]);
 
     const togglePlate = useCallback((name: string) => {
         setSoloPlate(null); // clear solo when toggling

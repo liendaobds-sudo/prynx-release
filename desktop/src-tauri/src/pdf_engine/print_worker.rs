@@ -4,18 +4,31 @@
 //! → worker chạy blocking GDI/PDFium → ghi result JSON → exit.
 //! Nếu worker AV/exit bất thường, parent chỉ nhận lỗi, app chính còn sống.
 
-use super::print::{print_breadcrumb, PrinterGeometry, PrinterInfo};
 #[cfg(windows)]
 use super::print::{
     get_printer_geometry_blocking, list_printers_blocking, open_printer_properties_blocking,
     parse_scale_mode_pub, print_direct_blocking, print_pdf_blocking, resolve_scale_mode_pub,
+    PrintJobControl,
 };
+use super::print::{print_breadcrumb, PrinterGeometry, PrinterInfo};
 #[cfg(windows)]
 use super::print_layout::{LayoutMode, PageSubset};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
-/// PID worker in đang chạy (0 = không có) — cancel_print_job kill process này.
-static PRINT_WORKER_PID: AtomicU32 = AtomicU32::new(0);
+#[derive(Clone, Debug)]
+struct ActivePrintWorker {
+    pid: u32,
+    cancel_path: PathBuf,
+}
+
+/// Registry chỉ chứa worker IN. Worker đọc geometry/list/properties không bao giờ được ghi đè.
+static ACTIVE_PRINT_WORKERS: OnceLock<Mutex<HashMap<String, ActivePrintWorker>>> = OnceLock::new();
+
+fn active_print_workers() -> &'static Mutex<HashMap<String, ActivePrintWorker>> {
+    ACTIVE_PRINT_WORKERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -33,8 +46,12 @@ pub enum PrintWorkerJob {
         advanced: bool,
     },
     PrintDirect {
+        job_id: String,
+        cancel_path: String,
+        progress_path: String,
         file_path: String,
         printer_name: String,
+        output_path: Option<String>,
         from_page: Option<i32>,
         to_page: Option<i32>,
         copies: i32,
@@ -59,6 +76,7 @@ pub enum PrintWorkerJob {
         to_page: Option<i32>,
         scale_mode: Option<String>,
         auto_rotate: bool,
+        owner_hwnd: isize,
     },
 }
 
@@ -121,7 +139,10 @@ pub fn run_print_worker(job_path: &str, result_path: &str) -> i32 {
         print_breadcrumb(&format!("worker: write result failed: {e}"));
         return 3;
     }
-    print_breadcrumb(&format!("worker: done code={code}"));
+    print_breadcrumb(&format!(
+        "worker: done code={code} error={}",
+        result.error.as_deref().unwrap_or("none")
+    ));
     code
 }
 
@@ -175,8 +196,12 @@ fn execute_job(job: PrintWorkerJob) -> PrintWorkerResult {
             Err(e) => err_result(e),
         },
         PrintWorkerJob::PrintDirect {
+            job_id,
+            cancel_path,
+            progress_path,
             file_path,
             printer_name,
+            output_path,
             from_page,
             to_page,
             copies,
@@ -222,8 +247,13 @@ fn execute_job(job: PrintWorkerJob) -> PrintWorkerResult {
                 pages_per_sheet,
                 poster_cols,
                 poster_rows,
+                output_path,
                 devmode,
-                None, // no Tauri AppHandle in worker
+                Some(PrintJobControl {
+                    job_id,
+                    cancel_path: PathBuf::from(cancel_path),
+                    progress_path: PathBuf::from(progress_path),
+                }),
             ) {
                 Ok(printed) => PrintWorkerResult {
                     ok: true,
@@ -242,9 +272,10 @@ fn execute_job(job: PrintWorkerJob) -> PrintWorkerResult {
             to_page,
             scale_mode,
             auto_rotate,
+            owner_hwnd,
         } => {
             let mode = parse_scale_mode_pub(scale_mode.as_deref());
-            match print_pdf_blocking(file_path, from_page, to_page, 0, mode, auto_rotate) {
+            match print_pdf_blocking(file_path, from_page, to_page, owner_hwnd, mode, auto_rotate) {
                 Ok(printed) => PrintWorkerResult {
                     ok: true,
                     error: None,
@@ -277,6 +308,44 @@ fn err_result(e: String) -> PrintWorkerResult {
 
 /// Spawn worker process, chờ xong, đọc result. Driver crash → lỗi, parent sống.
 pub fn run_isolated(job: PrintWorkerJob) -> Result<PrintWorkerResult, String> {
+    run_isolated_inner(job, None)
+}
+
+/// Spawn job in thật: parent theo dõi đúng PID/job và chuyển progress từ worker sang UI.
+pub fn run_isolated_print(
+    job: PrintWorkerJob,
+    progress_app: tauri::AppHandle,
+) -> Result<PrintWorkerResult, String> {
+    run_isolated_inner(job, Some(progress_app))
+}
+
+#[derive(Clone, Debug)]
+struct PrintRunContext {
+    job_id: String,
+    cancel_path: PathBuf,
+    progress_path: PathBuf,
+}
+
+fn print_run_context(job: &PrintWorkerJob) -> Option<PrintRunContext> {
+    match job {
+        PrintWorkerJob::PrintDirect {
+            job_id,
+            cancel_path,
+            progress_path,
+            ..
+        } => Some(PrintRunContext {
+            job_id: job_id.clone(),
+            cancel_path: PathBuf::from(cancel_path),
+            progress_path: PathBuf::from(progress_path),
+        }),
+        _ => None,
+    }
+}
+
+fn run_isolated_inner(
+    job: PrintWorkerJob,
+    progress_app: Option<tauri::AppHandle>,
+) -> Result<PrintWorkerResult, String> {
     let op_name = match &job {
         PrintWorkerJob::ListPrinters => "list_printers",
         PrintWorkerJob::Geometry { .. } => "geometry",
@@ -285,6 +354,7 @@ pub fn run_isolated(job: PrintWorkerJob) -> Result<PrintWorkerResult, String> {
         PrintWorkerJob::PrintDlg { .. } => "print_dlg",
     };
     print_breadcrumb(&format!("isolated: spawn op={op_name}"));
+    let print_context = print_run_context(&job);
 
     let temp = std::env::temp_dir();
     let id = format!(
@@ -315,15 +385,55 @@ pub fn run_isolated(job: PrintWorkerJob) -> Result<PrintWorkerResult, String> {
         cmd.creation_flags(0x08000000);
     }
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Không spawn print worker: {e}"))?;
-    PRINT_WORKER_PID.store(child.id(), Ordering::SeqCst);
+    if let Some(ref ctx) = print_context {
+        let mut registry = active_print_workers()
+            .lock()
+            .map_err(|_| "Registry job in bị khóa lỗi".to_string())?;
+        if registry.contains_key(&ctx.job_id) {
+            let _ = std::fs::remove_file(&job_path);
+            return Err(format!("Job in {} đang chạy", ctx.job_id));
+        }
+        let _ = std::fs::remove_file(&ctx.cancel_path);
+        let _ = std::fs::remove_file(&ctx.progress_path);
+        // PERF (audit 2026-08-05 §PRINT.3): registry này chỉ dành cho worker in,
+        // không còn bị list/geometry/properties ghi đè PID.
+        registry.insert(
+            ctx.job_id.clone(),
+            ActivePrintWorker {
+                pid: 0,
+                cancel_path: ctx.cancel_path.clone(),
+            },
+        );
+    }
 
-    let status = child
-        .wait()
-        .map_err(|e| format!("Chờ print worker: {e}"))?;
-    PRINT_WORKER_PID.store(0, Ordering::SeqCst);
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            unregister_print_context(print_context.as_ref(), 0);
+            let _ = std::fs::remove_file(&job_path);
+            return Err(format!("Không spawn print worker: {e}"));
+        }
+    };
+    let child_pid = child.id();
+    if let Some(ref ctx) = print_context {
+        if let Ok(mut registry) = active_print_workers().lock() {
+            if let Some(active) = registry.get_mut(&ctx.job_id) {
+                active.pid = child_pid;
+            }
+        }
+        print_breadcrumb(&format!(
+            "isolated: register job={} pid={}",
+            ctx.job_id, child_pid
+        ));
+    }
+
+    let status_result = if let Some(ref ctx) = print_context {
+        wait_print_worker(&mut child, ctx, progress_app.as_ref())
+    } else {
+        child.wait().map_err(|e| format!("Chờ print worker: {e}"))
+    };
+    unregister_print_context(print_context.as_ref(), child_pid);
+    let status = status_result?;
 
     // Dọn job input (best-effort)
     let _ = std::fs::remove_file(&job_path);
@@ -360,13 +470,136 @@ pub fn run_isolated(job: PrintWorkerJob) -> Result<PrintWorkerResult, String> {
     Ok(parsed)
 }
 
-/// Hủy job in worker (nếu đang chạy).
-pub fn kill_print_worker() {
-    let pid = PRINT_WORKER_PID.swap(0, Ordering::SeqCst);
+fn unregister_print_context(context: Option<&PrintRunContext>, pid: u32) {
+    let Some(ctx) = context else { return };
+    if let Ok(mut registry) = active_print_workers().lock() {
+        let should_remove = registry
+            .get(&ctx.job_id)
+            .is_some_and(|active| pid == 0 || active.pid == pid);
+        if should_remove {
+            registry.remove(&ctx.job_id);
+        }
+    }
+    let _ = std::fs::remove_file(&ctx.cancel_path);
+    let _ = std::fs::remove_file(&ctx.progress_path);
+}
+
+fn wait_print_worker(
+    child: &mut std::process::Child,
+    context: &PrintRunContext,
+    progress_app: Option<&tauri::AppHandle>,
+) -> Result<std::process::ExitStatus, String> {
+    let mut last_progress = String::new();
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("Theo dõi print worker: {e}"))?
+        {
+            emit_worker_progress(progress_app, &context.progress_path, &mut last_progress);
+            return Ok(status);
+        }
+        emit_worker_progress(progress_app, &context.progress_path, &mut last_progress);
+        std::thread::sleep(std::time::Duration::from_millis(60));
+    }
+}
+
+fn emit_worker_progress(
+    progress_app: Option<&tauri::AppHandle>,
+    progress_path: &Path,
+    last_progress: &mut String,
+) {
+    use tauri::Emitter;
+    let Some(app) = progress_app else { return };
+    let Ok(raw) = std::fs::read_to_string(progress_path) else {
+        return;
+    };
+    if raw == *last_progress {
+        return;
+    }
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return;
+    };
+    *last_progress = raw;
+    let _ = app.emit("print-progress", payload);
+}
+
+pub fn normalize_print_job_id(job_id: &str) -> String {
+    let safe: String = job_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        .take(80)
+        .collect();
+    if safe.is_empty() {
+        format!(
+            "print-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        )
+    } else {
+        safe
+    }
+}
+
+pub fn make_print_control_paths(job_id: &str) -> (String, String) {
+    let safe = normalize_print_job_id(job_id);
+    let base = std::env::temp_dir();
+    (
+        base.join(format!("prynx_print_{safe}.cancel"))
+            .to_string_lossy()
+            .into_owned(),
+        base.join(format!("prynx_print_{safe}.progress.json"))
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+/// Báo hủy cho đúng worker; nếu driver kẹt quá lâu thì kết thúc riêng worker đó sau thời gian ân hạn.
+pub fn cancel_print_worker(job_id: &str) -> Result<bool, String> {
+    let normalized = normalize_print_job_id(job_id);
+    let active = active_print_workers()
+        .lock()
+        .map_err(|_| "Registry job in bị khóa lỗi".to_string())?
+        .get(&normalized)
+        .cloned();
+    let Some(active) = active else {
+        print_breadcrumb(&format!("cancel: job={} not active", normalized));
+        return Ok(false);
+    };
+    std::fs::write(&active.cancel_path, b"cancel")
+        .map_err(|e| format!("Không gửi được tín hiệu hủy job in: {e}"))?;
+    print_breadcrumb(&format!(
+        "cancel: signal job={} pid={}",
+        normalized, active.pid
+    ));
+
+    if active.pid != 0 {
+        let job_id_for_guard = normalized.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let still_running = active_print_workers()
+                .lock()
+                .ok()
+                .and_then(|registry| registry.get(&job_id_for_guard).cloned())
+                .is_some_and(|current| current.pid == active.pid);
+            if still_running {
+                print_breadcrumb(&format!(
+                    "cancel: force stop job={} pid={}",
+                    job_id_for_guard, active.pid
+                ));
+                kill_worker_pid(active.pid);
+            }
+        });
+    }
+    Ok(true)
+}
+
+fn kill_worker_pid(pid: u32) {
     if pid == 0 {
         return;
     }
-    print_breadcrumb(&format!("isolated: kill worker pid={pid}"));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -380,5 +613,84 @@ pub fn kill_print_worker() {
         let _ = std::process::Command::new("kill")
             .args(["-9", &pid.to_string()])
             .output();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        active_print_workers, cancel_print_worker, make_print_control_paths,
+        normalize_print_job_id, print_run_context, ActivePrintWorker, PrintWorkerJob,
+    };
+    use std::path::PathBuf;
+
+    #[test]
+    fn print_job_id_cannot_escape_temp_directory() {
+        let normalized = normalize_print_job_id(r"..\..\bad/job:id");
+        assert_eq!(normalized, "badjobid");
+        let (cancel, progress) = make_print_control_paths(r"..\..\bad/job:id");
+        assert!(PathBuf::from(cancel).starts_with(std::env::temp_dir()));
+        assert!(PathBuf::from(progress).starts_with(std::env::temp_dir()));
+    }
+
+    #[test]
+    fn utility_workers_are_not_registered_as_print_jobs() {
+        assert!(print_run_context(&PrintWorkerJob::ListPrinters).is_none());
+        assert!(print_run_context(&PrintWorkerJob::Geometry {
+            printer_name: "Test".into(),
+            orientation: None,
+            devmode: None,
+        })
+        .is_none());
+        assert!(print_run_context(&PrintWorkerJob::OpenProperties {
+            printer_name: "Test".into(),
+            current_devmode: None,
+            advanced: false,
+        })
+        .is_none());
+    }
+
+    #[test]
+    fn system_dialog_keeps_parent_window_handle_across_worker_protocol() {
+        let job = PrintWorkerJob::PrintDlg {
+            file_path: "C:\\Temp\\job.pdf".into(),
+            from_page: Some(1),
+            to_page: Some(1),
+            scale_mode: Some("shrink".into()),
+            auto_rotate: false,
+            owner_hwnd: 12345,
+        };
+        let json = serde_json::to_string(&job).unwrap();
+        let decoded: PrintWorkerJob = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            decoded,
+            PrintWorkerJob::PrintDlg {
+                owner_hwnd: 12345,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn cancel_signal_targets_only_the_requested_job() {
+        let job_id = normalize_print_job_id("print-target");
+        let (cancel_path, _) = make_print_control_paths(&job_id);
+        let cancel_path = PathBuf::from(cancel_path);
+        let _ = std::fs::remove_file(&cancel_path);
+        active_print_workers().lock().unwrap().insert(
+            job_id.clone(),
+            ActivePrintWorker {
+                pid: 0,
+                cancel_path: cancel_path.clone(),
+            },
+        );
+
+        assert!(!cancel_print_worker("print-other").unwrap());
+        assert!(!cancel_path.exists());
+        assert!(cancel_print_worker(&job_id).unwrap());
+        assert!(cancel_path.exists());
+
+        active_print_workers().lock().unwrap().remove(&job_id);
+        let _ = std::fs::remove_file(cancel_path);
     }
 }

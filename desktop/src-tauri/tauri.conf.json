@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "PrynX",
-  "version": "1.0.0-rc.3",
+  "version": "1.0.0-rc.4",
   "identifier": "com.prynx.app",
   "build": {
     "frontendDist": "../dist",
@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "PrynX - Print made easy!",
         "width": 1400,
         "height": 900,
@@ -25,6 +26,22 @@
         "transparent": true,
         "dragDropEnabled": true,
         "additionalBrowserArgs": "--disable-features=msWebView2EnableDraggableRegions,CalculateNativeWinOcclusion --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding"
+      },
+      {
+        "label": "startup",
+        "title": "PrynX",
+        "url": "startup.html",
+        "width": 520,
+        "height": 300,
+        "center": true,
+        "resizable": false,
+        "fullscreen": false,
+        "visible": true,
+        "decorations": false,
+        "transparent": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "dragDropEnabled": false
       }
     ],
     "security": {

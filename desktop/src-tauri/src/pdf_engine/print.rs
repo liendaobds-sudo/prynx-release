@@ -14,10 +14,33 @@ use crate::pdf_engine::print_layout::{
     booklet_sheet_sides, chunk_pages, collect_page_numbers, multipage_grid, poster_tiles,
     LayoutMode, PageSubset,
 };
-use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
+#[derive(Clone, Debug)]
+pub(crate) struct PrintJobControl {
+    pub job_id: String,
+    pub cancel_path: std::path::PathBuf,
+    pub progress_path: std::path::PathBuf,
+}
 
-/// User bấm Hủy trong UI → set true; job in kiểm tra giữa các tờ.
-static PRINT_CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
+impl PrintJobControl {
+    fn is_cancelled(&self) -> bool {
+        self.cancel_path.exists()
+    }
+
+    fn report(&self, stage: &str, current: u32, total: u32, spooler_job_id: Option<i32>) {
+        let payload = serde_json::json!({
+            "jobId": self.job_id,
+            "stage": stage,
+            "current": current,
+            "total": total,
+            "spoolerJobId": spooler_job_id,
+        });
+        // PERF (audit 2026-08-05 §PRINT.3/5): file rất nhỏ, chỉ ghi một lần mỗi tờ để
+        // parent process chuyển tiếp progress mà vẫn giữ driver trong worker cách ly.
+        let _ = std::fs::write(&self.progress_path, payload.to_string());
+    }
+}
 
 /// Breadcrumb chẩn đoán crash Ctrl+P release → %APPDATA%\PrynX\logs\print_debug.log
 pub fn print_breadcrumb(msg: &str) {
@@ -477,10 +500,12 @@ pub async fn print_pdf(
             to_page,
             scale_mode,
             auto_rotate,
+            // UIUX (audit 2026-08-05 §PRINT.4): worker vẫn cách ly driver nhưng dialog
+            // Windows được gắn với cửa sổ PrynX, không còn bật khuất phía sau.
+            owner_hwnd,
         };
-        let r = crate::pdf_engine::print_worker::run_isolated(job).map(|res| {
-            res.printed.unwrap_or(false)
-        });
+        let r = crate::pdf_engine::print_worker::run_isolated(job)
+            .map(|res| res.printed.unwrap_or(false));
         if delete_after.unwrap_or(false) {
             remove_owned_print_temp(&file_path);
         }
@@ -631,7 +656,7 @@ pub(crate) fn print_pdf_blocking(
         print_annotations: true,
         ..PrintJobOptions::default()
     };
-    let result = run_print_job(b, doc, hdc, opts, &doc_name, None);
+    let result = run_print_job(b, doc, hdc, opts, &doc_name, None, None, None);
     unsafe {
         let _ = DeleteDC(hdc);
     }
@@ -685,7 +710,7 @@ impl Default for PrintJobOptions {
 
 // Chạy lệnh in vào một HDC máy in ĐÃ CÓ (dùng chung cho print_pdf qua PrintDlgW và
 // print_pdf_direct qua CreateDCW). KHÔNG sở hữu hdc/doc — caller đóng cả hai ở mọi nhánh.
-// progress_app: emit event "print-progress" (tránh dyn Fn — LNK2001 với MSVC).
+// control: cancel/progress qua file rất nhỏ để worker vẫn cách ly driver khỏi process UI.
 #[cfg(windows)]
 fn run_print_job(
     b: &dyn pdfium_render::prelude::PdfiumLibraryBindings,
@@ -693,14 +718,20 @@ fn run_print_job(
     hdc: windows::Win32::Graphics::Gdi::HDC,
     opts: PrintJobOptions,
     doc_name: &str,
-    progress_app: Option<tauri::AppHandle>,
+    output_path: Option<&str>,
+    printer_name: Option<&str>,
+    control: Option<PrintJobControl>,
 ) -> Result<(), String> {
-    use tauri::Emitter;
     use windows::core::PCWSTR;
     use windows::Win32::Graphics::Gdi::{GetDeviceCaps, HORZRES, LOGPIXELSX, LOGPIXELSY, VERTRES};
     use windows::Win32::Storage::Xps::{AbortDoc, EndDoc, EndPage, StartDocW, StartPage, DOCINFOW};
 
-    PRINT_CANCEL_FLAG.store(false, Ordering::SeqCst);
+    if control.as_ref().is_some_and(PrintJobControl::is_cancelled) {
+        if let Some(ref ctl) = control {
+            ctl.report("cancelled", 0, 0, None);
+        }
+        return Err("Đã hủy lệnh in".into());
+    }
 
     const FPDF_ANNOT: i32 = 0x01;
     const FPDF_GRAYSCALE: i32 = 0x08;
@@ -724,14 +755,31 @@ fn run_print_job(
     let _render_guard = crate::lock_mutex(&crate::RENDER_LOCK);
 
     let doc_name_w: Vec<u16> = doc_name.encode_utf16().chain(std::iter::once(0)).collect();
+    let output_path_w = output_path.map(to_wide_nul);
     let mut di = DOCINFOW::default();
     di.cbSize = std::mem::size_of::<DOCINFOW>() as i32;
     di.lpszDocName = PCWSTR(doc_name_w.as_ptr());
+    if let Some(ref path) = output_path_w {
+        // FIX (audit 2026-08-05 §PRINT.1): PORTPROMPT/file printer cần lpszOutput;
+        // nếu để NULL, spooler có thể tạo rồi tự hủy job mà không sinh file.
+        di.lpszOutput = PCWSTR(path.as_ptr());
+    }
 
-    let job = unsafe { StartDocW(hdc, &di) };
-    if job <= 0 {
+    let spooler_job_id = unsafe { StartDocW(hdc, &di) };
+    if spooler_job_id <= 0 {
+        if let Some(ref ctl) = control {
+            ctl.report("start_doc_failed", 0, 0, None);
+        }
         return Err("StartDoc thất bại (không bắt đầu được lệnh in)".into());
     }
+    print_breadcrumb(&format!(
+        "job={} stage=start_doc spooler_job_id={}",
+        control
+            .as_ref()
+            .map(|c| c.job_id.as_str())
+            .unwrap_or("legacy"),
+        spooler_job_id
+    ));
 
     let pages = collect_page_numbers(
         opts.start_pg,
@@ -748,48 +796,58 @@ fn run_print_job(
     }
 
     // Render one logical PDF page into a rectangle on the current sheet.
-    let render_page_in_rect = |pg: i32, cell_x: i32, cell_y: i32, cell_w: f64, cell_h: f64| -> Result<(), String> {
-        if pg <= 0 {
-            return Ok(()); // blank slot (booklet pad)
-        }
-        let idx = pg - 1;
-        let mut w_pt: f64 = 0.0;
-        let mut h_pt: f64 = 0.0;
-        let ok = b.FPDF_GetPageSizeByIndex(doc, idx, &mut w_pt, &mut h_pt);
-        if ok == 0 || w_pt <= 0.0 || h_pt <= 0.0 {
-            return Err(format!("Không đọc được kích thước trang {}", pg));
-        }
-        let page = b.FPDF_LoadPage(doc, idx);
-        if page.is_null() {
-            return Err(format!("Không load được trang {}", pg));
-        }
-        let page_w_px = w_pt / 72.0 * dpi_x;
-        let page_h_px = h_pt / 72.0 * dpi_y;
-        let rotated_w_px = h_pt / 72.0 * dpi_x;
-        let rotated_h_px = w_pt / 72.0 * dpi_y;
-        let (scale, rotate_page) = plan_scale_with_rotation_dimensions(
-            page_w_px,
-            page_h_px,
-            rotated_w_px,
-            rotated_h_px,
-            cell_w,
-            cell_h,
-            opts.mode,
-            opts.auto_rotate,
-        );
-        let (effective_w, effective_h, rotation) = if rotate_page {
-            (rotated_w_px, rotated_h_px, 1)
-        } else {
-            (page_w_px, page_h_px, 0)
+    let render_page_in_rect =
+        |pg: i32, cell_x: i32, cell_y: i32, cell_w: f64, cell_h: f64| -> Result<(), String> {
+            if pg <= 0 {
+                return Ok(()); // blank slot (booklet pad)
+            }
+            let idx = pg - 1;
+            let mut w_pt: f64 = 0.0;
+            let mut h_pt: f64 = 0.0;
+            let ok = b.FPDF_GetPageSizeByIndex(doc, idx, &mut w_pt, &mut h_pt);
+            if ok == 0 || w_pt <= 0.0 || h_pt <= 0.0 {
+                return Err(format!("Không đọc được kích thước trang {}", pg));
+            }
+            let page = b.FPDF_LoadPage(doc, idx);
+            if page.is_null() {
+                return Err(format!("Không load được trang {}", pg));
+            }
+            let page_w_px = w_pt / 72.0 * dpi_x;
+            let page_h_px = h_pt / 72.0 * dpi_y;
+            let rotated_w_px = h_pt / 72.0 * dpi_x;
+            let rotated_h_px = w_pt / 72.0 * dpi_y;
+            let (scale, rotate_page) = plan_scale_with_rotation_dimensions(
+                page_w_px,
+                page_h_px,
+                rotated_w_px,
+                rotated_h_px,
+                cell_w,
+                cell_h,
+                opts.mode,
+                opts.auto_rotate,
+            );
+            let (effective_w, effective_h, rotation) = if rotate_page {
+                (rotated_w_px, rotated_h_px, 1)
+            } else {
+                (page_w_px, page_h_px, 0)
+            };
+            let draw_w = (effective_w * scale).round() as i32;
+            let draw_h = (effective_h * scale).round() as i32;
+            let off_x = cell_x + ((cell_w - draw_w as f64) / 2.0).round() as i32;
+            let off_y = cell_y + ((cell_h - draw_h as f64) / 2.0).round() as i32;
+            b.FPDF_RenderPage(
+                hdc,
+                page,
+                off_x,
+                off_y,
+                draw_w,
+                draw_h,
+                rotation,
+                render_flags,
+            );
+            b.FPDF_ClosePage(page);
+            Ok(())
         };
-        let draw_w = (effective_w * scale).round() as i32;
-        let draw_h = (effective_h * scale).round() as i32;
-        let off_x = cell_x + ((cell_w - draw_w as f64) / 2.0).round() as i32;
-        let off_y = cell_y + ((cell_h - draw_h as f64) / 2.0).round() as i32;
-        b.FPDF_RenderPage(hdc, page, off_x, off_y, draw_w, draw_h, rotation, render_flags);
-        b.FPDF_ClosePage(page);
-        Ok(())
-    };
 
     let start_sheet = || -> Result<(), String> {
         if unsafe { StartPage(hdc) } <= 0 {
@@ -806,7 +864,7 @@ fn run_print_job(
         }
     };
     let check_cancel = || -> Result<(), String> {
-        if PRINT_CANCEL_FLAG.load(Ordering::SeqCst) {
+        if control.as_ref().is_some_and(PrintJobControl::is_cancelled) {
             Err("Đã hủy lệnh in".into())
         } else {
             Ok(())
@@ -831,13 +889,7 @@ fn run_print_job(
     match opts.layout {
         LayoutMode::Size => {
             for &pg in &pages {
-                sheet_plans.push(SheetPlan::Cells(vec![(
-                    pg,
-                    0,
-                    0,
-                    printable_w,
-                    printable_h,
-                )]));
+                sheet_plans.push(SheetPlan::Cells(vec![(pg, 0, 0, printable_w, printable_h)]));
             }
         }
         LayoutMode::Multiple => {
@@ -912,14 +964,14 @@ fn run_print_job(
     }
 
     let total = final_sheets.len() as u32;
+    if let Some(ref ctl) = control {
+        ctl.report("rendering", 0, total, Some(spooler_job_id));
+    }
     let render_result: Result<(), String> = (|| {
         for (i, plan) in final_sheets.iter().enumerate() {
             check_cancel()?;
-            if let Some(ref app) = progress_app {
-                let _ = app.emit(
-                    "print-progress",
-                    serde_json::json!({ "current": (i as u32) + 1, "total": total }),
-                );
+            if let Some(ref ctl) = control {
+                ctl.report("rendering", (i as u32) + 1, total, Some(spooler_job_id));
             }
             start_sheet()?;
             match plan {
@@ -964,16 +1016,7 @@ fn run_print_job(
                         - (*col as f64 * printable_w).round() as i32;
                     let base_y = ((full_h - draw_h as f64) / 2.0).round() as i32
                         - (*row as f64 * printable_h).round() as i32;
-                    b.FPDF_RenderPage(
-                        hdc,
-                        page_h,
-                        base_x,
-                        base_y,
-                        draw_w,
-                        draw_h,
-                        0,
-                        render_flags,
-                    );
+                    b.FPDF_RenderPage(hdc, page_h, base_x, base_y, draw_w, draw_h, 0, render_flags);
                     b.FPDF_ClosePage(page_h);
                 }
             }
@@ -986,14 +1029,119 @@ fn run_print_job(
         unsafe {
             let _ = AbortDoc(hdc);
         }
+        if let Some(ref ctl) = control {
+            let stage = if ctl.is_cancelled() {
+                "cancelled"
+            } else {
+                "render_failed"
+            };
+            ctl.report(stage, 0, total, Some(spooler_job_id));
+        }
+        print_breadcrumb(&format!(
+            "job={} stage=abort_doc error={}",
+            control
+                .as_ref()
+                .map(|c| c.job_id.as_str())
+                .unwrap_or("legacy"),
+            e
+        ));
         return Err(e);
     }
 
     let end = unsafe { EndDoc(hdc) };
     if end <= 0 {
+        if let Some(ref ctl) = control {
+            ctl.report("end_doc_failed", total, total, Some(spooler_job_id));
+        }
         return Err("EndDoc thất bại (lệnh in không hoàn tất)".into());
     }
+    if let Some(printer) = printer_name {
+        if let Some(status) = query_spooler_job_status(printer, spooler_job_id as u32) {
+            print_breadcrumb(&format!(
+                "job={} stage=spooler_status id={} status=0x{:X} pages={}/{} text={}",
+                control
+                    .as_ref()
+                    .map(|c| c.job_id.as_str())
+                    .unwrap_or("legacy"),
+                spooler_job_id,
+                status.flags,
+                status.pages_printed,
+                status.total_pages,
+                status.text
+            ));
+            if status.flags & windows::Win32::Graphics::Printing::JOB_STATUS_ERROR != 0 {
+                if let Some(ref ctl) = control {
+                    ctl.report("spooler_error", total, total, Some(spooler_job_id));
+                }
+                return Err(format!(
+                    "Windows Print Spooler báo lỗi cho job {}: {}",
+                    spooler_job_id, status.text
+                ));
+            }
+        } else {
+            // Job có thể đã ra khỏi queue rất nhanh (đã in xong); ghi rõ để chẩn đoán,
+            // không biến trạng thái bình thường này thành lỗi giả.
+            print_breadcrumb(&format!(
+                "job={} stage=spooler_status id={} no_longer_queued",
+                control
+                    .as_ref()
+                    .map(|c| c.job_id.as_str())
+                    .unwrap_or("legacy"),
+                spooler_job_id
+            ));
+        }
+    }
+    if let Some(ref ctl) = control {
+        ctl.report("completed", total, total, Some(spooler_job_id));
+    }
+    print_breadcrumb(&format!(
+        "job={} stage=end_doc spooler_job_id={}",
+        control
+            .as_ref()
+            .map(|c| c.job_id.as_str())
+            .unwrap_or("legacy"),
+        spooler_job_id
+    ));
     Ok(())
+}
+
+#[cfg(windows)]
+struct SpoolerJobStatus {
+    flags: u32,
+    total_pages: u32,
+    pages_printed: u32,
+    text: String,
+}
+
+#[cfg(windows)]
+fn query_spooler_job_status(printer_name: &str, job_id: u32) -> Option<SpoolerJobStatus> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Graphics::Printing::{ClosePrinter, GetJobW, OpenPrinterW, JOB_INFO_1W};
+
+    let printer_w = to_wide_nul(printer_name);
+    let mut handle = Default::default();
+    unsafe {
+        OpenPrinterW(PCWSTR(printer_w.as_ptr()), &mut handle, None).ok()?;
+        let mut needed = 0u32;
+        let _ = GetJobW(handle, job_id, 1, None, &mut needed);
+        if needed == 0 {
+            let _ = ClosePrinter(handle);
+            return None;
+        }
+        let mut buffer = vec![0u8; needed as usize];
+        let ok = GetJobW(handle, job_id, 1, Some(&mut buffer), &mut needed).as_bool();
+        let _ = ClosePrinter(handle);
+        if !ok {
+            return None;
+        }
+        let info = &*(buffer.as_ptr() as *const JOB_INFO_1W);
+        Some(SpoolerJobStatus {
+            flags: info.Status,
+            total_pages: info.TotalPages,
+            pages_printed: info.PagesPrinted,
+            text: pwstr_to_string(info.pStatus),
+        })
+    }
 }
 
 // In THẲNG vào máy in đã chọn (hộp thoại in kiểu Acrobat), KHÔNG bung PrintDlgW.
@@ -1004,8 +1152,10 @@ fn run_print_job(
 #[tauri::command]
 pub async fn print_pdf_direct(
     app: tauri::AppHandle,
+    job_id: String,
     file_path: String,
     printer_name: String,
+    output_path: Option<String>,
     from_page: Option<i32>,
     to_page: Option<i32>,
     copies: Option<i32>,
@@ -1028,15 +1178,24 @@ pub async fn print_pdf_direct(
     use tauri::Emitter;
     let auto_rotate = auto_rotate.unwrap_or(false);
     let app_done = app.clone();
+    let job_id = crate::pdf_engine::print_worker::normalize_print_job_id(&job_id);
+    let (cancel_path, progress_path) =
+        crate::pdf_engine::print_worker::make_print_control_paths(&job_id);
     print_breadcrumb(&format!(
-        "print_pdf_direct: enter isolated printer={:?} pages={:?}-{:?}",
-        printer_name, from_page, to_page
+        "print_pdf_direct: enter job={} isolated printer={:?} pages={:?}-{:?}",
+        job_id, printer_name, from_page, to_page
     ));
     let scale_mode_s = scale_mode.clone().unwrap_or_else(|| "shrink".into());
+    let job_id_for_worker = job_id.clone();
+    let job_id_for_done = job_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let job = crate::pdf_engine::print_worker::PrintWorkerJob::PrintDirect {
+            job_id: job_id_for_worker,
+            cancel_path,
+            progress_path,
             file_path: file_path.clone(),
             printer_name,
+            output_path,
             from_page,
             to_page,
             copies: normalize_copies(copies),
@@ -1055,16 +1214,21 @@ pub async fn print_pdf_direct(
             poster_rows: poster_rows.unwrap_or(2).clamp(1, 6),
             devmode,
         };
-        let r = crate::pdf_engine::print_worker::run_isolated(job)
+        let r = crate::pdf_engine::print_worker::run_isolated_print(job, app_done.clone())
             .map(|res| res.printed.unwrap_or(false));
         if delete_after.unwrap_or(false) {
             remove_owned_print_temp(&file_path);
         }
         let _ = app_done.emit(
             "print-progress",
-            serde_json::json!({ "current": 0, "total": 0, "done": true }),
+            serde_json::json!({
+                "jobId": job_id_for_done,
+                "current": 0,
+                "total": 0,
+                "done": true
+            }),
         );
-        print_breadcrumb("print_pdf_direct: leave");
+        print_breadcrumb(&format!("print_pdf_direct: leave job={}", job_id_for_done));
         r
     })
     .await
@@ -1074,10 +1238,8 @@ pub async fn print_pdf_direct(
 
 #[cfg(windows)]
 #[tauri::command]
-pub fn cancel_print_job() -> Result<(), String> {
-    PRINT_CANCEL_FLAG.store(true, Ordering::SeqCst);
-    crate::pdf_engine::print_worker::kill_print_worker();
-    Ok(())
+pub fn cancel_print_job(job_id: String) -> Result<bool, String> {
+    crate::pdf_engine::print_worker::cancel_print_worker(&job_id)
 }
 
 #[cfg(windows)]
@@ -1099,8 +1261,9 @@ pub(crate) fn print_direct_blocking(
     pages_per_sheet: u32,
     poster_cols: u32,
     poster_rows: u32,
+    output_path: Option<String>,
     devmode: Option<Vec<u8>>,
-    progress_app: Option<tauri::AppHandle>,
+    control: Option<PrintJobControl>,
 ) -> Result<bool, String> {
     use windows::core::PCWSTR;
     use windows::Win32::Graphics::Gdi::{CreateDCW, DeleteDC, DEVMODEW};
@@ -1110,6 +1273,9 @@ pub(crate) fn print_direct_blocking(
     }
     if printer_name.trim().is_empty() {
         return Err("Chưa chọn máy in".into());
+    }
+    if control.as_ref().is_some_and(PrintJobControl::is_cancelled) {
+        return Err("Đã hủy lệnh in".into());
     }
 
     // Mở doc qua raw FFI (giống print_pdf). Mọi nhánh thoát PHẢI đóng doc.
@@ -1182,7 +1348,16 @@ pub(crate) fn print_direct_blocking(
         poster_cols,
         poster_rows,
     };
-    let result = run_print_job(b, doc, hdc, opts, &doc_name, progress_app);
+    let result = run_print_job(
+        b,
+        doc,
+        hdc,
+        opts,
+        &doc_name,
+        output_path.as_deref(),
+        Some(&printer_name),
+        control,
+    );
     unsafe {
         let _ = DeleteDC(hdc);
     }
@@ -1194,6 +1369,14 @@ pub(crate) fn print_direct_blocking(
 pub struct PrinterInfo {
     pub name: String,
     pub is_default: bool,
+    #[serde(default)]
+    pub driver_name: String,
+    #[serde(default)]
+    pub port_name: String,
+    #[serde(default)]
+    pub requires_output_path: bool,
+    #[serde(default)]
+    pub output_extension: Option<String>,
 }
 
 // Liệt kê máy in cho dropdown của hộp thoại in. Máy in mặc định đứng đầu (is_default).
@@ -1229,7 +1412,7 @@ pub(crate) fn list_printers_blocking() -> Result<Vec<PrinterInfo>, String> {
     use windows::core::PWSTR;
     use windows::Win32::Graphics::Printing::{
         EnumPrintersW, GetDefaultPrinterW, PRINTER_ENUM_CONNECTIONS, PRINTER_ENUM_LOCAL,
-        PRINTER_INFO_4W,
+        PRINTER_INFO_5W,
     };
 
     // Tên máy in mặc định (two-call). Lỗi → None (tolerate).
@@ -1254,7 +1437,7 @@ pub(crate) fn list_printers_blocking() -> Result<Vec<PrinterInfo>, String> {
         // Lần 1: lấy byte count cần cấp.
         let mut needed: u32 = 0;
         let mut returned: u32 = 0;
-        let _ = EnumPrintersW(flags, None, 4, None, &mut needed, &mut returned);
+        let _ = EnumPrintersW(flags, None, 5, None, &mut needed, &mut returned);
         if needed == 0 {
             return Ok(vec![]);
         }
@@ -1263,7 +1446,7 @@ pub(crate) fn list_printers_blocking() -> Result<Vec<PrinterInfo>, String> {
         EnumPrintersW(
             flags,
             None,
-            4,
+            5,
             Some(&mut buf[..]),
             &mut needed,
             &mut returned,
@@ -1272,16 +1455,27 @@ pub(crate) fn list_printers_blocking() -> Result<Vec<PrinterInfo>, String> {
 
         // Con trỏ tên trỏ VÀO đuôi buffer — convert String TRƯỚC khi drop buf.
         let infos =
-            std::slice::from_raw_parts(buf.as_ptr() as *const PRINTER_INFO_4W, returned as usize);
+            std::slice::from_raw_parts(buf.as_ptr() as *const PRINTER_INFO_5W, returned as usize);
         let mut out: Vec<PrinterInfo> = infos
             .iter()
             .map(|info| {
                 let name = pwstr_to_string(info.pPrinterName);
+                let port_name = pwstr_to_string(info.pPortName);
+                let driver_name = get_printer_driver_name(&name).unwrap_or_default();
                 let is_default = default_name
                     .as_deref()
                     .map(|d| d.eq_ignore_ascii_case(&name))
                     .unwrap_or(false);
-                PrinterInfo { name, is_default }
+                let (requires_output_path, output_extension) =
+                    classify_file_printer(&name, &driver_name, &port_name);
+                PrinterInfo {
+                    name,
+                    is_default,
+                    driver_name,
+                    port_name,
+                    requires_output_path,
+                    output_extension,
+                }
             })
             .filter(|p| !p.name.is_empty())
             .collect();
@@ -1290,6 +1484,72 @@ pub(crate) fn list_printers_blocking() -> Result<Vec<PrinterInfo>, String> {
         out.sort_by_key(|p| !p.is_default);
         Ok(out)
     }
+}
+
+#[cfg(windows)]
+fn get_printer_driver_name(printer_name: &str) -> Option<String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Graphics::Printing::{
+        ClosePrinter, GetPrinterDriverW, OpenPrinterW, DRIVER_INFO_2W,
+    };
+
+    let printer_w = to_wide_nul(printer_name);
+    let mut handle = Default::default();
+    unsafe {
+        if OpenPrinterW(PCWSTR(printer_w.as_ptr()), &mut handle, None).is_err() {
+            return None;
+        }
+        let mut needed = 0u32;
+        let _ = GetPrinterDriverW(handle, PCWSTR::null(), 2, None, &mut needed);
+        if needed == 0 {
+            let _ = ClosePrinter(handle);
+            return None;
+        }
+        let mut buffer = vec![0u8; needed as usize];
+        let ok =
+            GetPrinterDriverW(handle, PCWSTR::null(), 2, Some(&mut buffer), &mut needed).as_bool();
+        let _ = ClosePrinter(handle);
+        if !ok {
+            return None;
+        }
+        let info = &*(buffer.as_ptr() as *const DRIVER_INFO_2W);
+        let name = pwstr_to_string(info.pName);
+        (!name.is_empty()).then_some(name)
+    }
+}
+
+fn classify_file_printer(
+    printer_name: &str,
+    driver_name: &str,
+    port_name: &str,
+) -> (bool, Option<String>) {
+    let identity = format!("{printer_name} {driver_name}").to_ascii_lowercase();
+    let file_port = port_name.split(',').any(|port| {
+        matches!(
+            port.trim().to_ascii_uppercase().as_str(),
+            "PORTPROMPT:" | "FILE:"
+        )
+    });
+    let known_pdf = [
+        "microsoft print to pdf",
+        "adobe pdf",
+        "foxit pdf",
+        "pdfcreator",
+        "bullzip pdf",
+        "dopdf",
+    ]
+    .iter()
+    .any(|needle| identity.contains(needle));
+    let known_xps = identity.contains("xps document writer");
+    let requires_output = file_port || known_pdf || known_xps;
+    let extension = if !requires_output {
+        None
+    } else if known_xps {
+        Some("xps".to_string())
+    } else {
+        Some("pdf".to_string())
+    };
+    (requires_output, extension)
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1467,8 +1727,10 @@ pub fn delete_print_temp(_path: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn print_pdf_direct(
     _app: tauri::AppHandle,
+    _job_id: String,
     _file_path: String,
     _printer_name: String,
+    _output_path: Option<String>,
     _from_page: Option<i32>,
     _to_page: Option<i32>,
     _copies: Option<i32>,
@@ -1493,15 +1755,15 @@ pub async fn print_pdf_direct(
 
 #[cfg(not(windows))]
 #[tauri::command]
-pub fn cancel_print_job() -> Result<(), String> {
-    Ok(())
+pub fn cancel_print_job(_job_id: String) -> Result<bool, String> {
+    Ok(false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        fit_ratio, for_each_print_page, normalize_copies, parse_scale_mode, plan_scale,
-        plan_scale_with_rotation_dimensions, resolve_scale_mode, ScaleMode,
+        classify_file_printer, fit_ratio, for_each_print_page, normalize_copies, parse_scale_mode,
+        plan_scale, plan_scale_with_rotation_dimensions, resolve_scale_mode, ScaleMode,
     };
 
     fn collect_pages(start: i32, end: i32, copies: i32, collate: bool) -> Vec<i32> {
@@ -1512,6 +1774,94 @@ mod tests {
         })
         .unwrap();
         pages
+    }
+
+    #[test]
+    fn file_printers_are_classified_before_start_doc() {
+        assert_eq!(
+            classify_file_printer(
+                "Microsoft Print to PDF",
+                "Microsoft Print To PDF",
+                "PORTPROMPT:"
+            ),
+            (true, Some("pdf".into()))
+        );
+        assert_eq!(
+            classify_file_printer("Microsoft XPS Document Writer", "XPSDrv", "PORTPROMPT:"),
+            (true, Some("xps".into()))
+        );
+        assert_eq!(
+            classify_file_printer("Máy in xưởng", "Generic Driver", "USB001"),
+            (false, None)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "Tạo một job Microsoft Print to PDF thật; chỉ chạy thủ công khi audit runtime"]
+    fn microsoft_print_to_pdf_runtime_smoke() {
+        let input =
+            std::env::var("PRYNX_PRINT_SMOKE_INPUT").expect("Thiếu PRYNX_PRINT_SMOKE_INPUT");
+        let output =
+            std::env::var("PRYNX_PRINT_SMOKE_OUTPUT").expect("Thiếu PRYNX_PRINT_SMOKE_OUTPUT");
+        let printer = std::env::var("PRYNX_PRINT_SMOKE_PRINTER")
+            .unwrap_or_else(|_| "Microsoft Print to PDF".into());
+
+        let printed = super::print_direct_blocking(
+            input,
+            printer,
+            Some(1),
+            Some(1),
+            1,
+            true,
+            ScaleMode::Actual,
+            Some("auto"),
+            false,
+            false,
+            true,
+            false,
+            crate::pdf_engine::print_layout::PageSubset::All,
+            crate::pdf_engine::print_layout::LayoutMode::Size,
+            2,
+            2,
+            2,
+            Some(output.clone()),
+            None,
+            None,
+        )
+        .expect("Job Microsoft Print to PDF phải hoàn tất");
+        assert!(printed);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut output_ready = false;
+        while std::time::Instant::now() < deadline {
+            if std::fs::metadata(&output)
+                .map(|meta| meta.len() > 100)
+                .unwrap_or(false)
+            {
+                output_ready = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            output_ready,
+            "Job báo xong nhưng không sinh file PDF hợp lệ: {output}"
+        );
+
+        let pdfium = crate::ensure_pdfium().expect("Phải mở lại được PDF kết quả");
+        let bindings = pdfium.bindings();
+        let doc = bindings.FPDF_LoadDocument(&output, None);
+        assert!(!doc.is_null(), "PDF kết quả phải mở lại được");
+        assert_eq!(bindings.FPDF_GetPageCount(doc), 1);
+        let mut width_pt = 0.0;
+        let mut height_pt = 0.0;
+        assert_ne!(
+            bindings.FPDF_GetPageSizeByIndex(doc, 0, &mut width_pt, &mut height_pt),
+            0
+        );
+        bindings.FPDF_CloseDocument(doc);
+        assert!(width_pt > 0.0 && height_pt > 0.0);
     }
 
     #[test]

@@ -1,3 +1,5 @@
+import { appVisibilityGate, type AppVisibilityGate } from '../../lib/appVisibility';
+
 export class SupersededTileRenderError extends Error {
     constructor() {
         super('Yêu cầu dựng hình đã được thay bằng yêu cầu mới hơn');
@@ -76,9 +78,13 @@ export class TileRenderScheduler<T> {
     private sequence = 0;
     private pumpScheduled = false;
     private pumpTimer: ReturnType<typeof setTimeout> | null = null;
+    private foregroundUnsubscribe: (() => void) | null = null;
     private quarantined = false;
 
-    constructor(private readonly maxConcurrent = 1) {
+    constructor(
+        private readonly maxConcurrent = 1,
+        private readonly visibility: AppVisibilityGate = appVisibilityGate,
+    ) {
         if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1) {
             throw new Error('maxConcurrent phải là số nguyên dương');
         }
@@ -155,6 +161,8 @@ export class TileRenderScheduler<T> {
             clearTimeout(this.pumpTimer);
             this.pumpTimer = null;
         }
+        this.foregroundUnsubscribe?.();
+        this.foregroundUnsubscribe = null;
         this.pumpScheduled = false;
     }
 
@@ -223,6 +231,10 @@ export class TileRenderScheduler<T> {
     }
 
     private pump(): void {
+        if (this.visibility.isBackgrounded()) {
+            this.pauseUntilForeground();
+            return;
+        }
         while (this.activeCount < this.maxConcurrent && this.queued.length > 0) {
             this.queued.sort((left, right) =>
                 left.priority - right.priority || left.sequence - right.sequence
@@ -248,6 +260,23 @@ export class TileRenderScheduler<T> {
                     }
                 });
         }
+    }
+
+    private pauseUntilForeground(): void {
+        if (this.foregroundUnsubscribe !== null) return;
+
+        const resume = () => {
+            if (this.visibility.isBackgrounded()) return;
+            const unsubscribe = this.foregroundUnsubscribe;
+            this.foregroundUnsubscribe = null;
+            unsubscribe?.();
+            this.schedulePump();
+        };
+        this.foregroundUnsubscribe = this.visibility.subscribe(backgrounded => {
+            if (!backgrounded) resume();
+        });
+        // Đóng race nếu foreground xảy ra giữa lần kiểm tra trong pump và lúc subscribe.
+        resume();
     }
 }
 

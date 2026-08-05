@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import type { PontConfig } from './types';
 import { toast } from '../ui/Toast';
 import { useTranslation } from 'react-i18next';
+import { getPontConfigValidationError } from './pontConfigValidation';
 
 export const DEFAULT_PONT_CONFIG: PontConfig = {
     shape: 'circle',
@@ -53,10 +54,14 @@ export const PontSettingsDialog = ({
     const [localCfg, setLocalCfg] = useState<PontConfig>(config);
     const [presetName, setPresetName] = useState('');
     const [presets, setPresets] = useState<Preset[]>([]);
+    const validationErrorKey = getPontConfigValidationError(localCfg);
+    const validationError = validationErrorKey
+        ? t(`imposition.pontSettingsDialog:${validationErrorKey}`)
+        : '';
 
     useEffect(() => {
         if (isOpen) {
-            setLocalCfg(config);
+            setLocalCfg({ ...DEFAULT_PONT_CONFIG, ...config });
             const savedPresets = localStorage.getItem('ps_pont_presets');
             if (savedPresets) {
                 try {
@@ -71,6 +76,10 @@ export const PontSettingsDialog = ({
     }, [isOpen, config]);
 
     const savePreset = () => {
+        if (validationError) {
+            toast.info(validationError);
+            return;
+        }
         if (!presetName.trim()) {
             toast.info(t('imposition.pontSettingsDialog:vui_long_nhap_ten_mau_truoc_khi_luu'));
             return;
@@ -86,7 +95,7 @@ export const PontSettingsDialog = ({
         if (!val) return;
         const p = presets.find(x => x.name === val);
         if (p) {
-            setLocalCfg(p.config);
+            setLocalCfg({ ...DEFAULT_PONT_CONFIG, ...p.config });
             setPresetName(p.name);
         }
     };
@@ -193,7 +202,7 @@ export const PontSettingsDialog = ({
                                 </div>
                                 <div>
                                     <label className={labelCls}>{t('imposition.pontSettingsDialog:duong_kinh_mm')}</label>
-                                    <input type="number" step="0.1" value={localCfg.size} onChange={e => updateLocal('size', Number(e.target.value))} className={inputCls} />
+                                    <input type="number" min="0.01" step="0.1" value={localCfg.size} onChange={e => updateLocal('size', Number(e.target.value))} className={inputCls} />
                                 </div>
                                 
                                 <div className="col-span-2 flex items-center gap-3 mt-1 mb-1">
@@ -209,7 +218,7 @@ export const PontSettingsDialog = ({
                                 {localCfg.isGraphtec && (
                                     <div className="col-span-2">
                                         <label className={labelCls}>Graphtec Info Layer Name</label>
-                                        <input type="text" value={localCfg.layerInfoName || 'SA info 0 0 0 17.01 2 -16777216 -16777216 1 1 0'} onChange={e => updateLocal('layerInfoName', e.target.value)} className={inputCls} />
+                                        <input type="text" value={localCfg.layerInfoName ?? DEFAULT_PONT_CONFIG.layerInfoName} onChange={e => updateLocal('layerInfoName', e.target.value)} className={inputCls} />
                                     </div>
                                 )}
 
@@ -227,7 +236,7 @@ export const PontSettingsDialog = ({
                                 </div>
                                 <div>
                                     <label className={labelCls}>{t('imposition.pontSettingsDialog:do_day_net_mm')}</label>
-                                    <input type="number" step="0.01" value={localCfg.thickness} onChange={e => updateLocal('thickness', Number(e.target.value))} className={inputCls} />
+                                    <input type="number" min="0.01" step="0.01" value={localCfg.thickness} onChange={e => updateLocal('thickness', Number(e.target.value))} className={inputCls} />
                                 </div>
                             </div>
                         </div>
@@ -241,19 +250,19 @@ export const PontSettingsDialog = ({
                             <div className="grid grid-cols-4 gap-3">
                                 <div>
                                     <label className="text-center block text-[11px] font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-wider mb-2">{t('imposition.pontSettingsDialog:le_tren')}</label>
-                                    <input type="number" step="1" value={localCfg.marginTop} onChange={e => updateLocal('marginTop', Number(e.target.value))} className={`${inputCls} text-center font-bold text-lg`} />
+                                    <input type="number" min="0" step="1" value={localCfg.marginTop} onChange={e => updateLocal('marginTop', Number(e.target.value))} className={`${inputCls} text-center font-bold text-lg`} />
                                 </div>
                                 <div>
                                     <label className="text-center block text-[11px] font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-wider mb-2">{t('imposition.pontSettingsDialog:le_duoi')}</label>
-                                    <input type="number" step="1" value={localCfg.marginBottom} onChange={e => updateLocal('marginBottom', Number(e.target.value))} className={`${inputCls} text-center font-bold text-lg`} />
+                                    <input type="number" min="0" step="1" value={localCfg.marginBottom} onChange={e => updateLocal('marginBottom', Number(e.target.value))} className={`${inputCls} text-center font-bold text-lg`} />
                                 </div>
                                 <div>
                                     <label className="text-center block text-[11px] font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-wider mb-2">{t('imposition.pontSettingsDialog:le_trai')}</label>
-                                    <input type="number" step="1" value={localCfg.marginLeft} onChange={e => updateLocal('marginLeft', Number(e.target.value))} className={`${inputCls} text-center font-bold text-lg`} />
+                                    <input type="number" min="0" step="1" value={localCfg.marginLeft} onChange={e => updateLocal('marginLeft', Number(e.target.value))} className={`${inputCls} text-center font-bold text-lg`} />
                                 </div>
                                 <div>
                                     <label className="text-center block text-[11px] font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-wider mb-2">{t('imposition.pontSettingsDialog:le_phai')}</label>
-                                    <input type="number" step="1" value={localCfg.marginRight} onChange={e => updateLocal('marginRight', Number(e.target.value))} className={`${inputCls} text-center font-bold text-lg`} />
+                                    <input type="number" min="0" step="1" value={localCfg.marginRight} onChange={e => updateLocal('marginRight', Number(e.target.value))} className={`${inputCls} text-center font-bold text-lg`} />
                                 </div>
                             </div>
                         </div>
@@ -293,11 +302,11 @@ export const PontSettingsDialog = ({
                                         </div>
                                         <div>
                                             <label className={labelCls}>{t('imposition.pontSettingsDialog:do_dai_mm')}</label>
-                                            <input type="number" step="1" value={localCfg.guide1Length} onChange={e => updateLocal('guide1Length', Number(e.target.value))} className={inputCls} />
+                                            <input type="number" min="0.01" step="1" value={localCfg.guide1Length} onChange={e => updateLocal('guide1Length', Number(e.target.value))} className={inputCls} />
                                         </div>
                                         <div>
                                             <label className={labelCls}>{t('imposition.pontSettingsDialog:do_dam_mm')}</label>
-                                            <input type="number" step="0.1" value={localCfg.guide1Thickness} onChange={e => updateLocal('guide1Thickness', Number(e.target.value))} className={inputCls} />
+                                            <input type="number" min="0.01" step="0.1" value={localCfg.guide1Thickness} onChange={e => updateLocal('guide1Thickness', Number(e.target.value))} className={inputCls} />
                                         </div>
                                         <div>
                                             <label className={labelCls}>{getGuideLabelX(localCfg.guide1Pos)}</label>
@@ -332,9 +341,13 @@ export const PontSettingsDialog = ({
                                                 <option value="BR">{t('imposition.pontSettingsDialog:goc_duoi_phai_bottom_right')}</option>
                                             </select>
                                         </div>
-                                        <div className="col-span-2">
+                                        <div>
                                             <label className={labelCls}>{t('imposition.pontSettingsDialog:do_dai_mm')}</label>
-                                            <input type="number" step="1" value={localCfg.guide2Length} onChange={e => updateLocal('guide2Length', Number(e.target.value))} className={inputCls} />
+                                            <input type="number" min="0.01" step="1" value={localCfg.guide2Length} onChange={e => updateLocal('guide2Length', Number(e.target.value))} className={inputCls} />
+                                        </div>
+                                        <div>
+                                            <label className={labelCls}>{t('imposition.pontSettingsDialog:do_dam_mm')}</label>
+                                            <input type="number" min="0.01" step="0.1" value={localCfg.guide2Thickness} onChange={e => updateLocal('guide2Thickness', Number(e.target.value))} className={inputCls} />
                                         </div>
                                         <div>
                                             <label className={labelCls}>{getGuideLabelX(localCfg.guide2Pos)}</label>
@@ -351,6 +364,12 @@ export const PontSettingsDialog = ({
 
                     </div>
                 </div>
+
+                {validationError && (
+                    <div id="pont-config-error" role="alert" className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300">
+                        {validationError}
+                    </div>
+                )}
 
                 {/* Footer Buttons */}
                 <div className="flex items-center justify-between pt-4 mt-2 border-t border-slate-100 dark:border-white/10">
@@ -373,12 +392,15 @@ export const PontSettingsDialog = ({
 
                         <button 
                             type="button"
+                            disabled={Boolean(validationError)}
+                            aria-describedby={validationError ? 'pont-config-error' : undefined}
                             onClick={(e) => { 
                                 e.stopPropagation();
+                                if (validationError) return;
                                 onSave(localCfg); 
                                 requestAnimationFrame(() => onClose());
                             }}
-                            className="px-6 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-md shadow-indigo-500/20 transition-all active:scale-95 text-sm"
+                            className="px-6 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-md shadow-indigo-500/20 transition-all active:scale-95 text-sm disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
                         >
                             {t('imposition.pontSettingsDialog:luu_cau_hinh')}
                         </button>

@@ -15,6 +15,7 @@ from concurrent.futures.process import BrokenProcessPool
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import unary_union
 import logging
+from app.core.pdfium_lock import pdfium_guard
 from app.core.bleed_sides import (
     ALL_BLEED_SIDES,
     bleed_sides_to_names,
@@ -46,43 +47,49 @@ def _render_selected_objects_rgba(page, object_ids: list[str], scale: float) -> 
     here is used only to derive a mask; the pikepdf source page copied to output is
     never mutated or rasterized.
     """
-    page_raw = page.raw
-    count = int(pdfium_c.FPDFPage_CountObjects(page_raw))
-    available: dict[str, int] = {}
-    for draw_index in range(count):
-        obj = pdfium_c.FPDFPage_GetObject(page_raw, draw_index)
-        if obj:
-            available[_pdfium_object_id(obj, draw_index)] = draw_index
+    # PERF (audit 2026-08-05 §PERF.1): route Sticker nay chạy trong worker thread;
+    # mọi lời gọi PDFium phải dùng khóa chung, nhưng nhả khóa trước phần xử lý NumPy.
+    with pdfium_guard():
+        page_raw = page.raw
+        count = int(pdfium_c.FPDFPage_CountObjects(page_raw))
+        available: dict[str, int] = {}
+        for draw_index in range(count):
+            obj = pdfium_c.FPDFPage_GetObject(page_raw, draw_index)
+            if obj:
+                available[_pdfium_object_id(obj, draw_index)] = draw_index
 
-    requested = list(dict.fromkeys(str(obj_id) for obj_id in object_ids if str(obj_id)))
-    missing = [obj_id for obj_id in requested if obj_id not in available]
-    if missing:
-        raise ValueError(
-            "Selection không còn khớp với bản PDF hiện tại: " + ", ".join(missing)
+        requested = list(dict.fromkeys(str(obj_id) for obj_id in object_ids if str(obj_id)))
+        missing = [obj_id for obj_id in requested if obj_id not in available]
+        if missing:
+            raise ValueError(
+                "Selection không còn khớp với bản PDF hiện tại: " + ", ".join(missing)
+            )
+        selected_indices = {available[obj_id] for obj_id in requested}
+        if not selected_indices:
+            raise ValueError("Selection không chứa đối tượng hợp lệ.")
+
+        # Reverse order keeps lower draw indices stable while objects are removed.
+        for draw_index in range(count - 1, -1, -1):
+            if draw_index in selected_indices:
+                continue
+            obj = pdfium_c.FPDFPage_GetObject(page_raw, draw_index)
+            if not obj:
+                continue
+            if not pdfium_c.FPDFPage_RemoveObject(page_raw, obj):
+                raise RuntimeError(f"Không thể cô lập object PDFium #{draw_index}.")
+            # RemoveObject transfers ownership to the caller.
+            pdfium_c.FPDFPageObj_Destroy(obj)
+
+        bitmap = page.render(
+            scale=scale,
+            fill_color=(0, 0, 0, 0),
+            draw_annots=False,
+            rev_byteorder=True,
         )
-    selected_indices = {available[obj_id] for obj_id in requested}
-    if not selected_indices:
-        raise ValueError("Selection không chứa đối tượng hợp lệ.")
-
-    # Reverse order keeps lower draw indices stable while objects are removed.
-    for draw_index in range(count - 1, -1, -1):
-        if draw_index in selected_indices:
-            continue
-        obj = pdfium_c.FPDFPage_GetObject(page_raw, draw_index)
-        if not obj:
-            continue
-        if not pdfium_c.FPDFPage_RemoveObject(page_raw, obj):
-            raise RuntimeError(f"Không thể cô lập object PDFium #{draw_index}.")
-        # RemoveObject transfers ownership to the caller.
-        pdfium_c.FPDFPageObj_Destroy(obj)
-
-    bitmap = page.render(
-        scale=scale,
-        fill_color=(0, 0, 0, 0),
-        draw_annots=False,
-        rev_byteorder=True,
-    )
-    rgba = bitmap.to_numpy()
+        try:
+            rgba = np.array(bitmap.to_numpy(), copy=True)
+        finally:
+            bitmap.close()
     if rgba.ndim != 3 or rgba.shape[2] != 4:
         raise RuntimeError("PDFium không trả về ảnh RGBA cho selection.")
     return rgba
@@ -3811,13 +3818,16 @@ class StickerEngine:
             corner_style = "preserve"
             shape_mode = "contour"
         doc_in_pdfium = None
+        page_in = None
         doc_in_pike = None
         doc_out = None
         try:
             debug_step = "Open Original PDF"
-            doc_in_pdfium = pdfium.PdfDocument(input_path)
+            with pdfium_guard():
+                doc_in_pdfium = pdfium.PdfDocument(input_path)
+                pdfium_page_count = len(doc_in_pdfium)
             doc_in_pike = pikepdf.Pdf.open(input_path)
-            invalid_pages = sorted(page for page in selection_targets if page >= len(doc_in_pdfium))
+            invalid_pages = sorted(page for page in selection_targets if page >= pdfium_page_count)
             if invalid_pages:
                 raise ValueError(
                     "Selection tham chiếu trang không tồn tại: "
@@ -3826,7 +3836,7 @@ class StickerEngine:
 
             if process_page_indexes is not None:
                 invalid_process_pages = sorted(
-                    page for page in process_page_indexes if page >= len(doc_in_pdfium)
+                    page for page in process_page_indexes if page >= pdfium_page_count
                 )
                 if invalid_process_pages:
                     raise ValueError("Danh sách trang xử lý tham chiếu trang không tồn tại.")
@@ -3871,9 +3881,9 @@ class StickerEngine:
                 _page_subset is None
                 and not selection_mode
                 and process_page_indexes is None
-                and _n_pages_should_parallelize(len(doc_in_pdfium))
+                and _n_pages_should_parallelize(pdfium_page_count)
             ):
-                n_pages_probe = len(doc_in_pdfium)
+                n_pages_probe = pdfium_page_count
                 try:
                     input_mb = os.path.getsize(input_path) / (1024 * 1024)
                 except OSError:
@@ -3884,7 +3894,9 @@ class StickerEngine:
                     n_pages_probe, input_mb, rectangle_mode, bleed_mm, cut_mode,
                     self.dpi, os.path.basename(input_path),
                 )
-                doc_in_pdfium.close(); doc_in_pdfium = None
+                with pdfium_guard():
+                    doc_in_pdfium.close()
+                doc_in_pdfium = None
                 doc_in_pike.close(); doc_in_pike = None
                 # Nhãn đúng bước (trước đây lỗi pool vẫn dính "Open Original PDF@…").
                 debug_step = "Process Parallel Workers"
@@ -3936,7 +3948,7 @@ class StickerEngine:
             any_dieline_found = False
             pages_no_dieline = []
 
-            _n_pages = len(doc_in_pdfium)
+            _n_pages = pdfium_page_count
             # Danh sách trang cần xử lý: subset (worker song song) hoặc toàn bộ.
             _page_list = list(_page_subset) if _page_subset is not None else list(range(_n_pages))
 
@@ -3948,7 +3960,10 @@ class StickerEngine:
                 alpha_fallback_used = False
                 alpha_contour_warning = None
                 debug_step = f"Rasterize Page {page_idx}"
-                page_in = doc_in_pdfium[page_idx]
+                with pdfium_guard():
+                    if page_in is not None:
+                        page_in.close()
+                    page_in = doc_in_pdfium[page_idx]
                 page_in_pike = doc_in_pike.pages[page_idx]
                 selection_page_mode = page_idx in selection_targets
                 if process_page_indexes is not None and page_idx not in process_page_indexes:
@@ -3974,7 +3989,8 @@ class StickerEngine:
                 MAX_MEGAPIXELS = 40_000_000
                 base_scale = self.dpi / 72.0
                 try:
-                    pw_pt, ph_pt = page_in.get_size()
+                    with pdfium_guard():
+                        pw_pt, ph_pt = page_in.get_size()
                 except Exception:
                     pw_pt, ph_pt = 0, 0
                 shrink = 1.0
@@ -4042,18 +4058,26 @@ class StickerEngine:
                         if alpha_contour_mode:
                             # PDF trung gian của PNG giữ Alpha trong /SMask. Render
                             # nền trong suốt để lấy lại silhouette, không composite trắng.
-                            bitmap = page_in.render(
-                                scale=self.scale,
-                                fill_color=(0, 0, 0, 0),
-                                rev_byteorder=True,
-                            )
-                            img = np.ascontiguousarray(bitmap.to_numpy())
+                            with pdfium_guard():
+                                bitmap = page_in.render(
+                                    scale=self.scale,
+                                    fill_color=(0, 0, 0, 0),
+                                    rev_byteorder=True,
+                                )
+                                try:
+                                    img = np.array(bitmap.to_numpy(), copy=True)
+                                finally:
+                                    bitmap.close()
                             if img.ndim != 3 or img.shape[2] != 4:
                                 raise RuntimeError("PDFium không trả về ảnh RGBA cho contour Alpha.")
                             img_native = img[:, :, :3].copy()
                         else:
-                            bitmap = page_in.render(scale=self.scale)
-                            img_bgra = bitmap.to_numpy()
+                            with pdfium_guard():
+                                bitmap = page_in.render(scale=self.scale)
+                                try:
+                                    img_bgra = np.array(bitmap.to_numpy(), copy=True)
+                                finally:
+                                    bitmap.close()
                             img = cv2.cvtColor(img_bgra, cv2.COLOR_BGRA2RGBA)
                             img_native = cv2.cvtColor(img_bgra, cv2.COLOR_BGRA2RGB)
                         has_alpha = (
@@ -5440,8 +5464,15 @@ class StickerEngine:
             _loc = f"@{_line}" if _line else ""
             raise RuntimeError(f"[{debug_step}{_loc}] {str(e)}")
         finally:
+            if page_in is not None:
+                try:
+                    with pdfium_guard():
+                        page_in.close()
+                except Exception: pass
             if doc_in_pdfium:
-                try: doc_in_pdfium.close()
+                try:
+                    with pdfium_guard():
+                        doc_in_pdfium.close()
                 except Exception: pass
             if doc_in_pike:
                 try: doc_in_pike.close()
@@ -5515,16 +5546,22 @@ class StickerEngine:
         except OSError:
             input_mb = 0.0
 
-        _probe = pdfium.PdfDocument(input_path)
-        n_pages = len(_probe)
-        # Probe kích thước trang đầu (gợi ý RAM/trang); không fail nếu PDF lạ.
-        page0_w = page0_h = 0.0
-        try:
-            if n_pages > 0:
-                page0_w, page0_h = _probe[0].get_size()
-        except Exception:
-            pass
-        _probe.close()
+        # Chỉ giữ khóa trong lúc gọi PDFium; phần lập pool/chia chunk ở ngoài khóa.
+        with pdfium_guard():
+            _probe = pdfium.PdfDocument(input_path)
+            n_pages = len(_probe)
+            # Probe kích thước trang đầu (gợi ý RAM/trang); không fail nếu PDF lạ.
+            page0_w = page0_h = 0.0
+            try:
+                if n_pages > 0:
+                    _page0 = _probe[0]
+                    try:
+                        page0_w, page0_h = _page0.get_size()
+                    finally:
+                        _page0.close()
+            except Exception:
+                pass
+            _probe.close()
 
         available = max(1, (os.cpu_count() or 2) - 1)
         try:

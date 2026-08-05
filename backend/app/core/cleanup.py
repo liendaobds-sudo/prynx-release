@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -10,6 +11,7 @@ from pathlib import Path
 from app.database import SessionLocal
 from app.models.job import UploadedFile, ComparisonJob
 from app.config import settings
+from app.core.disk_space_guard import minimum_free_disk_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,28 @@ APP_TEMP_PREFIXES = (
 # Ngưỡng tuổi riêng cho OS temp: đủ dài hơn job VDP/NUP dài nhất, đủ ngắn để không
 # tích lũy nhiều ngày. KHÔNG dùng chung 26h (temp là file đời ngắn).
 OS_TEMP_MAX_AGE_HOURS = 12
+
+# PERF (audit 2026-08-05 §PERF.7): high-watermark chỉ xét artifact có vòng đời
+# rõ ràng. N-Up/VDP đã tự công bố TTL 1 giờ; dùng 2 giờ làm biên chống race.
+# Input rơi lại sau crash giữ 12 giờ, cùng ngưỡng dài hơn job tối đa của OS temp.
+PRESSURE_RESULT_MIN_AGE_HOURS = 2
+PRESSURE_UPLOAD_MIN_AGE_HOURS = 12
+_PRESSURE_RESULT_PATTERNS = (
+    re.compile(r"^nup_[0-9a-f]{8}\.pdf$", re.IGNORECASE),
+    re.compile(r"^vdp_[0-9a-f]{32}\.pdf$", re.IGNORECASE),
+)
+_PRESSURE_UPLOAD_PATTERNS = (
+    re.compile(r"^vdp_data_[0-9a-f]{32}\.dat$", re.IGNORECASE),
+    re.compile(r"^vdp_template_[0-9a-f]{32}\.pdf$", re.IGNORECASE),
+    re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-"
+        r"[0-9a-f]{12}_plan_input\.pdf$",
+        re.IGNORECASE,
+    ),
+)
+_PRESSURE_RECOVERY_MIN_BYTES = 512 * 1024 * 1024
+_PRESSURE_RECOVERY_MAX_BYTES = 2 * 1024 * 1024 * 1024
+_CLEANUP_PROCESS_STARTED_AT = time.time()
 
 
 async def cleanup_expired_files_loop():
@@ -157,6 +181,12 @@ def cleanup_orphan_files():
     total_deleted += os_deleted
     total_freed_bytes += os_freed
 
+    # Chỉ chạy thêm khi volume xuống dưới reserve; danh sách ứng viên bị giới hạn
+    # nghiêm ngặt trong `_cleanup_storage_pressure`, không quét/xóa file khách hàng.
+    pressure_deleted, pressure_freed = _cleanup_storage_pressure(now)
+    total_deleted += pressure_deleted
+    total_freed_bytes += pressure_freed
+
     if total_deleted > 0:
         freed_mb = round(total_freed_bytes / (1024 * 1024), 1)
         logger.info(
@@ -236,4 +266,159 @@ def _cleanup_os_temp_by_prefix(now: float, max_age_seconds: float) -> tuple[int,
             # File có thể đang bị process khác giữ (job đang chạy) — bỏ qua.
             logger.debug(f"Cannot delete OS temp {item.name}: {e}")
 
+    return deleted, freed
+
+
+def _recovery_margin_bytes(total_bytes: int) -> int:
+    """Khoảng đệm sau cleanup để vòng 30 phút không lặp xóa từng file nhỏ."""
+    proportional = int(max(0, total_bytes) * 0.005)
+    return min(
+        _PRESSURE_RECOVERY_MAX_BYTES,
+        max(_PRESSURE_RECOVERY_MIN_BYTES, proportional),
+    )
+
+
+def _pressure_volume_key(directory: Path) -> object:
+    """Gộp uploads/results cùng volume để không tính dung lượng trống hai lần."""
+    try:
+        return ("device", os.stat(directory).st_dev)
+    except OSError:
+        normalized = os.path.normcase(os.path.abspath(directory))
+        drive = os.path.splitdrive(normalized)[0]
+        return ("drive", drive or normalized)
+
+
+def _collect_pressure_candidates(
+    directory: Path,
+    patterns: tuple[re.Pattern, ...],
+    now: float,
+    min_age_seconds: float,
+    created_before: float | None = None,
+) -> list[tuple[float, int, int, Path]]:
+    """Lấy file managed tầng gốc; bỏ symlink, thư mục job và file còn mới."""
+    if not directory.is_dir():
+        return []
+    try:
+        entries = list(directory.iterdir())
+    except OSError as error:
+        logger.debug("Không liệt kê được thư mục cleanup %s: %s", directory, error)
+        return []
+
+    candidates = []
+    for item in entries:
+        try:
+            if item.is_symlink() or not item.is_file():
+                continue
+            if not any(pattern.fullmatch(item.name) for pattern in patterns):
+                continue
+            stat = item.stat()
+            if now - stat.st_mtime < min_age_seconds:
+                continue
+            if created_before is not None and stat.st_mtime >= created_before:
+                # Input sinh trong sidecar hiện tại có thể vẫn đang xếp hàng/chạy.
+                continue
+            candidates.append((stat.st_mtime, stat.st_mtime_ns, stat.st_size, item))
+        except OSError as error:
+            logger.debug("Không đọc được ứng viên cleanup %s: %s", item, error)
+    return candidates
+
+
+def _cleanup_storage_pressure(now: float) -> tuple[int, int]:
+    """Thu hồi artifact managed cũ khi volume xuống dưới free-disk reserve.
+
+    Không đệ quy và không nhận pattern rộng: `sticker_*`, file khách hàng, Working_File,
+    kết quả compare/preflight và thư mục con đều nằm ngoài phạm vi xóa sớm.
+    """
+    roots = (
+        (
+            Path(settings.RESULTS_DIR),
+            _PRESSURE_RESULT_PATTERNS,
+            PRESSURE_RESULT_MIN_AGE_HOURS * 3600,
+            None,
+        ),
+        (
+            Path(settings.UPLOAD_DIR),
+            _PRESSURE_UPLOAD_PATTERNS,
+            PRESSURE_UPLOAD_MIN_AGE_HOURS * 3600,
+            _CLEANUP_PROCESS_STARTED_AT,
+        ),
+    )
+    volumes: dict[object, dict[str, object]] = {}
+    for directory, patterns, min_age_seconds, created_before in roots:
+        if not directory.is_dir():
+            continue
+        key = _pressure_volume_key(directory)
+        volume = volumes.setdefault(
+            key,
+            {"directory": directory, "candidates": []},
+        )
+        volume["candidates"].extend(
+            _collect_pressure_candidates(
+                directory,
+                patterns,
+                now,
+                min_age_seconds,
+                created_before,
+            )
+        )
+
+    deleted = 0
+    freed = 0
+    for volume in volumes.values():
+        directory = Path(volume["directory"])
+        try:
+            usage = shutil.disk_usage(directory)
+        except OSError as error:
+            logger.warning(
+                "[STORAGE-PRESSURE] không đọc được dung lượng tại %s: %s; bỏ qua.",
+                directory,
+                error,
+            )
+            continue
+        reserve = minimum_free_disk_bytes(usage.total)
+        if reserve <= 0 or usage.free >= reserve:
+            continue
+        target_free = min(
+            usage.total,
+            reserve + _recovery_margin_bytes(usage.total),
+        )
+        projected_free = usage.free
+        candidates = sorted(
+            volume["candidates"],
+            key=lambda candidate: (candidate[0], str(candidate[3]).lower()),
+        )
+        for _mtime, expected_mtime_ns, expected_size, item in candidates:
+            if projected_free >= target_free:
+                break
+            try:
+                if item.is_symlink():
+                    continue
+                current = item.stat()
+                # File vừa được job khác sửa/ghi lại sau lúc quét không còn là ứng viên.
+                if (
+                    current.st_mtime_ns != expected_mtime_ns
+                    or current.st_size != expected_size
+                ):
+                    continue
+                item.unlink()
+                deleted += 1
+                freed += expected_size
+                projected_free += expected_size
+            except OSError as error:
+                logger.debug("Không xóa được artifact managed %s: %s", item, error)
+
+        logger.info(
+            "[STORAGE-PRESSURE] volume=%s free_before_mb=%.1f "
+            "free_after_est_mb=%.1f reserve_mb=%.1f target_mb=%.1f",
+            directory,
+            usage.free / (1024 * 1024),
+            projected_free / (1024 * 1024),
+            reserve / (1024 * 1024),
+            target_free / (1024 * 1024),
+        )
+        if projected_free < reserve:
+            logger.warning(
+                "[STORAGE-PRESSURE] volume vẫn dưới reserve; không còn artifact "
+                "managed đủ tuổi để xóa an toàn."
+            )
     return deleted, freed

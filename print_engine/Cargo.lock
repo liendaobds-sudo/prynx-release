@@ -533,6 +533,7 @@ dependencies = [
  "jpeg-decoder",
  "lcms2",
  "lopdf",
+ "rayon",
  "thiserror",
  "tiny-skia",
  "ttf-parser",

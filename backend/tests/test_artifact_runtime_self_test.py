@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -276,6 +278,7 @@ foreach ($name in $names) {{
 def test_publisher_requires_committed_version_instead_of_mutating_source():
     repo = Path(__file__).parents[2]
     source = (repo / "release_update.ps1").read_text(encoding="utf-8")
+    publisher = json.loads((repo / "publisher.config.json").read_text(encoding="utf-8-sig"))
     assert "Assert-CommittedReleaseVersion -ExpectedVersion $Version" in source
     assert "publisher.config.json" in source
     assert "Da dat version=$Version" not in source
@@ -294,19 +297,25 @@ def test_publisher_requires_committed_version_instead_of_mutating_source():
     assert source.rfind("Assert-ManifestSourceState", 0, upload_call) > runtime_gate_check
     assert source.rfind("Assert-ManifestSourceState", 0, create_call) > runtime_gate_check
 
+    # SEC (audit 2026-08-06 §REL.PUBLISH): source nằm ở repo private, còn repo
+    # updater public chỉ chứa asset. Publisher phải xác minh đúng trust boundary;
+    # tuyệt đối không buộc/push object source sang repo public để thỏa chốt SHA.
+    assert publisher["SourceRepo"] == "liendaobds-sudo/PrynX"
+    assert re.fullmatch(r"[0-9a-f]{40}", publisher["ReleaseTargetCommit"])
     remote_commit_check = source.index(
-        "Assert-GitHubCommitAvailable -Repo $ReleaseRepo -Commit $manifestCommit",
+        "Assert-GitHubCommitAvailable -Repo $sourceRepo -Commit $manifestCommit",
         runtime_gate_check,
     )
     existing_tag_check = source.index(
-        "Assert-GitHubTagTargetsCommit -Repo $ReleaseRepo -Tag $tag -ExpectedCommit $manifestCommit",
+        "Assert-GitHubTagTargetsCommit -Repo $ReleaseRepo -Tag $tag -ExpectedCommit $releaseTargetCommit",
         remote_commit_check,
     )
     assert remote_commit_check < existing_tag_check < upload_call
     assert "git/ref/tags/$Tag" in source
     assert "git/tags/$objectSha" in source
     assert 'if ($objectType -eq "commit")' in source
-    assert "gh release create $tag --repo $ReleaseRepo --target $manifestCommit" in source
+    assert "gh release create $tag --repo $ReleaseRepo --target $releaseTargetCommit" in source
+    assert "Assert-GitHubCommitAvailable -Repo $ReleaseRepo -Commit $manifestCommit" not in source
 
 
 def test_release_gui_never_offers_stale_sidecar_packaging():

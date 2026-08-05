@@ -14,6 +14,9 @@ from app.workers.vdp_gs1 import (
     parse_gs1, build_gs1_payload, human_readable, GS1Error, FNC1,
 )
 from app.workers.vdp_conditions import resolve_field_content, ConditionError
+from app.core.pdfium_lock import pdfium_guard
+from app.core.disk_space_guard import ensure_job_disk_space, estimate_vdp_disk
+from app.core.system_memory import plan_worker_count
 from app.schemas.vdp import VdpField
 from typing import List, Dict
 
@@ -1059,9 +1062,70 @@ def _canonicalize_template_to_cropbox(template_path: str) -> tuple:
         return template_path, False
 
 
+def _plan_vdp_parallelism(record_count: int) -> tuple[int, int, str]:
+    """Trả số worker thực chạy, kích thước chunk và lý do chọn tài nguyên."""
+    # PERF (audit 2026-08-05 §PERF.2): VDP từng luôn lấy CPU-1, khiến máy ít RAM
+    # nhưng nhiều lõi có thể mở 15 process. Policy chung chỉ giảm máy <16 GB;
+    # máy >=16 GB vẫn chạy full và env cho phép người vận hành ghi đè.
+    worker_budget, reason = plan_worker_count(
+        kind="vdp",
+        per_worker_mb=1024.0,
+        env_override="PRYNX_VDP_WORKERS",
+    )
+    if record_count <= 0:
+        return 0, 100, reason
+    optimal_chunk_size = math.ceil(record_count / worker_budget)
+    chunk_size = max(100, optimal_chunk_size)
+    num_chunks = math.ceil(record_count / chunk_size)
+    return min(num_chunks, worker_budget), chunk_size, reason
+
+
+def _estimate_vdp_variable_image_bytes(
+    fields_dict: List[Dict],
+    data: List[Dict[str, str]],
+    cancel_check=None,
+) -> int:
+    """Cộng byte ảnh sẽ được nhúng theo từng record, có cache stat theo path."""
+    image_fields = [field for field in fields_dict if field.get("type") == "image"]
+    if not image_fields or not data:
+        return 0
+    path_cache = {}
+    size_cache = {}
+    total_bytes = 0
+    for record_index, row in enumerate(data):
+        if record_index % 256 == 0 and cancel_check and cancel_check():
+            return total_bytes
+        for field in image_fields:
+            try:
+                resolved = resolve_field_content(field, row)
+            except ConditionError:
+                continue
+            if not resolved.visible:
+                continue
+            value = resolved.content
+            if (not value) or (value.startswith("{") and value.endswith("}")):
+                value = field.get("imagePath") or ""
+            key = (
+                str(value or ""),
+                str(field.get("imageBaseDir") or ""),
+                str(field.get("imagePath") or ""),
+            )
+            if key not in path_cache:
+                path_cache[key] = _resolve_image_path(*key)
+            image_path = path_cache[key]
+            if not image_path:
+                continue
+            if image_path not in size_cache:
+                try:
+                    size_cache[image_path] = max(0, os.path.getsize(image_path))
+                except OSError:
+                    size_cache[image_path] = 0
+            total_bytes += size_cache[image_path]
+    return total_bytes
+
+
 def run_vdp_engine(template_path: str, fields: List[VdpField], data: List[Dict[str, str]], output_path: str, job_id: str = None, **kwargs):
     from concurrent.futures import ProcessPoolExecutor
-    import math
 
     cancel_file = kwargs.pop("cancel_file", None)
     cancel_check = kwargs.pop("cancel_check", None)
@@ -1094,16 +1158,41 @@ def run_vdp_engine(template_path: str, fields: List[VdpField], data: List[Dict[s
 
     abort_if_requested()
     fields_dict = [f.model_dump() for f in fields]
+    num_workers, CHUNK_SIZE, worker_reason = _plan_vdp_parallelism(len(data))
+    num_chunks = math.ceil(len(data) / CHUNK_SIZE)
+    variable_image_bytes = _estimate_vdp_variable_image_bytes(
+        fields_dict, data, cancel_check=cancellation_requested,
+    )
+    abort_if_requested()
+    try:
+        template_bytes = os.path.getsize(template_path)
+    except OSError:
+        template_bytes = 0
+    # PERF (audit 2026-08-05 §PERF.7): kiểm trước khi canonicalize/fan-out;
+    # ảnh VDP được tính theo số lần nhúng thật, không chỉ theo số record.
+    ensure_job_disk_space(
+        "tạo file dữ liệu biến đổi VDP",
+        output_path,
+        tempfile.gettempdir(),
+        estimate_vdp_disk(
+            template_bytes=template_bytes,
+            record_count=len(data),
+            chunk_count=num_chunks,
+            variable_image_bytes=variable_image_bytes,
+        ),
+    )
     # Chuẩn hoá CropBox→MediaBox (sau Crop) MỘT LẦN trước khi fan-out chunk.
     template_path, _canon_tmp = _canonicalize_template_to_cropbox(template_path)
     canonical_temp_path = template_path if _canon_tmp else None
     abort_if_requested()
-    available_cores = max(1, os.cpu_count() - 1)
-    optimal_chunk_size = math.ceil(len(data) / available_cores) if available_cores > 0 else 5000
-    CHUNK_SIZE = max(100, optimal_chunk_size)
-    
-    num_chunks = math.ceil(len(data) / CHUNK_SIZE)
-    num_workers = min(num_chunks, available_cores)
+    logger.info(
+        "[VDP] %s records=%d chunks=%d active_workers=%d chunk_size=%d",
+        worker_reason,
+        len(data),
+        num_chunks,
+        num_workers,
+        CHUNK_SIZE,
+    )
     
     chunks = []
     for i in range(0, len(data), CHUNK_SIZE):
@@ -1141,21 +1230,29 @@ def run_vdp_engine(template_path: str, fields: List[VdpField], data: List[Dict[s
     abort_if_requested()
 
     import pypdfium2 as pdfium
-    final_doc = pdfium.PdfDocument.new()
-    for chunk_pdf_path in chunk_paths:
-        if cancellation_requested():
-            final_doc.close()
+    # PERF (audit 2026-08-05 §PERF.2): VDP chạy trong executor thread; chỉ khóa
+    # quanh lời gọi PDFium, không giữ khóa lúc xóa chunk hay tối ưu bằng pikepdf.
+    with pdfium_guard():
+        final_doc = pdfium.PdfDocument.new()
+    try:
+        for chunk_pdf_path in chunk_paths:
             abort_if_requested()
-        src_pdf = pdfium.PdfDocument(chunk_pdf_path)
-        final_doc.import_pages(src_pdf)
-        src_pdf.close()
-        try:
-            os.remove(chunk_pdf_path)
-        except Exception:
-            pass
-            
-    final_doc.save(output_path)
-    final_doc.close()
+            with pdfium_guard():
+                src_pdf = pdfium.PdfDocument(chunk_pdf_path)
+                try:
+                    final_doc.import_pages(src_pdf)
+                finally:
+                    src_pdf.close()
+            try:
+                os.remove(chunk_pdf_path)
+            except Exception:
+                pass
+
+        with pdfium_guard():
+            final_doc.save(output_path)
+    finally:
+        with pdfium_guard():
+            final_doc.close()
     abort_if_requested()
 
     # #5 Tối ưu output: nén stream + object streams (gom object) trong CÙNG một

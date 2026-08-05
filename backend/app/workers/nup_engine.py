@@ -62,6 +62,7 @@ from app.workers.nup_repeat_metadata import (
     build_repeat_sheet_metadata as _build_repeat_sheet_metadata,
 )
 from app.workers.page_space_canonicalization import canonicalize_page_space_file
+from app.core.disk_space_guard import ensure_job_disk_space, estimate_nup_disk
 from app.workers.mixed_guillotine_adapter import (
     resolve_guillotine_trim,
 )
@@ -165,6 +166,9 @@ def run_nup_engine(
 ) -> str:
     """Own the rotated-source temporary file for the complete N-Up lifecycle."""
     settings, _ = _normalize_page_sheet_settings(settings)
+    # FIX (audit 2026-08-05 §OC.2): bảo vệ cả caller nội bộ đi thẳng vào engine.
+    from app.schemas.pont import normalize_pont_settings
+    settings = normalize_pont_settings(settings)
     perf_stages = None
     perf_path = None
     try:
@@ -3448,6 +3452,19 @@ def _run_nup_engine_impl(
     repeat_sheet_metadata = (
         _build_repeat_sheet_metadata(sheet_mapping)
         if layout_type == 'repeat' else {}
+    )
+
+    # PERF (audit 2026-08-05 §PERF.7): chốt dung lượng sau khi đã biết đúng số
+    # tờ, nhưng trước khi fan-out các process và tạo chunk PDF lớn.
+    try:
+        source_bytes = os.path.getsize(source_path)
+    except OSError:
+        source_bytes = 0
+    ensure_job_disk_space(
+        "tạo file bình bản N-Up",
+        output_path,
+        tempfile.gettempdir(),
+        estimate_nup_disk(source_bytes=source_bytes, total_sheets=total_sheets),
     )
 
     align = settings.get('align', 'center')

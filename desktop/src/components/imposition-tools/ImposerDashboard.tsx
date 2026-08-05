@@ -1311,7 +1311,10 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 pontType: pontSettingsMode ? s.pontType : 'none',
                 pontConfig: pontSettingsMode ? s.pontConfig : undefined,
                 separateCutPage: pageSheetMode ? true : (stickerGeometryMode ? s.separateCutPage : false),
-                pontsOnCutFile: pontSettingsMode ? s.pontsOnCutFile : false,
+                // FIX (audit 2026-08-05 §OC.3): renderer CNC luôn vẽ ốc Front + Cut.
+                ...((stickerGeometryMode || pageSheetMode) ? {
+                    pontsOnCutFile: s.pontsOnCutFile,
+                } : {}),
                 isDieCutMode: dieGeometryMode,
                 pageSheetMode,
                 shapeType: dieGeometryMode ? detectedShapeType : 'RECTANGLE',

@@ -5,6 +5,7 @@ import logging
 import contextlib
 import time
 import asyncio
+import uuid
 from pathlib import Path
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Depends
 from fastapi.responses import FileResponse
@@ -24,8 +25,7 @@ from app.schemas.imposition import (
     NupJobCancelResponse,
     NupJobStatusResponse,
 )
-import uuid
-
+from app.schemas.pont import PontConfigPayload, normalize_pont_settings
 from app.config import settings
 from app.utils.errors import raise_http
 
@@ -748,6 +748,7 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
     # CUT-BORDER (audit 2026-08-04 §CB.2): chặn cấu hình sai trước khi xếp job;
     # renderer vẫn gate lần hai để không rò sang tem bế/CNC/nguyên tấm.
     try:
+        settings = normalize_pont_settings(settings)  # FIX (audit 2026-08-05 §OC.2)
         from app.workers.nup_cut_border import (
             cut_border_is_applicable,
             normalize_cut_border_settings,
@@ -953,7 +954,6 @@ async def download_nup_result(job_id: str, _: dict = Depends(require_license)):
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from typing import Dict, Any, Optional, List
-
 class PreviewLayoutRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     
@@ -966,7 +966,7 @@ class PreviewLayoutRequest(BaseModel):
     strategy: str
     shape_type: str = "CUSTOM"
     shape_props: Dict[str, Any] = Field(default_factory=dict)
-    pont_config: Optional[Dict[str, Any]] = None
+    pont_config: Optional[PontConfigPayload] = None
     sheet_w: float = Field(default=0, ge=0, le=10000)
     sheet_h: float = Field(default=0, ge=0, le=10000)
     margin_left: float = Field(default=0, ge=0, le=10000)
@@ -3408,7 +3408,7 @@ class PreviewLayoutBatchRequest(BaseModel):
     task_mode: Optional[str] = "sticker_imposer"
     is_die_cut: Optional[bool] = False
     page_sheet_mode: StrictBool = False
-    pont_config: Optional[Dict[str, Any]] = None
+    pont_config: Optional[PontConfigPayload] = None
     sheet_w: float = 0.0
     sheet_h: float = 0.0
     margin_left: float = 0.0

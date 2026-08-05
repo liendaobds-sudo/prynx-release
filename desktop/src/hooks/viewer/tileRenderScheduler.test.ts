@@ -8,6 +8,7 @@ import {
     isTileLoadCancellation,
     tileLoadReducer,
 } from './tileRenderScheduler';
+import { AppVisibilityStore } from '../../lib/appVisibility';
 
 function deferred<T>() {
     let resolve!: (value: T) => void;
@@ -18,6 +19,90 @@ function deferred<T>() {
 }
 
 describe('TileRenderScheduler', () => {
+    it('không bắt đầu tile mới khi ứng dụng đang nền và bơm ngay khi hiện lại', async () => {
+        const visibility = new AppVisibilityStore(true, true);
+        const scheduler = new TileRenderScheduler<string>(1, visibility);
+        const run = vi.fn(async () => 'tile');
+
+        const tile = scheduler.enqueue({
+            requestKey: 'hidden-tile',
+            groupKey: 'hidden-tile',
+            ownerId: 'tab-1',
+            priority: 0,
+            run,
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(run).not.toHaveBeenCalled();
+
+        visibility.setDocumentHidden(false);
+        await expect(tile).resolves.toBe('tile');
+        expect(run).toHaveBeenCalledTimes(1);
+    });
+
+    it('cho tile đang chạy hoàn tất nhưng giữ tile kế tiếp khi app chuyển nền', async () => {
+        const visibility = new AppVisibilityStore(false, true);
+        const scheduler = new TileRenderScheduler<string>(1, visibility);
+        const gate = deferred<string>();
+        const order: string[] = [];
+        const running = scheduler.enqueue({
+            requestKey: 'running',
+            groupKey: 'running',
+            ownerId: 'tab-1',
+            priority: 0,
+            run: async () => {
+                order.push('running');
+                return gate.promise;
+            },
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const queued = scheduler.enqueue({
+            requestKey: 'queued',
+            groupKey: 'queued',
+            ownerId: 'tab-1',
+            priority: 0,
+            run: async () => {
+                order.push('queued');
+                return 'queued';
+            },
+        });
+        visibility.setWindowFocused(false);
+        gate.resolve('running');
+        await running;
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(order).toEqual(['running']);
+
+        visibility.setWindowFocused(true);
+        await expect(queued).resolves.toBe('queued');
+        expect(order).toEqual(['running', 'queued']);
+    });
+
+    it('giữ đúng ưu tiên của hàng đợi sau khi trở lại foreground', async () => {
+        const visibility = new AppVisibilityStore(true, true);
+        const scheduler = new TileRenderScheduler<string>(1, visibility);
+        const order: string[] = [];
+        const enqueue = (requestKey: string, priority: number) => scheduler.enqueue({
+            requestKey,
+            groupKey: requestKey,
+            ownerId: 'tab-1',
+            priority,
+            run: async () => {
+                order.push(requestKey);
+                return requestKey;
+            },
+        });
+
+        const background = enqueue('background', 100);
+        const active = enqueue('active', 0);
+        visibility.setDocumentHidden(false);
+
+        await Promise.all([background, active]);
+        expect(order).toEqual(['active', 'background']);
+    });
+
     it('ưu tiên tile đang xem dù được đưa vào sau render nền', async () => {
         const scheduler = new TileRenderScheduler<string>();
         const order: string[] = [];

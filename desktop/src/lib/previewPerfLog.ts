@@ -1,35 +1,51 @@
 /**
  * Log timeline FE cho audit preview tem/CNC.
- * - Desktop: Desktop/PrynX_Performance.log (Tauri append_perf_log)
- * - Backend: POST /imposition/perf-beacon → logs/preview_perf.log (agent đọc được)
+ * Mặc định tắt; PRYNX_PERF=1 mới gửi một beacon về file log backend duy nhất.
  */
 import { authenticatedFetch, getApiUrl } from './api';
 
 const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+type InvokeFn = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
+type PrynXWindow = Window & { __PRYNX_INVOKE__?: InvokeFn };
+
+let enabledPromise: Promise<boolean> | null = null;
+let enabledValue: boolean | undefined;
 
 function elapsedMs(): number {
   const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
   return Math.round(now - t0);
 }
 
-export async function previewPerfLog(msg: string, extra?: Record<string, unknown>): Promise<void> {
-  const line = extra
-    ? `[FE +${elapsedMs()}ms] ${msg} ${JSON.stringify(extra)}`
-    : `[FE +${elapsedMs()}ms] ${msg}`;
-
-  // 1) Tauri desktop log
-  try {
-    const invoke =
-      (window as any).__PRYNX_INVOKE__ ||
-      (await import('@tauri-apps/api/core').then((m) => m.invoke).catch(() => null));
-    if (typeof invoke === 'function') {
-      await invoke('append_perf_log', { msg: line });
-    }
-  } catch {
-    /* ignore */
+async function isPreviewPerfEnabled(): Promise<boolean> {
+  if (typeof window === 'undefined') return false;
+  if (enabledValue !== undefined) return enabledValue;
+  if (!enabledPromise) {
+    enabledPromise = (async () => {
+      try {
+        const invoke =
+          (window as PrynXWindow).__PRYNX_INVOKE__ ||
+          (await import('@tauri-apps/api/core')
+            .then((module) => module.invoke as InvokeFn)
+            .catch(() => null));
+        if (typeof invoke !== 'function') return false;
+        return await invoke<boolean>('preview_perf_logging_enabled');
+      } catch {
+        return false;
+      }
+    })().then((enabled) => {
+      enabledValue = enabled;
+      return enabled;
+    });
   }
+  return enabledPromise;
+}
 
-  // 2) Backend file (workspace logs/preview_perf.log)
+export async function previewPerfLog(msg: string, extra?: Record<string, unknown>): Promise<void> {
+  // PERF (audit 2026-08-05 §PERF.3): chỉ tốn một IPC ở lần đầu để đọc cờ.
+  // Release mặc định không dựng payload, không ghi Desktop và không gửi HTTP.
+  if (enabledValue === false) return;
+  if (enabledValue !== true && !(await isPreviewPerfEnabled())) return;
+
   try {
     await authenticatedFetch(`${getApiUrl()}/imposition/perf-beacon`, {
       method: 'POST',

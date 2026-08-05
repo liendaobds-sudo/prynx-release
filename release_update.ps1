@@ -270,10 +270,20 @@ function Assert-StagedReleaseAssets {
 }
 
 $endpointRepo = Get-EndpointRepo -ConfPath $CONF_PATH
-$publisherRepo = [string](Get-Content -LiteralPath "$ROOT\publisher.config.json" -Raw | ConvertFrom-Json).Repo
+$publisherConfig = Get-Content -LiteralPath "$ROOT\publisher.config.json" -Raw | ConvertFrom-Json
+$publisherRepo = [string]$publisherConfig.Repo
+$sourceRepo = [string]$publisherConfig.SourceRepo
+$releaseTargetCommit = [string]$publisherConfig.ReleaseTargetCommit
 if ($publisherRepo -ne $endpointRepo) {
     throw "publisher.config.json Repo=$publisherRepo, khac updater endpoint $endpointRepo."
 }
+if ($sourceRepo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' -or $sourceRepo -eq $publisherRepo) {
+    throw "publisher.config.json SourceRepo phai la repo source private va khac repo release public."
+}
+if ($releaseTargetCommit -notmatch '^[0-9a-fA-F]{40}$') {
+    throw "publisher.config.json ReleaseTargetCommit phai la commit SHA-1 day du cua repo release public."
+}
+$releaseTargetCommit = $releaseTargetCommit.ToLowerInvariant()
 if ([string]::IsNullOrWhiteSpace($ReleaseRepo)) {
     $ReleaseRepo = $endpointRepo
     Write-Host "  [OK] Repo phat hanh suy tu endpoint: $ReleaseRepo" -ForegroundColor Green
@@ -433,7 +443,12 @@ Write-Host "  [OK] Da tao latest.json (url -> $downloadUrl)" -ForegroundColor Gr
 Write-Host "  [..] Tao/cap nhat release $tag tren $ReleaseRepo va upload..." -ForegroundColor Yellow
 Assert-ManifestSourceState -ManifestPath $manifestPath
 $manifestCommit = Get-ReleaseManifestField -Path $manifestPath -Name "GIT_COMMIT"
-Assert-GitHubCommitAvailable -Repo $ReleaseRepo -Commit $manifestCommit
+# SEC (audit 2026-08-06 REL.PUBLISH): manifestCommit la source private. Kiem tra
+# no tren SourceRepo; KHONG day object source sang repo updater public de thoa SHA.
+Assert-GitHubCommitAvailable -Repo $sourceRepo -Commit $manifestCommit
+# Repo updater public chi chua asset. Tag release luon neo vao commit README da
+# pin, va commit pin phai ton tai truoc khi tao/cap nhat release.
+Assert-GitHubCommitAvailable -Repo $ReleaseRepo -Commit $releaseTargetCommit
 # AN TOAN: KHONG xoa release cu truoc (tranh khoang trong neu create loi -> client mat 'latest').
 # Tam tat Stop de gh.exe stderr ("release not found") khong abort script.
 $prevEAP = $ErrorActionPreference
@@ -448,7 +463,7 @@ if ($releaseExists) {
     Assert-StagedReleaseAssets -SetupPath $stagedSetupPath -SetupSha256 $manifestInstallerHash `
         -SignaturePath $stagedSigPath -SignatureSha256 $stagedSignatureHash `
         -LatestPath $stagedLatestPath -LatestSha256 $stagedLatestHash
-    Assert-GitHubTagTargetsCommit -Repo $ReleaseRepo -Tag $tag -ExpectedCommit $manifestCommit
+    Assert-GitHubTagTargetsCommit -Repo $ReleaseRepo -Tag $tag -ExpectedCommit $releaseTargetCommit
     & gh release upload $tag --repo $ReleaseRepo --clobber `
         "$stagedSetupPath" "$stagedSigPath" "$stagedLatestPath"
     if ($LASTEXITCODE -ne 0) { throw "gh release upload (clobber) that bai." }
@@ -459,7 +474,7 @@ else {
     Assert-StagedReleaseAssets -SetupPath $stagedSetupPath -SetupSha256 $manifestInstallerHash `
         -SignaturePath $stagedSigPath -SignatureSha256 $stagedSignatureHash `
         -LatestPath $stagedLatestPath -LatestSha256 $stagedLatestHash
-    & gh release create $tag --repo $ReleaseRepo --target $manifestCommit --title "PrynX $Version" --notes $Notes `
+    & gh release create $tag --repo $ReleaseRepo --target $releaseTargetCommit --title "PrynX $Version" --notes $Notes `
         "$stagedSetupPath" "$stagedSigPath" "$stagedLatestPath"
     if ($LASTEXITCODE -ne 0) { throw "gh release create that bai." }
 }

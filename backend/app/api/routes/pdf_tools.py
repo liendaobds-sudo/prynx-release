@@ -1452,81 +1452,82 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             logger.warning("sticker-dieline: bleed_color_hex không hợp lệ (%r), dùng mặc định trắng.", bleed_color_hex)
             solid_bleed_color = (255, 255, 255)
                 
-        engine = StickerEngine(dpi=300)
-        engine_started = time.perf_counter()
-        # Xếp hàng: in liên tục nhiều file không chồng 2 job bù xén (tránh OOM).
-        with _sticker_job_slot(job_id):
-            success, meta = engine.process_pdf(
-                input_path=source_path,
-                output_path=output_path,
-                cut_mode=cut_mode,
-                offset_mm=offset_mm,
-                corner_style=corner_style,
-                bleed_mm=bleed_mm,
-                fill_holes=do_fill_holes,
-                remove_white_bg=do_remove_bg,
-                bleed_color_type=bleed_color_type,
-                solid_bleed_color=solid_bleed_color,
-                draw_cut_contour=do_draw_cut_contour,
-                rectangle_mode=do_rectangle_mode,
-                edge_bite_mm=edge_bite_mm,
-                edge_sample_inset_mm=edge_sample_inset_mm,
-                cut_first_page_only=do_cut_first_page_only,
-                shape_mode=shape_mode,
-                bleed_sides=bleed_sides_raw,
-                selected_objects_by_page=selected_objects_by_page,
-                process_pages=process_pages,
-                alpha_corner_policy=adaptive_corner_policy,
-            )
-        engine_seconds = time.perf_counter() - engine_started
-        if not success or not os.path.exists(output_path):
-            # success=False kèm meta['error'] = lỗi nghiệp vụ (vd không dò được hình)
-            biz_err = meta.get("error") if isinstance(meta, dict) else None
-            if biz_err:
-                raise HTTPException(status_code=422, detail=biz_err)
-            raise RuntimeError("Lỗi lưu file kết quả. (File not found)")
-
-
-        # Bỏ nền trắng chỉ thay đổi silhouette/alpha, tuyệt đối không sở hữu
-        # quyết định crop trang. StickerEngine dùng một canvas làm việc nới đều
-        # ``max_expansion_pts`` rồi legacy-tight-crop theo contour; khôi phục
-        # page box nguồn tại biên API (sàn tối thiểu = khổ nguồn). Nếu bù xén /
-        # đường cắt tràn ra ngoài mép trang nguồn, canvas được NỚI ra vừa đủ để
-        # chứa — không thu hẹp. Selection mode đã copy nguyên trang nên không
-        # cần hậu xử lý. Xén vuông giữ contract riêng: bleed có thể chủ động
-        # nới trang thành phẩm.
-        # Khi bật Crop trang theo tem, giữ nguyên MediaBox/CropBox tight do engine
-        # tạo: TrimBox vẫn là đường bế thật, BleedBox/MediaBox vẫn chứa đủ bù xén.
-        if (
-            not do_crop_to_sticker
-            and selected_objects_by_page is None
-            and not do_rectangle_mode
-        ):
-            bleed_pts = bleed_mm * 2.83465
-            effective_offset_mm = offset_mm - (
-                ALPHA_CONTOUR_INSET_MM if cut_mode == "alpha" else 0.0
-            )
-            offset_pts = effective_offset_mm * 2.83465
-            if cut_mode == "none":
-                page_expansion_pts = max(0.0, bleed_pts)
-            else:
-                cut_edge_pts, outer_edge_pts = compute_cut_bleed_offsets(
-                    cut_mode,
-                    bleed_pts,
-                    offset_pts,
+        def _run_sticker_job():
+            """Chạy toàn bộ phần đồng bộ ngoài event loop, kể cả lúc chờ slot."""
+            # PERF (audit 2026-08-05 §PERF.1): đẩy toàn bộ job khỏi event loop;
+            # scheduler giữ admission, semaphore riêng vẫn giới hạn một job Sticker.
+            engine = StickerEngine(dpi=300)
+            engine_started = time.perf_counter()
+            with _sticker_job_slot(job_id):
+                success, meta = engine.process_pdf(
+                    input_path=source_path,
+                    output_path=output_path,
+                    cut_mode=cut_mode,
+                    offset_mm=offset_mm,
+                    corner_style=corner_style,
+                    bleed_mm=bleed_mm,
+                    fill_holes=do_fill_holes,
+                    remove_white_bg=do_remove_bg,
+                    bleed_color_type=bleed_color_type,
+                    solid_bleed_color=solid_bleed_color,
+                    draw_cut_contour=do_draw_cut_contour,
+                    rectangle_mode=do_rectangle_mode,
+                    edge_bite_mm=edge_bite_mm,
+                    edge_sample_inset_mm=edge_sample_inset_mm,
+                    cut_first_page_only=do_cut_first_page_only,
+                    shape_mode=shape_mode,
+                    bleed_sides=bleed_sides_raw,
+                    selected_objects_by_page=selected_objects_by_page,
+                    process_pages=process_pages,
+                    alpha_corner_policy=adaptive_corner_policy,
                 )
-                page_expansion_pts = max(
-                    0.0,
-                    cut_edge_pts,
-                    outer_edge_pts,
-                )
-            restore_sticker_page_canvas(
-                source_path,
-                output_path,
-                expansion_pts=page_expansion_pts,
-            )
+            engine_seconds = time.perf_counter() - engine_started
+            if not success or not os.path.exists(output_path):
+                # success=False kèm meta['error'] = lỗi nghiệp vụ (vd không dò được hình)
+                biz_err = meta.get("error") if isinstance(meta, dict) else None
+                if biz_err:
+                    raise HTTPException(status_code=422, detail=biz_err)
+                raise RuntimeError("Lỗi lưu file kết quả. (File not found)")
 
-        await run_in_threadpool(_safe_watermark, output_path, license_info)
+            # Bỏ nền trắng chỉ thay đổi silhouette/alpha, tuyệt đối không sở hữu
+            # quyết định crop trang. StickerEngine dùng một canvas làm việc nới đều
+            # ``max_expansion_pts`` rồi legacy-tight-crop theo contour; khôi phục
+            # page box nguồn tại biên API (sàn tối thiểu = khổ nguồn). Nếu bù xén /
+            # đường cắt tràn ra ngoài mép trang nguồn, canvas được NỚI ra vừa đủ để
+            # chứa — không thu hẹp. Selection mode đã copy nguyên trang nên không
+            # cần hậu xử lý. Xén vuông giữ contract riêng: bleed có thể chủ động
+            # nới trang thành phẩm.
+            # Khi bật Crop trang theo tem, giữ nguyên MediaBox/CropBox tight do engine
+            # tạo: TrimBox vẫn là đường bế thật, BleedBox/MediaBox vẫn chứa đủ bù xén.
+            if (
+                not do_crop_to_sticker
+                and selected_objects_by_page is None
+                and not do_rectangle_mode
+            ):
+                bleed_pts = bleed_mm * 2.83465
+                effective_offset_mm = offset_mm - (
+                    ALPHA_CONTOUR_INSET_MM if cut_mode == "alpha" else 0.0
+                )
+                offset_pts = effective_offset_mm * 2.83465
+                if cut_mode == "none":
+                    page_expansion_pts = max(0.0, bleed_pts)
+                else:
+                    cut_edge_pts, outer_edge_pts = compute_cut_bleed_offsets(
+                        cut_mode,
+                        bleed_pts,
+                        offset_pts,
+                    )
+                    page_expansion_pts = max(0.0, cut_edge_pts, outer_edge_pts)
+                restore_sticker_page_canvas(
+                    source_path,
+                    output_path,
+                    expansion_pts=page_expansion_pts,
+                )
+            # Giữ tạo output trong một lượt admission, không xếp hàng lại cho watermark.
+            _safe_watermark(output_path, license_info)
+            return meta, engine_seconds
+
+        meta, engine_seconds = await run_in_threadpool(_run_sticker_job)
 
         headers = {
             "X-Sticker-Output-Path": os.path.abspath(output_path),

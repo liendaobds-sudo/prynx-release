@@ -23,6 +23,7 @@ import i18n, { tv } from '../i18n';
 // UIUX (audit 2026-07-27 §D-15/§D-11): lỗi kỹ thuật → câu Việt + hướng khắc phục; toast có nút hành động
 import { formatError, isCanceled } from './errorMessages';
 import { toast } from '../components/ui/Toast';
+import { waitForAppForegroundDelay } from './appVisibility';
 
 // UIUX (audit 2026-07-27 §D-09): tác vụ nặng chạy lâu — trấn an để user không tưởng app treo.
 // (KHÔNG thêm nút hủy: backend chưa có endpoint cancel cho các route preprocess.)
@@ -195,7 +196,11 @@ export async function runProcessEngine(
                     : (isDieCut && (settings as any).cutType === 'one_dao'
                         ? true
                         : (isDieCut ? (settings as any).separateCutPage || false : false)),
-                pontsOnCutFile: pontSettingsMode ? (settings as any).pontsOnCutFile !== false : undefined,
+                // FIX (audit 2026-08-05 §OC.3): CNC luôn Front + Cut; toggle này chỉ
+                // thuộc Sticker/Page Sheet, không gửi field gây kỳ vọng giả sang CNC.
+                ...((isDieCut || isPageSheet) ? {
+                    pontsOnCutFile: (settings as any).pontsOnCutFile !== false,
+                } : {}),
                 hiddenOcgLayerIds: isDieCut ? (settings as any).hiddenOcgLayerIds || [] : [],
                 duplexFlow: isPageSheet ? 'normal' : (settings as any).duplexFlow,
                 // MIXED-GUILLOTINE (audit 2026-07-30 §MG.5/§MG.8): planner materialize mặt sau theo cạnh này.
@@ -309,7 +314,7 @@ export async function runProcessEngine(
                     if (prog.includes('/')) {
                         setProcessStatus(i18n.t('lib.processHandlers:dang_xu_ly_prog_trang_da_binh', { prog }));
                     }
-                    await new Promise(r => setTimeout(r, 500));
+                    await waitForAppForegroundDelay(500);
                 }
             }
         } else {

@@ -1,6 +1,6 @@
 // Hook điều phối hộp thoại in hợp nhất kiểu Acrobat: promise-resolve (giống
 // usePrintScaleModal cũ nhưng giàu hơn). Lo resolve filePath + liệt kê máy in +
-// in thật (print_pdf_direct) + fallback PrintDlgW trên cùng file tạm. Mỗi tab
+// in thật (print_pdf_direct) + PrintDlgW chủ động trên cùng file tạm. Mỗi tab
 // chỉ cần: const { openPrintDialog, printDialog } = usePrintDialog(); rồi
 // await openPrintDialog({ source, numPages }). Xem [[nativePrint]] + [[PrintDialog]].
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -10,6 +10,8 @@ import {
     resolvePrintableFilePath,
     printPdfDirect,
     printPdfPath,
+    choosePrinterOutputPath,
+    cancelPrintJob,
     deletePrintTemp,
     logPrintEvent,
     type PrinterInfo,
@@ -27,6 +29,7 @@ interface DialogState {
     printers: PrinterInfo[];
     filePath: string;
     deleteAfter: boolean;
+    jobId: string;
     resolve: (printed: boolean) => void;
     reject: (error: unknown) => void;
 }
@@ -37,6 +40,12 @@ export function usePrintDialog() {
     const stateRef = useRef<DialogState | null>(null);
     const pendingPromiseRef = useRef<Promise<boolean> | null>(null);
     const mountedRef = useRef(true);
+    const createJobId = useCallback((): string => {
+        const randomPart = typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        return `print-${randomPart}`;
+    }, []);
     const openPrintDialog = useCallback((req: PrintRequest): Promise<boolean> => {
         if (pendingPromiseRef.current) return pendingPromiseRef.current;
         const pending = (async (): Promise<boolean> => {
@@ -50,8 +59,9 @@ export function usePrintDialog() {
             let printers: PrinterInfo[] = [];
             try {
                 printers = await listPrinters();
-            } catch (e: any) {
-                await logPrintEvent(`openPrintDialog: listPrinters failed ${e?.message || e}`);
+            } catch (e: unknown) {
+                const detail = e instanceof Error ? e.message : String(e);
+                await logPrintEvent(`openPrintDialog: listPrinters failed ${detail}`);
                 printers = [];
             }
             await logPrintEvent(`openPrintDialog: printers=${printers.length}, show dialog`);
@@ -60,7 +70,7 @@ export function usePrintDialog() {
                 return false;
             }
             return await new Promise<boolean>((resolve, reject) => {
-                const next = { req, printers, filePath, deleteAfter, resolve, reject };
+                const next = { req, printers, filePath, deleteAfter, jobId: createJobId(), resolve, reject };
                 stateRef.current = next;
                 setState(next);
             });
@@ -70,7 +80,7 @@ export function usePrintDialog() {
         });
         pendingPromiseRef.current = tracked;
         return tracked;
-    }, []);
+    }, [createJobId]);
 
     // Đóng dialog: gỡ state, dọn file tạm nếu cần rồi resolve promise.
     const takeState = useCallback((): DialogState | null => {
@@ -91,54 +101,95 @@ export function usePrintDialog() {
         void cleanupTemp(current).finally(() => current.resolve(printed));
     }, [cleanupTemp, takeState]);
 
-    const handlePrint = useCallback((settings: PrintSettings) => {
-        const current = takeState();
-        if (!current) return;
+    const completePrint = useCallback(async (current: DialogState, printed: boolean): Promise<void> => {
+        // UIUX (audit 2026-08-05 §PRINT.2): chỉ đóng dialog khi đúng job hiện tại đã kết thúc.
+        if (stateRef.current !== current) return;
+        const completed = takeState();
+        if (!completed) return;
+        try {
+            await cleanupTemp(completed);
+        } finally {
+            completed.resolve(printed);
+        }
+    }, [cleanupTemp, takeState]);
+
+    const handlePrint = useCallback(async (settings: PrintSettings): Promise<void> => {
+        const current = stateRef.current;
+        if (!current) throw new Error('PRINT_DIALOG_CLOSED');
         const { filePath, req } = current;
         const autoRotate = settings.orientation === 'auto' ? (req.autoRotateDefault ?? false) : false;
-        void (async () => {
-            try {
-                let printed: boolean;
-                try {
-                    printed = await printPdfDirect({
-                        filePath,
-                        printerName: settings.printerName,
-                        fromPage: settings.fromPage,
-                        toPage: settings.toPage,
-                        copies: settings.copies,
-                        collate: settings.collate,
-                        deleteAfter: false,
-                        scaleMode: settings.scaleMode,
-                        scalePercent: settings.scalePercent,
-                        orientation: settings.orientation,
-                        autoRotate,
-                        grayscale: settings.grayscale,
-                        printAnnotations: settings.printAnnotations,
-                        devmode: settings.devmode,
-                        reverse: settings.reverse,
-                        pageSubset: settings.pageSubset,
-                        layoutMode: settings.layoutMode,
-                        pagesPerSheet: settings.pagesPerSheet,
-                        posterCols: settings.posterCols,
-                        posterRows: settings.posterRows,
-                    });
-                } catch {
-                    printed = await printPdfPath({
-                        filePath,
-                        fromPage: settings.fromPage,
-                        toPage: settings.toPage,
-                        scaleMode: settings.scaleMode,
-                        autoRotate,
-                    });
-                }
-                await cleanupTemp(current);
-                current.resolve(printed);
-            } catch (error) {
-                await cleanupTemp(current);
-                current.reject(error);
+        try {
+            const selectedPrinter = current.printers.find(p => p.name === settings.printerName);
+            let outputPath: string | null = null;
+            if (selectedPrinter?.requires_output_path) {
+                outputPath = await choosePrinterOutputPath(selectedPrinter);
+                // Người dùng hủy hộp thoại lưu: chưa tạo job, giữ nguyên dialog để chọn lại.
+                if (!outputPath) return;
             }
-        })();
-    }, [cleanupTemp, takeState]);
+            const printed = await printPdfDirect({
+                jobId: current.jobId,
+                filePath,
+                printerName: settings.printerName,
+                outputPath,
+                fromPage: settings.fromPage,
+                toPage: settings.toPage,
+                copies: settings.copies,
+                collate: settings.collate,
+                deleteAfter: false,
+                scaleMode: settings.scaleMode,
+                scalePercent: settings.scalePercent,
+                orientation: settings.orientation,
+                autoRotate,
+                grayscale: settings.grayscale,
+                printAnnotations: settings.printAnnotations,
+                devmode: settings.devmode,
+                reverse: settings.reverse,
+                pageSubset: settings.pageSubset,
+                layoutMode: settings.layoutMode,
+                pagesPerSheet: settings.pagesPerSheet,
+                posterCols: settings.posterCols,
+                posterRows: settings.posterRows,
+            });
+            if (!printed) throw new Error('PRINT_JOB_NOT_COMPLETED');
+            await completePrint(current, true);
+        } catch (error) {
+            // UIUX (audit 2026-08-05 §PRINT.4): giữ lỗi gốc, không âm thầm đổi sang PrintDlgW.
+            const detail = error instanceof Error ? error.message : String(error);
+            try {
+                await logPrintEvent(`printPdfDirect: failed ${detail}`);
+            } catch { /* ghi log không được che lỗi in gốc */ }
+            throw error;
+        }
+    }, [completePrint]);
+
+    const handleSystemPrint = useCallback(async (settings: PrintSettings): Promise<void> => {
+        const current = stateRef.current;
+        if (!current) throw new Error('PRINT_DIALOG_CLOSED');
+        const autoRotate = settings.orientation === 'auto' ? (current.req.autoRotateDefault ?? false) : false;
+        try {
+            const printed = await printPdfPath({
+                filePath: current.filePath,
+                fromPage: settings.fromPage,
+                toPage: settings.toPage,
+                scaleMode: settings.scaleMode,
+                autoRotate,
+            });
+            // Người dùng có thể hủy PrintDlgW; khi đó giữ dialog PrynX để họ thử lại.
+            if (printed) await completePrint(current, true);
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            try {
+                await logPrintEvent(`printPdfPath: failed ${detail}`);
+            } catch { /* ghi log không được che lỗi in gốc */ }
+            throw error;
+        }
+    }, [completePrint]);
+
+    const handleCancelPrint = useCallback(async (): Promise<void> => {
+        const current = stateRef.current;
+        if (!current) return;
+        await cancelPrintJob(current.jobId);
+    }, []);
 
     useEffect(() => {
         mountedRef.current = true;
@@ -157,8 +208,11 @@ export function usePrintDialog() {
             source={state.req.source}
             numPages={state.req.numPages}
             printers={state.printers}
+            jobId={state.jobId}
             autoRotateDefault={state.req.autoRotateDefault}
             onPrint={handlePrint}
+            onSystemPrint={handleSystemPrint}
+            onCancelPrint={handleCancelPrint}
             onCancel={() => finish(false)}
         />
     ) : null;

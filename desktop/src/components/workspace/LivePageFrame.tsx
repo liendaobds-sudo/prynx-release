@@ -5,6 +5,14 @@ import { localFileUrl } from '../../lib/localFileTransport';
 import { authenticatedFetch, getApiUrl, getSystemFonts } from '../../lib/api';
 import { adjustCropRegion, cropDragToFrac, cropFracToPixels, type CropAdjustMode, type CropRegionFrac } from '../../lib/cropGeometry';
 import { getVisiblePlateOverlaysForPage } from '../../lib/outputPreviewOverlay';
+import {
+    cacheTileUrl,
+    clearTileUrlCache,
+    clearTileUrlCacheForFile,
+    getCachedTileUrl,
+    hasCachedTileUrl,
+    type TileUrlSource,
+} from '../../lib/tileUrlCache';
 import { useCropPointerDrawing } from '../../hooks/useCropPointerDrawing';
 import { VdpPreviewImage } from './ViewerHelpers';
 import { useViewerHotkeys } from '../../hooks/viewer/useViewerHotkeys';
@@ -46,6 +54,8 @@ import {
 import { buildPropertyAffine, mmToPt, pickTopmostObjectAtPoint, ptToMm, selectionBounds } from './editTransformMath';
 import { previewPerfLog } from '../../lib/previewPerfLog';
 import { computeRenderZoomPure, RENDER_BUDGET_PX } from './renderZoomPolicy';
+
+export { clearTileUrlCache, clearTileUrlCacheForFile };
 
 // Mảng rỗng ỔN ĐỊNH — không tạo `[]` mới mỗi effect (tránh cascade setState).
 const EMPTY_OBJECT_IDS: string[] = [];
@@ -121,58 +131,6 @@ const EDIT_ADD_TEXT_W_PT = 200;
 const EDIT_ADD_IMAGE_SIZE_PT = 150;
 
 const TILE_SIZE = 512;
-
-// ═══ Frontend Tile URL Cache ═══
-// Persists tile image URLs across Virtuoso mount/unmount cycles
-// so scrolling back to a previously-loaded page shows it INSTANTLY (no white flash).
-const _tileUrlCache = new Map<string, string>();
-const TILE_CACHE_MAX = 200; // Max cached tile URLs (LRU eviction)
-
-function cacheTileUrl(key: string, url: string) {
-    // LRU eviction: if full, delete the oldest entry
-    if (_tileUrlCache.size >= TILE_CACHE_MAX && !_tileUrlCache.has(key)) {
-        const oldest = _tileUrlCache.keys().next().value;
-        if (oldest) {
-            const oldUrl = _tileUrlCache.get(oldest);
-            // Don't revoke protocol URLs (http://tile.localhost), only blobs
-            if (oldUrl && oldUrl.startsWith('blob:')) URL.revokeObjectURL(oldUrl);
-            _tileUrlCache.delete(oldest);
-        }
-    }
-    _tileUrlCache.set(key, url);
-}
-
-function getCachedTileUrl(key: string): string | undefined {
-    const url = _tileUrlCache.get(key);
-    if (url) {
-        // Move to end (most recently used) for LRU
-        _tileUrlCache.delete(key);
-        _tileUrlCache.set(key, url);
-    }
-    return url;
-}
-
-// Clear cache when loading a new file (called from parent)
-export function clearTileUrlCache() {
-    for (const [, url] of _tileUrlCache) {
-        if (url.startsWith('blob:')) URL.revokeObjectURL(url);
-    }
-    _tileUrlCache.clear();
-}
-
-// Dọn tile của RIÊNG một file (key = `${pdfUrl}_...`) → gọi khi ĐÓNG tab để giải
-// phóng bitmap của tab đó mà KHÔNG đụng tile các tab khác đang mở (cache là global,
-// dùng chung mọi tab — audit RAM 2026-07-06). Chỉ revoke blob thật.
-export function clearTileUrlCacheForFile(fileKeyPrefix: string) {
-    if (!fileKeyPrefix) return;
-    const prefix = `${fileKeyPrefix}_`;
-    for (const [key, url] of _tileUrlCache) {
-        if (key.startsWith(prefix)) {
-            if (url.startsWith('blob:')) URL.revokeObjectURL(url);
-            _tileUrlCache.delete(key);
-        }
-    }
-}
 
 // ═══ Edit Objects Cache (chế độ Chỉnh sửa đối tượng) ═══
 // Cache danh sách EditCanvasObj theo khóa `${selectionFileId}:${pageIndex}` để
@@ -260,6 +218,7 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
     }, [cssW, cssH, clipW, clipH]);
     const loadedParamsRef = useRef('');
     const preloadRef = useRef<HTMLImageElement|null>(null);
+    const ownedBlobUrlsRef = useRef(new Set<string>());
     const hasLoadedOnce = useRef(false);
     const displayedScaleRef = useRef(0);
     
@@ -351,18 +310,20 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
                     groupKey: renderGroupKey,
                     priority: renderPriority,
                 })
-                    .then((url: string) => {
+                    .then((source: TileUrlSource) => {
+                        const { url } = source;
+                        if (url.startsWith('blob:') && !url.includes('#keep')) {
+                            ownedBlobUrlsRef.current.add(url);
+                        }
                         if (!requestIsCurrent()) {
-                            if (url && url.startsWith('blob:') && !url.includes('#keep')) URL.revokeObjectURL(url);
+                            if (ownedBlobUrlsRef.current.delete(url)) URL.revokeObjectURL(url);
                             return;
                         }
                         const preImg = new Image();
                         preloadRef.current = preImg;
                         preImg.onload = () => {
                             if (!requestIsCurrent() || scale < displayedScaleRef.current) {
-                                if (url && url.startsWith('blob:') && !url.includes('#keep')) {
-                                    URL.revokeObjectURL(url);
-                                }
+                                if (ownedBlobUrlsRef.current.delete(url)) URL.revokeObjectURL(url);
                                 if (preloadRef.current === preImg) preloadRef.current = null;
                                 return;
                             }
@@ -373,11 +334,11 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
                             if (imgEl) {
                                 const oldSrc = imgEl.src;
                                 imgEl.src = url;
-                                if (cache) cacheTileUrl(paramsAtRequest, url);
+                                const keptInCache = cache && cacheTileUrl(paramsAtRequest, source);
+                                if (keptInCache) ownedBlobUrlsRef.current.delete(url);
                                 if (oldSrc && oldSrc.startsWith('blob:') && oldSrc !== url && !oldSrc.includes('#keep')) {
-                                    let inCache = false;
-                                    for (const [, v] of _tileUrlCache) { if (v === oldSrc) { inCache = true; break; } }
-                                    if (!inCache) URL.revokeObjectURL(oldSrc);
+                                    if (!hasCachedTileUrl(oldSrc)) URL.revokeObjectURL(oldSrc);
+                                    ownedBlobUrlsRef.current.delete(oldSrc);
                                 }
                             }
                             if (!hasLoadedOnce.current) {
@@ -394,7 +355,7 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
                         };
                         preImg.onerror = () => {
                             if (preloadRef.current === preImg) preloadRef.current = null;
-                            if (url && url.startsWith('blob:') && !url.includes('#keep')) URL.revokeObjectURL(url);
+                            if (ownedBlobUrlsRef.current.delete(url)) URL.revokeObjectURL(url);
                             if (onReady) return; // sharp đã được nối ngay sau khi gán src
                             if (!requestIsCurrent()) return;
                             loadedParamsRef.current = '';
@@ -443,7 +404,8 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
         };
     }, [clipH, clipW, clipX, clipY, coarseZoom, currentParams, eager, getTileUrl, onVisible, pageNum, renderEnabled, renderGroupKey, renderOwnerId, renderPriority, rot, showLoadStatus, zoom]);
     
-    // Cleanup on unmount — DON'T revoke blob URLs, they're in the cache now!
+    // Tile đã vào cache sống qua vòng mount của Virtuoso; tile coarse/quá budget
+    // vẫn thuộc component và phải thu hồi khi unmount để không rò Blob URL.
     useEffect(() => {
         mountedRef.current = true;
         return () => {
@@ -455,7 +417,10 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
                 preloadRef.current = null;
             }
             if (renderOwnerId) nativeTileRenderScheduler.cancelGroup(renderOwnerId, renderGroupKey);
-            // Intentionally NOT revoking imgRef.current.src — it's cached for instant re-mount
+            for (const url of ownedBlobUrlsRef.current) {
+                if (!hasCachedTileUrl(url)) URL.revokeObjectURL(url);
+            }
+            ownedBlobUrlsRef.current.clear();
         };
     }, [renderGroupKey, renderOwnerId]);
     // Initialize empty pixel only once (but only if no cached image was restored)

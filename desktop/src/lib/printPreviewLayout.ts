@@ -5,6 +5,31 @@
 
 export type PageSubset = 'all' | 'odd' | 'even';
 export type LayoutMode = 'size' | 'multiple' | 'booklet' | 'poster';
+export type PreviewScaleMode = 'actual' | 'fit' | 'shrink' | 'custom';
+
+export type PreviewPrinterGeometry = {
+  printable_w_mm: number;
+  printable_h_mm: number;
+};
+
+export function calculateSizePreview(
+  pageDimPt: { w: number; h: number },
+  geometry: PreviewPrinterGeometry,
+  mode: PreviewScaleMode,
+  customPercent: number,
+): { widthMm: number; heightMm: number; scale: number } {
+  const widthMm = pageDimPt.w / 72 * 25.4;
+  const heightMm = pageDimPt.h / 72 * 25.4;
+  const fit = Math.min(
+    geometry.printable_w_mm / Math.max(widthMm, 1e-6),
+    geometry.printable_h_mm / Math.max(heightMm, 1e-6),
+  );
+  let scale = 1;
+  if (mode === 'fit') scale = fit;
+  else if (mode === 'shrink') scale = Math.min(1, fit);
+  else if (mode === 'custom') scale = Math.max(0.01, Math.min(10, customPercent / 100));
+  return { widthMm, heightMm, scale };
+}
 
 export function collectPageNumbers(
   start: number,

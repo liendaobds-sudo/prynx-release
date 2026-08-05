@@ -1,12 +1,8 @@
-//! external_app.rs — Mở file kết quả bằng ứng dụng thiết kế ngoài (Illustrator/CorelDRAW).
+//! Mở file kết quả bằng ứng dụng thiết kế ngoài (Illustrator/CorelDRAW).
 //!
-//! Thay cho tính năng "gửi máy bế" (kênh TCP/serial chưa kiểm chứng end-to-end): user
-//! mở trang khuôn trong AI/Corel nơi PLUGIN MÁY BẾ đã cài sẵn để quét chọn + xuất file cắt.
-//!
-//! - detect_design_apps: dò đường dẫn .exe qua registry "App Paths" (mirror
-//!   collect_hardware_fingerprint trong security.rs — PowerShell + creation_flags ẩn cửa sổ).
-//! - launch_external_app: mở file bằng .exe đích danh qua std::process::Command (idiom
-//!   đã dùng khắp security.rs). Validate path (dùng chung is_sensitive_path của lib.rs).
+//! Người dùng mở riêng trang khuôn trong ứng dụng đã cài plugin máy bế, sau đó
+//! quét chọn đường cắt và xuất bằng plugin. Mô-đun này không gửi dữ liệu trực
+//! tiếp đến máy bế.
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -14,67 +10,126 @@ use std::process::Command;
 use tauri::command;
 
 #[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000; // ẩn console flash khi chạy powershell
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-#[derive(serde::Serialize)]
+#[derive(Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct DesignApps {
     pub illustrator: Option<String>,
     pub corel: Option<String>,
 }
 
-/// Truy vấn 1 key "App Paths\<exe>" ở HKLM rồi HKCU, trả (Default) nếu file tồn tại.
+/// Dò cả Illustrator và CorelDRAW trong một process PowerShell.
+///
+/// App Paths là nguồn chính; các mẫu Program Files là fallback cho bản cài
+/// không đăng ký App Paths. Không quét đệ quy toàn ổ đĩa vì sẽ làm hộp thoại
+/// Bế chậm trên máy có nhiều dữ liệu.
 #[cfg(target_os = "windows")]
-fn query_app_path(exe_name: &str) -> Option<String> {
-    let esc = crate::security::ps_single_quote_escape(exe_name);
-    // Nội suy tên exe vào PS SINGLE-quoted string (đã escape) — không nối vào double-quote.
-    let script = format!(
-        "$n='{}'; $roots=@('HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\','HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\'); foreach($r in $roots){{ try {{ $v=(Get-ItemProperty -Path ($r+$n) -ErrorAction Stop).'(default)'; if($v){{ Write-Output $v; exit }} }} catch {{}} }}",
-        esc
-    );
+fn query_design_apps() -> Option<DesignApps> {
+    // PERF (audit 2026-08-05 §OPEN-DESIGN): trước đây tạo tối đa bốn process
+    // PowerShell nối tiếp nên UI có thể báo nhầm “chưa dò được” trong lúc còn dò.
+    const SCRIPT: &str = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+$roots = @(
+    'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths',
+    'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths',
+    'Registry::HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths'
+)
+
+function Find-DesignApp([string[]]$names, [string[]]$patterns) {
+    foreach ($root in $roots) {
+        foreach ($name in $names) {
+            $key = Join-Path $root $name
+            try {
+                $value = (Get-Item -LiteralPath $key -ErrorAction Stop).GetValue('')
+                if ($value) {
+                    $candidate = [Environment]::ExpandEnvironmentVariables([string]$value).Trim().Trim('"')
+                    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                        return [System.IO.Path]::GetFullPath($candidate)
+                    }
+                }
+            } catch {}
+        }
+    }
+
+    foreach ($pattern in $patterns) {
+        if ([string]::IsNullOrWhiteSpace($pattern)) { continue }
+        $candidate = Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+        if ($candidate) { return $candidate.FullName }
+    }
+    return $null
+}
+
+$pf = $env:ProgramFiles
+$pf86 = ${env:ProgramFiles(x86)}
+$illustratorPatterns = @()
+$corelPatterns = @()
+if ($pf) {
+    $illustratorPatterns += (Join-Path $pf 'Adobe\Adobe Illustrator *\Support Files\Contents\Windows\Illustrator.exe')
+    $corelPatterns += (Join-Path $pf 'Corel\CorelDRAW Graphics Suite *\Programs64\CorelDRW.exe')
+    $corelPatterns += (Join-Path $pf 'Corel\CorelDRAW Graphics Suite *\Programs\CorelDRW.exe')
+}
+if ($pf86) {
+    $illustratorPatterns += (Join-Path $pf86 'Adobe\Adobe Illustrator *\Support Files\Contents\Windows\Illustrator.exe')
+    $corelPatterns += (Join-Path $pf86 'Corel\CorelDRAW Graphics Suite *\Programs64\CorelDRW.exe')
+    $corelPatterns += (Join-Path $pf86 'Corel\CorelDRAW Graphics Suite *\Programs\CorelDRW.exe')
+}
+
+[ordered]@{
+    illustrator = Find-DesignApp @('Illustrator.exe') $illustratorPatterns
+    corel = Find-DesignApp @('CorelDRW.exe', 'CorelDraw.exe') $corelPatterns
+} | ConvertTo-Json -Compress
+"#;
+
     let output = Command::new("powershell")
-        .args(["-NoProfile", "-NoLogo", "-Command", &script])
+        .args(["-NoProfile", "-NoLogo", "-Command", SCRIPT])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()?;
-    let val = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .trim_matches('"')
-        .to_string();
-    if val.is_empty() {
+    if !output.status.success() {
         return None;
     }
-    if std::path::Path::new(&val).is_file() {
-        Some(val)
-    } else {
-        None
-    }
+
+    let mut apps = parse_design_apps_output(&output.stdout)?;
+    apps.illustrator = validate_detected_path(apps.illustrator);
+    apps.corel = validate_detected_path(apps.corel);
+    Some(apps)
 }
 
-/// Dò Illustrator + CorelDRAW đã cài (Windows). Không tìm thấy → None (UI cho tự trỏ .exe).
+fn parse_design_apps_output(stdout: &[u8]) -> Option<DesignApps> {
+    let text = String::from_utf8_lossy(stdout);
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    serde_json::from_str(&text[start..=end]).ok()
+}
+
+#[cfg(target_os = "windows")]
+fn validate_detected_path(path: Option<String>) -> Option<String> {
+    path.map(|value| value.trim().trim_matches('"').to_string())
+        .filter(|value| std::path::Path::new(value).is_file())
+}
+
+/// Dò Illustrator và CorelDRAW đã cài. Không tìm thấy thì UI cho chọn thủ công.
 #[command]
-pub fn detect_design_apps() -> DesignApps {
+pub async fn detect_design_apps() -> DesignApps {
     #[cfg(target_os = "windows")]
     {
-        let illustrator = query_app_path("Illustrator.exe");
-        // Corel đổi tên exe theo dòng/phiên bản → thử vài biến thể phổ biến.
-        let corel = ["CorelDRW.exe", "CorelDraw.exe", "coreldrw.exe"]
-            .iter()
-            .find_map(|n| query_app_path(n));
-        DesignApps { illustrator, corel }
+        tauri::async_runtime::spawn_blocking(query_design_apps)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default()
     }
     #[cfg(not(target_os = "windows"))]
     {
-        DesignApps {
-            illustrator: None,
-            corel: None,
-        }
+        DesignApps::default()
     }
 }
 
-/// Mở `file_path` (PDF) bằng ứng dụng `app_path` đích danh (File>Open, không phải link).
+/// Mở `file_path` (PDF) bằng ứng dụng `app_path` đích danh.
 #[command]
 pub fn launch_external_app(app_path: String, file_path: String) -> Result<(), String> {
-    // Chỉ cho mở PDF (khuôn / khuôn+in) — không mở file tùy loại.
     let ext = std::path::Path::new(&file_path)
         .extension()
         .and_then(|e| e.to_str())
@@ -89,15 +144,9 @@ pub fn launch_external_app(app_path: String, file_path: String) -> Result<(), St
     if !std::path::Path::new(&file_path).is_file() {
         return Err("File not found".to_string());
     }
-    // app_path đến từ detect_design_apps (registry AI/Corel) HOẶC user tự trỏ .exe qua
-    // hộp thoại native (OpenInDesignModal). Không thể whitelist cứng AI/Corel vì luồng
-    // custom-exe hợp lệ. Nhưng SIẾT được ở đây mà không phá luồng đó:
-    //  - phải là .exe (chặn trỏ app_path vào script/DLL/LNK),
-    //  - phải là file tồn tại,
-    //  - KHÔNG nằm ở vị trí nhạy cảm (dùng is_sensitive_path — KHÔNG dùng
-    //    is_sensitive_write_path vì AI/Corel cài trong Program Files, write-guard chặn
-    //    còn read-guard cho qua). Không đụng luồng thật: exe cài ở Program Files / nơi
-    //    user chọn đều qua; chỉ chặn app_path bị nhét vào thư mục credential/khoá.
+
+    // app_path đến từ bộ dò hoặc hộp thoại native. Không whitelist thư mục cứng
+    // vì Corel/Illustrator có thể được cài ở ổ khác, nhưng bắt buộc là .exe tồn tại.
     let app_ext = std::path::Path::new(&app_path)
         .extension()
         .and_then(|e| e.to_str())
@@ -115,7 +164,32 @@ pub fn launch_external_app(app_path: String, file_path: String) -> Result<(), St
 
     let mut cmd = Command::new(&app_path);
     cmd.arg(&file_path);
-    cmd.spawn()
-        .map_err(|e| format!("Loi mo ung dung: {}", e))?;
+    cmd.spawn().map_err(|e| format!("Lỗi mở ứng dụng: {}", e))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_design_apps_json_ignores_surrounding_powershell_noise() {
+        let output = br#"warning
+{"illustrator":"C:\\Program Files\\Adobe\\Illustrator.exe","corel":null}
+"#;
+        let apps = parse_design_apps_output(output).expect("parse detection result");
+        assert_eq!(
+            apps,
+            DesignApps {
+                illustrator: Some(r"C:\Program Files\Adobe\Illustrator.exe".to_string()),
+                corel: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_design_apps_rejects_non_json_output() {
+        assert_eq!(parse_design_apps_output(b""), None);
+        assert_eq!(parse_design_apps_output(b"powershell error"), None);
+    }
 }

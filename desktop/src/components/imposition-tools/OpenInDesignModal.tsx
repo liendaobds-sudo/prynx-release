@@ -64,6 +64,10 @@ function saveCustomApps(a: CustomApps) {
     }
 }
 
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error ?? '');
+}
+
 /** Số trang mỗi đơn vị (tờ) theo chế độ. */
 function pagesPerUnit(cncMode?: boolean, cncTwoSided?: boolean, separateCut?: boolean): number {
     if (cncMode) return cncTwoSided ? 3 : 2;
@@ -76,6 +80,8 @@ export default function OpenInDesignModal({
     const { t } = useTranslation();
     const [detected, setDetected] = useState<CustomApps>({});
     const [custom, setCustom] = useState<CustomApps>(loadCustomApps());
+    const [detectingApps, setDetectingApps] = useState(false);
+    const [detectionFailed, setDetectionFailed] = useState(false);
     const [scope, setScope] = useState<Scope>('cut_only');
     const [busy, setBusy] = useState(false);
     const [status, setStatus] = useState('');
@@ -92,13 +98,20 @@ export default function OpenInDesignModal({
         if (!open) return;
         let active = true;
         setStatus('');
+        setDetected({});
+        setDetectingApps(true);
+        setDetectionFailed(false);
         (async () => {
             try {
                 const { invoke } = await import('@tauri-apps/api/core');
                 const apps = await invoke<{ illustrator: string | null; corel: string | null }>('detect_design_apps');
                 if (!active) return;
                 setDetected({ illustrator: apps.illustrator || undefined, corel: apps.corel || undefined });
-            } catch { /* không dò được → dùng custom */ }
+            } catch {
+                if (active) setDetectionFailed(true);
+            } finally {
+                if (active) setDetectingApps(false);
+            }
         })();
         return () => { active = false; };
     }, [open]);
@@ -155,7 +168,8 @@ export default function OpenInDesignModal({
     const corelPath = detected.corel || custom.corel;
     const multiSheet = cutPages.length > 1;
     const allSelected = cutPages.length > 0 && selected.size === cutPages.length;
-    const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
+    const isTauri = typeof window !== 'undefined'
+        && !!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
 
     // Preview 1 trang khuôn qua protocol tile:// (Rust render, nhẹ + có disk cache — như
     // ThumbnailView). page 1-indexed = pageIndex + 1. Không có path trên đĩa → không preview.
@@ -189,11 +203,6 @@ export default function OpenInDesignModal({
         if (!mods.shift) setAnchor(pageIndex);
     };
 
-    const selectAll = () => {
-        setSelected(new Set(cutPages.map(p => p.pageIndex)));
-        setAnchor(cutPages.length ? cutPages[0].pageIndex : null);
-    };
-
     const pickExe = async (which: 'illustrator' | 'corel') => {
         try {
             const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
@@ -208,7 +217,7 @@ export default function OpenInDesignModal({
                 saveCustomApps(next);
             }
         } catch (e) {
-            setStatus(t('misc.openInDesign:khong_mo_duoc_hop_thoai', { msg: (e as any)?.message }));
+            setStatus(t('misc.openInDesign:khong_mo_duoc_hop_thoai', { msg: errorMessage(e) }));
         }
     };
 
@@ -261,7 +270,7 @@ export default function OpenInDesignModal({
             setStatus(t('misc.openInDesign:da_mo'));
             onClose();
         } catch (e) {
-            setStatus(t('misc.openInDesign:loi_khi_mo', { msg: (e as any)?.message || e }));
+            setStatus(t('misc.openInDesign:loi_khi_mo', { msg: errorMessage(e) }));
         } finally {
             setBusy(false);
         }
@@ -271,27 +280,34 @@ export default function OpenInDesignModal({
         label: string,
         path: string | undefined,
         which: 'illustrator' | 'corel',
-    ) => (
-        <div className="flex items-center gap-2">
-            <button
-                onClick={() => doOpen(path)}
-                disabled={busy || !path}
-                className="flex-1 flex items-center justify-between px-3 h-11 rounded-lg border border-slate-300 dark:border-white/20 bg-white dark:bg-zinc-800 hover:border-indigo-500 disabled:opacity-40 disabled:hover:border-slate-300 text-left"
-            >
-                <span className="text-sm font-semibold text-slate-800 dark:text-white">{label}</span>
-                <span className="text-[11px] text-slate-400 truncate max-w-[220px]" title={path}>
-                    {path || t('misc.openInDesign:chua_do_duoc')}
-                </span>
-            </button>
-            <button
-                onClick={() => pickExe(which)}
-                className="px-2.5 h-11 rounded-lg border border-slate-300 dark:border-white/20 text-[11px] text-slate-600 dark:text-zinc-300 hover:border-indigo-500"
-                title={t('misc.openInDesign:chon_file_exe')}
-            >
-                {t('misc.openInDesign:tro_exe')}
-            </button>
-        </div>
-    );
+    ) => {
+        const availability = path
+            ? path
+            : detectingApps
+                ? t('misc.openInDesign:dang_tim_ung_dung')
+                : t('misc.openInDesign:khong_tim_thay_tren_may');
+        return (
+            <div className="flex items-center gap-2" data-app={which}>
+                <button
+                    onClick={() => doOpen(path)}
+                    disabled={busy || !path}
+                    className="flex-1 flex items-center justify-between px-3 h-11 rounded-lg border border-slate-300 dark:border-white/20 bg-white dark:bg-zinc-800 hover:border-indigo-500 disabled:opacity-40 disabled:hover:border-slate-300 text-left"
+                >
+                    <span className="text-sm font-semibold text-slate-800 dark:text-white">{label}</span>
+                    <span className="text-[11px] text-slate-400 truncate max-w-[220px]" title={path}>
+                        {availability}
+                    </span>
+                </button>
+                {!detectingApps && <button
+                    onClick={() => pickExe(which)}
+                    className="px-2.5 h-11 rounded-lg border border-slate-300 dark:border-white/20 text-[11px] text-slate-600 dark:text-zinc-300 hover:border-indigo-500"
+                    title={t('misc.openInDesign:chon_file_exe')}
+                >
+                    {path ? t('misc.openInDesign:chon_lai') : t('misc.openInDesign:chon_thu_cong')}
+                </button>}
+            </div>
+        );
+    };
 
     return (
         <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
@@ -367,6 +383,16 @@ export default function OpenInDesignModal({
                     {/* Chọn app */}
                     <div>
                         <label className="text-[11px] font-bold text-slate-600 uppercase">{t('misc.openInDesign:mo_bang')}</label>
+                        {detectingApps && (
+                            <p className="text-[11px] text-indigo-600 dark:text-indigo-400 mt-1">
+                                {t('misc.openInDesign:dang_tim_ung_dung')}
+                            </p>
+                        )}
+                        {!detectingApps && detectionFailed && (
+                            <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1">
+                                {t('misc.openInDesign:khong_the_tu_dong_do')}
+                            </p>
+                        )}
                         <div className="flex flex-col gap-2 mt-1.5">
                             {appRow('Adobe Illustrator', illustratorPath, 'illustrator')}
                             {appRow('CorelDRAW', corelPath, 'corel')}

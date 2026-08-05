@@ -36,5 +36,8 @@ ttf-parser = "0.25"
 # không phải file OpenType nên bộ đọc TrueType không mở được, mà chúng lại rất
 # phổ biến trong PDF — thiếu chúng là mất phần lớn chữ của file thật.
 hayro-font = "0.4"
+# PERF (audit 2026-08-05 §PERF.8): pool dùng chung cho kernel full-frame thuần dữ liệu.
+# Không tạo pool theo request; nhiều tác vụ PPE cùng chia sẻ số luồng CPU của Rayon.
+rayon = "1.12"
 
 [dev-dependencies]

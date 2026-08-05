@@ -19,6 +19,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use rayon::prelude::*;
+
 use crate::blend::{blend_nonseparable_cmyk, BlendMode};
 use crate::color::icc::ColorManager;
 use crate::error::{PpeError, PpeResult};
@@ -26,6 +28,16 @@ use crate::geom::Region;
 
 const MIB: usize = 1024 * 1024;
 const BYTES_PER_SAMPLE: usize = std::mem::size_of::<f32>();
+
+/// Dưới ngưỡng này, chi phí chia việc lớn hơn lợi ích song song.
+/// Đây là ngưỡng theo kích thước công việc, không phải hard-cap phần cứng: trang
+/// lớn luôn dùng toàn bộ pool Rayon dùng chung, kể cả trên máy mạnh nhiều lõi.
+const PARALLEL_FRAME_MIN_PIXELS: usize = 512 * 1024;
+
+#[inline]
+fn should_parallelize_frame(pixel_count: usize) -> bool {
+    pixel_count >= PARALLEL_FRAME_MIN_PIXELS && rayon::current_num_threads() > 1
+}
 
 /// Ngân sách mặc định cho toàn bộ buffer mực đang sống trong một lần render.
 ///
@@ -1581,6 +1593,16 @@ impl InkBuffer {
     pub fn tac_percent(&self) -> Vec<f32> {
         let px = (self.width as usize) * (self.height as usize);
         let mut out = vec![0.0f32; px];
+        if should_parallelize_frame(px) {
+            out.par_iter_mut().enumerate().for_each(|(index, output)| {
+                let mut tac = 0.0f32;
+                for plane in &self.planes {
+                    tac += plane[index] * 100.0;
+                }
+                *output = tac;
+            });
+            return out;
+        }
         for plane in &self.planes {
             for (o, v) in out.iter_mut().zip(plane.iter()) {
                 *o += v * 100.0;
@@ -1590,7 +1612,24 @@ impl InkBuffer {
     }
 
     pub fn max_tac_percent(&self) -> f32 {
-        self.tac_percent().into_iter().fold(0.0f32, f32::max)
+        // PERF (audit 2026-08-05 §PERF.8): fold trực tiếp, không dựng Vec<f32>
+        // full-page chỉ để đọc một giá trị. A4 @300 DPI tránh được ~32,1 MiB tạm.
+        let px = self.alpha.len();
+        let pixel_tac = |index: usize| {
+            let mut tac = 0.0f32;
+            for plane in &self.planes {
+                tac += plane[index] * 100.0;
+            }
+            tac
+        };
+        if should_parallelize_frame(px) {
+            (0..px)
+                .into_par_iter()
+                .map(pixel_tac)
+                .reduce(|| 0.0f32, f32::max)
+        } else {
+            (0..px).map(pixel_tac).fold(0.0f32, f32::max)
+        }
     }
 
     /// Xuất một kẽm sang byte 0..255 với **255 = 100% mực**.
@@ -1599,10 +1638,13 @@ impl InkBuffer {
     /// vì TIFF của `tiffsep` bị nghịch đảo), nên plate PPE cắm thẳng vào
     /// `_create_colored_plate` không cần đổi dấu ở lớp Python.
     pub fn plate_u8(&self, channel: usize) -> Vec<u8> {
-        self.planes[channel]
-            .iter()
-            .map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
-            .collect()
+        let plane = &self.planes[channel];
+        let convert = |value: &f32| (value.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        if should_parallelize_frame(plane.len()) {
+            plane.par_iter().map(convert).collect()
+        } else {
+            plane.iter().map(convert).collect()
+        }
     }
 
     /// Quy buffer mực sang ảnh sRGB 8 bit (3 byte/pixel) — đường **soft-proof**.
@@ -1681,15 +1723,20 @@ impl InkBuffer {
     pub fn to_process_cmyk(&self) -> Vec<u8> {
         let px = self.alpha.len();
         // Gộp spot vào process — cùng logic to_srgb.
-        let mut cmyk: Vec<[f32; 4]> = Vec::with_capacity(px);
-        for i in 0..px {
-            cmyk.push([
+        let process_at = |i: usize| {
+            [
                 self.planes[0][i].clamp(0.0, 1.0),
                 self.planes[1][i].clamp(0.0, 1.0),
                 self.planes[2][i].clamp(0.0, 1.0),
                 self.planes[3][i].clamp(0.0, 1.0),
-            ]);
-        }
+            ]
+        };
+        let parallel = should_parallelize_frame(px);
+        let mut cmyk: Vec<[f32; 4]> = if parallel {
+            (0..px).into_par_iter().map(process_at).collect()
+        } else {
+            (0..px).map(process_at).collect()
+        };
         for ch in 4..self.planes.len() {
             if !self.space.colorants()[ch].is_spot() {
                 continue;
@@ -1720,14 +1767,27 @@ impl InkBuffer {
             }
         }
         // Trả interleaved CMYK u8: 4 byte/pixel.
-        let mut out = Vec::with_capacity(px * 4);
-        for p in cmyk {
-            out.push((p[0] * 255.0 + 0.5) as u8);
-            out.push((p[1] * 255.0 + 0.5) as u8);
-            out.push((p[2] * 255.0 + 0.5) as u8);
-            out.push((p[3] * 255.0 + 0.5) as u8);
+        if parallel {
+            let mut out = vec![0u8; px * 4];
+            out.par_chunks_mut(4)
+                .zip(cmyk.par_iter())
+                .for_each(|(bytes, pixel)| {
+                    bytes[0] = (pixel[0] * 255.0 + 0.5) as u8;
+                    bytes[1] = (pixel[1] * 255.0 + 0.5) as u8;
+                    bytes[2] = (pixel[2] * 255.0 + 0.5) as u8;
+                    bytes[3] = (pixel[3] * 255.0 + 0.5) as u8;
+                });
+            out
+        } else {
+            let mut out = Vec::with_capacity(px * 4);
+            for pixel in cmyk {
+                out.push((pixel[0] * 255.0 + 0.5) as u8);
+                out.push((pixel[1] * 255.0 + 0.5) as u8);
+                out.push((pixel[2] * 255.0 + 0.5) as u8);
+                out.push((pixel[3] * 255.0 + 0.5) as u8);
+            }
+            out
         }
-        out
     }
 
     /// Độ phủ của một kẽm theo % diện tích có mực (ngưỡng > 2%).
@@ -1736,7 +1796,11 @@ impl InkBuffer {
         if plane.is_empty() {
             return 0.0;
         }
-        let inked = plane.iter().filter(|v| **v > 0.02).count();
+        let inked = if should_parallelize_frame(plane.len()) {
+            plane.par_iter().filter(|value| **value > 0.02).count()
+        } else {
+            plane.iter().filter(|value| **value > 0.02).count()
+        };
         inked as f32 / plane.len() as f32 * 100.0
     }
 }
@@ -1979,6 +2043,57 @@ mod tests {
         )
         .unwrap();
         assert_eq!(buf.plate_u8(3)[0], 128);
+    }
+
+    #[test]
+    fn parallel_full_frame_outputs_match_the_scalar_contract() {
+        let width = 1024u32;
+        let height = (PARALLEL_FRAME_MIN_PIXELS / width as usize) as u32;
+        let px = width as usize * height as usize;
+        assert_eq!(px, PARALLEL_FRAME_MIN_PIXELS);
+
+        let mut buf = InkBuffer::new(width, height, InkSpace::new()).unwrap();
+        for index in 0..px {
+            buf.planes[0][index] = (index % 257) as f32 / 256.0;
+            buf.planes[1][index] = (index % 17) as f32 / 16.0;
+            buf.planes[2][index] = (index % 5) as f32 / 4.0;
+            buf.planes[3][index] = (index % 2) as f32;
+        }
+
+        let expected_tac: Vec<f32> = (0..px)
+            .map(|index| {
+                let mut tac = 0.0f32;
+                for plane in &buf.planes {
+                    tac += plane[index] * 100.0;
+                }
+                tac
+            })
+            .collect();
+        let expected_max = expected_tac.iter().copied().fold(0.0f32, f32::max);
+        let expected_plate: Vec<u8> = buf.planes[0]
+            .iter()
+            .map(|value| (value.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
+            .collect();
+        let expected_coverage =
+            buf.planes[0].iter().filter(|value| **value > 0.02).count() as f32 / px as f32 * 100.0;
+        let mut expected_cmyk = Vec::with_capacity(px * 4);
+        for index in 0..px {
+            for plane in &buf.planes {
+                expected_cmyk.push((plane[index].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+            }
+        }
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            assert_eq!(buf.tac_percent(), expected_tac);
+            assert_eq!(buf.max_tac_percent(), expected_max);
+            assert_eq!(buf.plate_u8(0), expected_plate);
+            assert_eq!(buf.plate_coverage_pct(0), expected_coverage);
+            assert_eq!(buf.to_process_cmyk(), expected_cmyk);
+        });
     }
 
     #[test]

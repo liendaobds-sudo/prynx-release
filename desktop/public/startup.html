@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PrynX</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: "Segoe UI", system-ui, sans-serif;
+        background: #f8fafc;
+        color: #172033;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 18% 10%, rgba(37, 99, 235, 0.12), transparent 38%),
+          linear-gradient(145deg, #ffffff 0%, #eef3f9 100%);
+      }
+
+      .startup-card {
+        width: 100%;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 32px 46px 28px;
+        border: 1px solid rgba(148, 163, 184, 0.32);
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+
+      .brand img {
+        width: 58px;
+        height: 58px;
+        object-fit: contain;
+      }
+
+      .brand-name {
+        font-size: 34px;
+        font-weight: 760;
+        letter-spacing: 0.24em;
+        line-height: 1;
+      }
+
+      .tagline {
+        margin: 11px 0 28px;
+        color: #64748b;
+        font-size: 13px;
+        letter-spacing: 0.08em;
+      }
+
+      .status {
+        margin: 0 0 13px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      .progress {
+        width: min(330px, 82vw);
+        height: 4px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: rgba(148, 163, 184, 0.28);
+      }
+
+      .progress::after {
+        content: "";
+        display: block;
+        width: 42%;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #2563eb, #38bdf8);
+        animation: startup-progress 1.25s ease-in-out infinite;
+      }
+
+      .detail {
+        margin: 12px 0 0;
+        color: #64748b;
+        font-size: 12px;
+      }
+
+      @keyframes startup-progress {
+        from { transform: translateX(-120%); }
+        to { transform: translateX(340%); }
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root { background: #111827; color: #f8fafc; }
+        body {
+          background:
+            radial-gradient(circle at 18% 10%, rgba(59, 130, 246, 0.2), transparent 38%),
+            linear-gradient(145deg, #172033 0%, #0f172a 100%);
+        }
+        .startup-card { border-color: rgba(100, 116, 139, 0.38); }
+        .tagline, .detail { color: #94a3b8; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .progress::after { animation-duration: 2.4s; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="startup-card" role="status" aria-live="polite" aria-label="Đang khởi động PrynX">
+      <div class="brand">
+        <img src="./logo.svg" alt="" aria-hidden="true" />
+        <div class="brand-name">PRYNX</div>
+      </div>
+      <p class="tagline">PRINT MADE EASY</p>
+      <p class="status">Đang khởi động PrynX…</p>
+      <div class="progress" aria-hidden="true"></div>
+      <p class="detail">Đang chuẩn bị công cụ chế bản</p>
+    </main>
+  </body>
+</html>

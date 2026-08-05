@@ -35,6 +35,10 @@ export async function logPrintEvent(message: string): Promise<void> {
 export interface PrinterInfo {
     name: string;
     is_default: boolean;
+    driver_name?: string;
+    port_name?: string;
+    requires_output_path?: boolean;
+    output_extension?: string | null;
 }
 
 export interface PrinterGeometry {
@@ -47,8 +51,11 @@ export interface PrinterGeometry {
 }
 
 export interface PrintDirectParams {
+    /** Mã riêng của lần in để progress/cancel không chạm nhầm job ở tab khác. */
+    jobId: string;
     filePath: string;
     printerName: string;
+    outputPath?: string | null;
     fromPage?: number | null;
     toPage?: number | null;
     copies?: number;
@@ -156,8 +163,10 @@ export async function printPdfDirect(params: PrintDirectParams): Promise<boolean
     }
     const { invoke } = await import('@tauri-apps/api/core');
     return await invoke<boolean>('print_pdf_direct', {
+        jobId: params.jobId,
         filePath: params.filePath,
         printerName: params.printerName,
+        outputPath: params.outputPath ?? null,
         fromPage: params.fromPage ?? null,
         toPage: params.toPage ?? null,
         copies: params.copies ?? 1,
@@ -179,12 +188,26 @@ export async function printPdfDirect(params: PrintDirectParams): Promise<boolean
     });
 }
 
-/** Hủy job in đang chạy (best-effort). */
-export async function cancelPrintJob(): Promise<void> {
+/** Chọn file đích trước khi gửi job tới PORTPROMPT:/máy in PDF-XPS. */
+export async function choosePrinterOutputPath(printer: PrinterInfo): Promise<string | null> {
+    if (!printer.requires_output_path) return null;
+    const extension = (printer.output_extension || 'pdf').replace(/[^a-z0-9]/gi, '') || 'pdf';
+    const { save } = await import('@tauri-apps/plugin-dialog');
+    return await save({
+        defaultPath: `PrynX_${new Date().toISOString().replace(/[:.]/g, '-')}.${extension}`,
+        filters: [{
+            name: extension.toUpperCase(),
+            extensions: [extension],
+        }],
+    });
+}
+
+/** Hủy đúng job in đang chạy (best-effort). */
+export async function cancelPrintJob(jobId: string): Promise<void> {
     if (!isTauriRuntime()) return;
     try {
         const { invoke } = await import('@tauri-apps/api/core');
-        await invoke('cancel_print_job');
+        await invoke('cancel_print_job', { jobId });
     } catch {
         /* ignore */
     }

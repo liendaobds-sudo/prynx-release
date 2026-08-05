@@ -1,4 +1,8 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
+import {
+    configureTileUrlCacheForHardware,
+    type TileUrlSource,
+} from '../../lib/tileUrlCache';
 import { nativeTileRenderScheduler } from './tileRenderScheduler';
 
 interface UseTileRendererProps {
@@ -32,10 +36,14 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
         if (isActive === false) nativeTileRenderScheduler.cancelOwner(renderOwnerId);
     }, [isActive, renderOwnerId]);
 
-    const getTileUrl = useCallback((pageNum: number, rotation: number, zoomScale: number, clipX?: number, clipY?: number, clipW?: number, clipH?: number, requestOptions?: TileRenderRequestOptions): Promise<string> => {
+    useEffect(() => {
+        void configureTileUrlCacheForHardware();
+    }, []);
+
+    const getTileUrl = useCallback((pageNum: number, rotation: number, zoomScale: number, clipX?: number, clipY?: number, clipW?: number, clipH?: number, requestOptions?: TileRenderRequestOptions): Promise<TileUrlSource> => {
         const isImage = file?.type?.startsWith('image/') || file?.name?.match(/\.(jpg|jpeg|png|webp|gif)$/i);
         if (isImage) {
-            return Promise.resolve(pdfUrl ? pdfUrl + '#keep' : '');
+            return Promise.resolve({ url: pdfUrl ? pdfUrl + '#keep' : '', byteLength: 0 });
         }
 
         // Native file path. Ở RELEASE, protocol tile.localhost (img declarative / new Image /
@@ -91,12 +99,12 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                     },
                 });
                 const blob = new Blob([bytes], { type: 'image/jpeg' });
-                return URL.createObjectURL(blob);
+                return { url: URL.createObjectURL(blob), byteLength: blob.size };
             })();
         }
 
         // Fallback: PDF.js canvas rendering for non-native files
-        return new Promise(async (resolve, reject) => {
+        return new Promise<TileUrlSource>(async (resolve, reject) => {
             if (!pdfRef) return reject("No file and no PDF ref");
             try {
                 const page = await pdfRef.getPage(pageNum);
@@ -117,7 +125,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
 
                 await page.render({ canvasContext: ctx, viewport }).promise;
                 canvas.toBlob(blob => {
-                    if (blob) resolve(URL.createObjectURL(blob));
+                    if (blob) resolve({ url: URL.createObjectURL(blob), byteLength: blob.size });
                     else reject("Failed to create blob");
                 }, 'image/jpeg', 0.9);
             } catch (e) {

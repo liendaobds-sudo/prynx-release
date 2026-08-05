@@ -1,12 +1,8 @@
-"""Ghi log hiệu năng preview tem/CNC/cắt xén ra file cố định để audit.
+"""Ghi log hiệu năng preview tem/CNC/cắt xén khi người vận hành bật đo.
 
-File chính (workspace, agent đọc được):
-  <repo>/logs/preview_perf.log
-
-File phụ (máy user):
-  %APPDATA%/PrynX/logs/preview_perf.log
-
-Bật/tắt: PRYNX_PREVIEW_PERF_LOG=0 để tắt (mặc định bật).
+Mặc định không ghi. Bật thống nhất bằng ``PRYNX_PERF=1``; mỗi sự kiện chỉ ghi
+một bản tại ``%APPDATA%/PrynX/logs/preview_perf.log`` (hoặc HOME khi không có
+APPDATA). Đây là telemetry chẩn đoán cục bộ, không phải log vận hành bắt buộc.
 """
 from __future__ import annotations
 
@@ -25,36 +21,22 @@ _session_id = f"S{int(time.time())}"
 def _is_enabled() -> bool:
     global _enabled
     if _enabled is None:
-        v = (os.environ.get("PRYNX_PREVIEW_PERF_LOG") or "1").strip().lower()
-        _enabled = v not in ("0", "false", "no", "off")
+        # PERF (audit 2026-08-05 §PERF.3): trước đây mặc định bật và dùng cờ
+        # riêng, khiến release luôn ghi I/O. Chỉ PRYNX_PERF opt-in mới được bật.
+        v = (os.environ.get("PRYNX_PERF") or "").strip().lower()
+        _enabled = v in ("1", "true", "yes", "on")
     return _enabled
 
 
 def log_paths() -> list[Path]:
-    """Đường dẫn file log (workspace trước, APPDATA sau)."""
-    paths: list[Path] = []
-    # backend/app/utils → parents[3] = backend, parents[4] = repo root
-    try:
-        repo = Path(__file__).resolve().parents[3]
-        if (repo / "backend").is_dir() or (repo / "desktop").is_dir():
-            paths.append(repo / "logs" / "preview_perf.log")
-        else:
-            # fallback: backend/logs
-            paths.append(Path(__file__).resolve().parents[2] / "logs" / "preview_perf.log")
-    except Exception:
-        pass
+    """Trả đúng một đích ghi để không nhân đôi I/O cho cùng sự kiện."""
     appdata = os.environ.get("APPDATA") or os.environ.get("HOME") or ""
     if appdata:
-        paths.append(Path(appdata) / "PrynX" / "logs" / "preview_perf.log")
-    # unique preserve order
-    seen: set[str] = set()
-    out: list[Path] = []
-    for p in paths:
-        key = str(p).lower()
-        if key not in seen:
-            seen.add(key)
-            out.append(p)
-    return out
+        return [Path(appdata) / "PrynX" / "logs" / "preview_perf.log"]
+    try:
+        return [Path(__file__).resolve().parents[2] / "logs" / "preview_perf.log"]
+    except Exception:
+        return []
 
 
 def reset_session(label: str = "new") -> str:

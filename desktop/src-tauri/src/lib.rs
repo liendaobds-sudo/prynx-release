@@ -16,6 +16,7 @@ use std::os::windows::process::CommandExt;
 mod external_app;
 mod pdf_engine;
 mod security;
+mod tile_disk_cache;
 
 // Document Handle Pool - Capped to 1 to eliminate the massive
 // sequential initialization overhead of `load_pdf_from_file` for large VDP files.
@@ -73,6 +74,7 @@ fn pdf_file_identity(file_path: &str) -> Result<PdfFileIdentity, String> {
 // sidecar đã sẵn sàng. Nếu user mở shortcut lần hai trong lúc cold-start, callback
 // single-instance vẫn nhận args nhưng không làm lộ khung WebView trong suốt.
 static APP_STARTUP_READY: AtomicBool = AtomicBool::new(false);
+static FRONTEND_INTERACTIVE_RECORDED: AtomicBool = AtomicBool::new(false);
 
 // PID tiến trình sidecar Python — để KILL khi thoát app. Nếu không kill,
 // pdf-inspector-backend.exe treo ngầm sau khi đóng app → lần UPDATE, NSIS không
@@ -292,6 +294,27 @@ mod sidecar_startup_tests {
         );
         assert!(verify_startup_proof("test-secret", challenge, "khong-phai-hex").is_err());
     }
+
+    #[test]
+    fn cua_so_startup_hien_som_va_asset_tu_chua_du_thong_tin() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let windows = config["app"]["windows"].as_array().unwrap();
+        let startup = windows
+            .iter()
+            .find(|window| window["label"] == "startup")
+            .expect("phải có cửa sổ startup riêng");
+
+        assert_eq!(startup["visible"], true);
+        assert_eq!(startup["decorations"], false);
+        assert_eq!(startup["resizable"], false);
+        assert_eq!(startup["url"], "startup.html");
+
+        let html = include_str!("../../public/startup.html");
+        assert!(html.contains("Đang khởi động PrynX"));
+        assert!(html.contains("role=\"status\""));
+        assert!(!html.contains("<script"));
+    }
 }
 
 fn tile_cache_dir() -> std::path::PathBuf {
@@ -337,26 +360,6 @@ fn tile_render_cache_key(
         clip_w.unwrap_or(0),
         clip_h.unwrap_or(0)
     )
-}
-
-// Giữ tối đa `max_files` tile mới nhất trên đĩa; xoá cũ nhất khi vượt.
-fn prune_tile_cache_dir(max_files: usize) {
-    let dir = tile_cache_dir();
-    let mut entries: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(&dir) {
-        for e in rd.flatten() {
-            if let Ok(meta) = e.metadata() {
-                entries.push((meta.modified().unwrap_or(std::time::UNIX_EPOCH), e.path()));
-            }
-        }
-    }
-    if entries.len() > max_files {
-        entries.sort_by_key(|(t, _)| *t);
-        let remove_n = entries.len() - max_files;
-        for (_, p) in entries.into_iter().take(remove_n) {
-            let _ = std::fs::remove_file(p);
-        }
-    }
 }
 
 struct DocHandle {
@@ -681,18 +684,49 @@ fn startup_breadcrumb(msg: &str) {
     }
 }
 
-// In-Memory LRU Tile Cache (Stores ~200 last rendered JPEGs)
+fn reveal_main_window(app: &tauri::AppHandle) -> Result<(), String> {
+    let main_window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Không tìm thấy cửa sổ chính của PrynX".to_string())?;
+    main_window
+        .show()
+        .map_err(|error| format!("Không hiện được cửa sổ chính: {error}"))?;
+    APP_STARTUP_READY.store(true, Ordering::Release);
+    if let Err(error) = main_window.set_focus() {
+        log::warn!("[STARTUP] Không focus được cửa sổ chính: {}", error);
+    }
+    if let Some(startup_window) = app.get_webview_window("startup") {
+        if let Err(error) = startup_window.close() {
+            log::warn!("[STARTUP] Không đóng được splash: {}", error);
+        }
+    }
+    startup_breadcrumb("setup complete — app ready");
+    Ok(())
+}
+
+#[tauri::command]
+fn mark_frontend_interactive() {
+    if !FRONTEND_INTERACTIVE_RECORDED.swap(true, Ordering::AcqRel) {
+        // PERF (audit 2026-08-05 §PERF.5): mốc cuối do React gửi sau khi Home mount.
+        startup_breadcrumb("frontend: Home interactive");
+    }
+}
+
+// Cache LRU tile trong RAM. Dung lượng JPEG thay đổi rất rộng theo kích thước/nội dung,
+// nên giới hạn theo số ảnh không phản ánh lượng RAM thật đang giữ.
 struct TileCache {
     map: HashMap<String, Vec<u8>>,
     queue: std::collections::VecDeque<String>,
-    max_size: usize,
+    max_bytes: Option<usize>,
+    current_bytes: usize,
 }
 impl TileCache {
-    fn new(max_size: usize) -> Self {
+    fn new(max_bytes: Option<usize>) -> Self {
         Self {
             map: HashMap::new(),
             queue: std::collections::VecDeque::new(),
-            max_size,
+            max_bytes,
+            current_bytes: 0,
         }
     }
     fn get(&mut self, key: &str) -> Option<Vec<u8>> {
@@ -705,13 +739,28 @@ impl TileCache {
         }
     }
     fn insert(&mut self, key: String, data: Vec<u8>) {
-        if self.map.contains_key(&key) {
-            self.queue.retain(|k| k != &key);
-        } else if self.map.len() >= self.max_size {
-            if let Some(oldest) = self.queue.pop_front() {
-                self.map.remove(&oldest);
+        if let Some(previous) = self.map.remove(&key) {
+            self.current_bytes = self.current_bytes.saturating_sub(previous.len());
+            self.queue.retain(|cached_key| cached_key != &key);
+        }
+
+        if let Some(max_bytes) = self.max_bytes {
+            // Một tile đơn lẻ lớn hơn toàn bộ budget vẫn được trả cho caller nhưng
+            // không giữ lại, tránh một entry phá vỡ giới hạn RAM của máy yếu.
+            if data.len() > max_bytes {
+                return;
+            }
+            while self.current_bytes.saturating_add(data.len()) > max_bytes {
+                let Some(oldest) = self.queue.pop_front() else {
+                    break;
+                };
+                if let Some(removed) = self.map.remove(&oldest) {
+                    self.current_bytes = self.current_bytes.saturating_sub(removed.len());
+                }
             }
         }
+
+        self.current_bytes = self.current_bytes.saturating_add(data.len());
         self.queue.push_back(key.clone());
         self.map.insert(key, data);
     }
@@ -728,6 +777,47 @@ pub static RENDER_LOCK: Mutex<()> = Mutex::new(());
 
 const GIB: u64 = 1024 * 1024 * 1024;
 
+fn tile_cache_budget_for_total_ram(total_bytes: Option<u64>) -> Option<usize> {
+    match total_bytes {
+        Some(bytes) if bytes < 8 * GIB => Some(64 * MIB),
+        Some(bytes) if bytes < 16 * GIB => Some(128 * MIB),
+        // PERF (audit 2026-08-05 §PERF.7): máy >=16 GB giữ full cache như policy
+        // dự án; máy không đọc được RAM cũng không bị áp cap bảo thủ ngoài ý muốn.
+        _ => None,
+    }
+}
+
+fn parse_tile_cache_budget_override(raw: Option<&str>) -> Option<Option<usize>> {
+    let value_mb = raw?.trim().parse::<usize>().ok()?;
+    if value_mb == 0 {
+        return Some(None);
+    }
+    value_mb.checked_mul(MIB).map(Some)
+}
+
+fn configured_tile_cache_budget() -> Option<usize> {
+    if let Ok(raw) = std::env::var("PRYNX_TILE_CACHE_MB") {
+        if let Some(budget) = parse_tile_cache_budget_override(Some(&raw)) {
+            return budget;
+        }
+        log::warn!("[TILE_CACHE] Bỏ qua PRYNX_TILE_CACHE_MB không hợp lệ: {raw}");
+    }
+    tile_cache_budget_for_total_ram(system_total_memory_bytes())
+}
+
+fn tile_cache() -> &'static Mutex<TileCache> {
+    TILE_CACHE.get_or_init(|| {
+        let budget = configured_tile_cache_budget();
+        let policy = budget
+            .map(|bytes| format!("{} MiB", bytes / MIB))
+            .unwrap_or_else(|| "unbounded".to_string());
+        log::info!("[TILE_CACHE] policy={policy}");
+        // Release chỉ lưu log info khi QA bật PRYNX_PERF=1; mặc định không thêm I/O.
+        perf_log(&format!("TILE_CACHE_POLICY budget={policy}"));
+        Mutex::new(TileCache::new(budget))
+    })
+}
+
 fn doc_cache_limit_for_total_ram(total_bytes: Option<u64>) -> Option<usize> {
     match total_bytes {
         Some(bytes) if bytes < 8 * GIB => Some(2),
@@ -743,21 +833,37 @@ fn doc_cache_limit_for_total_ram(total_bytes: Option<u64>) -> Option<usize> {
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SystemMemoryStatus {
+    installed_bytes: u64,
     total_bytes: u64,
+    usable_bytes: u64,
     available_bytes: u64,
 }
 
 #[cfg(target_os = "windows")]
 fn system_memory_status() -> Option<SystemMemoryStatus> {
-    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    use windows::Win32::System::SystemInformation::{
+        GetPhysicallyInstalledSystemMemory, GlobalMemoryStatusEx, MEMORYSTATUSEX,
+    };
 
     let mut status = MEMORYSTATUSEX {
         dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
         ..Default::default()
     };
     unsafe { GlobalMemoryStatusEx(&mut status) }.ok()?;
+    let installed_bytes = {
+        let mut installed_kib = 0_u64;
+        unsafe { GetPhysicallyInstalledSystemMemory(&mut installed_kib) }
+            .ok()
+            .and_then(|()| installed_kib.checked_mul(1024))
+            .filter(|bytes| *bytes >= status.ullTotalPhys)
+            .unwrap_or(status.ullTotalPhys)
+    };
     Some(SystemMemoryStatus {
-        total_bytes: status.ullTotalPhys,
+        // PERF (audit 2026-08-06 §PERF.5): giữ `totalBytes` là RAM lắp đặt để
+        // consumer cũ không xếp máy 16 GB thành <16 GB vì hardware-reserved RAM.
+        installed_bytes,
+        total_bytes: installed_bytes,
+        usable_bytes: status.ullTotalPhys,
         available_bytes: status.ullAvailPhys,
     })
 }
@@ -937,20 +1043,27 @@ fn get_or_load_cached_document(
 
 struct SystemFilesState(Mutex<Vec<String>>);
 
+fn perf_env_value_enabled(value: Option<&str>) -> bool {
+    value
+        .map(str::trim)
+        .map(|value| {
+            value == "1"
+                || value.eq_ignore_ascii_case("true")
+                || value.eq_ignore_ascii_case("yes")
+                || value.eq_ignore_ascii_case("on")
+        })
+        .unwrap_or(false)
+}
+
+fn preview_perf_enabled() -> bool {
+    perf_env_value_enabled(std::env::var("PRYNX_PERF").ok().as_deref())
+}
+
 #[tauri::command]
-fn append_perf_log(app_handle: tauri::AppHandle, msg: String) {
-    if let Ok(desktop_dir) = app_handle.path().desktop_dir() {
-        let file_path = desktop_dir.join("PrynX_Performance.log");
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(file_path)
-        {
-            use std::io::Write;
-            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-            let _ = writeln!(&mut file, "[{}] {}", now, msg);
-        }
-    }
+fn preview_perf_logging_enabled() -> bool {
+    // PERF (audit 2026-08-05 §PERF.3): FE hỏi đúng một lần rồi cache kết quả;
+    // release mặc định không ghi Desktop và không gửi beacon.
+    preview_perf_enabled()
 }
 
 // ── Đo hiệu năng render (đo thật, không đoán) ────────────────────────────────
@@ -962,12 +1075,7 @@ fn append_perf_log(app_handle: tauri::AppHandle, msg: String) {
 static PERF_LOG_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
 
 fn perf_enabled() -> bool {
-    if cfg!(debug_assertions) {
-        return true;
-    }
-    std::env::var("PRYNX_PERF")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    cfg!(debug_assertions) || preview_perf_enabled()
 }
 
 fn perf_log(msg: &str) {
@@ -997,6 +1105,137 @@ fn perf_log(msg: &str) {
 #[tauri::command]
 fn append_render_perf(msg: String) {
     perf_log(&format!("FE {}", msg));
+}
+
+fn numeric_version_quad(raw: &str) -> Option<[u64; 4]> {
+    let parts = raw
+        .split('.')
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    if parts.len() != 4 {
+        return None;
+    }
+    Some([parts[0], parts[1], parts[2], parts[3]])
+}
+
+fn sidecar_cache_version(name: &str) -> Option<[u64; 8]> {
+    let raw = name.strip_prefix("sidecar-")?;
+    let (product_raw, file_raw) = raw.split_once('-').unwrap_or((raw, raw));
+    let product = numeric_version_quad(product_raw)?;
+    let file = numeric_version_quad(file_raw)?;
+    Some([
+        product[0], product[1], product[2], product[3], file[0], file[1], file[2], file[3],
+    ])
+}
+
+fn nuitka_cache_name_for_app_version(version: &str) -> Option<String> {
+    let (core, prerelease) = version
+        .split_once('-')
+        .map(|(core, prerelease)| (core, Some(prerelease)))
+        .unwrap_or((version, None));
+    let core_parts = core
+        .split('.')
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    if core_parts.len() != 3 {
+        return None;
+    }
+    let revision = prerelease
+        .and_then(|value| value.rsplit('.').next())
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let numeric = format!(
+        "{}.{}.{}.{}",
+        core_parts[0], core_parts[1], core_parts[2], revision
+    );
+    // Nuitka ghép PRODUCT_VERSION-FILE_VERSION khi build truyền cả hai cờ;
+    // build_production.ps1 luôn truyền cùng NUMERIC_VERSION cho hai cờ này.
+    Some(format!("sidecar-{numeric}-{numeric}"))
+}
+
+fn remove_sidecar_cache_with_retry(path: &std::path::Path) -> std::io::Result<()> {
+    let mut last_error = None;
+    for attempt in 0..3_u64 {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => last_error = Some(error),
+        }
+        if attempt < 2 {
+            std::thread::sleep(std::time::Duration::from_millis(50 * (attempt + 1)));
+        }
+    }
+    Err(last_error.unwrap_or_else(|| std::io::Error::other("Không xóa được cache sidecar")))
+}
+
+fn prune_sidecar_caches(
+    base_dir: &std::path::Path,
+    current_name: Option<&str>,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    if !base_dir.is_dir() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let canonical_base = std::fs::canonicalize(base_dir)
+        .map_err(|error| format!("Không chuẩn hóa được thư mục cache: {error}"))?;
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(&canonical_base)
+        .map_err(|error| format!("Không đọc được thư mục cache: {error}"))?
+    {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(version) = sidecar_cache_version(&name) else {
+            continue;
+        };
+        let metadata = match std::fs::symlink_metadata(entry.path()) {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        let canonical_path = match std::fs::canonicalize(entry.path()) {
+            Ok(path) => path,
+            Err(_) => continue,
+        };
+        // PERF (audit 2026-08-05 §PERF.4): chỉ nhận con trực tiếp của
+        // %LOCALAPPDATA%\PrynX; junction/reparse trỏ ra ngoài bị bỏ qua.
+        if canonical_path.parent() != Some(canonical_base.as_path()) {
+            continue;
+        }
+        entries.push((version, name, canonical_path));
+    }
+    entries.sort_by(|left, right| right.0.cmp(&left.0));
+
+    let mut keep = std::collections::HashSet::new();
+    if let Some(current) = current_name {
+        if entries.iter().any(|entry| entry.1 == current) {
+            keep.insert(current.to_string());
+        }
+    }
+    for (_, name, _) in &entries {
+        if keep.len() >= 2 {
+            break;
+        }
+        keep.insert(name.clone());
+    }
+
+    let mut removed = Vec::new();
+    let mut failed = Vec::new();
+    for (_, name, path) in entries {
+        if keep.contains(&name) {
+            continue;
+        }
+        match remove_sidecar_cache_with_retry(&path) {
+            Ok(()) => removed.push(name),
+            Err(error) => failed.push(format!("{name}: {error}")),
+        }
+    }
+    Ok((removed, failed))
 }
 
 fn compact_log_field(value: String, max_chars: usize) -> String {
@@ -1164,7 +1403,7 @@ fn render_tile_jpeg(
         "page"
     };
     {
-        let cache_lock = TILE_CACHE.get_or_init(|| Mutex::new(TileCache::new(500)));
+        let cache_lock = tile_cache();
         if let Ok(mut cache) = cache_lock.lock() {
             if let Some(data) = cache.get(&cache_key) {
                 let total_ms = _total_t0.elapsed().as_millis();
@@ -1193,7 +1432,7 @@ fn render_tile_jpeg(
                     "CACHE_HIT tier=disk kind={} page={} zoom={:.3} disk_read_ms={} total_ms={} bytes={}",
                     kind, page, zoom, disk_read_ms, total_ms, bytes.len()
                 ));
-                let cache_lock = TILE_CACHE.get_or_init(|| Mutex::new(TileCache::new(500)));
+                let cache_lock = tile_cache();
                 if let Ok(mut cache) = cache_lock.lock() {
                     cache.insert(cache_key.clone(), bytes.clone());
                 }
@@ -1361,20 +1600,24 @@ fn render_tile_jpeg(
     // perf_enabled() → an toàn. Ghi SAU khi encode xong, NGOÀI mọi vùng khóa.
     let _cache_t0 = std::time::Instant::now();
 
+    // PERF (audit 2026-08-05 §PERF.7): kiểm dung lượng trống trước khi ghi cache;
+    // ổ gần đầy chỉ bỏ cache đĩa, ảnh vẫn trả về và vẫn được cache RAM bình thường.
+    // I/O đĩa nằm ngoài mutex RAM để cache hit từ thread khác không phải chờ ghi file.
+    let dpath = tile_disk_path(&cache_key);
+    let disk_decision = tile_disk_cache::tile_disk_write_decision(&dpath, buffer.len());
+    if disk_decision.write {
+        let _ = std::fs::write(&dpath, &buffer);
+    }
+    // Quét nền ngay lần ghi đầu; tier ít dung lượng quét thường hơn, tier rộng giữ
+    // nhịp 64 lần cũ. AtomicBool trong module chặn nhiều thread prune trùng nhau.
+    let disk_attempt = DISK_CACHE_WRITES.fetch_add(1, Ordering::Relaxed);
+    if disk_attempt % disk_decision.prune_interval == 0 {
+        tile_disk_cache::schedule_tile_disk_prune(tile_cache_dir());
+    }
+
     {
-        let cache_lock = TILE_CACHE.get_or_init(|| Mutex::new(TileCache::new(500)));
+        let cache_lock = tile_cache();
         if let Ok(mut cache) = cache_lock.lock() {
-            // Ghi ĐĨA trước (cần &cache_key) rồi mới move cache_key vào RAM cache.
-            let dpath = tile_disk_path(&cache_key);
-            let _ = std::fs::write(&dpath, &buffer);
-            // Prune ĐỊNH KỲ trên THREAD NỀN (không chặn việc trả tile về). Bỏ qua lần ghi
-            // đầu (n=0) và chỉ chạy mỗi 64 lần ghi. Trước đây prune chạy ĐỒNG BỘ ngay lần
-            // ghi đầu + quét cả thư mục cache (tích lũy nhiều ngày → hàng nghìn file) →
-            // chặn trả tile vài giây ở lần mở đầu phiên (regression "hôm qua nhanh nay chậm").
-            let n = DISK_CACHE_WRITES.fetch_add(1, Ordering::Relaxed);
-            if n > 0 && n % 64 == 0 {
-                std::thread::spawn(|| prune_tile_cache_dir(3000));
-            }
             cache.insert(cache_key, buffer.clone());
         }
     }
@@ -2490,6 +2733,74 @@ mod pdf_user_unit_tests {
 }
 
 #[cfg(test)]
+mod tile_cache_tests {
+    use super::*;
+
+    #[test]
+    fn byte_budget_evicts_oldest_entries_until_the_new_tile_fits() {
+        let mut cache = TileCache::new(Some(10));
+        cache.insert("a".to_string(), vec![1; 4]);
+        cache.insert("b".to_string(), vec![2; 4]);
+        assert_eq!(cache.get("a"), Some(vec![1; 4]));
+
+        cache.insert("c".to_string(), vec![3; 5]);
+
+        assert!(cache.map.contains_key("a"));
+        assert!(!cache.map.contains_key("b"));
+        assert!(cache.map.contains_key("c"));
+        assert_eq!(cache.current_bytes, 9);
+    }
+
+    #[test]
+    fn oversized_tile_is_not_cached_and_replacement_updates_accounting() {
+        let mut cache = TileCache::new(Some(8));
+        cache.insert("a".to_string(), vec![1; 4]);
+        cache.insert("a".to_string(), vec![2; 6]);
+        assert_eq!(cache.current_bytes, 6);
+        assert_eq!(cache.get("a"), Some(vec![2; 6]));
+
+        cache.insert("too-large".to_string(), vec![3; 9]);
+
+        assert!(!cache.map.contains_key("too-large"));
+        assert_eq!(cache.current_bytes, 6);
+    }
+
+    #[test]
+    fn tile_cache_budget_only_reduces_on_low_memory_machines() {
+        assert_eq!(
+            tile_cache_budget_for_total_ram(Some(4 * GIB)),
+            Some(64 * MIB)
+        );
+        assert_eq!(
+            tile_cache_budget_for_total_ram(Some(8 * GIB)),
+            Some(128 * MIB)
+        );
+        assert_eq!(
+            tile_cache_budget_for_total_ram(Some(15 * GIB)),
+            Some(128 * MIB)
+        );
+        assert_eq!(tile_cache_budget_for_total_ram(Some(16 * GIB)), None);
+        assert_eq!(tile_cache_budget_for_total_ram(Some(64 * GIB)), None);
+        assert_eq!(tile_cache_budget_for_total_ram(None), None);
+    }
+
+    #[test]
+    fn tile_cache_budget_override_supports_unbounded_and_rejects_invalid_values() {
+        assert_eq!(
+            parse_tile_cache_budget_override(Some("256")),
+            Some(Some(256 * MIB))
+        );
+        assert_eq!(parse_tile_cache_budget_override(Some("0")), Some(None));
+        assert_eq!(parse_tile_cache_budget_override(Some("invalid")), None);
+        assert_eq!(parse_tile_cache_budget_override(None), None);
+        assert_eq!(
+            parse_tile_cache_budget_override(Some(&usize::MAX.to_string())),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
 mod doc_cache_tests {
     use super::*;
 
@@ -2570,14 +2881,18 @@ mod doc_cache_tests {
     #[test]
     fn memory_status_serializes_with_camel_case_fields() {
         let status = SystemMemoryStatus {
+            installed_bytes: 32 * GIB,
             total_bytes: 32 * GIB,
+            usable_bytes: 31 * GIB,
             available_bytes: 24 * GIB,
         };
 
         assert_eq!(
             serde_json::to_value(status).unwrap(),
             serde_json::json!({
+                "installedBytes": 32 * GIB,
                 "totalBytes": 32 * GIB,
+                "usableBytes": 31 * GIB,
                 "availableBytes": 24 * GIB,
             })
         );
@@ -2588,8 +2903,11 @@ mod doc_cache_tests {
     fn windows_memory_status_reports_available_within_total() {
         let status = get_system_memory_status().unwrap();
 
+        assert!(status.installed_bytes > 0);
+        assert_eq!(status.total_bytes, status.installed_bytes);
+        assert!(status.usable_bytes <= status.installed_bytes);
         assert!(status.total_bytes > 0);
-        assert!(status.available_bytes <= status.total_bytes);
+        assert!(status.available_bytes <= status.usable_bytes);
         assert_eq!(system_total_memory_bytes(), Some(status.total_bytes));
     }
 }
@@ -2735,6 +3053,102 @@ mod system_file_stat_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod perf_and_sidecar_cache_tests {
+    use super::*;
+
+    fn test_root(label: &str) -> std::path::PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "prynx_sidecar_cache_{}_{}_{}",
+            label,
+            std::process::id(),
+            stamp
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn preview_perf_chi_bat_khi_opt_in_ro_rang() {
+        for value in [Some("1"), Some("true"), Some("YES"), Some("on")] {
+            assert!(perf_env_value_enabled(value));
+        }
+        for value in [None, Some(""), Some("0"), Some("false"), Some("off")] {
+            assert!(!perf_env_value_enabled(value));
+        }
+    }
+
+    #[test]
+    fn version_tauri_khop_ten_cache_nuitka() {
+        assert_eq!(
+            nuitka_cache_name_for_app_version("1.0.0-rc.3").as_deref(),
+            Some("sidecar-1.0.0.3-1.0.0.3")
+        );
+        assert_eq!(
+            nuitka_cache_name_for_app_version("2.4.1").as_deref(),
+            Some("sidecar-2.4.1.0-2.4.1.0")
+        );
+        assert!(nuitka_cache_name_for_app_version("khong-hop-le").is_none());
+    }
+
+    #[test]
+    fn prune_chi_xoa_cache_cu_va_giu_current_cung_previous() {
+        let root = test_root("keep_current");
+        let base = root.join("PrynX");
+        std::fs::create_dir_all(&base).unwrap();
+        for name in [
+            "sidecar-1.0.0.1-1.0.0.1",
+            "sidecar-1.0.0.2-1.0.0.2",
+            "sidecar-1.0.0.3-1.0.0.3",
+            "sidecar-khong-hop-le",
+        ] {
+            std::fs::create_dir_all(base.join(name)).unwrap();
+        }
+        std::fs::write(base.join("sidecar-9.9.9.9"), b"khong-phai-thu-muc").unwrap();
+        let outside = root.join("sidecar-0.0.0.1");
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let (removed, failed) =
+            prune_sidecar_caches(&base, Some("sidecar-1.0.0.3-1.0.0.3")).unwrap();
+
+        assert_eq!(removed, vec!["sidecar-1.0.0.1-1.0.0.1"]);
+        assert!(failed.is_empty());
+        assert!(base.join("sidecar-1.0.0.3-1.0.0.3").is_dir());
+        assert!(base.join("sidecar-1.0.0.2-1.0.0.2").is_dir());
+        assert!(base.join("sidecar-khong-hop-le").is_dir());
+        assert!(base.join("sidecar-9.9.9.9").is_file());
+        assert!(outside.is_dir());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn khong_xac_dinh_duoc_current_thi_giu_hai_cache_moi_nhat() {
+        let root = test_root("unknown_current");
+        let base = root.join("PrynX");
+        for name in [
+            "sidecar-1.0.0.1-1.0.0.1",
+            "sidecar-1.0.0.2-1.0.0.2",
+            "sidecar-1.0.0.3-1.0.0.3",
+        ] {
+            std::fs::create_dir_all(base.join(name)).unwrap();
+        }
+
+        let (removed, failed) =
+            prune_sidecar_caches(&base, Some("sidecar-1.0.0.9-1.0.0.9")).unwrap();
+
+        assert_eq!(removed, vec!["sidecar-1.0.0.1-1.0.0.1"]);
+        assert!(failed.is_empty());
+        assert!(base.join("sidecar-1.0.0.3-1.0.0.3").is_dir());
+        assert!(base.join("sidecar-1.0.0.2-1.0.0.2").is_dir());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Panic hook: ghi mọi panic (message + vị trí) ra %APPDATA%\PrynX\logs\rust_panic.log
@@ -2772,11 +3186,13 @@ pub fn run() {
         std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", merged);
     }
 
+    startup_breadcrumb("process entry — creating windows");
+
     tauri::Builder::default()
         .manage(SystemFilesState(Mutex::new(Vec::new())))
         // SEC (audit 2026-08-04 §BE.03): không expose command nghiệp vụ không có
         // consumer/quyền native. Mọi bình bản và xóa đường bế đi qua sidecar đã gate.
-        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_startup_args, read_system_file, get_file_size, stat_system_file, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, get_pending_system_files, write_file_atomic, copy_file_atomic, read_dir_json, append_perf_log, append_render_perf, log_frontend_error, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
+        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_startup_args, mark_frontend_interactive, read_system_file, get_file_size, stat_system_file, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, get_pending_system_files, write_file_atomic, copy_file_atomic, read_dir_json, preview_perf_logging_enabled, append_render_perf, log_frontend_error, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(state) = app.try_state::<SystemFilesState>() {
                 if let Ok(mut pending) = state.0.lock() {
@@ -2801,6 +3217,23 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            if let Some(startup_window) = app.get_webview_window("startup") {
+                #[cfg(debug_assertions)]
+                {
+                    // Dev không chờ Nuitka sidecar; đóng ngay để tránh flash thừa.
+                    let _ = startup_window.close();
+                }
+                #[cfg(not(debug_assertions))]
+                {
+                    // PERF (audit 2026-08-05 §PERF.5): không gọi is_visible() trong
+                    // setup vì event loop chưa chạy, WebView2 sẽ chờ rồi báo
+                    // "failed to receive message". Config/test đảm bảo visible=true;
+                    // setup phải trả quyền sớm để splash thật sự paint và phản hồi.
+                    let _ = startup_window;
+                    startup_breadcrumb("native splash: created");
+                }
+            }
+
             // Log LUÔN được bật — kể cả release. Trước đây guard `cfg!(debug_assertions)`
             // khiến bản đóng gói KHÔNG ghi log gì → mọi `log::error!` (pdfium warmup FAIL,
             // sidecar spawn fail, render lỗi) rơi vào hư không → không thể chẩn đoán lỗi
@@ -2929,6 +3362,13 @@ pub fn run() {
             // ══════════════════════════════════════════════════════════════
             #[cfg(not(debug_assertions))]
             {
+                // PERF (audit 2026-08-05 §PERF.5): hash 413 MB + cold-start Nuitka
+                // có thể mất hàng chục giây. Chạy ngoài UI thread để event loop paint
+                // splash ngay và không bị Windows gắn "Not Responding".
+                let app = app.handle().clone();
+                std::thread::Builder::new()
+                    .name("prynx-release-startup".to_string())
+                    .spawn(move || {
                 use tauri_plugin_shell::ShellExt;
 
                 // VECTOR #3 FIX: verify tính toàn vẹn binary sidecar TRƯỚC khi chạy.
@@ -3032,6 +3472,9 @@ pub fn run() {
                         ("DEV_MODE", "false"),
                         // Signal sidecar to read token from stdin instead of file
                         ("PRYNX_TOKEN_SOURCE", "stdin"),
+                        // PERF (audit 2026-08-05 §PERF.3): frontend và sidecar dùng
+                        // cùng một cờ; mặc định release là 0 nên không có beacon/I/O.
+                        ("PRYNX_PERF", if preview_perf_enabled() { "1" } else { "0" }),
                         // Cưỡng chế token license server-ký: backend từ chối mọi request
                         // không kèm token Ed25519 hợp lệ (do edge function Supabase phát).
                         // Client bị crack không giả được token → không gọi được backend.
@@ -3123,7 +3566,44 @@ pub fn run() {
                 }
 
                 log::info!("Python backend sidecar started on port 8321 (token via stdin pipe)");
-                startup_breadcrumb("sidecar: spawned on :8321 (token via stdin)");
+                startup_breadcrumb("sidecar: ready (startup proof OK)");
+
+                // PERF (audit 2026-08-05 §PERF.4): chỉ prune SAU khi sidecar hiện
+                // tại đã xác thực/sẵn sàng. Chạy nền để xóa cache ~GB không kéo dài
+                // cold start; giữ current + một previous và bỏ qua path lạ/junction.
+                if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+                    let cache_base = std::path::PathBuf::from(local_app_data).join("PrynX");
+                    let current_cache = nuitka_cache_name_for_app_version(
+                        &app.package_info().version.to_string(),
+                    );
+                    std::thread::spawn(move || {
+                        match prune_sidecar_caches(&cache_base, current_cache.as_deref()) {
+                            Ok((removed, failed)) => {
+                                if !removed.is_empty() {
+                                    log::info!("[SIDECAR-CACHE] Đã xóa: {}", removed.join(", "));
+                                }
+                                for error in failed {
+                                    log::warn!("[SIDECAR-CACHE] Bỏ qua cache đang khóa: {}", error);
+                                }
+                            }
+                            Err(error) => log::warn!("[SIDECAR-CACHE] Không thể prune: {}", error),
+                        }
+                    });
+                }
+
+                if let Err(error) = reveal_main_window(&app) {
+                    log::error!("[STARTUP] {}", error);
+                    startup_breadcrumb(&format!("setup complete: FAIL {error}"));
+                    kill_sidecar();
+                    std::process::exit(1);
+                }
+                    })
+                    .map_err(|error| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!("Không tạo được luồng khởi động PrynX: {error}"),
+                        )
+                    })?;
             }
 
             // ══════════════════════════════════════════════════════════════
@@ -3174,19 +3654,12 @@ pub fn run() {
                 }
             }
 
-            // STARTUP (fix 2026-08-04): config giữ window ẩn để cold-start Nuitka
-            // không hiện khung trong suốt. Chỉ công bố ready sau mọi setup bảo mật và
-            // WebView; từ đây callback single-instance mới được phép đưa window lên.
-            let main_window = app.get_webview_window("main").ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "Không tìm thấy cửa sổ chính của PrynX",
-                )
+            // Dev không có worker sidecar nên công bố main ngay. Release chỉ làm
+            // việc này trong worker sau khi integrity + startup proof đã đạt.
+            #[cfg(debug_assertions)]
+            reveal_main_window(app.handle()).map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::Other, error)
             })?;
-            main_window.show()?;
-            APP_STARTUP_READY.store(true, Ordering::Release);
-            let _ = main_window.set_focus();
-            startup_breadcrumb("setup complete — app ready");
 
             Ok(())
         })

@@ -99,6 +99,47 @@ describe('runProcessEngine N-Up native fast path', () => {
         expect(payload).not.toHaveProperty('cutBorderThickness');
     });
 
+    it('does not serialize the Sticker cut-page toggle for CNC', async () => {
+        const context: ProcessContext = {
+            file: new File(['source'], 'cnc.pdf', { type: 'application/pdf' }),
+            commitWorkingFile: vi.fn().mockResolvedValue(undefined),
+            setError: vi.fn(),
+            setIsProcessing: vi.fn(),
+            setProcessStatus: vi.fn(),
+            setReportMsg: vi.fn(),
+            setBatchOutput: vi.fn(),
+            getWorkingBytes: vi.fn(),
+            getWorkingSourcePath: vi.fn().mockResolvedValue('D:\\cnc.pdf'),
+        };
+
+        await runProcessEngine(
+            context,
+            {
+                impositionMode: ImpositionMode.NUp,
+                imposerMode: 'cnc',
+                sheetWidth: 320,
+                sheetHeight: 450,
+                pontType: 'custom',
+                pontConfig: {
+                    shape: 'circle',
+                    size: 5,
+                    thickness: 0.5,
+                    layerName: 'Marks_Model_',
+                    groupName: 'MarkLine',
+                    itemName: 'MKLINE',
+                },
+                pontsOnCutFile: false,
+                cncTwoSided: false,
+            } as any,
+            false,
+        );
+
+        const payload = api.startNupJobBackend.mock.calls[0][1];
+        expect(payload.imposerMode).toBe('cnc');
+        expect(payload.pontConfig.itemName).toBe('MKLINE');
+        expect(payload).not.toHaveProperty('pontsOnCutFile');
+    });
+
     it('skips source upload and result download for clean desktop files', async () => {
         const commitWorkingFile = vi.fn().mockResolvedValue(undefined);
         const getWorkingBytes = vi.fn();

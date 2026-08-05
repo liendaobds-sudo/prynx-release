@@ -21,6 +21,8 @@ import math
 import logging
 from typing import Dict, Any
 
+import pikepdf
+
 from app.workers import pdf_wrapper as pdf_lib
 from app.workers.nup_sticker import compute_sticker_layout_for_page
 from app.workers.nup_diecut import _find_largest_die_path
@@ -39,6 +41,31 @@ from app.workers.imposition_finalize import finalize_placements
 logger = logging.getLogger(__name__)
 
 MM_TO_PTS = 2.83465
+
+
+def _create_cnc_pont_ocgs(out_doc, pont_config):
+    """Tạo cây layer ốc dùng chung cho Front + Cut của một đơn vị CNC."""
+
+    # FIX (audit 2026-08-05 §OC.1): dialog CNC cho nhập đủ tên nhưng renderer cũ
+    # vẽ trực tiếp, làm mất layer/group/Graphtec trên PDF đầu ra.
+    order_items = []
+    if pont_config.get('isGraphtec', False):
+        order_items.append(out_doc.add_ocg(
+            pont_config['layerInfoName'], on=True, add_to_order=False,
+        ))
+
+    layer_ocg = out_doc.add_ocg(
+        pont_config['layerName'], on=True, add_to_order=False,
+    )
+    group_ocg = out_doc.add_ocg(
+        pont_config['groupName'], on=True, add_to_order=False,
+    )
+    order_items.extend([layer_ocg, pikepdf.Array([group_ocg])])
+
+    root = out_doc._pdf.Root
+    order = root['/OCProperties']['/D']['/Order']
+    order.extend(order_items)
+    return group_ocg
 
 
 def _resolve_cnc_collisions(placements, pont_config, sheet_w, sheet_h,
@@ -177,6 +204,8 @@ def _render_cnc_unit(out_doc, src_doc, front_pl, *, two_sided, flip_edge, back_o
     Trả về dict thông tin trang đã thêm (front_page/cut_page) để stamp report.
     """
     front_page = out_doc.page_count
+    pont_group_ocg = _create_cnc_pont_ocgs(out_doc, pont_config) if pont_config else None
+    pont_item_name = pont_config['itemName'] if pont_config else None
 
     # ── Mặt trước ──
     front_bbox = compute_block_bbox(front_pl)
@@ -193,7 +222,8 @@ def _render_cnc_unit(out_doc, src_doc, front_pl, *, two_sided, flip_edge, back_o
         )
     if pont_config:
         _draw_ponts_on_page(out_front, front_pl, pont_config, sheet_w, sheet_h,
-                            margin_left, margin_bottom)
+                            margin_left, margin_bottom, ocg_xref=pont_group_ocg,
+                            item_name=pont_item_name)
     if duplex_marks and two_sided:
         draw_duplex_marks(out_front, sheet_w, sheet_h)
 
@@ -246,7 +276,8 @@ def _render_cnc_unit(out_doc, src_doc, front_pl, *, two_sided, flip_edge, back_o
         logger.warning("[CNC] Không có die_items cho mẫu nào → trang khuôn rỗng.")
     if pont_config:
         _draw_ponts_on_page(out_cut, front_pl, pont_config, sheet_w, sheet_h,
-                            margin_left, margin_bottom)
+                            margin_left, margin_bottom, ocg_xref=pont_group_ocg,
+                            item_name=pont_item_name)
 
     return {'front_page': front_page, 'cut_page': cut_page}
 
@@ -254,10 +285,13 @@ def _render_cnc_unit(out_doc, src_doc, front_pl, *, two_sided, flip_edge, back_o
 def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, Any],
                       job_id: str = None, progress_callback=None) -> str:
     """Render công cụ CNC. Trả về chuỗi report."""
+    from app.schemas.pont import normalize_pont_settings
+    settings = normalize_pont_settings(settings)
     two_sided = bool(settings.get('cncTwoSided', settings.get('cnc_two_sided', False)))
     flip_edge = settings.get('cncFlipEdge', settings.get('cnc_flip_edge', 'long'))
     # Boong bế (pont định vị máy cắt) — TÁI DÙNG hệ pont của Bình Tem Bế.
-    # Theo script: boong CHỈ vẽ ở Mặt trước + Khuôn, KHÔNG vẽ Mặt sau.
+    # FIX (audit 2026-08-05 §OC.3): hợp đồng CNC luôn vẽ boong ở Front + Cut;
+    # pontsOnCutFile chỉ thuộc Sticker/Page Sheet và không điều khiển renderer này.
     pont_type = settings.get('pontType', 'none')
     pont_config = settings.get('pontConfig') if pont_type and pont_type != 'none' else None
     # Dấu canh in 2 mặt (KHÁC boong) — vẽ ở CẢ Mặt trước & Mặt sau để canh chồng khi lật giấy.
