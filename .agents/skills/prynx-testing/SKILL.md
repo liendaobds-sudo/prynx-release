@@ -50,6 +50,18 @@ Khi sửa routing, drag/drop, picker, Back hoặc trạng thái công cụ, ki�
 
 DOM test không chứng minh được Tauri native drop. Với lỗi chỉ xuất hiện trong app desktop, phải chạy `run_dev.bat` và thao tác thật; nếu chưa chạy được thì ghi rõ là chưa xác minh runtime.
 
+## Trước khi commit — kiểm trạng thái git tại thời điểm commit
+
+Phiên khác có thể đã commit hoặc sửa file trong lúc mình làm. **Ảnh chụp `git status` ở đầu phiên không còn đúng.**
+
+1. Chạy lại `git status --porcelain` ngay trước khi stage, không dùng lại kết quả cũ.
+2. File lạ nằm trong index/working tree: chạy `git log --oneline -3 -- <file>` và `git diff HEAD -- <file>` để biết nó **đã được commit chưa** rồi mới quyết định. Diff rỗng so với HEAD nghĩa là đã an toàn, không phải "đã mất".
+3. Stage **liệt kê tường minh từng file của mình**; commit kèm pathspec (`git commit -- <các file>`) để index của phiên khác không lọt vào.
+4. Sau commit, `git show --stat --format= HEAD` xác nhận đúng danh sách file mong đợi.
+5. Không bao giờ `git checkout` / `reset --hard` để hoàn tác — dùng Edit. Xem `feedback_no_destructive_git`.
+
+Commit message nhiều dòng: viết ra file rồi `git commit -F <file>`. Here-string `@'...'@` là cú pháp PowerShell, dán vào Bash sẽ tạo commit rỗng tên `@`.
+
 ## Mức bằng chứng khi báo kết quả
 
 - **Mức 1 — tĩnh:** code review, lint/typecheck đạt.

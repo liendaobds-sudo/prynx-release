@@ -32,6 +32,24 @@ Nếu user chỉ yêu cầu chẩn đoán/review, dừng sau khi xác định ng
 
 Sau ba vòng không tiến triển, quay lại bước khám phá: đọc lại kiến trúc/tài liệu gốc, kiểm tra giả định đầu vào và thu hẹp ca tái hiện. Không tiếp tục vá dò. Nếu cần thêm quyền, dữ liệu mẫu hoặc quyết định nghiệp vụ thì dừng và hỏi user đúng điểm thiếu.
 
+## Cấm phát biểu từ suy diễn
+
+Ba loại phát biểu dưới đây **phải có lệnh xác nhận vừa chạy** mới được nói ra. Không có lệnh thì nói "chưa kiểm", không nói bằng giọng khẳng định. Cả ba đã từng sai thật trong dự án này (đợt bù xén tạo đường cắt 2026-08-06/07), cùng một kiểu: kết luận từ suy luận thay vì từ đo.
+
+1. **Trạng thái repo** — "file X đã mất", "thay đổi Y chưa commit", "cây làm việc bẩn". Ảnh chụp `git status` ở đầu phiên **lỗi thời ngay khi phiên khác commit**; đọc lại `git status` hiện tại và `git log --oneline -- <file>` trước khi kết luận. Từng báo động "mất code chưa commit của phiên khác" trong khi phiên đó đã commit xong từ trước.
+2. **Hành vi code** — "hàm này đã xử lý ca đó", "nhánh kia không chạy". Đọc code hoặc chạy nó, không tin lời văn trong file kế hoạch / báo cáo audit / commit message cũ. **Tài liệu trong repo là giả thuyết, không phải bằng chứng** — từng mô tả sai một hạng mục nguyên một lô vì tin mô tả trong file kế hoạch của chính mình.
+3. **Hậu quả bản vá** — "sửa xong sẽ mượt hơn", "không ảnh hưởng đường cũ". Đo bằng số trước và sau, trên chính đại lượng user nhìn thấy. Xem `feedback_measure_consequence_not_just_geometry` trong bộ nhớ dự án.
+
+Khi báo cáo, tách bạch cái **đã đo** và cái **đang suy đoán**. Một câu suy đoán trình bày như sự thật làm user mất nhiều thời gian hơn là im lặng.
+
+## Đổi thứ nằm ở thượng nguồn thì phải rà hạ nguồn
+
+Khi thay đổi một thứ **nhiều nơi cùng dùng** (bộ dò/mask, hàm dựng hình học, cấu trúc dữ liệu chung, hằng số chia sẻ), liệt kê **mọi consumer** trước khi báo xong, và kiểm ít nhất consumer nào nhạy nhất với đặc tính vừa đổi.
+
+Ca thật: lô dò nền thay mask đầu vào bằng mask **nhị phân thuần**, đúng ở mọi test của chính nó. Nhưng hạ nguồn `measure.find_contours` là marching-squares — nó cần **dải chuyển tiếp** để nội suy dưới mức điểm ảnh. Mất dải đó thì đường cắt thành bậc thang, tem càng lớn càng lộ. Không test nào bắt được vì test chỉ kiểm "mask có tách đúng nền không", còn user thì nhìn **đường cắt**.
+
+Rút ra: hỏi "thứ tôi vừa đổi mang đặc tính gì mà hạ nguồn đang âm thầm dựa vào?" — không chỉ "giá trị trả về có đúng không". Đặc tính ngầm hay bị bỏ sót: dải chuyển tiếp/độ mượt, thứ tự phần tử, đơn vị, hệ toạ độ, tính liên tục, có/không alpha.
+
 ## Định tuyến khi phạm vi đổi
 
 - Phát hiện thành chiến dịch rà soát hoặc dự kiến chạm hơn 5 file → chuyển `prynx-audit-workflow`, lập báo cáo và chờ duyệt trước khi sửa.
