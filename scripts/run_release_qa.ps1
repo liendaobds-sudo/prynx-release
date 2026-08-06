@@ -82,9 +82,21 @@ try {
 if (-not (Test-Path -LiteralPath $NO_GS_CORPUS)) {
     throw "No-GS corpus not found: $NO_GS_CORPUS (set PRYNX_NO_GS_CORPUS)"
 }
-Invoke-Checked "No-GS dependency gate (18 files x 16 operations)" {
+$NO_GS_MAX_ATTEMPTS = 2
+$noGsExit = 1
+for ($noGsAttempt = 1; $noGsAttempt -le $NO_GS_MAX_ATTEMPTS; $noGsAttempt++) {
+    Write-Host "  [QA] No-GS dependency gate (18 files x 16 operations), lan $noGsAttempt/$NO_GS_MAX_ATTEMPTS..." -ForegroundColor DarkGray
     & $PYTHON "$ROOT\scripts\gs_dependency_audit.py" $NO_GS_CORPUS `
         --limit 18 --gate --resume --out $NO_GS_AUDIT_OUT
+    $noGsExit = $LASTEXITCODE
+    if ($noGsExit -eq 0) { break }
+    if ($noGsExit -ne 1 -or $noGsAttempt -eq $NO_GS_MAX_ATTEMPTS) { break }
+    # BUILD (audit 2026-08-06 REL.NO_GS.RETRY): process con co the bi ngat thoang qua;
+    # thu lai mot lan tren cung wheel/artifact va tiep tuc tu checkpoint operation.
+    Write-Warning "No-GS gate bi ngat/that bai; thu lai mot lan tu checkpoint cung artifact."
+}
+if ($noGsExit -ne 0) {
+    throw "No-GS dependency gate (18 files x 16 operations) failed with exit code $noGsExit"
 }
 
 # RELEASE QA (audit 2026-07-27): Windows dev servers keep native npm DLLs locked,

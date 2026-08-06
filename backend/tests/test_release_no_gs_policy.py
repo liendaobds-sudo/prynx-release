@@ -177,6 +177,18 @@ def test_release_qa_runs_no_gs_gate_on_corpus():
     assert re.search(r'--limit\s+18', text)
 
 
+def test_release_qa_retries_no_gs_once_from_same_operation_checkpoint():
+    text = _read(RELEASE_QA)
+    assert "$NO_GS_MAX_ATTEMPTS = 2" in text
+    assert re.search(
+        r"for \(\$noGsAttempt = 1; \$noGsAttempt -le \$NO_GS_MAX_ATTEMPTS;",
+        text,
+    )
+    assert "--gate --resume --out $NO_GS_AUDIT_OUT" in text
+    assert "$noGsExit -ne 1" in text
+    assert "Remove-Item -LiteralPath $NO_GS_AUDIT_OUT" not in text
+
+
 def test_release_qa_covers_typecheck_and_print_engine():
     text = _read(RELEASE_QA)
     assert "npm.cmd run typecheck" in text
