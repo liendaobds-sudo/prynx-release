@@ -3061,3 +3061,101 @@ def test_sticker_endpoint_forwards_valid_object_selection(tmp_path, monkeypatch)
         0: [selection_ids["one"]],
     }
     assert response.headers["X-Sticker-Selection-Count"] == "1"
+
+
+def test_nen_mau_duoc_tach_dung_khong_cat_ca_trang(tmp_path):
+    """QUALITY (audit 2026-08-06 §BG.1/§BG.2): nền màu phải tách ĐÚNG.
+
+    Trước đây `white_mask` rỗng → `base_mask` toàn 255 → contour duy nhất là MÉP
+    TRANG, tức đường cắt ôm trọn khổ, và đi thẳng ra xưởng không một lời cảnh
+    báo. §BG.1 chặn hỏng âm thầm; §BG.2 dò nền theo MÀU nên ca này nay chạy đúng:
+    đường cắt phải ôm con tem, KHÔNG ôm cả trang, và có cảnh báo nêu màu nền.
+    """
+    src = str(tmp_path / "nen_mau.pdf")
+    out = str(tmp_path / "nen_mau_out.pdf")
+
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(100, 60))
+    # Nền #F2E9DC (trắng ngà/kem) + tem đỏ ở giữa.
+    page.Contents = pdf.make_stream(
+        b"0.949 0.914 0.863 rg 0 0 100 60 re f\n"
+        b"0.8 0.1 0.1 rg 25 15 50 30 re f\n"
+    )
+    pdf.save(src)
+
+    success, meta = StickerEngine(dpi=150).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="original",
+        offset_mm=0.0,
+        corner_style="miter",
+        bleed_mm=0.0,
+        fill_holes=True,
+        remove_white_bg=True,
+        draw_cut_contour=True,
+        shape_mode="contour",
+    )
+
+    assert success is True, meta.get("error")
+    with pikepdf.Pdf.open(out) as result:
+        trim = [float(v) for v in result.pages[0].TrimBox]
+        width = trim[2] - trim[0]
+        height = trim[3] - trim[1]
+        # Ôm con tem 50×30 pt, KHÔNG phải cả trang 100×60.
+        assert 45.0 < width < 58.0, f"TrimBox rộng {width:.1f}pt — nghi cắt cả trang"
+        assert 25.0 < height < 38.0, f"TrimBox cao {height:.1f}pt — nghi cắt cả trang"
+        assert b"/CutContour CS" in _read_all_content(result.pages[0])
+    assert "nền" in (meta.get("warning") or "").lower()
+
+
+def test_nen_gradient_bao_loi_thay_vi_cat_ca_trang(tmp_path):
+    """QUALITY (audit 2026-08-06 §BG.1): nền KHÔNG phẳng thì phải BÁO LỖI.
+
+    Đây là lưới an toàn cuối: dò nền theo màu bốn góc cũng bó tay (bốn góc lệch
+    màu nhau), nên engine phải trả lỗi nghiệp vụ (route đổi thành 422) chứ không
+    được lặng lẽ trả đường cắt ôm trọn khổ tờ.
+    """
+    import io as _io
+
+    import numpy as _np
+    from PIL import Image as _Image
+
+    src = str(tmp_path / "nen_gradient.pdf")
+    out = str(tmp_path / "nen_gradient_out.pdf")
+
+    w, h = 300, 200
+    yy, xx = _np.mgrid[:h, :w]
+    rgb = _np.zeros((h, w, 3), dtype=_np.uint8)
+    # Gradient chéo mạnh: bốn góc bốn màu khác nhau rõ rệt.
+    rgb[:, :, 0] = (xx * 255 // (w - 1)).astype(_np.uint8)
+    rgb[:, :, 1] = (yy * 255 // (h - 1)).astype(_np.uint8)
+    rgb[:, :, 2] = 90
+    buf = _io.BytesIO()
+    _Image.fromarray(rgb, mode="RGB").save(buf, format="PNG")
+    buf.seek(0)
+
+    from reportlab.lib.utils import ImageReader as _ImageReader
+    from reportlab.pdfgen import canvas as _canvas
+
+    page_w, page_h = w * 72.0 / 150.0, h * 72.0 / 150.0
+    c = _canvas.Canvas(src, pagesize=(page_w, page_h), pageCompression=0)
+    c.drawImage(_ImageReader(buf), 0, 0, width=page_w, height=page_h)
+    c.showPage()
+    c.save()
+
+    success, meta = StickerEngine(dpi=150).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="original",
+        offset_mm=0.0,
+        corner_style="miter",
+        bleed_mm=0.0,
+        fill_holes=True,
+        remove_white_bg=True,
+        draw_cut_contour=True,
+        shape_mode="contour",
+    )
+
+    assert success is False, "nền gradient phải báo lỗi, không được cắt cả trang"
+    assert "nền" in meta.get("error", "").lower()
+    assert not os.path.exists(out), "file lỗi phải bị dọn, không để thợ mở nhầm"

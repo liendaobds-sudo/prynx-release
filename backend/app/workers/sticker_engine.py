@@ -12,10 +12,20 @@ import time
 import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
+from typing import Optional, Tuple
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import unary_union
 import logging
 from app.core.pdfium_lock import pdfium_guard
+# QUALITY (audit 2026-08-06 §BG.2): bộ dò nền (mọi màu, trắng chỉ là một ca).
+from app.core.sticker_background import (
+    BG_FOREGROUND_RATIO_MAX,
+    BG_FOREGROUND_RATIO_MIN,
+    BackgroundInfo,
+    detect_background,
+    foreground_ratio,
+    mask_tach_duoc_nen,
+)
 from app.core.bleed_sides import (
     ALL_BLEED_SIDES,
     bleed_sides_to_names,
@@ -199,6 +209,25 @@ _ALPHA_SAFE_SIMPLIFY_MM = 0.05
 _ALPHA_SAFE_MAX_HAUSDORFF_MM = 0.08
 _ALPHA_SAFE_CURVE_HAUSDORFF_MM = 0.08
 _ALPHA_SAFE_MIN_GAP_MM = 0.05
+
+# QUALITY (audit 2026-08-07 §BG.5): mask do `detect_background` dựng là NHỊ PHÂN
+# thuần 0/255 — không có dải chuyển tiếp. `measure.find_contours` là marching-
+# squares: nó nội suy vị trí cắt BÊN TRONG dải chuyển tiếp để lấy toạ độ dưới mức
+# điểm ảnh. Mất dải đó thì mọi điểm cắt rơi đúng giữa cạnh điểm ảnh → biên thành
+# bậc thang, tem càng lớn chu vi càng dài càng lộ (đo tem tròn Ø240px: 679 góc bẻ
+# >30° so với 184 của nhánh trắng cũ).
+#
+# Nhánh trắng cũ không gặp lỗi này vì nó trả giá trị LIÊN TỤC theo khoảng cách
+# tới trắng, còn alpha thật thì bản thân kênh alpha đã có vành khử răng cưa. Chỉ
+# mask TỰ DỰNG mới thiếu, nên chỉ nó cần bù — không đụng hai đường kia.
+#
+# Bù bằng làm mờ theo BỀ RỘNG VẬT LÝ, không theo số điểm ảnh cố định: cùng một
+# con tem quét ở scale khác nhau phải ra cùng một đường cắt. 0,05 mm đủ cho
+# marching-squares nội suy mà vẫn nhỏ hơn dung sai bế (~0,1 mm), nên không bo
+# tròn được góc nhọn mà thợ nhìn thấy.
+_BG_MASK_FEATHER_MM = 0.05
+_BG_MASK_FEATHER_KERNEL_MIN = 3
+_BG_MASK_FEATHER_KERNEL_MAX = 9
 _ALPHA_SAFE_BEZIER_TENSIONS = (0.15, 0.10, 0.05, 0.03)
 _ALPHA_SAFE_BEZIER_SAMPLES = 3
 _ALPHA_FIT_TOLERANCES_MM = (0.10, 0.095, 0.08, 0.06)
@@ -411,54 +440,69 @@ def _alpha_adaptive_fit_profile(
     return hausdorff_mm, corner_window_mm, corner_separation_mm
 
 
+# QUALITY (audit 2026-08-06 §BG.1/§BG.2): ngưỡng "mask có tách được nền hay
+# không" nay là MỘT nguồn ở `core/sticker_background`; alias lại để các chỗ gọi
+# cũ trong file này khỏi đổi tên hàng loạt.
+_BG_FOREGROUND_RATIO_MIN = BG_FOREGROUND_RATIO_MIN
+_BG_FOREGROUND_RATIO_MAX = BG_FOREGROUND_RATIO_MAX
+_foreground_ratio = foreground_ratio
+_foreground_mask_tach_duoc_nen = mask_tach_duoc_nen
+
+
+def _feather_mask_tu_dung(mask: np.ndarray, px_per_mm: float) -> np.ndarray:
+    """Trả lại DẢI CHUYỂN TIẾP cho mask nhị phân tự dựng.
+
+    QUALITY (audit 2026-08-07 §BG.5). Xem chú thích ở `_BG_MASK_FEATHER_MM`:
+    `measure.find_contours` cần dải này để nội suy dưới mức điểm ảnh, không có
+    thì đường cắt thành bậc thang. Bề rộng tính theo mm nên độc lập scale quét.
+
+    Chỉ dùng cho mask do engine TỰ DỰNG (dò nền theo màu/gradient). Không gọi
+    cho alpha thật — silhouette của khách là chủ đích, làm mờ là sửa thiết kế.
+    """
+    if mask is None or mask.size == 0 or px_per_mm <= 0:
+        return mask
+    # Nhân đôi rồi ép lẻ: kernel Gauss của OpenCV bắt buộc lẻ. Kẹp trên để tem
+    # quét ở scale rất cao không bị làm mờ quá tay thành bo góc thấy được.
+    k = int(round(_BG_MASK_FEATHER_MM * px_per_mm)) * 2 + 1
+    k = max(_BG_MASK_FEATHER_KERNEL_MIN, min(_BG_MASK_FEATHER_KERNEL_MAX, k))
+    return cv2.GaussianBlur(mask, (k, k), 0)
+
+
+def _loi_khong_do_duoc_hinh(do_nen_khong_trang: bool) -> str:
+    """Thông điệp lỗi nghiệp vụ khi KHÔNG trang nào dò được hình.
+
+    QUALITY (audit 2026-08-06 §BG.1): nếu thất bại là do bóc nền trắng không ăn
+    thì nói thẳng, đừng bảo thợ bật lại đúng cái vừa hỏng. Dùng CHUNG cho cả
+    nhánh tuần tự lẫn nhánh song song để hai đường không nói hai kiểu.
+
+    QUALITY (audit 2026-08-06 §BG.2/§BG.3): cờ này chỉ bật SAU khi cả nhánh nền
+    màu phẳng lẫn nhánh nền gradient đã thử và bó tay, nên tuyệt đối không được
+    khuyên thợ "dùng chế độ tách nền theo màu" — đó đúng là thứ vừa thất bại.
+    """
+    if do_nen_khong_trang:
+        return (
+            "Không tách được nền trên bất kỳ trang nào — đã thử cả nền trắng, nền "
+            "màu phẳng và nền chuyển sắc (gradient) nhưng không phân biệt được hình "
+            "với nền. Thường gặp khi nền có hoạ tiết/ảnh chụp, hoặc tem chạm sát mép "
+            "khổ. Hãy dùng file PNG còn nền trong suốt (Alpha), hoặc tắt 'Bỏ nền "
+            "trắng' và cắt theo khổ trang."
+        )
+    return (
+        "Không dò được hình để tạo đường cắt. Hãy bật 'Bỏ nền trắng' "
+        "nếu nền màu trắng, hoặc kiểm tra lại file (hình quá nhạt/trống)."
+    )
+
+
 def _foreground_mask_from_corner_background(img: np.ndarray) -> np.ndarray | None:
     """Tách vật thể khỏi nền phẳng nối từ bốn góc khi PDF không còn Alpha.
 
     ALPHA (audit 2026-08-01 §A.1): đây chỉ là fallback cho PNG đã bị flatten.
-    Bốn góc phải đồng màu đủ chắc; candidate nền chỉ bị xóa khi nối với biên,
-    nên màu tương tự nằm kín bên trong artwork vẫn được giữ. Nền phức tạp trả
-    ``None`` để caller báo lỗi thay vì âm thầm cắt cả trang.
+    QUALITY (audit 2026-08-06 §BG.2): thân hàm đã chuyển sang
+    `core/sticker_background.detect_background` để nhánh nền-trắng dùng chung
+    cùng một bộ dò; giữ tên hàm này làm lớp mỏng cho các chỗ gọi cũ.
     """
-    if img is None or img.ndim != 3 or img.shape[2] < 3:
-        return None
-    height, width = img.shape[:2]
-    if height < 4 or width < 4:
-        return None
-
-    patch = max(2, min(12, min(height, width) // 40))
-    corners = np.concatenate((
-        img[:patch, :patch, :3].reshape(-1, 3),
-        img[:patch, -patch:, :3].reshape(-1, 3),
-        img[-patch:, :patch, :3].reshape(-1, 3),
-        img[-patch:, -patch:, :3].reshape(-1, 3),
-    )).astype(np.int16)
-    background_rgb = np.median(corners, axis=0)
-    corner_distance = np.max(np.abs(corners - background_rgb), axis=1)
-    corner_p95 = float(np.percentile(corner_distance, 95))
-    if corner_p95 > 28.0:
-        return None
-    tolerance = int(np.clip(round(corner_p95) + 8, 12, 36))
-
-    rgb = img[:, :, :3].astype(np.int16)
-    candidate = (
-        np.max(np.abs(rgb - background_rgb), axis=2) <= tolerance
-    ).astype(np.uint8)
-    num_labels, labels = cv2.connectedComponents(candidate)
-    if num_labels <= 1:
-        return None
-    border_labels = (
-        set(labels[0, :]) | set(labels[-1, :])
-        | set(labels[:, 0]) | set(labels[:, -1])
-    )
-    border_labels.discard(0)
-    if not border_labels:
-        return None
-    background = np.isin(labels, list(border_labels))
-    foreground = (~background).astype(np.uint8) * 255
-    foreground_ratio = float(np.count_nonzero(foreground)) / float(height * width)
-    if foreground_ratio < 0.001 or foreground_ratio > 0.98:
-        return None
-    return foreground
+    info = detect_background(img)
+    return info.foreground_mask if info is not None else None
 
 
 _PRESERVE_CORNER_RADIUS_MM = 0.40
@@ -1545,6 +1589,38 @@ def _erode_px(mask: np.ndarray, px: int, kernel_type: int = cv2.MORPH_ELLIPSE) -
     return cv2.erode(mask, ker)
 
 
+def _near_background_mask_rgb(
+    img: np.ndarray,
+    background_rgb: Optional[Tuple[int, int, int]],
+    tolerance: int,
+) -> np.ndarray:
+    """Pixel gần MÀU NỀN đã dò được (RGB uint8 HxWx3).
+
+    QUALITY (audit 2026-08-06 §BG.4): tổng quát hoá `_near_white_mask_rgb`. Viền
+    răng cưa (AA) quanh tem bị trộn với NỀN, và nền không nhất thiết là trắng —
+    trên nền kem/xanh thì pixel mép bị ám kem/xanh, `_near_white_mask_rgb` không
+    thấy nên màu nền bị kéo ra vùng bù xén thành quầng.
+
+    Dung sai nới nhẹ so với lúc dò nền: ở đây mục tiêu là LOẠI pixel pha nền khỏi
+    nguồn lấy màu, lọc rộng hơn một chút vẫn an toàn vì đã có chuỗi fallback.
+    """
+    if img is None or img.ndim != 3 or img.shape[2] < 3:
+        return (
+            np.zeros(img.shape[:2], dtype=bool)
+            if img is not None
+            else np.zeros((0, 0), dtype=bool)
+        )
+    if background_rgb is None:
+        return np.zeros(img.shape[:2], dtype=bool)
+    bg = np.array(background_rgb, dtype=np.int16).reshape(1, 1, 3)
+    delta = np.max(np.abs(img[:, :, :3].astype(np.int16) - bg), axis=2)
+    return delta <= max(1, int(tolerance))
+
+
+# Nới dung sai khi LOẠI pixel pha nền khỏi nguồn màu viền (so với lúc dò nền).
+_EDGE_BG_TOLERANCE_PADDING = 6
+
+
 def _build_edge_color_source_mask(
     silhouette: np.ndarray,
     img: np.ndarray,
@@ -1554,6 +1630,8 @@ def _build_edge_color_source_mask(
     edge_bite_px: int = 0,
     kernel_type: int = cv2.MORPH_ELLIPSE,
     exclude_near_white: bool = True,
+    background_rgb: Optional[Tuple[int, int, int]] = None,
+    background_tolerance: int = 0,
 ) -> np.ndarray:
     """Nguồn màu bleed = dải VIỀN tem gốc (shell), không hút cả ruột.
 
@@ -1564,8 +1642,12 @@ def _build_edge_color_source_mask(
       1) edge_bite: co silhouette (bỏ dải trắng mép khi file không tràn lề).
       2) peel: bỏ vài px ngoài cùng (AA trộn nền).
       3) band: dải dày `band_px` ngay sau peel = nguồn nearest/inpaint.
-      4) Loại pixel near-white trong dải.
+      4) Loại pixel pha NỀN trong dải (near-white, hoặc gần `background_rgb`).
       5) Fallback dần nếu dải rỗng (tem mảnh / viền trắng dày).
+
+    QUALITY (audit 2026-08-06 §BG.4): truyền `background_rgb` (màu nền đã dò ở
+    §BG.2/§BG.3) thì bước 4 loại pixel gần MÀU NỀN ĐÓ thay vì chỉ gần trắng.
+    Không truyền thì hành vi giữ nguyên từng điểm ảnh như trước.
     """
     if silhouette is None or np.count_nonzero(silhouette) == 0:
         return np.zeros_like(silhouette) if silhouette is not None else np.zeros((0, 0), dtype=np.uint8)
@@ -1593,6 +1675,12 @@ def _build_edge_color_source_mask(
         ):
             return shell
         cleaned = shell.copy()
+        if background_rgb is not None:
+            # §BG.4: nền màu → loại pixel pha màu nền đó. Loại luôn near-white
+            # vì render vẫn có thể pha trắng ở chỗ nền bị làm nhạt.
+            cleaned[
+                _near_background_mask_rgb(img, background_rgb, background_tolerance)
+            ] = 0
         cleaned[_near_white_mask_rgb(img)] = 0
         return cleaned if np.count_nonzero(cleaned) > 0 else shell
 
@@ -1605,7 +1693,10 @@ def _build_edge_color_source_mask(
     if np.count_nonzero(shell) > 0:
         return shell
 
-    # Fallback 2: không lọc trắng — thà lấy AA còn hơn rỗng (tránh bleed padding).
+    # Fallback 2: KHÔNG lọc pha nền — thà lấy AA còn hơn rỗng (tránh bleed
+    # padding). QUALITY (audit 2026-08-06 §BG.4): cố ý bỏ qua cờ lọc ở đây, vì
+    # tới bước này nghĩa là cả dải viền đều bị coi là pha nền; rỗng sẽ khiến bù
+    # xén không có màu để kéo, tệ hơn hẳn màu hơi nhạt.
     shell = _shell(base, 0, max(band, 2))
     if np.count_nonzero(shell) > 0:
         return shell
@@ -1827,6 +1918,8 @@ def _build_adaptive_edge_color_source_mask(
     edge_bite_px: int = 0,
     kernel_type: int = cv2.MORPH_ELLIPSE,
     exclude_near_white: bool = True,
+    background_rgb: Optional[Tuple[int, int, int]] = None,
+    background_tolerance: int = 0,
 ) -> tuple[np.ndarray, int]:
     """Chọn shell nông nhất đủ ổn định, thay vì kéo halo sát mép ra bleed.
 
@@ -1834,6 +1927,10 @@ def _build_adaptive_edge_color_source_mask(
     chỉ mask lấy màu được thử sâu dần. Viền gồm các mảng màu dài có tỷ lệ đổi
     pixel thấp nên giữ shell ban đầu. Chỉ shell cao tần mới được dịch vào trong,
     tối đa 0,60 mm do caller quy đổi sang pixel.
+
+    QUALITY (audit 2026-08-06 §BG.4): `background_rgb` chuyển tiếp nguyên vẹn
+    xuống `_build_edge_color_source_mask` để mọi lần thử sâu đều lọc pha nền
+    theo cùng một màu.
     """
     initial_peel = max(0, int(peel_px))
     initial = _build_edge_color_source_mask(
@@ -1844,6 +1941,8 @@ def _build_adaptive_edge_color_source_mask(
         edge_bite_px=edge_bite_px,
         kernel_type=kernel_type,
         exclude_near_white=exclude_near_white,
+        background_rgb=background_rgb,
+        background_tolerance=background_tolerance,
     )
     initial_metrics = _edge_color_instability_metrics(initial, img)
     sparse_bright_fringe = _edge_color_has_sparse_bright_fringe(initial_metrics)
@@ -1885,6 +1984,8 @@ def _build_adaptive_edge_color_source_mask(
             edge_bite_px=edge_bite_px,
             kernel_type=kernel_type,
             exclude_near_white=exclude_near_white,
+            background_rgb=background_rgb,
+            background_tolerance=background_tolerance,
         )
         metrics = _edge_color_instability_metrics(candidate, img)
         if _edge_color_is_unstable(metrics):
@@ -3947,6 +4048,8 @@ class StickerEngine:
             all_pages_meta = []
             any_dieline_found = False
             pages_no_dieline = []
+            # QUALITY (audit 2026-08-06 §BG.1): trang thất bại vì nền không trắng.
+            pages_white_bg_failed = []
 
             _n_pages = pdfium_page_count
             # Danh sách trang cần xử lý: subset (worker song song) hoặc toàn bộ.
@@ -3959,6 +4062,12 @@ class StickerEngine:
                 compress_seconds = 0.0
                 alpha_fallback_used = False
                 alpha_contour_warning = None
+                # QUALITY (audit 2026-08-06 §BG.1): nhánh bóc nền trắng không tách
+                # được nền (nền màu / trắng ngà) → đánh dấu để cảnh báo đúng lý do.
+                white_bg_detect_failed = False
+                # QUALITY (audit 2026-08-06 §BG.2): nền MÀU dò được (nếu có) —
+                # dùng để cảnh báo thợ soi lại đường cắt.
+                color_bg_detected: BackgroundInfo | None = None
                 debug_step = f"Rasterize Page {page_idx}"
                 with pdfium_guard():
                     if page_in is not None:
@@ -4121,21 +4230,10 @@ class StickerEngine:
                         base_mask = img[:, :, 3].copy()
                     else:
                         if remove_white_bg:
-                            hsv = cv2.cvtColor(img[:,:,:3], cv2.COLOR_RGB2HSV)
-                            # Ngưỡng SIẾT MẠNH: chỉ coi là "trắng nền" khi RẤT sáng
-                            # (V>=200) VÀ GẦN NHƯ VÔ SẮC TUYỆT ĐỐI (S<=2 ≈ 0.8%). Lý do:
-                            # màu nền gần-trung-tính rất nhạt vẫn LÀ NỘI DUNG nhãn, phải GIỮ.
-                            # Thực tế các màu như C9.8 M7.06 Y7.84 (S≈7.5) và C3.92 M2.35 Y5.1
-                            # (S≈7.2) — CMY xúm gần nhau nên chroma thấp — từng bị ngưỡng S<=8
-                            # bóc nhầm như nền trắng. Hạ xuống S<=2 để mọi màu gần-xám nhạt
-                            # (S>2) được giữ; chỉ trắng gần tuyệt đối (S<=2) mới bị bóc.
-                            # ĐÁNH ĐỔI: nền trắng-JPEG ám màu nhẹ (S>2) sẽ KHÔNG còn bị bóc.
-                            lower_white = np.array([0, 0, 200])
-                            upper_white = np.array([180, 2, 255])
-                            white_mask = cv2.inRange(hsv, lower_white, upper_white)
-                            # HSV saturation alone cannot distinguish a light neutral gray
-                            # from white. Use strict RGB near-white candidates instead:
-                            # all channels must be near white, so RGB(213,215,214) survives.
+                            # Chỉ coi là "trắng nền" khi CẢ BA kênh RGB gần trắng
+                            # tuyệt đối. Không dùng saturation HSV: nó không phân biệt
+                            # được xám trung tính nhạt với trắng, nên màu nền nhạt
+                            # (vẫn LÀ nội dung nhãn) từng bị bóc nhầm.
                             white_mask = (
                                 _near_white_background_candidate_rgb(
                                     img[:, :, :3], min_channel=248, max_chroma=18
@@ -4157,6 +4255,48 @@ class StickerEngine:
                             else:
                                 bg_white = np.zeros_like(white_mask)
                             base_mask = cv2.bitwise_not(bg_white)
+                            # QUALITY (audit 2026-08-06 §BG.1): nếu không bóc được
+                            # gì (nền màu, hoặc trắng ngà do nén JPEG) thì bg_white
+                            # rỗng → base_mask toàn 255 → contour duy nhất tìm được
+                            # là MÉP TRANG, tức đường cắt ôm trọn khổ. Trước đây lỗi
+                            # này đi thẳng ra xưởng, không một lời cảnh báo. Nay coi
+                            # trang này là KHÔNG dò được hình → trang vào
+                            # pages_no_dieline, có cảnh báo; nếu KHÔNG trang nào dò
+                            # được thì engine trả lỗi nghiệp vụ 422.
+                            #
+                            # Đo trên bg_white (phần NỀN bóc được), KHÔNG đo trên
+                            # foreground: tem bo góc chiếm gần trọn khổ là ca ĐÚNG
+                            # và hợp lệ (nền chỉ còn bốn góc), nên trần "foreground
+                            # ≤ 98%" của nhánh dò nền bốn góc sẽ bắt oan nó.
+                            if (
+                                cut_mode != "none"
+                                and _foreground_ratio(bg_white)
+                                < _BG_FOREGROUND_RATIO_MIN
+                            ):
+                                # QUALITY (audit 2026-08-06 §BG.2): trước khi
+                                # bỏ cuộc, thử dò nền theo MÀU ở bốn góc — nền
+                                # màu phẳng và trắng ngà do nén JPEG đều rơi
+                                # vào đây. Đặt SAU nhánh trắng (không đặt
+                                # trước) để mọi ca đang chạy đúng giữ nguyên
+                                # từng điểm ảnh; chỉ ca trước đây HỎNG mới đi
+                                # đường mới.
+                                bg_info = detect_background(img[:, :, :3])
+                                if bg_info is not None:
+                                    base_mask = bg_info.foreground_mask
+                                    color_bg_detected = bg_info
+                                    logger.info(
+                                        "[STICKER_BG] page=%d dò nền theo màu "
+                                        "rgb=%s tolerance=%d confidence=%.2f",
+                                        page_idx + 1,
+                                        bg_info.color,
+                                        bg_info.tolerance,
+                                        bg_info.confidence,
+                                    )
+                                else:
+                                    base_mask = np.zeros(
+                                        img.shape[:2], dtype=np.uint8
+                                    )
+                                    white_bg_detect_failed = True
                         else:
                             base_mask = np.ones(img.shape[:2], dtype=np.uint8) * 255
 
@@ -4179,6 +4319,15 @@ class StickerEngine:
                     if preserve_contour:
                         # Không blur/morphology: giữ nguyên cả góc, khe và chi tiết của mask.
                         aa_mask = mask.copy()
+                        # QUALITY (audit 2026-08-07 §BG.5): NGOẠI LỆ — mask do dò
+                        # nền theo màu/gradient là do engine TỰ DỰNG, nhị phân
+                        # thuần, thiếu dải chuyển tiếp mà marching-squares cần để
+                        # nội suy → đường cắt bậc thang trên tem lớn. Trả lại dải
+                        # đó. Không phải "bo góc": bề rộng 0,05 mm nhỏ hơn dung
+                        # sai bế, và alpha thật KHÔNG đi nhánh này (đã có vành AA
+                        # sẵn trong kênh alpha) nên silhouette của khách vẫn nguyên.
+                        if color_bg_detected is not None:
+                            aa_mask = _feather_mask_tu_dung(aa_mask, px_per_mm)
                     elif corner_style == "round":
                         aa_mask = cv2.GaussianBlur(mask, (7, 7), 0)
                     else:
@@ -4186,6 +4335,10 @@ class StickerEngine:
                         clean_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
                         aa_mask = cv2.morphologyEx(aa_mask, cv2.MORPH_OPEN, clean_kernel)
                         aa_mask = cv2.morphologyEx(aa_mask, cv2.MORPH_CLOSE, clean_kernel)
+                        # §BG.5: morphology chỉ dọn đốm, KHÔNG tạo dải chuyển tiếp
+                        # — mask vẫn nhị phân. Mask tự dựng vẫn cần bù như trên.
+                        if color_bg_detected is not None:
+                            aa_mask = _feather_mask_tu_dung(aa_mask, px_per_mm)
 
                     aa_mask_padded = np.pad(aa_mask, pad_width=1, mode='constant', constant_values=0)
 
@@ -4568,6 +4721,23 @@ class StickerEngine:
                         peel_px = max(1, int(0.08 * px_per_mm))
                         edge_band_px = max(2, int(0.25 * px_per_mm))
                         selected_peel_px = peel_px
+                        # QUALITY (audit 2026-08-06 §BG.4): nền đã dò được ở
+                        # §BG.2/§BG.3 thì viền AA bị ám MÀU NỀN ĐÓ, không phải
+                        # trắng. Truyền xuống để lọc pha nền đúng màu; nền
+                        # gradient (is_flat=False) KHÔNG truyền vì một màu đại
+                        # diện là vô nghĩa, lọc theo nó sẽ ăn oan artwork.
+                        edge_bg_rgb = None
+                        edge_bg_tolerance = 0
+                        if (
+                            color_bg_detected is not None
+                            and color_bg_detected.is_flat
+                            and not color_bg_detected.is_near_white
+                        ):
+                            edge_bg_rgb = color_bg_detected.color
+                            edge_bg_tolerance = (
+                                color_bg_detected.tolerance
+                                + _EDGE_BG_TOLERANCE_PADDING
+                            )
                         if bleed_color_type in ("image", "trajectory") and not rectangle_mode:
                             max_adaptive_peel_px = max(
                                 peel_px,
@@ -4583,6 +4753,8 @@ class StickerEngine:
                                     edge_bite_px=edge_color_inset_px,
                                     kernel_type=kernel_type,
                                     exclude_near_white=True,
+                                    background_rgb=edge_bg_rgb,
+                                    background_tolerance=edge_bg_tolerance,
                                 )
                             )
                         else:
@@ -4594,6 +4766,10 @@ class StickerEngine:
                                 edge_bite_px=edge_color_inset_px,
                                 kernel_type=kernel_type,
                                 exclude_near_white=not rectangle_mode,
+                                background_rgb=(
+                                    None if rectangle_mode else edge_bg_rgb
+                                ),
+                                background_tolerance=edge_bg_tolerance,
                             )
                         # Halo tile phải đủ sâu tới shell thực tế đã chọn.
                         source_depth_px = edge_color_inset_px + selected_peel_px + edge_band_px
@@ -5375,8 +5551,51 @@ class StickerEngine:
                 elif cut_mode != "none":
                     # Yêu cầu tạo đường cắt nhưng không dò được hình trên trang này.
                     pages_no_dieline.append(page_idx + 1)
+                # QUALITY (audit 2026-08-06 §BG.1): nói rõ nguyên nhân để thợ biết
+                # phải đổi gì, thay vì chỉ "không dò được hình".
+                # §BG.2/§BG.3: cờ này bật SAU khi nhánh nền màu và nhánh gradient
+                # đã thử và trượt — nên không được khuyên "tách nền theo màu".
+                white_bg_warning = (
+                    f"Trang {page_idx + 1}: không tách được nền — đã thử cả nền "
+                    "trắng, nền màu phẳng và nền chuyển sắc nhưng không phân biệt "
+                    "được hình với nền (nền hoạ tiết/ảnh chụp, hoặc tem chạm sát "
+                    "mép khổ). Hãy dùng file PNG còn nền trong suốt, hoặc tắt "
+                    "'Bỏ nền trắng' và cắt theo khổ trang."
+                ) if white_bg_detect_failed else None
+                if white_bg_detect_failed:
+                    pages_white_bg_failed.append(page_idx + 1)
+                    # Đánh dấu trong meta để nhánh SONG SONG (gom kết quả từ
+                    # process con) cũng biết lý do thất bại, không phải đoán.
+                    page_meta["white_bg_detect_failed"] = True
+                # QUALITY (audit 2026-08-06 §BG.2/§BG.3): đã phải dò nền theo MÀU
+                # — nói rõ đã tách kiểu nào để thợ soi lại đường cắt trước khi bế.
+                color_bg_warning = None
+                if color_bg_detected is not None:
+                    if color_bg_detected.is_flat:
+                        color_bg_warning = (
+                            f"Trang {page_idx + 1}: nền không phải trắng; đã tách "
+                            f"nền theo màu RGB{color_bg_detected.color}. Hãy kiểm "
+                            "tra lại đường cắt trước khi bế."
+                        )
+                    else:
+                        # Nhánh loang (§BG.3) là phỏng đoán trên nền gradient/hoạ
+                        # tiết → cảnh báo nặng hơn, và gợi ý đường chắc chắn.
+                        color_bg_warning = (
+                            f"Trang {page_idx + 1}: nền KHÔNG phẳng (gradient/hoạ "
+                            "tiết) — đã tách nền bằng cách loang từ mép, kết quả "
+                            "là PHỎNG ĐOÁN. Bắt buộc soi lại đường cắt; nếu sai, "
+                            "hãy dùng chế độ cắt xén theo hình chữ nhật."
+                        )
+                    page_meta["background_color"] = list(color_bg_detected.color)
+                    page_meta["background_confidence"] = round(
+                        color_bg_detected.confidence, 2
+                    )
+                    page_meta["background_is_flat"] = color_bg_detected.is_flat
                 page_warning = " ".join(
-                    warning for warning in (alpha_contour_warning, bleed_quality_warning)
+                    warning for warning in (
+                        alpha_contour_warning, white_bg_warning,
+                        color_bg_warning, bleed_quality_warning,
+                    )
                     if warning
                 )
                 if page_warning:
@@ -5436,10 +5655,7 @@ class StickerEngine:
                 except OSError:
                     pass
                 return False, {
-                    "error": (
-                        "Không dò được hình để tạo đường cắt. Hãy bật 'Bỏ nền trắng' "
-                        "nếu nền màu trắng, hoặc kiểm tra lại file (hình quá nhạt/trống)."
-                    )
+                    "error": _loi_khong_do_duoc_hinh(bool(pages_white_bg_failed))
                 }
             combined_warning = _compose_sticker_warning(all_pages_meta, pages_no_dieline)
             if combined_warning:
@@ -5777,9 +5993,12 @@ class StickerEngine:
             except OSError:
                 pass
             return False, {
-                "error": (
-                    "Không dò được hình để tạo đường cắt. Hãy bật 'Bỏ nền trắng' "
-                    "nếu nền màu trắng, hoặc kiểm tra lại file (hình quá nhạt/trống)."
+                "error": _loi_khong_do_duoc_hinh(
+                    # Cờ do các process con gắn vào meta từng trang (§BG.1).
+                    any(
+                        (m or {}).get("white_bg_detect_failed")
+                        for m in all_pages_meta
+                    )
                 )
             }
         combined_warning = _compose_sticker_warning(all_pages_meta, pages_no_dieline)
