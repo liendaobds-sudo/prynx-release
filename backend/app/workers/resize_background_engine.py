@@ -23,6 +23,7 @@ from app.core.page_boxes import (
     _pixel_bbox_to_cropbox,
 )
 from app.core.pdfium_lock import pdfium_guard
+from app.core.page_selection import parse_page_selection
 
 
 logger = logging.getLogger(__name__)
@@ -51,31 +52,9 @@ def is_dynamic_background_mode(mode: str) -> bool:
 
 
 def _parse_pages(apply_to: str, total: int) -> set[int]:
-    value = str(apply_to or "all").strip().lower()
-    if value == "all":
-        return set(range(total))
-    if value == "even":
-        return set(range(1, total, 2))
-    if value == "odd":
-        return set(range(0, total, 2))
-
-    selected: set[int] = set()
-    for raw_part in value.split(","):
-        part = raw_part.strip()
-        if not part:
-            continue
-        if "-" in part:
-            raw_start, _, raw_end = part.partition("-")
-            if not raw_start.strip().isdigit():
-                continue
-            start = int(raw_start)
-            end = int(raw_end) if raw_end.strip().isdigit() else total
-            for page_number in range(start, end + 1):
-                if 1 <= page_number <= total:
-                    selected.add(page_number - 1)
-        elif part.isdigit() and 1 <= int(part) <= total:
-            selected.add(int(part) - 1)
-    return selected
+    # RESIZE (audit 2026-08-06 §G.6): giữ tên hàm cho caller, thân uỷ quyền cho
+    # parser CHUNG (app.core.page_selection) để hai đường resize không lệch nhau.
+    return parse_page_selection(apply_to, total)
 
 
 def _render_path_page_rgb(path: str, page_index: int, scale: float) -> np.ndarray:
@@ -401,9 +380,13 @@ def resize_pages_with_background(
             for index in transparent_page_indexes
             if isinstance(index, int) and index >= 0
         }
-    if size_mode != "fixed" and scale_mode != "fit":
+    # RESIZE (audit 2026-08-06 §G.11): khổ khóa một chiều dựng khổ trang theo tỷ lệ
+    # tem gốc, nhưng tỷ lệ VẼ nội dung là chuyện khác. 'center_no_scale' giữ tem
+    # nguyên cỡ ở giữa trang mới (tem 5×10 → trang 7.5×15, tem vẫn 5×10) nên hợp lệ.
+    # 'fill'/'stretch' thì vẫn vô nghĩa: khổ đích sinh ra đã đúng tỷ lệ nội dung.
+    if size_mode != "fixed" and scale_mode not in {"fit", "center_no_scale"}:
         raise ValueError(
-            "Giữ tỷ lệ từng trang chỉ hỗ trợ kiểu Thu vừa khít."
+            "Giữ tỷ lệ từng trang chỉ hỗ trợ Thu vừa khít hoặc Giữ nguyên ở giữa."
         )
     if size_mode == "fixed" and scale_mode not in {"fit", "center_no_scale"}:
         raise ValueError("Kéo nền động chỉ hỗ trợ vừa khít hoặc giữ nguyên ở giữa.")
@@ -533,14 +516,19 @@ def resize_pages_with_background(
 
             # RESIZE (audit 2026-08-01 §R.2): khổ khóa một chiều phải được
             # tính SAU khi dò contentBox và chuẩn hóa /Rotate của chính trang đó.
+            # RESIZE (audit 2026-08-06 §G.11): TÁCH hai đại lượng từng bị gộp làm
+            # một. `page_scale` dựng KHỔ TRANG theo tỷ lệ nội dung gốc; `fit_scale`
+            # là tỷ lệ VẼ nội dung. Hai giá trị chỉ trùng nhau ở kiểu 'fit'.
             if size_mode == "fixed_width":
                 target_width_pt = requested_width_pt
-                fit_scale = target_width_pt / content_width_pt
-                target_height_pt = content_height_pt * fit_scale
+                page_scale = target_width_pt / content_width_pt
+                target_height_pt = content_height_pt * page_scale
+                fit_scale = 1.0 if scale_mode == "center_no_scale" else page_scale
             elif size_mode == "fixed_height":
                 target_height_pt = requested_height_pt
-                fit_scale = target_height_pt / content_height_pt
-                target_width_pt = content_width_pt * fit_scale
+                page_scale = target_height_pt / content_height_pt
+                target_width_pt = content_width_pt * page_scale
+                fit_scale = 1.0 if scale_mode == "center_no_scale" else page_scale
             else:
                 target_width_pt = requested_width_pt
                 target_height_pt = requested_height_pt

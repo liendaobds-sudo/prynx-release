@@ -578,7 +578,13 @@ export async function runResize(ctx: ProcessContext, settings: any) {
     const resizeMode: string = settings.resizeMode || 'auto';
     const pageSizeMode: 'fixed' | 'fixed_width' | 'fixed_height' = settings.pageSizeMode || 'fixed';
     const lockedAxis = pageSizeMode === 'fixed_width' || pageSizeMode === 'fixed_height';
-    const effectiveScaleMode = lockedAxis ? 'fit' : settings.scaleMode;
+    // RESIZE (audit 2026-08-06 §G.11): khổ khóa một chiều KHÔNG còn bị ép 'fit'.
+    // 'center_no_scale' là ca thật: tem 5×10 đưa về chiều cao 15 → trang 7.5×15,
+    // tem giữ nguyên 5×10 nằm giữa. Chỉ 'fill'/'stretch' mới phải hạ về 'fit'
+    // vì khổ đích đã sinh ra đúng tỷ lệ nội dung nên không còn phần dư để xử lý.
+    const effectiveScaleMode = lockedAxis && settings.scaleMode !== 'center_no_scale'
+        ? 'fit'
+        : settings.scaleMode;
     const newFileName = `Resized_${file.name}`;
     // PERF (audit 2026-08-01 §RT.12): log mốc đầu để ca bị treo vẫn cho biết
     // đã vào handler với đường xử lý nào; không ghi tên/path của file khách hàng.
@@ -643,6 +649,31 @@ export async function runResize(ctx: ProcessContext, settings: any) {
         // chiều thì state cũ không được âm thầm đổi transparency/màu output.
         const effectiveFillMode = lockedAxis ? 'white' : fillMode;
 
+        // RESIZE (audit 2026-08-06 §G.3): dò xem tác vụ có THU NHỎ khổ không, để
+        // nhánh backend-only dùng chung heuristic "auto = 300 DPI khi thu nhỏ".
+        // Chỉ soi trang đầu và chỉ khi file đủ nhỏ để nạp vào RAM an toàn — file
+        // lớn giữ nguyên hành vi cũ (0 = không downsample) thay vì mạo hiểm OOM.
+        const isDownsizingByProbe = async (): Promise<boolean> => {
+            if ((file.size || 0) > FE_SIZE_LIMIT) return false;
+            try {
+                const probeBytes = await getWorkingBytes();
+                const probeDoc = await PDFDocument.load(probeBytes);
+                const { width, height } = probeDoc.getPage(0).getSize();
+                if (!(width > 0 && height > 0)) return false;
+                if (pageSizeMode === 'fixed_width') {
+                    return settings.targetW * MM_TO_PT < width * 0.95;
+                }
+                if (pageSizeMode === 'fixed_height') {
+                    return settings.targetH * MM_TO_PT < height * 0.95;
+                }
+                const srcArea = width * height;
+                const dstArea = (settings.targetW * MM_TO_PT) * (settings.targetH * MM_TO_PT);
+                return dstArea > 0 && dstArea < srcArea * 0.9;
+            } catch {
+                return false;
+            }
+        };
+
 
         console.log('[resize] pipeline start', {
             scaleMode: effectiveScaleMode, pageSizeMode, fillMode,
@@ -669,13 +700,24 @@ export async function runResize(ctx: ProcessContext, settings: any) {
                     type: 'application/pdf',
                 });
             }
+            // RESIZE (audit 2026-08-06 §G.3): nhánh nền động / khóa một chiều /
+            // resize theo nội dung trước đây bỏ heuristic downsample mặc định →
+            // A1→A5 vẫn ~300MB, mọi tác vụ sau đó chậm. Dùng chung heuristic
+            // "auto = 300 DPI khi thu nhỏ" với nhánh thường bên dưới.
             const targetDpi = typeof settings.targetDpi === 'number'
                 ? settings.targetDpi
-                : 0;
+                : (await isDownsizingByProbe() ? 300 : 0);
+            // RESIZE (audit 2026-08-06 §G.4): màu nền trơn người dùng chọn phải
+            // đi theo cả nhánh này; ép cứng '#ffffff' làm "Đổ màu trơn + Resize
+            // theo nội dung" luôn ra nền trắng. Mode khóa một chiều đã bị hạ về
+            // 'white' ở effectiveFillMode (§R.5) nên không bị ảnh hưởng.
+            const backendFillColor = effectiveFillMode === 'solid'
+                ? (settings.bgFillColor || '#ffffff')
+                : '#ffffff';
             await emit(await backendResizePages(
                 inputFile, settings.targetW, settings.targetH, effectiveScaleMode,
                 settings.applyToStr || 'all', targetDpi, resizeMode,
-                effectiveFillMode, '#ffffff', sourcePath,
+                effectiveFillMode, backendFillColor, sourcePath,
                 pageSizeMode,
                 wantResizeByContent,
             ));

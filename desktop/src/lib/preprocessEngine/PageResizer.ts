@@ -167,6 +167,44 @@ export async function resizePages(
             width: embedW * scaleX,
             height: embedH * scaleY,
         });
+
+        // RESIZE (audit 2026-08-06 §G.2): mang TrimBox/BleedBox/ArtBox sang trang
+        // mới, biến đổi theo ĐÚNG phép đặt nội dung ở trên — cùng công thức với
+        // backend (_tx_box trong pdf_tools_engine.resize_pages). Trước đây đường
+        // frontend bỏ hẳn các box này nên file ≤50MB MẤT định nghĩa bleed/trim
+        // trong khi file >50MB (đi backend) thì giữ: cùng nút bấm, khác kết quả.
+        // Chỉ đọc box KHAI BÁO THẬT trên trang nguồn (node.*), vì getTrimBox()
+        // của pdf-lib tự suy ra CropBox/MediaBox khi box không tồn tại.
+        const txBox = (raw: number[]): [number, number, number, number] => {
+            // Điểm nguồn tính theo gốc vùng embed (box.left/box.bottom).
+            const px0 = (raw[0] - box.left) * scaleX + offsetX;
+            const py0 = (raw[1] - box.bottom) * scaleY + offsetY;
+            const px1 = (raw[2] - box.left) * scaleX + offsetX;
+            const py1 = (raw[3] - box.bottom) * scaleY + offsetY;
+            const x0 = Math.max(0, Math.min(px0, px1));
+            const x1 = Math.min(targetWPt, Math.max(px0, px1));
+            const y0 = Math.max(0, Math.min(py0, py1));
+            const y1 = Math.min(targetHPt, Math.max(py0, py1));
+            return [x0, y0, x1, y1];
+        };
+        const auxBoxes: Array<['TrimBox' | 'BleedBox' | 'ArtBox', any]> = [
+            ['TrimBox', (srcPage.node as any).TrimBox?.()],
+            ['BleedBox', (srcPage.node as any).BleedBox?.()],
+            ['ArtBox', (srcPage.node as any).ArtBox?.()],
+        ];
+        for (const [name, arr] of auxBoxes) {
+            if (!arr) continue;
+            try {
+                const rect = arr.asRectangle();
+                const raw = [rect.x, rect.y, rect.x + rect.width, rect.y + rect.height];
+                if (raw.some(v => !Number.isFinite(v))) continue;
+                const [x0, y0, x1, y1] = txBox(raw);
+                if (!(x1 > x0 && y1 > y0)) continue;
+                if (name === 'TrimBox') newPage.setTrimBox(x0, y0, x1 - x0, y1 - y0);
+                else if (name === 'BleedBox') newPage.setBleedBox(x0, y0, x1 - x0, y1 - y0);
+                else newPage.setArtBox(x0, y0, x1 - x0, y1 - y0);
+            } catch { /* box hỏng định dạng — bỏ qua, không chặn resize */ }
+        }
     }
 
     finishOptionalContentTransfer(ocTransfer, outputPdf);

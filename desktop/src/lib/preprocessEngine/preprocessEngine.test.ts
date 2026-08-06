@@ -203,6 +203,36 @@ describe('PageResizer — resizePages', () => {
     const result = await PDFDocument.load(out);
     expect(result.getPage(0).node.Contents()).toBeTruthy();
   });
+
+  // RESIZE (audit 2026-08-06 §G.2): đường frontend trước đây bỏ TrimBox/BleedBox
+  // nên file ≤50MB mất định nghĩa bleed/trim, còn file >50MB (đi backend) thì giữ.
+  it('mang TrimBox/BleedBox sang trang mới theo đúng tỉ lệ co giãn', async () => {
+    const source = await PDFDocument.create();
+    const srcW = 100 * MM_TO_POINTS;
+    const srcH = 200 * MM_TO_POINTS;
+    const p = source.addPage([srcW, srcH]);
+    p.drawRectangle({ x: 1, y: 1, width: 4, height: 4 });
+    p.setTrimBox(10, 20, srcW - 20, srcH - 40);
+    p.setBleedBox(5, 5, srcW - 10, srcH - 10);
+
+    // 100×200mm → 50×100mm: scale đúng 0.5 cho cả hai chiều, offset 0.
+    const out = await resizePages(await source.save(), {
+      targetW: 50,
+      targetH: 100,
+      scaleMode: 'fit',
+      applyTo: 'all',
+    });
+
+    const page = (await PDFDocument.load(out)).getPage(0);
+    const trim = (page.node as any).TrimBox().asRectangle();
+    const bleed = (page.node as any).BleedBox().asRectangle();
+    expect(trim.x).toBeCloseTo(5, 1);
+    expect(trim.y).toBeCloseTo(10, 1);
+    expect(trim.width).toBeCloseTo((srcW - 20) / 2, 1);
+    expect(trim.height).toBeCloseTo((srcH - 40) / 2, 1);
+    expect(bleed.x).toBeCloseTo(2.5, 1);
+    expect(bleed.width).toBeCloseTo((srcW - 10) / 2, 1);
+  });
 });
 
 // ─── PdfMerger (PDF-only, không chạm imageNormalizer) ──────────────────────

@@ -37,6 +37,29 @@ const COMMON_SIZES = [
 
 export type PageSizeMode = 'fixed' | 'fixed_width' | 'fixed_height';
 
+// RESIZE (audit 2026-08-06 §G.10): danh sách kiểu tỷ lệ tách ra hàm để khối
+// "Kiểu tỷ lệ" luôn hiển thị được, kể cả khi khổ khóa một chiều chỉ còn 1 lựa chọn.
+const SCALE_MODE_OPTIONS = (
+    t: (key: string) => string,
+): Array<{ value: ScaleMode; title: string; desc: string }> => [
+    { value: 'fit', title: t('preprocess.pageResizer:thu_vua_khit'), desc: t('preprocess.pageResizer:thu_phong_noi_dung_vua_khit_vao_kho') },
+    { value: 'fill', title: t('preprocess.pageResizer:phong_lap_day'), desc: t('preprocess.pageResizer:phong_to_noi_dung_lap_day_kho_moi_phan') },
+    { value: 'stretch', title: t('preprocess.pageResizer:ep_bop_meo'), desc: t('preprocess.pageResizer:ep_noi_dung_vua_dung_kho_moi_nhung') },
+    { value: 'center_no_scale', title: t('preprocess.pageResizer:giu_nguyen_o_giua'), desc: t('preprocess.pageResizer:giu_nguyen_kich_thuoc_noi_dung_goc_chi') },
+];
+
+/** Kiểu tỷ lệ engine chấp nhận theo cách đặt khổ.
+ *
+ * RESIZE (audit 2026-08-06 §G.11): khổ khóa một chiều dùng được CẢ 'center_no_scale'
+ * — tem 5×10 đưa về chiều cao 15 ra trang 7.5×15 với tem giữ nguyên 5×10 ở giữa.
+ * 'fill'/'stretch' vẫn bị loại vì khổ đích sinh ra đã đúng tỷ lệ nội dung nên
+ * không còn phần dư để lấp hay bóp (`resize_background_engine` ném ValueError). */
+export function allowedScaleModes(pageSizeMode: PageSizeMode = 'fixed'): ScaleMode[] {
+    return pageSizeMode === 'fixed'
+        ? ['fit', 'fill', 'stretch', 'center_no_scale']
+        : ['fit', 'center_no_scale'];
+}
+
 export interface PageResizerSettings extends ResizeOptions {
     sizePresetId: string;
     applyToStr: string;
@@ -67,19 +90,26 @@ export function shouldShowBackgroundFill(
     pageSizeMode: PageSizeMode = 'fixed',
 ): boolean {
     // Nền chỉ có ý nghĩa khi phép co giãn thật sự tạo vùng trống.
-    return pageSizeMode === 'fixed'
-        && (scaleMode === 'fit' || scaleMode === 'center_no_scale');
+    // RESIZE (audit 2026-08-06 §G.11): khóa một chiều + 'fit' thì khổ đích vừa khít
+    // nội dung nên KHÔNG có vùng trống; nhưng + 'center_no_scale' thì có (tem 5×10
+    // trong trang 7.5×15) → phải cho chọn nền.
+    if (pageSizeMode !== 'fixed') return scaleMode === 'center_no_scale';
+    return scaleMode === 'fit' || scaleMode === 'center_no_scale';
 }
 
 export function applyPageSizeMode(
     settings: PageResizerSettings,
     mode: PageSizeMode,
 ): PageResizerSettings {
+    // RESIZE (audit 2026-08-06 §G.11): chỉ hạ về 'fit' khi kiểu đang chọn KHÔNG
+    // còn hợp lệ ở chế độ mới; 'center_no_scale' được giữ nguyên qua chuyển chế độ.
     return {
         ...settings,
         pageSizeMode: mode,
         sizePresetId: mode === 'fixed' ? settings.sizePresetId : 'custom',
-        scaleMode: mode === 'fixed' ? settings.scaleMode : 'fit',
+        scaleMode: allowedScaleModes(mode).includes(settings.scaleMode)
+            ? settings.scaleMode
+            : 'fit',
     };
 }
 
@@ -233,21 +263,28 @@ export default function PageResizerTool({ settings, onChange, pdfFile }: Props) 
 
 
 
-            {pageSizeMode === 'fixed' && (
+            {/* RESIZE (audit 2026-08-06 §G.10): khổ khoá một chiều trước đây ẨN HẲN
+                khối "Kiểu tỷ lệ" → người dùng tưởng mất lựa chọn. Nay vẫn hiện, chỉ
+                thu về đúng lựa chọn engine hỗ trợ kèm ghi chú lý do.
+                RESIZE (audit 2026-08-06 §G.11): value không còn ép cứng 'fit' —
+                'center_no_scale' là lựa chọn hợp lệ ở khổ khóa một chiều. */}
             <div className="flex flex-col gap-2 relative z-[60]">
                 <ToolSectionLabel>{t('preprocess.pageResizer:2_kieu_ty_le')}</ToolSectionLabel>
                 <RichSelect
-                    value={settings.scaleMode}
+                    value={allowedScaleModes(pageSizeMode).includes(settings.scaleMode)
+                        ? settings.scaleMode
+                        : 'fit'}
                     onChange={(v: string) => onChange({...settings, scaleMode: v as ScaleMode})}
-                    options={[
-                        { value: 'fit', title: t('preprocess.pageResizer:thu_vua_khit'), desc: t('preprocess.pageResizer:thu_phong_noi_dung_vua_khit_vao_kho') },
-                        { value: 'fill', title: t('preprocess.pageResizer:phong_lap_day'), desc: t('preprocess.pageResizer:phong_to_noi_dung_lap_day_kho_moi_phan') },
-                        { value: 'stretch', title: t('preprocess.pageResizer:ep_bop_meo'), desc: t('preprocess.pageResizer:ep_noi_dung_vua_dung_kho_moi_nhung') },
-                        { value: 'center_no_scale', title: t('preprocess.pageResizer:giu_nguyen_o_giua'), desc: t('preprocess.pageResizer:giu_nguyen_kich_thuoc_noi_dung_goc_chi') },
-                    ]}
+                    options={SCALE_MODE_OPTIONS(t).filter(
+                        o => allowedScaleModes(pageSizeMode).includes(o.value),
+                    )}
                 />
+                {pageSizeMode !== 'fixed' && (
+                    <div className="text-[10.5px] leading-snug text-slate-500 dark:text-zinc-400">
+                        {t('preprocess.pageResizer:khoa_mot_chieu_giai_thich_ty_le', { defaultValue: 'Khổ khóa một chiều suy chiều còn lại theo tỷ lệ trang gốc. "Thu vừa khít" phóng nội dung theo khổ mới; "Giữ nguyên ở giữa" giữ nội dung đúng cỡ gốc và đặt vào giữa trang mới.' })}
+                    </div>
+                )}
             </div>
-            )}
 
             {/* RESIZE (audit 2026-08-01 §RT.11): mode nền tự dò mép, không phụ thuộc cờ auto-trim cũ. */}
             {shouldShowBackgroundFill(settings.autoTrimBefore, settings.scaleMode, pageSizeMode) && (
@@ -265,7 +302,14 @@ export default function PageResizerTool({ settings, onChange, pdfFile }: Props) 
                         <div className="flex items-start gap-2 mt-2 px-2.5 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40">
                             <span className="text-amber-500 text-sm leading-none mt-0.5">⚠️</span>
                             <p className="text-[10.5px] text-amber-700 dark:text-amber-300 leading-snug">
-                                Lật gương <strong>soi ngược nội dung sát mép</strong> ra vùng trống. Chữ/logo sát mép sẽ <strong>sai nội dung</strong>. Chỉ nên dùng cho nền trừu tượng/hoa văn, hoặc <strong>"Kéo giãn mép ảnh"</strong>.
+                                {/* RESIZE (audit 2026-08-06 §G.8): tách chuỗi cứng ra i18n; nhấn mạnh
+                                    giữ bằng 3 mảnh <strong> nên chia thành các key riêng. */}
+                                {t('preprocess.pageResizer:canh_bao_lat_guong_1')}{' '}
+                                <strong>{t('preprocess.pageResizer:canh_bao_lat_guong_soi_nguoc')}</strong>{' '}
+                                {t('preprocess.pageResizer:canh_bao_lat_guong_2')}{' '}
+                                <strong>{t('preprocess.pageResizer:canh_bao_lat_guong_sai_noi_dung')}</strong>
+                                {t('preprocess.pageResizer:canh_bao_lat_guong_3')}{' '}
+                                <strong>{t('preprocess.pageResizer:canh_bao_lat_guong_keo_gian_mep')}</strong>.
                             </p>
                         </div>
                     )}

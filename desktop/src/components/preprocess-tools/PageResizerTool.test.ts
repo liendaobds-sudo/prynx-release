@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import PageResizerTool, { applyPageSizeMode, shouldShowBackgroundFill } from './PageResizerTool';
+import PageResizerTool, { allowedScaleModes, applyPageSizeMode, shouldShowBackgroundFill } from './PageResizerTool';
 import { DEFAULT_RESIZE_SETTINGS } from '../imposition-tools/store/slices/preprocSlice';
 
 const api = vi.hoisted(() => ({
@@ -71,12 +71,13 @@ describe('PageResizerTool background-fill visibility', () => {
     );
 
     it.each(['fixed_width', 'fixed_height'] as const)(
-        'hides gap background when page size mode is %s',
+        'hides gap background for locked-axis fit (%s) but keeps it for center_no_scale',
         (pageSizeMode) => {
             expect(shouldShowBackgroundFill(undefined, 'fit', pageSizeMode)).toBe(false);
+            // RESIZE (audit 2026-08-06 §G.11): tem 5×10 → trang 7.5×15 CÓ vùng trống.
             expect(
                 shouldShowBackgroundFill(undefined, 'center_no_scale', pageSizeMode),
-            ).toBe(false);
+            ).toBe(true);
         },
     );
 
@@ -100,6 +101,47 @@ describe('PageResizerTool background-fill visibility', () => {
             targetH: 297,
         });
     });
+
+    // RESIZE (audit 2026-08-06 §G.11): giữ nguyên ở giữa là ca thật của khổ khóa
+    // một chiều (tem 5×10 → chiều cao 15 → trang 7.5×15, tem vẫn 5×10), không
+    // được hạ về 'fit' khi chuyển chế độ.
+    it('keeps center_no_scale when switching to a locked-axis mode', () => {
+        const locked = applyPageSizeMode(
+            { ...baseSettings, scaleMode: 'center_no_scale' as const },
+            'fixed_height',
+        );
+        expect(locked.scaleMode).toBe('center_no_scale');
+        expect(locked.pageSizeMode).toBe('fixed_height');
+    });
+
+    // RESIZE (audit 2026-08-06 §G.10): khổ khóa một chiều KHÔNG được ẩn mất khối
+    // "Kiểu tỷ lệ" — chỉ thu hẹp còn lựa chọn engine chấp nhận.
+    it('keeps every scale mode for the fixed page-size mode', () => {
+        expect(allowedScaleModes('fixed')).toEqual(['fit', 'fill', 'stretch', 'center_no_scale']);
+        expect(allowedScaleModes()).toEqual(['fit', 'fill', 'stretch', 'center_no_scale']);
+    });
+
+    it.each(['fixed_width', 'fixed_height'] as const)(
+        'narrows the scale mode to fit + center_no_scale for %s',
+        (pageSizeMode) => {
+            expect(allowedScaleModes(pageSizeMode)).toEqual(['fit', 'center_no_scale']);
+        },
+    );
+
+    it.each(['fixed_width', 'fixed_height'] as const)(
+        'still renders the scale-mode section for %s',
+        (pageSizeMode) => {
+            render(React.createElement(PageResizerTool, {
+                settings: { ...baseSettings, pageSizeMode, sizePresetId: 'custom' },
+                onChange: vi.fn(),
+            }));
+
+            expect(screen.getByText(/Kiểu tỷ lệ|Scaling mode/i)).toBeTruthy();
+            expect(screen.getAllByText(/Thu vừa khít|^Fit$/i).length).toBeGreaterThan(0);
+            expect(screen.getAllByText(/Giữ nguyên ở giữa|^Keep centred$/i).length).toBeGreaterThan(0);
+            expect(screen.queryByText(/Ép bóp méo|^Stretch$/i)).toBeNull();
+        },
+    );
 
     it('only shows resize-by-content after the current PDF reports transparency', async () => {
         api.inspectResizeTransparency.mockResolvedValue({

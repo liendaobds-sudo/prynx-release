@@ -657,4 +657,95 @@ describe('runResize unified dynamic-background pipeline', () => {
         expect(waitingStatuses.every((status) => status === 'Đang xử lý...')).toBe(true);
         expect(statuses.at(-1)).toBe('');
     });
+
+    // RESIZE (audit 2026-08-06 §G.3): nhánh nền động/khóa trục/theo nội dung phải
+    // dùng chung heuristic downsample với nhánh thường, nếu không A1→A5 vẫn ~300MB.
+    it('applies the 300 DPI auto downsample heuristic on the unified backend job', async () => {
+        const sourceDoc = await PDFDocument.create();
+        sourceDoc.addPage([1684, 2384]);   // A1 pt — thu về A4 là thu nhỏ rõ rệt
+        const sourceBytes = await sourceDoc.save();
+        const file = new File([sourceBytes as BlobPart], 'a1.pdf', { type: 'application/pdf' });
+        const context = makeContext(file, vi.fn(async () => sourceBytes));
+
+        await runResize(context, {
+            ...resizeSettings,
+            applyToStr: 'all',
+            targetDpi: undefined,        // 'auto'
+            bgFillMode: 'mirror',
+        });
+
+        expect(api.backendResizePages).toHaveBeenCalledTimes(1);
+        expect(api.backendResizePages.mock.calls[0][5]).toBe(300);
+    });
+
+    it('keeps auto downsample off when the target is not smaller', async () => {
+        const sourceDoc = await PDFDocument.create();
+        sourceDoc.addPage([595, 842]);    // A4 → A4: không thu nhỏ
+        const sourceBytes = await sourceDoc.save();
+        const file = new File([sourceBytes as BlobPart], 'a4.pdf', { type: 'application/pdf' });
+        const context = makeContext(file, vi.fn(async () => sourceBytes));
+
+        await runResize(context, {
+            ...resizeSettings,
+            applyToStr: 'all',
+            targetDpi: undefined,
+            bgFillMode: 'mirror',
+        });
+
+        expect(api.backendResizePages.mock.calls[0][5]).toBe(0);
+    });
+
+    it('respects an explicit DPI choice over the heuristic', async () => {
+        const sourceDoc = await PDFDocument.create();
+        sourceDoc.addPage([1684, 2384]);
+        const sourceBytes = await sourceDoc.save();
+        const file = new File([sourceBytes as BlobPart], 'a1.pdf', { type: 'application/pdf' });
+        const context = makeContext(file, vi.fn(async () => sourceBytes));
+
+        await runResize(context, {
+            ...resizeSettings,
+            applyToStr: 'all',
+            targetDpi: 150,
+            bgFillMode: 'mirror',
+        });
+
+        expect(api.backendResizePages.mock.calls[0][5]).toBe(150);
+    });
+
+    // RESIZE (audit 2026-08-06 §G.4): màu nền trơn người dùng chọn phải sang backend.
+    it('forwards the chosen solid colour on the resize-by-content branch', async () => {
+        const sourceDoc = await PDFDocument.create();
+        sourceDoc.addPage([595, 842]);
+        const sourceBytes = await sourceDoc.save();
+        const file = new File([sourceBytes as BlobPart], 'solid.pdf', { type: 'application/pdf' });
+        const context = makeContext(file, vi.fn(async () => sourceBytes));
+
+        await runResize(context, {
+            ...resizeSettings,
+            applyToStr: 'all',
+            bgFillMode: 'solid',
+            bgFillColor: '#ff8800',
+            resizeByContent: true,
+        });
+
+        expect(api.backendResizePages).toHaveBeenCalledTimes(1);
+        expect(api.backendResizePages.mock.calls[0][7]).toBe('solid');
+        expect(api.backendResizePages.mock.calls[0][8]).toBe('#ff8800');
+    });
+
+    it('still forces white on the locked-axis branch even with a solid colour in state', async () => {
+        const file = new File(['source'], 'locked.pdf', { type: 'application/pdf' });
+        const context = makeContext(file, vi.fn(async () => new Uint8Array([1, 2, 3])));
+        context.getWorkingSourcePath = vi.fn().mockResolvedValue('D:\\locked.pdf');
+
+        await runResize(context, {
+            ...resizeSettings,
+            pageSizeMode: 'fixed_width',
+            bgFillMode: 'solid',
+            bgFillColor: '#ff8800',
+        });
+
+        expect(api.backendResizePages.mock.calls[0][7]).toBe('white');
+        expect(api.backendResizePages.mock.calls[0][8]).toBe('#ffffff');
+    });
 });

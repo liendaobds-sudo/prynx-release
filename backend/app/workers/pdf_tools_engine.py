@@ -15,6 +15,11 @@ import math
 import pikepdf
 from typing import Callable, List, Optional, Tuple
 
+# RESIZE (audit 2026-08-06 §G.1): dùng chung helper bake /Rotate với đường
+# content-aware (resize_background_engine) để hai engine đọc trang nguồn giống nhau.
+from app.core.page_boxes import _canonicalize_rotated_page_for_mirror
+from app.core.page_selection import parse_page_selection, validate_page_selection
+
 MM_TO_PTS = 2.83465
 
 class PdfOperationCancelled(RuntimeError):
@@ -167,41 +172,29 @@ def resize_pages(source_path: str, output_path: str,
 
     with pikepdf.Pdf.open(source_path) as src:
         total = len(src.pages)
-        pages_to_resize = set()
-        if apply_to == 'all':
-            pages_to_resize = set(range(total))
-        elif apply_to == 'even':
-            pages_to_resize = set(range(1, total, 2))
-        elif apply_to == 'odd':
-            pages_to_resize = set(range(0, total, 2))
-        else:
-            # Parse danh sách trang tùy biến: hỗ trợ cả dải "a-b" lẫn số lẻ "n"
-            # (1-based, inclusive) — đồng bộ với client parseRanges. Trước đây chỉ
-            # nhận số lẻ (x.isdigit()) nên dải có dấu '-' bị bỏ âm thầm (audit fix).
-            pages_to_resize = set()
-            for part in apply_to.split(','):
-                part = part.strip()
-                if not part:
-                    continue
-                if '-' in part:
-                    a, _, b = part.partition('-')
-                    a, b = a.strip(), b.strip()
-                    if a.isdigit():
-                        start = int(a)
-                        end = int(b) if b.isdigit() else total
-                        for p in range(start, end + 1):
-                            if 1 <= p <= total:
-                                pages_to_resize.add(p - 1)
-                elif part.isdigit():
-                    p = int(part)
-                    if 1 <= p <= total:
-                        pages_to_resize.add(p - 1)
+        # RESIZE (audit 2026-08-06 §G.6): dùng parser CHUNG với đường nền động,
+        # trước đây hai bản copy lệch nhau ở dải hở/token rác.
+        pages_to_resize = parse_page_selection(apply_to, total)
 
         for i in range(total):
             check_cancelled()
             src_page = src.pages[i]
             
             if i in pages_to_resize:
+                # RESIZE (audit 2026-08-06 §G.1): trang có /Rotate≠0 phải được BAKE
+                # góc xoay vào content stream TRƯỚC khi đo MediaBox và tạo Form
+                # XObject. Nếu không, as_form_xobject() sinh /BBox theo khổ CHƯA xoay
+                # kèm /Matrix lật → nội dung sau khi lật vượt BBox và bị CLIP (đo được:
+                # mất 2/4 dấu góc), đồng thời src_w/src_h đọc sai chiều nên tỉ lệ fit
+                # tính trên khổ chưa xoay. Sau khi bake: /Rotate=0, MediaBox đã hoán
+                # chiều, mọi box phụ đã biến đổi theo — khớp đường content-aware
+                # (resize_background_engine.py) và đường frontend pdf-lib.
+                try:
+                    _canonicalize_rotated_page_for_mirror(src, src_page)
+                except Exception:
+                    # Góc xoay lạ (không bội số 90) → giữ nguyên hành vi cũ, không chặn tác vụ.
+                    pass
+
                 # GIỮ BOX BLEED/TRIM: đọc TrimBox/BleedBox/ArtBox GỐC trước khi đụng
                 # CropBox — resize phải mang các box này sang trang mới (scale theo
                 # cùng biến đổi nội dung), nếu không file kết quả MẤT định nghĩa bleed
@@ -591,6 +584,11 @@ def resize_pages_smart(source_path: str, output_path: str,
     )
 
     target_dpi = int(target_dpi or 0)
+    # RESIZE (audit 2026-08-06 §G.5): chuỗi chọn trang sai cú pháp trước đây ra tập
+    # RỖNG → trả file y nguyên, người dùng tưởng đã đổi khổ. ValueError ở đây được
+    # route /resize map thành HTTP 422.
+    if isinstance(apply_to, str):
+        validate_page_selection(apply_to)
     page_size_mode = normalize_page_size_mode(page_size_mode)
     variable_page_size = page_size_mode != "fixed"
     from app.core.pdf_actions_native import detect_transparent_pages

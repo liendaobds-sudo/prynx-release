@@ -525,18 +525,17 @@ async def resize_pages_endpoint(
         # tham số; request HTTP thật luôn đưa chuỗi. Giữ tương thích call site cũ.
         raw_page_size_mode = page_size_mode if isinstance(page_size_mode, str) else "fixed"
         page_size_mode = normalize_page_size_mode(raw_page_size_mode)
-        # Caller Python cũ có thể nhận FormInfo khi gọi thẳng endpoint.
         resize_by_content = (
             resize_by_content if isinstance(resize_by_content, bool) else False
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if page_size_mode != "fixed" and scale_mode != "fit":
+    # RESIZE (audit 2026-08-06 §G.11): khóa một chiều nhận thêm 'center_no_scale'.
+    if page_size_mode != "fixed" and scale_mode not in {"fit", "center_no_scale"}:
         raise HTTPException(
             status_code=422,
-            detail="Giữ tỷ lệ từng trang chỉ hỗ trợ kiểu Thu vừa khít.",
+            detail="Giữ tỷ lệ từng trang chỉ hỗ trợ Thu vừa khít hoặc Giữ nguyên ở giữa.",
         )
-
     job_id = uuid.uuid4().hex[:8]
     output_path = os.path.join(RESULTS_DIR, f"resized_{job_id}.pdf")
     source_path: Optional[str] = None
@@ -630,10 +629,11 @@ async def resize_pages_endpoint(
 async def inspect_resize_transparency_endpoint(
     file: Optional[UploadFile] = File(None),
     file_path: str = Form(""),
+    # RESIZE (audit 2026-08-06 §G.7): đối xứng guard giấy phép với các route resize.
+    license_info: dict = Depends(require_license),
 ):
     """Nhận diện trang còn transparency để UI chỉ hiện lựa chọn phù hợp."""
     from starlette.concurrency import run_in_threadpool as run_light_in_threadpool
-
     from app.core.pdf_actions_native import detect_transparent_pages
 
     source_path: Optional[str] = None

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 import numpy as np
 import pikepdf
@@ -661,6 +662,71 @@ def test_locked_width_uses_detected_contentbox_not_white_pagebox(tmp_path):
     assert height_mm == pytest.approx(40.0, abs=0.5)
 
 
+def test_locked_axis_center_no_scale_keeps_artwork_at_original_size(tmp_path):
+    """RESIZE (audit 2026-08-06 §G.11): tem 50×100 mm đưa về chiều cao 150 mm với
+    "Giữ nguyên ở giữa" → trang 75×150 mm (tỷ lệ tem gốc) nhưng tem VẪN 50×100 mm
+    nằm giữa. Trước đây engine ném ValueError, ép người dùng phải dùng 'fit' làm
+    tem bị phóng lên full khổ 75×150."""
+    src = str(tmp_path / "tem_50x100.pdf")
+    out = str(tmp_path / "tem_50x100_out.pdf")
+    _make_artwork_pdf(
+        src,
+        page_size=(50.0 * PT_PER_MM, 100.0 * PT_PER_MM),
+        content_box=(0.0, 0.0, 50.0 * PT_PER_MM, 100.0 * PT_PER_MM),
+    )
+
+    resize_pages_with_background(
+        src,
+        out,
+        60.0,
+        150.0,
+        scale_mode="center_no_scale",
+        background_mode="solid",
+        background_color="#123456",
+        background_dpi=72,
+        page_size_mode="fixed_height",
+    )
+
+    width_mm, height_mm = _page_sizes_mm(out)[0]
+    # Khổ trang suy theo tỷ lệ tem gốc 50:100 → 75×150, KHÔNG phải 60 mm đã nhập.
+    assert height_mm == pytest.approx(150.0, abs=0.05)
+    assert width_mm == pytest.approx(75.0, abs=0.5)
+
+    # Nội dung vẽ ở scale 1.0 và canh giữa: (75-50)/2 = 12.5 mm, (150-100)/2 = 25 mm.
+    with pikepdf.Pdf.open(out) as pdf:
+        streams = _decoded_page_contents(pdf.pages[0])
+    text = streams.decode("latin-1")
+    assert "1.00000000 0 0 1.00000000" in text, f"tem phải vẽ ở scale 1.0: {text[:400]}"
+    match = re.search(
+        r"1\.00000000 0 0 1\.00000000 (-?[\d.]+) (-?[\d.]+) cm", text
+    )
+    assert match is not None
+    assert float(match.group(1)) == pytest.approx(12.5 * PT_PER_MM, abs=1.5)
+    assert float(match.group(2)) == pytest.approx(25.0 * PT_PER_MM, abs=1.5)
+
+
+def test_locked_axis_still_rejects_fill_and_stretch(tmp_path):
+    """Khổ đích đã sinh ra đúng tỷ lệ nội dung nên không còn phần dư để lấp/bóp."""
+    src = str(tmp_path / "tem_reject.pdf")
+    _make_artwork_pdf(
+        src,
+        page_size=(50.0 * PT_PER_MM, 100.0 * PT_PER_MM),
+        content_box=(0.0, 0.0, 50.0 * PT_PER_MM, 100.0 * PT_PER_MM),
+    )
+    for scale_mode in ("fill", "stretch"):
+        with pytest.raises(ValueError, match="Giữ tỷ lệ từng trang"):
+            resize_pages_with_background(
+                src,
+                str(tmp_path / f"reject_{scale_mode}.pdf"),
+                60.0,
+                150.0,
+                scale_mode=scale_mode,
+                background_mode="solid",
+                background_dpi=72,
+                page_size_mode="fixed_height",
+            )
+
+
 def test_transparent_page_keeps_full_page_ratio_until_resize_by_content_is_enabled(
     tmp_path,
 ):
@@ -940,7 +1006,9 @@ async def test_resize_route_forwards_page_size_mode(tmp_path, monkeypatch):
     assert captured == [{"target_dpi": 0, "mode": "auto", "bg_fill_mode": "image", "bg_fill_color": "#ffffff", "page_size_mode": "fixed_width", "resize_by_content": True}]
 
 
-async def test_resize_route_rejects_locked_axis_with_non_fit_mode():
+async def test_resize_route_rejects_locked_axis_with_fill_or_stretch():
+    """RESIZE (audit 2026-08-06 §G.11): route chỉ còn chặn fill/stretch ở khổ khóa
+    một chiều; 'center_no_scale' phải đi qua được (xem test ngay dưới)."""
     from app.api.routes import pdf_tools
     from fastapi import HTTPException
 
@@ -962,7 +1030,33 @@ async def test_resize_route_rejects_locked_axis_with_non_fit_mode():
     assert raised.value.status_code == 422
 
 
+async def test_resize_route_accepts_locked_axis_with_center_no_scale():
+    """RESIZE (audit 2026-08-06 §G.11): tem 5×10 → chiều cao 15 + "Giữ nguyên ở giữa"
+    không được bị chốt hợp lệ của route chặn (trước đây trả 422 ngay đầu vào)."""
+    from app.api.routes import pdf_tools
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as raised:
+        await pdf_tools.resize_pages_endpoint(
+            file=None,
+            file_path="",
+            target_w=60.0,
+            target_h=150.0,
+            scale_mode="center_no_scale",
+            apply_to="all",
+            target_dpi=0,
+            mode="auto",
+            bg_fill_mode="image",
+            bg_fill_color="#ffffff",
+            page_size_mode="fixed_height",
+            license_info={"license_key": "DEV_MODE"},
+        )
+    # Vẫn lỗi vì không truyền file, nhưng KHÔNG phải vì chốt kiểu tỷ lệ.
+    assert "Giữ tỷ lệ từng trang" not in str(raised.value.detail)
+
+
 def test_detect_transparent_pages_handles_direct_and_nested_png_alpha(tmp_path):
+
     src = str(tmp_path / "mixed_transparency.pdf")
     _make_mixed_transparency_pdf(src)
 
