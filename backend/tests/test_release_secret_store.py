@@ -59,25 +59,24 @@ def test_release_build_consumes_new_secret_and_clears_it_before_tool_children() 
     assert "Resolve-PrynXReleaseSecretStorePath" in ui_text
 
 
-def test_updater_signing_secret_is_scoped_to_tauri_and_cleared_before_publish() -> None:
+def test_updater_signing_secret_is_scoped_to_signer_and_cleared_before_publish() -> None:
     build_text = BUILD_SCRIPT.read_text(encoding="utf-8")
     publish_text = PUBLISH_SCRIPT.read_text(encoding="utf-8-sig")
 
     capture_at = build_text.index("$script:CapturedTauriSigningPrivateKey =")
     early_clear_at = build_text.index("Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY")
     first_tool_gate_at = build_text.index("Assert-BuildToolchain\n")
+    tauri_at = build_text.index("npx @tauri-apps/cli build", first_tool_gate_at)
     expose_at = build_text.index(
-        "$env:TAURI_SIGNING_PRIVATE_KEY = $tauriSigningPrivateKey"
+        "$env:TAURI_SIGNING_PRIVATE_KEY = $tauriSigningPrivateKey", tauri_at
     )
-    read_key_at = build_text.index(
-        "$tauriSigningPrivateKey = [string](Get-Content", first_tool_gate_at
+    signer_at = build_text.index("npx @tauriSignerArgs", expose_at)
+    clear_after_signer_at = build_text.index(
+        "Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY", signer_at
     )
-    tauri_at = build_text.index("npx @tauri-apps/cli build", expose_at)
-    clear_after_tauri_at = build_text.index(
-        "Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY", tauri_at
-    )
-    assert capture_at < early_clear_at < first_tool_gate_at < read_key_at
-    assert read_key_at < expose_at < tauri_at < clear_after_tauri_at
+    assert capture_at < early_clear_at < first_tool_gate_at < tauri_at
+    assert tauri_at < expose_at < signer_at < clear_after_signer_at
+    assert "Get-Content -LiteralPath $script:CapturedTauriSigningKeyFile -Raw" not in build_text
 
     publisher_password_clear_at = publish_text.index(
         "Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD"

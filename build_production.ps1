@@ -1229,7 +1229,8 @@ if (-not $SkipTauri) {
 
     # Re-check after generators/tests and immediately before the public bundle.
     Assert-ReleaseSourceState
-    # -Release: use config with createUpdaterArtifacts (needs TAURI_SIGNING_PRIVATE_KEY).
+    # -Release: tao installer truoc, sau do ky updater bang signer rieng de ho tro
+    # khoa co mat khau rong ma khong de Tauri build dung cho prompt tuong tac.
     # Default: externalBin-only config (manual installer, no signing required).
     $tauriConfig = if ($Release) { "src-tauri/tauri.release.conf.json" } else { "src-tauri/tauri.prod.conf.json" }
     $nsisDir = "$ROOT\desktop\src-tauri\target\release\bundle\nsis"
@@ -1267,39 +1268,13 @@ if (-not $SkipTauri) {
     $env:CARGO_PROFILE_RELEASE_STRIP = "symbols"
     $tauriLocationPushed = $false
     $tauriExit = $null
-    $tauriSigningPrivateKey = $null
     try {
-        # SEC (audit 2026-08-04 §REL.SIGNING): chỉ tiến trình Tauri được kế thừa
-        # khóa ký updater; QA, Python, npm staging, Cargo test và publisher không có.
-        if ($Release) {
-            $tauriSigningPrivateKey = [string]$script:CapturedTauriSigningPrivateKey
-            if ([string]::IsNullOrWhiteSpace($tauriSigningPrivateKey)) {
-                if (-not (Test-Path -LiteralPath $script:CapturedTauriSigningKeyFile -PathType Leaf)) {
-                    throw "Khong thay khoa ky updater: $($script:CapturedTauriSigningKeyFile)"
-                }
-                # Đọc just-in-time: nội dung khóa chưa từng nằm trong env của publisher/QA.
-                $tauriSigningPrivateKey = [string](Get-Content -LiteralPath $script:CapturedTauriSigningKeyFile -Raw)
-            }
-            if ([string]::IsNullOrWhiteSpace($tauriSigningPrivateKey)) {
-                throw "Khoa ky updater rong."
-            }
-            $env:TAURI_SIGNING_PRIVATE_KEY = $tauriSigningPrivateKey
-            if (-not [string]::IsNullOrEmpty($script:CapturedTauriSigningPrivateKeyPassword)) {
-                $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $script:CapturedTauriSigningPrivateKeyPassword
-            }
-        }
         Push-Location "$ROOT\desktop"
         $tauriLocationPushed = $true
         npx @tauri-apps/cli build --config $tauriConfig
         $tauriExit = $LASTEXITCODE
     } finally {
         if ($tauriLocationPushed) { Pop-Location }
-        Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
-        Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
-        $tauriSigningPrivateKey = $null
-        $script:CapturedTauriSigningPrivateKey = $null
-        $script:CapturedTauriSigningKeyFile = $null
-        $script:CapturedTauriSigningPrivateKeyPassword = $null
         if ($null -eq $previousRustFlags) { Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue }
         else { $env:RUSTFLAGS = $previousRustFlags }
         if ($null -eq $previousLto) { Remove-Item Env:CARGO_PROFILE_RELEASE_LTO -ErrorAction SilentlyContinue } else { $env:CARGO_PROFILE_RELEASE_LTO = $previousLto }
@@ -1308,6 +1283,9 @@ if (-not $SkipTauri) {
     }
 
     if ($tauriExit -ne 0) {
+        $script:CapturedTauriSigningPrivateKey = $null
+        $script:CapturedTauriSigningKeyFile = $null
+        $script:CapturedTauriSigningPrivateKeyPassword = $null
         Write-Host "ERROR: Tauri build failed!" -ForegroundColor Red
         exit 1
     }
@@ -1329,6 +1307,55 @@ if (-not $SkipTauri) {
     $installerWrittenAfterStart = $installer.LastWriteTimeUtc -ge $tauriBuildStartedAtUtc.AddSeconds(-1)
     if (-not $installerChangedThisRun -or -not $installerWrittenAfterStart) {
         throw "Tauri returned success but did not create or rewrite the $APP_VERSION installer during this build. Refusing stale artifact: $($installer.FullName)"
+    }
+
+    if ($Release) {
+        # SEC (audit 2026-08-06 REL.SIGN.EMPTY): chi signer duoc nhan khoa. Dung
+        # --password= khi khoa co mat khau rong de khong treo o prompt tuong tac.
+        $signaturePath = "$($installer.FullName).sig"
+        if (Test-Path -LiteralPath $signaturePath -PathType Leaf) {
+            Remove-Item -LiteralPath $signaturePath -Force
+        }
+        $tauriSignerArgs = @("@tauri-apps/cli", "signer", "sign")
+        $tauriSigningPrivateKey = [string]$script:CapturedTauriSigningPrivateKey
+        $signerLocationPushed = $false
+        $signerExit = $null
+        try {
+            if ([string]::IsNullOrWhiteSpace($tauriSigningPrivateKey)) {
+                if (-not (Test-Path -LiteralPath $script:CapturedTauriSigningKeyFile -PathType Leaf)) {
+                    throw "Khong thay khoa ky updater: $($script:CapturedTauriSigningKeyFile)"
+                }
+                $tauriSignerArgs += @("-f", $script:CapturedTauriSigningKeyFile)
+            } else {
+                $env:TAURI_SIGNING_PRIVATE_KEY = $tauriSigningPrivateKey
+            }
+            if ([string]::IsNullOrEmpty($script:CapturedTauriSigningPrivateKeyPassword)) {
+                $tauriSignerArgs += "--password="
+            } else {
+                $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $script:CapturedTauriSigningPrivateKeyPassword
+            }
+            $tauriSignerArgs += $installer.FullName
+            Push-Location "$ROOT\desktop"
+            $signerLocationPushed = $true
+            npx @tauriSignerArgs
+            $signerExit = $LASTEXITCODE
+        } finally {
+            if ($signerLocationPushed) { Pop-Location }
+            Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
+            Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
+            $tauriSigningPrivateKey = $null
+            $script:CapturedTauriSigningPrivateKey = $null
+            $script:CapturedTauriSigningKeyFile = $null
+            $script:CapturedTauriSigningPrivateKeyPassword = $null
+        }
+        if ($signerExit -ne 0) {
+            throw "Tauri signer that bai voi exit code $signerExit."
+        }
+        if (-not (Test-Path -LiteralPath $signaturePath -PathType Leaf) -or
+            (Get-Item -LiteralPath $signaturePath).Length -le 0 -or
+            (Get-Item -LiteralPath $signaturePath).LastWriteTimeUtc -lt $installer.LastWriteTimeUtc) {
+            throw "Tauri signer khong tao chu ky updater moi hop le: $signaturePath"
+        }
     }
 
     Write-Host ""

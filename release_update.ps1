@@ -366,7 +366,7 @@ if ($setupHash -ne $manifestInstallerHash -or $publishedSetupHash -ne $manifestI
     throw "Installer bundle/publish khong khop INSTALLER_SHA256 trong manifest."
 }
 $sigFile = "$($setup.FullName).sig"
-if (-not (Test-Path -LiteralPath $sigFile -PathType Leaf)) { throw "Khong tim thay file chu ky: $sigFile (createUpdaterArtifacts chua bat? hoac ky that bai?)" }
+if (-not (Test-Path -LiteralPath $sigFile -PathType Leaf)) { throw "Khong tim thay file chu ky: $sigFile (Tauri signer chua chay hoac ky that bai?)" }
 if ((Get-Item -LiteralPath $sigFile).LastWriteTimeUtc -lt $setup.LastWriteTimeUtc) {
     throw "File chu ky cu hon installer vua build; tu choi dung chu ky stale: $sigFile"
 }

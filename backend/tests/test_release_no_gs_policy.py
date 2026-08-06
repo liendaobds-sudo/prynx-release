@@ -228,7 +228,11 @@ def test_release_uses_updater_signature_generated_for_each_version():
     assert "src-tauri/tauri.release.conf.json" in build
     assert "TAURI_SIGNING_PRIVATE_KEY" in release
     assert ".sig" in release
-    assert '"createUpdaterArtifacts": true' in config
+    assert '"createUpdaterArtifacts": false' in config
+    assert '$tauriSignerArgs = @("@tauri-apps/cli", "signer", "sign")' in build
+    assert '$tauriSignerArgs += "--password="' in build
+    assert "npx @tauriSignerArgs" in build
+    assert "LastWriteTimeUtc -lt $installer.LastWriteTimeUtc" in build
 
 
 def test_release_does_not_require_windows_authenticode():

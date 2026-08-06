@@ -4,6 +4,6 @@
   },
   "bundle": {
     "externalBin": ["binaries/pdf-inspector-backend"],
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": false
   }
 }
