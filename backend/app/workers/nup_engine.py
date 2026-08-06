@@ -1969,35 +1969,56 @@ def _run_nup_engine_impl(
                 ),
             )
 
-            sheet_idx = 0
-            precalculated_placements[sheet_idx] = []
+            # Audit 2026-08-06 §MS-1: solver có thể trả NHIỀU tờ mẫu khi số mẫu
+            # vượt sức chứa một tờ. Không còn giả định "chỉ có tờ 0".
+            _af_sheets = bp_result.get('sheets') or [bp_result]
             placed_on_sheet = 0
 
-            for p in bp_result['placements']:
-                rx = p['x']
-                ry = p['y']
-                iw = p['w']
-                ih = p['h']
-                p_idx = p['page_idx']
-                is_rot = p['is_rotated']
+            for sheet_idx, _af_sheet in enumerate(_af_sheets):
+                precalculated_placements[sheet_idx] = []
 
-                precalculated_placements[sheet_idx].append({
-                    'cluster_idx': 0,
-                    'cell': {
-                        'x': rx, 'y': ry, 'width': iw, 'height': ih,
-                        'isRotated': is_rot, 'isRotated180': False,
-                    },
-                    'src_page_idx': p_idx,
-                    'abs_x': 0,  # set by _finalize_sheet_centering
-                    'abs_y': 0,
-                    'width': iw,
-                    'height': ih,
-                    'original_cell_y': 0,
-                })
-                placed_on_sheet += 1
+                for p in _af_sheet['placements']:
+                    rx = p['x']
+                    ry = p['y']
+                    iw = p['w']
+                    ih = p['h']
+                    p_idx = p['page_idx']
+                    is_rot = p['is_rotated']
 
-            _finalize_sheet_centering(sheet_idx)
-            logger.debug(f"   [ZONE] BIN-PACK AUTO-FILL DONE: {placed_on_sheet} items on 1 sheet")
+                    precalculated_placements[sheet_idx].append({
+                        'cluster_idx': 0,
+                        'cell': {
+                            'x': rx, 'y': ry, 'width': iw, 'height': ih,
+                            'isRotated': is_rot, 'isRotated180': False,
+                        },
+                        'src_page_idx': p_idx,
+                        'abs_x': 0,  # set by _finalize_sheet_centering
+                        'abs_y': 0,
+                        'width': iw,
+                        'height': ih,
+                        'original_cell_y': 0,
+                    })
+                    placed_on_sheet += 1
+
+                _finalize_sheet_centering(sheet_idx)
+
+            _n_af_sheets = len(_af_sheets)
+            logger.debug(
+                f"   [ZONE] BIN-PACK AUTO-FILL DONE: {placed_on_sheet} items "
+                f"trên {_n_af_sheets} tờ mẫu"
+            )
+
+            # Không mẫu nào được phép rơi im lặng — thà báo lỗi còn hơn giao
+            # thiếu mẫu cho xưởng (audit 2026-08-06).
+            _af_missing = [
+                p_idx for p_idx, _, _, _ in page_infos
+                if bp_result.get('placed_by_page', {}).get(p_idx, 0) <= 0
+            ]
+            if _af_missing:
+                logger.error(
+                    f"[BIN-PACK] {len(_af_missing)} mẫu không xếp được lên tờ nào: "
+                    f"{_af_missing[:10]}"
+                )
 
             total_items_placed = placed_on_sheet
 
@@ -2018,13 +2039,13 @@ def _run_nup_engine_impl(
                         mode_label='Bế tem',
                         order_code=settings.get('reportOrderCode', '') or '',
                         identifier=f"{len(page_infos)} mẫu",
-                        sheet_count_override=1,
+                        sheet_count_override=_n_af_sheets,
                     )
                     _reports_by_sheet[0] = _nr_am.build_report_string(_rcfg_am, _data_am)
                     _report_rows.append({
                         'label': _label_am or f"{len(page_infos)} mẫu",
                         'items_per_sheet': placed_on_sheet,
-                        'requested_qty': 0, 'sheet_count': 1,
+                        'requested_qty': 0, 'sheet_count': _n_af_sheets,
                     })
             except Exception as _e_am:
                 logger.warning(f"[REPORT] auto-fill trộn dựng report lỗi: {_e_am}")
@@ -2047,52 +2068,77 @@ def _run_nup_engine_impl(
             )
 
             # bp_result gives us the layout for ONE sheet + sheets_needed count
-            one_sheet_placements = bp_result['placements']
+            # Audit 2026-08-06 §MS-2: có thể là NHIỀU tờ mẫu KHÁC NHAU khi số mẫu
+            # vượt sức chứa một tờ.
+            _ms_sheets = bp_result.get('sheets') or [bp_result]
             sheets_needed = bp_result.get('sheets_needed', 1)
 
             # ── Xuất tờ duy nhất + report (spec: binh-tem-be-report) ──
             # Trước đây luôn nhân bản sheets_needed trang giống hệt → file phình to
             # và "Lưu file in" tách mỗi trang thành 1 file (quá nhiều file).
             # exportUniqueSheets=True (mặc định sticker/CNC): chỉ 1 tờ + lệnh in N tờ.
+            # QUAN TRỌNG: "duy nhất" nghĩa là bỏ các BẢN SAO của cùng một tờ mẫu,
+            # KHÔNG phải bỏ các tờ mẫu khác nhau — mỗi tờ mẫu là một bộ kẽm riêng
+            # và luôn phải xuất đủ, nếu không sẽ mất mẫu (bug 50 mẫu → 1 tờ).
             from app.workers import nup_report as _nr_ms
             _rcfg_ms = settings.get('reportDisplay') or {}
             _report_enabled_ms = bool(_rcfg_ms.get('enabled'))
             _export_unique_ms = bool(settings.get('exportUniqueSheets', True))
-            repeat_count = 1 if _export_unique_ms else max(1, int(sheets_needed or 1))
 
-            for sheet_idx in range(repeat_count):
-                precalculated_placements[sheet_idx] = []
-                for p in one_sheet_placements:
-                    rx = p['x']
-                    ry = p['y']
-                    iw = p['w']
-                    ih = p['h']
-                    p_idx = p['page_idx']
-                    is_rot = p['is_rotated']
+            _out_idx = 0
+            for _ms_sheet in _ms_sheets:
+                _one = _ms_sheet['placements']
+                _runs = int(_ms_sheet.get('sheets_needed', 1) or 1)
+                repeat_count = 1 if _export_unique_ms else max(1, _runs)
+                for _ in range(repeat_count):
+                    precalculated_placements[_out_idx] = []
+                    for p in _one:
+                        rx = p['x']
+                        ry = p['y']
+                        iw = p['w']
+                        ih = p['h']
+                        p_idx = p['page_idx']
+                        is_rot = p['is_rotated']
 
-                    precalculated_placements[sheet_idx].append({
-                        'cluster_idx': 0,
-                        'cell': {
-                            'x': rx, 'y': ry, 'width': iw, 'height': ih,
-                            'isRotated': is_rot, 'isRotated180': False,
-                        },
-                        'src_page_idx': p_idx,
-                        'abs_x': 0,
-                        'abs_y': 0,
-                        'width': iw,
-                        'height': ih,
-                        'original_cell_y': 0,
-                    })
+                        precalculated_placements[_out_idx].append({
+                            'cluster_idx': 0,
+                            'cell': {
+                                'x': rx, 'y': ry, 'width': iw, 'height': ih,
+                                'isRotated': is_rot, 'isRotated180': False,
+                            },
+                            'src_page_idx': p_idx,
+                            'abs_x': 0,
+                            'abs_y': 0,
+                            'width': iw,
+                            'height': ih,
+                            'original_cell_y': 0,
+                        })
 
-                _finalize_sheet_centering(sheet_idx)
+                    _finalize_sheet_centering(_out_idx)
+                    _out_idx += 1
 
-            items_per_sheet_ms = len(one_sheet_placements)
-            total_items_placed = items_per_sheet_ms * max(1, int(sheets_needed or 1))
+            items_per_sheet_ms = len(_ms_sheets[0]['placements'])
+            total_items_placed = sum(
+                len(s['placements']) * max(1, int(s.get('sheets_needed', 1) or 1))
+                for s in _ms_sheets
+            )
             logger.debug(
-                f"   [ZONE] BIN-PACK OFFSET DONE: {items_per_sheet_ms} items/sheet × "
-                f"{sheets_needed} tờ cần in → xuất {repeat_count} trang "
+                f"   [ZONE] BIN-PACK OFFSET DONE: {len(_ms_sheets)} tờ mẫu × "
+                f"{sheets_needed} lượt in → xuất {_out_idx} trang "
                 f"(exportUnique={_export_unique_ms})"
             )
+
+            # Guard: mẫu nào không lên được tờ nào thì phải kêu, không im lặng.
+            _ms_missing = [
+                p_idx for p_idx, _, _, _ in page_infos
+                if remaining_by_page.get(p_idx, 0) > 0
+                and bp_result.get('placed_by_page', {}).get(p_idx, 0) <= 0
+            ]
+            if _ms_missing:
+                logger.error(
+                    f"[BIN-PACK] {len(_ms_missing)} mẫu không xếp được lên tờ nào: "
+                    f"{_ms_missing[:10]}"
+                )
 
             if _report_enabled_ms and items_per_sheet_ms > 0:
                 try:
@@ -2125,7 +2171,7 @@ def _run_nup_engine_impl(
                         sheet_count_override=max(1, int(sheets_needed or 1)),
                     )
                     _rep_str_ms = _nr_ms.build_report_string(_rcfg_ms, _data_ms)
-                    for _si in range(repeat_count):
+                    for _si in range(_out_idx):
                         _reports_by_sheet[_si] = _rep_str_ms
                     _report_rows.append({
                         'label': _label_ms or ('Trang 1' if len(page_infos) == 1 else f"{len(page_infos)} mẫu"),

@@ -1196,15 +1196,29 @@ def _build_templates(
 ) -> list[dict[str, Any]]:
     explicit_quantities = any(product.requested_quantity > 0 for product in products)
     if not explicit_quantities:
-        remaining = {product.product_id: 1 for product in products}
-        candidate = _choose_candidate(
-            products,
-            settings,
-            remaining,
-            prioritize_area=True,
-        )
-        counts = dict(candidate.capacities)
-        return [_materialize_template(candidate, counts, 1, 1)]
+        # Audit 2026-08-06 §MS-3: nhánh không nhập SL trước đây gọi solver ĐÚNG MỘT
+        # LẦN rồi trả một template — mọi sản phẩm không lọt lên tờ đó biến mất khỏi
+        # kết quả (đo: 50 mẫu / tờ 25 ô → chỉ 25 mẫu). Lặp cho tới khi phục vụ hết,
+        # cùng tinh thần vòng `while remaining` của nhánh có SL bên dưới.
+        pending = [product for product in products]
+        templates: list[dict[str, Any]] = []
+        while pending:
+            remaining = {product.product_id: 1 for product in pending}
+            candidate = _choose_candidate(
+                pending,
+                settings,
+                remaining,
+                prioritize_area=True,
+            )
+            counts = dict(candidate.capacities)
+            served = {product_id for product_id, count in counts.items() if count > 0}
+            if not served:
+                raise MixedGuillotineError("Solver không đặt được sản phẩm nào lên tờ.")
+            templates.append(
+                _materialize_template(candidate, counts, 1, len(templates) + 1)
+            )
+            pending = [p for p in pending if p.product_id not in served]
+        return templates
 
     # §MG-AUTO: thử 1 bộ kẽm trong ngưỡng tự động, rồi so với phương án chính xác.
     demand = {

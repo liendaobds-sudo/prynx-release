@@ -136,6 +136,85 @@ def solve_auto_fill_mixed(
     # 1 Dao + theo kích thước trang: nếu mọi mẫu cùng cỡ thì tất cả là cùng một
     # hình chữ nhật. MaxRects xoay từng mẫu độc lập sẽ tạo layout vá víu dù không
     # tăng sức chứa. Dùng một hướng duy nhất cho cả tờ và rải page_idx tuần tự.
+    # (Nhánh uniform xử lý trong `_solve_auto_fill_single_sheet`.)
+
+    # ── TRÀN TỜ (audit 2026-08-06 §MS-1): nhiều mẫu hơn số ô một tờ ──────────
+    # Trước đây solver chỉ biết MỘT tờ: 50 mẫu / tờ chứa 25 ô thì 25 mẫu sau bị
+    # packer từ chối và bỏ đi IM LẶNG (đo: placed_by_page thiếu hẳn mẫu 25..49).
+    # Xưởng thì phải in cả 50 mẫu, nên loại nào không lên được tờ này phải sang
+    # tờ mẫu KẾ TIẾP — mỗi tờ mẫu là một bộ kẽm riêng, đúng như bình cắt xén.
+    # Chia đều theo lô để các tờ cân nhau, thay vì tờ đầu đầy ự và tờ cuối lơ thơ.
+    if len(page_dims) > 1:
+        per_sheet_cap = _estimate_type_capacity(
+            sheet_w, sheet_h, page_dims, gap, allow_rotation, exclude_zones
+        )
+        if 0 < per_sheet_cap < len(page_dims):
+            import math as _math
+
+            n_sheets = _math.ceil(len(page_dims) / per_sheet_cap)
+            chunk = _math.ceil(len(page_dims) / n_sheets)
+            sheets = []
+            for start in range(0, len(page_dims), chunk):
+                group = page_dims[start:start + chunk]
+                sheets.append(
+                    _solve_auto_fill_single_sheet(
+                        sheet_w, sheet_h, group, gap, allow_rotation,
+                        exclude_zones, uniform_if_equal,
+                    )
+                )
+            merged_by_page: Dict[int, int] = {}
+            for sheet in sheets:
+                for key, value in sheet['placed_by_page'].items():
+                    merged_by_page[key] = merged_by_page.get(key, 0) + value
+            return {
+                # `placements` giữ tờ ĐẦU để mọi caller cũ (preview 1 tờ) không vỡ.
+                'placements': sheets[0]['placements'],
+                'total_placed': sum(s['total_placed'] for s in sheets),
+                'placed_by_page': merged_by_page,
+                'sheets': sheets,
+                'sheet_count': len(sheets),
+            }
+
+    return _solve_auto_fill_single_sheet(
+        sheet_w, sheet_h, page_dims, gap, allow_rotation,
+        exclude_zones, uniform_if_equal,
+    )
+
+
+def _estimate_type_capacity(
+    sheet_w: float,
+    sheet_h: float,
+    page_dims: List[Tuple[int, float, float]],
+    gap: float,
+    allow_rotation: bool,
+    exclude_zones: Optional[List[Tuple[float, float, float, float]]],
+) -> int:
+    """Đếm xem MỘT tờ nhận được bao nhiêu LOẠI khác nhau (mỗi loại ≥1 bản).
+
+    Không suy từ diện tích: hình dạng lệch nhau khiến ước lượng diện tích lạc quan
+    hơn thực tế. Chạy thẳng packer với qty=1 mỗi loại rồi đếm loại đặt được.
+    """
+    probe = solve_mixed_bin_pack(
+        sheet_w, sheet_h,
+        [(p_idx, w, h, 1) for p_idx, w, h in page_dims],
+        gap, allow_rotation, exclude_zones,
+    )
+    return len(probe['placed_by_page'])
+
+
+def _solve_auto_fill_single_sheet(
+    sheet_w: float,
+    sheet_h: float,
+    page_dims: List[Tuple[int, float, float]],
+    gap: float = 0.0,
+    allow_rotation: bool = True,
+    exclude_zones: Optional[List[Tuple[float, float, float, float]]] = None,
+    uniform_if_equal: bool = False,
+) -> Dict:
+    """Xếp mọi loại trong `page_dims` lên ĐÚNG một tờ (thân cũ của auto-fill)."""
+    if not page_dims:
+        return {'placements': [], 'total_placed': 0, 'placed_by_page': {}}
+
     if uniform_if_equal and _all_page_dims_equal(page_dims):
         return _solve_uniform_auto_fill(
             sheet_w, sheet_h, page_dims, gap, allow_rotation, exclude_zones
@@ -373,6 +452,63 @@ def solve_offset_mixed(
 
     sheet_w = _q6(sheet_w); sheet_h = _q6(sheet_h); gap = _q6(gap)
 
+    # ── TRÀN TỜ (audit 2026-08-06 §MS-2): nhiều mẫu hơn số ô một tờ ─────────
+    # Cùng khiếm khuyết như auto-fill, nhưng hậu quả nặng hơn: `sheets_needed`
+    # dưới kia tính từ TỈ LỆ mong muốn chứ không phải số đặt THẬT, nên loại nào
+    # bị packer bỏ vẫn được ghi per_sheet≥1 → báo "1 tờ là đủ" trong khi một nửa
+    # số mẫu không hề có mặt. Chia thành nhiều tờ mẫu trước khi giải tỉ lệ.
+    if len(page_dims_qty) > 1:
+        probe_dims = [(p_idx, w, h) for p_idx, w, h, _ in page_dims_qty]
+        per_sheet_cap = _estimate_type_capacity(
+            sheet_w, sheet_h, probe_dims, gap, allow_rotation, None
+        )
+        if 0 < per_sheet_cap < len(page_dims_qty):
+            import math as _math
+
+            n_groups = _math.ceil(len(page_dims_qty) / per_sheet_cap)
+            chunk = _math.ceil(len(page_dims_qty) / n_groups)
+            sheets = []
+            for start in range(0, len(page_dims_qty), chunk):
+                group = page_dims_qty[start:start + chunk]
+                sheets.append(
+                    _solve_offset_single_sheet(
+                        sheet_w, sheet_h, group, gap, allow_rotation, fill_remainder
+                    )
+                )
+            merged_by_page: Dict[int, int] = {}
+            for sheet in sheets:
+                for key, value in sheet['placed_by_page'].items():
+                    merged_by_page[key] = merged_by_page.get(key, 0) + value
+            return {
+                'placements': sheets[0]['placements'],
+                'total_placed': sum(s['total_placed'] for s in sheets),
+                'placed_by_page': merged_by_page,
+                # Mỗi tờ mẫu có số lần in RIÊNG (SL/loại khác nhau) — tổng lượt in
+                # là tổng, không phải max, vì chúng là các bộ kẽm khác nhau.
+                'sheets_needed': sum(s['sheets_needed'] for s in sheets),
+                'sheets': sheets,
+                'sheet_count': len(sheets),
+            }
+
+    return _solve_offset_single_sheet(
+        sheet_w, sheet_h, page_dims_qty, gap, allow_rotation, fill_remainder
+    )
+
+
+def _solve_offset_single_sheet(
+    sheet_w: float,
+    sheet_h: float,
+    page_dims_qty: List[Tuple[int, float, float, int]],
+    gap: float = 0.0,
+    allow_rotation: bool = True,
+    fill_remainder: bool = False,
+) -> Dict:
+    """Giải tỉ lệ SL cho ĐÚNG một tờ mẫu (thân cũ của offset)."""
+    if not page_dims_qty:
+        return {'placements': [], 'total_placed': 0, 'placed_by_page': {}, 'sheets_needed': 0}
+
+    sheet_w = _q6(sheet_w); sheet_h = _q6(sheet_h); gap = _q6(gap)
+
     # Find the GCD-reduced ratio
     quantities = [qty for _, _, _, qty in page_dims_qty]
     from math import gcd
@@ -472,10 +608,13 @@ def solve_offset_mixed(
         }
 
     # Calculate sheets needed
-    items_per_sheet = {p_idx: r * best_multiplier for (p_idx, _, _, _), r in zip(page_dims_qty, base_ratios)}
+    # Audit 2026-08-06 §MS-2: dùng số đặt THẬT (`placed_by_page`) chứ không phải
+    # `r * best_multiplier` — tỉ lệ mong muốn nói loại nào cũng có mặt, kể cả khi
+    # packer đã từ chối nó, và khi ấy ceil(qty/per_sheet) cho ra số tờ thiếu.
+    placed_by_page = best_result.get('placed_by_page', {})
     sheets_needed = 1
     for p_idx, _, _, qty in page_dims_qty:
-        per_sheet = items_per_sheet.get(p_idx, 1)
+        per_sheet = int(placed_by_page.get(p_idx, 0))
         if per_sheet > 0:
             sheets_needed = max(sheets_needed, -(-qty // per_sheet))  # ceil division
 
