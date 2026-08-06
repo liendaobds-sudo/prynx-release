@@ -356,14 +356,18 @@ def _get_pdf_meta(body: dict):
             if visual_h > max_h:
                 max_h = visual_h
 
+            # [PREVIEW-UNIT FIX 2026-08-06] Làm tròn 4 số, KHÔNG phải 2.
+            # 500mm = 1417.325pt, làm tròn 2 số thành 1417.33 (+0.005pt/cột);
+            # ở khổ vừa khít 1500mm phần dư đó vượt dung sai 0.01pt của solver
+            # → preview mất hẳn một cột (9 con hiển thị thành 7).
             pages.append({
                 "index": i,
-                "width_pt": round(visual_w, 2),
-                "height_pt": round(visual_h, 2),
-                "media_width_pt": round(media_visual_w, 2),
-                "media_height_pt": round(media_visual_h, 2),
-                "guillotine_width_pt": round(guillotine_w, 2),
-                "guillotine_height_pt": round(guillotine_h, 2),
+                "width_pt": round(visual_w, 4),
+                "height_pt": round(visual_h, 4),
+                "media_width_pt": round(media_visual_w, 4),
+                "media_height_pt": round(media_visual_h, 4),
+                "guillotine_width_pt": round(guillotine_w, 4),
+                "guillotine_height_pt": round(guillotine_h, 4),
                 "rotation": rot,
             })
 
@@ -371,8 +375,8 @@ def _get_pdf_meta(body: dict):
 
         return {
             "page_count": page_count,
-            "max_width_pt": round(max_w, 2),
-            "max_height_pt": round(max_h, 2),
+            "max_width_pt": round(max_w, 4),
+            "max_height_pt": round(max_h, 4),
             "detected_bleed_mm": detected_bleed_mm,
             "pages": pages,
         }

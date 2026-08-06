@@ -991,7 +991,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     && s.paperClassification === 'offset'
                     && s.taskMode !== 'booklet'
                 ) {
-                    effMarginBottom += s.gripperMargin;
+                    // [GRIPPER PARITY FIX 2026-08-06] Kẹp sàn cho khớp backend, không cộng dồn.
+                    effMarginBottom = Math.max(effMarginBottom, s.gripperMargin);
                 }
                 const effMarginMode = dieGeometryMode ? 'labels_only' : s.marginMode;
                 if (effMarginMode === 'include_marks' && s.markType && s.markType !== 'none') {
@@ -1242,7 +1243,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 && s.paperClassification === 'offset'
                 && s.taskMode !== 'booklet'
             ) {
-                effMarginBottom += s.gripperMargin;
+                // [GRIPPER PARITY FIX 2026-08-06] Kẹp sàn cho khớp backend, không cộng dồn.
+                effMarginBottom = Math.max(effMarginBottom, s.gripperMargin);
             }
 
             // splitGap (khe khối chính↔khối phụ của L-shape).
@@ -1650,7 +1652,10 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                     && s.paperClassification === 'offset'
                                     && s.taskMode !== 'booklet'
                                 ) {
-                                    effMarginBottom += s.gripperMargin;
+                                    // [GRIPPER PARITY FIX 2026-08-06] Backend KẸP SÀN (max), không cộng dồn
+                                    // — xem nup_engine.py (if gripper_pt > margin_bottom). Cộng dồn làm
+                                    // usable_h preview nhỏ hơn output → lệch số con.
+                                    effMarginBottom = Math.max(effMarginBottom, s.gripperMargin);
                                 }
                                 
                                 const effectiveMarginMode = stickerLike ? 'labels_only' : s.marginMode;
@@ -1747,6 +1752,25 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                     }
                                     const h = itemDim?.h;
                                     return (typeof h === 'number' && !isNaN(h)) ? h * 0.352778 : 55;
+                                })()}
+                                // [PREVIEW-UNIT FIX 2026-08-06] Gửi kèm kích thước theo ĐIỂM (pt)
+                                // đúng như trang nguồn: vòng pt→mm→pt làm nở ~0.003pt, vượt dung
+                                // sai 0.01pt của solver ở khổ vừa khít → preview mất một cột.
+                                itemWPt={(() => {
+                                    const w = itemDim?.w;
+                                    if (typeof w !== 'number' || isNaN(w) || w <= 0) return undefined;
+                                    if (stickerLike && s.cutType === 'one_dao' && s.dieSizeMode === 'page') {
+                                        return w + (s.dieOffsetMm || 0) * 2 * 2.83465;
+                                    }
+                                    return w;
+                                })()}
+                                itemHPt={(() => {
+                                    const h = itemDim?.h;
+                                    if (typeof h !== 'number' || isNaN(h) || h <= 0) return undefined;
+                                    if (stickerLike && s.cutType === 'one_dao' && s.dieSizeMode === 'page') {
+                                        return h + (s.dieOffsetMm || 0) * 2 * 2.83465;
+                                    }
+                                    return h;
                                 })()}
                                 targetQuantity={s.targetQuantity}
                                 // N-Up cắt xén (ratio_stack/sequential) cũng cần SL từng trang cho preview ≡ output.

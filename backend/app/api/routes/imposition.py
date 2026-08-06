@@ -2403,57 +2403,40 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 _ml = getattr(req, 'margin_left', 0) or 0
                 _mb = getattr(req, 'margin_bottom', 0) or 0
                 _mt = getattr(req, 'margin_top', 0) or 0
-                _pl = bp_result['placements']
-                max_x_used = max((p['x'] + p['w'] for p in _pl), default=0.0)
-                max_bottom = max((p['y'] + p['h'] for p in _pl), default=0.0)
-                x_off = _ml + (req.usable_w - max_x_used) / 2 if max_x_used < req.usable_w else _ml
-                y_off = _mb + (req.usable_h - max_bottom) / 2 if max_bottom < req.usable_h else _mb
-
-                # Đường bế THẬT per-cell (như S&R) → mỗi ô vẽ đúng contour + transform
-                # xoay/lật, thay vì scale outline chuẩn hoá vào bbox (méo). Toạ độ TOP-DOWN
-                # trang đích: _ay_td = (usable_h + mb + mt) - abs_y - h (nhất quán S&R).
+                # [MULTI-SHEET PREVIEW FIX 2026-08-06] Nhiều mẫu hơn sức chứa MỘT tờ thì
+                # packer mở thêm TỜ MẪU (khoá `sheets`); `placements` chỉ còn giữ tờ đầu
+                # cho caller cũ. Preview phải dựng ĐỦ mọi tờ (bug 50 loại tem / 25 ô một tờ).
+                # Đường bế THẬT per-cell (như S&R) dựng trong worker `mixed_preview_cells`.
                 from app.workers.nup_artwork import die_polylines_for_placement as _die_pl_mixed
+                from app.workers.mixed_preview_cells import build_mixed_preview_sheets
 
-                items = []
-                ov_w = 0.0
-                ov_h = 0.0
-                for p in _pl:
-                    abs_x = x_off + p['x']
-                    abs_y = y_off + (max_bottom - p['y'] - p['h'])
-                    _cell_mixed = {
-                        'x': p['x'],
-                        'y': p['y'],
-                        'absX': abs_x,
-                        'absY': abs_y,
-                        'width': p['w'],
-                        'height': p['h'],
-                        'isRotated': p['is_rotated'],
-                        'isRotated180': False,
-                        'pageIdx': p['page_idx'],
-                    }
-                    _geo = _die_geo_by_page.get(p['page_idx'])
-                    if _geo is not None:
-                        _ay_td = (req.usable_h + _mb + _mt) - abs_y - p['h']
-                        try:
-                            _cell_mixed['diePolylines'] = _die_pl_mixed(
-                                _geo[0], _geo[1], abs_x, _ay_td,
-                                is_rotated=p['is_rotated'],
-                                is_rotated_180=False,
-                            )
-                        except Exception as _e_dpl:
-                            logger.debug("mixed die polylines build failed: %s", _e_dpl)
-                    items.append(_cell_mixed)
-                    ov_w = max(ov_w, abs_x + p['w'])
-                    ov_h = max(ov_h, abs_y + p['h'])
+                _sheets_out = build_mixed_preview_sheets(
+                    bp_result,
+                    usable_w=req.usable_w,
+                    usable_h=req.usable_h,
+                    margin_left=_ml,
+                    margin_bottom=_mb,
+                    margin_top=_mt,
+                    die_geo_by_page=_die_geo_by_page,
+                    die_polylines_for_placement=_die_pl_mixed,
+                )
 
-                logger.debug("[BIN-PACK PREVIEW] %d items, overall=%.1fx%.1f, zones=%d", len(items), ov_w, ov_h, len(exclude_zones))
+                items = _sheets_out[0]["cells"]
+                ov_w = _sheets_out[0]["overallWidth"]
+                ov_h = _sheets_out[0]["overallHeight"]
+
+                logger.debug("[BIN-PACK PREVIEW] %d sheet(s), %d items tờ đầu, overall=%.1fx%.1f, zones=%d",
+                             len(_sheets_out), len(items), ov_w, ov_h, len(exclude_zones))
 
                 return {
                     "success": True,
                     "cells": items,
                     "overallWidth": ov_w,
                     "overallHeight": ov_h,
-                    "totalItems": len(items),
+                    # totalItems là TỔNG mọi tờ mẫu — con số xưởng thực nhận.
+                    "totalItems": sum(len(s["cells"]) for s in _sheets_out),
+                    # Chỉ trả `sheets` khi thật sự tràn tờ, tránh hiện nút lật vô cớ.
+                    **({"sheets": _sheets_out} if len(_sheets_out) > 1 else {}),
                     "strategyUsed": "bin_pack_mixed",
                     "isMixedPreview": True,
                     "absPlacement": True,

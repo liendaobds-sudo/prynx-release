@@ -70,6 +70,12 @@ export interface GridPreviewProps {
   shapeType: string;
   itemW?: number;
   itemH?: number;
+  /** [PREVIEW-UNIT FIX 2026-08-06] Kích thước tem theo ĐIỂM (pt) lấy thẳng từ trang nguồn.
+   *  itemW/itemH đã qua vòng pt→mm→pt (0.352778 × 2.83465 ≈ 1.0000021) nên nở thêm
+   *  ~0.003 pt; với khổ vừa khít (500×330 vào 1500×990) mức nở đó vượt dung sai
+   *  EPS=0.01pt của solver → mất hẳn một cột (9 con thành 7). Có pt thì dùng pt. */
+  itemWPt?: number;
+  itemHPt?: number;
   targetQuantity?: number | string;
   targetQuantitiesByPage?: Record<number, number>;
   /** Tổng số mẫu nguồn hiện có — dùng để phân bổ và tự động lấp đầy preview. */
@@ -856,6 +862,8 @@ export default function GridPreview(props: GridPreviewProps) {
     sourceTotalPages,
     itemW = 90,
     itemH = 55,
+    itemWPt,
+    itemHPt,
     shapeParams,
     isDetectingShape,
     shapesByPage,
@@ -1394,8 +1402,8 @@ export default function GridPreview(props: GridPreviewProps) {
         const body = {
           usable_w: usableW * MM_TO_PT,
           usable_h: usableH * MM_TO_PT,
-          item_w: itemW * MM_TO_PT,
-          item_h: itemH * MM_TO_PT,
+          item_w: (typeof itemWPt === 'number' && itemWPt > 0) ? itemWPt : itemW * MM_TO_PT,
+          item_h: (typeof itemHPt === 'number' && itemHPt > 0) ? itemHPt : itemH * MM_TO_PT,
           gap_x: gapX * MM_TO_PT,
           gap_y: gapY * MM_TO_PT,
           strategy: gridStrategy || "optimal_auto",
