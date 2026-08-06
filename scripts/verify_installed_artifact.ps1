@@ -978,7 +978,9 @@ try {
         }
         $ready = $newStartupText -match '(?m)pdfium: OK' -and
             $newStartupText -match '(?m)sidecar integrity: OK' -and
-            $newStartupText -match '(?m)sidecar: spawned on :8321 \(token via stdin\)' -and
+            # BUILD (audit 2026-08-06 REL.RUNTIME): marker nay chi duoc ghi sau
+            # khi startup proof cua sidecar da dat; marker "spawned" cu khong con.
+            $newStartupText -match '(?m)sidecar: ready \(startup proof OK\)' -and
             $newStartupText -match '(?m)setup complete.*app ready'
         if ($ready) { break }
         Start-Sleep -Milliseconds 250

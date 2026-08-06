@@ -57,3 +57,12 @@ def test_startup_timeouts_leave_room_for_each_outer_verifier() -> None:
     assert app_timeout == 60
     assert artifact_timeout > app_timeout
     assert clean_user_timeout > artifact_timeout
+
+
+def test_runtime_verifier_waits_for_current_authenticated_sidecar_breadcrumb() -> None:
+    verifier_text = ARTIFACT_VERIFIER.read_text(encoding="utf-8")
+    tauri_text = TAURI_LIB.read_text(encoding="utf-8")
+
+    assert 'startup_breadcrumb("sidecar: ready (startup proof OK)")' in tauri_text
+    assert "sidecar: ready \\(startup proof OK\\)" in verifier_text
+    assert "sidecar: spawned on :8321" not in verifier_text
