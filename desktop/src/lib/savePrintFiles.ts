@@ -8,6 +8,7 @@
  */
 import { buildSavePlan, type SaveTypeInfo, type SavePlanConfig } from './printFileNaming';
 import { beginOptionalContentTransfer, finishOptionalContentTransfer } from './pdfOptionalContent';
+import { getFileArrayBuffer } from './utils';
 
 export interface SavePrintOptions {
     /** Danh sách loại (label + số tờ). Nếu rỗng, tự suy từ số trang PDF. */
@@ -35,7 +36,11 @@ export async function savePrintFilesToFolder(
     const atomicWrite = (p: string, data: Uint8Array) =>
         invoke('write_file_atomic', { path: p, contents: data });
 
-    const srcBytes = new Uint8Array(await resultBlob.arrayBuffer());
+    // FILEIO (audit 2026-08-06 §2): theo "đường native", tab kết quả chỉ giữ File SENTINEL
+    // 11 byte ('native-path') hoặc File RỖNG kèm `.path` — bytes thật nằm trên đĩa. Đọc thẳng
+    // `.arrayBuffer()` sẽ đưa rác cho pdf-lib → "No PDF header found". getFileArrayBuffer là
+    // SSOT: đọc đĩa qua `.path` trước, chỉ fallback blob khi không có path (web/in-memory).
+    const srcBytes = new Uint8Array(await getFileArrayBuffer(resultBlob));
     const srcDoc = await PDFDocument.load(srcBytes);
     const pageCount = srcDoc.getPageCount();
 

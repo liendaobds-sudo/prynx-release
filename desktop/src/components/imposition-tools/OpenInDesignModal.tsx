@@ -13,6 +13,7 @@
 import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { buildSavePlan, type SaveTypeInfo, type SavePlanConfig } from '../../lib/printFileNaming';
+import { fetchLocalFileBuffer } from '../../lib/localFileTransport';
 import { useTranslation } from 'react-i18next';
 
 interface Props {
@@ -35,6 +36,27 @@ interface Props {
 }
 
 type Scope = 'cut_only' | 'cut_and_print';
+
+/**
+ * FILEIO (audit 2026-08-06): sau khi bình xong theo "đường native", tab chỉ giữ File RỖNG
+ * (hoặc sentinel 11 byte 'native-path' từ processHandlers) kèm `.path` — bytes THẬT nằm
+ * trên đĩa. Đọc thẳng blob sẽ đưa 11 byte rác cho pdf-lib → "No PDF header found".
+ * Ưu tiên đọc từ đĩa qua protocol localfile; chỉ dùng bytes trong RAM khi không có path
+ * (web/fallback) hoặc khi đọc đĩa lỗi mà blob có bytes thật.
+ */
+async function readResultBytes(path: string | undefined, blob: Blob | null): Promise<Uint8Array> {
+    const isTauriEnv = typeof window !== 'undefined'
+        && !!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    if (isTauriEnv && path) {
+        try {
+            return new Uint8Array(await fetchLocalFileBuffer(path));
+        } catch (e) {
+            if (!blob || blob.size === 0) throw e;
+        }
+    }
+    if (!blob) throw new Error('missing result bytes');
+    return new Uint8Array(await blob.arrayBuffer());
+}
 
 interface CustomApps {
     illustrator?: string;
@@ -118,12 +140,12 @@ export default function OpenInDesignModal({
 
     // Tính danh sách trang khuôn từ PDF kết quả + chọn sẵn tờ chứa trang đang xem.
     useEffect(() => {
-        if (!open || !resultBlob) { setCutPages([]); return; }
+        if (!open || (!resultBlob && !resultFilePath)) { setCutPages([]); return; }
         let active = true;
         (async () => {
             try {
                 const { PDFDocument } = await import('pdf-lib');
-                const doc = await PDFDocument.load(new Uint8Array(await resultBlob.arrayBuffer()));
+                const doc = await PDFDocument.load(await readResultBytes(resultFilePath, resultBlob));
                 const pageCount = doc.getPageCount();
                 const per = pagesPerUnit(cncMode, cncTwoSided, separateCut);
                 const count = Math.max(1, Math.floor(pageCount / per));
@@ -148,12 +170,16 @@ export default function OpenInDesignModal({
                     || pages[0];
                 setSelected(hit ? new Set([hit.pageIndex]) : new Set());
                 setAnchor(hit ? hit.pageIndex : null);
-            } catch {
-                if (active) { setCutPages([]); setSelected(new Set()); setAnchor(null); }
+            } catch (e) {
+                // Không đọc được PDF kết quả → báo ngay thay vì im lặng mất lưới tờ khuôn.
+                if (active) {
+                    setCutPages([]); setSelected(new Set()); setAnchor(null);
+                    setStatus(t('misc.openInDesign:loi_khi_mo', { msg: errorMessage(e) }));
+                }
             }
         })();
         return () => { active = false; };
-    }, [open, resultBlob, cncMode, cncTwoSided, separateCut, originalName, currentPage]);
+    }, [open, resultBlob, resultFilePath, cncMode, cncTwoSided, separateCut, originalName, currentPage]);
 
     useEffect(() => {
         if (!open) return;
@@ -223,12 +249,12 @@ export default function OpenInDesignModal({
 
     // Trích trang khuôn (theo lựa chọn) ra PDF tạm, trả đường dẫn temp.
     const buildCutOnlyFile = async (): Promise<string> => {
-        if (!resultBlob) throw new Error(t('misc.openInDesign:khong_co_file_ket_qua'));
+        if (!resultBlob && !resultFilePath) throw new Error(t('misc.openInDesign:khong_co_file_ket_qua'));
         const { PDFDocument } = await import('pdf-lib');
         const { invoke } = await import('@tauri-apps/api/core');
         const { tempDir, join } = await import('@tauri-apps/api/path');
 
-        const srcBytes = new Uint8Array(await resultBlob.arrayBuffer());
+        const srcBytes = await readResultBytes(resultFilePath, resultBlob);
         const srcDoc = await PDFDocument.load(srcBytes);
         const pageCount = srcDoc.getPageCount();
 

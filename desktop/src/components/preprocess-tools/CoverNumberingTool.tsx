@@ -12,6 +12,7 @@ import { planCoverLayout, resolveCoverPageIndices, type Cluster } from '@/lib/co
 import { useNumberingJobStore, DEFAULT_SHARED_JOB, type SharedJob } from '@/stores/useNumberingJobStore';
 import { useTranslation } from 'react-i18next';
 import { tv } from '@/i18n';
+import { getFileArrayBuffer } from '@/lib/utils';
 
 interface Props {
     pdfFile: File | null;
@@ -88,7 +89,9 @@ export default function CoverNumberingTool({
             if (!pdfFile) { setTotalPages(0); return; }
             try {
                 const { PDFDocument } = await import('pdf-lib');
-                const bytes = new Uint8Array(await pdfFile.arrayBuffer());
+                // FILEIO (audit 2026-08-06 §5): file làm việc của tab có thể là File RỖNG/sentinel
+                // chỉ mang `.path` (đường native) — `.arrayBuffer()` trả rác → "0 trang".
+                const bytes = new Uint8Array(await getFileArrayBuffer(pdfFile));
                 const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
                 if (!cancelled) setTotalPages(doc.getPageCount());
             } catch { if (!cancelled) setTotalPages(0); }
@@ -190,7 +193,9 @@ export default function CoverNumberingTool({
                     throw new Error(t('preprocess.coverNumbering:dai_trang_bia_khong_hop_le_nhap_so'));
                 setStatus(t('preprocess.coverNumbering:dang_trich_trang_bia_khoi_file'));
                 const { PDFDocument } = await import('pdf-lib');
-                const srcBytes = new Uint8Array(await template.arrayBuffer());
+                // FILEIO (audit 2026-08-06 §5): template có thể là File path-backed rỗng →
+                // đọc ĐĨA trước qua SSOT, không dùng thẳng `.arrayBuffer()`.
+                const srcBytes = new Uint8Array(await getFileArrayBuffer(template));
                 const src = await PDFDocument.load(srcBytes, { ignoreEncryption: true });
                 const out = await PDFDocument.create();
                 const copied = await out.copyPages(src, coverPageIdx);

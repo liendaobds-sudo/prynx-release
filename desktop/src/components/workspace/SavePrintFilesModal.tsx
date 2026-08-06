@@ -48,7 +48,10 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
         (async () => {
             try {
                 const { PDFDocument } = await import('pdf-lib');
-                const doc = await PDFDocument.load(new Uint8Array(await resultBlob.arrayBuffer()));
+                const { getFileArrayBuffer } = await import('../../lib/utils');
+                // FILEIO (audit 2026-08-06 §2): đọc ĐĨA qua `.path` trước — File kết quả theo
+                // đường native chỉ là sentinel 11 byte, `.arrayBuffer()` sẽ trả rác.
+                const doc = await PDFDocument.load(new Uint8Array(await getFileArrayBuffer(resultBlob)));
                 const pageCount = doc.getPageCount();
                 const pagesPerType = cncMode ? (cncTwoSided ? 3 : 2) : (separateCut ? 2 : 1);
                 const count = Math.floor(pageCount / pagesPerType);
@@ -57,7 +60,13 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
                     label: labelNameText || t('misc.savePrintFiles:trang_n', { n: i + 1 }),
                     sheetCount: 0,
                 })));
-            } catch { if (active) setDerivedTypes([{ label: labelNameText || t('misc.savePrintFiles:trang_1'), sheetCount: 0 }]); }
+            } catch (e) {
+                // UIUX (audit 2026-08-06 §4): trước đây nuốt lỗi → UI hiện "1 loại / 0 tờ" như
+                // thể bình thường, che mất việc không đọc được file kết quả.
+                if (!active) return;
+                setDerivedTypes([{ label: labelNameText || t('misc.savePrintFiles:trang_1'), sheetCount: 0 }]);
+                setStatus(t('misc.savePrintFiles:loi_khi_luu', { msg: (e as Error)?.message || String(e) }));
+            }
         })();
         return () => { active = false; };
     }, [open, resultBlob, separateCut, cncMode, cncTwoSided, typesProp, labelNameText, t]);
