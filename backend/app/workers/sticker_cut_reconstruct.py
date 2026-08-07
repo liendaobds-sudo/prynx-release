@@ -37,7 +37,6 @@ AUTO_MAX_RESIDUAL_MM = 0.35
 AUTO_MAX_DEFECT_MM = 0.45
 AUTO_AREA_RATIO_MIN = 0.96
 AUTO_AREA_RATIO_MAX = 1.04
-AUTO_MIN_CIRCULARITY = 0.90
 AUTO_ELLIPSE_ASPECT_MAX = 1.35  # a/b — lớn hơn → elip rõ; nhỏ hơn + residual thấp → circle
 
 # Rounded-rect (CN bo góc — hình tem nhãn phổ biến nhất)
@@ -53,6 +52,34 @@ ROUNDED_MAX_RADIUS_FRAC = 0.85
 # Noise-floor: contour raster có răng cưa sàn ~1.5px. Ở DPI thấp, tròn thật có thể
 # vượt ngưỡng residual chỉ vì răng cưa → bị từ chối oan. τ_hiệu_dụng nới theo px_per_mm.
 NOISE_FLOOR_PX = 1.5
+
+# QUALITY (audit 2026-08-07 §BG.7) — ngưỡng residual/defect theo TỈ LỆ kích thước tem.
+# Lỗi cũ: hai ngưỡng trên là mm TUYỆT ĐỐI, nên tem càng lớn càng chắc chắn trượt.
+# Đo thật trên tem tròn 800mm (file khách): residual = 0.637mm > 0.35 → auto_safe từ
+# chối → giữ contour raster thô → đường cắt gợn sóng "sợi mì tôm". Cùng độ lệch đó chỉ
+# là 0.08% cạnh tem — tròn hơn cả dung sai bế.
+# Ma trận đo (7 hình × 3 cỡ 50/200/800mm, residual tính theo % cạnh tem):
+#   tròn/elip      0.025 – 0.172 %      ← phải NHẬN
+#   bát giác       0.908 – 2.346 %      ← phải TỪ CHỐI (gần nhất, biên 2.6×)
+#   squircle/rrect 1.867 – 10.860 %     ← phải TỪ CHỐI
+# Chọn 0.35 % nằm giữa hai nhóm. Lấy max() với hằng số mm cũ nên tem nhỏ (≤100mm)
+# giữ NGUYÊN hành vi cũ — chỉ tem lớn mới được nới.
+AUTO_RESIDUAL_SIZE_FRAC = 0.0035
+AUTO_DEFECT_SIZE_FRAC = 0.0045
+
+# QUALITY (audit 2026-08-07 §BG.8) — ĐÃ BỎ cổng circularity khỏi nhánh nhận tự động.
+# Cổng cũ (circ < AUTO_MIN_CIRCULARITY = 0.90 → từ chối) mang hai thiên lệch cộng dồn:
+#   1. Elip dẹt có circ thấp BẨM SINH (elip 0.35 → circ ~0.69) dù tròn trịa hoàn hảo.
+#   2. Chu vi = tổng đoạn qua MỌI điểm contour, nên răng cưa raster thổi phồng chu vi
+#      ⇒ circ tụt theo kích thước tem. Đo thật cùng một elip 0.7: circ = 0.9534 ở tem
+#      50mm nhưng chỉ 0.8019 ở tem 800mm → trượt ngưỡng 0.90 dù hình y hệt.
+# Đã thử chuẩn hoá thành tỉ số circ_đo / circ_lý_thuyết(a, b) (chu vi Ramanujan) —
+# vẫn vô dụng: đo 7 hình × 3 cỡ, tỉ số KHÔNG tách được nhóm tròn khỏi nhóm có góc:
+#   50mm : tròn 0.9992 vs squircle2.5 0.9907  (chồng lấn)
+#   800mm: elip 0.8406 vs bát giác 0.8381    (chồng lấn)
+# Chạy lại toàn ma trận khi BỎ hẳn cổng: không hình có góc nào lọt — cổng residual
+# (§BG.7) đã gánh trọn việc phân loại. Giữ một cổng vô tác dụng chỉ thêm một đường
+# loại nhầm tem khổ lớn, nên bỏ.
 
 
 @dataclass
@@ -192,6 +219,7 @@ def _fit_ellipse_params(pts: np.ndarray) -> Optional[Tuple[float, float, float, 
 def try_ellipse_or_circle(
     pts: np.ndarray, *, force: Optional[str] = None,
     max_residual_mm: float = AUTO_MAX_RESIDUAL_MM,
+    max_defect_mm: float = AUTO_MAX_DEFECT_MM,
 ) -> Optional[ReconstructResult]:
     """
     force: None (auto gates) | 'circle' | 'ellipse'
@@ -208,15 +236,12 @@ def try_ellipse_or_circle(
     area_c = _contour_area(pts)
     area_e = math.pi * a * b
     area_ratio = area_c / area_e if area_e > 1e-9 else 0.0
-    circ = _circularity(pts)
     aspect = a / b if b > 1e-9 else 99.0
 
     if force is None:
-        if circ < AUTO_MIN_CIRCULARITY:
-            return None
         if residual > max_residual_mm:
             return None
-        if defect > AUTO_MAX_DEFECT_MM:
+        if defect > max_defect_mm:
             return None
         if not (AUTO_AREA_RATIO_MIN <= area_ratio <= AUTO_AREA_RATIO_MAX):
             return None
@@ -486,6 +511,17 @@ def reconstruct_cut_coords(
     else:
         eff_residual = AUTO_MAX_RESIDUAL_MM
 
+    # QUALITY (audit 2026-08-07 §BG.7) — nới thêm theo KÍCH THƯỚC tem.
+    # Dung sai bế là tương đối, không tuyệt đối: lệch 0.6mm trên tem 800mm (0.08%)
+    # là tròn hoàn hảo, còn trên tem 50mm (1.2%) là méo. Lấy cạnh dài bbox làm cỡ.
+    # max() với hằng số cũ ⇒ tem ≤100mm giữ nguyên hành vi, chỉ tem lớn được nới.
+    _w = float(np.max(pts[:, 0]) - np.min(pts[:, 0]))
+    _h = float(np.max(pts[:, 1]) - np.min(pts[:, 1]))
+    size_mm = max(_w, _h) / PT_PER_MM
+    eff_residual = max(eff_residual, size_mm * AUTO_RESIDUAL_SIZE_FRAC)
+    eff_defect = max(AUTO_MAX_DEFECT_MM, size_mm * AUTO_DEFECT_SIZE_FRAC)
+    meta["size_mm"] = round(size_mm, 2)
+
     if mode == "contour":
         meta["reason"] = "user_contour"
         return None, meta
@@ -526,7 +562,9 @@ def reconstruct_cut_coords(
     # rounded-rect PHẢI thử trước rect vuông: CN bo góc là ca đặc biệt hơn,
     # để try_rect chạy trước sẽ nuốt nó thành CN nhọn (mất bo góc).
     for attempt in (
-        lambda: try_ellipse_or_circle(pts, force=None, max_residual_mm=eff_residual),
+        lambda: try_ellipse_or_circle(
+            pts, force=None, max_residual_mm=eff_residual, max_defect_mm=eff_defect
+        ),
         lambda: try_rounded_rect(pts, force=False, max_residual_mm=eff_residual),
         lambda: try_rect(pts, force=False, max_residual_mm=eff_residual),
         lambda: try_triangle(pts, force=False, max_residual_mm=eff_residual),

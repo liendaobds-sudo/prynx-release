@@ -228,6 +228,72 @@ _ALPHA_SAFE_MIN_GAP_MM = 0.05
 _BG_MASK_FEATHER_MM = 0.05
 _BG_MASK_FEATHER_KERNEL_MIN = 3
 _BG_MASK_FEATHER_KERNEL_MAX = 9
+
+# QUALITY (audit 2026-08-07 §BG.6): lọc contour vụn theo DIỆN TÍCH.
+#
+# Nhiễu nén JPEG quanh ngưỡng nền (min_channel >= 248) làm vài cụm điểm ảnh nền
+# rớt lại thành contour riêng → đường cắt sinh ra những vòng nhỏ và chấm rời rạc
+# bám dọc biên tem (khách gọi là "sợi mì tôm"). Đo trên bộ hình tròn/sao/vuông ×
+# 15/20/50/200/800 mm, ảnh JPEG q60: contour phụ lớn nhất chỉ 0,346 mm², trong
+# khi contour thật nhỏ nhất (tem tròn 20 mm) là 265 mm². Ngưỡng 1 mm² tách sạch
+# hai nhóm ở mọi cỡ, và LỖ THẬT nhỏ nhất mà thợ vẽ (lỗ treo r=1 mm ≈ 3,14 mm²)
+# vẫn sống sót — đo bằng đối chứng âm.
+#
+# Bộ lọc chỉ BỎ contour, không chạm điểm ảnh nào của hình → không đổi hình học
+# đường cắt của các ca đang chạy đúng.
+_MIN_CONTOUR_AREA_MM2 = 1.0
+_PT_PER_MM = 72.0 / 25.4
+
+# QUALITY (audit 2026-08-07 §BG.6b): trả lại dải chuyển tiếp cho mask nhị phân,
+# CHỈ trong một dải hẹp quanh biên.
+#
+# Mask nền trắng/nền màu là nhị phân thuần 0/255. `measure.find_contours` nội suy
+# vị trí cắt BÊN TRONG dải chuyển tiếp để lấy toạ độ dưới mức điểm ảnh; mask nhị
+# phân không có dải đó nên mọi điểm rơi đúng giữa cạnh điểm ảnh → biên nhảy từng
+# điểm ảnh → đường cắt gợn sóng ("sợi mì tôm"), tem càng lớn càng lộ vì bị hạ độ
+# phân giải theo trần 6000 px.
+#
+# Cách bù: lấy lại độ đậm thật của ảnh gốc (dist = 255 - min(R,G,B)) làm giá trị
+# xám trong dải biên, ruột giữ nguyên 255. Đo trên hình tròn/sao/vuông ×
+# 15/20/50/200/800 mm (JPEG q60, so với bản render sạch): sai số rms giảm ở MỌI ca
+# (tròn 800 mm 0,434 → 0,282 mm; sao 20 mm 0,433 → 0,258 mm), không ca nào tệ hơn,
+# và đầu nhọn ngôi sao KHÔNG bị bo. Quét bề rộng dải 0,2→1,2 mm: 0,5 mm là điểm
+# bão hoà.
+#
+# Chỉ dùng cho `measure.find_contours`; `aa_mask` gốc giữ nguyên cho nhánh nguồn
+# màu bù xén (§BG.4) — đo thấy nếu ghi đè thì diện tích vùng đó lệch tới −5,4%
+# trên tem sao 20 mm, tức đổi màu mép bù xén của tem nhỏ.
+_BG_BAND_SOFT_MM = 0.5
+# Điểm bắt đầu dải xám = đúng ngưỡng nền của `_near_white_background_candidate_rgb`
+# (min_channel 248 → dist 7); rộng 12 mức là hết vành AA thực đo trên ảnh nén.
+_BG_BAND_SOFT_DIST_MIN = 7.0
+_BG_BAND_SOFT_DIST_RANGE = 12.0
+
+
+def _lam_mem_dai_bien(
+    mask: np.ndarray, img_rgb: np.ndarray, px_per_mm: float
+) -> np.ndarray:
+    """Trả mask có dải xám quanh biên, ruột và nền giữ nguyên.
+
+    QUALITY (audit 2026-08-07 §BG.6b). Xem chú thích ở `_BG_BAND_SOFT_MM`.
+    """
+    if mask is None or mask.size == 0 or px_per_mm <= 0:
+        return mask
+    if img_rgb is None or img_rgb.ndim != 3 or img_rgb.shape[2] < 3:
+        return mask
+    if img_rgb.shape[:2] != mask.shape[:2]:
+        return mask
+    k = int(round(_BG_BAND_SOFT_MM * px_per_mm)) | 1
+    k = max(3, k)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    dai_bien = cv2.subtract(cv2.dilate(mask, kernel), cv2.erode(mask, kernel))
+    dist = (255 - img_rgb[:, :, :3].min(axis=2)).astype(np.float32)
+    xam = np.clip(
+        (dist - _BG_BAND_SOFT_DIST_MIN) * 255.0 / _BG_BAND_SOFT_DIST_RANGE, 0, 255
+    ).astype(np.uint8)
+    ra = mask.copy()
+    ra[dai_bien > 0] = xam[dai_bien > 0]
+    return ra
 _ALPHA_SAFE_BEZIER_TENSIONS = (0.15, 0.10, 0.05, 0.03)
 _ALPHA_SAFE_BEZIER_SAMPLES = 3
 _ALPHA_FIT_TOLERANCES_MM = (0.10, 0.095, 0.08, 0.06)
@@ -4068,6 +4134,8 @@ class StickerEngine:
                 # QUALITY (audit 2026-08-06 §BG.2): nền MÀU dò được (nếu có) —
                 # dùng để cảnh báo thợ soi lại đường cắt.
                 color_bg_detected: BackgroundInfo | None = None
+                # §BG.6b: mask nền trắng do engine tự dựng từ ngưỡng cứng.
+                white_bg_mask_built = False
                 debug_step = f"Rasterize Page {page_idx}"
                 with pdfium_guard():
                     if page_in is not None:
@@ -4255,6 +4323,9 @@ class StickerEngine:
                             else:
                                 bg_white = np.zeros_like(white_mask)
                             base_mask = cv2.bitwise_not(bg_white)
+                            # §BG.6b: mask này do engine tự dựng từ ngưỡng cứng
+                            # → nhị phân thuần, cần trả lại dải chuyển tiếp.
+                            white_bg_mask_built = True
                             # QUALITY (audit 2026-08-06 §BG.1): nếu không bóc được
                             # gì (nền màu, hoặc trắng ngà do nén JPEG) thì bg_white
                             # rỗng → base_mask toàn 255 → contour duy nhất tìm được
@@ -4340,7 +4411,13 @@ class StickerEngine:
                         if color_bg_detected is not None:
                             aa_mask = _feather_mask_tu_dung(aa_mask, px_per_mm)
 
-                    aa_mask_padded = np.pad(aa_mask, pad_width=1, mode='constant', constant_values=0)
+                    # §BG.6b: mask riêng cho marching-squares. KHÔNG ghi đè
+                    # `aa_mask` — nó còn là nguồn màu cho bù xén (§BG.4), đo thấy
+                    # ghi đè làm lệch tới −5,4% diện tích trên tem nhỏ.
+                    contour_mask = aa_mask
+                    if white_bg_mask_built and not alpha_contour_mode:
+                        contour_mask = _lam_mem_dai_bien(aa_mask, img, px_per_mm)
+                    aa_mask_padded = np.pad(contour_mask, pad_width=1, mode='constant', constant_values=0)
 
                     debug_step = f"Find Contours Page {page_idx}"
                     from skimage import measure
@@ -4458,6 +4535,11 @@ class StickerEngine:
                     poly_scale = 1.0 / self.scale
                     
                     raw_polys = []
+                    # §BG.6: ngưỡng tính trong không gian POINT vì contour_pts đã
+                    # đổi sang pt (poly_scale = 1/scale).
+                    min_area_pt2 = _MIN_CONTOUR_AREA_MM2 * _PT_PER_MM * _PT_PER_MM
+                    dropped_specks = 0
+                    speck_polys = []
                     for contour in contours:
                         contour = contour - 1
                         contour_pts = contour[:, [1, 0]] * poly_scale
@@ -4483,12 +4565,30 @@ class StickerEngine:
                         if len(contour_pts) >= 3:
                             poly = Polygon(contour_pts)
                             if poly.is_valid:
+                                # §BG.6: bỏ contour vụn do nhiễu nén, trước khi
+                                # simplify (simplify không đổi thứ hạng diện tích).
+                                if poly.area < min_area_pt2:
+                                    dropped_specks += 1
+                                    speck_polys.append(poly)
+                                    continue
                                 if not preserve_contour:
                                     # Các kiểu cũ vẫn dọn nhẹ contour trước khi buffer.
                                     poly = poly.simplify(0.1, preserve_topology=True)
                                 raw_polys.append(poly)
                                 
+                    if not raw_polys and speck_polys:
+                        # §BG.6: mọi contour đều dưới ngưỡng → hoặc tem thật sự
+                        # bé hơn 1 mm² (không có thật trong nghề), hoặc mask hỏng.
+                        # Giữ lại contour lớn nhất để không mất trắng đường cắt.
+                        raw_polys = [max(speck_polys, key=lambda p: p.area)]
+                        dropped_specks = max(0, dropped_specks - 1)
                     if raw_polys:
+                        if dropped_specks:
+                            logger.info(
+                                "[STICKER_BG] page=%d §BG.6 bỏ %d contour vụn "
+                                "(< %.2f mm²) do nhiễu nén",
+                                page_idx + 1, dropped_specks, _MIN_CONTOUR_AREA_MM2,
+                            )
                         holes = []
                         exteriors = []
                         for p in raw_polys:
