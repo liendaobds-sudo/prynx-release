@@ -51,20 +51,26 @@ export interface ImpositionSplitGapInput {
 
 /**
  * Một nguồn duy nhất cho khe giữa các khối ở batch-capacity, preview và export.
- * Hình học bế dùng hở tem; hình học xén chừa đúng không gian cho hai bộ dấu.
+ * Hình học bế dùng hở tem; hình học xén có dấu chừa chỗ cho hai bộ dấu,
+ * còn khi tắt dấu thì trở về đúng hở tem.
  */
 export function resolveImpositionSplitGap(input: ImpositionSplitGapInput): number {
     const gapX = Number.isFinite(input.gapX) ? Math.max(0, Number(input.gapX)) : 0;
     const gapY = Number.isFinite(input.gapY) ? Math.max(0, Number(input.gapY)) : 0;
-    if (input.dieGeometryMode) return Math.max(gapX, gapY);
+    const itemGap = Math.max(gapX, gapY);
+    if (input.dieGeometryMode) return itemGap;
+
+    const hasCutMarks = input.markType === 'guillotine' || input.markType === 'corners';
+    // [NUP SPLIT-GAP FIX 2026-08-07] Không có dấu xén thì khe khối phụ phải
+    // theo đúng hở tem; gap = 0 cho phép hai khối L-shape nằm sát nhau.
+    if (!hasCutMarks) return itemGap;
 
     const clusterGap = Number.isFinite(input.clusterGap)
         ? Math.max(0, Number(input.clusterGap))
         : 0;
-    let splitGap = clusterGap > 0 ? clusterGap : Math.max(gapX, gapY, 5);
+    let splitGap = clusterGap > 0 ? clusterGap : itemGap;
     if (
-        (input.markType === 'guillotine' || input.markType === 'corners')
-        && (clusterGap <= 0 || input.clusterGapMode === 'mark')
+        clusterGap <= 0 || input.clusterGapMode === 'mark'
     ) {
         const markLength = Number.isFinite(input.markLength) ? Math.max(0, Number(input.markLength)) : 5;
         const markOffset = Number.isFinite(input.markOffset) ? Math.max(0, Number(input.markOffset)) : 3;

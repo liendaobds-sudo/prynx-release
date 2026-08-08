@@ -1620,6 +1620,22 @@ body.dt-panel-interacting * {
 }
 .dt-fold-step-btn:hover { background: var(--dt-bg-hover); color: var(--dt-text-primary); }
 
+/* PERF (audit 2026-08-07 §MOTION.5): các blur viết CSS trực tiếp không đi qua
+ * utility backdrop-blur toàn cục, nên phải tuân tier phần cứng tại đây. */
+html.perf-low .dt-viewport-overlay,
+html.perf-low .dt-fold-controls {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html.perf-mid .dt-viewport-overlay {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html.perf-mid .dt-fold-controls {
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
 /* --- Thanh Hoàn tác/Làm lại artwork --- */
 .dt-undo-bar {
   display: flex;

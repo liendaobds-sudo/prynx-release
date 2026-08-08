@@ -1,11 +1,22 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AppVisibilityStore } from './appVisibility';
+import { APP_BACKGROUNDED_CLASS, AppVisibilityStore, syncAppBackgroundClass } from './appVisibility';
 
 afterEach(() => {
     vi.useRealTimers();
 });
 
 describe('AppVisibilityStore', () => {
+    it('đồng bộ class CSS để pause animation khi app chạy nền', () => {
+        const toggle = vi.fn();
+        const root = { classList: { toggle } } as unknown as Element;
+
+        syncAppBackgroundClass(true, root);
+        syncAppBackgroundClass(false, root);
+
+        expect(toggle).toHaveBeenNthCalledWith(1, APP_BACKGROUNDED_CLASS, true);
+        expect(toggle).toHaveBeenNthCalledWith(2, APP_BACKGROUNDED_CLASS, false);
+    });
+
     it('giữ nhịp polling bình thường khi ứng dụng đang hiển thị', async () => {
         vi.useFakeTimers();
         const visibility = new AppVisibilityStore(false, true);

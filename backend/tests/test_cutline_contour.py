@@ -14,6 +14,7 @@ import pytest
 
 from app.workers.cutline_geometry import (
     _chord_length_parameters,
+    _reference_corner_indices,
     build_contour_path_stream,
     _coords_to_bezier_stream,
     _coords_to_polyline_stream,
@@ -128,3 +129,94 @@ def test_fitted_bezier_handles_do_not_turn_back_along_chord():
     projection2 = _vec_dot(_vec_sub(segment[2], segment[0]), chord_unit)
 
     assert 0.0 <= projection1 <= projection2 <= chord
+
+
+def _densify_ring(vertices, steps=16):
+    dense = []
+    for start, end in zip(vertices, vertices[1:] + vertices[:1]):
+        for step in range(steps):
+            ratio = step / steps
+            dense.append((
+                start[0] + (end[0] - start[0]) * ratio,
+                start[1] + (end[1] - start[1]) * ratio,
+            ))
+    return dense
+
+
+def _densify_ring_uniform(vertices, step_length=5.0):
+    dense = []
+    for start, end in zip(vertices, vertices[1:] + vertices[:1]):
+        steps = max(1, math.ceil(math.dist(start, end) / step_length))
+        for step in range(steps):
+            ratio = step / steps
+            dense.append((
+                start[0] + (end[0] - start[0]) * ratio,
+                start[1] + (end[1] - start[1]) * ratio,
+            ))
+    return dense
+
+
+def _polar_ring(count, radius_fn):
+    return [
+        (
+            radius_fn(index, angle) * math.cos(angle),
+            radius_fn(index, angle) * math.sin(angle),
+        )
+        for index, angle in (
+            (index, 2.0 * math.pi * index / count)
+            for index in range(count)
+        )
+    ]
+
+
+@pytest.mark.parametrize("scale", [1.0, 80.0])
+def test_reference_corner_detector_is_scale_invariant(scale):
+    """Reference phân biệt được độ cong liên tục với góc thật ở mọi kích thước."""
+    heart = []
+    for index in range(720):
+        parameter = 2.0 * math.pi * index / 720.0
+        heart.append((
+            16.0 * math.sin(parameter) ** 3 * scale,
+            -(
+                13.0 * math.cos(parameter)
+                - 5.0 * math.cos(2.0 * parameter)
+                - 2.0 * math.cos(3.0 * parameter)
+                - math.cos(4.0 * parameter)
+            ) * scale,
+        ))
+    flower_vertices = _polar_ring(
+        720,
+        lambda _index, angle: 720.0 + 190.0 * math.cos(12.0 * angle),
+    )
+    flower = [
+        (x * scale, y * scale)
+        for x, y in _densify_ring(flower_vertices, steps=8)
+    ]
+    gear_vertices = _polar_ring(
+        80,
+        lambda index, _angle: 880.0 if index % 4 in (0, 1) else 690.0,
+    )
+    gear = [
+        (x * scale, y * scale)
+        for x, y in _densify_ring(gear_vertices)
+    ]
+    hourglass = [
+        (x * scale, y * scale)
+        for x, y in _densify_ring_uniform([
+            (300.0, 260.0),
+            (1980.0, 260.0),
+            (1370.0, 930.0),
+            (1280.0, 1137.0),
+            (1370.0, 1344.0),
+            (1980.0, 2010.0),
+            (300.0, 2010.0),
+            (910.0, 1344.0),
+            (1000.0, 1137.0),
+            (910.0, 930.0),
+        ])
+    ]
+
+    assert len(_reference_corner_indices(heart, heart, 38.0)) == 2
+    assert _reference_corner_indices(flower, flower, 38.0) == []
+    assert len(_reference_corner_indices(gear, gear, 38.0)) == 80
+    assert len(_reference_corner_indices(hourglass, hourglass, 38.0)) == 6

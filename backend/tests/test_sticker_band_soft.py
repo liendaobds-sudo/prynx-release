@@ -9,6 +9,7 @@ Kiểm ở mức hàm thuần (numpy + skimage), không PDF, không PDFium.
 import cv2
 import numpy as np
 from skimage import measure
+from shapely.geometry import LineString
 
 from app.workers.sticker_engine import _lam_mem_dai_bien, _PT_PER_MM
 
@@ -104,3 +105,39 @@ def test_bo_qua_khi_kich_thuoc_lech():
     assert _lam_mem_dai_bien(mask, np.zeros((5, 5, 3), np.uint8), 12.0) is mask
     assert _lam_mem_dai_bien(mask, None, 12.0) is mask
     assert _lam_mem_dai_bien(mask, np.zeros((10, 10, 3), np.uint8), 0) is mask
+
+
+def test_hom_tim_jpeg_khong_bi_ringing_bit_nong():
+    """§NOODLE.13: hõm nhọn phải bám mask nguồn trong 3,25 px, không ăn ringing nhạt."""
+    import math
+
+    size = 2281
+    ideal = np.zeros((size, size), dtype=np.uint8)
+    points = []
+    for index in range(720):
+        t = 2 * math.pi * index / 720
+        x = 16 * math.sin(t) ** 3
+        y = 13 * math.cos(t) - 5 * math.cos(2 * t) - 2 * math.cos(3 * t) - math.cos(4 * t)
+        points.append((round(size / 2 + x * 56.25), round(1110 - y * 65.0)))
+    cv2.fillPoly(ideal, [np.asarray(points, dtype=np.int32)], 255)
+    rgb = np.full((size, size, 3), 255, dtype=np.uint8)
+    rgb[ideal > 0] = (18, 92, 168)
+    encoded = cv2.imencode(
+        ".jpg",
+        cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
+        [cv2.IMWRITE_JPEG_QUALITY, 82],
+    )[1]
+    jpeg = cv2.cvtColor(cv2.imdecode(encoded, 1), cv2.COLOR_BGR2RGB)
+    strict = _mask_nen_trang(jpeg)
+    source_pixel_mm = 1600.0 / size
+    softened = _lam_mem_dai_bien(
+        strict,
+        jpeg,
+        px_per_mm=size / 1600.0,
+        source_pixel_mm=source_pixel_mm,
+    )
+
+    ideal_ring = max(measure.find_contours(ideal, 127.5), key=len)
+    actual_ring = max(measure.find_contours(softened, 127.5), key=len)
+    error_px = LineString(ideal_ring).hausdorff_distance(LineString(actual_ring))
+    assert error_px <= 3.25

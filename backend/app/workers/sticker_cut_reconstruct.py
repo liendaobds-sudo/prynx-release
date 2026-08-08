@@ -42,6 +42,10 @@ AUTO_ELLIPSE_ASPECT_MAX = 1.35  # a/b — lớn hơn → elip rõ; nhỏ hơn + 
 # Rounded-rect (CN bo góc — hình tem nhãn phổ biến nhất)
 # r tối thiểu để coi là "bo góc thật" (dưới ngưỡng → coi vuông, để try_rect lo).
 ROUNDED_MIN_RADIUS_MM = 1.0
+# QUALITY (audit 2026-08-07 §NOODLE.10): bán kính bo nhỏ hơn 8 pixel ảnh nguồn
+# thường chỉ là alias/nén JPEG ở góc vuông. Hình bo thật trong ma trận có r≈230 px,
+# nên cổng này tách xa hai nhóm và không phụ thuộc kích thước đặt trên trang.
+ROUNDED_MIN_RADIUS_SOURCE_PX = 8.0
 # r tối đa theo tỉ lệ nửa cạnh ngắn. Không cần quá chặt: hình tròn thật đã được
 # try_ellipse_or_circle chặn TRƯỚC trong chuỗi auto_safe, nên bo góc lớn (kể cả
 # dạng viên thuốc r≈nửa cạnh ngắn) vẫn là rounded-rect hợp lệ, không phải tròn.
@@ -52,6 +56,7 @@ ROUNDED_MAX_RADIUS_FRAC = 0.85
 # Noise-floor: contour raster có răng cưa sàn ~1.5px. Ở DPI thấp, tròn thật có thể
 # vượt ngưỡng residual chỉ vì răng cưa → bị từ chối oan. τ_hiệu_dụng nới theo px_per_mm.
 NOISE_FLOOR_PX = 1.5
+TRIANGLE_RESIDUAL_MULTIPLIER = 1.25
 
 # QUALITY (audit 2026-08-07 §BG.7) — ngưỡng residual/defect theo TỈ LỆ kích thước tem.
 # Lỗi cũ: hai ngưỡng trên là mm TUYỆT ĐỐI, nên tem càng lớn càng chắc chắn trượt.
@@ -84,7 +89,7 @@ AUTO_DEFECT_SIZE_FRAC = 0.0045
 
 @dataclass
 class ReconstructResult:
-    kind: str  # circle | ellipse | rect | triangle
+    kind: str  # circle | ellipse | rounded_rect | rect | triangle
     coords: np.ndarray  # (N, 2) closed optional; caller may close
     params: dict
     residual_mm: float
@@ -273,7 +278,11 @@ def try_ellipse_or_circle(
 
 
 def try_rect(
-    pts: np.ndarray, *, force: bool = False, max_residual_mm: float = AUTO_MAX_RESIDUAL_MM
+    pts: np.ndarray,
+    *,
+    force: bool = False,
+    max_residual_mm: float = AUTO_MAX_RESIDUAL_MM,
+    max_defect_mm: float = AUTO_MAX_DEFECT_MM,
 ) -> Optional[ReconstructResult]:
     pts = _pts_xy(pts)
     if len(pts) < 4 or cv2 is None:
@@ -304,7 +313,7 @@ def try_rect(
             return None
         if residual > max_residual_mm:
             return None
-        if defect > AUTO_MAX_DEFECT_MM * 1.2:
+        if defect > max_defect_mm * 1.2:
             return None
         # reject near-circles that also fill a square bounding box poorly classified
         if _circularity(pts) > 0.92 and abs(w - h) / max(w, h) < 0.15:
@@ -359,6 +368,8 @@ def try_rounded_rect(
     *,
     force: bool = False,
     max_residual_mm: float = AUTO_MAX_RESIDUAL_MM,
+    max_defect_mm: float = AUTO_MAX_DEFECT_MM,
+    min_radius_mm: float = ROUNDED_MIN_RADIUS_MM,
 ) -> Optional[ReconstructResult]:
     """CN bo góc: minAreaRect → xoay về trục → fit bán kính r bằng SDF, đo residual mm.
     Gate auto: r đủ lớn để là "bo góc thật", nhưng không lớn tới mức thành tròn/viên thuốc."""
@@ -398,13 +409,13 @@ def try_rounded_rect(
 
     if not force:
         # r phải "thật" (đủ lớn) nhưng không quá lớn (→ tròn/stadium).
-        if r_mm < ROUNDED_MIN_RADIUS_MM:
+        if r_mm < min_radius_mm:
             return None  # gần vuông → để try_rect
         if best_r > ROUNDED_MAX_RADIUS_FRAC * min(W, H):
             return None  # quá tròn → để circle/ellipse
         if residual > max_residual_mm:
             return None
-        if defect > AUTO_MAX_DEFECT_MM:
+        if defect > max_defect_mm:
             return None  # lõm/khuyết → không phải rounded-rect trơn
 
     coords = _sample_rounded_rect(cx, cy, W, H, best_r, angle)
@@ -418,7 +429,11 @@ def try_rounded_rect(
 
 
 def try_triangle(
-    pts: np.ndarray, *, force: bool = False, max_residual_mm: float = AUTO_MAX_RESIDUAL_MM
+    pts: np.ndarray,
+    *,
+    force: bool = False,
+    max_residual_mm: float = AUTO_MAX_RESIDUAL_MM,
+    max_defect_mm: float = AUTO_MAX_DEFECT_MM,
 ) -> Optional[ReconstructResult]:
     pts = _pts_xy(pts)
     if len(pts) < 3 or cv2 is None:
@@ -471,9 +486,9 @@ def try_triangle(
             return None
         if area_ratio < 0.92:
             return None
-        if residual > max_residual_mm * 1.2:
+        if residual > max_residual_mm * TRIANGLE_RESIDUAL_MULTIPLIER:
             return None
-        if defect > AUTO_MAX_DEFECT_MM * 1.3:
+        if defect > max_defect_mm * 1.3:
             return None
 
     return ReconstructResult(
@@ -489,6 +504,7 @@ def reconstruct_cut_coords(
     contour_pts: Sequence[Sequence[float]],
     mode: str = "auto_safe",
     px_per_mm: Optional[float] = None,
+    source_pixel_mm: Optional[float] = None,
 ) -> Tuple[Optional[np.ndarray], dict]:
     """
     Returns (coords Nx2 without forced close, meta dict).
@@ -497,6 +513,9 @@ def reconstruct_cut_coords(
     px_per_mm: độ phân giải raster nguồn contour. Dùng nới ngưỡng residual theo
     răng cưa sàn (NOISE_FLOOR_PX) để tròn/CN-bo-góc thật ở DPI thấp không bị
     reject oan. None → dùng ngưỡng cố định (hành vi cũ).
+
+    source_pixel_mm: kích thước vật lý của một pixel ẢNH GỐC. Dùng phân biệt bán
+    kính bo thật với alias góc JPEG; khác với pixel raster render ở `px_per_mm`.
     """
     mode = normalize_shape_mode(mode)
     meta: dict[str, Any] = {"shape_mode": mode, "reconstructed": False}
@@ -520,6 +539,17 @@ def reconstruct_cut_coords(
     size_mm = max(_w, _h) / PT_PER_MM
     eff_residual = max(eff_residual, size_mm * AUTO_RESIDUAL_SIZE_FRAC)
     eff_defect = max(AUTO_MAX_DEFECT_MM, size_mm * AUTO_DEFECT_SIZE_FRAC)
+    effective_rounded_min_radius_mm = ROUNDED_MIN_RADIUS_MM
+    if source_pixel_mm is not None:
+        try:
+            source_mm = float(source_pixel_mm)
+        except (TypeError, ValueError):
+            source_mm = 0.0
+        if math.isfinite(source_mm) and source_mm > 0:
+            effective_rounded_min_radius_mm = max(
+                ROUNDED_MIN_RADIUS_MM,
+                source_mm * ROUNDED_MIN_RADIUS_SOURCE_PX,
+            )
     meta["size_mm"] = round(size_mm, 2)
 
     if mode == "contour":
@@ -565,9 +595,27 @@ def reconstruct_cut_coords(
         lambda: try_ellipse_or_circle(
             pts, force=None, max_residual_mm=eff_residual, max_defect_mm=eff_defect
         ),
-        lambda: try_rounded_rect(pts, force=False, max_residual_mm=eff_residual),
-        lambda: try_rect(pts, force=False, max_residual_mm=eff_residual),
-        lambda: try_triangle(pts, force=False, max_residual_mm=eff_residual),
+        # QUALITY (audit 2026-08-07 §NOODLE.8–10): truyền cùng ngưỡng lõm
+        # theo kích thước cho mọi họ hình; trước đây chỉ ellipse nhận `eff_defect`.
+        lambda: try_rounded_rect(
+            pts,
+            force=False,
+            max_residual_mm=eff_residual,
+            max_defect_mm=eff_defect,
+            min_radius_mm=effective_rounded_min_radius_mm,
+        ),
+        lambda: try_rect(
+            pts,
+            force=False,
+            max_residual_mm=eff_residual,
+            max_defect_mm=eff_defect,
+        ),
+        lambda: try_triangle(
+            pts,
+            force=False,
+            max_residual_mm=eff_residual,
+            max_defect_mm=eff_defect,
+        ),
     ):
         r = attempt()
         if r is not None:

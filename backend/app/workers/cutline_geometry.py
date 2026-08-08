@@ -203,6 +203,24 @@ def _generate_fitted_bezier(
     # node mạnh và tránh phải fallback cả contour chỉ vì một đoạn bị loop.
     alpha_left = min(alpha_left, chord)
     alpha_right = min(alpha_right, chord)
+
+    if enforce_monotonic and chord > 1e-12:
+        chord_unit = _vec_scale(_vec_sub(p3, p0), 1.0 / chord)
+        left_projection_factor = _vec_dot(left_tangent, chord_unit)
+        right_projection_factor = -_vec_dot(right_tangent, chord_unit)
+        if left_projection_factor > 1e-9 and right_projection_factor > 1e-9:
+            projected_span = (
+                alpha_left * left_projection_factor
+                + alpha_right * right_projection_factor
+            )
+            if projected_span > chord:
+                # QUALITY (audit 2026-08-07 §MOTION.2): co độ dài tay nắm,
+                # không đổi HƯỚNG tiếp tuyến sang chord. Cách cũ giữ đơn điệu
+                # nhưng biến mọi split đệ quy thành một khớp gãy cho máy cắt.
+                scale = chord / projected_span
+                alpha_left *= scale
+                alpha_right *= scale
+
     control1 = _vec_add(p0, _vec_scale(left_tangent, alpha_left))
     control2 = _vec_add(p3, _vec_scale(right_tangent, alpha_right))
 
@@ -397,6 +415,31 @@ def _fit_open_cubic(
     )
 
 
+def _closed_ring_samples(points, index, direction, distance):
+    """Lấy dải điểm một phía trên ring theo độ dài cung."""
+    current = index
+    walked = 0.0
+    samples = [points[current]]
+    for _ in range(len(points) - 1):
+        following = (current + direction) % len(points)
+        walked += _vec_length(_vec_sub(points[following], points[current]))
+        current = following
+        samples.append(points[current])
+        if walked >= distance:
+            break
+    return samples
+
+
+def _closed_ring_center_tangent(points, index, distance):
+    """Ước lượng tiếp tuyến hai phía; hướng trả về quay ngược chiều ring."""
+    before = _closed_ring_samples(points, index, -1, distance)
+    after = _closed_ring_samples(points, index, 1, distance)
+    return _principal_chain_direction(
+        before[1:] + after,
+        _vec_sub(before[-1], after[-1]),
+    )
+
+
 def fit_closed_cubic_beziers(
     coords,
     tolerance,
@@ -425,9 +468,23 @@ def fit_closed_cubic_beziers(
         points[:split + 1],
         points[split:] + [points[0]],
     )
+    shared_tangents = None
+    if tangent_window > 0:
+        start_tangent = _closed_ring_center_tangent(points, 0, tangent_window)
+        split_tangent = _closed_ring_center_tangent(points, split, tangent_window)
+        if start_tangent != (0.0, 0.0) and split_tangent != (0.0, 0.0):
+            # QUALITY (audit 2026-08-07 §MOTION.2): hai điểm chia kỹ thuật của
+            # ring trơn phải dùng chung tiếp tuyến hai phía. Ước lượng độc lập
+            # từng chain từng tạo khớp gãy dù reference không hề có góc.
+            shared_tangents = (
+                (_vec_scale(start_tangent, -1.0), split_tangent),
+                (_vec_scale(split_tangent, -1.0), start_tangent),
+            )
     output = []
-    for chain in chains:
-        if tangent_window > 0:
+    for chain_index, chain in enumerate(chains):
+        if shared_tangents is not None:
+            left_tangent, right_tangent = shared_tangents[chain_index]
+        elif tangent_window > 0:
             left_tangent = _open_chain_endpoint_tangent(
                 chain,
                 0,
@@ -458,6 +515,212 @@ def fit_closed_cubic_beziers(
 _ADAPTIVE_CORNER_VALIDATION_SCALES = (2.0, 3.0)
 _ADAPTIVE_CORNER_PERSISTENCE_RATIO = 0.50
 _ADAPTIVE_TANGENT_MIN_SPAN_RATIO = 5.0
+_ADAPTIVE_CORNER_DISCONTINUITY_SCALES = (1.0, 1.5, 2.0)
+_ADAPTIVE_CORNER_REFERENCE_EDGE_MULTIPLIER = 6.0
+
+
+def _solve_three_by_three(matrix, vector):
+    """Giải hệ 3×3 nhỏ bằng pivot; trả ``None`` khi dữ liệu suy biến."""
+    rows = [list(row) + [value] for row, value in zip(matrix, vector)]
+    for column in range(3):
+        pivot = max(range(column, 3), key=lambda row: abs(rows[row][column]))
+        if abs(rows[pivot][column]) <= 1e-12:
+            return None
+        rows[column], rows[pivot] = rows[pivot], rows[column]
+        divisor = rows[column][column]
+        rows[column] = [value / divisor for value in rows[column]]
+        for row in range(3):
+            if row == column:
+                continue
+            factor = rows[row][column]
+            rows[row] = [
+                value - factor * pivot_value
+                for value, pivot_value in zip(rows[row], rows[column])
+            ]
+    return tuple(rows[row][3] for row in range(3))
+
+
+def _quadratic_chain_endpoint_tangent(samples):
+    """Ngoại suy tiếp tuyến tại đầu dải bằng bình phương tối thiểu bậc hai."""
+    preferred = _vec_normalize(_vec_sub(samples[-1], samples[0]))
+    distances = [0.0]
+    for previous, current in zip(samples, samples[1:]):
+        distances.append(
+            distances[-1] + _vec_length(_vec_sub(current, previous))
+        )
+    total = distances[-1]
+    if len(samples) < 4 or total <= 1e-12:
+        return preferred
+
+    parameters = [distance / total for distance in distances]
+    powers = [
+        sum(parameter ** power for parameter in parameters)
+        for power in range(5)
+    ]
+    matrix = (
+        (powers[0], powers[1], powers[2]),
+        (powers[1], powers[2], powers[3]),
+        (powers[2], powers[3], powers[4]),
+    )
+    derivatives = []
+    for axis in range(2):
+        target = (
+            sum(point[axis] for point in samples),
+            sum(
+                parameter * point[axis]
+                for parameter, point in zip(parameters, samples)
+            ),
+            sum(
+                parameter * parameter * point[axis]
+                for parameter, point in zip(parameters, samples)
+            ),
+        )
+        solution = _solve_three_by_three(matrix, target)
+        if solution is None:
+            return preferred
+        derivatives.append(solution[1])
+    tangent = _vec_normalize(tuple(derivatives))
+    return tangent if tangent != (0.0, 0.0) else preferred
+
+
+def _closed_ring_tangent_discontinuity(points, index, window):
+    """Đo góc gián đoạn tiếp tuyến, không nhầm độ cong lớn với một đỉnh nhọn."""
+    before = _quadratic_chain_endpoint_tangent(
+        _closed_ring_samples(points, index, -1, window)
+    )
+    after = _quadratic_chain_endpoint_tangent(
+        _closed_ring_samples(points, index, 1, window)
+    )
+    incoming = _vec_scale(before, -1.0)
+    if incoming == (0.0, 0.0) or after == (0.0, 0.0):
+        return 0.0
+    cross = incoming[0] * after[1] - incoming[1] * after[0]
+    return math.atan2(cross, _vec_dot(incoming, after))
+
+
+def _closed_ring_discontinuity_corner_indices(
+    points,
+    *,
+    probe_window,
+    minimum_turn_degrees,
+):
+    """Khóa góc có gián đoạn tiếp tuyến bền qua ba thang đo cục bộ."""
+    count = len(points)
+    if count < 4 or probe_window <= 0:
+        return []
+    edge_lengths = [
+        _vec_length(_vec_sub(points[(index + 1) % count], points[index]))
+        for index in range(count)
+    ]
+    perimeter = sum(edge_lengths)
+    if perimeter <= probe_window * 4.0:
+        return []
+    arc_positions = [0.0]
+    for edge_length in edge_lengths[:-1]:
+        arc_positions.append(arc_positions[-1] + edge_length)
+
+    threshold = math.radians(float(minimum_turn_degrees))
+    # Lọc thô bằng chord-turn rẻ trước khi chạy hồi quy bậc hai. Khoảng NMS nhỏ
+    # giữ vài ứng viên quanh mỗi đỉnh để bước chính không bỏ góc vì lệch một pixel.
+    coarse_indices = _closed_ring_corner_indices(
+        points,
+        corner_window=probe_window,
+        # Cửa này chỉ loại vùng gần thẳng. Đỉnh tim sau nội suy có chord-turn
+        # nhỏ ở đúng pixel giữa nhưng hồi quy hai phía vẫn thấy gián đoạn >150°.
+        minimum_turn_degrees=float(minimum_turn_degrees) * 0.50,
+        minimum_corner_separation=probe_window * 0.25,
+        validate_persistence=False,
+    )
+    candidates = []
+    for index in coarse_indices:
+        turns = [
+            _closed_ring_tangent_discontinuity(points, index, probe_window * scale)
+            for scale in _ADAPTIVE_CORNER_DISCONTINUITY_SCALES
+        ]
+        persistent_count = sum(abs(turn) >= threshold for turn in turns)
+        regular_corner = (
+            persistent_count >= 2
+            and abs(turns[0]) >= threshold * 0.85
+        )
+        hidden_cusp = (
+            abs(turns[1]) >= threshold
+            and abs(turns[2]) >= threshold * 2.50
+        )
+        if (
+            (regular_corner or hidden_cusp)
+            and all(turns[0] * turn > 0.0 for turn in turns[1:])
+        ):
+            candidates.append((min(abs(turn) for turn in turns), index))
+
+    selected = []
+    # Một cửa sổ probe tương ứng khoảng sáu cạnh reference. NMS cùng thang này
+    # gom cụm pixel quanh một đỉnh nhưng không nhập hai feature riêng biệt.
+    for _score, index in sorted(candidates, reverse=True):
+        position = arc_positions[index]
+        if all(
+            min(abs(position - other), perimeter - abs(position - other))
+            >= probe_window
+            for other in selected
+        ):
+            selected.append(position)
+    position_to_index = {
+        position: index for index, position in enumerate(arc_positions)
+    }
+    return sorted(position_to_index[position] for position in selected)
+
+
+def _reference_corner_indices(
+    points,
+    reference_points,
+    minimum_turn_degrees,
+    *,
+    probe_window=None,
+):
+    """Dò góc trên reference bất biến rồi ánh xạ về ring neo đang fit."""
+    edge_lengths = sorted(
+        length
+        for length in (
+            _vec_length(
+                _vec_sub(
+                    reference_points[(index + 1) % len(reference_points)],
+                    reference_points[index],
+                )
+            )
+            for index in range(len(reference_points))
+        )
+        if length > 1e-12
+    )
+    if not edge_lengths:
+        return []
+    middle = len(edge_lengths) // 2
+    median_edge = (
+        edge_lengths[middle]
+        if len(edge_lengths) % 2
+        else (edge_lengths[middle - 1] + edge_lengths[middle]) * 0.5
+    )
+    derived_probe_window = (
+        median_edge * _ADAPTIVE_CORNER_REFERENCE_EDGE_MULTIPLIER
+    )
+    if probe_window is None:
+        probe_window = derived_probe_window
+    else:
+        probe_window = max(float(probe_window), derived_probe_window)
+    reference_corners = _closed_ring_discontinuity_corner_indices(
+        reference_points,
+        probe_window=probe_window,
+        minimum_turn_degrees=minimum_turn_degrees,
+    )
+    mapped = set()
+    for reference_index in reference_corners:
+        corner = reference_points[reference_index]
+        mapped.add(min(
+            range(len(points)),
+            key=lambda index: _vec_dot(
+                _vec_sub(points[index], corner),
+                _vec_sub(points[index], corner),
+            ),
+        ))
+    return sorted(mapped)
 
 
 def _closed_ring_corner_indices(
@@ -571,12 +834,15 @@ def fit_closed_cubic_beziers_adaptive(
     enforce_monotonic=True,
     validate_corner_persistence=True,
     smooth_raster_tangents=True,
+    reference_coords=None,
+    corner_discontinuity_window=None,
 ):
     """Fit ring theo từng span trơn và giữ neo tại mọi góc lồi/lõm có ý nghĩa.
 
-    Hai span kề nhau dùng tiếp tuyến riêng tại neo, vì vậy đường cong được phép
-    gián đoạn tiếp tuyến đúng ở đỉnh nhọn. Nếu ring không có đủ góc rõ ràng, dùng
-    bộ fit kín cũ để giữ nguyên hành vi cho contour cong hoàn toàn.
+    Khi có ``reference_coords``, góc thật được dò trên contour bất biến bằng độ
+    gián đoạn của hai tiếp tuyến ngoại suy, rồi mới ánh xạ sang ring đã simplify.
+    Hai span kề nhau chỉ dùng tiếp tuyến riêng ở các góc đã xác nhận. Nếu không
+    có đủ góc rõ ràng, bộ fit kín dùng tiếp tuyến chung cho contour cong hoàn toàn.
     """
     points = [(float(x), float(y)) for x, y in coords]
     if len(points) > 1 and points[0] == points[-1]:
@@ -588,6 +854,20 @@ def fit_closed_cubic_beziers_adaptive(
     points = deduplicated
     if len(points) < 3 or tolerance <= 0:
         return []
+
+    reference_points = []
+    if reference_coords is not None:
+        for x, y in reference_coords:
+            point = (float(x), float(y))
+            if (
+                not reference_points
+                or _vec_length(_vec_sub(point, reference_points[-1])) > 1e-12
+            ):
+                reference_points.append(point)
+        if len(reference_points) > 1 and reference_points[0] == reference_points[-1]:
+            reference_points.pop()
+        if len(reference_points) < 3:
+            reference_points = []
 
     separation = (
         float(minimum_corner_separation)
@@ -602,13 +882,24 @@ def fit_closed_cubic_beziers_adaptive(
         float(corner_window) * _ADAPTIVE_CORNER_VALIDATION_SCALES[-1],
         perimeter * 0.25,
     )
-    corners = _closed_ring_corner_indices(
-        points,
-        corner_window=float(corner_window),
-        minimum_turn_degrees=minimum_turn_degrees,
-        minimum_corner_separation=separation,
-        validate_persistence=validate_corner_persistence,
-    )
+    if reference_points:
+        # QUALITY (audit 2026-08-07 §MOTION.2): không tìm feature trên anchor đã
+        # simplify. Việc đó từng biến cực trị cong mượt thành góc và tạo khớp gãy
+        # 10–54°. Reference chỉ để phân loại; guard cuối vẫn dùng geometry gốc.
+        corners = _reference_corner_indices(
+            points,
+            reference_points,
+            minimum_turn_degrees,
+            probe_window=corner_discontinuity_window,
+        )
+    else:
+        corners = _closed_ring_corner_indices(
+            points,
+            corner_window=float(corner_window),
+            minimum_turn_degrees=minimum_turn_degrees,
+            minimum_corner_separation=separation,
+            validate_persistence=validate_corner_persistence,
+        )
     if len(corners) < 2:
         return fit_closed_cubic_beziers(
             points,

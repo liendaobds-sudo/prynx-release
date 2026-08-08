@@ -62,4 +62,30 @@ describe('pageSheetPolicy', () => {
             markOffset: 3,
         })).toBe(12);
     });
+
+    it('uses the item gap for the L-shape secondary block when cut marks are disabled', () => {
+        expect(resolveImpositionSplitGap({
+            dieGeometryMode: false,
+            gapX: 0,
+            gapY: 0,
+            clusterGap: 0,
+            markType: 'none',
+        })).toBe(0);
+        expect(resolveImpositionSplitGap({
+            dieGeometryMode: false,
+            gapX: 2,
+            gapY: 3,
+            clusterGap: 12,
+            clusterGapMode: 'item',
+            markType: 'none',
+        })).toBe(3);
+        expect(resolveImpositionSplitGap({
+            dieGeometryMode: false,
+            gapX: 0,
+            gapY: 0,
+            clusterGap: 12,
+            clusterGapMode: 'item',
+            markType: 'none',
+        })).toBe(0);
+    });
 });

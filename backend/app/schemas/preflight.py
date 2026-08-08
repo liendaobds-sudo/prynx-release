@@ -364,6 +364,19 @@ class SoftProofRequest(BaseModel):
     show_gamut_warning: bool = False
     dpi: int = 150
 
+
+class ViewerAccurateRenderRequest(BaseModel):
+    """Render color-managed cho Viewer từ file PDF đang mở tại máy người dùng."""
+
+    file_path: str = Field(min_length=1)
+    page: int = Field(default=1, ge=1)
+    # COLOR (audit 2026-08-07 §GV.3): renderZoom phía Viewer đã tự giữ cạnh dài
+    # trong ngân sách bitmap. Giới hạn này chỉ chặn payload IPC bất thường, không hạ
+    # chất lượng zoom hợp lệ trên máy mạnh.
+    dpi: int = Field(default=96, ge=24, le=9600)
+    profile_id: str = "fogra39"
+    intent: str = "relative"
+
 class OverprintPreviewRequest(BaseModel):
     file_id: str
     page: int = 1

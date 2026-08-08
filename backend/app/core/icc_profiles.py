@@ -1,13 +1,14 @@
 """Shared ICC profile registry — Convert Colors, Soft-proof, Separations.
 
 Resolves profiles from the app bundle first (``settings.ICC_PROFILE_DIR``),
-then well-known OS color directories. Acrobat-style soft-proof needs a real
-CMYK output profile (FOGRA39) and an sRGB display profile.
+then well-known OS color directories. Mỗi ứng viên sRGB được xác minh danh tính
+trước khi dùng; file mang nhãn sRGB nhưng thực chất Adobe RGB sẽ bị cách ly.
 """
 from __future__ import annotations
 
 import logging
 import os
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -152,13 +153,62 @@ def _search_dirs() -> list[Path]:
     return dirs
 
 
-def _find_file(filenames: list[str]) -> Path | None:
+def _profile_matches_registry_id(profile_id: str, path: Path) -> bool:
+    """Chặn profile bị đặt sai tên trước khi nó đi vào Ghostscript/PPE."""
+    if profile_id != "srgb":
+        return True
+    try:
+        from PIL import ImageCms
+
+        profile = ImageCms.getOpenProfile(str(path))
+        identity = " ".join((
+            ImageCms.getProfileName(profile),
+            ImageCms.getProfileDescription(profile),
+        )).strip().lower()
+        return ("srgb" in identity or "iec 61966-2.1" in identity) and "adobe rgb" not in identity
+    except Exception as exc:
+        logger.warning("[ICC] không đọc được profile sRGB '%s': %s", path, exc)
+        return False
+
+
+@lru_cache(maxsize=1)
+def _materialize_builtin_srgb_profile() -> Path | None:
+    """Tạo profile sRGB chuẩn từ LittleCMS khi bundle/OS không có bản hợp lệ."""
+    try:
+        from PIL import ImageCms
+
+        target_dir = Path(tempfile.gettempdir()) / "PrynX" / "icc"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / "sRGB-lcms.icc"
+        if target.is_file() and _profile_matches_registry_id("srgb", target):
+            return target.resolve()
+
+        profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB"))
+        payload = profile.tobytes()
+        temporary = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+        temporary.write_bytes(payload)
+        os.replace(temporary, target)
+        if _profile_matches_registry_id("srgb", target):
+            return target.resolve()
+    except Exception as exc:
+        logger.warning("[ICC] không tạo được profile sRGB LittleCMS: %s", exc)
+    return None
+
+
+def _find_file(profile_id: str, filenames: list[str]) -> Path | None:
     for directory in _search_dirs():
         try:
             for fn in filenames:
                 candidate = directory / fn
                 if candidate.is_file():
-                    return candidate.resolve()
+                    resolved = candidate.resolve()
+                    if _profile_matches_registry_id(profile_id, resolved):
+                        return resolved
+                    logger.warning(
+                        "[ICC] bỏ qua profile '%s' vì danh tính không khớp id '%s'",
+                        resolved,
+                        profile_id,
+                    )
             # one-level subdirs
             for sub in directory.iterdir():
                 if not sub.is_dir():
@@ -166,7 +216,9 @@ def _find_file(filenames: list[str]) -> Path | None:
                 for fn in filenames:
                     candidate = sub / fn
                     if candidate.is_file():
-                        return candidate.resolve()
+                        resolved = candidate.resolve()
+                        if _profile_matches_registry_id(profile_id, resolved):
+                            return resolved
         except OSError:
             continue
     return None
@@ -181,10 +233,15 @@ def resolve_profile_path(profile_id: str) -> str | None:
     info = PROFILE_REGISTRY.get(key)
     if not info:
         return None
-    found = _find_file(list(info["filenames"]))
+    found = _find_file(key, list(info["filenames"]))
     if found:
         logger.debug("[ICC] %s → %s", key, found)
         return str(found)
+    if key == "srgb":
+        generated = _materialize_builtin_srgb_profile()
+        if generated:
+            logger.info("[ICC] srgb → %s (LittleCMS built-in)", generated)
+            return str(generated)
     logger.warning("[ICC] profile '%s' not found (tried %s)", key, info["filenames"][:3])
     return None
 
@@ -195,11 +252,7 @@ def resolve_cmyk_profile_path(profile_id: str | None = None) -> str | None:
 
 
 def resolve_srgb_profile_path() -> str | None:
-    path = resolve_profile_path("srgb")
-    if path:
-        return path
-    # Pillow can create sRGB; callers may fall back.
-    return None
+    return resolve_profile_path("srgb")
 
 
 def default_cmyk_profile_filename() -> str:

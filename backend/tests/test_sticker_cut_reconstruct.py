@@ -201,6 +201,19 @@ def test_rounded_rect_small_radius_becomes_rect():
     assert meta.get("kind") == "rect", meta
 
 
+def test_jpeg_corner_radius_below_eight_source_pixels_stays_rect():
+    """§NOODLE.10: bo giả 1,1 mm trên ảnh 0,2 mm/px không được đổi góc vuông."""
+    pts = _rounded_rect_pts(w_mm=60, h_mm=40, r_mm=1.1)
+    coords, meta = reconstruct_cut_coords(
+        pts,
+        "auto_safe",
+        px_per_mm=5.0,
+        source_pixel_mm=0.2,
+    )
+    assert coords is not None
+    assert meta.get("kind") == "rect", meta
+
+
 def test_sharp_rect_not_rounded():
     pts = _sharp_rect_pts(w_mm=60, h_mm=40)
     coords, meta = reconstruct_cut_coords(pts, "auto_safe")

@@ -3,7 +3,8 @@ import {
     configureTileUrlCacheForHardware,
     type TileUrlSource,
 } from '../../lib/tileUrlCache';
-import { nativeTileRenderScheduler } from './tileRenderScheduler';
+import { CancelledTileRenderError, nativeTileRenderScheduler } from './tileRenderScheduler';
+import { authenticatedFetch, getApiUrl } from '../../lib/api';
 
 interface UseTileRendererProps {
     file: any;
@@ -12,25 +13,85 @@ interface UseTileRendererProps {
     activePage: number;
     tabId?: string;
     isActive?: boolean;
+    accurateColorEnabled?: boolean;
+    accurateColorPages?: number[];
 }
 
 interface TileRenderRequestOptions {
     ownerId?: string;
     groupKey?: string;
     priority?: number;
+    colorStage?: ViewerColorStage;
 }
 
 let nextTileRendererId = 1;
 
-export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isActive }: UseTileRendererProps) {
+export type ViewerColorStage = 'display' | 'accurate';
+
+const DISPLAY_ONLY_STAGES: readonly ViewerColorStage[] = ['display'];
+const PROGRESSIVE_COLOR_STAGES: readonly ViewerColorStage[] = ['display', 'accurate'];
+export const ACCURATE_VIEWER_DPI_BUCKET = 12;
+
+export function progressiveViewerColorStages(enabled: boolean): readonly ViewerColorStage[] {
+    return enabled ? PROGRESSIVE_COLOR_STAGES : DISPLAY_ONLY_STAGES;
+}
+
+export function shouldUseAccurateViewerRender(
+    enabled: boolean,
+    accuratePages: readonly number[],
+    pageNum: number,
+    isTile: boolean,
+    colorStage?: ViewerColorStage,
+): boolean {
+    return enabled
+        && colorStage === 'accurate'
+        && !isTile
+        && accuratePages.includes(pageNum);
+}
+
+export function accurateViewerDpi(zoomScale: number): number {
+    // PERF (audit 2026-08-07 §ZOOM.3): Ctrl+Wheel tạo scale thập phân gần nhau;
+    // nếu dùng DPI chính xác từng đơn vị, mỗi lần chỉnh nhẹ lại thành một cache miss PPE.
+    // Bo LÊN nấc 12 DPI để ảnh cuối chỉ downsample (không phóng mờ), đồng thời các mức
+    // chuẩn 100/125/150/200% vẫn khớp đúng 96/120/144/192 DPI, không render dư.
+    const requestedDpi = Number.isFinite(zoomScale) && zoomScale > 0
+        ? 96 * zoomScale
+        : 24;
+    const bucketedDpi = Math.ceil(requestedDpi / ACCURATE_VIEWER_DPI_BUCKET)
+        * ACCURATE_VIEWER_DPI_BUCKET;
+    // Biên 9600 đồng bộ validation API và cao hơn miền renderZoom hợp lệ của Viewer.
+    return Math.max(24, Math.min(9600, bucketedDpi));
+}
+
+export function adjacentAccuratePages(
+    pageNum: number,
+    accuratePages: readonly number[],
+): number[] {
+    const available = new Set(accuratePages);
+    return [pageNum + 1, pageNum - 1].filter(page => page > 0 && available.has(page));
+}
+
+export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isActive, accurateColorEnabled = false, accurateColorPages = [] }: UseTileRendererProps) {
     const activePageRef = useRef(activePage);
+    const accurateRenderAbortRef = useRef<AbortController | null>(null);
+    const accuratePrefetchAbortRef = useRef(new Map<string, AbortController>());
+    const accuratePrefetchedKeysRef = useRef(new Set<string>());
     useEffect(() => { activePageRef.current = activePage; }, [activePage]);
 
     const [rendererInstanceId] = useState(() => `viewer:${tabId || 'local'}:${nextTileRendererId++}`);
     const fileIdentity = (file as { path?: string } | null)?.path || pdfUrl || 'memory';
+    const [accurateColorFailure, setAccurateColorFailure] = useState<{ fileIdentity: string; message: string } | null>(null);
+    const accurateColorError = accurateColorFailure?.fileIdentity === fileIdentity
+        ? accurateColorFailure.message
+        : null;
     const renderOwnerId = `${rendererInstanceId}:${fileIdentity}`;
     useEffect(() => () => {
         nativeTileRenderScheduler.cancelOwner(renderOwnerId);
+        accurateRenderAbortRef.current?.abort();
+        accurateRenderAbortRef.current = null;
+        for (const controller of accuratePrefetchAbortRef.current.values()) controller.abort();
+        accuratePrefetchAbortRef.current.clear();
+        accuratePrefetchedKeysRef.current.clear();
     }, [renderOwnerId]);
     useEffect(() => {
         if (isActive === false) nativeTileRenderScheduler.cancelOwner(renderOwnerId);
@@ -48,7 +109,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
 
         // Native file path. Ở RELEASE, protocol tile.localhost (img declarative / new Image /
         // fetch) ĐỀU không hiển thị được — chỉ cache cũ mới hiện. Cách đáng tin duy nhất:
-        // lấy bytes JPEG qua IPC `invoke('render_pdf_page')` (giống tách nền dùng invoke→blob,
+        // lấy bytes PNG qua IPC `invoke('render_pdf_page')` (giống tách nền dùng invoke→blob,
         // đã chạy ở release) rồi tạo blob:. LiveTile tự cache + revoke blob.
         const nativeFilePath = (file as { path?: string } | null)?.path;
         if (nativeFilePath) {
@@ -73,7 +134,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                 isTile ? clipH : 0,
             ].join('|');
             const queuedAt = performance.now();
-            return (async () => {
+            const renderNativePng = async (): Promise<TileUrlSource> => {
                 const bytes = await nativeTileRenderScheduler.enqueue({
                     requestKey,
                     groupKey,
@@ -98,9 +159,104 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                         return renderedBytes;
                     },
                 });
-                const blob = new Blob([bytes], { type: 'image/jpeg' });
+                // COLOR (audit 2026-08-07 §GV.1/§GV.4): raw PDFium không được nén
+                // mất dữ liệu lần hai; full-page và tile zoom dùng cùng MIME lossless.
+                const blob = new Blob([bytes], { type: 'image/png' });
                 return { url: URL.createObjectURL(blob), byteLength: blob.size };
-            })();
+            };
+
+            if (shouldUseAccurateViewerRender(
+                accurateColorEnabled,
+                accurateColorPages,
+                pageNum,
+                isTile,
+                requestOptions?.colorStage,
+            )) {
+                // COLOR (audit 2026-08-07 §GV.3): trang CMYK/DeviceN/transparency
+                // được dựng trong không gian mực rồi mới quy FOGRA39→sRGB. Chỉ xin
+                // full-page; LivePageFrame tắt tile PDFium để hue không đổi theo mảng.
+                return (async () => {
+                    accurateRenderAbortRef.current?.abort();
+                    const abortController = new AbortController();
+                    accurateRenderAbortRef.current = abortController;
+                    try {
+                        // PERF (audit 2026-08-07 §GV.P1): PPE chạy ở sidecar/backend,
+                        // không được chiếm scheduler dành riêng cho khóa PDFium native.
+                        // Nếu dùng chung, PPE trang trước chặn cả ảnh display trang kế.
+                        const response = await authenticatedFetch(`${getApiUrl()}/preflight/viewer-accurate`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                file_path: nativeFilePath,
+                                page: pageNum,
+                                dpi: accurateViewerDpi(zoomScale),
+                                profile_id: 'fogra39',
+                                intent: 'relative',
+                            }),
+                            signal: abortController.signal,
+                        });
+                        if (!response.ok) {
+                            const detail = await response.json().catch(() => ({}));
+                            throw new Error(detail.detail || `HTTP ${response.status}`);
+                        }
+                        const bytes = await response.arrayBuffer();
+                        setAccurateColorFailure(null);
+                        // PERF (audit 2026-08-07 §GV.P3): sau khi trang active đã hoàn
+                        // tất, dựng nền đúng hai trang liền kề. Backend single-flight +
+                        // cache đĩa ngăn render trùng nếu user chuyển trang giữa chừng.
+                        const dpi = accurateViewerDpi(zoomScale);
+                        for (const nearbyPage of adjacentAccuratePages(pageNum, accurateColorPages)) {
+                            const prefetchKey = `${nativeFilePath}|${nearbyPage}|${dpi}|fogra39|relative`;
+                            if (accuratePrefetchedKeysRef.current.has(prefetchKey)) continue;
+                            accuratePrefetchedKeysRef.current.add(prefetchKey);
+                            const prefetchController = new AbortController();
+                            accuratePrefetchAbortRef.current.set(prefetchKey, prefetchController);
+                            void authenticatedFetch(`${getApiUrl()}/preflight/viewer-accurate`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    file_path: nativeFilePath,
+                                    page: nearbyPage,
+                                    dpi,
+                                    profile_id: 'fogra39',
+                                    intent: 'relative',
+                                }),
+                                signal: prefetchController.signal,
+                            }).then(async prefetchResponse => {
+                                if (!prefetchResponse.ok) {
+                                    throw new Error(`HTTP ${prefetchResponse.status}`);
+                                }
+                                await prefetchResponse.arrayBuffer();
+                            }).catch(error => {
+                                if (prefetchController.signal.aborted) return;
+                                accuratePrefetchedKeysRef.current.delete(prefetchKey);
+                                console.warn('[VIEWER-COLOR] Không thể dựng trước trang kế:', error);
+                            }).finally(() => {
+                                accuratePrefetchAbortRef.current.delete(prefetchKey);
+                            });
+                        }
+                        const blob = new Blob([bytes], { type: 'image/png' });
+                        return { url: URL.createObjectURL(blob), byteLength: blob.size };
+                    } catch (error) {
+                        if (abortController.signal.aborted) {
+                            throw new CancelledTileRenderError();
+                        }
+                        const message = error instanceof Error ? error.message : String(error);
+                        setAccurateColorFailure({ fileIdentity, message });
+                        // PERF (audit 2026-08-07 §GV.P1): PDFium pha display đã hiện
+                        // bên dưới; giữ nguyên ảnh đó và báo CMYK! thay vì render PDFium
+                        // lần hai rồi vô tình cache nó dưới key accurate.
+                        console.warn('[VIEWER-COLOR] Accurate render failed; keeping display preview:', message);
+                        throw error instanceof Error ? error : new Error(message);
+                    } finally {
+                        if (accurateRenderAbortRef.current === abortController) {
+                            accurateRenderAbortRef.current = null;
+                        }
+                    }
+                })();
+            }
+
+            return renderNativePng();
         }
 
         // Fallback: PDF.js canvas rendering for non-native files
@@ -127,12 +283,12 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                 canvas.toBlob(blob => {
                     if (blob) resolve({ url: URL.createObjectURL(blob), byteLength: blob.size });
                     else reject("Failed to create blob");
-                }, 'image/jpeg', 0.9);
+                }, 'image/png');
             } catch (e) {
                 reject(e);
             }
         });
-    }, [activePageRef, file, pdfRef, pdfUrl, renderOwnerId]);
+    }, [activePageRef, accurateColorEnabled, accurateColorPages, file, pdfRef, pdfUrl, renderOwnerId]);
 
     // Text extraction via pdfjs
     const getTextBlocksForPage = useCallback(async (pageNum: number, existingBlocks: Record<number, any[]>) => {
@@ -156,5 +312,5 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
         } catch { return null; }
     }, [pdfRef]);
 
-    return { getTileUrl, getTextBlocksForPage, renderOwnerId };
+    return { getTileUrl, getTextBlocksForPage, renderOwnerId, accurateColorError };
 }

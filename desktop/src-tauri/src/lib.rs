@@ -2,6 +2,7 @@ use tauri::http::{self};
 use tauri::Manager;
 
 // Add state struct for PDFium
+use image::ImageEncoder;
 use pdfium_render::prelude::*;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -14,6 +15,7 @@ use tauri::ipc::Response;
 use std::os::windows::process::CommandExt;
 
 mod external_app;
+mod pdf_color_risk;
 mod pdf_engine;
 mod security;
 mod tile_disk_cache;
@@ -100,6 +102,41 @@ const SIDECAR_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 
 #[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
 const SIDECAR_STARTUP_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+#[cfg(any(test, not(debug_assertions)))]
+#[derive(Debug, Eq, PartialEq)]
+struct SidecarStoragePaths {
+    working_dir: std::path::PathBuf,
+    upload_dir: std::path::PathBuf,
+    results_dir: std::path::PathBuf,
+}
+
+#[cfg(any(test, not(debug_assertions)))]
+fn prepare_sidecar_storage(
+    app_local_data_dir: &std::path::Path,
+) -> Result<SidecarStoragePaths, String> {
+    // STARTUP (fix 2026-08-07): backend dùng ./data, ./uploads và ./results. Neo cwd vào
+    // vùng dữ liệu riêng của ứng dụng để Windows không tạo ba thư mục này cạnh file user.
+    let working_dir = app_local_data_dir.join("backend");
+    let data_dir = working_dir.join("data");
+    let upload_dir = working_dir.join("uploads");
+    let results_dir = working_dir.join("results");
+
+    for dir in [&working_dir, &data_dir, &upload_dir, &results_dir] {
+        std::fs::create_dir_all(dir).map_err(|error| {
+            format!(
+                "Không tạo được thư mục nội bộ của PrynX tại {}: {error}",
+                dir.display()
+            )
+        })?;
+    }
+
+    Ok(SidecarStoragePaths {
+        working_dir,
+        upload_dir,
+        results_dir,
+    })
+}
 
 #[cfg(all(not(debug_assertions), target_os = "windows"))]
 const SIDECAR_HEALTH_RESPONSE_LIMIT: usize = 64 * 1024;
@@ -257,10 +294,37 @@ fn verify_sidecar_startup(secret: &str, sidecar_exited: &AtomicBool) -> Result<(
 #[cfg(test)]
 mod sidecar_startup_tests {
     use super::{
-        sidecar_startup_timeout_error, startup_retry_delay, verify_startup_proof,
-        SIDECAR_STARTUP_TIMEOUT,
+        prepare_sidecar_storage, sidecar_startup_timeout_error, startup_retry_delay,
+        verify_startup_proof, SIDECAR_STARTUP_TIMEOUT,
     };
     use std::time::Duration;
+
+    #[test]
+    fn storage_sidecar_nam_trong_app_local_data() {
+        let test_root = std::env::temp_dir().join(format!(
+            "prynx_sidecar_storage_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let app_local_data = test_root.join("app-local-data");
+
+        let storage = prepare_sidecar_storage(&app_local_data).unwrap();
+
+        assert_eq!(storage.working_dir, app_local_data.join("backend"));
+        assert_eq!(storage.upload_dir, storage.working_dir.join("uploads"));
+        assert_eq!(storage.results_dir, storage.working_dir.join("results"));
+        assert!(storage.working_dir.join("data").is_dir());
+        assert!(storage.upload_dir.is_dir());
+        assert!(storage.results_dir.is_dir());
+        assert!(!test_root.join("data").exists());
+        assert!(!test_root.join("uploads").exists());
+        assert!(!test_root.join("results").exists());
+
+        std::fs::remove_dir_all(test_root).unwrap();
+    }
 
     #[test]
     fn retry_dung_tai_deadline_va_timeout_release_la_60_giay() {
@@ -327,10 +391,10 @@ fn tile_disk_path(cache_key: &str) -> std::path::PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     cache_key.hash(&mut h);
-    tile_cache_dir().join(format!("{:016x}.jpg", h.finish()))
+    tile_cache_dir().join(format!("{:016x}.png", h.finish()))
 }
 
-const TILE_RENDER_CACHE_VERSION: &str = "v6_userunit_q90";
+const TILE_RENDER_CACHE_VERSION: &str = "v7_userunit_lossless_png";
 
 #[allow(clippy::too_many_arguments)]
 fn tile_render_cache_key(
@@ -453,6 +517,7 @@ impl<T> DocumentCache<T> {
 struct CachedDocument {
     pool: Vec<OnceLock<DocHandle>>,
     user_units: Vec<f32>,
+    color_risk: pdf_color_risk::PdfColorRiskSummary,
     file_identity: PdfFileIdentity,
     next: AtomicUsize, // Round-robin index
 }
@@ -491,7 +556,48 @@ unsafe impl Send for SyncPdfium {}
 unsafe impl Sync for SyncPdfium {}
 
 static PDFIUM_STATIC: OnceLock<SyncPdfium> = OnceLock::new();
+static PDFIUM_LIBRARY_IDENTITY: OnceLock<PdfiumRuntimeIdentity> = OnceLock::new();
 static DOC_CACHE: OnceLock<Mutex<DocumentCache<Arc<CachedDocument>>>> = OnceLock::new();
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PdfiumRuntimeIdentity {
+    library_path: String,
+    size_bytes: Option<u64>,
+    modified_millis: Option<u64>,
+    app_version: &'static str,
+    tile_cache_version: &'static str,
+}
+
+fn pdfium_runtime_identity_for_path(path: &std::path::Path) -> PdfiumRuntimeIdentity {
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let metadata = std::fs::metadata(&resolved).ok();
+    let modified_millis = metadata
+        .as_ref()
+        .and_then(|value| value.modified().ok())
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|value| value.as_millis().min(u64::MAX as u128) as u64);
+    PdfiumRuntimeIdentity {
+        library_path: resolved.to_string_lossy().into_owned(),
+        size_bytes: metadata.as_ref().map(std::fs::Metadata::len),
+        modified_millis,
+        app_version: env!("CARGO_PKG_VERSION"),
+        tile_cache_version: TILE_RENDER_CACHE_VERSION,
+    }
+}
+
+fn current_pdfium_runtime_identity() -> PdfiumRuntimeIdentity {
+    PDFIUM_LIBRARY_IDENTITY
+        .get()
+        .cloned()
+        .unwrap_or(PdfiumRuntimeIdentity {
+            library_path: "unknown".to_string(),
+            size_bytes: None,
+            modified_millis: None,
+            app_version: env!("CARGO_PKG_VERSION"),
+            tile_cache_version: TILE_RENDER_CACHE_VERSION,
+        })
+}
 
 const DEFAULT_PDF_USER_UNIT: f32 = 1.0;
 const MAX_PDF_USER_UNIT: f32 = 75_000.0;
@@ -538,7 +644,16 @@ fn lopdf_load_options_for_total_ram(total_bytes: Option<u64>) -> lopdf::LoadOpti
     }
 }
 
-fn parse_pdf_user_units(bytes: &[u8], total_bytes: Option<u64>) -> Result<Vec<f32>, String> {
+#[derive(Debug)]
+struct ParsedPdfStructure {
+    user_units: Vec<f32>,
+    color_risk: pdf_color_risk::PdfColorRiskSummary,
+}
+
+fn parse_pdf_structure(
+    bytes: &[u8],
+    total_bytes: Option<u64>,
+) -> Result<ParsedPdfStructure, String> {
     // PAGEBOX (audit 2026-08-04 §W1.PB6): parse ngay trên buffer sẽ chuyển cho
     // PDFium; Document lopdf được drop trước khi PDFium mở để không giữ hai bản PDF.
     let document = lopdf::Document::load_mem_with_options(
@@ -548,7 +663,12 @@ fn parse_pdf_user_units(bytes: &[u8], total_bytes: Option<u64>) -> Result<Vec<f3
     .map_err(|error| {
         format!("Không thể đọc cấu trúc trang PDF an toàn để xác định /UserUnit: {error}")
     })?;
-    Ok(collect_pdf_user_units(&document))
+    // COLOR (audit 2026-08-07 §GV.3): tận dụng cùng lần parse để nhận diện trang
+    // CMYK/DeviceN/transparency; không đọc file lần hai và không giải mã bitmap.
+    Ok(ParsedPdfStructure {
+        user_units: collect_pdf_user_units(&document),
+        color_risk: pdf_color_risk::analyze_pdf_color_risk(&document),
+    })
 }
 
 fn validate_pdf_user_unit_page_count(
@@ -626,15 +746,33 @@ fn bind_pdfium() -> Result<Box<dyn PdfiumLibraryBindings>, String> {
     for dir in &dirs {
         let lib = Pdfium::pdfium_platform_library_name_at_path(dir);
         if let Ok(bindings) = Pdfium::bind_to_library(&lib) {
+            let identity = pdfium_runtime_identity_for_path(&lib);
+            log::info!(
+                "[PDFIUM] library='{}' bytes={:?} modified_ms={:?}",
+                identity.library_path,
+                identity.size_bytes,
+                identity.modified_millis
+            );
+            let _ = PDFIUM_LIBRARY_IDENTITY.set(identity);
             return Ok(bindings);
         }
     }
-    Pdfium::bind_to_system_library().map_err(|e| {
-        format!(
+    match Pdfium::bind_to_system_library() {
+        Ok(bindings) => {
+            let _ = PDFIUM_LIBRARY_IDENTITY.set(PdfiumRuntimeIdentity {
+                library_path: "system-library-search".to_string(),
+                size_bytes: None,
+                modified_millis: None,
+                app_version: env!("CARGO_PKG_VERSION"),
+                tile_cache_version: TILE_RENDER_CACHE_VERSION,
+            });
+            Ok(bindings)
+        }
+        Err(error) => Err(format!(
             "Khong tim thay pdfium.dll (da thu canh exe, ./bin va system): {:?}",
-            e
-        )
-    })
+            error
+        )),
+    }
 }
 
 /// Bind thư viện pdfium MỘT LẦN. Trả về Result để KHÔNG panic khi không tìm thấy
@@ -947,7 +1085,10 @@ fn build_cached_document(
     // I/O và parse không giữ cache/PDFium mutex. Cùng buffer này được đọc đúng một
     // lần, parse bằng lopdf, drop parser rồi mới move vào PDFium để giảm peak RAM.
     let bytes = read_pdf_bytes_for_identity(file_path, file_identity)?;
-    let user_units = parse_pdf_user_units(&bytes, system_total_memory_bytes())?;
+    let ParsedPdfStructure {
+        user_units,
+        color_risk,
+    } = parse_pdf_structure(&bytes, system_total_memory_bytes())?;
     let doc = load_pdf_document_from_bytes(pdfium, bytes)?;
     let page_count = {
         let _pdfium_guard = lock_mutex(&RENDER_LOCK);
@@ -973,6 +1114,7 @@ fn build_cached_document(
     Ok(Arc::new(CachedDocument {
         pool,
         user_units,
+        color_risk,
         file_identity,
         next: AtomicUsize::new(0),
     }))
@@ -1068,7 +1210,7 @@ fn preview_perf_logging_enabled() -> bool {
 
 // ── Đo hiệu năng render (đo thật, không đoán) ────────────────────────────────
 // Đường log riêng cho render/thumbnail, set 1 lần trong setup(). KHÔNG dùng
-// chrono::Local::now() (đã PANIC ở release trong render_tile_jpeg — xem note ~:609)
+// chrono::Local::now() (đã PANIC ở release trong render_tile_png — xem note ~:609)
 // → dùng epoch millis từ SystemTime (không timezone, không panic). Bật khi:
 //   - debug build (dev chạy run_dev.bat → tự bật, không cần thao tác), HOẶC
 //   - env PRYNX_PERF=1 (opt-in cho bản release khi cần chẩn đoán máy khách).
@@ -1351,7 +1493,9 @@ async fn get_pdf_metadata(file_path: String) -> Result<serde_json::Value, String
             "numPages": num_pages,
             "widthPt": width_pt,
             "heightPt": height_pt,
-            "allDims": all_dims
+            "allDims": all_dims,
+            "colorRisk": document_arc.color_risk,
+            "renderEngine": current_pdfium_runtime_identity(),
         }))
     })
     .await
@@ -1359,7 +1503,21 @@ async fn get_pdf_metadata(file_path: String) -> Result<serde_json::Value, String
 }
 
 // ═══ Shared tile rendering core (used by both IPC command and protocol handler) ═══
-fn render_tile_jpeg(
+fn encode_viewer_png(rgba_image: &image::RgbaImage) -> Result<Vec<u8>, String> {
+    let mut buffer = Vec::new();
+    let encoder = image::codecs::png::PngEncoder::new(&mut buffer);
+    encoder
+        .write_image(
+            rgba_image.as_raw(),
+            rgba_image.width(),
+            rgba_image.height(),
+            image::ColorType::Rgba8.into(),
+        )
+        .map_err(|error| format!("Không thể mã hóa ảnh PNG của Viewer: {error:?}"))?;
+    Ok(buffer)
+}
+
+fn render_tile_png(
     file_path: &str,
     page: i32,
     zoom: f32,
@@ -1583,17 +1741,12 @@ fn render_tile_jpeg(
         (img, lock_wait_ms, render_ms, bitmap_wh)
     };
 
-    let mut buffer = Vec::new();
-    // JPEG-90: encode ~40% nhanh hơn q98 (audit tốc độ 2026-07-06: encode ~59ms là khâu
-    // LỚN NHẤT/tile sau khi debounce cắt render thừa). q90 vẫn ≥90 → image-crate giữ 4:4:4
-    // (KHÔNG subsample màu → biên màu vẫn sắc); chỉ giảm nhẹ lượng tử hoá DCT, mắt thường
-    // gần như không phân biệt với q98 trên ảnh render màn hình. (Từng: q92→q98 cho nét, nay
-    // hạ q90 đổi lấy tốc độ vì debounce đã đảm bảo mỗi lần zoom chỉ 1 render.)
+    // COLOR (audit 2026-08-07 §GV.1/§GV.4): trang chính và tile dùng PNG lossless
+    // cùng một hợp đồng. Trên artifact CMYK-gradient, PNG encode 4–10 ms trong khi
+    // JPEG q90 mất 133–334 ms và thêm sai số 1–2 mức/kênh. Cache RAM/đĩa đã có budget
+    // theo phần cứng nên không hạ chất lượng vô điều kiện trên máy >=16GB.
     let _encode_t0 = std::time::Instant::now();
-    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 90);
-    encoder
-        .encode_image(&rgba_image)
-        .map_err(|e| format!("Encode error: {:?}", e))?;
+    let buffer = encode_viewer_png(&rgba_image)?;
     let encode_ms = _encode_t0.elapsed().as_millis();
     // LƯU Ý: block ghi PrynX_Performance.log kiểu cũ dùng chrono::Local::now() và PANIC
     // ở release. perf_log() thay bằng SystemTime epoch (không chrono) + chỉ ghi khi
@@ -1670,7 +1823,7 @@ async fn render_pdf_page(
     let (result, worker_queue_ms, core_ms) = tauri::async_runtime::spawn_blocking(move || {
         let worker_queue_ms = submitted_t0.elapsed().as_millis();
         let core_t0 = std::time::Instant::now();
-        let result = match render_tile_jpeg(
+        let result = match render_tile_png(
             &file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h,
         ) {
             Ok(data) => Ok(data),
@@ -2545,9 +2698,9 @@ fn collect_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> Re
 #[cfg(test)]
 mod pdf_user_unit_tests {
     use super::{
-        collect_pdf_user_units, collect_physical_page_dimensions,
+        collect_pdf_user_units, collect_physical_page_dimensions, encode_viewer_png,
         lopdf_decompression_limit_for_total_ram, lopdf_load_options_for_total_ram,
-        parse_pdf_user_units, physical_page_dimension, tile_render_cache_key,
+        parse_pdf_structure, physical_page_dimension, tile_disk_path, tile_render_cache_key,
         validate_pdf_user_unit_page_count, viewer_render_scale, PdfFileIdentity,
         DEFAULT_PDF_USER_UNIT, GIB, LOW_RAM_LOPDF_STREAM_LIMIT, MID_RAM_LOPDF_STREAM_LIMIT,
     };
@@ -2629,8 +2782,30 @@ mod pdf_user_unit_tests {
     }
 
     #[test]
+    fn transport_png_giu_nguyen_tung_pixel_va_cache_dung_duoi_moi() {
+        let rgba = image::RgbaImage::from_raw(
+            2,
+            2,
+            vec![
+                0, 128, 255, 255, 17, 34, 51, 255, 240, 120, 3, 255, 255, 255, 255, 0,
+            ],
+        )
+        .unwrap();
+
+        let encoded = encode_viewer_png(&rgba).unwrap();
+        assert_eq!(&encoded[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(image::load_from_memory(&encoded).unwrap().to_rgba8(), rgba);
+        assert_eq!(
+            tile_disk_path("viewer-lossless-test")
+                .extension()
+                .and_then(|value| value.to_str()),
+            Some("png")
+        );
+    }
+
+    #[test]
     fn parser_loi_va_so_trang_lech_deu_dung_an_toan() {
-        let parse_error = parse_pdf_user_units(b"khong-phai-pdf", None).unwrap_err();
+        let parse_error = parse_pdf_structure(b"khong-phai-pdf", None).unwrap_err();
         assert!(parse_error.contains("Không thể đọc cấu trúc trang PDF an toàn"));
 
         let mismatch_error = validate_pdf_user_unit_page_count(vec![1.0], 2).unwrap_err();
@@ -2808,6 +2983,7 @@ mod doc_cache_tests {
         Arc::new(CachedDocument {
             pool: Vec::new(),
             user_units: vec![DEFAULT_PDF_USER_UNIT],
+            color_risk: pdf_color_risk::PdfColorRiskSummary::empty(),
             file_identity: identity,
             next: AtomicUsize::new(0),
         })
@@ -3424,6 +3600,30 @@ pub fn run() {
                         std::process::exit(1);
                     }
                 };
+                let sidecar_storage = match app
+                    .path()
+                    .app_local_data_dir()
+                    .map_err(|error| format!("Không xác định được thư mục dữ liệu PrynX: {error}"))
+                    .and_then(|dir| prepare_sidecar_storage(&dir))
+                {
+                    Ok(storage) => storage,
+                    Err(error) => {
+                        log::error!("[SIDECAR] {}", error);
+                        startup_breadcrumb(&format!("sidecar storage: FAIL {error}"));
+                        let _ = std::process::Command::new("powershell")
+                            .args(["-NoProfile", "-Command", &format!(
+                                "[System.Windows.MessageBox]::Show('{}', 'PrynX', 'OK', 'Error')",
+                                error.replace('\'', "''")
+                            )])
+                            .creation_flags(0x08000000)
+                            .output();
+                        std::process::exit(1);
+                    }
+                };
+                startup_breadcrumb(&format!(
+                    "sidecar storage: {}",
+                    sidecar_storage.working_dir.display()
+                ));
                 // ══════════════════════════════════════════════════════════════
                 // ZOMBIE FIX: Giành lại port 8321 TRƯỚC khi spawn sidecar mới.
                 // Nếu phiên trước app chết BẨN (OOM khi Optimize file lớn, End Task,
@@ -3467,6 +3667,9 @@ pub fn run() {
                 }
 
                 let spawn_result = sidecar
+                    .current_dir(&sidecar_storage.working_dir)
+                    .env("UPLOAD_DIR", &sidecar_storage.upload_dir)
+                    .env("RESULTS_DIR", &sidecar_storage.results_dir)
                     .args(["--port", "8321"])
                     .envs([
                         ("DEV_MODE", "false"),
@@ -3872,16 +4075,16 @@ pub fn run() {
                     let clip_w = cw.filter(|&v| v != 0);
                     let clip_h = ch.filter(|&v| v != 0);
 
-                    render_tile_jpeg(&file_path, page, zoom, rot, clip_x, clip_y, clip_w, clip_h)
+                    render_tile_png(&file_path, page, zoom, rot, clip_x, clip_y, clip_w, clip_h)
                 }).await;
 
                 match res {
-                    Ok(Ok(jpeg_bytes)) => {
+                    Ok(Ok(image_bytes)) => {
                         let resp = http::Response::builder()
                             .status(200)
-                            .header("Content-Type", "image/jpeg")
+                            .header("Content-Type", "image/png")
                             .header("Cache-Control", "max-age=3600, immutable")
-                            .body(jpeg_bytes)
+                            .body(image_bytes)
                             .unwrap_or_else(|_| http::Response::new(Vec::new()));
                         responder.respond(resp);
                     }

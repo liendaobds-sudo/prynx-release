@@ -114,7 +114,7 @@ const MemoThumbItem = React.memo((props: any) => {
 
     // Thumbnail render: PDFium TRƯỚC (đảo với bản cũ chạy Ghostscript trước). Đo thật
     // 2026-07-22 cho thấy GS parse LẠI toàn bộ file mỗi khối 6 trang → ~40s/khối trên
-    // file đã bình. PDFium giữ doc mở sẵn + page LRU (render_tile_jpeg) → trang đã xem ở
+    // file đã bình. PDFium giữ doc mở sẵn + page LRU (render_tile_png) → trang đã xem ở
     // view chính được TÁI DÙNG, thumbnail gần như tức thì; zoom nhỏ nên bitmap bé + encode
     // rẻ. GS chỉ còn là fallback khi PDFium ném lỗi (view chính cũng dùng PDFium nên nếu
     // nó hỏng thì cả 2 hỏng — fallback chỉ cho edge case hiếm).
@@ -141,7 +141,9 @@ const MemoThumbItem = React.memo((props: any) => {
                         });
                     },
                 });
-                ownBlobUrl = URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' }));
+                // COLOR (audit 2026-08-07 §GV.1): command native trả PNG lossless;
+                // khai báo đúng MIME để thumbnail và trang chính cùng hợp đồng transport.
+                ownBlobUrl = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
                 src = ownBlobUrl;
             } catch {
                 // Fallback GS (hiếm): PDFium lỗi thì thử Ghostscript.

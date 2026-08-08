@@ -415,7 +415,10 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
             productType === 'sticker'
                 ? (cutMode === 'alpha'
                     ? 'contour'
-                    : ((requestedCornerStyle === 'preserve' || requestedForceContour) ? 'contour' : 'auto_safe'))
+                    // QUALITY (audit 2026-08-07 §NOODLE.2): "Giữ góc" chỉ
+                    // chọn cách xuất góc của contour custom; không được âm thầm
+                    // tắt nhận dạng hình chuẩn. Chỉ van an toàn của user mới ép contour.
+                    : (requestedForceContour ? 'contour' : 'auto_safe'))
                 : 'contour',
         );
         if (productType === 'rectangle') {

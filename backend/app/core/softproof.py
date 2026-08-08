@@ -79,6 +79,7 @@ class SoftProofEngine:
         intent: str = "relative",
         show_gamut_warning: bool = False,
         dpi: int = 150,
+        output_format: str = "jpeg",
     ) -> dict:
         profile_id = (profile_id or "fogra39").strip().lower()
         if profile_id in ("auto", ""):
@@ -89,11 +90,11 @@ class SoftProofEngine:
 
         if not profile_path:
             img = await asyncio.to_thread(self._render_pdfium_rgb, pdf_path, page_num, dpi)
-            buf = io.BytesIO()
-            img.save(buf, "JPEG", quality=88)
+            encoded, image_mime = self._encode_preview_image(img, output_format, jpeg_quality=88)
             return {
                 "success": True,
-                "softproof_b64": base64.b64encode(buf.getvalue()).decode(),
+                "softproof_b64": base64.b64encode(encoded).decode(),
+                "image_mime": image_mime,
                 "gamut_b64": None,
                 "out_of_gamut_pct": 0,
                 "profile_name": profile_name,
@@ -162,9 +163,10 @@ class SoftProofEngine:
             accuracy = "approximate"
 
         width, height = proofed.size
-        buf = io.BytesIO()
-        proofed.save(buf, "JPEG", quality=90)
-        softproof_b64 = base64.b64encode(buf.getvalue()).decode()
+        encoded, image_mime = self._encode_preview_image(
+            proofed, output_format, jpeg_quality=90,
+        )
+        softproof_b64 = base64.b64encode(encoded).decode()
 
         gamut_b64 = None
         out_of_gamut_pct = 0.0
@@ -185,6 +187,7 @@ class SoftProofEngine:
         return {
             "success": True,
             "softproof_b64": softproof_b64,
+            "image_mime": image_mime,
             "gamut_b64": gamut_b64,
             "out_of_gamut_pct": out_of_gamut_pct,
             "profile_name": profile_name,
@@ -198,6 +201,24 @@ class SoftProofEngine:
                 if engine.startswith("pdfium") else None
             ),
         }
+
+    @staticmethod
+    def _encode_preview_image(
+        image: Image.Image,
+        output_format: str,
+        *,
+        jpeg_quality: int,
+    ) -> tuple[bytes, str]:
+        """Mã hóa ảnh proof; Viewer dùng PNG để không thêm banding sau PPE."""
+        normalized = (output_format or "jpeg").strip().lower()
+        buf = io.BytesIO()
+        if normalized == "png":
+            # COLOR (audit 2026-08-07 §GV.1): accurate path phải giữ nguyên pixel
+            # do PPE/ICC trả về; không nén JPEG lần nữa sau khi đã quản lý màu.
+            image.save(buf, "PNG")
+            return buf.getvalue(), "image/png"
+        image.convert("RGB").save(buf, "JPEG", quality=jpeg_quality)
+        return buf.getvalue(), "image/jpeg"
 
     # ── Render paths ──────────────────────────────────────────────────────
 

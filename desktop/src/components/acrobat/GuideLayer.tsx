@@ -13,19 +13,24 @@ interface GuideLayerProps {
    *  toạ độ TƯƠNG ĐỐI mép trang → tự bám trang dù scroll hay re-center. Fallback
    *  về gốc cuộn nếu không có/không tìm thấy (hành vi cũ). */
   pageAnchorId?: string;
+  /** Tab đang hiển thị — tab nền không giữ listener/RAF đồng bộ guide. */
+  isActive?: boolean;
 }
 
-export function GuideLayer({ scrollContainerRef, guides, draggingGuide, selectedGuideId, onGuideMouseDown, pageAnchorId }: GuideLayerProps) {
+export function GuideLayer({ scrollContainerRef, guides, draggingGuide, selectedGuideId, onGuideMouseDown, pageAnchorId, isActive = true }: GuideLayerProps) {
   const layerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const scroller = scrollContainerRef.current;
     const layer = layerRef.current;
-    if (!scroller || !layer) return;
+    if (!isActive || !scroller || !layer || (guides.length === 0 && !draggingGuide)) return;
 
-    let rafId: number;
+    let rafId: number | null = null;
+    let observedAnchor: HTMLElement | null = null;
+    const resizeObserver = new ResizeObserver(() => scheduleSync());
 
     const sync = () => {
+      rafId = null;
       const scrollX = scroller.scrollLeft;
       const scrollY = scroller.scrollTop;
 
@@ -33,6 +38,11 @@ export function GuideLayer({ scrollContainerRef, guides, draggingGuide, selected
       // không có anchor → dùng -scroll (tương đương hành vi cũ theo gốc cuộn).
       const layerRect = layer.getBoundingClientRect();
       const anchorEl = pageAnchorId ? scroller.querySelector<HTMLElement>(`#${pageAnchorId}`) : null;
+      if (anchorEl !== observedAnchor) {
+        if (observedAnchor) resizeObserver.unobserve(observedAnchor);
+        observedAnchor = anchorEl;
+        if (observedAnchor) resizeObserver.observe(observedAnchor);
+      }
       let originX = -scrollX;
       let originY = -scrollY;
       let pageWidth = 1;
@@ -58,12 +68,30 @@ export function GuideLayer({ scrollContainerRef, guides, draggingGuide, selected
         }
       });
 
-      rafId = requestAnimationFrame(sync);
     };
 
-    rafId = requestAnimationFrame(sync);
-    return () => cancelAnimationFrame(rafId);
-  }, [guides, draggingGuide, scrollContainerRef, pageAnchorId]);
+    // PERF (audit 2026-08-07 §MOTION.1): RAF chỉ gộp event trong một frame,
+    // không tự reschedule khi trang đứng yên.
+    function scheduleSync() {
+      if (rafId === null) rafId = requestAnimationFrame(sync);
+    }
+
+    const contentObserver = new MutationObserver(() => scheduleSync());
+    resizeObserver.observe(scroller);
+    resizeObserver.observe(layer);
+    contentObserver.observe(scroller, { childList: true, subtree: true });
+    scroller.addEventListener('scroll', scheduleSync, { passive: true });
+    window.addEventListener('resize', scheduleSync, { passive: true });
+    scheduleSync();
+
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      resizeObserver.disconnect();
+      contentObserver.disconnect();
+      scroller.removeEventListener('scroll', scheduleSync);
+      window.removeEventListener('resize', scheduleSync);
+    };
+  }, [isActive, guides, draggingGuide, scrollContainerRef, pageAnchorId]);
 
   return (
     <div ref={layerRef} className="absolute inset-0 pointer-events-none z-[45] overflow-hidden">

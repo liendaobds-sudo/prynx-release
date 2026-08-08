@@ -2,7 +2,7 @@ import { createRoot } from 'react-dom/client'
 import * as Sentry from "@sentry/react"
 import './index.css'
 import './i18n'
-import { bootstrapAppearance } from './lib/appearanceBootstrap'
+import { bootstrapAppearance, refineAppearanceForHardware } from './lib/appearanceBootstrap'
 import App from './App'
 import { ErrorBoundary } from './ErrorBoundary'
 import { installBackendFetchAuth } from './lib/api'
@@ -43,6 +43,9 @@ if ((window as any).__TAURI__) {
 // UIUX §A-01/§A-09/§A-15: theme + mức hiệu ứng phải có ngay ở frame đầu tiên,
 // trước cả splash — nếu để React effect làm thì dark mode bị nháy trắng lúc mở app.
 bootstrapAppearance();
+// PERF (audit 2026-08-07 §MOTION.4): RAM native hiệu chỉnh tier bất đồng bộ;
+// không chặn frame đầu và máy >=16 GB luôn được trả về hiệu ứng đầy đủ.
+void refineAppearanceForHardware();
 
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN,

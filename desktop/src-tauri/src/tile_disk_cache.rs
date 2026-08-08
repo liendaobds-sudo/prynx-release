@@ -207,7 +207,12 @@ fn is_owned_tile_file(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
         return false;
     };
-    let Some(stem) = name.strip_suffix(".jpg") else {
+    // COLOR (audit 2026-08-07 §GV.1): dọn cả PNG lossless hiện tại và JPEG legacy.
+    // Chỉ nhận đúng tên hash trực tiếp để tuyệt đối không xóa file ngoại lai.
+    let Some(stem) = name
+        .strip_suffix(".png")
+        .or_else(|| name.strip_suffix(".jpg"))
+    else {
         return false;
     };
     stem.len() == 16 && stem.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -459,11 +464,11 @@ mod tests {
     }
 
     #[test]
-    fn only_accepts_direct_hash_named_jpeg_tiles() {
+    fn only_accepts_direct_hash_named_viewer_tiles() {
         assert!(is_owned_tile_file(std::path::Path::new(
             "0123456789abcdef.jpg"
         )));
-        assert!(!is_owned_tile_file(std::path::Path::new(
+        assert!(is_owned_tile_file(std::path::Path::new(
             "0123456789abcdef.png"
         )));
         assert!(!is_owned_tile_file(std::path::Path::new("not-a-tile.jpg")));
@@ -483,19 +488,22 @@ mod tests {
             std::process::id(),
             stamp
         ));
+        assert!(!is_owned_tile_file(std::path::Path::new(
+            "../0123456789abcdef.png.tmp"
+        )));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("0123456789abcdef.jpg"), [1_u8, 2, 3]).unwrap();
+        std::fs::write(root.join("fedcba9876543210.png"), [6_u8, 7, 8, 9]).unwrap();
         std::fs::write(root.join("ghi-chu.txt"), [4_u8, 5]).unwrap();
-        std::fs::create_dir_all(root.join("fedcba9876543210.jpg")).unwrap();
+        std::fs::create_dir_all(root.join("0011223344556677.png")).unwrap();
 
         let entries = collect_tile_disk_entries(&root);
 
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].bytes, 3);
-        assert_eq!(
-            entries[0].path.file_name().and_then(|value| value.to_str()),
-            Some("0123456789abcdef.jpg")
-        );
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.iter().map(|entry| entry.bytes).sum::<u64>(), 7);
+        assert!(entries.iter().any(|entry| {
+            entry.path.file_name().and_then(|value| value.to_str()) == Some("fedcba9876543210.png")
+        }));
         std::fs::remove_dir_all(root).unwrap();
     }
 

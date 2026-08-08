@@ -149,6 +149,21 @@ describe('usePdfLoader — trạng thái tải PDF trong bộ nhớ', () => {
                     numPages: 2,
                     widthPt: 595,
                     heightPt: 842,
+                    colorRisk: {
+                        highRisk: true,
+                        accurateColorRecommended: true,
+                        hasOutputIntent: false,
+                        riskyPages: [1],
+                        pages: [],
+                        reasonCodes: ['missing_output_intent', 'device_cmyk'],
+                    },
+                    renderEngine: {
+                        libraryPath: 'D:\\PrynX\\pdfium.dll',
+                        sizeBytes: 123,
+                        modifiedMillis: 456,
+                        appVersion: '1.0.0-rc.4',
+                        tileCacheVersion: 'v7_userunit_lossless_png',
+                    },
                     allDims: {
                         1: { widthPt: 595, heightPt: 842 },
                         2: { widthPt: 595, heightPt: 842 },
@@ -178,6 +193,9 @@ describe('usePdfLoader — trạng thái tải PDF trong bộ nhớ', () => {
 
         await waitFor(() => expect(result.current.loadStatus).toBe('ready'));
         expect(result.current.loadError).toBeNull();
+        expect(result.current.colorRisk?.highRisk).toBe(true);
+        expect(result.current.colorRisk?.riskyPages).toEqual([1]);
+        expect(result.current.renderEngine?.libraryPath).toBe('D:\\PrynX\\pdfium.dll');
         expect(pdfMocks.getDocument).not.toHaveBeenCalled();
     });
 

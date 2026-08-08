@@ -80,11 +80,12 @@ def _canned_layout_20(*_a, **_k):
     }
 
 
-def _run_capture(monkeypatch, n_pages, settings, layout_factory=_canned_layout_8):
+def _run_capture(monkeypatch, n_pages, settings, layout_factory=_canned_layout_8, *, return_args=False):
     """Chạy engine (ép 1-chunk inline), chặn ở process_chunk, trả precalc (args[37])."""
     captured = {}
 
     def _capture_chunk(args):
+        captured["args"] = args
         captured["precalc"] = args[37]
         raise _StopEngine()
 
@@ -99,7 +100,7 @@ def _run_capture(monkeypatch, n_pages, settings, layout_factory=_canned_layout_8
         _make_blank_pdf(src, n_pages)
         with pytest.raises(_StopEngine):
             nup_engine.run_nup_engine(src, out, settings, job_id="t-ratio")
-    return captured.get("precalc")
+    return captured.get("args") if return_args else captured.get("precalc")
 
 
 def _base_settings(**over):
@@ -115,6 +116,21 @@ def _base_settings(**over):
     }
     s.update(over)
     return s
+
+
+def test_no_cut_marks_preserve_explicit_zero_secondary_gap(monkeypatch):
+    """Không dấu xén + hở tem 0 phải giữ khe L-shape = 0, không rơi về khe chia cọc."""
+    settings = _base_settings(
+        targetQuantity=1,
+        markType="none",
+        gapX=0,
+        gapY=0,
+        splitGap=0,
+        clusterGap=12,
+    )
+    args = _run_capture(monkeypatch, 1, settings, return_args=True)
+
+    assert args[45] == pytest.approx(0)
 
 
 def test_ratio_stack_moi_to_giong_het_nhau(monkeypatch):

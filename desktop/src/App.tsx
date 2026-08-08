@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef, Suspense } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import './lib/appVisibility'; // PERF (audit 2026-08-07 §MOTION.3): khởi tạo cổng pause nền từ lúc app mở.
 import HomeTab from './components/HomeTab';
 import { ThemeToggle } from './components/ThemeToggle';
 import { LanguageToggle } from './components/LanguageToggle';
@@ -1399,6 +1400,7 @@ function AppInner() {
         {tabs.map((tab) => (
           <div
             key={tab.id}
+            data-prynx-tab-active={tab.id === activeTabId ? 'true' : 'false'}
             className={`absolute inset-0 flex-col w-full h-full ${tab.id === activeTabId ? 'flex z-10' : 'flex z-[0] opacity-0 pointer-events-none overflow-hidden'}`}
           >
             {tab.type === 'home' && <HomeTab onOpenApp={handleOpenApp} isActive={tab.id === activeTabId} />}

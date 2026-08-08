@@ -12,10 +12,12 @@ Cần deps nặng (cv2, pypdfium2, pikepdf, shapely, skimage) → đánh dấu �
 bỏ qua khi môi trường thiếu, nhưng KHÔNG nuốt lỗi crash thật.
 """
 import hashlib
+import math
 import os
 import sys
 
 import pytest
+import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -25,7 +27,13 @@ pytest.importorskip("pypdfium2")
 pytest.importorskip("shapely")
 pytest.importorskip("skimage")
 
-from shapely.geometry import Polygon
+from shapely.geometry import MultiPolygon, Point, Polygon, box
+from app.core.sticker_cutline_policy import resolve_sticker_corner_policy
+from app.workers.cutline_machine_path import (
+    MachinePathSegment,
+    analyze_machine_path,
+    cubic_segments_from_tuples,
+)
 from app.workers.sticker_engine import (
     ALPHA_CONTOUR_INSET_MM,
     ALPHA_CONTOUR_SIMPLIFY_MM,
@@ -43,14 +51,19 @@ from app.workers.sticker_engine import (
     _compose_sticker_warning,
     _edge_color_instability_metrics,
     _edge_color_sampling_warning,
+    _EXISTING_CONTOUR_SOURCE_PIXEL_BUDGET,
     _fit_alpha_bezier_paths,
     _fit_alpha_simplified_anchor_paths,
     _fit_preserved_contour_paths,
     _geometry_within_hausdorff_budget,
     _infer_document_image_pixel_mm,
     _infer_full_page_image_pixel_mm,
+    _filter_full_page_jpeg_halo_components,
+    _reconstruct_cut_geometry_parts,
+    _PT_PER_MM,
     _round_preserved_corners,
     _safe_alpha_bezier_tension,
+    _smooth_round_contour_points,
     _smooth_alpha_cut_contour,
 )
 
@@ -100,6 +113,115 @@ def _make_radial_halo_pdf(path: str) -> None:
         width=page_pts,
         height=page_pts,
         mask="auto",
+    )
+    pdf.showPage()
+    pdf.save()
+
+
+def _make_large_jpeg_shape_pdf(path: str, shape: str, long_side_mm: float) -> None:
+    """§NOODLE.8–11: một ảnh JPEG phủ trang, không DPI, ở scale sản xuất lớn."""
+    import io
+    import math
+    from PIL import Image, ImageDraw
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+
+    width, height = 2281, 2275
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    color = (18, 92, 168)
+    if shape == "ellipse":
+        draw.ellipse((260, 560, 2020, 1715), fill=color)
+    elif shape == "rectangle":
+        draw.rectangle((300, 510, 1980, 1765), fill=color)
+    elif shape == "rounded_rectangle":
+        draw.rounded_rectangle((300, 510, 1980, 1765), radius=230, fill=color)
+    elif shape == "triangle":
+        draw.polygon([(1140, 250), (2050, 1900), (230, 1900)], fill=color)
+    elif shape == "star_custom":
+        points = []
+        for index in range(10):
+            radius = 930 if index % 2 == 0 else 410
+            angle = -math.pi / 2 + index * math.pi / 5
+            points.append((
+                1140 + radius * math.cos(angle),
+                1137 + radius * math.sin(angle),
+            ))
+        draw.polygon(points, fill=color)
+    elif shape == "heart":
+        raw_points = []
+        for index in range(720):
+            t = 2 * math.pi * index / 720
+            x = 16 * math.sin(t) ** 3
+            y = 13 * math.cos(t) - 5 * math.cos(2 * t) - 2 * math.cos(3 * t) - math.cos(4 * t)
+            raw_points.append((x, -y))
+        min_x = min(point[0] for point in raw_points)
+        max_x = max(point[0] for point in raw_points)
+        min_y = min(point[1] for point in raw_points)
+        max_y = max(point[1] for point in raw_points)
+        points = [
+            (
+                240 + (x - min_x) * 1800 / (max_x - min_x),
+                260 + (y - min_y) * 1700 / (max_y - min_y),
+            )
+            for x, y in raw_points
+        ]
+        draw.polygon(points, fill=color)
+    elif shape == "flower_12":
+        points = []
+        for index in range(720):
+            angle = -math.pi / 2 + 2 * math.pi * index / 720
+            radius = 720 + 190 * math.cos(12 * angle)
+            points.append((
+                1140 + radius * math.cos(angle),
+                1137 + radius * math.sin(angle),
+            ))
+        draw.polygon(points, fill=color)
+    elif shape == "gear_20":
+        points = []
+        for index in range(80):
+            angle = -math.pi / 2 + 2 * math.pi * index / 80
+            radius = 880 if index % 4 in (0, 1) else 690
+            points.append((
+                1140 + radius * math.cos(angle),
+                1137 + radius * math.sin(angle),
+            ))
+        draw.polygon(points, fill=color)
+    elif shape == "hourglass_narrow_neck":
+        draw.polygon(
+            [
+                (300, 260), (1980, 260), (1370, 930), (1280, 1137),
+                (1370, 1344), (1980, 2010), (300, 2010), (910, 1344),
+                (1000, 1137), (910, 930),
+            ],
+            fill=color,
+        )
+    elif shape == "donut_one_hole":
+        draw.ellipse((230, 210, 2050, 2050), fill=color)
+        draw.ellipse((720, 700, 1560, 1560), fill="white")
+    elif shape == "letter_b_two_holes":
+        draw.rounded_rectangle((360, 180, 1840, 2080), radius=540, fill=color)
+        draw.rectangle((360, 180, 1030, 2080), fill=color)
+        draw.ellipse((850, 440, 1500, 1010), fill="white")
+        draw.ellipse((850, 1260, 1500, 1840), fill="white")
+    else:  # pragma: no cover - fixture chỉ gọi bằng param cố định
+        raise ValueError(f"Hình test không hỗ trợ: {shape}")
+
+    jpeg = io.BytesIO()
+    image.save(jpeg, "JPEG", quality=82, subsampling=2, optimize=True)
+    jpeg.seek(0)
+    height_mm = long_side_mm * height / width
+    pdf = canvas.Canvas(
+        path,
+        pagesize=(long_side_mm * _PT_PER_MM, height_mm * _PT_PER_MM),
+        pageCompression=0,
+    )
+    pdf.drawImage(
+        ImageReader(jpeg),
+        0,
+        0,
+        width=long_side_mm * _PT_PER_MM,
+        height=height_mm * _PT_PER_MM,
     )
     pdf.showPage()
     pdf.save()
@@ -181,6 +303,107 @@ def _make_white_outline_pdf(path: str, *, transparent: bool) -> None:
         0,
         width=page_pts,
         height=page_pts,
+        mask="auto",
+    )
+    pdf.showPage()
+    pdf.save()
+
+
+def _make_wavy_shell_alpha_pdf(path: str) -> None:
+    """Fixture viền trắng hữu cơ nhiều lượn, có Alpha thật ở đúng 300 DPI."""
+    import io
+    from PIL import Image
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+
+    width, height = 900, 700
+    source_dpi = 300.0
+    yy, xx = np.mgrid[:height, :width]
+    center_x = (width - 1) / 2.0
+    center_y = (height - 1) / 2.0
+    nx = (xx - center_x) / 380.0
+    ny = (yy - center_y) / 270.0
+    angle = np.arctan2(ny, nx)
+    radial = np.sqrt(nx * nx + ny * ny)
+    shell = radial <= 1.0 + 0.06 * np.sin(12.0 * angle)
+    artwork = radial <= 0.78
+    rgb = np.full((height, width, 3), 255, dtype=np.uint8)
+    rgb[artwork] = (42, 151, 72)
+    rgba = np.dstack((rgb, np.where(shell, 255, 0).astype(np.uint8)))
+
+    png = io.BytesIO()
+    Image.fromarray(rgba, mode="RGBA").save(png, format="PNG", dpi=(300, 300))
+    png.seek(0)
+    page_width = width * 72.0 / source_dpi
+    page_height = height * 72.0 / source_dpi
+    pdf = canvas.Canvas(path, pagesize=(page_width, page_height), pageCompression=0)
+    pdf.drawImage(
+        ImageReader(png),
+        0,
+        0,
+        width=page_width,
+        height=page_height,
+        mask="auto",
+    )
+    pdf.showPage()
+    pdf.save()
+
+
+def _make_low_dpi_notched_alpha_pdf(path: str) -> None:
+    """Fixture 72 DPI có nhiều hõm nông và gợn nhỏ như trang AI tách nhiều tem."""
+    import io
+    import cv2
+    from PIL import Image
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+
+    width, height = 386, 318
+    source_dpi = 72.0
+    angles = np.linspace(0.0, 2.0 * math.pi, 720, endpoint=False)
+    radial = (
+        1.0
+        + 0.045 * np.sin(7.0 * angles + 0.4)
+        + 0.025 * np.sin(19.0 * angles - 0.7)
+        + 0.012 * np.sin(43.0 * angles + 0.2)
+    )
+    xs = width * 0.5 + 172.0 * radial * np.cos(angles)
+    ys = height * 0.5 + 135.0 * radial * np.sin(angles)
+    contour = np.rint(np.column_stack((xs, ys))).astype(np.int32)
+    alpha = np.zeros((height, width), dtype=np.uint8)
+    cv2.fillPoly(alpha, [contour], 255)
+    # §AI-MOTION.10: râu nhỏ nối bằng cổ một pixel giống phần mask thừa của tem
+    # AI thật. Fairing được phép bỏ râu này nhưng không được đổi số component.
+    center_column = width // 2
+    top_y = int(np.flatnonzero(alpha[:, center_column]).min())
+    cv2.rectangle(
+        alpha,
+        (center_column - 1, max(1, top_y - 6)),
+        (center_column, max(2, top_y - 5)),
+        255,
+        thickness=-1,
+    )
+    cv2.line(
+        alpha,
+        (center_column, max(2, top_y - 5)),
+        (center_column, top_y),
+        255,
+        thickness=1,
+    )
+    rgb = np.full((height, width, 3), 255, dtype=np.uint8)
+    inset = cv2.erode(alpha, np.ones((15, 15), dtype=np.uint8)) > 0
+    rgb[inset] = (238, 45, 118)
+    rgba = np.dstack((rgb, alpha))
+
+    png = io.BytesIO()
+    Image.fromarray(rgba, mode="RGBA").save(png, format="PNG", dpi=(72, 72))
+    png.seek(0)
+    pdf = canvas.Canvas(path, pagesize=(width, height), pageCompression=0)
+    pdf.drawImage(
+        ImageReader(png),
+        0,
+        0,
+        width=width,
+        height=height,
         mask="auto",
     )
     pdf.showPage()
@@ -288,6 +511,94 @@ def _read_all_content(page) -> bytes:
     if isinstance(raw, pikepdf.Array):
         return b"\n".join(bytes(s.read_bytes()) for s in raw)
     return bytes(page.Contents.read_bytes())
+
+
+def _parse_cut_machine_paths(page):
+    """Đọc lại chính lệnh PDF đã lượng tử hóa để metric bám artifact giao máy."""
+    cut = _read_all_content(page).split(b"/CutContour CS", 1)[1]
+    paths = []
+    segments = []
+    current = None
+    start = None
+    for raw_line in cut.splitlines():
+        tokens = raw_line.split()
+        if not tokens:
+            continue
+        operation = tokens[-1]
+        values = [float(value) for value in tokens[:-1]]
+        if operation == b"m":
+            if segments:
+                paths.append(segments)
+            segments = []
+            current = (values[0], values[1])
+            start = current
+        elif operation == b"l" and current is not None:
+            following = (values[0], values[1])
+            segments.append(MachinePathSegment.line(current, following))
+            current = following
+        elif operation == b"c" and current is not None:
+            following = (values[4], values[5])
+            segments.append(MachinePathSegment.cubic(
+                current,
+                (values[0], values[1]),
+                (values[2], values[3]),
+                following,
+            ))
+            current = following
+        elif operation == b"h" and current is not None and start is not None:
+            if math.dist(current, start) > 1e-9:
+                segments.append(MachinePathSegment.line(current, start))
+            if segments:
+                paths.append(segments)
+            segments = []
+            current = None
+            start = None
+    if segments:
+        paths.append(segments)
+    return paths
+
+
+def _summarize_machine_paths(paths, *, join_threshold_degrees=1.0):
+    """Gộp metric từng ring và lọc nhiễu lượng tử theo tỷ lệ kích thước hình."""
+    metrics = [
+        analyze_machine_path(
+            path,
+            mm_to_units=_PT_PER_MM,
+            smooth_join_threshold_degrees=join_threshold_degrees,
+            short_segment_threshold_mm=0.25,
+            curvature_noise_floor_per_mm=(
+                0.10
+                / max(
+                    math.hypot(
+                        max(point[0] for segment in path for point in (segment.p0, segment.p3))
+                        - min(point[0] for segment in path for point in (segment.p0, segment.p3)),
+                        max(point[1] for segment in path for point in (segment.p0, segment.p3))
+                        - min(point[1] for segment in path for point in (segment.p0, segment.p3)),
+                    ) / _PT_PER_MM,
+                    1e-9,
+                )
+            ),
+        )
+        for path in paths
+    ]
+    return {
+        "segments": sum(metric.segment_count for metric in metrics),
+        "short": sum(metric.short_segment_count for metric in metrics),
+        "sharp_joins": sum(
+            metric.discontinuous_join_count for metric in metrics
+        ),
+        "curvature_flips": sum(
+            metric.curvature_sign_flip_count for metric in metrics
+        ),
+        "p95_curvature_jump": max(
+            (metric.p95_curvature_jump_per_mm or 0.0 for metric in metrics),
+            default=0.0,
+        ),
+        "maximum_curvature_jump": max(
+            (metric.maximum_curvature_jump_per_mm or 0.0 for metric in metrics),
+            default=0.0,
+        ),
+    }
 
 
 @pytest.fixture()
@@ -687,6 +998,69 @@ def test_adaptive_alpha_fallback_smooths_dense_notches_without_losing_them():
     ).covers(fitted_geometry)
 
 
+def test_adaptive_alpha_machine_selector_keeps_wavy_shell_g1_and_long_commands():
+    """Viền hữu cơ nhiều lượn phải giữ quỹ đạo nhưng không khóa lượn thành khớp gãy."""
+    mm_to_pts = 72.0 / 25.4
+    points = []
+    for index in range(360):
+        angle = index * 2.0 * math.pi / 360.0
+        radius = 1.0 + 0.06 * math.sin(12.0 * angle)
+        points.append((
+            (50.0 + 42.0 * radius * math.cos(angle)) * mm_to_pts,
+            (38.0 + 28.0 * radius * math.sin(angle)) * mm_to_pts,
+        ))
+    alpha_geometry = Polygon(points)
+    total_offset_pts = -ALPHA_CONTOUR_INSET_MM * mm_to_pts
+    ideal_cut = alpha_geometry.buffer(total_offset_pts, join_style=1)
+    max_hausdorff_mm, _window_mm, _separation_mm = (
+        _alpha_adaptive_fit_profile(
+            ideal_cut,
+            mm_to_pts=mm_to_pts,
+            source_pixel_mm=25.4 / 300.0,
+        )
+    )
+
+    fitted = _fit_alpha_bezier_paths(
+        alpha_geometry,
+        ideal_cut,
+        total_offset_pts=total_offset_pts,
+        mm_to_pts=mm_to_pts,
+        corner_policy="adaptive",
+        source_pixel_mm=25.4 / 300.0,
+    )
+
+    assert fitted is not None
+    fitted_geometry, fitted_paths, _tolerance_mm = fitted
+    diagonal_mm = math.hypot(
+        fitted_geometry.bounds[2] - fitted_geometry.bounds[0],
+        fitted_geometry.bounds[3] - fitted_geometry.bounds[1],
+    ) / mm_to_pts
+    metrics = [
+        analyze_machine_path(
+            cubic_segments_from_tuples(path),
+            mm_to_units=mm_to_pts,
+            smooth_join_threshold_degrees=1.0,
+            short_segment_threshold_mm=0.25,
+            curvature_noise_floor_per_mm=0.10 / diagonal_mm,
+        )
+        for path in fitted_paths
+    ]
+
+    assert sum(metric.short_segment_count for metric in metrics) == 0
+    assert sum(metric.discontinuous_join_count for metric in metrics) == 0
+    assert max(
+        metric.maximum_join_angle_degrees or 0.0
+        for metric in metrics
+    ) < 0.001
+    assert ideal_cut.hausdorff_distance(fitted_geometry) / mm_to_pts <= (
+        max_hausdorff_mm + 1e-6
+    )
+    assert alpha_geometry.buffer(
+        -_ALPHA_SAFE_MIN_GAP_MM * mm_to_pts,
+        join_style=1,
+    ).covers(fitted_geometry)
+
+
 @pytest.mark.parametrize("dpi", [72.0, 300.0])
 def test_full_page_image_dpi_inference_is_physical_and_strict(tmp_path, dpi):
     source = tmp_path / f"full_page_{int(dpi)}.pdf"
@@ -769,8 +1143,85 @@ def test_preserved_large_raster_contour_scales_smoothing_by_physical_size():
     assert fitted_geometry.is_valid
     assert len(fitted_paths) == 1
     assert sum(len(path) for path in fitted_paths) <= 24
+    max_hausdorff_mm = max(
+        0.45,
+        source_pixel_mm * _EXISTING_CONTOUR_SOURCE_PIXEL_BUDGET,
+    )
     assert geometry.hausdorff_distance(fitted_geometry) / mm_to_pts <= (
-        0.45 + 1e-6
+        max_hausdorff_mm + 1e-6
+    )
+
+
+def test_preserved_large_smooth_flower_has_no_artificial_machine_joins():
+    """Cực trị cong của hoa không được biến thành góc gãy khi tem phóng lớn."""
+    import cv2
+    import math
+    import numpy as np
+    from app.workers.cutline_machine_path import (
+        analyze_machine_path,
+        cubic_segments_from_tuples,
+    )
+
+    source_size = 1200
+    center = source_size * 0.5
+    vertices = []
+    for index in range(720):
+        angle = index * 2.0 * math.pi / 720.0
+        radius = 380.0 + 100.0 * math.cos(12.0 * angle)
+        vertices.append((
+            round(center + math.cos(angle) * radius),
+            round(center + math.sin(angle) * radius),
+        ))
+    mask = np.zeros((source_size, source_size), dtype=np.uint8)
+    cv2.fillPoly(mask, [np.asarray(vertices, dtype=np.int32)], 255)
+    render_scale = 4.0
+    rendered = cv2.resize(
+        mask,
+        None,
+        fx=render_scale,
+        fy=render_scale,
+        interpolation=cv2.INTER_LINEAR,
+    )
+    _, rendered = cv2.threshold(rendered, 64, 255, cv2.THRESH_BINARY)
+    contour = max(
+        cv2.findContours(rendered, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)[0],
+        key=cv2.contourArea,
+    )
+
+    mm_to_pts = 72.0 / 25.4
+    long_side_mm = 1600.0
+    source_pixel_mm = long_side_mm / source_size
+    pixel_to_pts = source_pixel_mm / render_scale * mm_to_pts
+    geometry = Polygon(
+        (float(x) * pixel_to_pts, float(y) * pixel_to_pts)
+        for x, y in contour[:, 0, :]
+    )
+
+    fitted = _fit_preserved_contour_paths(
+        geometry,
+        mm_to_pts=mm_to_pts,
+        source_pixel_mm=source_pixel_mm,
+    )
+
+    assert fitted is not None
+    fitted_geometry, fitted_paths, _simplify_mm = fitted
+    assert fitted_geometry.is_valid
+    assert len(fitted_paths) == 1
+    metrics = analyze_machine_path(
+        cubic_segments_from_tuples(fitted_paths[0]),
+        mm_to_units=mm_to_pts,
+        smooth_join_threshold_degrees=1.0,
+        short_segment_threshold_mm=0.25,
+    )
+    assert metrics.discontinuous_join_count == 0
+    assert metrics.maximum_join_angle_degrees is not None
+    assert metrics.maximum_join_angle_degrees <= 1.0
+    max_hausdorff_mm = max(
+        0.20,
+        source_pixel_mm * _EXISTING_CONTOUR_SOURCE_PIXEL_BUDGET,
+    )
+    assert geometry.hausdorff_distance(fitted_geometry) / mm_to_pts <= (
+        max_hausdorff_mm + 1e-6
     )
 
 
@@ -815,8 +1266,12 @@ def test_preserved_large_raster_star_keeps_convex_and_concave_corners():
     anchors = [segment[0] for segment in fitted_paths[0]]
     for vertex in expected_vertices:
         assert min(math.dist(vertex, anchor) for anchor in anchors) / mm_to_pts <= 0.55
+    max_hausdorff_mm = max(
+        0.45,
+        source_pixel_mm * _EXISTING_CONTOUR_SOURCE_PIXEL_BUDGET,
+    )
     assert geometry.hausdorff_distance(fitted_geometry) / mm_to_pts <= (
-        0.45 + 1e-6
+        max_hausdorff_mm + 1e-6
     )
 
 
@@ -838,8 +1293,8 @@ def test_buffer_guard_matches_exact_hausdorff_for_polygon_with_hole(budget):
     ) is expected
 
 
-def test_preserve_mode_bypasses_reconstruction_smoothing_and_bezier(src_pdf, tmp_path):
-    """Giữ nguyên phải bám contour raster, kể cả khi client gửi auto_safe."""
+def test_preserve_mode_keeps_auto_safe_shape_contract(src_pdf, tmp_path):
+    """Giữ góc không được âm thầm tắt auto_safe; forceContour mới làm việc đó."""
     out = str(tmp_path / "preserve.pdf")
     success, meta = StickerEngine(dpi=300).process_pdf(
         input_path=src_pdf,
@@ -855,16 +1310,383 @@ def test_preserve_mode_bypasses_reconstruction_smoothing_and_bezier(src_pdf, tmp
     )
 
     assert success is True
-    assert meta["pages"][0]["cut_kind"] is None
+    assert meta["pages"][0]["cut_kind"] == "rect"
     with pikepdf.Pdf.open(out) as result:
         page = result.pages[0]
         cut_stream = _read_all_content(page).split(b"/CutContour CS", 1)[1]
         line_count = cut_stream.count(b" l\n")
-        assert 4 < line_count < 100, "contour still has production-unfriendly node density"
+        assert line_count == 3, "hình chữ nhật chuẩn phải chỉ có bốn cạnh kể cả lệnh close"
         assert b" c\n" not in cut_stream
         trim = [float(v) for v in page.TrimBox]
         assert abs((trim[2] - trim[0]) - 140.0) < 0.6
         assert abs((trim[3] - trim[1]) - 180.0) < 0.6
+
+
+def test_noodle_filter_bo_halo_sat_nhung_giu_component_o_xa():
+    """§NOODLE.1: mảnh JPEG sát tem lớn bị bỏ; component thật ở xa vẫn giữ."""
+    source_pixel_mm = 25.4 / 72.0
+    main = Point(0, 0).buffer(400 * _PT_PER_MM, resolution=64)
+    near_halo = box(
+        401.6 * _PT_PER_MM,
+        -4 * _PT_PER_MM,
+        402.1 * _PT_PER_MM,
+        4 * _PT_PER_MM,
+    )
+    distant_component = box(
+        430 * _PT_PER_MM,
+        0,
+        430.5 * _PT_PER_MM,
+        8 * _PT_PER_MM,
+    )
+
+    kept, dropped = _filter_full_page_jpeg_halo_components(
+        [main, near_halo, distant_component],
+        source_pixel_mm,
+    )
+
+    assert dropped == 1
+    assert main in kept
+    assert distant_component in kept
+    assert near_halo not in kept
+
+
+def test_noodle_filter_giu_component_day_va_fail_safe_khi_thieu_dpi():
+    """Tem phụ đủ dày và PDF không có bằng chứng ảnh phủ trang đều được giữ."""
+    main = Point(0, 0).buffer(400 * _PT_PER_MM, resolution=64)
+    meaningful = box(
+        400.2 * _PT_PER_MM,
+        -3 * _PT_PER_MM,
+        406.2 * _PT_PER_MM,
+        3 * _PT_PER_MM,
+    )
+    kept, dropped = _filter_full_page_jpeg_halo_components(
+        [main, meaningful],
+        25.4 / 72.0,
+    )
+    assert dropped == 0
+    assert kept == [main, meaningful]
+
+    unchanged, dropped_without_evidence = _filter_full_page_jpeg_halo_components(
+        [main, meaningful],
+        None,
+    )
+    assert dropped_without_evidence == 0
+    assert unchanged == [main, meaningful]
+
+
+def test_noodle_luot_hai_chi_bo_manh_rat_nho_o_khoang_cach_mo_rong():
+    """§NOODLE.6: ngưỡng rộng chỉ ăn mảnh cực nhỏ, không ăn chi tiết có nghĩa."""
+    source_pixel_mm = 0.4
+    main = Point(0, 0).buffer(400 * _PT_PER_MM, resolution=64)
+    far_halo = box(
+        403.5 * _PT_PER_MM,
+        -1.4 * _PT_PER_MM,
+        405.0 * _PT_PER_MM,
+        1.4 * _PT_PER_MM,
+    )
+    meaningful = box(
+        403.5 * _PT_PER_MM,
+        -1.0 * _PT_PER_MM,
+        407.5 * _PT_PER_MM,
+        1.0 * _PT_PER_MM,
+    )
+
+    conservative, dropped_conservative = _filter_full_page_jpeg_halo_components(
+        [main, far_halo, meaningful],
+        source_pixel_mm,
+    )
+    assert dropped_conservative == 0
+    assert conservative == [main, far_halo, meaningful]
+
+    recognized, dropped_recognized = _filter_full_page_jpeg_halo_components(
+        [main, far_halo, meaningful],
+        source_pixel_mm,
+        max_area_fraction=1.0e-5,
+        max_gap_source_px=12.0,
+    )
+    assert dropped_recognized == 1
+    assert far_halo not in recognized
+    assert meaningful in recognized
+
+
+def test_noodle_island_muc_yeu_bi_bo_nhung_cham_muc_that_duoc_giu():
+    """§NOODLE.9: cùng kích thước/vị trí, chỉ ringing gần trắng bị loại."""
+    source_pixel_mm = 0.35
+    main = box(10, 10, 2010, 2010)
+    weak_island = box(2017, 50, 2023, 56)
+    dark_dot = box(2017, 100, 2023, 106)
+    image = np.full((2050, 2050, 3), 255, dtype=np.uint8)
+    image[49:58, 2016:2025] = 245
+    image[99:108, 2016:2025] = 20
+
+    kept, dropped = _filter_full_page_jpeg_halo_components(
+        [main, weak_island, dark_dot],
+        source_pixel_mm,
+        image_rgb=image,
+        geometry_px_per_point=1.0,
+    )
+
+    assert dropped == 1
+    assert weak_island not in kept
+    assert dark_dot in kept
+
+
+def test_noodle_simplified_probe_nhan_alias_nhung_giu_guard_hausdorff():
+    """§NOODLE.7: dải alias trung gian được nhận hình chỉ trong sai số 0,35 mm."""
+    count = 5272
+    angles = np.linspace(0.0, 2.0 * np.pi, count, endpoint=False)
+    radii = (50.0 + 0.15 * np.sin(160.0 * angles)) * _PT_PER_MM
+    raster_alias = np.column_stack((
+        radii * np.cos(angles),
+        radii * np.sin(angles),
+    ))
+    pre_smoothed = _smooth_round_contour_points(
+        raster_alias,
+        source_pixel_mm=0.04384042,
+        contour_px_per_mm=11.811,
+    )
+
+    rebuilt, meta = _reconstruct_cut_geometry_parts(
+        Polygon(pre_smoothed),
+        "auto_safe",
+        11.811,
+        0.04384042,
+    )
+
+    assert meta["kind"] == "circle"
+    assert meta["simplified_probe"] is True
+    assert meta["probe_hausdorff_mm"] <= 0.35
+    assert len(rebuilt.exterior.coords) == 97
+
+
+def test_noodle_reconstruct_tung_component_va_probe_theo_pixel_nguon():
+    """§NOODLE.2–3: component xấu không khóa hình tốt; probe lọc nhận tem lớn."""
+    circle = Point(0, 0).buffer(100 * _PT_PER_MM, resolution=64)
+    custom = Polygon([(1000, 0), (1050, 10), (1030, 70), (960, 58), (950, 16)])
+    rebuilt, meta = _reconstruct_cut_geometry_parts(
+        MultiPolygon([circle, custom]),
+        "auto_safe",
+        12.0,
+    )
+    assert meta["component_count"] == 2
+    assert meta["component_reconstructed_count"] == 1
+    assert meta["dominant_reconstructed"] is True
+    assert meta["dominant_kind"] == "circle"
+    parts = sorted(rebuilt.geoms, key=lambda part: part.area, reverse=True)
+    assert len(parts[0].exterior.coords) == 97
+    assert len(parts[1].exterior.coords) == len(custom.exterior.coords)
+
+    count = 4096
+    angles = np.linspace(0.0, 2.0 * np.pi, count, endpoint=False)
+    radii = (400.0 + 4.0 * np.sin(320.0 * angles)) * _PT_PER_MM
+    noisy_circle = Polygon(np.column_stack((
+        radii * np.cos(angles),
+        radii * np.sin(angles),
+    )))
+    rebuilt_circle, circle_meta = _reconstruct_cut_geometry_parts(
+        noisy_circle,
+        "auto_safe",
+        7.45,
+        25.4 / 72.0,
+    )
+    assert circle_meta["kind"] == "circle"
+    assert circle_meta["source_scaled_probe"] is True
+    assert len(rebuilt_circle.exterior.coords) == 97
+
+
+@pytest.mark.parametrize(
+    ("shape", "expected_kind", "expected_lines", "max_cubics"),
+    [
+        ("ellipse", "ellipse", 0, 96),
+        ("rectangle", "rect", 3, 0),
+        ("rounded_rectangle", "rounded_rect", 0, 68),
+        ("triangle", "triangle", 2, 0),
+        ("star_custom", None, 0, 24),
+    ],
+)
+def test_noodle_da_hinh_jpeg_1600mm_chi_con_mot_cutcontour(
+    tmp_path,
+    shape,
+    expected_kind,
+    expected_lines,
+    max_cubics,
+):
+    """§NOODLE.8–11: khóa điểm scale xấu nhất cho hình chuẩn và custom."""
+    source = str(tmp_path / f"source_{shape}.pdf")
+    output = str(tmp_path / f"cut_{shape}.pdf")
+    _make_large_jpeg_shape_pdf(source, shape, 1600.0)
+
+    success, meta = StickerEngine(dpi=300).process_pdf(
+        input_path=source,
+        output_path=output,
+        cut_mode="original",
+        offset_mm=0.0,
+        corner_style="preserve",
+        bleed_mm=0.0,
+        fill_holes=True,
+        remove_white_bg=True,
+        bleed_color_type="image",
+        draw_cut_contour=True,
+        rectangle_mode=False,
+        shape_mode="auto_safe",
+        alpha_corner_policy="adaptive",
+    )
+
+    assert success is True
+    assert meta["cut_kind"] == expected_kind
+    assert len(meta["boxes"]) == 1
+    with pikepdf.Pdf.open(output) as result:
+        cut_stream = _read_all_content(result.pages[0]).split(
+            b"/CutContour CS", 1
+        )[1]
+        assert cut_stream.count(b" m\n") == 1
+        assert cut_stream.count(b" l\n") == expected_lines
+        cubic_count = cut_stream.count(b" c\n")
+        if max_cubics == 0:
+            assert cubic_count == 0
+        else:
+            assert 1 <= cubic_count <= max_cubics
+
+
+@pytest.mark.parametrize(
+    ("shape", "fill_holes", "expected_kind", "expected_paths", "expected_lines"),
+    [
+        ("heart", True, None, 1, 0),
+        ("flower_12", True, None, 1, 0),
+        ("gear_20", True, None, 1, 0),
+        ("hourglass_narrow_neck", True, None, 1, 0),
+        ("donut_one_hole", False, None, 2, 0),
+        ("letter_b_two_holes", False, None, 3, 0),
+        # Mặc định vẫn lấp lỗ, không biến mọi mảng trắng nội bộ thành đường cắt.
+        ("donut_one_hole", True, "circle", 1, 0),
+    ],
+)
+def test_noodle_custom_topology_1600mm_khong_roi_ve_mi_tom(
+    tmp_path,
+    shape,
+    fill_holes,
+    expected_kind,
+    expected_paths,
+    expected_lines,
+):
+    """§NOODLE.12–15: hình tự do/lỗ phải giữ topology và không nổ node theo scale."""
+    source = str(tmp_path / f"source_{shape}_{fill_holes}.pdf")
+    output = str(tmp_path / f"cut_{shape}_{fill_holes}.pdf")
+    _make_large_jpeg_shape_pdf(source, shape, 1600.0)
+
+    success, meta = StickerEngine(dpi=300).process_pdf(
+        input_path=source,
+        output_path=output,
+        cut_mode="original",
+        offset_mm=0.0,
+        corner_style="preserve",
+        bleed_mm=0.0,
+        fill_holes=fill_holes,
+        remove_white_bg=True,
+        bleed_color_type="image",
+        draw_cut_contour=True,
+        rectangle_mode=False,
+        shape_mode="auto_safe",
+        alpha_corner_policy="adaptive",
+    )
+
+    assert success is True
+    assert meta["cut_kind"] == expected_kind
+    with pikepdf.Pdf.open(output) as result:
+        cut_stream = _read_all_content(result.pages[0]).split(
+            b"/CutContour CS", 1
+        )[1]
+        path_count = cut_stream.count(b" m\n")
+        line_count = cut_stream.count(b" l\n")
+        cubic_count = cut_stream.count(b" c\n")
+        assert path_count == expected_paths
+        assert line_count == expected_lines
+        assert 1 <= line_count + cubic_count <= 512
+        machine_paths = _parse_cut_machine_paths(result.pages[0])
+
+    if shape in {"heart", "flower_12", "gear_20", "hourglass_narrow_neck"}:
+        machine = _summarize_machine_paths(machine_paths)
+        assert machine["short"] == 0
+        if shape == "flower_12":
+            assert machine["sharp_joins"] == 0
+        elif shape == "hourglass_narrow_neck":
+            assert machine["sharp_joins"] == 10
+            assert machine["curvature_flips"] == 0
+        elif shape == "gear_20":
+            assert machine["sharp_joins"] >= 80
+        else:
+            strong_cusps = _summarize_machine_paths(
+                machine_paths,
+                join_threshold_degrees=120.0,
+            )
+            assert strong_cusps["sharp_joins"] == 2
+
+
+@pytest.mark.parametrize("shape", ["heart", "flower_12", "gear_20"])
+def test_preserved_motion_policy_20mm_giu_cusp_va_bo_goc_gia(
+    tmp_path,
+    shape,
+):
+    """§MOTION.1–4: tem nhỏ phải chọn theo chuyển động, không theo ít node."""
+    source = str(tmp_path / f"source_{shape}_20mm.pdf")
+    output = str(tmp_path / f"cut_{shape}_20mm.pdf")
+    _make_large_jpeg_shape_pdf(source, shape, 20.0)
+    success, meta = StickerEngine(dpi=300).process_pdf(
+        input_path=source,
+        output_path=output,
+        cut_mode="original",
+        offset_mm=0.0,
+        corner_style="preserve",
+        bleed_mm=0.0,
+        fill_holes=True,
+        remove_white_bg=True,
+        bleed_color_type="image",
+        draw_cut_contour=True,
+        rectangle_mode=False,
+        shape_mode="contour",
+        alpha_corner_policy="adaptive",
+    )
+
+    assert success is True
+    assert meta["cut_kind"] is None
+    with pikepdf.Pdf.open(output) as result:
+        machine_paths = _parse_cut_machine_paths(result.pages[0])
+    assert len(machine_paths) == 1
+    assert all(segment.kind == "cubic" for segment in machine_paths[0])
+    machine = _summarize_machine_paths(machine_paths)
+    assert machine["short"] == 0
+    if shape == "flower_12":
+        assert machine["sharp_joins"] == 0
+    elif shape == "gear_20":
+        assert machine["sharp_joins"] >= 72
+        assert machine["curvature_flips"] <= 12
+    else:
+        assert machine["sharp_joins"] == 2
+        strong_cusps = _summarize_machine_paths(
+            machine_paths,
+            join_threshold_degrees=110.0,
+        )
+        assert strong_cusps["sharp_joins"] == 2
+
+
+@pytest.mark.parametrize("shape_mode", ["contour", "auto_safe"])
+def test_preserve_adaptive_policy_cho_ca_auto_va_force_contour(shape_mode):
+    assert resolve_sticker_corner_policy(
+        "original",
+        False,
+        False,
+        shape_mode,
+        "preserve",
+    ) == "adaptive"
+
+
+def test_preserve_policy_giu_legacy_cho_force_shape_va_selection():
+    assert resolve_sticker_corner_policy(
+        "original", False, False, "force_circle", "preserve"
+    ) == "legacy"
+    assert resolve_sticker_corner_policy(
+        "original", False, True, "auto_safe", "preserve"
+    ) == "legacy"
 
 
 def test_preserve_adaptive_rejection_returns_exact_legacy_cut_path(
@@ -1295,6 +2117,72 @@ def test_alpha_cutline_filters_raster_steps_in_exported_pdf(tmp_path):
         curve_count = cut_stream.count(b" c\n")
         assert line_count == 0
         assert 8 < curve_count < 100
+
+
+def test_alpha_wavy_shell_pdf_has_no_artificial_joins_or_short_commands(tmp_path):
+    """Regression đọc lại lệnh PDF thật của viền hữu cơ ở chế độ Ảnh AI."""
+    src = str(tmp_path / "alpha_wavy_shell.pdf")
+    out = str(tmp_path / "alpha_wavy_shell_cut.pdf")
+    _make_wavy_shell_alpha_pdf(src)
+
+    success, _meta = StickerEngine(dpi=300).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="alpha",
+        offset_mm=0.0,
+        corner_style="preserve",
+        bleed_mm=0.0,
+        fill_holes=True,
+        remove_white_bg=False,
+        draw_cut_contour=True,
+        shape_mode="contour",
+        alpha_corner_policy="adaptive",
+        alpha_source_pixel_mm=25.4 / 300.0,
+    )
+
+    assert success is True
+    with pikepdf.Pdf.open(out) as result:
+        machine_paths = _parse_cut_machine_paths(result.pages[0])
+    assert len(machine_paths) == 1
+    assert all(segment.kind == "cubic" for segment in machine_paths[0])
+    machine = _summarize_machine_paths(machine_paths)
+    assert machine["short"] == 0
+    assert machine["sharp_joins"] == 0
+
+
+def test_alpha_72dpi_notched_pdf_stays_cubic_without_short_commands(tmp_path):
+    """§AI-MOTION.4–10: 72 DPI phải là C2 thật, kể cả khi mask có râu cổ hẹp."""
+    src = str(tmp_path / "alpha_72dpi_notched.pdf")
+    out = str(tmp_path / "alpha_72dpi_notched_cut.pdf")
+    _make_low_dpi_notched_alpha_pdf(src)
+
+    success, _meta = StickerEngine(dpi=300).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="alpha",
+        offset_mm=0.0,
+        corner_style="preserve",
+        bleed_mm=0.0,
+        fill_holes=True,
+        remove_white_bg=False,
+        draw_cut_contour=True,
+        shape_mode="contour",
+        alpha_corner_policy="adaptive",
+        alpha_source_pixel_mm=25.4 / 72.0,
+    )
+
+    assert success is True
+    with pikepdf.Pdf.open(out) as result:
+        machine_paths = _parse_cut_machine_paths(result.pages[0])
+    assert len(machine_paths) == 1
+    assert all(segment.kind == "cubic" for segment in machine_paths[0])
+    machine = _summarize_machine_paths(machine_paths)
+    assert machine["short"] == 0
+    assert machine["sharp_joins"] == 0
+    # Regression cũ chỉ kiểm join G1 nên Bézier tay nắm ngắn vẫn lọt dù nhìn như
+    # đa giác. Đọc lại PDF thật và khóa cả độ nhảy độ cong sau lượng tử hóa.
+    assert machine["p95_curvature_jump"] < 0.02
+    assert machine["maximum_curvature_jump"] < 0.02
 
 
 def test_alpha_cut_mode_keeps_rgb_order_for_image_bleed(tmp_path):

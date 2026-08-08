@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { PDFDocument } from 'pdf-lib';
+import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRef, PDFString } from 'pdf-lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import OpenInDesignModal from './OpenInDesignModal';
@@ -26,6 +26,83 @@ vi.mock('react-i18next', () => ({
 }));
 
 const ILLUSTRATOR = 'C:\\Program Files\\Adobe\\Adobe Illustrator 2025\\Illustrator.exe';
+const GRAPH_INFO_NAME = 'SA info AUDIT GRAPH';
+const LAYER_NAME = 'Marks_Model_AUDIT';
+const GROUP_NAME = 'MarkLine_AUDIT';
+const ITEM_NAME = 'MKLINE_AUDIT';
+
+/** Dựng đúng kiểu artifact CNC: layer Graphtec/layer cha rỗng, group con chứa nét ốc. */
+function attachPontLayerTree(doc: PDFDocument, pageIndex: number): void {
+    const graphInfoRef = doc.context.register(
+        doc.context.obj({ Type: 'OCG', Name: PDFString.of(GRAPH_INFO_NAME) }),
+    );
+    const layerRef = doc.context.register(
+        doc.context.obj({ Type: 'OCG', Name: PDFString.of(LAYER_NAME) }),
+    );
+    const groupRef = doc.context.register(
+        doc.context.obj({ Type: 'OCG', Name: PDFString.of(GROUP_NAME) }),
+    );
+    const page = doc.getPage(pageIndex);
+    page.node.set(
+        PDFName.of('Contents'),
+        doc.context.register(doc.context.stream(
+            '/OC /MarkGroup BDC /Span /MarkItem BDC 0 0 0 RG 10 10 20 20 re S EMC EMC',
+        )),
+    );
+    page.node.set(PDFName.of('Resources'), doc.context.obj({
+        Properties: {
+            MarkGroup: groupRef,
+            MarkItem: { NM: PDFString.of(ITEM_NAME) },
+        },
+    }));
+    doc.catalog.set(PDFName.of('OCProperties'), doc.context.obj({
+        OCGs: [graphInfoRef, layerRef, groupRef],
+        D: {
+            BaseState: PDFName.of('ON'),
+            ON: [graphInfoRef, layerRef, groupRef],
+            Order: [graphInfoRef, layerRef, [groupRef]],
+        },
+    }));
+}
+
+function optionalContentProps(doc: PDFDocument): PDFDict | undefined {
+    return doc.catalog.lookupMaybe(PDFName.of('OCProperties'), PDFDict);
+}
+
+function ocgNames(doc: PDFDocument): string[] {
+    const ocgs = optionalContentProps(doc)?.lookupMaybe(PDFName.of('OCGs'), PDFArray);
+    const names: string[] = [];
+    for (let i = 0; ocgs && i < ocgs.size(); i += 1) {
+        const dict = ocgs.lookupMaybe(i, PDFDict);
+        const name = dict?.lookupMaybe(PDFName.of('Name'), PDFString)?.decodeText();
+        if (name) names.push(name);
+    }
+    return names;
+}
+
+function orderNames(doc: PDFDocument, order: PDFArray | undefined): Array<string | unknown[]> {
+    const names: Array<string | unknown[]> = [];
+    for (let i = 0; order && i < order.size(); i += 1) {
+        const raw = order.get(i);
+        if (raw instanceof PDFRef) {
+            const name = doc.context
+                .lookupMaybe(raw, PDFDict)
+                ?.lookupMaybe(PDFName.of('Name'), PDFString)
+                ?.decodeText();
+            if (name) names.push(name);
+            continue;
+        }
+        const nested = order.lookupMaybe(i, PDFArray);
+        if (nested) names.push(orderNames(doc, nested));
+    }
+    return names;
+}
+
+function pageProperties(doc: PDFDocument): PDFDict | undefined {
+    return doc.getPage(0).node
+        .lookupMaybe(PDFName.of('Resources'), PDFDict)
+        ?.lookupMaybe(PDFName.of('Properties'), PDFDict);
+}
 
 function renderModal(overrides: Partial<React.ComponentProps<typeof OpenInDesignModal>> = {}) {
     const props: React.ComponentProps<typeof OpenInDesignModal> = {
@@ -106,6 +183,7 @@ describe('OpenInDesignModal', () => {
         source.addPage([200, 210]); // Trang bế tờ 1.
         source.addPage([300, 310]);
         source.addPage([400, 410]); // Trang bế tờ 2.
+        attachPontLayerTree(source, 1);
         const sourceBytes = await source.save();
         const resultBlob = {
             arrayBuffer: async () => sourceBytes.buffer.slice(
@@ -135,5 +213,30 @@ describe('OpenInDesignModal', () => {
         const output = await PDFDocument.load((writeCall?.[1] as { contents: Uint8Array }).contents);
         expect(output.getPageCount()).toBe(1);
         expect(output.getPage(0).getSize()).toEqual({ width: 200, height: 210 });
+
+        // OCG FIX (audit 2026-08-07 §PONTLAYER.1-.2): trích riêng trang khuôn không được
+        // làm mất Graphtec info/layer cha rỗng, group chứa nét hoặc tên item `/NM`.
+        expect(ocgNames(output)).toEqual([GRAPH_INFO_NAME, LAYER_NAME, GROUP_NAME]);
+        const config = optionalContentProps(output)?.lookupMaybe(PDFName.of('D'), PDFDict);
+        expect(orderNames(output, config?.lookupMaybe(PDFName.of('Order'), PDFArray))).toEqual([
+            GRAPH_INFO_NAME,
+            LAYER_NAME,
+            [GROUP_NAME],
+        ]);
+        const properties = pageProperties(output);
+        const groupRef = properties?.get(PDFName.of('MarkGroup'));
+        expect(groupRef).toBeInstanceOf(PDFRef);
+        expect(
+            optionalContentProps(output)
+                ?.lookupMaybe(PDFName.of('OCGs'), PDFArray)
+                ?.asArray()
+                .some(ref => ref instanceof PDFRef && ref.tag === (groupRef as PDFRef).tag),
+        ).toBe(true);
+        expect(
+            properties
+                ?.lookupMaybe(PDFName.of('MarkItem'), PDFDict)
+                ?.lookupMaybe(PDFName.of('NM'), PDFString)
+                ?.decodeText(),
+        ).toBe(ITEM_NAME);
     });
 });

@@ -294,8 +294,21 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         pageOrder, setPageOrder, pageInstanceIds, setPageInstanceIds,
         selectedIndices, setSelectedIndices, lastSelectedIndex, setLastSelectedIndex,
         pageRotations, setPageRotations, pastStack, setPastStack, futureStack, setFutureStack,
-        updatePageDimForPage, generateThumb, loadError, loadStatus, retryLoad, cancelLoad
+        updatePageDimForPage, generateThumb, loadError, loadStatus, retryLoad, cancelLoad,
+        colorRisk,
     } = loader;
+
+    // COLOR (audit 2026-08-07 §GV.3): tự bật cho PDF rủi ro cao, nhưng cho phép
+    // người dùng tắt/bật theo từng file. Không ghi global store để tab khác không bị ảnh hưởng.
+    const accurateColorSourceKey = [pdfUrl || '', (file as any)?.path || '', (file as any)?.size || 0, (file as any)?.lastModified || 0].join('|');
+    const [accurateColorPreference, setAccurateColorPreference] = useState<{ sourceKey: string; enabled: boolean } | null>(null);
+    const accurateColorPages = useMemo(
+        () => colorRisk?.pages.filter(page => page.accurateColorRecommended).map(page => page.page) || [],
+        [colorRisk],
+    );
+    const accurateColorEnabled = accurateColorPreference?.sourceKey === accurateColorSourceKey
+        ? accurateColorPreference.enabled
+        : colorRisk?.highRisk === true;
 
     // Helper: mọi thao tác đổi thứ tự trang PHẢI cập nhật pageOrder VÀ pageInstanceIds
     // cùng lúc (bất biến: 2 mảng luôn cùng độ dài). Rotation keyed theo instance-id nên
@@ -323,8 +336,10 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     // Việc kiểm tra loadError được dời xuống SAU TẤT CẢ hook (ngay trước RENDER).
 
     // ═══ Hook: Tile Renderer ═══
-    const { getTileUrl, getTextBlocksForPage, renderOwnerId } = useTileRenderer({
+    const { getTileUrl, getTextBlocksForPage, renderOwnerId, accurateColorError } = useTileRenderer({
         file, pdfRef, pdfUrl, activePage, tabId, isActive,
+        accurateColorEnabled,
+        accurateColorPages,
     });
 
     // ═══ Edit-session lifecycle (COMMIT-ON-EXIT) ═══
@@ -1546,6 +1561,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                         onVdpFieldsChange={onVdpFieldsChange}
                         getTileUrl={getTileUrl}
                         renderOwnerId={renderOwnerId}
+                        accurateColorPage={accurateColorEnabled && accurateColorPages.includes(originalPageNum)}
                         textBlocks={nativeTextBlocks[originalPageNum]}
                         setHoveredPdfPosition={setHoveredPdfPosition}
                         isBlankDoc={!!(file as any)?.isBlank}
@@ -1561,7 +1577,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 </div>
             </div>
         );
-    }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, zoom, bleedView, highlightBoxes, isVdpMode, getTileUrl, renderOwnerId, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage, tabId, isActive]);
+    }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, zoom, bleedView, highlightBoxes, isVdpMode, getTileUrl, renderOwnerId, accurateColorEnabled, accurateColorPages, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage, tabId, isActive]);
 
     // Kiểm tra loadError SAU khi mọi hook đã được gọi (xem ghi chú ở đầu component).
     if (loadError) {
@@ -1694,7 +1710,32 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                     )}
                     {toolbarExtra}
                 </>}
-                extraActionsRight={toolbarExtraRight}
+                extraActionsRight={<>
+                    {!!(file as any)?.path && accurateColorPages.length > 0 && (
+                        <button
+                            type="button"
+                            onClick={() => setAccurateColorPreference({
+                                sourceKey: accurateColorSourceKey,
+                                enabled: !accurateColorEnabled,
+                            })}
+                            title={accurateColorEnabled && accurateColorError
+                                ? accurateColorError
+                                : t('tabs.outputPreview:gia_lap_may_rip_thuc_te_boc_chinh_xac')}
+                            aria-label={t('tabs.outputPreview:gia_lap_may_rip_thuc_te_boc_chinh_xac')}
+                            aria-pressed={accurateColorEnabled}
+                            className={`h-8 px-2 rounded text-[11px] font-bold tracking-wide transition-colors ${
+                                accurateColorError && accurateColorEnabled
+                                    ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 ring-1 ring-amber-300 dark:ring-amber-700'
+                                    : accurateColorEnabled
+                                        ? 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-300 ring-1 ring-cyan-300 dark:ring-cyan-700'
+                                        : 'text-slate-600 dark:text-zinc-300 hover:bg-black/5 dark:hover:bg-white/10'
+                            }`}
+                        >
+                            CMYK{accurateColorError && accurateColorEnabled ? '!' : accurateColorEnabled ? '✓' : ''}
+                        </button>
+                    )}
+                    {toolbarExtraRight}
+                </>}
                 onOpenRotateModalOrTools={(type) => {
                     if ((type as string) === 'rotate') { setActiveDashboardTool('pages'); setIsSidebarOpen(true); }
                     else if ((type as string) === 'delete') { setIsDeleteModalOpen(true); }
@@ -1761,8 +1802,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                             {showRulers && (
                                 <>
                                     {/* UIUX (audit 2026-07-27 §C-04): onCycleUnit — chuột phải lên thước đổi đơn vị mm→cm→inch */}
-                                    <Ruler orientation="vertical" scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} zoom={zoom} unit={measurementUnit} onMouseDown={handleRulerMouseDown} pageAnchorId={`pdf-page-container-${activePage}`} onCycleUnit={cycleMeasurementUnit} />
-                                    <Ruler orientation="horizontal" scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} zoom={zoom} unit={measurementUnit} onMouseDown={handleRulerMouseDown} pageAnchorId={`pdf-page-container-${activePage}`} onCycleUnit={cycleMeasurementUnit} />
+                                    <Ruler orientation="vertical" scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} zoom={zoom} unit={measurementUnit} onMouseDown={handleRulerMouseDown} pageAnchorId={`pdf-page-container-${activePage}`} onCycleUnit={cycleMeasurementUnit} isActive={isActive !== false} />
+                                    <Ruler orientation="horizontal" scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} zoom={zoom} unit={measurementUnit} onMouseDown={handleRulerMouseDown} pageAnchorId={`pdf-page-container-${activePage}`} onCycleUnit={cycleMeasurementUnit} isActive={isActive !== false} />
                                 </>
                             )}
                             <div
@@ -1779,15 +1820,17 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                                 }}
                                 style={{ left: showRulers ? 20 : 0, top: showRulers ? 20 : 0 }}
                             >
-                                <GuideLayer scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} guides={guides} draggingGuide={draggingGuide} selectedGuideId={selectedGuideId} onGuideMouseDown={handleGuideMouseDown} pageAnchorId={`pdf-page-container-${activePage}`} />
+                                <GuideLayer scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} guides={guides} draggingGuide={draggingGuide} selectedGuideId={selectedGuideId} onGuideMouseDown={handleGuideMouseDown} pageAnchorId={`pdf-page-container-${activePage}`} isActive={isActive !== false} />
                                 <DimensionLayer
                                     pageAnchorId={`pdf-page-container-${activePage}`}
+                                    scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>}
                                     guides={guides}
                                     dimensions={dimensions}
                                     activePage={activePage}
                                     pageWidthPt={activePagePhysical.widthPt}
                                     pageHeightPt={activePagePhysical.heightPt}
                                     unit={measurementUnit}
+                                    isActive={isActive !== false}
                                     onRemove={(id) => setDimensions(prev => prev.filter(d => d.id !== id))}
                                 />
 

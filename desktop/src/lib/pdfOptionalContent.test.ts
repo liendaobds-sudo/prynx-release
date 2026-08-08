@@ -95,6 +95,19 @@ function propertyRef(doc: PDFDocument, name: string): PDFRef | undefined {
     return ref instanceof PDFRef ? ref : undefined;
 }
 
+function ocgNames(doc: PDFDocument): string[] {
+    const arr = ocProps(doc)?.lookupMaybe(PDFName.of('OCGs'), PDFArray);
+    const names: string[] = [];
+    for (let i = 0; arr && i < arr.size(); i += 1) {
+        const name = arr
+            .lookupMaybe(i, PDFDict)
+            ?.lookupMaybe(PDFName.of('Name'), PDFString)
+            ?.decodeText();
+        if (name) names.push(name);
+    }
+    return names;
+}
+
 async function copyInto(src: PDFDocument): Promise<PDFDocument> {
     const out = await PDFDocument.create();
     const pages = await out.copyPages(src, src.getPageIndices());
@@ -111,6 +124,94 @@ describe('pdfOptionalContent — giữ layer qua pdf-lib copyPages', () => {
         expect(ocProps(out)).toBeUndefined();
         // Nhưng marked content vẫn còn → renderer vẽ hết, đây chính là lỗ hổng.
         expect(propertyRef(out, 'L_An')).toBeDefined();
+    });
+
+    it('tuỳ chọn giữ OCG rỗng dùng làm Graphtec info và cây layer cha', async () => {
+        const doc = await PDFDocument.create();
+        const page = doc.addPage([200, 200]);
+        const graphRef = doc.context.register(
+            doc.context.obj({ Type: 'OCG', Name: PDFString.of('SA info AUDIT') }),
+        );
+        const layerRef = doc.context.register(
+            doc.context.obj({ Type: 'OCG', Name: PDFString.of('Marks_Model_AUDIT') }),
+        );
+        const groupRef = doc.context.register(
+            doc.context.obj({ Type: 'OCG', Name: PDFString.of('MarkLine_AUDIT') }),
+        );
+        page.node.set(
+            PDFName.of('Contents'),
+            doc.context.register(doc.context.stream('/OC /MarkGroup BDC 0 0 10 10 re S EMC')),
+        );
+        // Artifact CNC thật chỉ tham chiếu group chứa nét; Graphtec info và layer cha rỗng.
+        page.node.set(PDFName.of('Resources'), doc.context.obj({
+            Properties: { MarkGroup: groupRef },
+        }));
+        doc.catalog.set(PDFName.of('OCProperties'), doc.context.obj({
+            OCGs: [graphRef, layerRef, groupRef],
+            D: {
+                BaseState: PDFName.of('ON'),
+                ON: [graphRef, layerRef, groupRef],
+                Order: [graphRef, layerRef, [groupRef]],
+            },
+        }));
+
+        const transfer = beginOptionalContentTransfer(
+            [doc],
+            { preserveUnreferencedOcgs: true },
+        );
+        const out = await copyInto(doc);
+        finishOptionalContentTransfer(transfer, out);
+
+        expect(ocgNames(out)).toEqual([
+            'SA info AUDIT',
+            'Marks_Model_AUDIT',
+            'MarkLine_AUDIT',
+        ]);
+        const order = ocProps(out)
+            ?.lookupMaybe(PDFName.of('D'), PDFDict)
+            ?.lookupMaybe(PDFName.of('Order'), PDFArray);
+        expect(order?.size()).toBe(3);
+        expect(order?.lookupMaybe(2, PDFArray)?.size()).toBe(1);
+        expect(refsIn(ocProps(out), 'OCGs').map(ref => ref.tag)).toContain(
+            propertyRef(out, 'MarkGroup')?.tag,
+        );
+    });
+
+    it('chỉ giữ OCG rỗng cùng nhánh /Order với trang được trích', async () => {
+        const doc = await PDFDocument.create();
+        const refs = ['SA 1', 'Layer 1', 'Group 1', 'SA 2', 'Layer 2', 'Group 2']
+            .map(name => doc.context.register(
+                doc.context.obj({ Type: 'OCG', Name: PDFString.of(name) }),
+            ));
+        [refs[2], refs[5]].forEach((groupRef) => {
+            const page = doc.addPage([200, 200]);
+            page.node.set(
+                PDFName.of('Contents'),
+                doc.context.register(doc.context.stream('/OC /MarkGroup BDC 0 0 10 10 re S EMC')),
+            );
+            page.node.set(PDFName.of('Resources'), doc.context.obj({
+                Properties: { MarkGroup: groupRef },
+            }));
+        });
+        doc.catalog.set(PDFName.of('OCProperties'), doc.context.obj({
+            OCGs: refs,
+            D: {
+                BaseState: PDFName.of('ON'),
+                ON: refs,
+                Order: [refs[0], refs[1], [refs[2]], refs[3], refs[4], [refs[5]]],
+            },
+        }));
+
+        const transfer = beginOptionalContentTransfer(
+            [doc],
+            { preserveUnreferencedOcgs: true },
+        );
+        const out = await PDFDocument.create();
+        const [firstPage] = await out.copyPages(doc, [0]);
+        out.addPage(firstPage);
+        finishOptionalContentTransfer(transfer, out);
+
+        expect(ocgNames(out)).toEqual(['SA 1', 'Layer 1', 'Group 1']);
     });
 
     it('giữ được trạng thái ẩn và trỏ đúng object mà content dùng', async () => {

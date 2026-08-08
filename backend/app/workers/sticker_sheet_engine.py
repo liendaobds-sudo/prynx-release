@@ -25,6 +25,23 @@ SOFT_EDGE_RADIUS_PX = 2
 MAX_UNCERTAIN_ALPHA = 207
 MIN_UNCERTAIN_ALPHA = 48
 
+# QUALITY (audit 2026-08-08 §AI-SHADOW.1): bóng đổ do ảnh mockup thường là
+# một dải xám trung tính nối trực tiếp với biên ngoài của mask AI. Chỉ bóc dải
+# này khi sau bóc xuất hiện một mép trắng liên tục, sạch hơn rõ rệt; như vậy
+# viền trắng thật, artwork tối màu và hình không có bóng đều có đường lui an toàn.
+_SHADOW_LUMA_MIN = 96
+_SHADOW_LUMA_MAX = 248
+_SHADOW_CHROMA_MAX = 16
+_SHADOW_EXPAND_LUMA_MAX = 252
+_SHADOW_EXPAND_CHROMA_MAX = 18
+_SHADOW_MIN_BOUNDARY_EVIDENCE_RATIO = 0.05
+_SHADOW_MIN_AREA_RATIO = 0.002
+_SHADOW_MAX_AREA_RATIO = 0.35
+_SHADOW_MIN_RETAINED_AREA_RATIO = 0.65
+_SHADOW_CLEAN_BOUNDARY_WHITE_RATIO = 0.88
+_SHADOW_BOUNDARY_WHITE_GAIN = 0.08
+_SHADOW_MAX_FRAGMENT_AREA_RATIO = 0.0005
+
 
 class StickerSheetError(RuntimeError):
     """Lỗi nghiệp vụ có thể chuyển thành thông báo ngắn cho người dùng."""
@@ -175,6 +192,146 @@ def _clean_alpha(raw_alpha: np.ndarray, labels: np.ndarray) -> np.ndarray:
     return np.where(soft_support, scaled, 0).astype(np.uint8)
 
 
+def _boundary_white_ratio(source_rgb: np.ndarray, component: np.ndarray) -> float:
+    """Đo phần mép trong gần-trắng; mask rỗng trả 0 để guard tự từ chối."""
+    component_u8 = np.where(component, 255, 0).astype(np.uint8)
+    if not np.any(component_u8):
+        return 0.0
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    inner = cv2.erode(component_u8, kernel, iterations=1)
+    boundary = (component_u8 > 0) & (inner == 0)
+    colors = source_rgb[:, :, :3][boundary]
+    if colors.size == 0:
+        return 0.0
+    minimum = colors.min(axis=1)
+    chroma = colors.max(axis=1) - minimum
+    white = (minimum >= 225) & (chroma <= 25)
+    return float(np.count_nonzero(white)) / float(len(colors))
+
+
+def _remove_attached_neutral_shadow(
+    source_rgb: np.ndarray,
+    component: np.ndarray,
+) -> np.ndarray:
+    """Bóc bóng xám nối biên nhưng chỉ nhận kết quả còn nguyên một vỏ tem trắng.
+
+    Phép flood chỉ đi qua dải xám trung tính chạm biên ngoài, nên chữ đen hoặc
+    chi tiết tối nằm sau viền trắng không bị xem là bóng. Các guard diện tích,
+    connectivity và chất lượng mép khiến ca mơ hồ quay về mask AI nguyên bản.
+    """
+    component_bool = np.asarray(component, dtype=bool)
+    component_area = int(np.count_nonzero(component_bool))
+    if component_area < MIN_COMPONENT_AREA_PX:
+        return component_bool
+
+    rgb = source_rgb[:, :, :3]
+    luma = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    rgb_i16 = rgb.astype(np.int16, copy=False)
+    chroma = rgb_i16.max(axis=2) - rgb_i16.min(axis=2)
+    component_u8 = component_bool.astype(np.uint8)
+    boundary = component_bool & (
+        cv2.erode(component_u8, np.ones((3, 3), dtype=np.uint8)) == 0
+    )
+    boundary_count = int(np.count_nonzero(boundary))
+    if boundary_count <= 0:
+        return component_bool
+
+    neutral_band = (
+        component_bool
+        & (luma >= _SHADOW_LUMA_MIN)
+        & (luma <= _SHADOW_LUMA_MAX)
+        & (chroma <= _SHADOW_CHROMA_MAX)
+    )
+    boundary_evidence = boundary & neutral_band
+    if (
+        float(np.count_nonzero(boundary_evidence)) / float(boundary_count)
+        < _SHADOW_MIN_BOUNDARY_EVIDENCE_RATIO
+    ):
+        return component_bool
+
+    count, neutral_labels = cv2.connectedComponents(
+        neutral_band.astype(np.uint8),
+        connectivity=8,
+    )
+    if count <= 1:
+        return component_bool
+    attached_ids = np.unique(neutral_labels[boundary_evidence])
+    attached_ids = attached_ids[attached_ids > 0]
+    if attached_ids.size == 0:
+        return component_bool
+    attached_shadow = np.isin(neutral_labels, attached_ids)
+
+    # Nới đúng một pixel qua phần cuối của gradient xám. Dải sáng hơn 252 hoặc
+    # có sắc màu là điểm dừng, nên không xuyên qua viền trắng/đường viền màu.
+    expanded = cv2.dilate(
+        attached_shadow.astype(np.uint8),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        iterations=1,
+    ) > 0
+    attached_shadow = (
+        expanded
+        & component_bool
+        & (luma <= _SHADOW_EXPAND_LUMA_MAX)
+        & (chroma <= _SHADOW_EXPAND_CHROMA_MAX)
+    )
+    shadow_area = int(np.count_nonzero(attached_shadow))
+    shadow_ratio = float(shadow_area) / float(component_area)
+    if not _SHADOW_MIN_AREA_RATIO <= shadow_ratio <= _SHADOW_MAX_AREA_RATIO:
+        return component_bool
+
+    refined = component_bool & ~attached_shadow
+    retained_ratio = float(np.count_nonzero(refined)) / float(component_area)
+    if retained_ratio < _SHADOW_MIN_RETAINED_AREA_RATIO:
+        return component_bool
+
+    refined_count, refined_labels, refined_stats, _centroids = (
+        cv2.connectedComponentsWithStats(
+        refined.astype(np.uint8),
+        connectivity=8,
+        )
+    )
+    if refined_count > 2:
+        main_id = 1 + int(
+            np.argmax(refined_stats[1:, cv2.CC_STAT_AREA])
+        )
+        fragment_area = int(np.count_nonzero(refined & (refined_labels != main_id)))
+        if (
+            float(fragment_area) / float(component_area)
+            > _SHADOW_MAX_FRAGMENT_AREA_RATIO
+        ):
+            return component_bool
+        refined = refined_labels == main_id
+        refined_count = 2
+    if refined_count != 2:
+        return component_bool
+
+    before_white = _boundary_white_ratio(rgb, component_bool)
+    after_white = _boundary_white_ratio(rgb, refined)
+    if (
+        after_white < _SHADOW_CLEAN_BOUNDARY_WHITE_RATIO
+        or after_white - before_white < _SHADOW_BOUNDARY_WHITE_GAIN
+    ):
+        return component_bool
+    return refined
+
+
+def _refine_attached_shadows(
+    source_rgb: np.ndarray,
+    records: list[dict[str, int]],
+    raw_labels: np.ndarray,
+) -> tuple[np.ndarray, int]:
+    """Lọc bóng độc lập từng instance; không cho một tem đổi số tem của cả tờ."""
+    refined_binary = np.zeros(raw_labels.shape, dtype=np.uint8)
+    refined_count = 0
+    for record in records:
+        component = raw_labels == record["raw_id"]
+        refined = _remove_attached_neutral_shadow(source_rgb, component)
+        if not np.array_equal(refined, component):
+            refined_count += 1
+        refined_binary[refined] = 255
+    return refined_binary, refined_count
+
+
 def _instance_quality(
     raw_alpha: np.ndarray,
     labels: np.ndarray,
@@ -228,6 +385,7 @@ def analyze_sticker_sheet(
 
     post_started = time.perf_counter()
     model_array = np.asarray(model_result, dtype=np.uint8)
+    source_rgb = np.asarray(source, dtype=np.uint8)
     raw_alpha = model_array[:, :, 3]
     binary = np.where(raw_alpha >= int(alpha_threshold), 255, 0).astype(np.uint8)
     min_area = max(
@@ -235,6 +393,21 @@ def analyze_sticker_sheet(
         int(binary.size * float(min_component_area_ratio)),
     )
     records, raw_labels = _component_records(binary, min_area)
+    if records:
+        refined_binary, _refined_shadow_count = _refine_attached_shadows(
+            source_rgb,
+            records,
+            raw_labels,
+        )
+        if _refined_shadow_count > 0:
+            refined_records, refined_raw_labels = _component_records(
+                refined_binary,
+                min_area,
+            )
+            # §AI-SHADOW.1: số instance là hợp đồng cứng. Nếu hậu xử lý làm đổi
+            # số tem thì bỏ toàn bộ lượt bóc bóng và giữ nguyên kết quả model.
+            if len(refined_records) == len(records):
+                records, raw_labels = refined_records, refined_raw_labels
     labels, ordered = _build_labels(records, raw_labels, binary.shape)
     if not ordered:
         raise StickerSheetError(
@@ -244,7 +417,6 @@ def analyze_sticker_sheet(
     clean_alpha = _clean_alpha(raw_alpha, labels)
     # COLOR (audit 2026-08-05 §AI2.COLOR1): model chỉ quyết định Alpha. RGB do
     # model hậu xử lý có thể khử nhiễm/đổi màu mép và không được thay artwork gốc.
-    source_rgb = np.asarray(source, dtype=np.uint8)
     result_array = np.dstack((source_rgb, clean_alpha)).astype(np.uint8, copy=False)
     uncertainty = np.where(
         (labels > 0)

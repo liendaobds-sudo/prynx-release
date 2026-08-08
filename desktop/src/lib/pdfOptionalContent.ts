@@ -99,6 +99,8 @@ interface StampedOcg {
     /** Ẩn theo cấu hình xem mặc định `/D` của file nguồn. */
     hidden: boolean;
     locked: boolean;
+    source: PDFDocument;
+    sourceRef: PDFRef;
 }
 
 type OrderNode =
@@ -118,11 +120,20 @@ interface CarriedOutputIntents {
     array: PDFArray;
 }
 
+export interface OptionalContentTransferOptions {
+    /**
+     * Giữ cả OCG không được content trang tham chiếu trực tiếp. Cần cho các artifact
+     * dùng OCG rỗng làm metadata (Graphtec info) hoặc node cha của cây layer.
+     */
+    preserveUnreferencedOcgs?: boolean;
+}
+
 /** Ảnh chụp optional content của các file nguồn, chờ dựng lại ở file đích. */
 export interface OptionalContentTransfer {
     ocgs: StampedOcg[];
     order: OrderNode[];
     autoStates: AutoStateNode[];
+    preserveUnreferencedOcgs: boolean;
     /** Các dict đã bị đóng dấu, để xoá dấu khi xong. */
     stampedDicts: PDFDict[];
     outputIntents?: CarriedOutputIntents;
@@ -140,9 +151,12 @@ export interface OptionalContentTransfer {
 let stampSequence = 0;
 
 /** Mở một lượt chuyển rỗng, rồi cộng dồn từng nguồn bằng `addOptionalContentSource`. */
-export function createOptionalContentTransfer(): OptionalContentTransfer {
+export function createOptionalContentTransfer(
+    options: OptionalContentTransferOptions = {},
+): OptionalContentTransfer {
     return {
         ocgs: [], order: [], autoStates: [], stampedDicts: [],
+        preserveUnreferencedOcgs: options.preserveUnreferencedOcgs === true,
         outputIntentConflicts: [],
     };
 }
@@ -343,7 +357,13 @@ export function addOptionalContentSource(
         dict.set(K_STAMP, PDFName.of(stamp));
         transfer.stampedDicts.push(dict);
         stampByRefTag.set(ref.tag, stamp);
-        transfer.ocgs.push({ stamp, hidden, locked: lockedTags.has(ref.tag) });
+        transfer.ocgs.push({
+            stamp,
+            hidden,
+            locked: lockedTags.has(ref.tag),
+            source: src,
+            sourceRef: ref,
+        });
     }
 
     if (stampByRefTag.size === 0) return;
@@ -385,8 +405,9 @@ export function addOptionalContentSource(
  */
 export function beginOptionalContentTransfer(
     sources: readonly PDFDocument[],
+    options: OptionalContentTransferOptions = {},
 ): OptionalContentTransfer {
-    const transfer = createOptionalContentTransfer();
+    const transfer = createOptionalContentTransfer(options);
     sources.forEach((src) => addOptionalContentSource(transfer, src));
     return transfer;
 }
@@ -463,6 +484,96 @@ function findStampedRefs(doc: PDFDocument): Map<string, PDFRef[]> {
     return byStamp;
 }
 
+function addAllOrderOcgStamps(nodes: OrderNode[], out: Set<string>): void {
+    nodes.forEach((node) => {
+        if (node.kind === 'ocg') out.add(node.stamp);
+        else if (node.kind === 'group') addAllOrderOcgStamps(node.items, out);
+    });
+}
+
+/**
+ * Chọn đúng nhánh `/Order` chứa OCG mà trang đích thực sự dùng.
+ *
+ * PDF biểu diễn cha-con bằng `OCG-cha, [các-node-con]`. Các OCG liên tiếp trước
+ * một mảng con thuộc cùng một cụm nghiệp vụ trong artifact PrynX (Graphtec info,
+ * dao cắt, layer ốc). Khi một node trong cụm được dùng, giữ cả cụm nhưng không kéo
+ * theo cụm của tờ khác nằm sau mảng con kế tiếp.
+ */
+function collectRelevantOrderStamps(
+    nodes: OrderNode[],
+    used: ReadonlySet<string>,
+    out: Set<string>,
+): boolean {
+    let branchRelevant = false;
+    let segment: Extract<OrderNode, { kind: 'ocg' }>[] = [];
+
+    const flush = (group?: Extract<OrderNode, { kind: 'group' }>) => {
+        const childRelevant = group
+            ? collectRelevantOrderStamps(group.items, used, out)
+            : false;
+        const segmentRelevant = segment.some(node => used.has(node.stamp));
+        const relevant = childRelevant || segmentRelevant;
+        if (relevant) {
+            segment.forEach(node => out.add(node.stamp));
+            // OCG trong segment đã dùng nhưng group con rỗng vẫn thuộc cùng cây layer.
+            if (group && !childRelevant) addAllOrderOcgStamps(group.items, out);
+            branchRelevant = true;
+        }
+        segment = [];
+    };
+
+    nodes.forEach((node) => {
+        if (node.kind === 'ocg') {
+            segment.push(node);
+            return;
+        }
+        if (node.kind === 'group') {
+            flush(node);
+            return;
+        }
+        // Nhãn text ngắt một cụm OCG phẳng; không ghép layer hai phía của nhãn.
+        flush();
+    });
+    flush();
+    return branchRelevant;
+}
+
+/**
+ * OCG rỗng không nằm trong `/Resources` của trang nên `copyPages()` không mang theo.
+ * Khi caller yêu cầu giữ cây layer, copy riêng OCG còn thiếu trong đúng nhánh `/Order`;
+ * OCG đã theo content sang đích vẫn dùng chính ref của trang để không sinh bản trùng.
+ */
+function carryUnreferencedOcgs(
+    transfer: OptionalContentTransfer,
+    target: PDFDocument,
+    refByStamp: Map<string, PDFRef[]>,
+): void {
+    if (!transfer.preserveUnreferencedOcgs) return;
+
+    const usedStamps = new Set(refByStamp.keys());
+    const relevantStamps = new Set<string>();
+    if (transfer.order.length > 0 && usedStamps.size > 0) {
+        collectRelevantOrderStamps(transfer.order, usedStamps, relevantStamps);
+    } else {
+        // Không có `/Order` hoặc trang không tham chiếu OCG nào: không có căn cứ để
+        // tách nhánh, nên giữ toàn bộ catalog theo đúng yêu cầu explicit của caller.
+        transfer.ocgs.forEach(entry => relevantStamps.add(entry.stamp));
+    }
+
+    const copiers = new Map<PDFDocument, PDFObjectCopier>();
+    transfer.ocgs.forEach((entry) => {
+        if (refByStamp.has(entry.stamp)) return;
+        if (!relevantStamps.has(entry.stamp)) return;
+        let copier = copiers.get(entry.source);
+        if (!copier) {
+            copier = PDFObjectCopier.for(entry.source.context, target.context);
+            copiers.set(entry.source, copier);
+        }
+        const copiedRef = copier.copy(entry.sourceRef);
+        if (copiedRef instanceof PDFRef) refByStamp.set(entry.stamp, [copiedRef]);
+    });
+}
+
 function buildOrderArray(
     nodes: OrderNode[],
     doc: PDFDocument,
@@ -507,6 +618,9 @@ export function finishOptionalContentTransfer(
         if (isEmptyTransfer(transfer)) return 0;
 
         const refByStamp = findStampedRefs(target);
+        // OCG FIX (audit 2026-08-07 §PONTLAYER.1): Graphtec info/layer cha có thể
+        // rỗng nhưng tên của chúng vẫn là hợp đồng với Illustrator/plugin máy bế.
+        carryUnreferencedOcgs(transfer, target, refByStamp);
         if (refByStamp.size === 0) return 0;
 
         const context = target.context;
@@ -517,7 +631,8 @@ export function finishOptionalContentTransfer(
 
         transfer.ocgs.forEach((entry) => {
             const refs = refByStamp.get(entry.stamp);
-            // OCG không trang nào dùng thì không copy sang — bỏ khỏi catalog là đúng.
+            // Mặc định bỏ OCG không trang nào dùng; caller cần metadata/cây đầy đủ có
+            // thể bật `preserveUnreferencedOcgs` để carryUnreferencedOcgs bổ sung ref.
             if (!refs || refs.length === 0) return;
             // ĐĂNG KÝ MỌI BẢN, không chỉ bản đầu: bản nào sót ngoài /OCGs là bản đó
             // được vẽ bất chấp trạng thái tắt (xem chú thích ở findStampedRefs).

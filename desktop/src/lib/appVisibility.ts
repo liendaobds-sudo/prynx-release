@@ -5,6 +5,16 @@ export interface AppVisibilityGate {
     subscribe: (listener: AppVisibilityListener) => () => void;
 }
 
+export const APP_BACKGROUNDED_CLASS = 'prynx-app-backgrounded';
+
+/** Đồng bộ trạng thái foreground ra CSS mà không buộc component React subscribe riêng. */
+export function syncAppBackgroundClass(
+    backgrounded: boolean,
+    root: Element | null = typeof document !== 'undefined' ? document.documentElement : null,
+): void {
+    root?.classList.toggle(APP_BACKGROUNDED_CLASS, backgrounded);
+}
+
 /**
  * PERF (audit 2026-08-05 §PERF.9): một nguồn trạng thái foreground dùng chung.
  * `document.hidden` bắt tab/webview bị ẩn; focus native bắt cả trường hợp WebView2
@@ -95,6 +105,11 @@ const appVisibilityStore = hotData?.appVisibilityStore
 
 if (hotData) hotData.appVisibilityStore = appVisibilityStore;
 
+// PERF (audit 2026-08-07 §MOTION.3): WebView2 cố ý không throttle nền để tránh
+// hồi quy occlusion; pause animation CSS bằng cổng ứng dụng thay vì gỡ native flags.
+const removeBackgroundClassListener = appVisibilityStore.subscribe(syncAppBackgroundClass);
+syncAppBackgroundClass(appVisibilityStore.isBackgrounded());
+
 const handleDocumentVisibility = () => {
     appVisibilityStore.setDocumentHidden(document.visibilityState === 'hidden');
 };
@@ -107,7 +122,7 @@ let disposed = false;
 let removeWindowFocusListener: (() => void) | null = null;
 
 async function initializeNativeWindowFocus(): Promise<void> {
-    if (typeof window === 'undefined' || !(window as any).__TAURI_INTERNALS__) return;
+    if (typeof window === 'undefined' || !window.__TAURI_INTERNALS__) return;
 
     try {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
@@ -169,6 +184,7 @@ if (import.meta.hot) {
             document.removeEventListener('visibilitychange', handleDocumentVisibility);
         }
         removeWindowFocusListener?.();
+        removeBackgroundClassListener();
         (data as AppVisibilityHotData).appVisibilityStore = appVisibilityStore;
     });
 }

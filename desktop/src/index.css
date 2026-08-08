@@ -594,10 +594,40 @@ html.perf-low [class*="backdrop-blur"] {
 }
 html.perf-low .glass,
 html.perf-low .glass-card,
-html.perf-low .glass-panel {
+html.perf-low .glass-panel,
+html.perf-low .app-header {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
   background: var(--app-bg-2);
+}
+
+/* PERF (audit 2026-08-07 §MOTION.4): tier 8–15 GB chỉ giảm blur đắt;
+ * animation/transition foreground vẫn giữ để UI không trở nên khựng. */
+html.perf-mid .glass,
+html.perf-mid .glass-card,
+html.perf-mid .glass-panel,
+html.perf-mid .app-header {
+  backdrop-filter: blur(8px) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
+}
+
+/* PERF (audit 2026-08-07 §MOTION.3): app giữ mọi tab mounted để bảo toàn state.
+ * Pause chuyển động không nhìn thấy; nghiệp vụ/backend vẫn chạy bình thường. Dùng
+ * 0.01ms cho transition để transitionend vẫn được phát nếu component chờ cleanup. */
+[data-prynx-tab-active="false"],
+[data-prynx-tab-active="false"] *,
+[data-prynx-tab-active="false"]::before,
+[data-prynx-tab-active="false"]::after,
+[data-prynx-tab-active="false"] *::before,
+[data-prynx-tab-active="false"] *::after,
+html.prynx-app-backgrounded,
+html.prynx-app-backgrounded *,
+html.prynx-app-backgrounded::before,
+html.prynx-app-backgrounded::after,
+html.prynx-app-backgrounded *::before,
+html.prynx-app-backgrounded *::after {
+  animation-play-state: paused !important;
+  transition-duration: 0.01ms !important;
 }
 
 /* UIUX (audit 2026-07-27 §M-3): animation cho ProgressBar vô định */

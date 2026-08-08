@@ -23,6 +23,10 @@ import {
     nativeTileRenderScheduler,
     tileLoadReducer,
 } from '../../hooks/viewer/tileRenderScheduler';
+import {
+    progressiveViewerColorStages,
+    type ViewerColorStage,
+} from '../../hooks/viewer/useTileRenderer';
 import { globalPdfObjectCache } from '../../stores/pdfObjectCache';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
@@ -53,7 +57,12 @@ import {
 } from './verticalScroll';
 import { buildPropertyAffine, mmToPt, pickTopmostObjectAtPoint, ptToMm, selectionBounds } from './editTransformMath';
 import { previewPerfLog } from '../../lib/previewPerfLog';
-import { computeRenderZoomPure, RENDER_BUDGET_PX } from './renderZoomPolicy';
+import {
+    computeRenderZoomPure,
+    computeViewerBackgroundZoom,
+    RENDER_BUDGET_PX,
+    VIEWPORT_TILE_SETTLE_MS,
+} from './renderZoomPolicy';
 
 export { clearTileUrlCache, clearTileUrlCacheForFile };
 
@@ -160,7 +169,7 @@ interface TileLoadLabels {
 
 const EMPTY_TILE_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==';
 
-const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible, renderOwnerId, renderPriority = 100, renderEnabled = true, showLoadStatus = false, loadLabels }: any) => {
+const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible, renderOwnerId, renderPriority = 100, renderEnabled = true, showLoadStatus = false, loadLabels, progressiveAccurate = false }: any) => {
     const tileRef = useRef<LoadableTileElement>(null);
     const imgRef = useRef<HTMLImageElement>(null);
     const loadAttemptRef = useRef(0);
@@ -304,11 +313,17 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
 
             // Tải tile ở 'scale'. onReady chạy ngay khi bytes thành blob URL, trước decode ảnh,
             // để sharp kịp vào scheduler trước coarse prefetch của trang kế bên.
-            const loadAt = (scale: number, cache: boolean, onReady?: () => void) => {
+            const loadAt = (
+                scale: number,
+                cache: boolean,
+                onReady?: () => void,
+                colorStage?: ViewerColorStage,
+            ) => {
                 getTileUrl(pageNum, rot, scale, clipX, clipY, clipW, clipH, {
                     ownerId: renderOwnerId,
                     groupKey: renderGroupKey,
                     priority: renderPriority,
+                    colorStage,
                 })
                     .then((source: TileUrlSource) => {
                         const { url } = source;
@@ -334,7 +349,8 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
                             if (imgEl) {
                                 const oldSrc = imgEl.src;
                                 imgEl.src = url;
-                                const keptInCache = cache && cacheTileUrl(paramsAtRequest, source);
+                                const keptInCache = cache && source.cacheable !== false
+                                    && cacheTileUrl(paramsAtRequest, source);
                                 if (keptInCache) ownedBlobUrlsRef.current.delete(url);
                                 if (oldSrc && oldSrc.startsWith('blob:') && oldSrc !== url && !oldSrc.includes('#keep')) {
                                     if (!hasCachedTileUrl(oldSrc)) URL.revokeObjectURL(oldSrc);
@@ -381,7 +397,27 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
                     });
             };
 
-            if (!hasLoadedOnce.current && typeof coarseZoom === 'number' && coarseZoom < zoom - 0.05) {
+            if (progressiveAccurate) {
+                // PERF (audit 2026-08-07 §GV.P1): PDFium PNG hiện trước (~0,2 s),
+                // PPE/FOGRA39 tiếp tục nền và thay đúng cùng bitmap box khi xong (~2,5 s).
+                // Pha display không cache dưới key accurate; chỉ kết quả PPE cuối được giữ.
+                const stages = progressiveViewerColorStages(true);
+                const loadStage = (index: number) => {
+                    const colorStage = stages[index];
+                    const hasNext = index + 1 < stages.length;
+                    loadAt(
+                        zoom,
+                        colorStage === 'accurate',
+                        hasNext
+                            ? () => {
+                                if (loadedParamsRef.current === paramsAtRequest) loadStage(index + 1);
+                            }
+                            : undefined,
+                        colorStage,
+                    );
+                };
+                loadStage(0);
+            } else if (!hasLoadedOnce.current && typeof coarseZoom === 'number' && coarseZoom < zoom - 0.05) {
                 // Pha 1: coarse (nhanh) hiện trước → Pha 2: sharp nối sau (tuần tự).
                 loadAt(coarseZoom, false, () => {
                     if (loadedParamsRef.current === paramsAtRequest) loadAt(zoom, true);
@@ -402,7 +438,7 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
             el._loadTile = undefined;
             onVisible(el, true, eager);
         };
-    }, [clipH, clipW, clipX, clipY, coarseZoom, currentParams, eager, getTileUrl, onVisible, pageNum, renderEnabled, renderGroupKey, renderOwnerId, renderPriority, rot, showLoadStatus, zoom]);
+    }, [clipH, clipW, clipX, clipY, coarseZoom, currentParams, eager, getTileUrl, onVisible, pageNum, progressiveAccurate, renderEnabled, renderGroupKey, renderOwnerId, renderPriority, rot, showLoadStatus, zoom]);
     
     // Tile đã vào cache sống qua vòng mount của Virtuoso; tile coarse/quá budget
     // vẫn thuộc component và phải thu hồi khi unmount để không rò Blob URL.
@@ -545,11 +581,15 @@ const TileLayer = React.memo(({ fileKey, pageNum, zoom, dpr, displayWidth, displ
 
     // DEBOUNCE zoom (audit tốc độ 2026-07-06): zoom liên tục sinh HÀNG TRĂM render trung
     // gian (log: 278 render/phiên, mỗi cái ~160ms tuần tự → chờ vài giây). Chỉ render tile
-    // SẮC khi zoom ĐÃ DỪNG (~180ms); trong lúc zoom nền mờ lo hiển thị. displayWidth/Height
-    // đổi theo zoom nên cũng phải "đóng băng" theo settledZoom để clip/CSS khớp.
+    // SẮC khi zoom đã dừng; trong lúc zoom nền mờ lo hiển thị. PERF (audit 2026-08-07
+    // §ZOOM.1): 90ms bỏ 90ms chờ cảm nhận so với baseline nhưng vẫn gom chuỗi wheel/rAF.
+    // displayWidth/Height cũng phải "đóng băng" theo settledZoom để clip/CSS khớp.
     const [settled, setSettled] = useState({ zoom, displayWidth, displayHeight });
     useEffect(() => {
-        const id = setTimeout(() => setSettled({ zoom, displayWidth, displayHeight }), 180);
+        const id = setTimeout(
+            () => setSettled({ zoom, displayWidth, displayHeight }),
+            VIEWPORT_TILE_SETTLE_MS,
+        );
         return () => clearTimeout(id);
     }, [zoom, displayWidth, displayHeight]);
     const sZoom = settled.zoom;
@@ -805,7 +845,8 @@ export const LivePageFrame = (props: any) => {
         getTileUrl, textBlocks, isVdpMode, onVdpBoxCreate, onVdpBoxSelect, onVdpFieldsChange,
         setHoveredPdfPosition, detectedDimension, isBlankDoc, onEditCommit, isActivePage,
         isImageFile: isImage, nativeFilePath, previewRevision,
-        editSession, totalPages, tabId, isViewerActive, renderOwnerId, prefetchPage
+        editSession, totalPages, tabId, isViewerActive, renderOwnerId, prefetchPage,
+        accurateColorPage,
     } = props;
     // Trang ĐANG xem (active) trong danh sách ảo (Virtuoso). Chỉ frame active mới
     // đẩy editObjects của mình lên store `currentEditObjects` → panel "Thành phần"
@@ -864,7 +905,10 @@ export const LivePageFrame = (props: any) => {
     // PERF (audit 2026-07-29 §R.10): trang active ưu tiên 10, hai trang kề prefetch
     // cùng chất lượng ở ưu tiên 100; trang xa bị hủy khỏi hàng đợi. Không dùng coarse
     // vì đo thực tế cho thấy decode trang chiếm thời gian và zoom 0.35 tạo cache-miss mới.
-    const shouldRenderBasePage = viewerIsActive && (isActiveFrame || prefetchPage === true);
+    // Accurate render mất ~2,5 giây/trang trên artifact audit: chỉ dựng trang active,
+    // không prefetch PPE hai trang kề làm chậm chính trang người dùng đang nhìn.
+    const shouldRenderBasePage = viewerIsActive
+        && (isActiveFrame || (!accurateColorPage && prefetchPage === true));
 
     const separationPreviewBelongsToFrame = separationPlates.some(
         plate => plate.pageNum === previewFramePage,
@@ -2835,7 +2879,7 @@ export const LivePageFrame = (props: any) => {
                 // (Virtuoso giữ ~9 trang) đều render tile sắc dù người dùng chỉ nhìn 1 → 9× công
                 // thừa xếp hàng tuần tự. Trang khác giữ nền single-tile là đủ (audit tốc độ).
                 const dpr = window.devicePixelRatio || 1;
-                const needsTiling = viewerIsActive && isActiveFrame && !isImage && (rotation || 0) % 360 === 0
+                const needsTiling = !accurateColorPage && viewerIsActive && isActiveFrame && !isImage && (rotation || 0) % 360 === 0
                     && renderZoom < zoom * dpr * 0.95;
                 // PERF (audit độ nét 2026-07-28 §R.1): TRẦN zoom cho nền của trang KHÔNG
                 // đang xem. Virtuoso giữ ~9 trang mounted và LiveTile gọi _loadTile() ĐỒNG BỘ
@@ -2844,16 +2888,19 @@ export const LivePageFrame = (props: any) => {
                 // mỗi bản có cạnh dài tới 6000px, và MỌI render PDFium trong app đi tuần tự
                 // sau RENDER_LOCK → tile sắc của vùng đang nhìn xếp hàng sau 8 bản không ai xem.
                 //
-                // Trang không active chỉ là ẢNH CHỜ lúc cuộn tới, 2×dpr là quá đủ. Trang đang
-                // xem GIỮ NGUYÊN renderZoom (không đổi gì) để không hạ chất lượng chỗ đang nhìn.
+                // Trang không active chỉ là ẢNH CHỜ lúc cuộn tới, 2×dpr là quá đủ. Khi trang
+                // active đã có tile viewport đúng zoom×dpr, nền cũng chỉ cần chống trắng/chớp;
+                // giữ bitmap nền 6000px lúc này vừa bị che vừa chặn scheduler PDFium tuần tự.
                 // Cố tình KHÔNG chạm lối gọi _loadTile đồng bộ: đó là bản sửa lỗi màn trắng.
                 //
                 // PHẠM VI ẢNH HƯỞNG có giới hạn rõ: vì dùng Math.min, trần này chỉ CÓ tác dụng
                 // khi renderZoom > 2×dpr, tức zoom > ~200%. Ở mức fit/100% mọi thứ y như trước.
                 // Đánh đổi duy nhất: xem 2 trang cạnh nhau ở zoom >200% thì trang không active
                 // nét bằng nửa cho tới khi cuộn sang (nó thành active và render lại đủ nét).
-                const BG_IDLE_ZOOM_CAP = 2;
-                const bgZoom = isActiveFrame ? S : Math.min(S, BG_IDLE_ZOOM_CAP * dpr);
+                const bgZoom = computeViewerBackgroundZoom(S, dpr, isActiveFrame, needsTiling);
+                // COLOR (audit 2026-08-07 §GV.3): tách cache display/accurate; nếu
+                // dùng chung key, bật CMYK có thể lấy lại tile PDFium đã cache trước đó.
+                const colorAwareFileKey = `${pdfUrl || 'unknown'}|color:${accurateColorPage ? 'accurate' : 'display'}`;
                 return (
                     <div style={{ width: displayWidth, height: displayHeight, position: 'relative' }}>
                         {/* Loading Skeleton */}
@@ -2866,7 +2913,7 @@ export const LivePageFrame = (props: any) => {
                         </div>
                         <div className="absolute inset-0 z-10">
                             <LiveTile
-                                fileKey={pdfUrl || 'unknown'}
+                                fileKey={colorAwareFileKey}
                                 key="full"
                                 pageNum={originalPageNum}
                                 zoom={bgZoom}
@@ -2884,12 +2931,13 @@ export const LivePageFrame = (props: any) => {
                                 renderEnabled={shouldRenderBasePage}
                                 showLoadStatus={isActiveFrame && shouldRenderBasePage}
                                 loadLabels={tileLoadLabels}
+                                progressiveAccurate={accurateColorPage}
                             />
                         </div>
                         {needsTiling && (
                             <div className="absolute inset-0 z-[11]">
                                 <TileLayer
-                                    fileKey={pdfUrl || 'unknown'}
+                                    fileKey={colorAwareFileKey}
                                     pageNum={originalPageNum}
                                     zoom={zoom}
                                     dpr={dpr}

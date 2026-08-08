@@ -24,6 +24,35 @@ export interface PageDim {
     widthPt?: number;
 }
 
+export interface PdfPageColorRisk {
+    page: number;
+    highRisk: boolean;
+    accurateColorRecommended: boolean;
+    hasDeviceCmyk: boolean;
+    hasDeviceN: boolean;
+    hasSeparation: boolean;
+    hasTransparency: boolean;
+    hasSoftMask: boolean;
+    hasBlendMode: boolean;
+}
+
+export interface PdfColorRiskSummary {
+    highRisk: boolean;
+    accurateColorRecommended: boolean;
+    hasOutputIntent: boolean;
+    riskyPages: number[];
+    pages: PdfPageColorRisk[];
+    reasonCodes: string[];
+}
+
+export interface PdfRenderEngineIdentity {
+    libraryPath: string;
+    sizeBytes: number | null;
+    modifiedMillis: number | null;
+    appVersion: string;
+    tileCacheVersion: string;
+}
+
 // ── Per-instance page id (per-instance rotation) ──
 // pageOrder[i] = số trang gốc (nhiều index có thể trùng khi nhân bản). pageInstanceIds[i]
 // = mã DUY NHẤT cho từng ô trong danh sách → rotation keyed theo id này thay vì số trang
@@ -51,6 +80,8 @@ export interface UsePdfLoaderResult {
     allPageDims: Record<number, { w: number; h: number; widthPt: number }>;
     pageWidthPt: number;
     plateLabels: Record<number, string>;
+    colorRisk: PdfColorRiskSummary | null;
+    renderEngine: PdfRenderEngineIdentity | null;
     numPages: number;
     pageOrder: number[];
     setPageOrder: React.Dispatch<React.SetStateAction<number[]>>;
@@ -84,6 +115,8 @@ export function usePdfLoader({
     const [allPageDims, setAllPageDims] = useState<Record<number, { w: number; h: number; widthPt: number }>>({});
     const [pageWidthPt, setPageWidthPt] = useState<number>(595);
     const [plateLabels, setPlateLabels] = useState<Record<number, string>>({});
+    const [colorRisk, setColorRisk] = useState<PdfColorRiskSummary | null>(null);
+    const [renderEngine, setRenderEngine] = useState<PdfRenderEngineIdentity | null>(null);
 
     const [pageOrder, setPageOrder] = useState<number[]>([]);
     // Song song pageOrder: id duy nhất cho MỖI vị trí trang (kể cả bản nhân bản cùng
@@ -190,6 +223,8 @@ export function usePdfLoader({
         setPdfRef(null);
         setAllPageDims({});
         setThumbPdfRef(null);
+        setColorRisk(null);
+        setRenderEngine(null);
         setNumPages(0);
 
         // UIUX (audit 2026-08-01 §A.1+A.2): mỗi lượt tải thật phải có trạng thái
@@ -345,6 +380,8 @@ export function usePdfLoader({
                     let widthPt = 0;
                     let heightPt = 0;
                     const allDims: Record<number, { widthPt: number, heightPt: number }> = {};
+                    let detectedColorRisk: PdfColorRiskSummary | null = null;
+                    let detectedRenderEngine: PdfRenderEngineIdentity | null = null;
                     
                     // Lấy metadata bằng Rust/pdfium CỤC BỘ (nhanh, không qua HTTP Python),
                     // đồng thời NẠP SẴN file vào pdfium cache → tile đầu tiên render tức thì.
@@ -358,6 +395,8 @@ export function usePdfLoader({
                         numPagesFromEngine = meta.numPages || 0;
                         widthPt = meta.widthPt || 0;
                         heightPt = meta.heightPt || 0;
+                        detectedColorRisk = meta.colorRisk || null;
+                        detectedRenderEngine = meta.renderEngine || null;
                         if (meta.allDims) {
                             for (const k of Object.keys(meta.allDims)) {
                                 const d = meta.allDims[k];
@@ -397,6 +436,10 @@ export function usePdfLoader({
                     }
 
                     if (cancelled) return;
+                    // COLOR (audit 2026-08-07 §GV.3/§GV.5): giữ detector và danh tính
+                    // DLL theo đúng lượt tải; đường fallback không được mượn metadata cũ.
+                    setColorRisk(detectedColorRisk);
+                    setRenderEngine(detectedRenderEngine);
                     if (!Number.isFinite(numPagesFromEngine) || numPagesFromEngine <= 0) {
                         throw new Error('PDF không có trang hợp lệ.');
                     }
@@ -641,6 +684,8 @@ export function usePdfLoader({
         allPageDims,
         pageWidthPt,
         plateLabels,
+        colorRisk,
+        renderEngine,
         pageOrder, setPageOrder,
         pageInstanceIds, setPageInstanceIds,
         selectedIndices, setSelectedIndices,

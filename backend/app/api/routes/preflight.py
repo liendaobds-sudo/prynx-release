@@ -18,7 +18,7 @@ import re
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from typing import List, Optional, Any
@@ -87,6 +87,7 @@ from app.schemas.preflight import (  # noqa: F401
     SetPageBoxesRequest,
     SetVisibilityRequest,
     SoftProofRequest,
+    ViewerAccurateRenderRequest,
     ToggleLockRequest,
 )
 
@@ -111,6 +112,9 @@ _PREFLIGHT_ROUTE_FEATURES: dict[str, str | None] = {
     "/preflight/convert-colors": "prepress.convert_colors",
     "/preflight/icc-profiles": "prepress.convert_colors",
     "/preflight/softproof": "prepress.convert_colors",
+    # COLOR (audit 2026-08-07 §GV.3): đây là fidelity của Viewer thường, không phải
+    # thao tác sửa/chuyển màu file nên không khóa sau capability chế bản nâng cao.
+    "/preflight/viewer-accurate": None,
     "/preflight/set-overprint": "prepress.trapping",
     "/preflight/overprint-preview": "prepress.trapping",
     "/preflight/check-pdfx/{file_id}/{standard}": "prepress.pdfx",
@@ -1535,6 +1539,77 @@ async def render_softproof(req: SoftProofRequest):
     except Exception as e:
         logger.exception("Lỗi khi render Soft-Proof")
         return {"success": False, "error": str(e)}
+
+
+@router.post("/preflight/viewer-accurate")
+async def render_viewer_accurate(req: ViewerAccurateRenderRequest):
+    """Dựng PNG color-managed cho một trang Viewer từ đường dẫn local đã kiểm tra."""
+    from app.core.softproof import SoftProofEngine
+    from app.core.viewer_accurate_cache import (
+        RenderedAccuratePng,
+        build_accurate_cache_key,
+        get_or_render_accurate_png,
+    )
+
+    pdf_path = _validate_local_pdf_path(req.file_path)
+    try:
+        profile_id = req.profile_id or "fogra39"
+        cache_key = await asyncio.to_thread(
+            build_accurate_cache_key,
+            pdf_path,
+            page=req.page,
+            dpi=req.dpi,
+            profile_id=profile_id,
+            intent=req.intent,
+        )
+
+        async def render_png() -> RenderedAccuratePng:
+            result = await SoftProofEngine().render_softproof(
+                pdf_path=pdf_path,
+                page_num=req.page,
+                profile_id=profile_id,
+                intent=req.intent,
+                show_gamut_warning=False,
+                dpi=req.dpi,
+                output_format="png",
+            )
+            if not result.get("success") or not result.get("softproof_b64"):
+                raise RuntimeError(result.get("error") or "Bộ dựng màu không trả ảnh.")
+            if result.get("accuracy") != "rip_softproof":
+                # COLOR (audit 2026-08-07 §GV.3): đường PDFium+LCMS đã mất thông tin
+                # CMYK/spot trước khi đổi profile, không được gắn nhãn "CMYK chính xác".
+                raise RuntimeError(
+                    result.get("warning")
+                    or "Không có PPE/Ghostscript đủ chính xác để dựng màu CMYK."
+                )
+            image_bytes = base64.b64decode(result["softproof_b64"], validate=True)
+            if not image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+                raise RuntimeError("Bộ dựng màu không trả đúng PNG lossless.")
+            return RenderedAccuratePng(
+                data=image_bytes,
+                engine=str(result.get("engine") or "unknown"),
+                accuracy=str(result.get("accuracy") or "unknown"),
+            )
+
+        cached = await get_or_render_accurate_png(cache_key, render_png)
+        return Response(
+            content=cached.rendered.data,
+            media_type="image/png",
+            headers={
+                "Cache-Control": "private, max-age=31536000, immutable",
+                "X-PrynX-Color-Engine": cached.rendered.engine,
+                "X-PrynX-Color-Accuracy": cached.rendered.accuracy,
+                "X-PrynX-Viewer-Cache": cached.status,
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Lỗi khi dựng màu chính xác cho Viewer")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Không thể dựng màu chính xác cho trang {req.page}: {exc}",
+        ) from exc
 
 
 

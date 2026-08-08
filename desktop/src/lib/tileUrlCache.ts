@@ -6,6 +6,8 @@ const GIB = 1024 * MIB;
 export interface TileUrlSource {
   url: string;
   byteLength: number;
+  /** False khi ảnh chỉ là fallback tạm; không giữ dưới cache key của pipeline khác. */
+  cacheable?: boolean;
 }
 
 type TileUrlCacheEntry = TileUrlSource;

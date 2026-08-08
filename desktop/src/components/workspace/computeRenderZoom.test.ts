@@ -4,7 +4,12 @@
 // (trước đợt này nó là nút chết, không đường render nào đọc).
 import { describe, expect, it } from 'vitest';
 
-import { computeRenderZoomPure, RENDER_BUDGET_PX } from './renderZoomPolicy';
+import {
+    computeRenderZoomPure,
+    computeViewerBackgroundZoom,
+    RENDER_BUDGET_PX,
+    VIEWPORT_TILE_SETTLE_MS,
+} from './renderZoomPolicy';
 
 // A4 dọc: 595×842 pt → px@96 (usePdfLoader dựng dims bằng widthPt × 96/72).
 const A4_W = 595 * 96 / 72;   // ≈ 793.7
@@ -50,5 +55,27 @@ describe('computeRenderZoomPure — ngân sách pixel', () => {
         // A4 ngang: w/h đảo lại; ratio = max(1, h/w) = 1 → cap = budget / w.
         const z = computeRenderZoomPure(8, A4_H, A4_H, A4_W, RENDER_BUDGET_PX.high);
         expect(A4_H * z).toBeLessThanOrEqual(RENDER_BUDGET_PX.high + 1);
+    });
+});
+
+describe('Viewer — ưu tiên làm nét vùng đang nhìn', () => {
+    it('bắt đầu tile sắc trong tối đa 100ms sau lần zoom cuối', () => {
+        expect(VIEWPORT_TILE_SETTLE_MS).toBe(90);
+        expect(VIEWPORT_TILE_SETTLE_MS).toBeLessThanOrEqual(100);
+    });
+
+    it('hạ nền active xuống 2×DPR khi tile viewport đảm nhiệm độ nét cuối', () => {
+        expect(computeViewerBackgroundZoom(5.5, 1, true, true)).toBe(2);
+        expect(computeViewerBackgroundZoom(9, 2, true, true)).toBe(4);
+    });
+
+    it('không hạ nền active khi chưa có tile sắc thay thế', () => {
+        expect(computeViewerBackgroundZoom(5.5, 1, true, false)).toBe(5.5);
+        expect(computeViewerBackgroundZoom(9, 2, true, false)).toBe(9);
+    });
+
+    it('giữ chính sách nền nhẹ hiện có cho trang không active', () => {
+        expect(computeViewerBackgroundZoom(5.5, 1, false, false)).toBe(2);
+        expect(computeViewerBackgroundZoom(3, 2, false, false)).toBe(3);
     });
 });

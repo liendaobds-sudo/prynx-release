@@ -251,6 +251,10 @@ export default function OpenInDesignModal({
     const buildCutOnlyFile = async (): Promise<string> => {
         if (!resultBlob && !resultFilePath) throw new Error(t('misc.openInDesign:khong_co_file_ket_qua'));
         const { PDFDocument } = await import('pdf-lib');
+        const {
+            beginOptionalContentTransfer,
+            finishOptionalContentTransfer,
+        } = await import('../../lib/pdfOptionalContent');
         const { invoke } = await import('@tauri-apps/api/core');
         const { tempDir, join } = await import('@tauri-apps/api/path');
 
@@ -265,8 +269,18 @@ export default function OpenInDesignModal({
         if (cutIdxs.length === 0) throw new Error(t('misc.openInDesign:khong_tim_thay_trang_khuon'));
 
         const out = await PDFDocument.create();
-        const copied = await out.copyPages(srcDoc, cutIdxs);
-        copied.forEach(p => out.addPage(p));
+        // OCG FIX (audit 2026-08-07 §PONTLAYER.1): `copyPages()` bỏ catalog layer.
+        // Giữ cả OCG rỗng vì Graphtec info/layer cha dùng tên làm metadata cho plugin.
+        const ocTransfer = beginOptionalContentTransfer(
+            [srcDoc],
+            { preserveUnreferencedOcgs: true },
+        );
+        try {
+            const copied = await out.copyPages(srcDoc, cutIdxs);
+            copied.forEach(p => out.addPage(p));
+        } finally {
+            finishOptionalContentTransfer(ocTransfer, out);
+        }
         const bytes = await out.save();
 
         const base = (originalName || 'khuon').replace(/\.pdf$/i, '');

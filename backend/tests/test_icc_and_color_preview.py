@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import base64
+import io
 from pathlib import Path
 
 import pytest
@@ -21,11 +23,42 @@ def test_fogra39_resolves_from_bundle():
     assert Path(path).name.lower() in ("fogra39.icc", "coatedfogra39.icc")
 
 
-def test_srgb_resolves_from_bundle():
+def test_srgb_resolver_never_returns_mislabeled_adobe_rgb():
+    from PIL import ImageCms
+
     path = resolve_srgb_profile_path()
-    expected = Path(__file__).resolve().parents[1] / "app" / "assets" / "icc" / "sRGB.icc"
     assert path is not None
-    assert Path(path).resolve() == expected.resolve()
+    profile = ImageCms.getOpenProfile(path)
+    identity = " ".join((
+        ImageCms.getProfileName(profile),
+        ImageCms.getProfileDescription(profile),
+    )).lower()
+    assert "srgb" in identity or "iec 61966-2.1" in identity
+    assert "adobe rgb" not in identity
+
+
+def test_mislabeled_bundle_is_quarantined_and_lcms_fallback_is_srgb(monkeypatch, tmp_path):
+    from PIL import ImageCms
+    import app.core.icc_profiles as registry
+
+    wrong_bundle = Path(__file__).resolve().parents[1] / "app" / "assets" / "icc" / "sRGB.icc"
+    isolated_bundle = tmp_path / "profiles"
+    isolated_bundle.mkdir()
+    (isolated_bundle / "sRGB.icc").write_bytes(wrong_bundle.read_bytes())
+
+    monkeypatch.setattr(registry.settings, "ICC_PROFILE_DIR", str(isolated_bundle))
+    monkeypatch.setattr(registry, "OS_ICC_SEARCH_PATHS", [])
+    registry.resolve_profile_path.cache_clear()
+    registry._materialize_builtin_srgb_profile.cache_clear()
+    try:
+        resolved = registry.resolve_srgb_profile_path()
+        assert resolved is not None
+        assert Path(resolved).resolve() != (isolated_bundle / "sRGB.icc").resolve()
+        profile = ImageCms.getOpenProfile(resolved)
+        assert "srgb" in ImageCms.getProfileDescription(profile).lower()
+    finally:
+        registry.resolve_profile_path.cache_clear()
+        registry._materialize_builtin_srgb_profile.cache_clear()
 
 
 def test_missing_configured_icc_dir_falls_back_to_package(monkeypatch, tmp_path):
@@ -129,3 +162,89 @@ async def test_softproof_returns_image(tmp_path):
     assert result.get("softproof_b64")
     assert result.get("profile_available") is True
     assert result.get("engine") in ("ppe+lcms", "ghostscript+icc", "pdfium+lcms")
+
+
+@pytest.mark.asyncio
+async def test_softproof_png_giu_hop_dong_lossless(tmp_path):
+    from PIL import Image
+    from app.core.softproof import SoftProofEngine
+
+    pdf_path = _make_cmyk_page(tmp_path, "softproof_png.pdf")
+    result = await SoftProofEngine().render_softproof(
+        str(pdf_path),
+        page_num=1,
+        profile_id="fogra39",
+        dpi=36,
+        output_format="png",
+    )
+
+    payload = base64.b64decode(result["softproof_b64"])
+    assert result["image_mime"] == "image/png"
+    assert payload.startswith(b"\x89PNG\r\n\x1a\n")
+    with Image.open(io.BytesIO(payload)) as image:
+        assert image.size[0] > 0 and image.size[1] > 0
+
+
+@pytest.mark.asyncio
+async def test_viewer_accurate_route_kiem_path_va_tra_png(monkeypatch, tmp_path):
+    from PIL import Image
+    from app.api.routes import preflight
+    from app.core.softproof import SoftProofEngine
+    from app.schemas.preflight import ViewerAccurateRenderRequest
+
+    pdf_path = _make_cmyk_page(tmp_path, "viewer_accurate.pdf")
+    buffer = io.BytesIO()
+    Image.new("RGB", (2, 2), (10, 20, 30)).save(buffer, "PNG")
+    calls = {}
+
+    async def fake_render(self, **kwargs):
+        calls.update(kwargs)
+        return {
+            "success": True,
+            "softproof_b64": base64.b64encode(buffer.getvalue()).decode(),
+            "engine": "ppe+lcms",
+            "accuracy": "rip_softproof",
+        }
+
+    monkeypatch.setattr(SoftProofEngine, "render_softproof", fake_render)
+    response = await preflight.render_viewer_accurate(
+        ViewerAccurateRenderRequest(
+            file_path=str(pdf_path),
+            page=1,
+            dpi=144,
+        )
+    )
+
+    assert response.media_type == "image/png"
+    assert bytes(response.body).startswith(b"\x89PNG\r\n\x1a\n")
+    assert calls["pdf_path"] == os.path.realpath(str(pdf_path))
+    assert calls["dpi"] == 144
+    assert calls["output_format"] == "png"
+
+
+@pytest.mark.asyncio
+async def test_viewer_accurate_route_khong_nhan_fallback_xap_xi(monkeypatch, tmp_path):
+    from fastapi import HTTPException
+    from app.api.routes import preflight
+    from app.core.softproof import SoftProofEngine
+    from app.schemas.preflight import ViewerAccurateRenderRequest
+
+    pdf_path = _make_cmyk_page(tmp_path, "viewer_approximate.pdf")
+
+    async def fake_render(self, **kwargs):
+        return {
+            "success": True,
+            "softproof_b64": base64.b64encode(b"not-used").decode(),
+            "engine": "pdfium+lcms",
+            "accuracy": "approximate",
+            "warning": "Soft-proof gần đúng",
+        }
+
+    monkeypatch.setattr(SoftProofEngine, "render_softproof", fake_render)
+    with pytest.raises(HTTPException) as exc_info:
+        await preflight.render_viewer_accurate(
+            ViewerAccurateRenderRequest(file_path=str(pdf_path), page=1, dpi=96)
+        )
+
+    assert exc_info.value.status_code == 500
+    assert "Soft-proof gần đúng" in str(exc_info.value.detail)

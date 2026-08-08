@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 
 interface RulerProps {
   orientation: 'horizontal' | 'vertical';
@@ -12,109 +12,47 @@ interface RulerProps {
   pageAnchorId?: string;
   /** UIUX (audit 2026-07-27 §C-04): chuột phải lên thước → xoay vòng đơn vị mm→cm→inch. */
   onCycleUnit?: () => void;
+  /** Tab đang hiển thị — tab nền không giữ listener/RAF của thước. */
+  isActive?: boolean;
 }
 
 const DPI = 96;
-const INCH_TO_MM = 25.4;
 
-export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness = 20, onMouseDown, pageAnchorId, onCycleUnit }: RulerProps) {
+export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness = 20, onMouseDown, pageAnchorId, onCycleUnit, isActive = true }: RulerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const mousePosRef = useRef<{x: number, y: number} | null>(null);
 
-  // We need to trigger a redraw when resize happens
-  const [size, setSize] = useState({ width: 0, height: 0 });
-  const [scrollOffset, setScrollOffset] = useState(0);
-
-  // Measure container
-  useEffect(() => {
-    if (!containerRef.current) return;
-    const observer = new ResizeObserver((entries) => {
-      for (let entry of entries) {
-        setSize({
-          width: entry.contentRect.width,
-          height: entry.contentRect.height
-        });
-      }
-    });
-    observer.observe(containerRef.current);
-    return () => observer.disconnect();
-  }, []);
-
-  // Sync scroll
-  useEffect(() => {
-    const scroller = scrollContainerRef.current;
-    if (!scroller) return;
-
-    let rafId: number;
-    let lastScroll = -1;
-    let lastMouseX = -1;
-    let lastMouseY = -1;
-
-    const syncScroll = () => {
-      let needsUpdate = false;
-      const currentScroll = orientation === 'horizontal' ? scroller.scrollLeft : scroller.scrollTop;
-      if (currentScroll !== lastScroll) {
-        setScrollOffset(currentScroll);
-        lastScroll = currentScroll;
-        needsUpdate = true;
-      }
-      
-      // We also trigger a re-render if mouse position changed significantly, but we can just use state or force a redraw.
-      // Wait, since we are using React, triggering setScrollOffset causes a re-render.
-      // If we want to redraw on mouse move WITHOUT React re-render, we'd need to put the drawing logic outside of the `useEffect` dependency array and just call it.
-      // For simplicity, we just trigger a tiny state update to force redraw if mouse moves? No, that's bad.
-      // Let's just draw in the RAF loop directly!
-      
-      rafId = requestAnimationFrame(syncScroll);
-    };
-
-    rafId = requestAnimationFrame(syncScroll);
-    return () => cancelAnimationFrame(rafId);
-  }, [scrollContainerRef, orientation]);
-
-  // Track mouse
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!scrollContainerRef.current) return;
-      const rect = scrollContainerRef.current.getBoundingClientRect();
-      // Check if mouse is inside the scroll container
-      if (e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom) {
-        mousePosRef.current = {
-          x: e.clientX - rect.left + scrollContainerRef.current.scrollLeft,
-          y: e.clientY - rect.top + scrollContainerRef.current.scrollTop
-        };
-      } else {
-        mousePosRef.current = null;
-      }
-    };
-    
-    window.addEventListener('mousemove', handleMouseMove);
-    return () => window.removeEventListener('mousemove', handleMouseMove);
-  }, [scrollContainerRef]);
-
-  // Render canvas loop
+  // PERF (audit 2026-08-07 §MOTION.1): vẽ theo sự kiện. RAF chỉ gộp nhiều
+  // scroll/resize/mousemove vào một frame, tuyệt đối không tự gọi lại khi idle.
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    const container = containerRef.current;
+    const scroller = scrollContainerRef.current;
+    if (!isActive || !canvas || !container || !scroller) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    let animationFrameId: number;
+    let animationFrameId: number | null = null;
+    let observedAnchor: HTMLElement | null = null;
+
+    const resizeObserver = new ResizeObserver(() => scheduleDraw());
 
     const draw = () => {
-      if (size.width === 0 || size.height === 0) {
-        animationFrameId = requestAnimationFrame(draw);
-        return;
-      }
+      animationFrameId = null;
+      const width = container.clientWidth;
+      const height = container.clientHeight;
+      if (width === 0 || height === 0) return;
 
       // Handle HiDPI displays
       const dpr = window.devicePixelRatio || 1;
       
       // Only resize if needed to avoid flickering
-      if (canvas.width !== size.width * dpr || canvas.height !== size.height * dpr) {
-        canvas.width = size.width * dpr;
-        canvas.height = size.height * dpr;
+      const pixelWidth = Math.max(1, Math.round(width * dpr));
+      const pixelHeight = Math.max(1, Math.round(height * dpr));
+      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+        canvas.width = pixelWidth;
+        canvas.height = pixelHeight;
       }
       
       ctx.save();
@@ -125,7 +63,7 @@ export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness =
 
       // Clear background
       ctx.fillStyle = isDark ? '#121212' : '#f5f5f5'; // Dark/Light grey bg matching Acrobat
-      ctx.fillRect(0, 0, size.width, size.height);
+      ctx.fillRect(0, 0, width, height);
 
       // Inner border
       ctx.strokeStyle = isDark ? '#27272a' : '#cccccc'; // Dark/Light border
@@ -133,10 +71,10 @@ export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness =
       ctx.beginPath();
       if (orientation === 'horizontal') {
         ctx.moveTo(0, thickness - 0.5);
-        ctx.lineTo(size.width, thickness - 0.5);
+        ctx.lineTo(width, thickness - 0.5);
       } else {
         ctx.moveTo(thickness - 0.5, 0);
-        ctx.lineTo(thickness - 0.5, size.height);
+        ctx.lineTo(thickness - 0.5, height);
       }
       ctx.stroke();
 
@@ -169,20 +107,25 @@ export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness =
         else { tickStep = 1; midStep = 5; labelStep = 10; }
       }
 
-      const length = orientation === 'horizontal' ? size.width : size.height;
+      const length = orientation === 'horizontal' ? width : height;
 
       // Gốc "0" của thước = mép trang thật (đo DOM mỗi frame → tự bám trang dù
       // scroll hay re-center do panel đổi width). Fallback về gốc cuộn nếu không
       // tìm thấy trang (giữ hành vi cũ). Vì draw() chạy trong RAF loop liên tục,
       // getBoundingClientRect luôn phản ánh vị trí trang hiện tại.
       const canvasRect = canvas.getBoundingClientRect();
-      const anchorEl = pageAnchorId ? scrollContainerRef.current?.querySelector<HTMLElement>(`#${pageAnchorId}`) : null;
+      const anchorEl = pageAnchorId ? scroller.querySelector<HTMLElement>(`#${pageAnchorId}`) : null;
+      if (anchorEl !== observedAnchor) {
+        if (observedAnchor) resizeObserver.unobserve(observedAnchor);
+        observedAnchor = anchorEl;
+        if (observedAnchor) resizeObserver.observe(observedAnchor);
+      }
       let anchorOffset: number;
       if (anchorEl) {
         const pr = anchorEl.getBoundingClientRect();
         anchorOffset = orientation === 'horizontal' ? (pr.left - canvasRect.left) : (pr.top - canvasRect.top);
       } else {
-        anchorOffset = -scrollOffset;
+        anchorOffset = -(orientation === 'horizontal' ? scroller.scrollLeft : scroller.scrollTop);
       }
 
       // value tại canvas-pos p: v = (p - anchorOffset) / pxPerUnit
@@ -242,7 +185,9 @@ export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness =
       // Draw mouse indicator
       const mPos = mousePosRef.current;
       if (mPos) {
-        const pos = Math.round(orientation === 'horizontal' ? mPos.x - scrollOffset : mPos.y - scrollOffset) + 0.5;
+        const pos = Math.round(orientation === 'horizontal'
+          ? mPos.x - scroller.scrollLeft
+          : mPos.y - scroller.scrollTop) + 0.5;
         if (pos >= 0 && pos <= length) {
           ctx.beginPath();
           ctx.strokeStyle = '#ef4444'; // red-500
@@ -259,14 +204,45 @@ export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness =
       }
       
       ctx.restore();
-      
-      animationFrameId = requestAnimationFrame(draw);
     };
 
-    draw();
+    function scheduleDraw() {
+      if (animationFrameId === null) animationFrameId = requestAnimationFrame(draw);
+    }
 
-    return () => cancelAnimationFrame(animationFrameId);
-  }, [size, scrollOffset, zoom, unit, orientation, thickness]);
+    const handleMouseMove = (event: MouseEvent) => {
+      const rect = scroller.getBoundingClientRect();
+      if (event.clientX >= rect.left && event.clientX <= rect.right
+        && event.clientY >= rect.top && event.clientY <= rect.bottom) {
+        mousePosRef.current = {
+          x: event.clientX - rect.left + scroller.scrollLeft,
+          y: event.clientY - rect.top + scroller.scrollTop,
+        };
+      } else {
+        mousePosRef.current = null;
+      }
+      scheduleDraw();
+    };
+
+    const contentObserver = new MutationObserver(() => scheduleDraw());
+    const themeObserver = new MutationObserver(() => scheduleDraw());
+    resizeObserver.observe(container);
+    resizeObserver.observe(scroller);
+    contentObserver.observe(scroller, { childList: true, subtree: true });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    scroller.addEventListener('scroll', scheduleDraw, { passive: true });
+    window.addEventListener('mousemove', handleMouseMove, { passive: true });
+    scheduleDraw();
+
+    return () => {
+      if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
+      resizeObserver.disconnect();
+      contentObserver.disconnect();
+      themeObserver.disconnect();
+      scroller.removeEventListener('scroll', scheduleDraw);
+      window.removeEventListener('mousemove', handleMouseMove);
+    };
+  }, [isActive, scrollContainerRef, zoom, unit, orientation, thickness, pageAnchorId]);
 
   return (
     <div

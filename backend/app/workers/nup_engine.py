@@ -2229,9 +2229,10 @@ def _run_nup_engine_impl(
         split_gap_mm = settings.get('splitGap', None)
         if cut_type == 'one_dao' and fill_block_gap_mm > 0:
             secondary_gap = fill_block_gap_mm * MM_TO_PTS
-        elif split_gap_mm is not None and split_gap_mm > 0:
-            # split_gap_mm: cùng giá trị (mm) preview gửi tới /preview-layout → preview==output
-            secondary_gap = split_gap_mm * MM_TO_PTS
+        elif split_gap_mm is not None:
+            # [NUP SPLIT-GAP FIX 2026-08-07] Giá trị 0 là chủ đích khi tắt dấu
+            # xén; phải giữ 0 thay vì rơi về clusterGap của chia cọc.
+            secondary_gap = max(0.0, float(split_gap_mm)) * MM_TO_PTS
         else:
             secondary_gap = cluster_gap if cluster_gap > 0 else None
 
