@@ -76,7 +76,14 @@ def test_allow_list_rust_khop_types_ts() -> None:
     assert REQUEST_RS.is_file(), f"Không tìm thấy {REQUEST_RS}"
     rust = REQUEST_RS.read_text(encoding="utf-8")
 
-    call = re.search(r'one_of\(params\.get\("boxType"\).*?&\[(.*?)\]\)', rust, re.S)
+    # TEST (audit 2026-08-11 §REL.QA.RUSTFMT): rustfmt được phép xuống dòng ngay
+    # sau `one_of(`; test khóa nội dung allow-list, không khóa cách trình bày Rust.
+    call = re.search(
+        r'one_of\(\s*params\.get\("boxType"\),\s*'
+        r'"params\.boxType",\s*&\[(.*?)\],\s*\)\?;',
+        rust,
+        re.S,
+    )
     assert call, "Không đọc được allow-list boxType trong dieline_request.rs"
     rust_types = set(re.findall(r'"([a-z_]+)"', call.group(1)))
 

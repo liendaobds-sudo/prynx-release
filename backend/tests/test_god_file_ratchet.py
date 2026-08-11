@@ -31,25 +31,22 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 # không thread-safe, rule #3) và một trần đồng thời, chứ không phải nhồi tính năng mới vào
 # file đã quá dài. Ghi lại ở đây để lần sau không ai lấy tiền lệ này để nâng trần cho việc
 # thêm tính năng.
-# MỐC ĐO: 2026-07-29, lấy trong lúc MỘT PHIÊN KHÁC đang sửa `sticker_engine.py` (+298/-94
-# dòng) và `pdf_tools.py`. Nếu nhánh đó còn đang làm dở thì lấy lại mốc một lần nữa sau khi
-# nó land — ratchet chỉ có ý nghĩa khi mốc là trạng thái đã ổn định.
+# MỐC ĐO LẠI CÓ LÝ DO: checkpoint `023449a` đã chốt toàn bộ đợt PPE/no-GS/bình tem
+# còn đang dở lúc đo ngày 2026-07-29. Các route dưới đây đã tăng vì hợp đồng preview,
+# preflight và đường xuất file của đợt đó đã land; không refactor chúng trong lượt đóng
+# gói vì đây là đường sản xuất file. Chốt lại đúng trạng thái 2026-08-11 để mọi tăng trưởng
+# tiếp theo tiếp tục bị khóa. `sticker_engine.py` cũng đã ổn định và được đưa vào ratchet.
 CEILINGS: dict[str, int] = {
-    "app/api/routes/imposition.py": 3861,
-    "app/api/routes/pdf_tools.py": 1933,
-    "app/api/routes/preflight.py": 1660,
+    "app/api/routes/imposition.py": 3915,
+    "app/api/routes/pdf_tools.py": 2217,
+    "app/api/routes/preflight.py": 1992,
     "app/api/routes/edit.py": 1432,
     "app/core/stream_editor.py": 3713,
     "app/workers/nup_engine.py": 3716,
     "app/core/channel_remover.py": 2246,
     "app/core/edit_session.py": 2211,
+    "app/workers/sticker_engine.py": 9757,
 }
-
-# `app/workers/sticker_engine.py` (3.2k+ dòng) CỐ TÌNH chưa vào ratchet: trong đợt audit
-# 2026-07-29 nó đang được một nhánh khác sửa liên tục (đo được 3252 → 3382 → 3390 dòng
-# trong cùng buổi). Khoá trần trên một file đang thay đổi chỉ tạo test đỏ nhiễu, không tạo
-# áp lực gì. **Thêm lại khi nhánh đó land** — đo lại số dòng lúc đó rồi đưa vào CEILINGS.
-_HOAN_LAI = ("app/workers/sticker_engine.py",)
 
 
 def _line_count(path: Path) -> int:
@@ -99,18 +96,3 @@ def test_route_imposition_khong_them_endpoint():
         f"routes/imposition.py có {count} endpoint (trần 18, audit 2026-07-29 §A.1). "
         f"Đặt endpoint mới ở router riêng thay vì nối tiếp vào file này."
     )
-
-
-def test_file_hoan_lai_van_ton_tai():
-    """File đang được nhánh khác sửa vẫn phải tồn tại — nhắc đưa lại vào ratchet.
-
-    Nếu test này đỏ vì file đã bị tách/đổi tên thì cập nhật `_HOAN_LAI`. Nếu nhánh kia đã
-    land, đo lại số dòng và chuyển file từ `_HOAN_LAI` sang `CEILINGS`.
-    """
-    for rel_path in _HOAN_LAI:
-        assert (BACKEND_ROOT / rel_path).is_file(), (
-            f"{rel_path} không còn — cập nhật _HOAN_LAI/CEILINGS trong file này"
-        )
-        assert rel_path not in CEILINGS, (
-            f"{rel_path} vừa nằm trong _HOAN_LAI vừa trong CEILINGS — chọn một"
-        )
