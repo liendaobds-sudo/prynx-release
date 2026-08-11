@@ -9,10 +9,10 @@ if (-not (Test-Path $Python)) {
     Write-Error "Không tìm thấy venv. Chạy: python -m venv venv && .\venv\Scripts\pip install -r requirements.txt"
 }
 
-Write-Host "==> [1/2] Sinh fixture PDF (nếu cần)..." -ForegroundColor Cyan
-& $Python tests\preflight_fixtures\generate_fixtures.py
-
-Write-Host "==> [2/2] Chay pytest Preflight..." -ForegroundColor Cyan
+# BUILD (audit 2026-08-11 §REL.QA.GOLDEN): conftest chỉ sinh các PDF còn thiếu.
+# Không gọi generate_all ở đây vì nó ghi lại expected_rules.json đã track và làm
+# mất ý nghĩa khóa golden hoặc khiến source sạch thành bẩn giữa lượt build.
+Write-Host "==> [1/1] Chạy pytest Preflight (tự sinh fixture PDF còn thiếu)..." -ForegroundColor Cyan
 & $Python -m pytest `
     tests\preflight_golden `
     tests\test_preflight_engine.py `

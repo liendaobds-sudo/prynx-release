@@ -33,6 +33,17 @@ function Invoke-Checked {
     }
 }
 
+# BUILD (audit 2026-08-11 §REL.QA.UTF8): pytest fd-capture đọc theo UTF-8, còn
+# ProcessPool con trên Windows có thể kế thừa code page hệ thống và ghi byte khác
+# UTF-8 vào cùng handle. Ép đồng nhất encoding cho toàn bộ Python con rồi hoàn
+# nguyên môi trường khi gate kết thúc hoặc thất bại.
+$previousPythonIoEncoding = [Environment]::GetEnvironmentVariable(
+    "PYTHONIOENCODING",
+    [EnvironmentVariableTarget]::Process
+)
+try {
+$env:PYTHONIOENCODING = "utf-8"
+
 if (-not (Test-Path -LiteralPath $PYTHON)) {
     throw "Python venv not found: $PYTHON"
 }
@@ -214,3 +225,10 @@ try {
 }
 
 Write-Host "  [QA] All release regression suites passed." -ForegroundColor Green
+} finally {
+    [Environment]::SetEnvironmentVariable(
+        "PYTHONIOENCODING",
+        $previousPythonIoEncoding,
+        [EnvironmentVariableTarget]::Process
+    )
+}

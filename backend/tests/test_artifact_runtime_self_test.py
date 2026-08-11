@@ -405,6 +405,24 @@ def test_build_restores_owned_environment_even_after_failure():
         assert f'"{name}"' in source[snapshot:outer_try]
 
 
+def test_release_qa_forces_utf8_and_does_not_rewrite_preflight_golden():
+    """QA phải đồng nhất encoding ProcessPool và không tự ghi đè golden đã track."""
+    root = Path(__file__).parents[2]
+    release_qa = (root / "scripts" / "run_release_qa.ps1").read_text(
+        encoding="utf-8"
+    )
+    preflight_qa = (root / "backend" / "scripts" / "run_preflight_qa.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    utf8_set = release_qa.index('$env:PYTHONIOENCODING = "utf-8"')
+    backend_suite = release_qa.index('Invoke-Checked "Backend test suite"')
+    utf8_restore = release_qa.rindex('"PYTHONIOENCODING"')
+    assert utf8_set < backend_suite < utf8_restore
+    assert "generate_fixtures.py" not in preflight_qa
+    assert "tests\\preflight_golden" in preflight_qa
+
+
 def test_build_environment_restore_runs_on_early_failure():
     powershell = shutil.which("powershell") or shutil.which("pwsh")
     if not powershell:
