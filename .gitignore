@@ -72,6 +72,7 @@ detect_shape_error.log
 *.log
 
 # Temp/scratch files at root
+/.tmp/
 diff.txt
 search_*.txt
 temp_*.txt
