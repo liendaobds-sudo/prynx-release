@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import logging
 import os
 import threading
 import time
-from contextlib import contextmanager
-from typing import Any, Callable, Iterator, TypeVar
+from contextlib import asynccontextmanager, contextmanager
+from typing import Any, AsyncIterator, Callable, Iterator, TypeVar
 
 from starlette.concurrency import run_in_threadpool as _run_in_threadpool
 
@@ -105,6 +106,33 @@ _WAITING_BY_KIND: dict[str, int] = {}
 T = TypeVar("T")
 
 
+class HeavyJobQueueCancelled(RuntimeError):
+    """Job bị hủy khi còn chờ admission, trước khi chiếm thread worker."""
+
+
+async def _acquire_semaphore_async(
+    semaphore: threading.BoundedSemaphore,
+    queue_cancelled: Callable[[], bool] | None,
+) -> None:
+    """Chờ semaphore mà không giữ token AnyIO/Starlette threadpool."""
+
+    def try_acquire() -> bool:
+        try:
+            return bool(semaphore.acquire(blocking=False))
+        except TypeError:
+            # Giữ tương thích wrapper/test-double cũ chỉ khai `acquire()`;
+            # semaphore production là threading.BoundedSemaphore và luôn đi nhánh trên.
+            return bool(semaphore.acquire())
+
+    while not try_acquire():
+        if queue_cancelled is not None and queue_cancelled():
+            raise HeavyJobQueueCancelled("Job đã bị hủy khi đang chờ tài nguyên.")
+        await asyncio.sleep(0.05)
+    if queue_cancelled is not None and queue_cancelled():
+        semaphore.release()
+        raise HeavyJobQueueCancelled("Job đã bị hủy khi đang chờ tài nguyên.")
+
+
 @contextmanager
 def heavy_job_slot(kind: str) -> Iterator[None]:
     """Wait for a shared heavy slot and release it on every exit path.
@@ -144,6 +172,53 @@ def heavy_job_slot(kind: str) -> Iterator[None]:
             gate.release()
 
 
+@asynccontextmanager
+async def async_heavy_job_slot(
+    kind: str,
+    queue_cancelled: Callable[[], bool] | None = None,
+) -> AsyncIterator[None]:
+    """Admission async dùng chung semaphore với đường sync hiện có.
+
+    PERF (audit 2026-08-09 §LR3.01): waiter phải chờ trước khi vào
+    Starlette threadpool; nếu không đủ waiter sẽ giữ hết token và chặn cả
+    endpoint hủy/health. Thứ tự khóa vẫn là trần phụ rồi trần toàn cục.
+    """
+
+    started = time.monotonic()
+    gate = _kind_gate(kind)
+    gate_acquired = False
+    global_acquired = False
+    waiting_registered = True
+    active_registered = False
+    with _STATE_LOCK:
+        _WAITING_BY_KIND[kind] = _WAITING_BY_KIND.get(kind, 0) + 1
+    try:
+        if gate is not None:
+            await _acquire_semaphore_async(gate, queue_cancelled)
+            gate_acquired = True
+        await _acquire_semaphore_async(_HEAVY_JOB_SLOTS, queue_cancelled)
+        global_acquired = True
+        with _STATE_LOCK:
+            _WAITING_BY_KIND[kind] -= 1
+            waiting_registered = False
+            _ACTIVE_BY_KIND[kind] = _ACTIVE_BY_KIND.get(kind, 0) + 1
+            active_registered = True
+        waited_ms = round((time.monotonic() - started) * 1000, 1)
+        if waited_ms >= 100:
+            logger.info("Heavy scheduler admitted %s after %.1f ms", kind, waited_ms)
+        yield
+    finally:
+        with _STATE_LOCK:
+            if waiting_registered:
+                _WAITING_BY_KIND[kind] -= 1
+            if active_registered:
+                _ACTIVE_BY_KIND[kind] -= 1
+        if global_acquired:
+            _HEAVY_JOB_SLOTS.release()
+        if gate_acquired and gate is not None:
+            gate.release()
+
+
 def scheduled_job(kind: str) -> Callable[[Callable[..., T]], Callable[..., T]]:
     """Decorate a fixed-executor worker with shared heavy-job admission."""
     def decorate(function: Callable[..., T]) -> Callable[..., T]:
@@ -155,18 +230,18 @@ def scheduled_job(kind: str) -> Callable[[Callable[..., T]], Callable[..., T]]:
     return decorate
 
 
-def _run_heavy(kind: str, function: Callable[..., T], *args: Any, **kwargs: Any) -> T:
-    with heavy_job_slot(kind):
-        return function(*args, **kwargs)
-
-
 async def run_heavy_in_threadpool(function: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     """Run one PDF-tool operation off-loop and under the shared scheduler."""
     return await run_scheduled_in_threadpool("pdf-tools", function, *args, **kwargs)
 
 
 async def run_scheduled_in_threadpool(
-    kind: str, function: Callable[..., T], *args: Any, **kwargs: Any
+    kind: str,
+    function: Callable[..., T],
+    *args: Any,
+    queue_cancelled: Callable[[], bool] | None = None,
+    **kwargs: Any,
 ) -> T:
     """Run synchronous heavy work off-loop under the shared scheduler."""
-    return await _run_in_threadpool(_run_heavy, kind, function, *args, **kwargs)
+    async with async_heavy_job_slot(kind, queue_cancelled):
+        return await _run_in_threadpool(function, *args, **kwargs)

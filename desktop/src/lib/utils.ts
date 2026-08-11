@@ -21,21 +21,52 @@ export const getFileArrayBuffer = async (file: File | Blob): Promise<ArrayBuffer
 };
 
 /**
- * Trả về một File RỖNG bytes chỉ mang tên + path nếu file có `.path` trên đĩa (Tauri) —
+ * Trả về một File RỖNG bytes mang metadata của file nếu có `.path` trên đĩa (Tauri) —
  * dùng cho stack undo (history / objectEdit) để KHÔNG giữ nguyên bytes PDF trong RAM
  * (audit RAM 2026-07-06: file 50MB × N bước undo = leak vài GB/tab).
  *
- * File rỗng + path vẫn render đúng qua pdfium (native) và đọc lại bytes qua
+ * File rỗng nội dung + path vẫn render đúng qua pdfium (native) và đọc lại bytes qua
  * `getFileArrayBuffer` (đọc từ đĩa qua protocol `localfile`). Nếu KHÔNG có path (web
  * fallback / blob) → GIỮ NGUYÊN file (fallback bytes) → hành vi y hệt hiện tại.
  */
 export function stripBytesIfOnDisk<T extends File | null>(file: T): T {
     if (!file || !(window as any).__TAURI_INTERNALS__ || !(file as any).path) return file;
-    const light = new File([], file.name, { type: file.type });
-    Object.defineProperty(light, 'path', { value: (file as any).path });
-    // Giữ cờ __editCommit nếu có → viewer không full-reload khi apply lại.
-    if ((file as any).__editCommit) {
-        Object.defineProperty(light, '__editCommit', { value: true, configurable: true });
+
+    const light = new File([], file.name, {
+        type: file.type,
+        lastModified: file.lastModified,
+    });
+
+    // PERF (feedback 2026-08-10 §UNDO.1): bytes thật vẫn rỗng, nhưng `.size`
+    // phải là kích thước trên đĩa. Nếu để 0, policy file lớn và dò màu
+    // hiểu nhầm, có thể đọc toàn bộ PDF ngay lúc Ctrl+Z đang nạp lại viewer.
+    Object.defineProperty(light, 'size', {
+        value: file.size,
+        configurable: true,
+    });
+
+    // Các cờ này quyết định nhánh render/lưu. Làm mất chúng trong history
+    // có thể khiến Undo ghi đè file tạm hoặc nạp lại sai engine.
+    const runtimeMetadataKeys = [
+        'path',
+        'isTempUploadPath',
+        'isGenerated',
+        '__pathMaterializationFailed',
+        '__editCommit',
+        '__pathRebaseOnly',
+        '__nativePathPending',
+        'isBlank',
+        'blankWidthPt',
+        'blankHeightPt',
+        'blankPageCount',
+        'isInMemory',
+    ] as const;
+    for (const key of runtimeMetadataKeys) {
+        if (!(key in (file as any))) continue;
+        Object.defineProperty(light, key, {
+            value: (file as any)[key],
+            configurable: true,
+        });
     }
     return light as T;
 }

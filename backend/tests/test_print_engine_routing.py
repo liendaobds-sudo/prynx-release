@@ -1,4 +1,4 @@
-"""Hồi quy hợp đồng separation PPE/no-GS cố định."""
+"""Hồi quy hợp đồng tách kẽm theo chất lượng accurate/approximate."""
 
 from __future__ import annotations
 
@@ -14,8 +14,6 @@ from app.core.separations import SeparationEngine
 def _engine(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SeparationEngine:
     monkeypatch.setattr(settings, "RESULTS_DIR", str(tmp_path))
     engine = SeparationEngine()
-    # Cố ý giả lập GS "có sẵn": engine vẫn tuyệt đối không được gọi nó.
-    engine.gs_path = str(__file__)
     monkeypatch.setattr(engine, "_detect_spot_inks", lambda _path: [])
     monkeypatch.setattr(
         engine,
@@ -26,7 +24,7 @@ def _engine(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SeparationEngine
 
 
 @pytest.mark.asyncio
-async def test_ppe_result_is_used_without_ghostscript(
+async def test_accurate_mode_uses_ppe(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     engine = _engine(monkeypatch, tmp_path)
@@ -40,36 +38,30 @@ async def test_ppe_result_is_used_without_ghostscript(
         },
     )
 
-    async def unexpected_gs(*_args, **_kwargs):
-        raise AssertionError("Không được gọi Ghostscript")
+    result = await engine.extract_separations(
+        "fixture.pdf", 1, render_mode="accurate"
+    )
 
-    monkeypatch.setattr(engine, "_run_ghostscript_tiffsep", unexpected_gs)
-    result = await engine.extract_separations("fixture.pdf", 1, use_ghostscript=True)
     assert result["engine"] == "ppe"
 
 
 @pytest.mark.asyncio
-async def test_legacy_true_parameter_cannot_force_ghostscript(
+async def test_approximate_mode_skips_ppe(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     engine = _engine(monkeypatch, tmp_path)
-    # Kể cả code ngoài cố sửa các khóa legacy sau khi Settings đã khởi tạo.
-    monkeypatch.setattr(
-        ppe_facade,
-        "separations",
-        lambda *_args, **_kwargs: {
-            "engine": "ppe",
-            "accuracy": "rip_separations",
-            "plates": [{"name": "Black", "is_spot": False}],
-        },
+
+    def unexpected_ppe(*_args, **_kwargs):
+        raise AssertionError("Chế độ approximate không được gọi PPE")
+
+    monkeypatch.setattr(ppe_facade, "separations", unexpected_ppe)
+
+    result = await engine.extract_separations(
+        "fixture.pdf", 1, render_mode="approximate"
     )
 
-    async def unexpected_gs(*_args, **_kwargs):
-        raise AssertionError("Cấu hình legacy không được bật lại Ghostscript")
-
-    monkeypatch.setattr(engine, "_run_ghostscript_tiffsep", unexpected_gs)
-    result = await engine.extract_separations("fixture.pdf", 1, use_ghostscript=True)
-    assert result["engine"] == "ppe"
+    assert result["engine"] == "pdfium_approx"
+    assert result["accuracy"] == "approximate"
 
 
 @pytest.mark.asyncio
@@ -81,11 +73,11 @@ async def test_ppe_unavailable_falls_back_to_explicit_approximation(
     def unavailable_ppe(*_args, **_kwargs):
         raise ppe_facade.PpeUnavailable("not built")
 
-    async def unexpected_gs(*_args, **_kwargs):
-        raise AssertionError("PPE lỗi cũng không được rơi về Ghostscript")
-
     monkeypatch.setattr(ppe_facade, "separations", unavailable_ppe)
-    monkeypatch.setattr(engine, "_run_ghostscript_tiffsep", unexpected_gs)
-    result = await engine.extract_separations("fixture.pdf", 1, use_ghostscript=True)
+
+    result = await engine.extract_separations(
+        "fixture.pdf", 1, render_mode="accurate"
+    )
+
     assert result["engine"] == "pdfium_approx"
     assert result["accuracy"] == "approximate"

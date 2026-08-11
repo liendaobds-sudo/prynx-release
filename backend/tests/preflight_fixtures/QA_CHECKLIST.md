@@ -17,7 +17,7 @@ cd D:\pdfcompare\backend
 .\venv\Scripts\python.exe -m pytest tests\test_preflight_engine.py tests\test_image_dpi_props.py tests\test_placed_size_props.py tests\test_tac_threshold_props.py tests\test_tac_props.py tests\test_tac_bbox_props.py -v
 ```
 
-**Pass criteria:** 0 failed (skipped OK: `17_tac_heavy_cmyk.pdf` khi thiếu Ghostscript).
+**Pass criteria:** 0 failed; fixture TAC phải chạy bằng PrynX Print Engine, không được skip.
 
 ---
 
@@ -40,7 +40,7 @@ cd D:\pdfcompare\backend
 | `14_progressive_jpeg.pdf` | Manual — PROGRESSIVE_JPEG | File ReportLab; dùng JPEG progressive thật (C3) |
 | `15_pdf_version_old.pdf` | PDF_VERSION_MISMATCH | Header PDF 1.2 |
 | `16_object_off_page.pdf` | OBJECT_OFF_PAGE | Text ngoài trang |
-| `17_tac_heavy_cmyk.pdf` | TAC_EXCEEDED (optional) | Cần Ghostscript |
+| `17_tac_heavy_cmyk.pdf` | TAC_EXCEEDED | Kiểm tra kẽm/TAC bằng PPE |
 
 Chi tiết kỳ vọng: `expected_rules.json`.
 

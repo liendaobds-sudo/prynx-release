@@ -29,8 +29,8 @@
 
 ## 4. Trust boundary và entry point
 
-1. **WebView → Tauri IPC**: mọi `invoke`, capability, shell/process, filesystem, deep-link/startup args và asset protocol.
-2. **Tauri → FastAPI sidecar**: HTTP/WS localhost, CORS/origin, HMAC header, timestamp, nonce, method/path/body binding và startup challenge.
+1. **WebView → Tauri IPC**: mọi `invoke`, capability, shell/process, filesystem, deep-link/startup args và asset protocol. `grant_upscale_file_path` chỉ ký canonical image path đã nằm trong dynamic `plugin-fs` scope do picker/native drop cấp; renderer không tự biến một chuỗi path thành capability.
+2. **Tauri → FastAPI sidecar**: HTTP/WS localhost, CORS/origin, HMAC header, timestamp, nonce, method/path/body binding và startup challenge. Fast-path Upscale dùng grant HMAC riêng, bind `path + tab + iat/exp + nonce`, dùng một lần; production dùng secret stdin, `run_dev.bat` sinh secret theo từng phiên cho hai process cùng kế thừa.
 3. **Sidecar → native/parser**: PyO3, PDFium, pypdfium2, subprocess/PowerShell, codec, model/font/PDF parser và worker/process boundary.
 4. **Client → PrintSolutions/Supabase**: Edge Functions, RPC, RLS, webhook, activation, entitlement, telemetry và rate limit.
 5. **Filesystem/result boundary**: upload, picker/drop, path-by-reference, signed result URL, temp/cache/log và external application launch.
@@ -42,10 +42,10 @@
 - Authn/authz/feature gate của engine/tác vụ có giá trị phải cưỡng chế ở Tauri/backend/server; UI chỉ là lớp UX/defense-in-depth. Tool client-only phải được ghi rõ accepted risk và vẫn re-check khi quyền đổi.
 - Sidecar chỉ nghe loopback; route/WS ngoài allowlist phải xác thực mặc định. HMAC phải ràng buộc request đầy đủ, chống replay và không cho renderer ghi đè header tin cậy.
 - Claim license chỉ được dùng sau verify Ed25519; private/signing/service key không xuất hiện trong client, source map, argv hoặc log.
-- Đường dẫn phải canonicalize rồi mới so scope; chặn traversal, symlink/junction, UNC/device path, arbitrary overwrite và đọc file nhạy cảm.
-- File/result của user không được lộ qua IDOR, static mount, signed URL sai scope, exception hoặc log.
+- Đường dẫn phải canonicalize rồi mới so scope; chặn traversal, symlink/junction, UNC/device path, arbitrary overwrite và đọc file nhạy cảm. Không chữa lỗi fast-path bằng allowlist toàn Desktop, `%TEMP%` hay ổ đĩa; file ngoài thư mục PrynX phải có capability native hoặc upload bytes.
+- File/result của user không được lộ qua IDOR, static mount, signed URL sai scope, exception hoặc log. Companion PDF Upscale dùng marker lease atomic trong `RESULTS_DIR`: lease ngắn khi chưa commit, claim sau commit, release khi đóng tab và sweep được sau restart; endpoint claim/release vẫn chịu license + feature gate.
 - Input định dạng và native FFI luôn không tin cậy; giới hạn parser/process phải bảo vệ tính bí mật, toàn vẹn và ổn định.
-- Release phải chốt cùng một Git commit sạch trước/sau build, ghi hai feature gate, Python ABI, build mode và sidecar provenance vào manifest; artifact smoke phải chứng minh signed Free bị từ chối một quyền Pro. Secret không nằm trong repo/artifact/log và output cũ không được tái sử dụng âm thầm.
+- Release phải chốt cùng một Git commit sạch trước/sau build, ghi hai feature gate, Python ABI, build mode và sidecar provenance vào manifest; artifact smoke phải chứng minh signed Free bị từ chối một quyền Pro. Native merger phải qua staged symbol gate và behavior smoke thật trên PNG có pHYs + alpha + RGB ICC, kiểm MediaBox, `/SMask` và `/ICCBased /N 3`. Secret không nằm trong repo/artifact/log và output cũ không được tái sử dụng âm thầm.
 - Migration/RPC/RLS phải fail-closed, chống race và không trao quyền mặc định cho anon/authenticated ngoài chủ đích.
 
 ## 6. Accepted risk và non-goal

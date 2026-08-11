@@ -1,9 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
 import { useTranslation } from 'react-i18next';
+import {
+  useWorkspaceStore,
+  workspaceDocumentIdentity,
+} from '../../stores/useWorkspaceStore';
 
 interface Props {
   pdfFile: File | null;
@@ -20,37 +24,65 @@ interface InkInfo {
 
 export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
   const { t } = useTranslation();
-  const [fileId, setFileId] = useState('');
   const [inks, setInks] = useState<InkInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [converting, setConverting] = useState(false);
   const [status, setStatus] = useState('');
   const [isInksOpen, setIsInksOpen] = useState(true);
+  const selectionFileId = useWorkspaceStore(state => state.selectionFileId);
+  const selectionDocumentIdentity = useWorkspaceStore(state => state.selectionDocumentIdentity);
+  const viewerPageOrder = useWorkspaceStore(state => state.viewerPageOrder);
+  const viewerPageRotations = useWorkspaceStore(state => state.viewerPageRotations);
+  const setSelectionFileId = useWorkspaceStore(state => state.setSelectionFileId);
+  const documentIdentity = workspaceDocumentIdentity(
+    pdfFile,
+    viewerPageOrder,
+    viewerPageRotations,
+  );
+  const reusableFileId = selectionFileId && (
+    !selectionDocumentIdentity
+    || selectionDocumentIdentity === documentIdentity
+  ) ? selectionFileId : '';
+  const autoFetchIdentityRef = useRef('');
+  const documentIdentityRef = useRef(documentIdentity);
+  documentIdentityRef.current = documentIdentity;
 
-  useEffect(() => { setFileId(''); setInks([]); setStatus(''); }, [pdfFile]);
+  useEffect(() => { setInks([]); setStatus(''); }, [documentIdentity]);
 
   const getWorkingFile = useWorkingPdf();
   const ensureUploaded = useCallback(async (): Promise<string> => {
-    if (fileId) return fileId;
+    if (reusableFileId) return reusableFileId;
     if (!pdfFile) throw new Error(t('preprocess.inkManager:chua_co_file_pdf'));
-    const r = await uploadPDF((await getWorkingFile()) || pdfFile);
-    setFileId(r.id);
+    // PERF (audit 2026-08-10 §PPE.REAUDIT.5): chỉ materialize khi page order/
+    // rotation thật sự khác. ID mới được chia sẻ lại cho Output Preview và Edit.
+    const r = await uploadPDF((await getWorkingFile(pdfFile)) || pdfFile);
+    if (documentIdentityRef.current !== documentIdentity) {
+      throw new Error('Tài liệu đã thay đổi trong lúc chuẩn bị dữ liệu mực.');
+    }
+    setSelectionFileId(r.id, documentIdentity);
     return r.id;
-  }, [fileId, pdfFile, getWorkingFile, t]);
+  }, [documentIdentity, getWorkingFile, pdfFile, reusableFileId, setSelectionFileId, t]);
 
   const fetchInks = useCallback(async () => {
     if (!pdfFile) return;
+    const requestIdentity = documentIdentity;
     setLoading(true); setStatus('');
     try {
       const fid = await ensureUploaded();
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/inks/${fid}`);
       const data = await res.json();
-      setInks(data.inks || []);
-    } catch (e: any) { setStatus(`❌ ${e.message}`); }
-    setLoading(false);
-  }, [pdfFile, ensureUploaded]);
+      if (documentIdentityRef.current === requestIdentity) setInks(data.inks || []);
+    } catch (e: any) {
+      if (documentIdentityRef.current === requestIdentity) setStatus(`❌ ${e.message}`);
+    }
+    if (documentIdentityRef.current === requestIdentity) setLoading(false);
+  }, [documentIdentity, pdfFile, ensureUploaded]);
 
-  useEffect(() => { fetchInks(); }, [fetchInks]);
+  useEffect(() => {
+    if (!pdfFile || autoFetchIdentityRef.current === documentIdentity) return;
+    autoFetchIdentityRef.current = documentIdentity;
+    void fetchInks();
+  }, [documentIdentity, fetchInks, pdfFile]);
 
   const convertSpot = async (spotName?: string) => {
     setConverting(true); setStatus('');

@@ -26,7 +26,6 @@ const T = {
     khi_bam_xuat_pdf_x_he_thong_tu_nhung: 'When you click "Export PDF/X", the system embeds all fonts (including system fonts) into the file.',
     khi_xuat_pdf_x_1a_he_thong_tu_chuyen: 'When exporting PDF/X-1a, the system converts all RGB to CMYK using the configured color profile (ICC).',
     khi_xuat_pdf_x_1a_he_thong_tu_lam_phang: 'When exporting PDF/X-1a, the system flattens all transparency areas into solid image/vector.',
-    khi_xuat_pdf_x_ghostscript_tu_ha_nang: 'When exporting PDF/X, Ghostscript automatically lowers/raises the PDF version to match the standard — so this item is always handled automatically.',
     khi_xuat_pdf_x_he_thong_tu_gan_output: 'When exporting PDF/X, the system attaches an Output Intent (preferring FOGRA39, or default CMYK) to the file.',
     kiem_tra_compliance: '🔍 Check Compliance',
     kiem_tra_file_chi_dung_he_mau_cmyk: 'Checks that the file uses only the CMYK color space, with no remaining RGB colors.',

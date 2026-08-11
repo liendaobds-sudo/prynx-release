@@ -5,6 +5,7 @@ import { TOOL_REGISTRY, TOOL_CATEGORIES, findToolByUniqueKey, getToolsByCategory
 
 import PDFUploader from './PDFUploader';
 import AcrobatViewer from './AcrobatViewer';
+import type { ThumbPageWorkflowStatus } from './acrobat/ThumbSidebar';
 import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
 import { useEditSession } from '../hooks/useEditSession';
 import { useWorkingPdf } from '../hooks/useWorkingPdf';
@@ -28,7 +29,7 @@ import { writeSnapshot, deleteSnapshot } from '../lib/recovery';
 import { getFileArrayBuffer, detectColorSpace, stripBytesIfOnDisk } from '../lib/utils';
 import { beginOptionalContentTransfer, finishOptionalContentTransfer } from '../lib/pdfOptionalContent';
 import { saveVdpTemplate, loadVdpTemplate } from '../lib/vdpTemplate';
-import OutputPreviewTab from './OutputPreviewTab';
+import OutputPreviewHost from './OutputPreviewHost';
 import RecipeRecordControl from './recipe/RecipeRecordControl';
 import RecipePanel from './recipe/RecipePanel';
 import { toast } from './ui/Toast';
@@ -51,9 +52,14 @@ import { clearTileUrlCacheForFile } from './workspace/LivePageFrame';
 import { useShallow } from 'zustand/react/shallow';
 import { globalPdfObjectCache } from '../stores/pdfObjectCache';
 import { BgRemoverPreview } from './preprocess-tools/BgRemoverTool';
-import { UpscalePreview } from './preprocess-tools/UpscaleTool';
+import { copyUpscaleResultIdentity, UpscalePreview } from './preprocess-tools/UpscaleTool';
 import StickerSheetWorkspace from './preprocess-tools/StickerSheetWorkspace';
 import { useStickerSheetStore } from './preprocess-tools/stickerSheetStore';
+import {
+    resolveStickerSourceSyncMarker,
+    selectStickerSheetTabSummary,
+    viewerShowsStickerSource,
+} from './stickerSheetTabSelector';
 import LogoRebuildWorkspace from './preprocess-tools/LogoRebuildWorkspace';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../i18n';
@@ -145,7 +151,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         reportMsg, setReportMsg, viewerDirty, setViewerDirty, viewerPageOrder, setViewerPageOrder, setViewerPageInstanceIds,
         viewerPageRotations, setViewerPageRotations, bleedView, setBleedView,
         isDraggingSidebar, setIsDraggingSidebar,
-        showOutputPreview, setShowOutputPreview, separationPlates, setSeparationPlates,
         pdfObjectsVersion, setPdfObjectsVersion,
         isObjectEditMode,
         currentEditObjects,
@@ -158,6 +163,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         showCloseConfirm, setShowCloseConfirm,
         viewerNumPages,
         viewerActivePage,
+        viewerToolMode,
         setDetectedShapeType, setDetectedShapeParams, 
         setDetectedShapesByPage, setDetectedDimensionsByPage, setDetectedShapeParamsByPage,
         detectedDimensionsByPage,
@@ -170,7 +176,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         reportMsg: state.reportMsg, setReportMsg: state.setReportMsg, viewerDirty: state.viewerDirty, setViewerDirty: state.setViewerDirty, viewerPageOrder: state.viewerPageOrder, setViewerPageOrder: state.setViewerPageOrder, setViewerPageInstanceIds: state.setViewerPageInstanceIds,
         viewerPageRotations: state.viewerPageRotations, setViewerPageRotations: state.setViewerPageRotations, bleedView: state.bleedView, setBleedView: state.setBleedView,
         isDraggingSidebar: state.isDraggingSidebar, setIsDraggingSidebar: state.setIsDraggingSidebar,
-        showOutputPreview: state.showOutputPreview, setShowOutputPreview: state.setShowOutputPreview, separationPlates: state.separationPlates, setSeparationPlates: state.setSeparationPlates,
         pdfObjectsVersion: state.pdfObjectsVersion, setPdfObjectsVersion: state.setPdfObjectsVersion,
         isObjectEditMode: state.isObjectEditMode,
         currentEditObjects: state.currentEditObjects,
@@ -183,6 +188,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         showCloseConfirm: state.showCloseConfirm, setShowCloseConfirm: state.setShowCloseConfirm,
         viewerNumPages: state.viewerNumPages,
         viewerActivePage: state.viewerActivePage,
+        viewerToolMode: state.viewerToolMode,
         setDetectedShapeType: state.setDetectedShapeType, setDetectedShapeParams: state.setDetectedShapeParams, 
         setDetectedShapesByPage: state.setDetectedShapesByPage, setDetectedDimensionsByPage: state.setDetectedDimensionsByPage, setDetectedShapeParamsByPage: state.setDetectedShapeParamsByPage,
         detectedDimensionsByPage: state.detectedDimensionsByPage,
@@ -221,12 +227,56 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const sidebarWidth = useAppSettingsStore(state => state.toolMenuWidth);
     const setSidebarWidth = useAppSettingsStore(state => state.setToolMenuWidth);
     const dedicatedInitialTool = resolveDedicatedInitialTool(initialFeature);
-    const stickerSheetMode = useStickerSheetStore(
-        state => state.tabs[tabId || '']?.mode || 'existing',
+    const [logoSessionDirty, setLogoSessionDirty] = useState(false);
+    const [logoWorkspaceOpened, setLogoWorkspaceOpened] = useState(
+        () => activeDashboardTool === 'logo_rebuild' || dedicatedInitialTool === 'logo_rebuild',
     );
+    const {
+        stickerSheetMode,
+        stickerSheetSourceFile,
+        stickerSheetActiveSourcePage,
+        stickerSheetPages,
+        stickerSheetPageCount,
+        stickerSheetSourceImageCount,
+        stickerSheetBusy,
+    } = useStickerSheetStore(useShallow(
+        state => selectStickerSheetTabSummary(state, tabId),
+    ));
     const setStickerSheetMode = useStickerSheetStore(state => state.setMode);
     const disposeStickerSheetTab = useStickerSheetStore(state => state.disposeTab);
+    const stickerSheetPageStatuses = useMemo<Partial<Record<number, ThumbPageWorkflowStatus>> | undefined>(() => {
+        if (stickerSheetMode !== 'ai-sheet' || !stickerSheetSourceFile) return undefined;
+        const count = Math.max(
+            1,
+            stickerSheetPageCount,
+            stickerSheetSourceImageCount,
+            viewerPageOrder?.length || 0,
+            viewerNumPages || 0,
+        );
+        const statuses: Partial<Record<number, ThumbPageWorkflowStatus>> = {};
+        for (let pageNumber = 1; pageNumber <= count; pageNumber += 1) {
+            const page = stickerSheetPages[pageNumber];
+            if (page?.status === 'error') statuses[pageNumber] = 'error';
+            else if (
+                page?.isRefining
+                || ['inspecting', 'detecting', 'confirming', 'exporting'].includes(page?.status || '')
+            ) statuses[pageNumber] = 'processing';
+            else if (page?.status === 'mask-review') statuses[pageNumber] = 'review';
+            else if (page?.status === 'mask-ready') statuses[pageNumber] = 'ready';
+            else statuses[pageNumber] = 'pending';
+        }
+        return statuses;
+    }, [
+        stickerSheetMode,
+        stickerSheetPageCount,
+        stickerSheetPages,
+        stickerSheetSourceFile,
+        stickerSheetSourceImageCount,
+        viewerNumPages,
+        viewerPageOrder,
+    ]);
     const previousDashboardToolRef = useRef<string | null>(null);
+    const syncedStickerSourceRef = useRef<File | null>(null);
 
     useEffect(() => () => {
         if (tabId) disposeStickerSheetTab(tabId);
@@ -251,6 +301,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         if (!tabId) return;
         return registerActiveTabFeature(tabId, activeDashboardTool);
     }, [tabId, activeDashboardTool]);
+
+    useEffect(() => {
+        // UIUX (audit 2026-08-09 §LR3.04): giữ component mounted sau lần mở đầu
+        // để đổi công cụ không làm mất editor/history/SVG đang dựng trong cùng tab.
+        if (activeDashboardTool === 'logo_rebuild') setLogoWorkspaceOpened(true);
+    }, [activeDashboardTool]);
 
 
 
@@ -395,6 +451,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     useEffect(() => {
         if (file && !selectionFileId && file.name.toLowerCase().endsWith('.pdf')) {
             const sz = (file as any)?.size || 0;
+            // History/native stub có path nhưng chưa biết size: coi là file lớn
+            // cho pre-upload. Tác vụ cần file_id sẽ đăng ký path khi người dùng mở nó.
+            if ((file as any).path && sz <= 0) return;
             // Bỏ pre-upload eager cho file > 20MB (sẽ upload on-demand khi mở Selection/Output Preview).
             if (sz > 20 * 1024 * 1024) return;
             const timer = setTimeout(() => {
@@ -416,6 +475,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const [sourceImageFile, setSourceImageFile] = useState<File | null>(() => (
         initialFile && isSupportedImageFileName(initialFile.name) ? initialFile : null
     ));
+    const stickerSheetSourceVisible = viewerShowsStickerSource(
+        file,
+        sourceImageFile,
+        stickerSheetSourceFile,
+    );
     const [initialOpenRetryToken, setInitialOpenRetryToken] = useState(0);
     const fileOpeningAttemptRef = useRef(0);
     const fileOpeningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -467,6 +531,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             (async () => {
                 let openedFile = initialFile;
                 setSourceImageFile(isSupportedImageFileName(initialFile.name) ? initialFile : null);
+                syncedStickerSourceRef.current = initialFile;
                 try {
                     openedFile = await imageFileToPdfIfNeeded(initialFile, getFileArrayBuffer);
                 } catch (openError) {
@@ -713,7 +778,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // mất thay đổi âm thầm. Khai báo state ở ĐÂY (trước isDirty) để tránh TDZ.
     const [editSessionDirty, setEditSessionDirty] = useState(false);
 
-    const isDirty = useMemo(() => {
+    const documentIsDirty = useMemo(() => {
         if (editSessionDirty) return true; // edit-object chưa commit → LUÔN dirty (kể cả isSaved)
         if (isSaved) return false;
         if (history.length > 0) return true;
@@ -728,6 +793,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         if (vdpFields && vdpFields.length > 0) return true;
         return false;
     }, [isSaved, history.length, file, viewerPageRotations, vdpFields, viewerDirty, editSessionDirty]);
+    const isDirty = logoSessionDirty || documentIsDirty;
 
     useEffect(() => {
         onDirtyChange?.(isDirty);
@@ -744,7 +810,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         // Bỏ qua snapshot khi path là file phù du (uploads/results/temp): file này bị
         // dọn sau 26h → khôi phục sẽ trỏ vào path đã biến mất. Chờ tới khi lưu ra vị
         // trí thật (fpath ổn định) mới snapshot.
-        if (!isDirty || !fpath || isEphemeralBackendPath(fpath)) {
+        if (!documentIsDirty || !fpath || isEphemeralBackendPath(fpath)) {
             void deleteSnapshot(tabId);
             return;
         }
@@ -764,7 +830,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             });
         }, 8000);
         return () => clearTimeout(snapTimer);
-    }, [tabId, isDirty, file, originalFileName, viewerPageOrder, viewerPageRotations, vdpFields, activeDashboardTool, lockedMode]);
+    }, [tabId, documentIsDirty, file, originalFileName, viewerPageOrder, viewerPageRotations, vdpFields, activeDashboardTool, lockedMode]);
 
     // Áp KHÔI PHỤC một lần khi mở tab từ snapshot: dựng lại thao tác sửa trên file gốc.
     useEffect(() => {
@@ -802,21 +868,79 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const editHistory = useObjectEditHistory();
 
     const commitWorkingFile = useCallback(async (newBlob: Blob, newName: string, existingPath?: string) => {
+        let committedBlob = newBlob;
+        let committedName = newName;
+        let committedPath = existingPath;
+        let nextSourceImage: File | null = null;
+
+        if (newBlob.type.startsWith('image/') || isSupportedImageFileName(newName)) {
+            // UIUX (feedback 2026-08-10 §UP.WORKING.1): giữ ảnh AI làm nguồn thật
+            // cho công cụ kế tiếp, đồng thời tạo PDF một trang cho viewer dùng chung.
+            nextSourceImage = new File([newBlob], newName, {
+                type: newBlob.type || 'application/octet-stream',
+            });
+            // UIUX (audit 2026-08-11 §UP.X.01): giữ token owner khi Blob Upscale
+            // được bọc thành File để Undo riêng đối chiếu chính xác item đã commit.
+            copyUpscaleResultIdentity(newBlob, nextSourceImage);
+            const companionPdfPath = (
+                (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+                && existingPath?.toLowerCase().endsWith('.pdf')
+            ) ? existingPath : undefined;
+            if (companionPdfPath) {
+                // Backend đã bọc luồng PNG thành PDF bằng native, không decode lại
+                // bitmap khổng lồ trên WebView. Blob ảnh vẫn được giữ làm nguồn AI.
+                committedBlob = new Blob([], { type: 'application/pdf' });
+                committedName = newName.replace(/\.(?:jpe?g|png|webp|bmp|tiff?)$/i, '.pdf');
+                committedPath = companionPdfPath;
+            } else {
+                const sourceImagePath = existingPath?.toLowerCase().endsWith('.pdf')
+                    ? undefined
+                    : existingPath;
+                if (sourceImagePath) {
+                    Object.defineProperty(nextSourceImage, 'path', {
+                        value: sourceImagePath,
+                        configurable: true,
+                    });
+                }
+                const normalizedPdf = await imageFileToPdfIfNeeded(nextSourceImage, getFileArrayBuffer);
+                committedBlob = normalizedPdf;
+                committedName = normalizedPdf.name;
+                // Đường dẫn cũ là file ảnh, không được giao nhầm cho PDFium như PDF.
+                committedPath = undefined;
+            }
+        }
+
         if (file) {
             // Cắt bớt entry cũ nhất khi vượt ngưỡng → chặn leak RAM (audit 2026-07-06).
             setHistory(prev => {
                 // Strip bytes khi file có path đĩa → entry undo chỉ giữ tên+path (đọc lại
                 // qua getFileArrayBuffer khi cần), chặn leak RAM (audit 2026-07-06). File
                 // không path → giữ nguyên bytes (fallback). handleUndo đã xử lý cả 2 nhánh.
-                const next = [...prev, stripBytesIfOnDisk(file)];
+                const historyFile = stripBytesIfOnDisk(file);
+                // Undo phải khôi phục đồng thời PDF hiển thị và ảnh nguồn tương ứng;
+                // nếu không, Bù xén vẫn có thể âm thầm nhận ảnh upscale mới.
+                Object.defineProperty(historyFile, '__prynxSourceImageFile', {
+                    value: sourceImageFile,
+                    configurable: true,
+                });
+                const next = [...prev, historyFile];
                 return next.length > MAX_HISTORY ? next.slice(next.length - MAX_HISTORY) : next;
             });
         }
+        // UIUX (feedback 2026-08-11 §AI.SPLIT1): PDF tạo xong phải ở lại Viewer.
+        // Nếu marker về null, effect đồng bộ nguồn sẽ mở lại nguyên tấm ngay khi
+        // khối export hạ xuống, làm kết quả 9 trang trở về 1/1.
+        syncedStickerSourceRef.current = resolveStickerSourceSyncMarker(
+            stickerSheetSourceFile,
+            nextSourceImage,
+            activeDashboardTool === 'sticker' && stickerSheetMode === 'ai-sheet',
+        );
+        setSourceImageFile(nextSourceImage);
         // Use newName to correctly reflect the current file's processing state
-        const displayName = newName;
-        setOriginalFileName(newName);
+        const displayName = committedName;
+        setOriginalFileName(committedName);
         
-        const newFile = new File([newBlob as any], displayName, { type: 'application/pdf' });
+        const newFile = new File([committedBlob as any], displayName, { type: 'application/pdf' });
         
         try {
             if ((window as any).__TAURI_INTERNALS__) {
@@ -824,11 +948,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 // VDP/job kết quả: backend đã ghi file thật ra đĩa và trả về đường dẫn
                 // (newBlob lúc này chỉ là blob "dummy" để skip download). Dùng thẳng
                 // path thật → tile native render đúng, KHÔNG ghi đè bằng blob rỗng.
-                if (existingPath) {
-                    tempPath = existingPath;
+                if (committedPath) {
+                    tempPath = committedPath;
                     try {
                         const { stat } = await import('@tauri-apps/plugin-fs');
-                        const info = await stat(existingPath);
+                        const info = await stat(committedPath);
                         Object.defineProperty(newFile, 'size', { value: Number((info as any).size || 0) });
                     } catch {
                         // Native rendering only requires the path; size is display metadata.
@@ -841,7 +965,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         console.warn("HTTP upload failed for fix pdf, falling back to IPC");
                         const { tempDir, join } = (await import('@tauri-apps/api/path')) as any;
                         const { writeFile } = (await import('@tauri-apps/plugin-fs')) as any;
-                        const buffer = await newBlob.arrayBuffer();
+                        const buffer = await committedBlob.arrayBuffer();
                         const tDir = await tempDir();
                         tempPath = await join(tDir, `prynx_tmp_${Date.now()}_${newName}`);
                         await writeFile(tempPath, new Uint8Array(buffer));
@@ -858,7 +982,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
         setFile(newFile);
         if (pdfUrl && !pdfUrl.startsWith('https://')) URL.revokeObjectURL(pdfUrl);
-        setPdfUrl(URL.createObjectURL(newBlob));
+        setPdfUrl(URL.createObjectURL(committedBlob));
         setFileSizeStr((newFile.size / (1024 * 1024)).toFixed(2) + ' MB');
         setIsSaved(false);
         onTitleChange?.(displayName);
@@ -880,7 +1004,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setSelectionFileId(''); // Reset fid � object edit re-uploads on demand
         setHiddenObjectIds([]);
         setLockedObjectIds([]);
-    }, [file, originalFileName, onTitleChange]);
+    }, [
+        activeDashboardTool,
+        file,
+        onTitleChange,
+        sourceImageFile,
+        stickerSheetMode,
+        stickerSheetSourceFile,
+    ]);
     const ensureCropFileId = useCallback(async (signal?: AbortSignal) => {
         if (!file) throw new Error(t('misc.acrobatViewer:chua_co_file_de_cat_kho'));
         // PAGEBOX (audit 2026-08-04 §W1.PB5): Crop phải đọc đúng artifact người
@@ -1200,28 +1331,48 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     // ----------------------------
 
+    const documentUndoTransitionRef = useRef(false);
+
+    useEffect(() => {
+        // Cho phép bước Undo kế tiếp sau khi React đã áp xong file/history mới.
+        documentUndoTransitionRef.current = false;
+    }, [file, history.length, pdfUrl]);
+
     const handleUndo = useCallback(() => {
-        if (history.length === 0) return;
+        // PERF (feedback 2026-08-10 §UNDO.2): keydown có thể lặp trước lần
+        // render kế tiếp. Không cho hai lượt nạp tài liệu chồng lên nhau.
+        if (documentUndoTransitionRef.current || history.length === 0) return;
 
         const prevFile = history[history.length - 1];
-        setHistory(prev => prev.slice(0, -1));
-
-        setFile(prevFile);
-        
-        if (pdfUrl && !pdfUrl.startsWith('https://')) URL.revokeObjectURL(pdfUrl);
         let objUrl = '';
         if ((window as any).__TAURI_INTERNALS__ && (prevFile as any).path) {
             objUrl = localFileUrl((prevFile as any).path);
         } else {
             objUrl = URL.createObjectURL(prevFile);
         }
+
+        documentUndoTransitionRef.current = true;
+        setHistory(prev => prev.slice(0, -1));
+
+        setFile(prevFile);
+        setOriginalFileName(prevFile.name);
         setPdfUrl(objUrl);
+        const restoredSource = (prevFile as File & { __prynxSourceImageFile?: File | null })
+            .__prynxSourceImageFile ?? null;
+        syncedStickerSourceRef.current = restoredSource;
+        setSourceImageFile(restoredSource);
+
+        // URL cũ còn có thể đang được loader hiện tại dùng trong cùng tick.
+        // Thu hồi sau khi state swap đã commit để tránh cắt ngang lượt render cũ.
+        if (pdfUrl?.startsWith('blob:') && pdfUrl !== objUrl) {
+            window.setTimeout(() => URL.revokeObjectURL(pdfUrl), 0);
+        }
+
         setFileSizeStr((prevFile.size / (1024 * 1024)).toFixed(2) + ' MB');
         onTitleChange?.(prevFile.name);
-        
-        detectColorSpace(prevFile).then(cs => {
-            if (cs) onTitleChange?.(`${prevFile.name} (${cs})`);
-        });
+
+        // Không dò lại hệ màu trong Undo: viewer đang nạp cùng file từ path.
+        // Dò song song từng có thể đọc toàn PDF và làm WebView đứng.
 
         setViewerPageOrder(undefined);
         setViewerPageRotations(undefined);
@@ -1232,7 +1383,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setDetectedShapesByPage({});
         setDetectedDimensionsByPage({});
         setDetectedShapeParamsByPage({});
-    }, [history, onTitleChange]);
+    }, [history, pdfUrl, onTitleChange, setHistory, setFile, setOriginalFileName, setPdfUrl,
+        setFileSizeStr, setViewerPageOrder, setViewerPageRotations, setDetectedShapeType,
+        setDetectedShapeParams, setDetectedShapesByPage, setDetectedDimensionsByPage,
+        setDetectedShapeParamsByPage]);
 
 
 
@@ -1296,6 +1450,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const handleFileSelected = useCallback(async (selectedFile: File, allFiles?: File[]) => {
         // Ảnh → PDF ngay khi mở để mọi công cụ sau chỉ nhận hợp đồng PDF.
         pendingSelectedOpenRef.current = { file: selectedFile, allFiles };
+        syncedStickerSourceRef.current = selectedFile;
         setSourceImageFile(isSupportedImageFileName(selectedFile.name) ? selectedFile : null);
         const attempt = beginFileOpeningAttempt();
         try {
@@ -1371,6 +1526,30 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
         initialOpenRetryRef.current?.();
     }, [handleFileSelected]);
+
+    useEffect(() => {
+        if (
+            !isActive
+            || activeDashboardTool !== 'sticker'
+            || stickerSheetMode !== 'ai-sheet'
+        ) {
+            return;
+        }
+        if (!stickerSheetSourceFile || fileOpeningPhase === 'loading' || stickerSheetBusy) return;
+        if (syncedStickerSourceRef.current === stickerSheetSourceFile) return;
+        syncedStickerSourceRef.current = stickerSheetSourceFile;
+        // UIUX (feedback 2026-08-09 §AI.VIEW1): picker trong panel AI cũng phải
+        // cập nhật tài liệu của AcrobatViewer; không dựng một viewport ảnh song song.
+        void handleFileSelected(stickerSheetSourceFile);
+    }, [
+        activeDashboardTool,
+        fileOpeningPhase,
+        handleFileSelected,
+        isActive,
+        stickerSheetBusy,
+        stickerSheetMode,
+        stickerSheetSourceFile,
+    ]);
     //#endregion
 
     //#region Processing Handlers
@@ -2193,6 +2372,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     useEffect(() => {
         const handleTriggerSave = async (e: any) => {
             if (e.detail?.tabId !== tabId) return;
+            // Workspace Logo sở hữu artifact SVG và Save dialog riêng. Nếu parent
+            // tiếp tục xử lý, cùng requestId có thể nhận kết quả lưu PDF sai trước.
+            if (
+                activeDashboardTool === 'logo_rebuild'
+                && logoWorkspaceOpened
+                && (logoSessionDirty || !documentIsDirty)
+            ) return;
             const requestId = e.detail?.requestId as string | undefined;
             const reply = (result: 'saved' | 'cancelled' | 'failed') => {
                 if (!requestId) return;
@@ -2235,7 +2421,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         };
         window.addEventListener('app-trigger-save', handleTriggerSave);
         return () => window.removeEventListener('app-trigger-save', handleTriggerSave);
-    }, [isActive, tabId, isDirty, viewerDirty, handleSaveFile, file, store, t]);
+    }, [isActive, tabId, isDirty, viewerDirty, handleSaveFile, file, store, t, activeDashboardTool, logoWorkspaceOpened, logoSessionDirty, documentIsDirty]);
 
     // Ctrl+P → in PDF ĐANG XEM qua hộp thoại máy in Windows (lệnh Rust print_pdf).
     // KHÔNG dùng window.print() của WebView2 (chỉ in DOM giao diện). Resolve path
@@ -2592,28 +2778,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             </div>
                         )}
 
-                        {showOutputPreview && selectionFileId && (
-                            <OutputPreviewTab
-                                fileId={selectionFileId}
-                                initialPageNum={1}
-                                totalPages={viewerPageOrder ? viewerPageOrder.length : 1}
-                                onClose={() => { setShowOutputPreview(false); setSeparationPlates([]); }}
-                                onPlatesChange={setSeparationPlates}
-                                onFileFixed={(blob: Blob, name: string) => {
-                                    void commitWorkingFile(blob, name);
-                                }}
-                            />
-                        )}
+                        <OutputPreviewHost onFileFixed={commitWorkingFile} />
 
                         {activeDashboardTool === 'bgremover' && (
                             <div className="absolute top-0 left-0 bottom-0 z-40" style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}>
                                 <BgRemoverPreview tabId={tabId || ''} isActive={isActive === true} />
-                            </div>
-                        )}
-
-                        {activeDashboardTool === 'sticker' && stickerSheetMode === 'ai-sheet' && (
-                            <div className="absolute top-0 left-0 bottom-0 z-40" style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}>
-                                <StickerSheetWorkspace tabId={tabId || ''} isActive={isActive === true} />
                             </div>
                         )}
 
@@ -2623,9 +2792,18 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             </div>
                         )}
 
-                        {LOGO_REBUILD_ENABLED && activeDashboardTool === 'logo_rebuild' && (
-                            <div className="absolute inset-y-0 left-0 z-40" style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}>
-                                <LogoRebuildWorkspace isActive={isActive === true} />
+                        {LOGO_REBUILD_ENABLED && logoWorkspaceOpened && (
+                            <div
+                                aria-hidden={activeDashboardTool !== 'logo_rebuild'}
+                                className={`absolute inset-y-0 left-0 z-40 ${activeDashboardTool === 'logo_rebuild' ? '' : 'hidden'}`}
+                                style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}
+                            >
+                                <LogoRebuildWorkspace
+                                    tabId={tabId || ''}
+                                    isActive={isActive === true && activeDashboardTool === 'logo_rebuild'}
+                                    hasOtherDirtyChanges={documentIsDirty}
+                                    onDirtyChange={setLogoSessionDirty}
+                                />
                             </div>
                         )}
 
@@ -2669,6 +2847,23 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                 <AcrobatViewer
                                     isActive={isActive}
                                     tabId={tabId}
+                                    pageOverlay={activeDashboardTool === 'sticker'
+                                        && stickerSheetMode === 'ai-sheet'
+                                        && stickerSheetSourceVisible ? (
+                                        <StickerSheetWorkspace
+                                            tabId={tabId || ''}
+                                            isActive={isActive === true}
+                                            embedded
+                                            editingEnabled={viewerToolMode === 'pointer'}
+                                            sourcePage={stickerSheetActiveSourcePage}
+                                        />
+                                    ) : undefined}
+                                    pageOverlayPage={stickerSheetActiveSourcePage}
+                                    pageWorkflowStatuses={activeDashboardTool === 'sticker'
+                                        && stickerSheetMode === 'ai-sheet'
+                                        && stickerSheetSourceVisible
+                                        ? stickerSheetPageStatuses
+                                        : undefined}
                                     onViewerDirtyChange={setViewerDirty}
                                     onExtractPages={handleExtractPages}
                                     onObjectDelete={handleDeleteObjects}

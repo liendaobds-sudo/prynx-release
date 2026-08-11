@@ -347,7 +347,12 @@ mod tests {
             tool: ToolKind::Nup,
             sheet_width: 320.0,
             sheet_height: 450.0,
-            margins: Margins { top: 5.0, bottom: 5.0, left: 0.0, right: 0.0 },
+            margins: Margins {
+                top: 5.0,
+                bottom: 5.0,
+                left: 0.0,
+                right: 0.0,
+            },
             margin_mode: MarginMode::LabelsOnly,
             gap_x: 2.0,
             gap_y: 2.0,
@@ -411,10 +416,19 @@ mod tests {
         let out = LayoutOutput {
             sheets: vec![Sheet {
                 placements: vec![Placement {
-                    abs_x: 10.0, abs_y: 20.0, width: 100.0, height: 60.0,
-                    rotation: Rotation::Deg90, src_page: 0,
+                    abs_x: 10.0,
+                    abs_y: 20.0,
+                    width: 100.0,
+                    height: 60.0,
+                    rotation: Rotation::Deg90,
+                    src_page: 0,
                 }],
-                marks: vec![MarkSeg { x1: 0.0, y1: 0.0, x2: 0.0, y2: 5.0 }],
+                marks: vec![MarkSeg {
+                    x1: 0.0,
+                    y1: 0.0,
+                    x2: 0.0,
+                    y2: 5.0,
+                }],
             }],
             capacity_per_sheet: 1,
             strategy_used: "manual".to_string(),

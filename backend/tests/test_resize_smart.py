@@ -5,7 +5,7 @@ resize_pages_smart bổ sung downsample theo khổ mới. Test kiểm:
   - Logic chọn mode 'auto' (thuần hàm).
   - Nhận diện text-font / ảnh non-RGB.
   - Geometry đúng khổ A5 (khi target_dpi=0 → hành vi cũ).
-  - Vector downsample THỰC SỰ làm file nhỏ đi (guard theo Ghostscript).
+  - Vector downsample native THỰC SỰ làm file nhỏ đi.
   - Raster resize ra đúng khổ A5 và nhỏ.
 """
 import os
@@ -63,12 +63,6 @@ def _page_sizes_mm(path: str):
             h = float(mb[3]) - float(mb[1])
             out.append((round(w / MM_TO_PTS), round(h / MM_TO_PTS)))
     return out
-
-
-def _gs_available() -> bool:
-    from app.config import settings
-    p = getattr(settings, "GHOSTSCRIPT_PATH", None)
-    return bool(p and os.path.isfile(p))
 
 
 # ── Logic chọn mode (thuần hàm) ──────────────────────────────────────────────
@@ -185,7 +179,7 @@ def test_raster_resize_shrinks_and_a5(tmp_path):
     assert os.path.getsize(out) < src_size, (os.path.getsize(out), src_size)
 
 
-# ── Vector (Ghostscript) downsample: giữ khổ A5 + nhỏ hơn ───────────────────
+# ── Vector (native) downsample: giữ khổ A5 + nhỏ hơn ────────────────────────
 
 def _bleed_pdf(path: str):
     """PDF MediaBox 200x200, nội dung ĐỎ phủ TOÀN media, CropBox nhỏ hơn
@@ -329,8 +323,8 @@ def test_trim_shift_output_pdflib_compatible(tmp_path):
     assert b"xref" in data
 
 
-@pytest.mark.skipif(not _gs_available(), reason="Ghostscript không có sẵn")
-def test_vector_downsample_shrinks(tmp_path):
+def test_native_vector_downsample_shrinks(tmp_path):
+    """GS-SUNSET (audit 2026-08-08 §GS.3): kiểm đường native thật, không skip."""
     src = str(tmp_path / "poster.pdf")
     out = str(tmp_path / "out.pdf")
     _a1_image_pdf(src, pages=1)

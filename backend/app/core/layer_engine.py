@@ -1466,9 +1466,9 @@ class LayerEngine:
         Flatten all visible layers — renders each page to raster, removes OCG structure.
         Uses pypdfium2 for rendering (respects current /D/OFF state).
 
-        Đặt `self.last_flatten_warning` khi phải đi đường raster fallback. Caller phải
-        chuyển cảnh báo đó lên UI — trả success=True kèm một file đã mất Pantone và
-        kênh bế mà không nói gì là fail-open, sai đúng chiều nguy hiểm cho nhà in.
+        Đặt `self.last_flatten_warning` vì đầu ra luôn là raster. Caller phải chuyển
+        cảnh báo đó lên UI — trả success=True kèm một file đã mất Pantone và kênh bế
+        mà không nói gì là fail-open, sai đúng chiều nguy hiểm cho nhà in.
         """
         from app.config import settings
 
@@ -1480,37 +1480,12 @@ class LayerEngine:
         output_name = f"{stem}_flattened_{uuid.uuid4().hex[:6]}.pdf"
         output_path = str(output_dir / output_name)
 
-        gs_path = settings.GHOSTSCRIPT_PATH
-
-        # Use Ghostscript to flatten — it handles OCG correctly
-        from app.utils.subprocess_utils import run_hidden
-        gs_args = [
-            gs_path, "-dBATCH", "-dNOPAUSE", "-dQUIET",
-            "-sDEVICE=pdfwrite",
-            f"-sOutputFile={output_path}",
-            "-dPDFSETTINGS=/prepress",
-            "-dFlattenOCGs",  # Key: flatten all OCG
-            str(pdf_path),
-        ]
-
-        try:
-            proc = run_hidden(gs_args, capture_output=True, timeout=120)
-            if proc.returncode != 0:
-                # Fallback: render to raster via pypdfium2 + rebuild PDF
-                logger.warning(f"GS flatten failed ({proc.returncode}), using raster fallback")
-                self.last_flatten_warning = self.RASTER_FLATTEN_WARNING
-                return self._flatten_raster_fallback(pdf_path, output_path)
-        except Exception as exc:
-            # GS-SUNSET (2026-07-28): nhánh này giờ là đường DUY NHẤT. Ghostscript bị
-            # `subprocess_utils._guard_ghostscript` chặn vô điều kiện nên `run_hidden`
-            # luôn ném `GhostscriptUnavailable` ⇒ mọi lần bấm Flatten đều raster hoá.
-            # Trước đây chỉ `logger.warning` rồi trả success=True, thợ không hề biết
-            # mình vừa nhận file mất Pantone và kênh bế. Nay báo lên UI.
-            logger.warning("Ghostscript flatten unavailable (%s), using raster fallback", exc)
-            self.last_flatten_warning = self.RASTER_FLATTEN_WARNING
-            return self._flatten_raster_fallback(pdf_path, output_path)
-
-        return output_path
+        # GS-SUNSET (audit 2026-08-08 §GS.3): lệnh subprocess cũ trước đây luôn bị chặn
+        # rồi mới rơi vào đúng đường PDFium này. Đi thẳng giúp bỏ lần dò subprocess vô ích,
+        # giữ nguyên đầu ra raster 300 DPI và vẫn cảnh báo rõ rủi ro chế bản cho người dùng.
+        self.last_flatten_warning = self.RASTER_FLATTEN_WARNING
+        logger.warning("Gộp lớp đang raster hoá ở 300 DPI; cần kiểm tra trước khi in.")
+        return self._flatten_raster_fallback(pdf_path, output_path)
 
     def _flatten_raster_fallback(self, pdf_path: str, output_path: str) -> str:
         """Flatten by rendering each page to raster and rebuilding PDF."""

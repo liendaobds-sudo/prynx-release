@@ -11,7 +11,12 @@ from app.core.print_engine import facade
 @pytest.mark.parametrize(
     "total_gb,available_gb,expected",
     [
-        (4, 3, 384),
+        # PERF (audit 2026-08-10 §PPE.SCOPE.8): low-tier sạch đủ chạy trang
+        # production 300 DPI; khi RAM trống giảm, budget phải co lại trước swap.
+        (6, 3, 640),
+        (6, 2, 512),
+        (6, 1.5, 384),
+        (6, 0.5, 256),
         (12, 8, 1024),
         # Máy mạnh không còn trần 512 MiB: 24 GiB khả dụng × 75%.
         (32, 24, 18 * 1024),
@@ -77,6 +82,10 @@ def test_slot_division_keeps_tier_floor():
     """Máy nhiều slot vẫn không bị hạ xuống dưới sàn của tier."""
     assert facade._auto_memory_budget_mb(32 * 1024.0, 20 * 1024.0, 64) == 512
     assert facade._auto_memory_budget_mb(4 * 1024.0, 3 * 1024.0, 8) == 256
+
+
+def test_low_tier_unknown_available_ram_keeps_conservative_budget():
+    assert facade._auto_memory_budget_mb(6 * 1024.0, None) == 384
 
 
 def test_concurrency_of_one_matches_previous_policy():

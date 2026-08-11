@@ -7,7 +7,6 @@ from app.config import settings
 from app.core.license_guard import require_license
 from app.schemas.system import (
     GpuStatusResponse,
-    GsUsageResponse,
     InstallGpuPluginResponse,
     RecoverJobsResponse,
 )
@@ -93,20 +92,3 @@ def recover_stuck_jobs(db: Session = Depends(get_db), license_info: dict = Depen
         recovered_count += 1
         
     return {"status": "success", "recovered_jobs_count": recovered_count}
-
-
-@router.get("/system/gs-usage", response_model=GsUsageResponse)
-def get_gs_usage(license_info: dict = Depends(require_license)):
-    """Số lần Ghostscript được gọi — thiết bị đo cho gate §8.1 của kế hoạch PPE.
-
-    Điều kiện gỡ bundle Ghostscript đòi "≥95% job prepress trong 30 ngày không
-    cần GS fallback". Con số đó chỉ có từ máy chạy thật, nên endpoint này để
-    thu thập: `by_reason` cho biết ĐƯỜNG NÀO còn gọi GS, tức việc tiếp theo
-    phải gỡ cái gì. Không ghi tên file, chỉ ghi module gọi.
-    """
-    from app.core import gs_usage
-
-    return {
-        "since_process_start": gs_usage.summary(),
-        "persisted": gs_usage.read_log_summary(),
-    }

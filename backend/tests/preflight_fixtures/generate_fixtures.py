@@ -147,12 +147,12 @@ FIXTURE_SPECS: dict[str, dict] = {
         "manual_note": "Đối tượng hoàn toàn ngoài vùng in.",
     },
     "17_tac_heavy_cmyk.pdf": {
-        "title": "Tấm CMYK đặc — TAC cao (cần Ghostscript)",
+        "title": "Tấm CMYK đặc — TAC cao (kiểm tra bằng PPE)",
         "category": "ink",
         "must_have": ["TAC_EXCEEDED"],
         "must_not_have": ["INTERNAL_ERROR"],
 
-        "manual_note": "Chỉ chạy khi SeparationEngine/GS khả dụng. QA manual bắt buộc.",
+        "manual_note": "SeparationEngine/PPE phải phát hiện TAC_EXCEEDED. QA manual bắt buộc.",
     },
 }
 

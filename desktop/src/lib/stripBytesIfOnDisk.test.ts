@@ -3,7 +3,7 @@
  * Unit tests cho `stripBytesIfOnDisk` (audit RAM 2026-07-06, mục #2).
  *
  * Hành vi cốt lõi cho stack undo (history / objectEdit):
- * - File CÓ .path trên Tauri → trả File RỖNG bytes (0 byte) chỉ mang tên+path
+ * - File CÓ .path trên Tauri → nội dung File RỖNG, giữ size logic + metadata
  *   → render/đọc lại qua path, KHÔNG giữ bytes PDF trong RAM.
  * - File KHÔNG path (web / blob) → GIỮ NGUYÊN file (fallback bytes) → hành vi cũ.
  * - Không ở môi trường Tauri → GIỮ NGUYÊN (fallback).
@@ -12,10 +12,17 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { stripBytesIfOnDisk } from './utils';
 
-function fileWithPath(bytes: Uint8Array, name: string, path: string, flags?: { editCommit?: boolean }): File {
+function fileWithPath(
+    bytes: Uint8Array,
+    name: string,
+    path: string,
+    flags?: { editCommit?: boolean; generated?: boolean; tempUploadPath?: boolean },
+): File {
     const f = new File([bytes as any], name, { type: 'application/pdf' });
     Object.defineProperty(f, 'path', { value: path });
     if (flags?.editCommit) Object.defineProperty(f, '__editCommit', { value: true, configurable: true });
+    if (flags?.generated) Object.defineProperty(f, 'isGenerated', { value: true, configurable: true });
+    if (flags?.tempUploadPath) Object.defineProperty(f, 'isTempUploadPath', { value: true, configurable: true });
     return f;
 }
 
@@ -27,12 +34,13 @@ function setTauri(on: boolean) {
 afterEach(() => setTauri(false));
 
 describe('stripBytesIfOnDisk', () => {
-    it('Tauri + có path → File rỗng bytes, giữ tên + path', () => {
+    it('Tauri + có path → không giữ bytes nhưng vẫn giữ kích thước logic', () => {
         setTauri(true);
         const orig = fileWithPath(new Uint8Array(5000), 'doc.pdf', 'C:/tmp/doc.pdf');
         const light = stripBytesIfOnDisk(orig);
         expect(light).not.toBe(orig);
-        expect(light.size).toBe(0);              // bytes đã strip
+        expect(light.size).toBe(5000);           // metadata để policy file lớn không chạy sai
+        expect(light.slice(0, 1).size).toBe(0);  // bytes thật đã strip khỏi RAM
         expect(light.name).toBe('doc.pdf');
         expect((light as any).path).toBe('C:/tmp/doc.pdf');
     });
@@ -49,6 +57,24 @@ describe('stripBytesIfOnDisk', () => {
         const orig = fileWithPath(new Uint8Array(100), 'e.pdf', 'C:/tmp/e.pdf');
         const light = stripBytesIfOnDisk(orig);
         expect((light as any).__editCommit).toBeUndefined();
+    });
+
+    it('giữ metadata runtime quyết định luồng lưu và render', () => {
+        setTauri(true);
+        const orig = fileWithPath(
+            new Uint8Array(100),
+            'generated.pdf',
+            'C:/tmp/generated.pdf',
+            { editCommit: true, generated: true, tempUploadPath: true },
+        );
+        Object.defineProperty(orig, '__pathMaterializationFailed', { value: true, configurable: true });
+
+        const light = stripBytesIfOnDisk(orig);
+
+        expect((light as any).__editCommit).toBe(true);
+        expect((light as any).isGenerated).toBe(true);
+        expect((light as any).isTempUploadPath).toBe(true);
+        expect((light as any).__pathMaterializationFailed).toBe(true);
     });
 
     it('Tauri nhưng KHÔNG path → giữ nguyên file (fallback bytes)', () => {

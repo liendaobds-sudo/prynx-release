@@ -6,7 +6,8 @@ use tiny_skia::{LineCap, LineJoin, Mask, Stroke, StrokeDash};
 
 use crate::blend::BlendMode;
 use crate::color::ColorSpace;
-use crate::geom::Matrix;
+use crate::geom::{Matrix, Region};
+use crate::ink::SoftMask;
 use crate::raster::mask::effective_line_width;
 use crate::text::state::TextState;
 
@@ -46,22 +47,29 @@ pub struct GraphicsState {
     pub blend_mode: BlendMode,
 
     /// Soft mask hiện hành (`/SMask` trong ExtGState), đã raster ở **toạ độ thiết
-    /// bị**, dài `width*height`, giá trị 0.0..=1.0.
+    /// bị** trong một cửa sổ hữu hạn; ngoài cửa sổ dùng giá trị nền theo subtype.
     ///
     /// Nằm trong graphics state chứ không phải tham số của từng thao tác vẽ vì spec
     /// bắt nó nhân vào alpha của **mọi** thao tác cho tới khi `gs` khác thay đổi
-    /// (§11.6.4.3). `Arc` vì `q` phải nhân bản trạng thái mà mặt nạ cỡ cả trang.
+    /// (§11.6.4.3). `Arc` để `q` chỉ tăng đếm tham chiếu thay vì sao chép raster.
     ///
     /// Mặt nạ được dựng **một lần** tại `gs`, với CTM lúc đó — đúng spec: soft mask
     /// không đi theo `cm` sau này. Dựng lại theo CTM hiện hành sẽ làm mặt nạ trượt
     /// khỏi hình mà nó phải che.
-    pub soft_mask: Option<Arc<Vec<f32>>>,
+    pub soft_mask: Option<Arc<SoftMask>>,
 
     /// Mặt nạ clip hiện hành. `None` = không clip (toàn trang).
     ///
     /// `Arc` để `q` chỉ tăng đếm tham chiếu; clip là mảng cỡ cả trang nên copy
     /// theo giá trị ở mỗi `q` sẽ rất đắt trong file có hàng nghìn `q/Q`.
     pub clip: Option<Arc<Mask>>,
+
+    /// Hộp bao bảo thủ của clip hiện hành trong tọa độ thiết bị.
+    ///
+    /// `None` nghĩa là toàn raster. Đây chỉ là chỉ mục để giới hạn vòng lặp nóng;
+    /// mặt nạ [`Self::clip`] vẫn là nguồn sự thật quyết định độ phủ từng pixel.
+    /// Giá trị nằm trong graphics state để `q`/`Q` tự lưu và phục hồi cùng clip.
+    pub clip_region: Option<Region>,
 
     /// Tham số text. Nằm trong graphics state (không phải trong text object) nên
     /// sống qua `BT`/`ET` và được `q`/`Q` lưu/phục hồi — đúng §9.3.
@@ -99,6 +107,7 @@ impl GraphicsState {
             blend_mode: BlendMode::Normal,
             soft_mask: None,
             clip: None,
+            clip_region: None,
             text: TextState::default(),
             fill_pattern: None,
             stroke_pattern: None,

@@ -100,8 +100,8 @@ def preprocess(image: Image.Image, size=(1024, 1024)) -> np.ndarray:
     return np.expand_dims(arr, 0).astype(np.float32)
 
 
-def remove_background(image: Image.Image) -> Image.Image:
-    """Tách nền bằng ISNet, trả PIL RGBA (nền trong suốt)."""
+def predict_alpha(image: Image.Image) -> Image.Image:
+    """Chạy ISNet và chỉ trả mask Alpha; caller không cần màu foreground."""
     orig_w, orig_h = image.size
     input_tensor = preprocess(image)
 
@@ -134,7 +134,15 @@ def remove_background(image: Image.Image) -> Image.Image:
 
     # BILINEAR (không overshoot) thay LANCZOS: mask xác suất phóng to bằng LANCZOS bị
     # vọt lố quanh mép cứng → sinh vành alpha bán trong suốt ("viền rác"). BILINEAR êm hơn.
-    mask = Image.fromarray((pred * 255).astype(np.uint8), mode="L").resize((orig_w, orig_h), Image.BILINEAR)
+    return Image.fromarray((pred * 255).astype(np.uint8), mode="L").resize(
+        (orig_w, orig_h),
+        Image.BILINEAR,
+    )
+
+
+def remove_background(image: Image.Image) -> Image.Image:
+    """Tách nền bằng ISNet, trả PIL RGBA (nền trong suốt)."""
+    mask = predict_alpha(image)
 
     # refine_foreground: tẩy màu nền lẫn ở mép (thay cho GaussianBlur làm nhoè).
     from app.workers.image_postprocessor import refine_foreground_rgba

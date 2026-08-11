@@ -40,7 +40,13 @@ logger = logging.getLogger(__name__)
 
 # Layout solver functions extracted to nup_layout_solver.py for modularity & testability
 
-from app.workers.nup_layout_solver import solve_grid, solve_optimal_layout, get_src_page_idx, solve_manual
+from app.workers.nup_layout_solver import (
+    build_sequential_product_sequence,
+    get_src_page_idx,
+    solve_grid,
+    solve_manual,
+    solve_optimal_layout,
+)
 
 
 # Extracted modules
@@ -3259,16 +3265,10 @@ def _run_nup_engine_impl(
         _align_np = settings.get('align', 'center')
         _cells_np = layout.get('cells') or []
 
-        def _qty_for_page(_p):
-            _q = target_quantities_by_page.get(str(_p), target_quantities_by_page.get(_p, target_quantity))
-            try:
-                return max(0, int(_q))
-            except (TypeError, ValueError):
-                return 0
-
         if layout_type == 'sequential' and capacity > 0 and page_count > 0 and _cells_np:
             # ── Xếp LẦN LƯỢT ──
-            # 1 mặt: trang 0×q0, 1×q1… (không xen). Trống = lấp 1 tờ wrap.
+            # 1 mặt: trang 0×q0, 1×q1… (không xen). Nhiều trang và SL trống = mỗi
+            # trang một lần; một trang duy nhất vẫn tự lấp đầy một tờ.
             # 2 mặt: mỗi SP = cặp (2k | 2k+1) trước/sau. Cùng ô trên tờ chẵn=trước,
             #    tờ lẻ=sau (cùng toạ độ); process_chunk lật gương tờ lẻ.
             #    SL UI key theo trang chẵn (SP): qty[0] cho SP0, qty[2] cho SP1…
@@ -3281,33 +3281,13 @@ def _run_nup_engine_impl(
             if _duplex_seq and _n_prod < 1:
                 _duplex_seq = False
                 _n_prod = page_count
-
-            def _qty_for_product(_pi):
-                """SL của SP: 2 mặt → key trang chẵn 2*_pi; 1 mặt → key trang _pi."""
-                if _duplex_seq:
-                    return _qty_for_page(_pi * 2)
-                return _qty_for_page(_pi)
-
-            _seq = []  # danh sách chỉ số SP (1 mặt = chỉ số trang)
-            _any_qty = any(_qty_for_product(p) > 0 for p in range(_n_prod))
-            if _any_qty:
-                for _p in range(_n_prod):
-                    _seq.extend([_p] * _qty_for_product(_p))
-            elif target_quantity > 0:
-                for _p in range(_n_prod):
-                    _seq.extend([_p] * int(target_quantity))
-            else:
-                # Trống = lấp đầy 1 tờ, GOM THEO LOẠI (A-A-A B-B-B C-C-C), KHÔNG xen
-                # kẽ A-B-C-A-B-C. Chia đều capacity cho các loại thành khối liền nhau
-                # (phần dư dồn cho các loại đầu) → xén chồng ra mỗi loại một xấp.
-                if _n_prod > 0:
-                    _base = capacity // _n_prod
-                    _rem = capacity % _n_prod
-                    _seq = []
-                    for _p in range(_n_prod):
-                        _seq.extend([_p] * (_base + (1 if _p < _rem else 0)))
-                else:
-                    _seq = [0] * capacity
+            _seq = build_sequential_product_sequence(
+                page_count=page_count,
+                capacity=capacity,
+                target_quantity=target_quantity,
+                target_quantities_by_page=target_quantities_by_page,
+                duplex=_duplex_seq,
+            )
             if not _seq:
                 _seq = [0]
             total_needed = len(_seq)

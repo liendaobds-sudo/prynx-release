@@ -9,7 +9,6 @@ import os
 import zlib
 import math
 import time
-import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
 from typing import Optional, Tuple
@@ -35,6 +34,14 @@ from app.workers.shape_analyzer import ShapeType
 import json
 
 logger = logging.getLogger(__name__)
+
+
+class UnsafeCutlineGeometryError(RuntimeError):
+    """Không có ứng viên CutContour nào vừa đúng biên vừa an toàn cho máy bế."""
+
+    def __init__(self, message: str, *, quality: dict[str, object] | None = None):
+        super().__init__(message)
+        self.quality = quality
 
 
 def _pdfium_object_id(obj, draw_index: int) -> str:
@@ -108,6 +115,7 @@ def _render_selected_objects_rgba(page, object_ids: list[str], scale: float) -> 
 # Hàm hình học đường cắt được tách sang module nhẹ (không deps nặng) để test được.
 # Re-export ở đây để giữ tương thích với code cũ import từ sticker_engine.
 from app.workers.cutline_geometry import (  # noqa: E402
+    _closed_ring_discontinuity_corner_indices,
     build_bezier_segments_path_stream,
     build_corner_locked_catmull_beziers,
     build_contour_path_stream,
@@ -248,6 +256,77 @@ _BG_MASK_FEATHER_KERNEL_MAX = 9
 # đường cắt của các ca đang chạy đúng.
 _MIN_CONTOUR_AREA_MM2 = 1.0
 _PT_PER_MM = 72.0 / 25.4
+
+# UIUX/QUALITY (audit 2026-08-09 §PV.3): các thanh tinh chỉnh CutContour dùng
+# thang 0–100, nhưng giá trị 50 PHẢI giữ nguyên profile đã kiểm chứng trước đây.
+# Bám sát và độ mượt là hai đại lượng độc lập: bám sát điều khiển ngân sách sai
+# lệch hình học; độ mượt điều khiển mức lọc dao động nhỏ trước khi fit Bézier.
+_CUTLINE_TUNING_DEFAULT = 50.0
+_CUTLINE_SMOOTHNESS_SCALE_MIN = 0.45
+_CUTLINE_SMOOTHNESS_SCALE_MAX = 1.90
+_CUTLINE_FIDELITY_BUDGET_MIN = 0.55
+_CUTLINE_FIDELITY_BUDGET_MAX = 1.65
+_CUTLINE_TENSION_HANDLE_MIN = 0.55
+_CUTLINE_TENSION_HANDLE_MAX = 1.45
+_CUTLINE_TENSION_EXTRA_BUDGET_MM = 0.18
+_CUTLINE_TUNING_MAX_HAUSDORFF_MM = 1.0
+
+
+def _clamp_cutline_percent(value: float | int | None) -> float:
+    try:
+        resolved = float(value)
+    except (TypeError, ValueError):
+        return _CUTLINE_TUNING_DEFAULT
+    if not math.isfinite(resolved):
+        return _CUTLINE_TUNING_DEFAULT
+    return max(0.0, min(100.0, resolved))
+
+
+def _cutline_smoothness_scale(value: float | int | None) -> float:
+    """Đổi 0–100 sang cường độ lọc; 50 trả đúng 1 để giữ artifact mặc định."""
+    resolved = _clamp_cutline_percent(value)
+    if resolved <= _CUTLINE_TUNING_DEFAULT:
+        ratio = resolved / _CUTLINE_TUNING_DEFAULT
+        return _CUTLINE_SMOOTHNESS_SCALE_MIN + (
+            1.0 - _CUTLINE_SMOOTHNESS_SCALE_MIN
+        ) * ratio
+    ratio = (resolved - _CUTLINE_TUNING_DEFAULT) / _CUTLINE_TUNING_DEFAULT
+    return 1.0 + (_CUTLINE_SMOOTHNESS_SCALE_MAX - 1.0) * ratio
+
+
+def _cutline_fidelity_budget_scale(value: float | int | None) -> float:
+    """Bám sát càng cao thì fitter càng ít được rời silhouette đã duyệt."""
+    resolved = _clamp_cutline_percent(value)
+    if resolved <= _CUTLINE_TUNING_DEFAULT:
+        ratio = resolved / _CUTLINE_TUNING_DEFAULT
+        return _CUTLINE_FIDELITY_BUDGET_MAX + (
+            1.0 - _CUTLINE_FIDELITY_BUDGET_MAX
+        ) * ratio
+    ratio = (resolved - _CUTLINE_TUNING_DEFAULT) / _CUTLINE_TUNING_DEFAULT
+    return 1.0 + (_CUTLINE_FIDELITY_BUDGET_MIN - 1.0) * ratio
+
+
+def _cutline_round_radius_mm(
+    value: float | int | None,
+    source_pixel_mm: float,
+) -> float:
+    """Đổi mức bo 0–100 sang bán kính Round thực theo độ phân giải nguồn."""
+    roundness = _clamp_cutline_percent(value) / 100.0
+    pixel_mm = max(0.001, float(source_pixel_mm))
+    max_radius_mm = min(0.70, max(0.25, pixel_mm * 2.0))
+    return roundness * max_radius_mm
+
+
+def _cutline_tension_handle_scale(value: float | int | None) -> float:
+    """Tăng sức căng bằng cách rút đều tay nắm, vẫn giữ tiếp tuyến G1 tại node."""
+    resolved = _clamp_cutline_percent(value)
+    if resolved <= _CUTLINE_TUNING_DEFAULT:
+        ratio = resolved / _CUTLINE_TUNING_DEFAULT
+        return _CUTLINE_TENSION_HANDLE_MAX + (
+            1.0 - _CUTLINE_TENSION_HANDLE_MAX
+        ) * ratio
+    ratio = (resolved - _CUTLINE_TUNING_DEFAULT) / _CUTLINE_TUNING_DEFAULT
+    return 1.0 + (_CUTLINE_TENSION_HANDLE_MIN - 1.0) * ratio
 
 # QUALITY (audit 2026-08-07 §NOODLE.1): nhiễu JPEG trên ảnh phóng lớn có thể
 # vượt ngưỡng 1 mm² nhưng vẫn là dải rất mảnh, nằm sát silhouette chính. Các
@@ -605,6 +684,10 @@ _BG_BAND_STRONG_DIST_RANGE = 34.0
 # làm đứt nét thật; profile pastel vẫn dùng ngưỡng bảo thủ cũ.
 _BG_BAND_STRONG_DIST_FRACTION = 0.68
 _BG_BAND_BACKGROUND_CONNECT_GRAY = 250
+# QUALITY (feedback 2026-08-11 §STICKER.PASTEL.1): chỉ được nối lại nền khi phần
+# foreground yếu là một vành JPEG rất nhỏ. Trên artwork nhiều màu, percentile mực
+# đậm của chữ/tâm không được biến nền kem, cánh hoa hồng hoặc xám nhạt thành nền.
+_BG_BAND_MAX_RECONNECT_FOREGROUND_FRACTION = 0.02
 _BG_BAND_SOURCE_DIAMETER_PX = 4.0
 
 
@@ -654,9 +737,22 @@ def _lam_mem_dai_bien(
         (dist - _BG_BAND_SOFT_DIST_MIN) * 255.0 / dist_range, 0, 255
     ).astype(np.uint8)
 
+    sampled_xam = xam[::sample_step, ::sample_step]
+    reconnect_candidates = sampled_mask & (
+        sampled_xam < _BG_BAND_BACKGROUND_CONNECT_GRAY
+    )
+    reconnect_foreground_fraction = float(
+        np.count_nonzero(reconnect_candidates) / max(1, np.count_nonzero(sampled_mask))
+    )
+    allow_strong_background_reconnect = (
+        strong_profile
+        and reconnect_foreground_fraction
+        <= _BG_BAND_MAX_RECONNECT_FOREGROUND_FRACTION
+    )
+
     contour_base = mask
     band_diameter_mm = _BG_BAND_SOFT_MM
-    if strong_profile:
+    if allow_strong_background_reconnect:
         # §NOODLE.13: mask nền trắng ngưỡng 248 có thể bị một cầu ringing rất mảnh
         # bịt kín hõm sâu. Nối nền bằng profile mực trước, rồi mới đặt biên ở mức
         # xám 127; cách này xử lý toàn hõm mà không cần kernel 24–60 px nguồn.
@@ -742,6 +838,32 @@ _PRESERVED_ADAPTIVE_TURN_DEGREES = (
     _ALPHA_CORNER_MIN_TURN_DEGREES,
     18.0,
 )
+# QUALITY (audit 2026-08-10 §CUTSMOOTH.1): cổng cuối đánh giá lệnh chạy dao,
+# không đánh giá theo số node. Ngưỡng góc danh nghĩa là 38°; chừa 2° cho sai số
+# marching-squares/khử răng cưa để hai vai lõm 37° không bị coi là khớp giả.
+_CUTLINE_FINAL_SMOOTH_JOIN_DEGREES = 1.0
+_CUTLINE_FINAL_SHORT_SEGMENT_MM = 0.25
+_CUTLINE_TRUE_CORNER_TURN_DEGREES = 36.0
+_CUTLINE_TRUE_CORNER_BASE_WINDOW_MM = 0.50
+_CUTLINE_TRUE_CORNER_PIXEL_WINDOW = 2.50
+_CUTLINE_TRUE_CORNER_PIXEL_SUPPORT = 2.00
+# QUALITY (feedback 2026-08-10 §ROUND-PATH.1): bước ghi PDF không được làm
+# quỹ đạo ``Theo hình gốc`` trôi thêm chỉ vì đổi polyline thành cubic. 0,12 mm
+# nhỏ hơn sai số một pixel ở 300 DPI và đủ chặt để mắt không thấy đường bế nở.
+_ROUND_PATH_MAX_HAUSDORFF_MM = 0.12
+_ROUND_PATH_REFERENCE_SIMPLIFY_MM = 0.015
+_ROUND_PATH_SPLINE_RMS_PROFILES_MM = (
+    0.08,
+    0.06,
+    0.05,
+    0.04,
+    0.035,
+    0.03,
+    0.025,
+    0.02,
+    0.015,
+)
+_ROUND_PATH_GUARD_SAMPLES = 32
 
 
 def _concat_pdf_matrix(current, extra):
@@ -1566,19 +1688,28 @@ def _fit_alpha_periodic_spline_paths(
     mm_to_pts: float,
     max_hausdorff_mm: float,
     source_pixel_mm: float | None,
+    allow_high_resolution_fairing: bool = False,
+    smoothness_scale: float = 1.0,
 ):
     """Fairing riêng cho Alpha DPI thấp, khóa topology và vùng cắt an toàn.
 
-    Ảnh 72–100 DPI không mang thông tin hình học dưới một pixel nguồn. Ngân sách
-    spline vì vậy đo theo pixel nguồn; đây là hành lang sai lệch hình học, không phải
-    giới hạn node. Ảnh đủ mịn tiếp tục dùng fitter Alpha cũ để giữ hợp đồng 0,15 mm.
+    Ảnh 72–100 DPI không mang thông tin hình học dưới một pixel nguồn. Mask đã duyệt
+    từ pipeline nhận diện cũng được phép dùng fairing ở DPI cao vì nhiễu nằm trong
+    mask AI, không nằm ở lưới render. Các caller Alpha cũ vẫn giữ ngưỡng legacy.
     """
     try:
         pixel_mm = float(source_pixel_mm)
     except (TypeError, ValueError):
         return None
-    if not math.isfinite(pixel_mm) or pixel_mm < 0.25:
+    if (
+        not math.isfinite(pixel_mm)
+        or (pixel_mm < 0.25 and not allow_high_resolution_fairing)
+    ):
         return None
+    resolved_smoothness = max(
+        _CUTLINE_SMOOTHNESS_SCALE_MIN,
+        min(_CUTLINE_SMOOTHNESS_SCALE_MAX, float(smoothness_scale)),
+    )
     topology = _polygon_topology_signature(ideal_cut_geometry)
     spline_reference_geometry = ideal_cut_geometry
     if isinstance(ideal_cut_geometry, Polygon):
@@ -1642,7 +1773,13 @@ def _fit_alpha_periodic_spline_paths(
         (0.57, 0.43, 0.26),
         (0.17, 0.57, 0.34),
     )
-    spacing_mm = max(0.12, min(0.30, pixel_mm * 0.70))
+    spacing_mm = max(
+        0.08,
+        min(
+            0.42,
+            max(0.12, min(0.30, pixel_mm * 0.70)) * resolved_smoothness,
+        ),
+    )
     spline_budget_mm = max(
         max_hausdorff_mm,
         min(1.20, pixel_mm * 3.40),
@@ -1670,7 +1807,7 @@ def _fit_alpha_periodic_spline_paths(
     candidates = []
     smoothed_by_sigma = {}
     for sigma_pixels, inset_pixels, rms_pixels in profile_pixels:
-        sigma_mm = sigma_pixels * pixel_mm
+        sigma_mm = sigma_pixels * pixel_mm * resolved_smoothness
         sigma_key = round(sigma_mm, 9)
         smoothed_geometry = smoothed_by_sigma.get(sigma_key)
         if smoothed_geometry is None:
@@ -1701,8 +1838,14 @@ def _fit_alpha_periodic_spline_paths(
         ):
             continue
 
+        # QUALITY (audit 2026-08-08 §UNIFIED.ALPHA4): ``ideal_cut_geometry`` đã
+        # mang đúng Offset người dùng. Mask pipeline đã xác nhận không được cộng
+        # thêm inset fairing, kể cả Offset âm; nếu không −0,15 mm sẽ bị co hai lần.
+        effective_inset_pixels = (
+            0.0 if allow_high_resolution_fairing else inset_pixels
+        )
         anchor_geometry = smoothed_geometry.buffer(
-            -(inset_pixels * pixel_mm) * mm_to_pts,
+            -(effective_inset_pixels * pixel_mm) * mm_to_pts,
             join_style=1,
         )
         # §AI-MOTION.9: một râu mask nối bằng cổ gần-zero có thể tách thành đảo
@@ -1744,7 +1887,17 @@ def _fit_alpha_periodic_spline_paths(
                 fitted_rings = [
                     _periodic_smoothing_spline_segments(
                         ring.coords,
-                        smoothing_rms_pts=(rms_pixels * pixel_mm) * mm_to_pts,
+                        # §UNIFIED.ALPHA2: riêng mask nhận diện đã chốt cần RMS
+                        # tối thiểu theo mm để không đặt knot cực sát quanh nhiễu AI.
+                        # Caller Alpha legacy vẫn giữ nguyên profile theo pixel.
+                        smoothing_rms_pts=(
+                            max(
+                                rms_pixels * pixel_mm * resolved_smoothness,
+                                min(0.08, max_hausdorff_mm * 0.32),
+                            )
+                            if allow_high_resolution_fairing
+                            else rms_pixels * pixel_mm * resolved_smoothness
+                        ) * mm_to_pts,
                     )
                     for ring in rings
                 ]
@@ -1867,6 +2020,8 @@ def _fit_alpha_source_smoothed_paths(
     mm_to_pts: float,
     max_hausdorff_mm: float,
     source_pixel_mm: float | None,
+    allow_high_resolution_fairing: bool = False,
+    smoothness_scale: float = 1.0,
 ):
     """Lọc bậc thang theo pixel nguồn rồi fit G1 trong đúng safe-envelope Alpha."""
     try:
@@ -1875,12 +2030,15 @@ def _fit_alpha_source_smoothed_paths(
         return None
     if not math.isfinite(pixel_mm) or pixel_mm <= 0:
         return None
-    # QUALITY (audit 2026-08-08 §AI-MOTION.6): low-pass theo lưới nguồn chỉ dành
-    # cho ảnh thô khoảng 100 DPI trở xuống. Ảnh 150/300 DPI đã đủ mịn; đưa qua
-    # anchor lùi dành cho 72 DPI sẽ cộng thêm khoảng 0,05–0,07 mm vào độ lùi
-    # 0,15 mm đã cam kết với người dùng.
-    if pixel_mm < 0.25:
+    # QUALITY (audit 2026-08-08 §AI-MOTION.6/UNIFIED.ALPHA2): caller Alpha cũ chỉ
+    # low-pass ảnh thô khoảng 100 DPI trở xuống. Mask nhận diện đã chốt được phép
+    # fairing ở DPI cao, nhưng không được cộng inset ẩn vào ``original``.
+    if pixel_mm < 0.25 and not allow_high_resolution_fairing:
         return None
+    resolved_smoothness = max(
+        _CUTLINE_SMOOTHNESS_SCALE_MIN,
+        min(_CUTLINE_SMOOTHNESS_SCALE_MAX, float(smoothness_scale)),
+    )
     if isinstance(ideal_cut_geometry, Polygon):
         source_parts = [ideal_cut_geometry]
         return_multi = False
@@ -1891,7 +2049,13 @@ def _fit_alpha_source_smoothed_paths(
         return None
 
     topology = _polygon_topology_signature(ideal_cut_geometry)
-    spacing_mm = max(0.025, min(0.10, pixel_mm * 0.50))
+    spacing_mm = max(
+        0.02,
+        min(
+            0.16,
+            max(0.025, min(0.10, pixel_mm * 0.50)) * resolved_smoothness,
+        ),
+    )
 
     # QUALITY (audit 2026-08-08 §AI-MOTION.2/5): profile mạnh xử lý biên hữu cơ;
     # hai profile sau dành cho khe/lõm hẹp. Đây không phải chọn theo tên hình: mọi
@@ -1915,7 +2079,10 @@ def _fit_alpha_source_smoothed_paths(
         inset_cap_mm,
         simplify_cap_mm,
     ) in smoothing_profiles:
-        sigma_mm = max(0.04, max_hausdorff_mm * sigma_fraction)
+        sigma_mm = max(
+            0.04,
+            max_hausdorff_mm * sigma_fraction * resolved_smoothness,
+        )
         if sigma_cap_mm is not None:
             sigma_mm = min(sigma_mm, sigma_cap_mm)
         sigma_key = round(sigma_mm, 9)
@@ -1948,13 +2115,18 @@ def _fit_alpha_source_smoothed_paths(
         ):
             continue
         inset_mm = max(0.015, max_hausdorff_mm * inset_fraction)
-        simplify_mm = max(0.075, max_hausdorff_mm * simplify_fraction)
+        simplify_mm = max(
+            0.04,
+            max(0.075, max_hausdorff_mm * simplify_fraction)
+            * resolved_smoothness,
+        )
         if inset_cap_mm is not None:
             inset_mm = min(inset_mm, inset_cap_mm)
         if simplify_cap_mm is not None:
             simplify_mm = min(simplify_mm, simplify_cap_mm)
+        effective_inset_mm = 0.0 if allow_high_resolution_fairing else inset_mm
         anchor_geometry = smoothed_geometry.buffer(
-            -inset_mm * mm_to_pts,
+            -effective_inset_mm * mm_to_pts,
             join_style=1,
         ).simplify(
             simplify_mm * mm_to_pts,
@@ -1979,7 +2151,13 @@ def _fit_alpha_source_smoothed_paths(
         if minimum_gap_pts > 0
         else None
     )
-    exact_budget_pts = max_hausdorff_mm * mm_to_pts
+    source_budget_mm = max_hausdorff_mm
+    if allow_high_resolution_fairing:
+        source_budget_mm = max(
+            source_budget_mm,
+            min(0.40, pixel_mm * 3.40),
+        )
+    exact_budget_pts = source_budget_mm * mm_to_pts
     ideal_envelope = ideal_cut_geometry.buffer(exact_budget_pts, join_style=1)
     min_x, min_y, max_x, max_y = ideal_cut_geometry.bounds
     diagonal_mm = math.hypot(max_x - min_x, max_y - min_y) / max(
@@ -1990,6 +2168,19 @@ def _fit_alpha_source_smoothed_paths(
     minimum_anchor_spacing_pts = (
         _PRESERVED_MOTION_SHORT_SEGMENT_MM * 1.08 * mm_to_pts
     )
+    if allow_high_resolution_fairing:
+        # PERF (audit 2026-08-08 §UNIFIED.ALPHA3): mask đã duyệt không được phép
+        # chọn candidate còn anchor cực ngắn. Bỏ hẳn nhánh unmerged bị bộ xếp hạng
+        # loại, và giữ bốn mức tension đại diện; guard topology/Hausdorff phía dưới
+        # vẫn quyết định candidate nào hợp lệ. Nhánh Alpha legacy giữ ma trận cũ.
+        merge_short_options = (True,)
+        tension_options = (0.33, 0.22, 0.10, 0.03)
+    else:
+        merge_short_options = (False, True)
+        tension_options = (
+            0.33, 0.30, 0.26, 0.22, 0.18, 0.15,
+            0.12, 0.10, 0.07, 0.05, 0.03, 0.02, 0.01, 0.005,
+        )
     for anchor_geometry, simplify_mm in anchor_candidates:
         anchor_parts = (
             [anchor_geometry]
@@ -1998,15 +2189,12 @@ def _fit_alpha_source_smoothed_paths(
         )
         # Tension lớn thử trước để tay nắm không quá ngắn so với độ làm tròn 4 chữ
         # số của content stream PDF; mọi mức vẫn phải qua cùng guard phía dưới.
-        for merge_short_anchors in (False, True):
+        for merge_short_anchors in merge_short_options:
             # QUALITY (audit 2026-08-08 §AI-MOTION.7): tay nắm 0,05–0,10 có
             # thể tạo lệnh cubic hợp lệ nhưng thân đường gần như đoạn thẳng, chỉ
             # bo vi mô ở node. Thử cả dải tay nắm dài để bộ xếp hạng độ cong bên
             # dưới chọn quỹ đạo thật sự mượt; guard hình học vẫn quyết định hợp lệ.
-            for tension in (
-                0.33, 0.30, 0.26, 0.22, 0.18, 0.15,
-                0.12, 0.10, 0.07, 0.05, 0.03, 0.02, 0.01, 0.005,
-            ):
+            for tension in tension_options:
                 all_paths = []
                 sampled_parts = []
                 try:
@@ -2096,6 +2284,8 @@ def _fit_alpha_simplified_anchor_paths(
     corner_window_mm: float,
     corner_separation_mm: float,
     source_pixel_mm: float | None = None,
+    allow_high_resolution_fairing: bool = False,
+    smoothness_scale: float = 1.0,
 ):
     """Fallback cho contour nhiều notch: thử cả khóa góc và quỹ đạo G1 có guard."""
     exact_budget_pts = max_hausdorff_mm * mm_to_pts
@@ -2140,6 +2330,8 @@ def _fit_alpha_simplified_anchor_paths(
         mm_to_pts=mm_to_pts,
         max_hausdorff_mm=max_hausdorff_mm,
         source_pixel_mm=source_pixel_mm,
+        allow_high_resolution_fairing=allow_high_resolution_fairing,
+        smoothness_scale=smoothness_scale,
     )
     if periodic_spline_result is not None:
         spline_geometry, spline_paths, spline_tolerance = periodic_spline_result
@@ -2161,6 +2353,8 @@ def _fit_alpha_simplified_anchor_paths(
         mm_to_pts=mm_to_pts,
         max_hausdorff_mm=max_hausdorff_mm,
         source_pixel_mm=source_pixel_mm,
+        allow_high_resolution_fairing=allow_high_resolution_fairing,
+        smoothness_scale=smoothness_scale,
     )
     if source_smoothed_result is not None:
         source_geometry, source_paths, source_tolerance = source_smoothed_result
@@ -2189,10 +2383,14 @@ def _fit_alpha_simplified_anchor_paths(
             simplify_mm = max(
                 0.08,
                 min(0.14, max_hausdorff_mm * simplify_fraction),
-            )
+            ) * smoothness_scale
         else:
             inset_mm = max(0.01, max_hausdorff_mm * inset_fraction)
-            simplify_mm = max(0.08, max_hausdorff_mm * simplify_fraction)
+            simplify_mm = (
+                max(0.08, max_hausdorff_mm * simplify_fraction)
+                * smoothness_scale
+            )
+        simplify_mm = max(0.04, min(0.40, simplify_mm))
         anchor_geometry = ideal_cut_geometry.buffer(
             -inset_mm * mm_to_pts,
             join_style=anchor_join_style,
@@ -2788,7 +2986,165 @@ def _fit_preserved_contour_paths(
     return None
 
 
-def _fit_alpha_bezier_paths(
+def _fit_round_contour_paths(
+    ideal_cut_geometry,
+    *,
+    mm_to_pts: float,
+):
+    """Dựng cubic C2 cho ``Góc tròn`` nhưng khóa sát quỹ đạo hình học đã duyệt.
+
+    Catmull–Rom cũ đi qua mọi node nhưng tay nắm có thể vọt khỏi contour ở phần
+    lồi và cắt tắt phần lõm. Periodic B-spline giữ liên tục độ cong; profile mạnh
+    được thử trước và chỉ nhận khi topology cùng Hausdorff hai chiều đều đạt.
+    """
+    if isinstance(ideal_cut_geometry, Polygon):
+        source_parts = [ideal_cut_geometry]
+        return_multi = False
+    elif isinstance(ideal_cut_geometry, MultiPolygon):
+        source_parts = list(ideal_cut_geometry.geoms)
+        return_multi = True
+    else:
+        return None
+    if not source_parts or len(source_parts) > _EXISTING_CONTOUR_MAX_COMPONENTS:
+        return None
+    ring_count = sum(1 + len(part.interiors) for part in source_parts)
+    if ring_count > _EXISTING_CONTOUR_MAX_RINGS:
+        return None
+
+    topology = _polygon_topology_signature(ideal_cut_geometry)
+    exact_budget_pts = _ROUND_PATH_MAX_HAUSDORFF_MM * mm_to_pts
+    ideal_envelope = ideal_cut_geometry.buffer(exact_budget_pts, join_style=1)
+
+    for smoothing_rms_mm in _ROUND_PATH_SPLINE_RMS_PROFILES_MM:
+        all_paths = []
+        sampled_parts = []
+        try:
+            for part in source_parts:
+                rings = [part.exterior, *part.interiors]
+                fitted_rings = [
+                    _periodic_smoothing_spline_segments(
+                        ring.coords,
+                        smoothing_rms_pts=smoothing_rms_mm * mm_to_pts,
+                    )
+                    for ring in rings
+                ]
+                if any(not path for path in fitted_rings):
+                    raise ValueError("Không fit được spline tuần hoàn cho Góc tròn")
+                sampled_rings = [
+                    sample_bezier_segments(
+                        path,
+                        samples_per_segment=_ROUND_PATH_GUARD_SAMPLES,
+                    )
+                    for path in fitted_rings
+                ]
+                sampled_parts.append(
+                    Polygon(sampled_rings[0], sampled_rings[1:])
+                )
+                all_paths.extend(fitted_rings)
+        except (ArithmeticError, TypeError, ValueError):
+            continue
+
+        sampled_geometry = (
+            MultiPolygon(sampled_parts) if return_multi else sampled_parts[0]
+        )
+        if (
+            sampled_geometry.is_empty
+            or not sampled_geometry.is_valid
+            or _polygon_topology_signature(sampled_geometry) != topology
+            or not _geometry_within_hausdorff_budget(
+                ideal_cut_geometry,
+                sampled_geometry,
+                exact_budget_pts,
+                first_envelope=ideal_envelope,
+            )
+        ):
+            continue
+        return sampled_geometry, all_paths, smoothing_rms_mm
+
+    # Contour có góc thật/đoạn thẳng dài không phù hợp với spline C2 toàn vòng.
+    # Fit thích nghi sẽ khóa riêng các góc đó, còn các chuỗi trơn vẫn là cubic G1;
+    # mọi kết quả tiếp tục phải qua đúng hành lang 0,12 mm phía trên.
+    min_x, min_y, max_x, max_y = ideal_cut_geometry.bounds
+    diagonal_mm = math.hypot(max_x - min_x, max_y - min_y) / max(
+        mm_to_pts,
+        1e-9,
+    )
+    size_scale = min(
+        _ALPHA_ADAPTIVE_MAX_SCALE,
+        max(
+            1.0,
+            math.sqrt(
+                max(0.0, diagonal_mm) / _ALPHA_ADAPTIVE_REFERENCE_DIAGONAL_MM
+            ),
+        ),
+    )
+    corner_window_pts = _ALPHA_CORNER_WINDOW_MM * size_scale * mm_to_pts
+    corner_separation_pts = (
+        _ALPHA_CORNER_MIN_SEPARATION_MM * size_scale * mm_to_pts
+    )
+    discontinuity_window_pts = max(
+        corner_window_pts * 1.5,
+        1.0 * mm_to_pts,
+    )
+    for tolerance_mm in (0.12, 0.10, 0.08, 0.06, 0.04):
+        for minimum_turn_degrees in (24.0, 18.0):
+            all_paths = []
+            sampled_parts = []
+            try:
+                for part in source_parts:
+                    rings = [part.exterior, *part.interiors]
+                    fitted_rings = [
+                        fit_closed_cubic_beziers_adaptive(
+                            ring.coords,
+                            tolerance_mm * mm_to_pts,
+                            corner_window=corner_window_pts,
+                            minimum_turn_degrees=minimum_turn_degrees,
+                            minimum_corner_separation=corner_separation_pts,
+                            enforce_monotonic=True,
+                            validate_corner_persistence=True,
+                            smooth_raster_tangents=True,
+                            reference_coords=ring.coords,
+                            corner_discontinuity_window=(
+                                discontinuity_window_pts
+                            ),
+                        )
+                        for ring in rings
+                    ]
+                    if any(not path for path in fitted_rings):
+                        raise ValueError("Không fit được Bézier khóa góc")
+                    sampled_rings = [
+                        sample_bezier_segments(
+                            path,
+                            samples_per_segment=_ROUND_PATH_GUARD_SAMPLES,
+                        )
+                        for path in fitted_rings
+                    ]
+                    sampled_parts.append(
+                        Polygon(sampled_rings[0], sampled_rings[1:])
+                    )
+                    all_paths.extend(fitted_rings)
+            except (ArithmeticError, RecursionError, TypeError, ValueError):
+                continue
+            sampled_geometry = (
+                MultiPolygon(sampled_parts) if return_multi else sampled_parts[0]
+            )
+            if (
+                sampled_geometry.is_empty
+                or not sampled_geometry.is_valid
+                or _polygon_topology_signature(sampled_geometry) != topology
+                or not _geometry_within_hausdorff_budget(
+                    ideal_cut_geometry,
+                    sampled_geometry,
+                    exact_budget_pts,
+                    first_envelope=ideal_envelope,
+                )
+            ):
+                continue
+            return sampled_geometry, all_paths, tolerance_mm
+    return None
+
+
+def _fit_alpha_bezier_paths_core(
     alpha_geometry,
     ideal_cut_geometry,
     *,
@@ -2799,6 +3155,9 @@ def _fit_alpha_bezier_paths(
     _use_adaptive_limits: bool | None = None,
     _enforce_monotonic: bool = True,
     _use_multiscale_geometry: bool = True,
+    allow_high_resolution_fairing: bool = False,
+    smoothness_scale: float = 1.0,
+    fidelity_budget_scale: float = 1.0,
 ):
     """Fit nhiều điểm raster thành ít cubic; mọi candidate phải qua guard artifact.
 
@@ -2852,6 +3211,10 @@ def _fit_alpha_bezier_paths(
         max_hausdorff_mm = _ALPHA_FIT_MAX_HAUSDORFF_MM
         corner_window_mm = _ALPHA_CORNER_WINDOW_MM
         corner_separation_mm = _ALPHA_CORNER_MIN_SEPARATION_MM
+    max_hausdorff_mm = min(
+        _CUTLINE_TUNING_MAX_HAUSDORFF_MM,
+        max(0.04, max_hausdorff_mm * float(fidelity_budget_scale)),
+    )
     remaining_budget_pts = max(
         0.01,
         max_hausdorff_mm - ALPHA_CONTOUR_SIMPLIFY_MM,
@@ -2897,21 +3260,27 @@ def _fit_alpha_bezier_paths(
             ),
         )
 
-    if use_adaptive_corners and _use_multiscale_geometry and safe_envelope is not None:
-        # QUALITY/PERF (audit 2026-08-05 §AI2.CUT2): khi đường cắt đã lùi vào
-        # Alpha, fit trực tiếp quanh ideal thường bị safe-envelope loại vì cubic
-        # dao động ra ngoài. Fit anchor lùi trước vừa đúng bất biến vừa tránh chạy
-        # lại bốn tolerance hai lượt rồi mới tới cùng fallback này.
-        inset_result = _fit_alpha_inset_anchor_paths(
-            alpha_geometry,
-            ideal_cut_geometry,
-            total_offset_pts=total_offset_pts,
-            mm_to_pts=mm_to_pts,
-            max_hausdorff_mm=max_hausdorff_mm,
-            corner_window_mm=corner_window_mm,
-            corner_separation_mm=corner_separation_mm,
-            use_multiscale_geometry=True,
-        )
+    if (
+        use_adaptive_corners
+        and _use_multiscale_geometry
+        and (safe_envelope is not None or allow_high_resolution_fairing)
+    ):
+        # QUALITY/PERF (audit 2026-08-08 §UNIFIED.ALPHA2): cả đường dao lùi lẫn
+        # đường ``original`` từ mask đã chốt phải được so với candidate C2. Trước
+        # đây nhánh này chỉ chạy khi có safe-envelope âm, nên offset 0 luôn rơi vào
+        # fitter khóa góc và sinh nhiều khớp gãy dù periodic spline đã qua guard.
+        inset_result = None
+        if safe_envelope is not None:
+            inset_result = _fit_alpha_inset_anchor_paths(
+                alpha_geometry,
+                ideal_cut_geometry,
+                total_offset_pts=total_offset_pts,
+                mm_to_pts=mm_to_pts,
+                max_hausdorff_mm=max_hausdorff_mm,
+                corner_window_mm=corner_window_mm,
+                corner_separation_mm=corner_separation_mm,
+                use_multiscale_geometry=True,
+            )
         simplified_result = _fit_alpha_simplified_anchor_paths(
             alpha_geometry,
             ideal_cut_geometry,
@@ -2921,12 +3290,14 @@ def _fit_alpha_bezier_paths(
             corner_window_mm=corner_window_mm,
             corner_separation_mm=corner_separation_mm,
             source_pixel_mm=source_pixel_mm,
+            allow_high_resolution_fairing=allow_high_resolution_fairing,
+            smoothness_scale=smoothness_scale,
         )
         # QUALITY (audit 2026-08-08 §AI-MOTION.3): 192 segment từng là ngưỡng
         # trả sớm, khiến candidate ít node nhưng có khớp gãy thắng candidate G1.
         # Số node không còn quyền bỏ qua bước so chuyển động; cả ba nhánh phải
         # vào cùng bộ xếp hạng sau khi đã qua guard hình học.
-        compatible_result = _fit_alpha_bezier_paths(
+        compatible_result = _fit_alpha_bezier_paths_core(
             alpha_geometry,
             ideal_cut_geometry,
             total_offset_pts=total_offset_pts,
@@ -2936,6 +3307,9 @@ def _fit_alpha_bezier_paths(
             _use_adaptive_limits=use_adaptive_limits,
             _enforce_monotonic=True,
             _use_multiscale_geometry=False,
+            allow_high_resolution_fairing=allow_high_resolution_fairing,
+            smoothness_scale=smoothness_scale,
+            fidelity_budget_scale=fidelity_budget_scale,
         )
         return prefer_machine_motion(
             inset_result,
@@ -3066,7 +3440,7 @@ def _fit_alpha_bezier_paths(
             # QUALITY (audit 2026-08-05 §AI2.CUT2): tiếp tuyến đa tỉ lệ giúp mạnh
             # ở span cong lớn, nhưng contour pha nhiều góc ngắn đôi khi hợp với fitter
             # cũ hơn. Chỉ trả đường mới khi không dày node hơn candidate tương thích.
-            compatible_result = _fit_alpha_bezier_paths(
+            compatible_result = _fit_alpha_bezier_paths_core(
                 alpha_geometry,
                 ideal_cut_geometry,
                 total_offset_pts=total_offset_pts,
@@ -3076,6 +3450,9 @@ def _fit_alpha_bezier_paths(
                 _use_adaptive_limits=use_adaptive_limits,
                 _enforce_monotonic=True,
                 _use_multiscale_geometry=False,
+                allow_high_resolution_fairing=allow_high_resolution_fairing,
+                smoothness_scale=smoothness_scale,
+                fidelity_budget_scale=fidelity_budget_scale,
             )
             inset_result = _fit_alpha_inset_anchor_paths(
                 alpha_geometry,
@@ -3096,7 +3473,7 @@ def _fit_alpha_bezier_paths(
                 return preferred
         return sampled_geometry, all_paths, tolerance_mm
     if _enforce_monotonic:
-        return _fit_alpha_bezier_paths(
+        return _fit_alpha_bezier_paths_core(
             alpha_geometry,
             ideal_cut_geometry,
             total_offset_pts=total_offset_pts,
@@ -3106,10 +3483,13 @@ def _fit_alpha_bezier_paths(
             _use_adaptive_limits=use_adaptive_limits,
             _enforce_monotonic=False,
             _use_multiscale_geometry=_use_multiscale_geometry,
+            allow_high_resolution_fairing=allow_high_resolution_fairing,
+            smoothness_scale=smoothness_scale,
+            fidelity_budget_scale=fidelity_budget_scale,
         )
     if use_adaptive_corners:
         if _use_multiscale_geometry:
-            compatible_result = _fit_alpha_bezier_paths(
+            compatible_result = _fit_alpha_bezier_paths_core(
                 alpha_geometry,
                 ideal_cut_geometry,
                 total_offset_pts=total_offset_pts,
@@ -3119,6 +3499,9 @@ def _fit_alpha_bezier_paths(
                 _use_adaptive_limits=use_adaptive_limits,
                 _enforce_monotonic=True,
                 _use_multiscale_geometry=False,
+                allow_high_resolution_fairing=allow_high_resolution_fairing,
+                smoothness_scale=smoothness_scale,
+                fidelity_budget_scale=fidelity_budget_scale,
             )
             inset_result = _fit_alpha_inset_anchor_paths(
                 alpha_geometry,
@@ -3137,7 +3520,7 @@ def _fit_alpha_bezier_paths(
         # các span khóa góc tự cắt nhau dù bộ fit toàn ring vẫn qua đủ guard.
         # Thử bộ fit cũ trước khi rơi về Catmull một-cubic-mỗi-node; không nới
         # topology, Hausdorff hay safe-envelope.
-        legacy_result = _fit_alpha_bezier_paths(
+        legacy_result = _fit_alpha_bezier_paths_core(
             alpha_geometry,
             ideal_cut_geometry,
             total_offset_pts=total_offset_pts,
@@ -3147,6 +3530,9 @@ def _fit_alpha_bezier_paths(
             _use_adaptive_limits=True,
             _enforce_monotonic=True,
             _use_multiscale_geometry=False,
+            allow_high_resolution_fairing=allow_high_resolution_fairing,
+            smoothness_scale=smoothness_scale,
+            fidelity_budget_scale=fidelity_budget_scale,
         )
         if legacy_result is not None:
             return legacy_result
@@ -3161,6 +3547,1294 @@ def _fit_alpha_bezier_paths(
             use_multiscale_geometry=False,
         )
     return None
+
+
+def _alpha_polygon_parts(geometry):
+    if isinstance(geometry, Polygon):
+        return [geometry], False
+    if isinstance(geometry, MultiPolygon):
+        return list(geometry.geoms), True
+    return [], False
+
+
+def _sampled_geometry_from_alpha_paths_like(reference_geometry, paths):
+    """Dựng lại Polygon từ các ring Bézier theo đúng thứ tự của geometry gốc."""
+    reference_parts, return_multi = _alpha_polygon_parts(reference_geometry)
+    if not reference_parts:
+        return None
+    cursor = 0
+    sampled_parts = []
+    try:
+        for part in reference_parts:
+            ring_count = 1 + len(part.interiors)
+            ring_paths = paths[cursor:cursor + ring_count]
+            if len(ring_paths) != ring_count:
+                return None
+            sampled_rings = [
+                sample_bezier_segments(
+                    ring,
+                    samples_per_segment=max(16, _ALPHA_FIT_SAMPLES),
+                )
+                for ring in ring_paths
+            ]
+            if any(len(ring) < 4 for ring in sampled_rings):
+                return None
+            sampled_parts.append(Polygon(sampled_rings[0], sampled_rings[1:]))
+            cursor += ring_count
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+    if cursor != len(paths):
+        return None
+    return MultiPolygon(sampled_parts) if return_multi else sampled_parts[0]
+
+
+def _scale_alpha_bezier_handles(paths, scale: float):
+    scaled_paths = []
+    for ring in paths:
+        scaled_ring = []
+        for p0, control1, control2, p3 in ring:
+            scaled_ring.append((
+                (float(p0[0]), float(p0[1])),
+                (
+                    float(p0[0]) + (float(control1[0]) - float(p0[0])) * scale,
+                    float(p0[1]) + (float(control1[1]) - float(p0[1])) * scale,
+                ),
+                (
+                    float(p3[0]) + (float(control2[0]) - float(p3[0])) * scale,
+                    float(p3[1]) + (float(control2[1]) - float(p3[1])) * scale,
+                ),
+                (float(p3[0]), float(p3[1])),
+            ))
+        scaled_paths.append(scaled_ring)
+    return scaled_paths
+
+
+def _retension_alpha_fit_result(
+    fitted_result,
+    *,
+    ideal_cut_geometry,
+    alpha_geometry,
+    total_offset_pts: float,
+    mm_to_pts: float,
+    curve_tension: float | int | None,
+):
+    """Đổi sức căng mà vẫn khóa topology, G1 và sai lệch so với candidate an toàn."""
+    if fitted_result is None:
+        return None
+    sampled_geometry, paths, tolerance_mm = fitted_result
+    requested_scale = _cutline_tension_handle_scale(curve_tension)
+    if abs(requested_scale - 1.0) <= 1e-9:
+        return fitted_result
+
+    minimum_gap_pts = min(
+        _ALPHA_SAFE_MIN_GAP_MM * mm_to_pts,
+        max(0.0, -float(total_offset_pts)),
+    )
+    safe_envelope = (
+        alpha_geometry.buffer(-minimum_gap_pts, join_style=1)
+        if minimum_gap_pts > 0
+        else None
+    )
+    topology = _polygon_topology_signature(ideal_cut_geometry)
+    scale = requested_scale
+    # Nếu cực trị người dùng vượt guard, tiến dần về 1 thay vì trả đường lỗi.
+    for _attempt in range(8):
+        scaled_paths = _scale_alpha_bezier_handles(paths, scale)
+        scaled_geometry = _sampled_geometry_from_alpha_paths_like(
+            ideal_cut_geometry,
+            scaled_paths,
+        )
+        extra_budget_pts = (
+            _CUTLINE_TENSION_EXTRA_BUDGET_MM
+            * abs(scale - 1.0)
+            / max(
+                abs(_CUTLINE_TENSION_HANDLE_MAX - 1.0),
+                abs(_CUTLINE_TENSION_HANDLE_MIN - 1.0),
+            )
+            * mm_to_pts
+        )
+        if (
+            scaled_geometry is not None
+            and not scaled_geometry.is_empty
+            and scaled_geometry.is_valid
+            and _polygon_topology_signature(scaled_geometry) == topology
+            and _geometry_within_hausdorff_budget(
+                sampled_geometry,
+                scaled_geometry,
+                max(0.01 * mm_to_pts, extra_budget_pts),
+            )
+            and (
+                safe_envelope is None
+                or (
+                    not safe_envelope.is_empty
+                    and safe_envelope.is_valid
+                    and safe_envelope.covers(scaled_geometry)
+                )
+            )
+        ):
+            return scaled_geometry, scaled_paths, tolerance_mm
+        scale = 1.0 + (scale - 1.0) * 0.5
+    return fitted_result
+
+
+def _fit_alpha_bezier_paths(
+    alpha_geometry,
+    ideal_cut_geometry,
+    *,
+    total_offset_pts: float,
+    mm_to_pts: float,
+    corner_policy: str = "legacy",
+    source_pixel_mm: float | None = None,
+    _use_adaptive_limits: bool | None = None,
+    _enforce_monotonic: bool = True,
+    _use_multiscale_geometry: bool = True,
+    allow_high_resolution_fairing: bool = False,
+    cutline_smoothness: float | int | None = _CUTLINE_TUNING_DEFAULT,
+    cutline_fidelity: float | int | None = _CUTLINE_TUNING_DEFAULT,
+    curve_tension: float | int | None = _CUTLINE_TUNING_DEFAULT,
+):
+    """Fit CutContour có tuning; giá trị 50/50/50 tương thích artifact cũ."""
+    fitted = _fit_alpha_bezier_paths_core(
+        alpha_geometry,
+        ideal_cut_geometry,
+        total_offset_pts=total_offset_pts,
+        mm_to_pts=mm_to_pts,
+        corner_policy=corner_policy,
+        source_pixel_mm=source_pixel_mm,
+        _use_adaptive_limits=_use_adaptive_limits,
+        _enforce_monotonic=_enforce_monotonic,
+        _use_multiscale_geometry=_use_multiscale_geometry,
+        allow_high_resolution_fairing=allow_high_resolution_fairing,
+        smoothness_scale=_cutline_smoothness_scale(cutline_smoothness),
+        fidelity_budget_scale=_cutline_fidelity_budget_scale(cutline_fidelity),
+    )
+    return _retension_alpha_fit_result(
+        fitted,
+        ideal_cut_geometry=ideal_cut_geometry,
+        alpha_geometry=alpha_geometry,
+        total_offset_pts=total_offset_pts,
+        mm_to_pts=mm_to_pts,
+        # QUALITY (audit 2026-08-10 §CUTROUND.1): co tay nắm toàn cục làm tăng
+        # curvature jump nhưng gần như không đổi quỹ đạo. Giữ field để tương thích
+        # API cũ, còn fitter tự dùng tay nắm C2/G1 đã qua bộ xếp hạng chuyển động.
+        curve_tension=_CUTLINE_TUNING_DEFAULT,
+    )
+
+
+def _linear_bezier_ring(coords):
+    points = list(coords)
+    if len(points) < 4:
+        return []
+    if points[0] != points[-1]:
+        points.append(points[0])
+    segments = []
+    for start, end in zip(points, points[1:]):
+        dx = float(end[0]) - float(start[0])
+        dy = float(end[1]) - float(start[1])
+        segments.append((
+            (float(start[0]), float(start[1])),
+            (float(start[0]) + dx / 3.0, float(start[1]) + dy / 3.0),
+            (float(start[0]) + dx * 2.0 / 3.0, float(start[1]) + dy * 2.0 / 3.0),
+            (float(end[0]), float(end[1])),
+        ))
+    return segments
+
+
+def _paths_for_alpha_geometry(geometry, *, tension: float | None = None):
+    parts, _return_multi = _alpha_polygon_parts(geometry)
+    paths = []
+    for part in parts:
+        for ring in [part.exterior, *part.interiors]:
+            coords = list(ring.coords)
+            paths.append(
+                _catmull_rom_bezier_segments(coords, tension=tension)
+                if tension is not None
+                else _linear_bezier_ring(coords)
+            )
+    return paths
+
+
+def _group_alpha_paths_like(reference_geometry, paths):
+    parts, _return_multi = _alpha_polygon_parts(reference_geometry)
+    cursor = 0
+    groups = []
+    for part in parts:
+        ring_count = 1 + len(part.interiors)
+        ring_paths = paths[cursor:cursor + ring_count]
+        if len(ring_paths) != ring_count:
+            return []
+        groups.append({
+            "exterior": ring_paths[0],
+            "interiors": ring_paths[1:],
+        })
+        cursor += ring_count
+    return groups if cursor == len(paths) else []
+
+
+def _alpha_override_geometry(payload):
+    """Khôi phục geometry + ring Bézier từ payload thuần số dùng qua process pool."""
+    if not isinstance(payload, dict):
+        return None
+    raw_groups = payload.get("path_groups")
+    if not isinstance(raw_groups, list) or not raw_groups:
+        return None
+    paths = []
+    polygons = []
+    try:
+        for group in raw_groups:
+            exterior = group["exterior"]
+            interiors = list(group.get("interiors") or [])
+            sampled = [
+                sample_bezier_segments(
+                    ring,
+                    samples_per_segment=max(16, _ALPHA_FIT_SAMPLES),
+                )
+                for ring in [exterior, *interiors]
+            ]
+            polygon = Polygon(sampled[0], sampled[1:])
+            if polygon.is_empty or not polygon.is_valid:
+                return None
+            polygons.append(polygon)
+            paths.extend([exterior, *interiors])
+    except (ArithmeticError, KeyError, TypeError, ValueError):
+        return None
+    geometry = polygons[0] if len(polygons) == 1 else MultiPolygon(polygons)
+    if geometry.is_empty or not geometry.is_valid:
+        return None
+    return geometry, paths
+
+
+def _alpha_live_machine_path_summary(path, *, mm_to_pts: float):
+    """Đo ba rủi ro chạy dao theo lô NumPy và giữ vị trí từng khớp gãy."""
+    points = np.asarray(path, dtype=np.float64)
+    if (
+        points.ndim != 3
+        or points.shape[0] == 0
+        or points.shape[1:] != (4, 2)
+        or not np.all(np.isfinite(points))
+    ):
+        return None
+
+    epsilon = 1e-12
+    following_starts = np.roll(points[:, 0, :], -1, axis=0)
+    endpoint_gaps = np.linalg.norm(points[:, 3, :] - following_starts, axis=1)
+    endpoint_gaps_mm = endpoint_gaps / mm_to_pts
+
+    def normalized_tangents(candidates: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        lengths = np.linalg.norm(candidates, axis=2)
+        valid = lengths > epsilon
+        has_value = np.any(valid, axis=1)
+        first_valid = np.argmax(valid, axis=1)
+        selected = candidates[np.arange(len(candidates)), first_valid]
+        selected_lengths = lengths[np.arange(len(candidates)), first_valid]
+        tangents = np.zeros_like(selected)
+        tangents[has_value] = (
+            selected[has_value] / selected_lengths[has_value, None]
+        )
+        return tangents, has_value
+
+    end_tangents, valid_end = normalized_tangents(np.stack((
+        points[:, 3, :] - points[:, 2, :],
+        points[:, 3, :] - points[:, 1, :],
+        points[:, 3, :] - points[:, 0, :],
+    ), axis=1))
+    start_tangents, valid_start = normalized_tangents(np.stack((
+        points[:, 1, :] - points[:, 0, :],
+        points[:, 2, :] - points[:, 0, :],
+        points[:, 3, :] - points[:, 0, :],
+    ), axis=1))
+    following_tangents = np.roll(start_tangents, -1, axis=0)
+    valid_joins = valid_end & np.roll(valid_start, -1)
+    angles = np.zeros(len(points), dtype=np.float64)
+    if np.any(valid_joins):
+        cosines = np.sum(end_tangents * following_tangents, axis=1)
+        angles[valid_joins] = np.degrees(np.arccos(np.clip(
+            cosines[valid_joins],
+            -1.0,
+            1.0,
+        )))
+
+    sample_t = np.arange(1, 33, dtype=np.float64) / 32.0
+    sample_u = 1.0 - sample_t
+    samples = (
+        sample_u[None, :, None] ** 3 * points[:, 0, None, :]
+        + 3.0 * sample_u[None, :, None] ** 2 * sample_t[None, :, None]
+        * points[:, 1, None, :]
+        + 3.0 * sample_u[None, :, None] * sample_t[None, :, None] ** 2
+        * points[:, 2, None, :]
+        + sample_t[None, :, None] ** 3 * points[:, 3, None, :]
+    )
+    previous = np.concatenate((points[:, 0, None, :], samples[:, :-1, :]), axis=1)
+    lengths_mm = np.linalg.norm(samples - previous, axis=2).sum(axis=1) / mm_to_pts
+    sharp_join_indices = np.flatnonzero(
+        valid_joins & (angles > _CUTLINE_FINAL_SMOOTH_JOIN_DEGREES)
+    )
+    return {
+        "segment_count": int(len(points)),
+        "short_segment_count": int(np.count_nonzero(
+            lengths_mm < _CUTLINE_FINAL_SHORT_SEGMENT_MM
+        )),
+        "disconnected_join_count": int(np.count_nonzero(
+            endpoint_gaps_mm > epsilon
+        )),
+        "minimum_segment_length_mm": float(np.min(lengths_mm)),
+        "maximum_join_angle_degrees": (
+            float(np.max(angles[valid_joins])) if np.any(valid_joins) else None
+        ),
+        "sharp_join_points": [
+            (float(points[index, 3, 0]), float(points[index, 3, 1]))
+            for index in sharp_join_indices
+        ],
+    }
+
+
+def _alpha_live_machine_path_is_safe(
+    path,
+    *,
+    mm_to_pts: float,
+) -> bool:
+    """Kiểm nhanh đường C2/G1; góc thật chỉ được miễn tại cổng cuối có reference.
+
+    PERF (audit 2026-08-10 §CUTLINE.LIVE6): ``analyze_machine_path`` còn đo
+    curvature, percentile và nhiều số phục vụ báo cáo chất lượng. Live fitter chỉ
+    đọc đường hở, góc nối và đoạn <0,25 mm; tính theo lô để slider không bị khựng.
+    """
+    summary = _alpha_live_machine_path_summary(path, mm_to_pts=mm_to_pts)
+    return bool(
+        summary is not None
+        and summary["disconnected_join_count"] == 0
+        and not summary["sharp_join_points"]
+        and summary["short_segment_count"] == 0
+    )
+
+
+def _alpha_reference_corner_points(
+    reference_geometry,
+    *,
+    mm_to_pts: float,
+    source_pixel_mm: float | None,
+):
+    """Tìm góc thật bền qua cả reference gốc và reference đã lọc theo mm.
+
+    QUALITY (audit 2026-08-10 §CUTSMOOTH.2): giao của hai phép dò loại bậc raster
+    cục bộ nhưng giữ góc sao/notch. Cửa sổ theo pixel nguồn nên cùng artwork đổi
+    DPI không biến đường cong thành hàng trăm góc giả.
+    """
+    pixel_mm = 0.0
+    try:
+        candidate = float(source_pixel_mm or 0.0)
+        if math.isfinite(candidate) and candidate > 0:
+            pixel_mm = candidate
+    except (TypeError, ValueError):
+        pass
+    window_mm = max(
+        _CUTLINE_TRUE_CORNER_BASE_WINDOW_MM,
+        pixel_mm * _CUTLINE_TRUE_CORNER_PIXEL_WINDOW,
+    )
+    support_mm = max(
+        _CUTLINE_TRUE_CORNER_BASE_WINDOW_MM,
+        pixel_mm * _CUTLINE_TRUE_CORNER_PIXEL_SUPPORT,
+    )
+    window_pts = window_mm * mm_to_pts
+    support_pts = support_mm * mm_to_pts
+    simplified = reference_geometry.simplify(
+        window_pts,
+        preserve_topology=True,
+    )
+    simplified_corners = []
+    if isinstance(simplified, (Polygon, MultiPolygon)):
+        for ring in _polygon_rings(simplified):
+            points = [
+                (float(point[0]), float(point[1]))
+                for point in list(ring.coords)[:-1]
+            ]
+            for index, point in enumerate(points):
+                previous = points[index - 1]
+                following = points[(index + 1) % len(points)]
+                incoming = (point[0] - previous[0], point[1] - previous[1])
+                outgoing = (following[0] - point[0], following[1] - point[1])
+                incoming_length = math.hypot(*incoming)
+                outgoing_length = math.hypot(*outgoing)
+                if incoming_length < support_pts or outgoing_length < support_pts:
+                    continue
+                cosine = (
+                    incoming[0] * outgoing[0] + incoming[1] * outgoing[1]
+                ) / (incoming_length * outgoing_length)
+                turn_degrees = math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
+                if turn_degrees >= _CUTLINE_TRUE_CORNER_TURN_DEGREES:
+                    simplified_corners.append(point)
+    if not simplified_corners:
+        return [], window_pts
+
+    raw_corners = []
+    for ring in _polygon_rings(reference_geometry):
+        points = [
+            (float(point[0]), float(point[1]))
+            for point in list(ring.coords)[:-1]
+        ]
+        try:
+            corner_indices = _closed_ring_discontinuity_corner_indices(
+                points,
+                probe_window=window_pts,
+                minimum_turn_degrees=_CUTLINE_TRUE_CORNER_TURN_DEGREES,
+            )
+        except (ArithmeticError, TypeError, ValueError):
+            continue
+        raw_corners.extend(points[index] for index in corner_indices)
+
+    window_squared = window_pts * window_pts
+    protected = [
+        corner
+        for corner in raw_corners
+        if any(
+            (corner[0] - simplified_corner[0]) ** 2
+            + (corner[1] - simplified_corner[1]) ** 2
+            <= window_squared
+            for simplified_corner in simplified_corners
+        )
+    ]
+    return protected, window_pts
+
+
+def _match_protected_corner_count(join_points, corner_points, radius_pts: float) -> int:
+    """Ghép một-một khớp dao với góc reference gần nhất bằng lưới không gian."""
+    if not join_points or not corner_points or radius_pts <= 0:
+        return 0
+    cell_size = radius_pts
+    corner_cells: dict[tuple[int, int], list[int]] = {}
+    for corner_index, corner in enumerate(corner_points):
+        cell = (
+            math.floor(float(corner[0]) / cell_size),
+            math.floor(float(corner[1]) / cell_size),
+        )
+        corner_cells.setdefault(cell, []).append(corner_index)
+
+    radius_squared = radius_pts * radius_pts
+    candidate_pairs = []
+    for join_index, join in enumerate(join_points):
+        cell_x = math.floor(float(join[0]) / cell_size)
+        cell_y = math.floor(float(join[1]) / cell_size)
+        for offset_x in (-1, 0, 1):
+            for offset_y in (-1, 0, 1):
+                for corner_index in corner_cells.get(
+                    (cell_x + offset_x, cell_y + offset_y),
+                    (),
+                ):
+                    corner = corner_points[corner_index]
+                    distance_squared = (
+                        (float(join[0]) - float(corner[0])) ** 2
+                        + (float(join[1]) - float(corner[1])) ** 2
+                    )
+                    if distance_squared <= radius_squared:
+                        candidate_pairs.append((
+                            distance_squared,
+                            join_index,
+                            corner_index,
+                        ))
+    matched_joins = set()
+    matched_corners = set()
+    for _distance, join_index, corner_index in sorted(candidate_pairs):
+        if join_index in matched_joins or corner_index in matched_corners:
+            continue
+        matched_joins.add(join_index)
+        matched_corners.add(corner_index)
+    return len(matched_joins)
+
+
+def _alpha_final_cutline_quality(
+    paths,
+    *,
+    reference_geometry,
+    fitted_geometry,
+    alpha_geometry,
+    total_offset_pts: float,
+    mm_to_pts: float,
+    source_pixel_mm: float | None,
+    fit_mode: str,
+) -> dict[str, object]:
+    """Cổng chất lượng duy nhất áp cho live, retension và mọi fallback."""
+    summaries = [
+        _alpha_live_machine_path_summary(path, mm_to_pts=mm_to_pts)
+        for path in paths
+    ]
+    valid_summaries = [summary for summary in summaries if summary is not None]
+    invalid_path_count = len(summaries) - len(valid_summaries)
+    sharp_join_points = [
+        point
+        for summary in valid_summaries
+        for point in summary["sharp_join_points"]
+    ]
+    protected_corner_count = 0
+    if sharp_join_points:
+        # PERF (audit 2026-08-10 §CUTSMOOTH.5): đường C2 phổ biến không có khớp
+        # gãy nên không cần chạy bộ dò góc đa thang trên reference hàng nghìn điểm.
+        corner_points, match_radius_pts = _alpha_reference_corner_points(
+            reference_geometry,
+            mm_to_pts=mm_to_pts,
+            source_pixel_mm=source_pixel_mm,
+        )
+        protected_corner_count = _match_protected_corner_count(
+            sharp_join_points,
+            corner_points,
+            match_radius_pts,
+        )
+    short_segment_count = sum(
+        int(summary["short_segment_count"]) for summary in valid_summaries
+    )
+    disconnected_join_count = sum(
+        int(summary["disconnected_join_count"]) for summary in valid_summaries
+    )
+    minimum_lengths = [
+        float(summary["minimum_segment_length_mm"])
+        for summary in valid_summaries
+    ]
+    maximum_angles = [
+        float(summary["maximum_join_angle_degrees"])
+        for summary in valid_summaries
+        if summary["maximum_join_angle_degrees"] is not None
+    ]
+
+    geometry_safe = bool(
+        isinstance(fitted_geometry, (Polygon, MultiPolygon))
+        and not fitted_geometry.is_empty
+        and fitted_geometry.is_valid
+        and _polygon_topology_signature(fitted_geometry)
+        == _polygon_topology_signature(reference_geometry)
+        and bool(_group_alpha_paths_like(fitted_geometry, paths))
+    )
+    minimum_gap_pts = min(
+        _ALPHA_SAFE_MIN_GAP_MM * mm_to_pts,
+        max(0.0, -float(total_offset_pts)),
+    )
+    if geometry_safe and minimum_gap_pts > 0:
+        safe_envelope = alpha_geometry.buffer(-minimum_gap_pts, join_style=1)
+        geometry_safe = bool(
+            not safe_envelope.is_empty
+            and safe_envelope.is_valid
+            and safe_envelope.covers(fitted_geometry)
+        )
+    try:
+        effective_deviation_mm = float(
+            reference_geometry.hausdorff_distance(fitted_geometry) / mm_to_pts
+        )
+        if not math.isfinite(effective_deviation_mm):
+            effective_deviation_mm = None
+    except (ArithmeticError, TypeError, ValueError):
+        effective_deviation_mm = None
+
+    unprotected_join_count = len(sharp_join_points) - protected_corner_count
+    machine_safe = bool(
+        geometry_safe
+        and invalid_path_count == 0
+        and valid_summaries
+        and short_segment_count == 0
+        and disconnected_join_count == 0
+        and unprotected_join_count == 0
+    )
+    return {
+        "machine_safe": machine_safe,
+        "segment_count": sum(
+            int(summary["segment_count"]) for summary in valid_summaries
+        ),
+        "short_segment_count": short_segment_count,
+        "disconnected_join_count": disconnected_join_count,
+        "unprotected_join_count": unprotected_join_count,
+        "protected_corner_count": protected_corner_count,
+        "minimum_segment_length_mm": min(minimum_lengths, default=None),
+        "maximum_join_angle_degrees": max(maximum_angles, default=None),
+        "effective_deviation_mm": effective_deviation_mm,
+        "fit_mode": fit_mode,
+    }
+
+
+def _fit_alpha_live_tuned_paths(
+    alpha_geometry,
+    ideal_cut_geometry,
+    *,
+    total_offset_pts: float,
+    mm_to_pts: float,
+    source_pixel_mm: float,
+    cutline_smoothness: float | int | None,
+    cutline_fidelity: float | int | None,
+    curve_tension: float | int | None,
+):
+    """Fit C2 nhanh cho slider live, với guard hình học như nhánh tự động.
+
+    Nhánh tự động cũ thử hàng chục tổ hợp để tự chọn profile và phù hợp xử lý
+    hàng loạt. Live preview đã có chủ ý người dùng nên chỉ cần một profile xác
+    định từ slider, rồi giảm cường độ tối đa ba lần nếu candidate vượt guard.
+    """
+    source_parts, return_multi = _alpha_polygon_parts(ideal_cut_geometry)
+    if not source_parts:
+        return None
+    fidelity = _clamp_cutline_percent(cutline_fidelity) / 100.0
+    requested_smoothness = _clamp_cutline_percent(cutline_smoothness) / 100.0
+    # QUALITY (audit 2026-08-10 §CUTROUND.2): nửa trái của trục Bám sát chính là
+    # yêu cầu bo mượt kiểu Offset Path + Round. Nó phải tăng fairing thực, không
+    # chỉ nới một envelope rồi trả lại nguyên candidate như vùng chết trước đây.
+    # Không cho đầu Bám sát tắt hẳn fairing: bám răng cưa pixel không phải là
+    # trung thành hình học và chỉ làm tăng lệnh dao. Mốc 50 giữ đúng profile cũ.
+    smoothness = max(0.50, requested_smoothness, 1.0 - fidelity)
+    pixel_mm = max(0.001, float(source_pixel_mm))
+    # Ảnh 72 DPI không mang thông tin dưới 0,353 mm/pixel; khóa 0,10 mm sẽ buộc
+    # spline quay lại bám răng cưa giả. Ngân sách theo pixel nguồn, còn slider
+    # Bám sát co/nới trong biên 0,08–1,20 mm có hiển thị trực tiếp cho người dùng.
+    source_budget_mm = max(0.12, min(1.20, pixel_mm * 3.60))
+    max_deviation_mm = source_budget_mm * (1.60 - fidelity * 1.25)
+    max_deviation_mm = max(0.08, min(1.20, max_deviation_mm))
+    spacing_mm = max(0.08, min(0.32, pixel_mm * 0.68))
+    sigma_mm = min(
+        max_deviation_mm * 0.78,
+        max(0.025, pixel_mm * (0.18 + smoothness * 1.35)),
+    )
+    simplify_mm = min(
+        max_deviation_mm * 0.85,
+        max(0.20, pixel_mm * (0.25 + smoothness * 2.10)),
+    )
+    spline_rms_mm = min(
+        max_deviation_mm * 0.62,
+        max(0.025, pixel_mm * (0.08 + smoothness * 0.80)),
+    )
+    exact_budget_pts = max_deviation_mm * mm_to_pts
+    ideal_envelope = ideal_cut_geometry.buffer(exact_budget_pts, join_style=1)
+    absolute_budget_mm = max(
+        max_deviation_mm,
+        min(1.20, max(0.25, pixel_mm * 4.50)),
+    )
+    absolute_budget_pts = absolute_budget_mm * mm_to_pts
+    absolute_envelope = ideal_cut_geometry.buffer(
+        absolute_budget_pts,
+        join_style=1,
+    )
+    topology = _polygon_topology_signature(ideal_cut_geometry)
+    # QUALITY (audit 2026-08-10 §CUTROUND.6): Độ bo cong là một điều khiển
+    # hình học độc lập. Lùi vào rồi trả ra với Join Round để tạo fillet ở góc
+    # lồi; vòng ra–vào trước đây chỉ khép khe lõm nên tem lồi không hề đổi.
+    # Topology và sai lệch vẫn phải qua cùng guard của preview lẫn PDF.
+    round_radius_mm = _cutline_round_radius_mm(curve_tension, pixel_mm)
+    if round_radius_mm > 1e-9:
+        rounded_parts = []
+        rounded_any = False
+        for part in source_parts:
+            accepted_part = None
+            # Một mấu hẹp có thể vượt guard ở bán kính yêu cầu dù phần còn lại
+            # bo được. Hạ bán kính có thứ tự thay vì vô hiệu cả tem ngay lập tức.
+            for radius_scale in (1.0, 0.75, 0.50, 0.25):
+                candidate_radius_mm = round_radius_mm * radius_scale
+                candidate_radius_pts = candidate_radius_mm * mm_to_pts
+                round_budget_pts = min(
+                    max_deviation_mm,
+                    max(0.08, candidate_radius_mm * 1.50),
+                ) * mm_to_pts
+                rounded_part = part.buffer(
+                    -candidate_radius_pts,
+                    join_style=1,
+                ).buffer(
+                    candidate_radius_pts,
+                    join_style=1,
+                )
+                part_envelope = part.buffer(round_budget_pts, join_style=1)
+                if (
+                    isinstance(rounded_part, Polygon)
+                    and not rounded_part.is_empty
+                    and rounded_part.is_valid
+                    and _polygon_topology_signature(rounded_part)
+                    == _polygon_topology_signature(part)
+                    and part.hausdorff_distance(rounded_part)
+                    <= round_budget_pts + 1e-7
+                    and _geometry_within_hausdorff_budget(
+                        part,
+                        rounded_part,
+                        round_budget_pts,
+                        first_envelope=part_envelope,
+                    )
+                ):
+                    accepted_part = rounded_part
+                    break
+            if accepted_part is not None:
+                rounded_parts.append(accepted_part)
+                rounded_any = True
+            else:
+                # Khe/hốc vẫn vượt guard ở mọi mức thử thì giữ nguyên component.
+                rounded_parts.append(part)
+        if rounded_any:
+            rounded_reference = (
+                MultiPolygon(rounded_parts) if return_multi else rounded_parts[0]
+            )
+            if (
+                rounded_reference.is_valid
+                and _polygon_topology_signature(rounded_reference) == topology
+            ):
+                source_parts = rounded_parts
+    minimum_gap_pts = min(
+        _ALPHA_SAFE_MIN_GAP_MM * mm_to_pts,
+        max(0.0, -float(total_offset_pts)),
+    )
+    safe_envelope = (
+        alpha_geometry.buffer(-minimum_gap_pts, join_style=1)
+        if minimum_gap_pts > 0
+        else None
+    )
+    minimum_anchor_spacing_pts = max(
+        0.45,
+        min(0.85, pixel_mm * 1.20),
+    ) * mm_to_pts
+
+    def build_candidate(strength: float, builder: str):
+        fitted_paths = []
+        sampled_parts = []
+        try:
+            for part in source_parts:
+                ring_paths = []
+                sampled_rings = []
+                for ring in [part.exterior, *part.interiors]:
+                    smoothed = _smooth_closed_ring_source_scale(
+                        ring.coords,
+                        spacing_pts=spacing_mm * mm_to_pts,
+                        sigma_pts=sigma_mm * strength * mm_to_pts,
+                    )
+                    if len(smoothed) < 5:
+                        raise ValueError("Ring quá ngắn để fit preview")
+                    anchor_ring = Polygon(smoothed).exterior
+                    simplified_ring = Polygon(anchor_ring).simplify(
+                        max(0.02, simplify_mm * strength) * mm_to_pts,
+                        preserve_topology=True,
+                    ).exterior
+                    coords = _remove_short_alpha_anchor_edges(
+                        simplified_ring.coords,
+                        minimum_spacing_pts=minimum_anchor_spacing_pts,
+                    )
+                    if builder == "c2":
+                        segments = _periodic_smoothing_spline_segments(
+                            coords,
+                            smoothing_rms_pts=(
+                                max(0.015, spline_rms_mm * strength) * mm_to_pts
+                            ),
+                        )
+                    else:
+                        segments = _catmull_rom_bezier_segments(
+                            coords,
+                            tension=0.18,
+                        )
+                    if not segments:
+                        raise ValueError("Không fit được ring preview")
+                    segments = [
+                        tuple(
+                            (float(point[0]), float(point[1]))
+                            for point in segment
+                        )
+                        for segment in segments
+                    ]
+                    ring_paths.append(segments)
+                    sampled_rings.append(sample_bezier_segments(
+                        segments,
+                        samples_per_segment=max(16, _ALPHA_FIT_SAMPLES),
+                    ))
+                polygon = Polygon(sampled_rings[0], sampled_rings[1:])
+                if polygon.is_empty or not polygon.is_valid:
+                    raise ValueError("Candidate preview tự cắt")
+                sampled_parts.append(polygon)
+                fitted_paths.extend(ring_paths)
+        except (ArithmeticError, TypeError, ValueError):
+            return None
+        geometry = (
+            MultiPolygon(sampled_parts) if return_multi else sampled_parts[0]
+        )
+        return geometry, fitted_paths
+
+    safe_fallback = None
+    for strength in (1.0, 0.70, 0.42, 0.18):
+        for builder in ("c2", "g1"):
+            candidate = build_candidate(strength, builder)
+            if candidate is None:
+                continue
+            sampled_geometry, fitted_paths = candidate
+            machine_paths_are_safe = all(
+                _alpha_live_machine_path_is_safe(path, mm_to_pts=mm_to_pts)
+                for path in fitted_paths
+            )
+            if (
+                sampled_geometry.is_empty
+                or not sampled_geometry.is_valid
+                or not machine_paths_are_safe
+                or _polygon_topology_signature(sampled_geometry) != topology
+                or (
+                    safe_envelope is not None
+                    and (
+                        safe_envelope.is_empty
+                        or not safe_envelope.is_valid
+                        or not safe_envelope.covers(sampled_geometry)
+                    )
+                )
+            ):
+                continue
+            if (
+                safe_fallback is None
+                and _geometry_within_hausdorff_budget(
+                    ideal_cut_geometry,
+                    sampled_geometry,
+                    absolute_budget_pts,
+                    first_envelope=absolute_envelope,
+                )
+            ):
+                safe_fallback = (
+                    sampled_geometry,
+                    fitted_paths,
+                    absolute_budget_mm,
+                )
+            if not _geometry_within_hausdorff_budget(
+                ideal_cut_geometry,
+                sampled_geometry,
+                exact_budget_pts,
+                first_envelope=ideal_envelope,
+            ):
+                continue
+            return _retension_alpha_fit_result(
+                (sampled_geometry, fitted_paths, max_deviation_mm),
+                ideal_cut_geometry=ideal_cut_geometry,
+                alpha_geometry=alpha_geometry,
+                total_offset_pts=total_offset_pts,
+                mm_to_pts=mm_to_pts,
+                curve_tension=_CUTLINE_TUNING_DEFAULT,
+            )
+    if safe_fallback is not None:
+        # Độ bám sát cực cao không được phép ép engine quay về polyline dày node.
+        # Dùng candidate máy-safe gần nhất trong envelope tuyệt đối; vùng xem cho
+        # người dùng thấy đúng quỹ đạo này trước khi xuất.
+        return _retension_alpha_fit_result(
+            safe_fallback,
+            ideal_cut_geometry=ideal_cut_geometry,
+            alpha_geometry=alpha_geometry,
+            total_offset_pts=total_offset_pts,
+            mm_to_pts=mm_to_pts,
+            curve_tension=_CUTLINE_TUNING_DEFAULT,
+        )
+    return None
+
+
+def prepare_alpha_cutline_geometry(
+    alpha_mask: np.ndarray,
+    *,
+    dpi: float,
+    dpi_y: float | None = None,
+    cut_mode: str = "original",
+    offset_mm: float = 0.0,
+    bleed_mm: float = 0.0,
+    corner_style: str = "preserve",
+    fill_holes: bool = True,
+    min_detail_area_mm2: float = _MIN_CONTOUR_AREA_MM2,
+) -> dict[str, object] | None:
+    """Chuẩn bị silhouette/offset dùng chung cho nhiều lần fit Bézier.
+
+    PERF (audit 2026-08-10 §CUTLINE.LIVE1): bám sát và độ bo không làm đổi
+    mask/offset đầu vào. Tách bước này để live preview tái sử dụng phần
+    marching-squares + Shapely thay vì dựng lại cho mỗi tick slider.
+    """
+    mask = np.asarray(alpha_mask)
+    if mask.ndim != 2 or mask.size == 0:
+        return None
+    if mask.dtype != np.uint8:
+        mask = np.clip(mask, 0, 255).astype(np.uint8)
+    try:
+        dpi_x = float(dpi)
+        dpi_y_resolved = float(dpi_y if dpi_y is not None else dpi)
+    except (TypeError, ValueError):
+        return None
+    if (
+        not math.isfinite(dpi_x)
+        or not math.isfinite(dpi_y_resolved)
+        or dpi_x <= 0
+        or dpi_y_resolved <= 0
+    ):
+        return None
+    cut_mode = str(cut_mode or "original").strip().lower()
+    if cut_mode == "none":
+        return {
+            "disabled": True,
+            "dropped_contours": 0,
+        }
+
+    from skimage import measure
+
+    contours = measure.find_contours(
+        np.pad(mask, pad_width=1, mode="constant", constant_values=0),
+        127.5,
+    )
+    point_per_pixel_x = 72.0 / dpi_x
+    point_per_pixel_y = 72.0 / dpi_y_resolved
+    try:
+        detail_area = float(min_detail_area_mm2)
+    except (TypeError, ValueError):
+        detail_area = _MIN_CONTOUR_AREA_MM2
+    if not math.isfinite(detail_area):
+        detail_area = _MIN_CONTOUR_AREA_MM2
+    detail_area = max(0.0, min(25.0, detail_area))
+    min_area_pt2 = detail_area * _PT_PER_MM * _PT_PER_MM
+    contour_polygons = []
+    for contour in contours:
+        contour = contour - 1
+        points = np.empty((len(contour), 2), dtype=np.float64)
+        points[:, 0] = contour[:, 1] * point_per_pixel_x
+        points[:, 1] = contour[:, 0] * point_per_pixel_y
+        if len(points) < 3:
+            continue
+        polygon = Polygon(points)
+        if polygon.is_empty or not polygon.is_valid:
+            continue
+        contour_polygons.append(polygon)
+    if not contour_polygons:
+        return None
+
+    holes = []
+    exteriors = []
+    for polygon in contour_polygons:
+        is_hole = any(
+            other is not polygon
+            and other.bounds[0] <= polygon.bounds[0]
+            and other.bounds[1] <= polygon.bounds[1]
+            and other.bounds[2] >= polygon.bounds[2]
+            and other.bounds[3] >= polygon.bounds[3]
+            and other.contains(polygon)
+            for other in contour_polygons
+        )
+        (holes if is_hole else exteriors).append(polygon)
+    filtered_exteriors = [
+        polygon for polygon in exteriors if polygon.area < min_area_pt2
+    ]
+    exteriors = [
+        polygon for polygon in exteriors if polygon.area >= min_area_pt2
+    ]
+    if not exteriors and filtered_exteriors:
+        largest = max(filtered_exteriors, key=lambda polygon: polygon.area)
+        exteriors = [largest]
+        filtered_exteriors = [
+            polygon for polygon in filtered_exteriors if polygon is not largest
+        ]
+    if not exteriors:
+        return None
+    base_geometry = unary_union(exteriors)
+    if not fill_holes:
+        for hole in holes:
+            base_geometry = base_geometry.difference(hole)
+    if base_geometry.is_empty or not isinstance(base_geometry, (Polygon, MultiPolygon)):
+        return None
+
+    effective_offset_mm = float(offset_mm) - (
+        ALPHA_CONTOUR_INSET_MM if cut_mode == "alpha" else 0.0
+    )
+    total_offset_pts, _bleed_outer = compute_cut_bleed_offsets(
+        cut_mode,
+        max(0.0, float(bleed_mm)) * _PT_PER_MM,
+        effective_offset_mm * _PT_PER_MM,
+    )
+    join_style = 1 if str(corner_style).lower() == "round" else 2
+    ideal_geometry = (
+        base_geometry.buffer(total_offset_pts, join_style=join_style)
+        if abs(total_offset_pts) > 1e-12
+        else base_geometry
+    )
+    if total_offset_pts < 0 and not ideal_geometry.is_empty:
+        ideal_geometry = ideal_geometry.buffer(0.01, join_style=join_style)
+    if ideal_geometry.is_empty or not isinstance(ideal_geometry, (Polygon, MultiPolygon)):
+        return None
+    if fill_holes:
+        if isinstance(ideal_geometry, MultiPolygon):
+            ideal_geometry = MultiPolygon([
+                Polygon(part.exterior) for part in ideal_geometry.geoms
+            ])
+        else:
+            ideal_geometry = Polygon(ideal_geometry.exterior)
+
+    return {
+        "disabled": False,
+        "base_geometry": base_geometry,
+        "ideal_geometry": ideal_geometry,
+        "total_offset_pts": total_offset_pts,
+        "source_pixel_mm": max(25.4 / dpi_x, 25.4 / dpi_y_resolved),
+        "dropped_contours": len(filtered_exteriors),
+    }
+
+
+def fit_prepared_alpha_cutline_geometry(
+    prepared: dict[str, object],
+    *,
+    cutline_smoothness: float | int | None = _CUTLINE_TUNING_DEFAULT,
+    cutline_fidelity: float | int | None = _CUTLINE_TUNING_DEFAULT,
+    curve_tension: float | int | None = _CUTLINE_TUNING_DEFAULT,
+) -> dict[str, object] | None:
+    """Fit Bézier từ geometry đã chuẩn bị; kết quả dùng chung preview và PDF."""
+    if bool(prepared.get("disabled")):
+        return {
+            "geometry": None,
+            "path_groups": [],
+            "paths": [],
+            "dropped_contours": int(prepared.get("dropped_contours", 0)),
+            "fit_tolerance_mm": 0.0,
+            "fit_mode": "disabled",
+            "quality": {
+                "machine_safe": True,
+                "segment_count": 0,
+                "short_segment_count": 0,
+                "disconnected_join_count": 0,
+                "unprotected_join_count": 0,
+                "protected_corner_count": 0,
+                "dropped_component_count": int(prepared.get("dropped_contours", 0)),
+                "minimum_segment_length_mm": None,
+                "maximum_join_angle_degrees": None,
+                "effective_deviation_mm": 0.0,
+                "fit_mode": "disabled",
+            },
+        }
+
+    base_geometry = prepared.get("base_geometry")
+    ideal_geometry = prepared.get("ideal_geometry")
+    if not isinstance(base_geometry, (Polygon, MultiPolygon)) or not isinstance(
+        ideal_geometry,
+        (Polygon, MultiPolygon),
+    ):
+        return None
+    try:
+        total_offset_pts = float(prepared["total_offset_pts"])
+        source_pixel_mm = float(prepared["source_pixel_mm"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    rejected_qualities: list[dict[str, object]] = []
+
+    def accept_candidate(fitted, fit_mode: str):
+        if fitted is None:
+            return None
+        fitted_geometry, paths, fit_tolerance_mm = fitted
+        quality = _alpha_final_cutline_quality(
+            paths,
+            reference_geometry=ideal_geometry,
+            fitted_geometry=fitted_geometry,
+            alpha_geometry=base_geometry,
+            total_offset_pts=total_offset_pts,
+            mm_to_pts=_PT_PER_MM,
+            source_pixel_mm=source_pixel_mm,
+            fit_mode=fit_mode,
+        )
+        quality["dropped_component_count"] = int(
+            prepared.get("dropped_contours", 0)
+        )
+        if fit_mode == "live-bezier":
+            effective_deviation_mm = quality.get("effective_deviation_mm")
+            live_deviation_budget_mm = max(
+                float(fit_tolerance_mm),
+                min(1.20, max(0.25, source_pixel_mm * 4.50)),
+            )
+            round_allowance_mm = min(
+                0.10,
+                _cutline_round_radius_mm(curve_tension, source_pixel_mm) * 0.15,
+            )
+            live_deviation_budget_mm = min(
+                1.30,
+                live_deviation_budget_mm + round_allowance_mm,
+            )
+            fits_live_budget = bool(
+                isinstance(effective_deviation_mm, (int, float))
+                and math.isfinite(float(effective_deviation_mm))
+                and float(effective_deviation_mm)
+                <= live_deviation_budget_mm + 1e-7
+            )
+            if not fits_live_budget:
+                # Guard diện tích nhanh ở fitter không đủ bắt một khe lõm sâu bị
+                # Round lấp kín. Tận dụng phép đo quỹ đạo cuối đã có, không đo lại
+                # trên từng ứng viên nên preview vẫn phản hồi nhanh.
+                quality["machine_safe"] = False
+                quality["fit_budget_exceeded"] = True
+        if not bool(quality["machine_safe"]):
+            rejected_qualities.append(quality)
+            return None
+        path_groups = _group_alpha_paths_like(fitted_geometry, paths)
+        if not path_groups:
+            rejected_qualities.append({**quality, "machine_safe": False})
+            return None
+        return {
+            "geometry": fitted_geometry,
+            "path_groups": path_groups,
+            "paths": paths,
+            "dropped_contours": int(prepared.get("dropped_contours", 0)),
+            "fit_tolerance_mm": float(fit_tolerance_mm),
+            "fit_mode": fit_mode,
+            "quality": quality,
+        }
+
+    # QUALITY (audit 2026-08-10 §CUTSMOOTH.1): cả kết quả live sau retension
+    # cũng phải qua oracle cuối; không dựa vào việc ứng viên trước retension đã đạt.
+    live_result = accept_candidate(
+        _fit_alpha_live_tuned_paths(
+            base_geometry,
+            ideal_geometry,
+            total_offset_pts=total_offset_pts,
+            mm_to_pts=_PT_PER_MM,
+            source_pixel_mm=source_pixel_mm,
+            cutline_smoothness=cutline_smoothness,
+            cutline_fidelity=cutline_fidelity,
+            curve_tension=curve_tension,
+        ),
+        "live-bezier",
+    )
+    if live_result is not None:
+        return live_result
+
+    # QUALITY (audit 2026-08-10 §CUTSMOOTH.2): fallback này fit trên reference
+    # bất biến, khóa đúng góc sao/notch và vẫn có guard topology/Hausdorff theo mm.
+    preserved = _fit_preserved_contour_paths(
+        ideal_geometry,
+        mm_to_pts=_PT_PER_MM,
+        source_pixel_mm=source_pixel_mm,
+    )
+    if preserved is not None:
+        preserved = _retension_alpha_fit_result(
+            preserved,
+            ideal_cut_geometry=ideal_geometry,
+            alpha_geometry=base_geometry,
+            total_offset_pts=total_offset_pts,
+            mm_to_pts=_PT_PER_MM,
+            curve_tension=_CUTLINE_TUNING_DEFAULT,
+        )
+    preserved_result = accept_candidate(preserved, "corner-preserving-fallback")
+    if preserved_result is not None:
+        return preserved_result
+
+    # QUALITY (audit 2026-08-10 §CUTSMOOTH.2): offset miter có thể sinh thêm
+    # điểm chia kỹ thuật quanh góc thật. Với một component, thử fitter thích nghi
+    # G1/C2 đã có guard để bỏ các khớp đó. Không chạy nhánh đắt này cho
+    # MultiPolygon nhiều speck; trường hợp ấy phải lọc nhiễu hoặc fail-closed.
+    adaptive_fallback = None
+    if isinstance(ideal_geometry, Polygon):
+        adaptive_fallback = _fit_alpha_bezier_paths(
+            base_geometry,
+            ideal_geometry,
+            total_offset_pts=total_offset_pts,
+            mm_to_pts=_PT_PER_MM,
+            corner_policy="adaptive",
+            source_pixel_mm=source_pixel_mm,
+            allow_high_resolution_fairing=True,
+            cutline_smoothness=cutline_smoothness,
+            cutline_fidelity=cutline_fidelity,
+            curve_tension=_CUTLINE_TUNING_DEFAULT,
+        )
+    adaptive_result = accept_candidate(
+        adaptive_fallback,
+        "adaptive-safe-fallback",
+    )
+    if adaptive_result is not None:
+        return adaptive_result
+
+    # Giữ fallback cũ như ứng viên cuối cho contour cong đơn giản, nhưng tuyệt đối
+    # không còn quyền đi tắt qua oracle như trước đây.
+    fallback_geometry, anchor_deviation_pts = _smooth_alpha_cut_contour(
+        base_geometry,
+        ideal_geometry,
+        total_offset_pts=total_offset_pts,
+        mm_to_pts=_PT_PER_MM,
+    )
+    safe_tension = _safe_alpha_bezier_tension(
+        base_geometry,
+        ideal_geometry,
+        fallback_geometry,
+        total_offset_pts=total_offset_pts,
+        mm_to_pts=_PT_PER_MM,
+        anchor_deviation_pts=anchor_deviation_pts,
+    )
+    fallback_paths = _paths_for_alpha_geometry(
+        fallback_geometry,
+        tension=safe_tension,
+    )
+    sampled_fallback = _sampled_geometry_from_alpha_paths_like(
+        fallback_geometry,
+        fallback_paths,
+    )
+    legacy_fallback = _retension_alpha_fit_result(
+        (
+            sampled_fallback if sampled_fallback is not None else fallback_geometry,
+            fallback_paths,
+            0.0,
+        ),
+        ideal_cut_geometry=fallback_geometry,
+        alpha_geometry=base_geometry,
+        total_offset_pts=total_offset_pts,
+        mm_to_pts=_PT_PER_MM,
+        curve_tension=_CUTLINE_TUNING_DEFAULT,
+    )
+    fallback_result = accept_candidate(legacy_fallback, "guarded-fallback")
+    if fallback_result is not None:
+        return fallback_result
+
+    best_quality = min(
+        rejected_qualities,
+        key=lambda quality: (
+            int(quality.get("short_segment_count", 0)),
+            int(quality.get("disconnected_join_count", 0)),
+            int(quality.get("unprotected_join_count", 0)),
+            int(quality.get("segment_count", 0)),
+        ),
+        default=None,
+    )
+    issue_parts = []
+    if best_quality is not None:
+        if int(best_quality.get("short_segment_count", 0)):
+            issue_parts.append(
+                f"{best_quality['short_segment_count']} đoạn dao ngắn dưới 0,25 mm"
+            )
+        if int(best_quality.get("disconnected_join_count", 0)):
+            issue_parts.append(
+                f"{best_quality['disconnected_join_count']} khớp hở"
+            )
+        if int(best_quality.get("unprotected_join_count", 0)):
+            issue_parts.append(
+                f"{best_quality['unprotected_join_count']} khớp gãy không khớp góc thật"
+            )
+    detail = ", ".join(issue_parts) or "quỹ đạo vượt hành lang hình học an toàn"
+    raise UnsafeCutlineGeometryError(
+        "Không thể tạo đường bế an toàn cho máy "
+        f"({detail}). Hãy tăng Độ mượt hoặc Lọc chi tiết nhỏ rồi xem lại đường bao.",
+        quality=best_quality,
+    )
+
+
+def build_alpha_cutline_geometry(
+    alpha_mask: np.ndarray,
+    *,
+    dpi: float,
+    dpi_y: float | None = None,
+    cut_mode: str = "original",
+    offset_mm: float = 0.0,
+    bleed_mm: float = 0.0,
+    corner_style: str = "preserve",
+    fill_holes: bool = True,
+    cutline_smoothness: float | int | None = _CUTLINE_TUNING_DEFAULT,
+    cutline_fidelity: float | int | None = _CUTLINE_TUNING_DEFAULT,
+    curve_tension: float | int | None = _CUTLINE_TUNING_DEFAULT,
+    min_detail_area_mm2: float = _MIN_CONTOUR_AREA_MM2,
+):
+    """Tạo geometry CutContour trực tiếp từ Alpha nguồn cho preview và export.
+
+    Toạ độ kết quả là point PDF nhưng vẫn dùng gốc trên-trái như ảnh. Caller chỉ
+    cần lật Y ở lúc ghi content stream, giống toàn bộ engine hiện tại.
+    """
+    prepared = prepare_alpha_cutline_geometry(
+        alpha_mask,
+        dpi=dpi,
+        dpi_y=dpi_y,
+        cut_mode=cut_mode,
+        offset_mm=offset_mm,
+        bleed_mm=bleed_mm,
+        corner_style=corner_style,
+        fill_holes=fill_holes,
+        min_detail_area_mm2=min_detail_area_mm2,
+    )
+    if prepared is None:
+        return None
+    return fit_prepared_alpha_cutline_geometry(
+        prepared,
+        cutline_smoothness=cutline_smoothness,
+        cutline_fidelity=cutline_fidelity,
+        curve_tension=curve_tension,
+    )
 
 
 def _erode_px(mask: np.ndarray, px: int, kernel_type: int = cv2.MORPH_ELLIPSE) -> np.ndarray:
@@ -3198,6 +4872,59 @@ def _near_background_mask_rgb(
     bg = np.array(background_rgb, dtype=np.int16).reshape(1, 1, 3)
     delta = np.max(np.abs(img[:, :, :3].astype(np.int16) - bg), axis=2)
     return delta <= max(1, int(tolerance))
+
+
+def _strip_edge_color_shell_pixels(
+    shell: np.ndarray,
+    img: np.ndarray,
+    *,
+    exclude_near_white: bool,
+    background_rgb: Optional[Tuple[int, int, int]],
+    background_tolerance: int,
+) -> np.ndarray:
+    """Loại pixel pha nền chỉ trên shell, giữ nguyên kết quả của phép lọc toàn ảnh.
+
+    PERF (audit 2026-08-10 §STICKER-COLOR.1): shell chỉ chiếm một dải rất mỏng
+    quanh tem. Dựng các mask H×W cho mọi kênh RGB ở mỗi candidate làm tem lớn
+    phải quét hàng chục triệu pixel không liên quan; lấy đúng tọa độ shell giảm
+    lượng tính toán mà không đổi pixel nguồn màu nào.
+    """
+    if (
+        not exclude_near_white
+        or shell is None
+        or img is None
+        or img.ndim != 3
+        or img.shape[2] < 3
+        or shell.shape != img.shape[:2]
+    ):
+        return shell
+
+    points = cv2.findNonZero(np.ascontiguousarray(shell))
+    if points is None:
+        return shell
+    xs = points[:, 0, 0]
+    ys = points[:, 0, 1]
+    rgb = img[ys, xs, :3]
+    remove = np.zeros(rgb.shape[0], dtype=bool)
+
+    if background_rgb is not None:
+        bg = np.asarray(background_rgb, dtype=np.int16).reshape(1, 3)
+        rgb_i16 = rgb.astype(np.int16)
+        remove |= np.max(np.abs(rgb_i16 - bg), axis=1) <= max(
+            1, int(background_tolerance)
+        )
+
+    channel_max = np.max(rgb, axis=1)
+    channel_min = np.min(rgb, axis=1)
+    chroma = channel_max.astype(np.int16) - channel_min.astype(np.int16)
+    remove |= (channel_max >= 248) & (chroma <= 18)
+    if not np.any(remove) or bool(np.all(remove)):
+        # Giữ đúng chuỗi fallback cũ: shell bị lọc rỗng phải quay lại shell gốc.
+        return shell
+
+    cleaned = shell.copy()
+    cleaned[ys[remove], xs[remove]] = 0
+    return cleaned
 
 
 # Nới dung sai khi LOẠI pixel pha nền khỏi nguồn màu viền (so với lúc dò nền).
@@ -3257,15 +4984,13 @@ def _build_edge_color_source_mask(
             or img.ndim != 3
         ):
             return shell
-        cleaned = shell.copy()
-        if background_rgb is not None:
-            # §BG.4: nền màu → loại pixel pha màu nền đó. Loại luôn near-white
-            # vì render vẫn có thể pha trắng ở chỗ nền bị làm nhạt.
-            cleaned[
-                _near_background_mask_rgb(img, background_rgb, background_tolerance)
-            ] = 0
-        cleaned[_near_white_mask_rgb(img)] = 0
-        return cleaned if np.count_nonzero(cleaned) > 0 else shell
+        return _strip_edge_color_shell_pixels(
+            shell,
+            img,
+            exclude_near_white=exclude_near_white,
+            background_rgb=background_rgb,
+            background_tolerance=background_tolerance,
+        )
 
     shell = _strip_white(_shell(base, peel, band))
     if np.count_nonzero(shell) > 0:
@@ -3301,13 +5026,62 @@ _EDGE_COLOR_BRIGHT_TAIL_PERCENTILE = 99.0
 _EDGE_COLOR_BRIGHT_TAIL_DELTA = 20.0
 _EDGE_COLOR_BRIGHT_TAIL_MIN_RATIO = 0.005
 _EDGE_COLOR_BRIGHT_TAIL_MAX_RATIO = 0.08
-_EDGE_COLOR_ADAPTIVE_MAX_MM = 0.60
+_EDGE_COLOR_ADAPTIVE_BASE_MM = 0.60
+_EDGE_COLOR_ADAPTIVE_MAX_MM = 2.50
+_EDGE_COLOR_ADAPTIVE_SOURCE_PIXELS = 7.0
 _EDGE_COLOR_ADAPTIVE_ACCEPT_RATIO = 0.75
 _EDGE_COLOR_DEPTH_PENALTY = 0.002
+_EDGE_COLOR_BACKGROUND_DISTANCE = 72
+# QUALITY (feedback 2026-08-10 §EDGE-SAMPLE.3): JPEG 72 DPI có thể tạo thêm
+# nhiều lớp đỏ pha trắng trước viền mực thật. Mức 150 vẫn nhận lớp chuyển tiếp
+# RGB(130, 76, 74) của ca thật làm nguồn và kéo nó thành vành nâu/hồng. Mức 200
+# chỉ dùng khi adaptive đã chứng minh shell còn pha nền; viền sáng có chủ đích
+# không tìm thấy shell thay thế sẽ tự rơi về nguồn nông ban đầu.
+_EDGE_COLOR_WHITE_FRINGE_DISTANCE = 200
+_EDGE_COLOR_BACKGROUND_FRINGE_RATIO = 0.70
+_EDGE_COLOR_BACKGROUND_RELEASE_RATIO = 0.25
+_EDGE_COLOR_BACKGROUND_COVERAGE_RATIO = 0.90
+_EDGE_COLOR_BACKGROUND_SCORE_WEIGHT = 0.50
 _SEAM_FEATHER_MM = 0.15
+# Lớp màu được vẽ lại trên artwork chỉ cần chồng mí đủ chống hở subpixel. Độ sâu
+# lấy mẫu có thể tới 2,5 mm trên ảnh 72 DPI nhưng không được biến thành độ lẹm màu.
+_SAMPLED_BLEED_OVERLAP_MM = 0.25
 _TRAJECTORY_RECT_MIN_FILL_RATIO = 0.82
 _TRAJECTORY_RECT_CORE_MIN_FILL_RATIO = 0.995
 _TRAJECTORY_RECT_MIN_CONVEXITY_RATIO = 0.99
+
+
+def _sampled_bleed_overlap_px(px_per_mm: float) -> int:
+    """Độ chồng mí hiển thị, độc lập hoàn toàn với độ sâu dò nguồn màu."""
+    try:
+        resolved = float(px_per_mm)
+    except (TypeError, ValueError):
+        resolved = 0.0
+    if not math.isfinite(resolved) or resolved <= 0.0:
+        return 1
+    return max(1, int(round(_SAMPLED_BLEED_OVERLAP_MM * resolved)))
+
+
+def _edge_color_adaptive_max_mm(source_pixel_mm: Optional[float]) -> float:
+    """Độ sâu dò màu theo pixel nguồn, nhưng có chặn theo mm vật lý.
+
+    QUALITY (feedback 2026-08-10 §EDGE-SAMPLE.2): ảnh không khai báo DPI được mở ở
+    72 DPI; một pixel nguồn khi đó rộng 0,353 mm. Halo JPEG 6–7 pixel đã sâu hơn
+    nhiều giới hạn cố định 0,60 mm, dù trên ảnh 300 DPI giới hạn cũ là hợp lý.
+    """
+    try:
+        pixel_mm = float(source_pixel_mm) if source_pixel_mm is not None else 0.0
+    except (TypeError, ValueError):
+        pixel_mm = 0.0
+    if not math.isfinite(pixel_mm) or pixel_mm <= 0.0:
+        return _EDGE_COLOR_ADAPTIVE_BASE_MM
+    return max(
+        _EDGE_COLOR_ADAPTIVE_BASE_MM,
+        min(
+            _EDGE_COLOR_ADAPTIVE_MAX_MM,
+            pixel_mm * _EDGE_COLOR_ADAPTIVE_SOURCE_PIXELS,
+        ),
+    )
 
 
 def _axis_aligned_rectangle_bbox(
@@ -3372,6 +5146,8 @@ def _axis_aligned_rectangle_bbox(
 def _edge_color_instability_metrics(
     source_mask: np.ndarray,
     img: np.ndarray,
+    *,
+    background_rgb: Optional[Tuple[int, int, int]] = None,
 ) -> dict[str, float]:
     """Đo nhiễu màu cao tần trên shell dùng để kéo bù xén.
 
@@ -3392,6 +5168,8 @@ def _edge_color_instability_metrics(
             "luma_span": 0.0,
             "bright_tail_span": 0.0,
             "bright_tail_ratio": 0.0,
+            "background_close_ratio": 0.0,
+            "background_distance_median": 255.0,
         }
 
     ys, xs = np.where(source_mask > 0)
@@ -3402,6 +5180,8 @@ def _edge_color_instability_metrics(
             "luma_span": 0.0,
             "bright_tail_span": 0.0,
             "bright_tail_ratio": 0.0,
+            "background_close_ratio": 0.0,
+            "background_distance_median": 255.0,
         }
 
     stride = max(1, int(math.ceil(ys.size / _EDGE_COLOR_MAX_SAMPLES)))
@@ -3421,6 +5201,15 @@ def _edge_color_instability_metrics(
     bright_tail_ratio = float(
         np.mean(luma >= luma_median + _EDGE_COLOR_BRIGHT_TAIL_DELTA)
     )
+    background_close_ratio = 0.0
+    background_distance_median = 255.0
+    if background_rgb is not None:
+        background = np.asarray(background_rgb, dtype=np.int16).reshape(1, 3)
+        background_distance = np.max(np.abs(rgb - background), axis=1)
+        background_close_ratio = float(
+            np.mean(background_distance <= _EDGE_COLOR_BACKGROUND_DISTANCE)
+        )
+        background_distance_median = float(np.median(background_distance))
 
     changed_pairs = 0
     total_pairs = 0
@@ -3448,6 +5237,8 @@ def _edge_color_instability_metrics(
         "luma_span": luma_span,
         "bright_tail_span": bright_tail_span,
         "bright_tail_ratio": bright_tail_ratio,
+        "background_close_ratio": background_close_ratio,
+        "background_distance_median": background_distance_median,
     }
 
 
@@ -3480,6 +5271,19 @@ def _edge_color_has_sparse_bright_fringe(metrics: dict[str, float]) -> bool:
     )
 
 
+def _edge_color_has_background_fringe(metrics: dict[str, float]) -> bool:
+    """True khi phần lớn shell vẫn là màu pha gần nền đã biết.
+
+    Khác nhiễu cao tần, halo JPEG trên tem khổ lớn có thể là một dải hồng/trắng
+    rất đều nên nhìn "ổn định" theo transition ratio. Tỷ lệ gần nền bắt đúng ca đó.
+    """
+    return (
+        metrics.get("sample_count", 0.0) >= _EDGE_COLOR_MIN_SAMPLES
+        and metrics.get("background_close_ratio", 0.0)
+        >= _EDGE_COLOR_BACKGROUND_FRINGE_RATIO
+    )
+
+
 def _edge_color_stability_score(metrics: dict[str, float]) -> float:
     """Điểm thấp hơn = shell ổn định hơn; ưu tiên giảm đổi màu từng pixel."""
     transition = max(0.0, float(metrics.get("transition_ratio", 0.0)))
@@ -3489,6 +5293,56 @@ def _edge_color_stability_score(metrics: dict[str, float]) -> float:
         / 255.0
     )
     return transition + 0.02 * luma + 0.02 * bright_tail
+
+
+def _edge_color_source_coverage_ratio(
+    reference_mask: np.ndarray,
+    candidate_mask: np.ndarray,
+    max_distance_px: int,
+) -> float:
+    """Tỷ lệ shell ngoài tìm thấy nguồn màu an toàn ở độ sâu cho phép.
+
+    Đo trên bản hạ tối đa 1000 px để không tạo distance-map lớn cho tem khổ lớn.
+    Candidate chỉ tốt khi phủ gần trọn chu vi; vài mảng đỏ cục bộ không được phép
+    làm cả trang kết luận rằng halo trắng đã được loại.
+    """
+    if (
+        reference_mask is None
+        or candidate_mask is None
+        or reference_mask.shape != candidate_mask.shape
+        or np.count_nonzero(reference_mask) == 0
+        or np.count_nonzero(candidate_mask) == 0
+    ):
+        return 0.0
+    height, width = reference_mask.shape[:2]
+    factor = _downscale_factor(height, width, max_dim=1000)
+    if factor > 1:
+        small_size = (
+            max(1, int(math.ceil(width / factor))),
+            max(1, int(math.ceil(height / factor))),
+        )
+        reference = cv2.resize(
+            reference_mask,
+            small_size,
+            interpolation=cv2.INTER_AREA,
+        ) > 0
+        candidate = cv2.resize(
+            candidate_mask,
+            small_size,
+            interpolation=cv2.INTER_AREA,
+        ) > 0
+    else:
+        reference = reference_mask > 0
+        candidate = candidate_mask > 0
+    if not np.any(reference) or not np.any(candidate):
+        return 0.0
+    distance = cv2.distanceTransform(
+        np.ascontiguousarray(~candidate, dtype=np.uint8),
+        cv2.DIST_L2,
+        3,
+    )
+    allowed = max(1.0, float(max_distance_px) / factor + 0.5)
+    return float(np.mean(distance[reference] <= allowed))
 
 
 def _build_adaptive_edge_color_source_mask(
@@ -3508,8 +5362,8 @@ def _build_adaptive_edge_color_source_mask(
 
     QUALITY (audit 2026-07-28 §BX.1/§BX.2): mask hình học vẫn giữ nguyên;
     chỉ mask lấy màu được thử sâu dần. Viền gồm các mảng màu dài có tỷ lệ đổi
-    pixel thấp nên giữ shell ban đầu. Chỉ shell cao tần mới được dịch vào trong,
-    tối đa 0,60 mm do caller quy đổi sang pixel.
+    pixel thấp nên giữ shell ban đầu. Shell cao tần hoặc shell còn pha màu nền mới
+    được dịch vào trong; caller giới hạn theo cả pixel nguồn và mm vật lý.
 
     QUALITY (audit 2026-08-06 §BG.4): `background_rgb` chuyển tiếp nguyên vẹn
     xuống `_build_edge_color_source_mask` để mọi lần thử sâu đều lọc pha nền
@@ -3527,11 +5381,17 @@ def _build_adaptive_edge_color_source_mask(
         background_rgb=background_rgb,
         background_tolerance=background_tolerance,
     )
-    initial_metrics = _edge_color_instability_metrics(initial, img)
+    initial_metrics = _edge_color_instability_metrics(
+        initial,
+        img,
+        background_rgb=background_rgb,
+    )
     sparse_bright_fringe = _edge_color_has_sparse_bright_fringe(initial_metrics)
+    background_fringe = _edge_color_has_background_fringe(initial_metrics)
     if not (
         _edge_color_is_unstable(initial_metrics)
         or sparse_bright_fringe
+        or background_fringe
     ):
         return initial, initial_peel
 
@@ -3548,30 +5408,83 @@ def _build_adaptive_edge_color_source_mask(
     # lùi tối thiểu một bề dày shell để không chọn lại lớp kế cận vẫn còn pha nền.
     minimum_candidate_peel = (
         min(deepest_peel, initial_peel + band)
-        if sparse_bright_fringe
+        if sparse_bright_fringe or background_fringe
         else initial_peel + 1
     )
 
     best_mask = initial
     best_peel = initial_peel
     initial_score = _edge_color_stability_score(initial_metrics)
+    if background_fringe:
+        initial_score += (
+            _EDGE_COLOR_BACKGROUND_SCORE_WEIGHT
+            * initial_metrics.get("background_close_ratio", 0.0)
+        )
     best_score = initial_score
     for candidate_peel in candidate_peels:
         if candidate_peel < minimum_candidate_peel:
             continue
+        candidate_band = band
+        candidate_shell_peel = candidate_peel
+        candidate_background_tolerance = background_tolerance
+        if background_fringe:
+            # Halo nền có bề dày không đều quanh contour. Quét cả dải từ shell
+            # nông tới độ sâu candidate rồi bỏ pixel gần nền; nearest-fill sẽ tự
+            # chọn pixel an toàn nông nhất tại từng vị trí, thay vì dùng một vòng
+            # erode sâu đồng loạt và chọc qua viền màu mảnh ở chỗ khác.
+            candidate_band = max(
+                band,
+                candidate_peel - initial_peel + band,
+            )
+            candidate_shell_peel = initial_peel
+            background_array = np.asarray(background_rgb, dtype=np.int16)
+            background_is_near_white = bool(
+                background_array.size >= 3
+                and int(np.min(background_array[:3])) >= 240
+                and int(np.max(background_array[:3]) - np.min(background_array[:3]))
+                <= 18
+            )
+            candidate_background_tolerance = max(
+                background_tolerance,
+                (
+                    _EDGE_COLOR_WHITE_FRINGE_DISTANCE
+                    if background_is_near_white
+                    else _EDGE_COLOR_BACKGROUND_DISTANCE
+                ),
+            )
         candidate = _build_edge_color_source_mask(
             silhouette,
             img,
-            band_px=band,
-            peel_px=candidate_peel,
+            band_px=candidate_band,
+            peel_px=candidate_shell_peel,
             edge_bite_px=edge_bite_px,
             kernel_type=kernel_type,
             exclude_near_white=exclude_near_white,
             background_rgb=background_rgb,
-            background_tolerance=background_tolerance,
+            background_tolerance=candidate_background_tolerance,
         )
-        metrics = _edge_color_instability_metrics(candidate, img)
-        if _edge_color_is_unstable(metrics):
+        metrics = _edge_color_instability_metrics(
+            candidate,
+            img,
+            background_rgb=background_rgb,
+        )
+        background_coverage = (
+            _edge_color_source_coverage_ratio(
+                initial,
+                candidate,
+                candidate_peel,
+            )
+            if background_fringe
+            else 1.0
+        )
+        background_released = (
+            background_fringe
+            and metrics.get("background_close_ratio", 0.0)
+            <= initial_metrics.get("background_close_ratio", 0.0)
+            * _EDGE_COLOR_BACKGROUND_RELEASE_RATIO
+            and background_coverage >= _EDGE_COLOR_BACKGROUND_COVERAGE_RATIO
+        )
+        if _edge_color_is_unstable(metrics) and not background_released:
             continue
         depth_penalty = (
             _EDGE_COLOR_DEPTH_PENALTY
@@ -3579,6 +5492,11 @@ def _build_adaptive_edge_color_source_mask(
             / band
         )
         score = _edge_color_stability_score(metrics) + depth_penalty
+        if background_fringe:
+            score += (
+                _EDGE_COLOR_BACKGROUND_SCORE_WEIGHT
+                * metrics.get("background_close_ratio", 0.0)
+            )
         if score < best_score:
             best_mask = candidate
             best_peel = candidate_peel
@@ -3737,91 +5655,6 @@ def _inpaint_color_fill(sub_img, sub_csm, sub_bleed, max_dim: int = 4000):
     if f > 1:
         out = cv2.resize(out, (sw, sh), interpolation=cv2.INTER_NEAREST)
     return out
-
-
-def _render_page_rgb_ghostscript(
-    input_path: str,
-    page_index: int,
-    scale: float,
-    expected_width: int,
-    expected_height: int,
-) -> np.ndarray | None:
-    """Render one page with Ghostscript for transparency/gradient colour fidelity.
-
-    PDFium can expose the uncomposited colour of some Canva transparency groups
-    at the trim edge. That colour does not match the original vector artwork when
-    PDF.js, Poppler or a RIP displays it, creating a hard seam before any bleed
-    algorithm runs. Ghostscript is already bundled/discovered by the application
-    and produces the composited RGB appearance needed by raster bleed sampling.
-    """
-    try:
-        import subprocess
-        from app.config import settings
-        from app.utils.subprocess_utils import run_hidden
-
-        gs_path = getattr(settings, "GHOSTSCRIPT_PATH", "")
-        if not gs_path or not os.path.isfile(gs_path):
-            return None
-
-        dpi = max(1.0, float(scale) * 72.0)
-        with tempfile.TemporaryDirectory(prefix="prynx_sticker_gs_") as tmp_dir:
-            output_path = os.path.join(tmp_dir, "page.png")
-            page_number = int(page_index) + 1
-            cmd = [
-                gs_path,
-                "-dSAFER",
-                "-dBATCH",
-                "-dNOPAUSE",
-                "-dQUIET",
-                "-dAutoRotatePages=/None",
-                "-dUseCropBox",
-                "-dTextAlphaBits=4",
-                "-dGraphicsAlphaBits=4",
-                "-sDEVICE=png16m",
-                f"-r{dpi:.6f}",
-                f"-dFirstPage={page_number}",
-                f"-dLastPage={page_number}",
-                f"-sOutputFile={output_path}",
-                input_path,
-            ]
-            result = run_hidden(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=180,
-            )
-            if (
-                result.returncode != 0
-                or not os.path.isfile(output_path)
-                or os.path.getsize(output_path) == 0
-            ):
-                logger.warning(
-                    "Ghostscript sticker render failed on page %d (exit %s): %s",
-                    page_number,
-                    getattr(result, "returncode", "?"),
-                    result.stderr.decode(errors="replace")[-500:],
-                )
-                return None
-
-            image_bgr = cv2.imread(output_path, cv2.IMREAD_COLOR)
-            if image_bgr is None or image_bgr.size == 0:
-                return None
-            image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-
-        target_w = max(1, int(expected_width))
-        target_h = max(1, int(expected_height))
-        if image_rgb.shape[1] != target_w or image_rgb.shape[0] != target_h:
-            image_rgb = cv2.resize(
-                image_rgb, (target_w, target_h), interpolation=cv2.INTER_AREA
-            )
-        return image_rgb
-    except Exception as exc:
-        logger.warning(
-            "Ghostscript sticker render unavailable on page %d: %s",
-            int(page_index) + 1,
-            exc,
-        )
-        return None
 
 
 # BX-03/BX-08 (audit bù xén lần 2, 2026-07-30): TRẦN ĐỘ DỐC của quỹ đạo. 1.25 ≈ 51°,
@@ -4647,6 +6480,25 @@ def _band_tiles(band, band_radius: int, tile: int = 1024):
             yield (gy0, gy1, gx0, gx1, cy0, cy1, cx0, cx1)
 
 
+def _build_bleed_color_work_band(
+    bleed_ring: np.ndarray,
+    band_radius: int,
+) -> np.ndarray:
+    """Dựng miền tính màu bao quanh SMask, không tham gia hình học hiển thị.
+
+    PERF (audit 2026-08-10 §STICKER-COLOR.2): miền này chỉ chọn ô cần chạy
+    nearest/inpaint; SMask ``bleed_ring`` mới quyết định pixel nhìn thấy. Kernel
+    chữ nhật là tập bao của kernel ellipse cũ, giữ đủ toàn bộ miền an toàn nhưng
+    OpenCV xử lý tách trục nhanh hơn nhiều trên tem khổ lớn.
+    """
+    radius = max(1, int(band_radius))
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (radius * 2 + 1, radius * 2 + 1),
+    )
+    return cv2.dilate(bleed_ring, kernel)
+
+
 def _banded_nearest_fill(csm, img, ring, band, band_radius: int, out, tile: int = 1024) -> bool:
     """'Kéo giãn mép ảnh' giới hạn theo band (dải quanh ring) thay vì cả trang.
 
@@ -5366,6 +7218,15 @@ def _process_sticker_chunk(args: dict):
             bleed_sides=args.get("bleed_sides"),
             alpha_corner_policy=args.get("alpha_corner_policy", "legacy"),
             alpha_source_pixel_mm=args.get("alpha_source_pixel_mm"),
+            alpha_source_mode=args.get("alpha_source_mode", False),
+            cutline_smoothness=args.get("cutline_smoothness", 50),
+            cutline_fidelity=args.get("cutline_fidelity", 50),
+            curve_tension=args.get("curve_tension", 50),
+            min_detail_area_mm2=args.get(
+                "min_detail_area_mm2",
+                _MIN_CONTOUR_AREA_MM2,
+            ),
+            alpha_path_overrides=args.get("alpha_path_overrides"),
             _page_subset=args["page_indices"],
         )
         # result = (bytes, metas, pages_no_dieline, any_dieline)
@@ -5416,6 +7277,12 @@ class StickerEngine:
         _page_subset: list = None,
         alpha_corner_policy: str = "legacy",
         alpha_source_pixel_mm: float | None = None,
+        alpha_source_mode: bool = False,
+        cutline_smoothness: float | int = _CUTLINE_TUNING_DEFAULT,
+        cutline_fidelity: float | int = _CUTLINE_TUNING_DEFAULT,
+        curve_tension: float | int = _CUTLINE_TUNING_DEFAULT,
+        min_detail_area_mm2: float = _MIN_CONTOUR_AREA_MM2,
+        alpha_path_overrides: dict[int, dict] | None = None,
     ) -> tuple:
         # _page_subset: khi != None, CHỈ xử lý các trang có index trong list (theo
         # đúng thứ tự truyền vào) và lưu output ra output_path. Dùng cho worker song
@@ -5443,6 +7310,24 @@ class StickerEngine:
                 alpha_source_pixel_mm = None
         except (TypeError, ValueError):
             alpha_source_pixel_mm = None
+        cutline_smoothness = _clamp_cutline_percent(cutline_smoothness)
+        cutline_fidelity = _clamp_cutline_percent(cutline_fidelity)
+        curve_tension = _clamp_cutline_percent(curve_tension)
+        try:
+            min_detail_area_mm2 = float(min_detail_area_mm2)
+        except (TypeError, ValueError):
+            min_detail_area_mm2 = _MIN_CONTOUR_AREA_MM2
+        if not math.isfinite(min_detail_area_mm2):
+            min_detail_area_mm2 = _MIN_CONTOUR_AREA_MM2
+        min_detail_area_mm2 = max(0.0, min(25.0, min_detail_area_mm2))
+        raw_alpha_path_overrides = (
+            alpha_path_overrides if isinstance(alpha_path_overrides, dict) else {}
+        )
+        alpha_path_overrides = {
+            int(page_index): payload
+            for page_index, payload in raw_alpha_path_overrides.items()
+            if isinstance(payload, dict)
+        }
         # Chỉ dịch nguồn lấy màu; tuyệt đối không dùng giá trị này để co footprint/clip.
         try:
             edge_sample_inset_mm = float(edge_sample_inset_mm)
@@ -5489,6 +7374,10 @@ class StickerEngine:
         bleed_side_l, bleed_side_r, bleed_side_b, bleed_side_t = bleed_sides_resolved
         cut_mode = str(cut_mode or "original").strip().lower()
         alpha_contour_mode = cut_mode == "alpha"
+        # QUALITY (audit 2026-08-08 §UNIFIED.ALPHA1): nguồn biên và vị trí dao là
+        # hai hợp đồng độc lập. Session nhận diện luôn chuyển silhouette thành PNG
+        # Alpha; ``original`` phải đọc Alpha đó nhưng không được tự lùi dao 0,15 mm.
+        alpha_source_contour = alpha_contour_mode or bool(alpha_source_mode)
         if alpha_contour_mode:
             # Alpha là silhouette đã chủ đích của PNG; không tái dựng thành hình
             # chuẩn và không bo lại contour của khách.
@@ -5598,6 +7487,12 @@ class StickerEngine:
                     bleed_sides=bleed_sides_resolved,
                     alpha_corner_policy=alpha_corner_policy,
                     alpha_source_pixel_mm=alpha_source_pixel_mm,
+                    alpha_source_mode=alpha_source_contour,
+                    cutline_smoothness=cutline_smoothness,
+                    cutline_fidelity=cutline_fidelity,
+                    curve_tension=curve_tension,
+                    min_detail_area_mm2=min_detail_area_mm2,
+                    alpha_path_overrides=alpha_path_overrides,
                 )
 
             debug_step = "Create Output PDF"
@@ -5732,34 +7627,13 @@ class StickerEngine:
                         img_native = img[:, :, :3].copy()
                         has_alpha = True
 
-                    use_color_managed_rectangle_raster = (
-                        rectangle_mode
-                        and bleed_color_type in ("inpaint", "trajectory")
-                        and bleed_pts > 0
-                    )
-                    if not selection_page_mode and use_color_managed_rectangle_raster:
-                        gs_started = time.perf_counter()
-                        img_native = _render_page_rgb_ghostscript(
-                            input_path,
-                            page_idx,
-                            self.scale,
-                            max(1, int(round(float(pw_pt) * self.scale))),
-                            max(1, int(round(float(ph_pt) * self.scale))),
-                        )
-                        gs_seconds = time.perf_counter() - gs_started
-                        if img_native is None:
-                            logger.warning(
-                                "Smart rectangle bleed page %d is falling back to PDFium RGB",
-                                page_idx + 1,
-                            )
-
                     if selection_page_mode:
                         pass
                     elif img_native is not None:
                         img = cv2.cvtColor(img_native, cv2.COLOR_RGB2RGBA)
                         has_alpha = False
                     else:
-                        if alpha_contour_mode:
+                        if alpha_source_contour:
                             # PDF trung gian của PNG giữ Alpha trong /SMask. Render
                             # nền trong suốt để lấy lại silhouette, không composite trắng.
                             with pdfium_guard():
@@ -5805,9 +7679,9 @@ class StickerEngine:
                     base_mask = raw_mask = mask = aa_mask = _full
                     contours = []
                 else:
-                    if alpha_contour_mode and has_alpha:
+                    if alpha_source_contour and has_alpha:
                         base_mask = img[:, :, 3].copy()
-                    elif alpha_contour_mode:
+                    elif alpha_source_contour:
                         base_mask = _foreground_mask_from_corner_background(
                             img[:, :, :3]
                         )
@@ -5916,7 +7790,7 @@ class StickerEngine:
                         else:
                             base_mask = np.ones(img.shape[:2], dtype=np.uint8) * 255
 
-                    if alpha_contour_mode:
+                    if alpha_source_contour:
                         # ALPHA (audit 2026-08-01 §A.3): lấy biên tại khoảng 25% độ đục.
                         # Ngưỡng >10 trước đây tính cả halo gần trong suốt, làm mất
                         # phần lớn khoảng lùi 0,15 mm so với mép nhìn thấy.
@@ -5961,14 +7835,14 @@ class StickerEngine:
                     # ghi đè làm lệch tới −5,4% diện tích trên tem nhỏ.
                     contour_mask = aa_mask
                     contour_pixel_to_pt = 1.0 / self.scale
-                    if white_bg_mask_built and not alpha_contour_mode:
+                    if white_bg_mask_built and not alpha_source_contour:
                         contour_mask = _lam_mem_dai_bien(
                             aa_mask,
                             img,
                             px_per_mm,
                             source_pixel_mm_page,
                         )
-                    elif alpha_contour_mode and source_pixel_mm_page is not None:
+                    elif alpha_source_contour and source_pixel_mm_page is not None:
                         # QUALITY (audit 2026-08-08 §AI-MOTION.4): PDF trung gian
                         # của Ảnh AI có thể chứa ảnh 72 DPI nhưng được raster lại ở
                         # 300 DPI. Fit trên mask đã phóng 4,17× sẽ khóa từng bậc nội
@@ -6074,13 +7948,14 @@ class StickerEngine:
                 dieline_poly = None
                 cut_poly = None
                 bleed_outer_poly = None
+                artwork_footprint_poly = None
                 dieline_polygons = []
                 total_offset = 0
                 bleed_outer_offset = 0
                 recon_meta = {"shape_mode": shape_mode, "reconstructed": False}
                 cut_draw_style = corner_style
                 cut_draw_tension = 0.33
-                alpha_fitted_paths = None
+                cut_fitted_paths = None
                 
                 # ── RECTANGLE MODE: dùng page bbox làm shape, skip contour detection ──
                 if rectangle_mode:
@@ -6122,7 +7997,9 @@ class StickerEngine:
                     raw_polys = []
                     # §BG.6: ngưỡng tính trong không gian POINT vì contour_pts đã
                     # đổi sang pt (poly_scale = 1/scale).
-                    min_area_pt2 = _MIN_CONTOUR_AREA_MM2 * _PT_PER_MM * _PT_PER_MM
+                    min_area_pt2 = (
+                        min_detail_area_mm2 * _PT_PER_MM * _PT_PER_MM
+                    )
                     dropped_specks = 0
                     speck_polys = []
                     for contour in contours:
@@ -6151,8 +8028,18 @@ class StickerEngine:
                                     speck_polys.append(poly)
                                     continue
                                 if not preserve_contour:
-                                    # Các kiểu cũ vẫn dọn nhẹ contour trước khi buffer.
-                                    poly = poly.simplify(0.1, preserve_topology=True)
+                                    # §ROUND-PATH.1: Góc tròn cần giữ đủ mẫu để spline
+                                    # C2 bám biên. 0,1 pt cũ làm mất quỹ đạo trước khi
+                                    # fitter chạy; kiểu góc thẳng vẫn giữ hợp đồng cũ.
+                                    reference_simplify_pts = (
+                                        _ROUND_PATH_REFERENCE_SIMPLIFY_MM * _PT_PER_MM
+                                        if corner_style == "round"
+                                        else 0.1
+                                    )
+                                    poly = poly.simplify(
+                                        reference_simplify_pts,
+                                        preserve_topology=True,
+                                    )
                                 raw_polys.append(poly)
                                 
                     if not raw_polys and speck_polys:
@@ -6166,7 +8053,7 @@ class StickerEngine:
                             logger.info(
                                 "[STICKER_BG] page=%d §BG.6 bỏ %d contour vụn "
                                 "(< %.2f mm²) do nhiễu nén",
-                                page_idx + 1, dropped_specks, _MIN_CONTOUR_AREA_MM2,
+                                page_idx + 1, dropped_specks, min_detail_area_mm2,
                             )
                         holes = []
                         exteriors = []
@@ -6213,6 +8100,10 @@ class StickerEngine:
                         if not fill_holes:
                             for h in holes:
                                 base_dieline = base_dieline.difference(h)
+                        # Giữ bản hình học đã bỏ mảnh JPEG nhưng chưa reconstruct để
+                        # clip artwork/ghép bleed. Raw mask còn halo rời nên không thể
+                        # là nguồn footprint sau khi đường cắt đã dùng contour sạch.
+                        artwork_footprint_poly = base_dieline
 
                         # Reconstruct hình học chuẩn (auto_safe / force_*) theo
                         # TỪNG component; một mảnh xấu không được khóa hình tốt.
@@ -6299,7 +8190,7 @@ class StickerEngine:
                             cut_mode, bleed_pts, offset_pts
                         )
 
-                        if alpha_contour_mode:
+                        if alpha_source_contour and preserve_contour:
                             # ALPHA (audit 2026-08-01 §A.2): buffer tròn giữ phép lùi
                             # đều quanh biên raster, không tạo mũi nhọn tại bậc pixel.
                             join_style = 1
@@ -6334,7 +8225,20 @@ class StickerEngine:
                             elif bleed_outer_poly.geom_type == 'Polygon':
                                 bleed_outer_poly = Polygon(bleed_outer_poly.exterior)
 
-                        if alpha_contour_mode:
+                        override_result = _alpha_override_geometry(
+                            alpha_path_overrides.get(page_idx)
+                        )
+                        if (
+                            alpha_source_contour
+                            and preserve_contour
+                            and override_result is not None
+                        ):
+                            # UIUX/QUALITY (audit 2026-08-09 §PV.3): đây là chính
+                            # Bézier đã dựng từ PNG nguồn cho live preview. Dùng
+                            # thẳng khi ghi PDF để preview và artifact không lệch.
+                            cut_poly, cut_fitted_paths = override_result
+                            dieline_poly = cut_poly
+                        elif alpha_source_contour and preserve_contour:
                             # QUALITY (audit 2026-08-04 §ALPHA.1–2): ưu tiên fit
                             # nhiều điểm raster thành ít cubic. Candidate không qua
                             # topology/Hausdorff/khoảng lùi sẽ tự về Catmull có guard.
@@ -6345,9 +8249,16 @@ class StickerEngine:
                                 mm_to_pts=mm_to_pts,
                                 corner_policy=alpha_corner_policy,
                                 source_pixel_mm=alpha_source_pixel_mm,
+                                allow_high_resolution_fairing=(
+                                    bool(alpha_source_mode)
+                                    and not alpha_contour_mode
+                                ),
+                                cutline_smoothness=cutline_smoothness,
+                                cutline_fidelity=cutline_fidelity,
+                                curve_tension=curve_tension,
                             )
                             if fitted_alpha is not None:
-                                cut_poly, alpha_fitted_paths, _fit_tolerance_mm = fitted_alpha
+                                cut_poly, cut_fitted_paths, _fit_tolerance_mm = fitted_alpha
                             else:
                                 cut_poly, alpha_anchor_deviation_pts = _smooth_alpha_cut_contour(
                                     base_dieline,
@@ -6388,7 +8299,7 @@ class StickerEngine:
                                 source_pixel_mm=alpha_source_pixel_mm,
                             )
                             if fitted_contour is not None:
-                                cut_poly, alpha_fitted_paths, _fit_tolerance_mm = fitted_contour
+                                cut_poly, cut_fitted_paths, _fit_tolerance_mm = fitted_contour
                             else:
                                 # QUALITY (audit 2026-08-07 §NOODLE.12): fitter
                                 # reject vẫn phải đi fallback theo pixel nguồn;
@@ -6416,21 +8327,55 @@ class StickerEngine:
                                 quad_segs=_PRESERVE_CORNER_QUAD_SEGS,
                             )
                         else:
-                            # Reconstruct → nén nhẹ; contour kiểu cũ → 1.0 pt.
-                            _cut_simplify = 0.05 if recon_meta.get("reconstructed") else 1.0
-                            if isinstance(dieline_poly, MultiPolygon):
-                                _cut_parts = []
-                                for p in dieline_poly.geoms:
-                                    _s = p.simplify(_cut_simplify, preserve_topology=False)
-                                    if _s.is_empty:
-                                        continue
-                                    if isinstance(_s, MultiPolygon):
-                                        _cut_parts.extend(g for g in _s.geoms if not g.is_empty)
-                                    else:
-                                        _cut_parts.append(_s)
-                                cut_poly = MultiPolygon(_cut_parts) if _cut_parts else dieline_poly
+                            # QUALITY (feedback 2026-08-10 §ROUND-PATH.1): contour
+                            # custom + Góc tròn phải fit trên geometry đầy đủ. Đường
+                            # cũ simplify 1 pt rồi Catmull 0,33 làm ca thật trôi ra
+                            # 0,37 mm và cắt tắt hõm tới hơn 1 mm dù Offset = 0.
+                            rounded_fit = (
+                                _fit_round_contour_paths(
+                                    dieline_poly,
+                                    mm_to_pts=mm_to_pts,
+                                )
+                                if corner_style == "round"
+                                else None
+                            )
+                            if rounded_fit is not None:
+                                (
+                                    cut_poly,
+                                    cut_fitted_paths,
+                                    _fit_tolerance_mm,
+                                ) = rounded_fit
                             else:
-                                cut_poly = dieline_poly.simplify(_cut_simplify, preserve_topology=False)
+                                # Kiểu góc thẳng giữ nhánh polyline cũ; nếu spline
+                                # không đạt guard cũng không nới ngân sách hình học.
+                                _cut_simplify = (
+                                    0.05 if recon_meta.get("reconstructed") else 1.0
+                                )
+                                if isinstance(dieline_poly, MultiPolygon):
+                                    _cut_parts = []
+                                    for p in dieline_poly.geoms:
+                                        _s = p.simplify(
+                                            _cut_simplify,
+                                            preserve_topology=False,
+                                        )
+                                        if _s.is_empty:
+                                            continue
+                                        if isinstance(_s, MultiPolygon):
+                                            _cut_parts.extend(
+                                                g for g in _s.geoms if not g.is_empty
+                                            )
+                                        else:
+                                            _cut_parts.append(_s)
+                                    cut_poly = (
+                                        MultiPolygon(_cut_parts)
+                                        if _cut_parts
+                                        else dieline_poly
+                                    )
+                                else:
+                                    cut_poly = dieline_poly.simplify(
+                                        _cut_simplify,
+                                        preserve_topology=False,
+                                    )
 
                 # ============================================================
                 # STEP B: Generate bleed using dieline_poly for perfect alignment
@@ -6504,10 +8449,19 @@ class StickerEngine:
                                 color_bg_detected.tolerance
                                 + _EDGE_BG_TOLERANCE_PADDING
                             )
+                        elif remove_white_bg and white_bg_mask_built:
+                            # Nền trắng đã được xác nhận bởi connected-component ở
+                            # mép trang. Truyền làm màu tham chiếu để adaptive nhận ra
+                            # cả dải JPEG hồng/trắng đều, không chỉ pixel gần #FFFFFF.
+                            edge_bg_rgb = (255, 255, 255)
+                            edge_bg_tolerance = 1
                         if bleed_color_type in ("image", "trajectory") and not rectangle_mode:
+                            adaptive_max_mm = _edge_color_adaptive_max_mm(
+                                source_pixel_mm_page
+                            )
                             max_adaptive_peel_px = max(
                                 peel_px,
-                                int(round(_EDGE_COLOR_ADAPTIVE_MAX_MM * px_per_mm)),
+                                int(round(adaptive_max_mm * px_per_mm)),
                             )
                             color_source_mask, selected_peel_px = (
                                 _build_adaptive_edge_color_source_mask(
@@ -6649,38 +8603,58 @@ class StickerEngine:
                                     (fallback_warning, bleed_quality_warning) if warning
                                 )
 
-                        close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_px*2+1, close_px*2+1))
-                        # QUALITY (fix 2026-08-03 §CARDINAL.1): khi tem chạm mép trang và
-                        # bleed < bán kính close 1,5 mm, kernel bị cắt bởi biên canvas đệm.
-                        # Phép erode sau dilation khi đó để lại bốn gai ở các tiếp tuyến;
-                        # các gai đục thủng bleed_ring thành bốn khe trắng. Đóng mask trên
-                        # một vành 0 tạm đủ rộng rồi cắt về kích thước cũ để morphology
-                        # không phụ thuộc độ dày bleed/padding của ảnh màu.
-                        close_guard_px = close_px + 1
-                        guarded_footprint_mask = np.pad(
-                            padded_original_mask,
-                            pad_width=close_guard_px,
-                            mode="constant",
-                            constant_values=0,
-                        )
-                        # Tái dùng chính buffer có guard để không giữ thêm một mask
-                        # full-page trong suốt phần xử lý còn lại của trang.
-                        cv2.morphologyEx(
-                            guarded_footprint_mask,
-                            cv2.MORPH_CLOSE,
-                            close_kernel,
-                            dst=guarded_footprint_mask,
-                        )
-                        closed_mask = np.ascontiguousarray(
-                            guarded_footprint_mask[
-                                close_guard_px:-close_guard_px,
-                                close_guard_px:-close_guard_px,
-                            ]
-                        )
-                        del guarded_footprint_mask
-                        foot_contours, _ = cv2.findContours(closed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                         sticker_footprint = np.zeros_like(padded_original_mask)
-                        cv2.drawContours(sticker_footprint, foot_contours, -1, 255, cv2.FILLED)
+                        if (
+                            artwork_footprint_poly is not None
+                            and not getattr(artwork_footprint_poly, "is_empty", True)
+                        ):
+                            # QUALITY (feedback 2026-08-10 §EDGE-SAMPLE.2): cùng
+                            # contour sạch đã dùng dựng đường cắt, không dùng raw mask
+                            # còn các đảo JPEG trắng/hồng làm SMask bù xén thủng từng mảng.
+                            _rasterize_poly(
+                                artwork_footprint_poly,
+                                sticker_footprint,
+                                self.scale,
+                                pad_left,
+                                pad_top,
+                            )
+                        else:
+                            close_kernel = cv2.getStructuringElement(
+                                cv2.MORPH_ELLIPSE,
+                                (close_px * 2 + 1, close_px * 2 + 1),
+                            )
+                            close_guard_px = close_px + 1
+                            guarded_footprint_mask = np.pad(
+                                padded_original_mask,
+                                pad_width=close_guard_px,
+                                mode="constant",
+                                constant_values=0,
+                            )
+                            cv2.morphologyEx(
+                                guarded_footprint_mask,
+                                cv2.MORPH_CLOSE,
+                                close_kernel,
+                                dst=guarded_footprint_mask,
+                            )
+                            closed_mask = np.ascontiguousarray(
+                                guarded_footprint_mask[
+                                    close_guard_px:-close_guard_px,
+                                    close_guard_px:-close_guard_px,
+                                ]
+                            )
+                            del guarded_footprint_mask
+                            foot_contours, _ = cv2.findContours(
+                                closed_mask,
+                                cv2.RETR_EXTERNAL,
+                                cv2.CHAIN_APPROX_SIMPLE,
+                            )
+                            cv2.drawContours(
+                                sticker_footprint,
+                                foot_contours,
+                                -1,
+                                255,
+                                cv2.FILLED,
+                            )
 
                         # "Lẹm mép" thật sự chỉ do edge_bite_px: co footprint và clip artwork
                         # để bleed lấn vào dải mép. Lẹm quá tay sẽ ăn nội dung nên mặc định là 0.
@@ -6692,16 +8666,15 @@ class StickerEngine:
                             bite_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (edge_bite_px*2+1, edge_bite_px*2+1))
                             sticker_footprint = cv2.erode(sticker_footprint, bite_kernel)
 
-                        # bleed_ring = vùng giữa footprint và đường cắt. NỚI mép trong
-                        # VÀO TRONG vài px: SMask lùa xuống DƯỚI artwork (layer trên phủ
-                        # footprint) → bịt khe hở subpixel ở mối nối raster(SMask)↔clip-vector,
-                        # tránh hở nền tạo sợi mảnh. Phần nới nằm dưới artwork nên vô hình.
-                        _seam_clean_px = (
-                            selected_peel_px
-                            if bleed_color_type in ("image", "trajectory") and not rectangle_mode
-                            else 0
-                        )
-                        _tuck_px = max(1, int(0.2 * px_per_mm), _seam_clean_px)
+                        # bleed_ring = vùng giữa footprint và biên bù xén. Lớp màu lấy
+                        # mẫu được vẽ LÊN TRÊN artwork, vì vậy phần chồng mí vào trong là
+                        # thay đổi nhìn thấy được. Chỉ cho phép một dải cố định rất hẹp để
+                        # bịt khe AA/subpixel; không được lấy độ sâu dò màu làm độ chồng mí.
+                        # QUALITY (feedback 2026-08-10 §EDGE-SAMPLE.3): độ sâu dò
+                        # màu và độ chồng mí là hai đại lượng độc lập. Trước đây
+                        # selected_peel_px=21 (≈2,47 mm) bị dùng làm choke trên
+                        # artwork, nên mọi sai màu nguồn đều lộ thành một vành lớn.
+                        _tuck_px = _sampled_bleed_overlap_px(px_per_mm)
                         _sampled_seam_overlay = (
                             bleed_color_type in ("image", "trajectory", "inpaint")
                             and not rectangle_mode
@@ -6751,10 +8724,10 @@ class StickerEngine:
                                 + 1
                                 + _SAFETY
                             )
-                            band_kernel = cv2.getStructuringElement(
-                                cv2.MORPH_ELLIPSE, (band_r * 2 + 1, band_r * 2 + 1)
+                            band = _build_bleed_color_work_band(
+                                bleed_ring,
+                                band_r,
                             )
-                            band = cv2.dilate(bleed_ring, band_kernel)
                         else:
                             band_r = 0
                             band = None
@@ -7120,8 +9093,8 @@ class StickerEngine:
                     page_content_stream.append("1.0 SCN")
                     page_content_stream.append("1.0 w")
 
-                    if alpha_fitted_paths is not None:
-                        for segments in alpha_fitted_paths:
+                    if cut_fitted_paths is not None:
+                        for segments in cut_fitted_paths:
                             page_content_stream.extend(
                                 build_bezier_segments_path_stream(
                                     segments,
@@ -7304,7 +9277,7 @@ class StickerEngine:
                     else:
                         _conf = None
                     page_meta = {
-                        "contour_source": "alpha" if alpha_contour_mode else "auto",
+                        "contour_source": "alpha" if alpha_source_contour else "auto",
                         "alpha_fallback": bool(alpha_fallback_used),
                         "width_mm": round(width_mm, 2),
                         "height_mm": round(height_mm, 2),
@@ -7613,6 +9586,15 @@ class StickerEngine:
                 "shape_mode": kw.get("shape_mode", "auto_safe"),
                 "alpha_corner_policy": kw.get("alpha_corner_policy", "legacy"),
                 "alpha_source_pixel_mm": kw.get("alpha_source_pixel_mm"),
+                "alpha_source_mode": kw.get("alpha_source_mode", False),
+                "cutline_smoothness": kw.get("cutline_smoothness", 50),
+                "cutline_fidelity": kw.get("cutline_fidelity", 50),
+                "curve_tension": kw.get("curve_tension", 50),
+                "min_detail_area_mm2": kw.get(
+                    "min_detail_area_mm2",
+                    _MIN_CONTOUR_AREA_MM2,
+                ),
+                "alpha_path_overrides": kw.get("alpha_path_overrides"),
                 # Tuple 4 bool — picklable, worker không phải parse lại chuỗi.
                 "bleed_sides": kw.get("bleed_sides"),
             })

@@ -31,7 +31,7 @@ TAC_TILE_PX = 16              # kích thước ô grid-tiling khi gom vùng vi p
 #
 # `ppe` vào được danh sách vì facade đã loại sẵn mọi trang mà chính engine khai là
 # lượng mực chưa đủ tin (`ink_unsound`) — xem `app/core/print_engine/facade.py`.
-TAC_TRUSTED_ENGINES = frozenset({"ghostscript", "ppe"})
+TAC_TRUSTED_ENGINES = frozenset({"ppe"})
 
 
 def _normalize_tac_threshold(value) -> int:
@@ -181,14 +181,14 @@ class InkRulesMixin:
                 page_h_pt = float(mb[3]) - float(mb[1]) if mb else None
 
                 # TAC = tổng mực DeviceCMYK (ink coverage), KHÔNG phải soft-proof FOGRA.
-                # ink_accurate=True: UseFastColor, không ICC, không AA — solid 400% TAC
-                # không bị nén xuống ~292% (false-clean dưới ngưỡng 300).
+                # ink_accurate=True đo trực tiếp lượng mực, không lấy ảnh soft-proof
+                # đã qua ICC làm dữ liệu TAC.
                 sep = _run_coro_sync(
                     engine.extract_separations(
                         pdf_path,
                         page_num,
                         dpi=TAC_RENDER_DPI,
-                        use_ghostscript=True,
+                        render_mode="accurate",
                         ink_accurate=True,
                     )
                 )
@@ -197,11 +197,8 @@ class InkRulesMixin:
                     # TAC chưa hề chạy → phát issue để user biết báo cáo "sạch TAC" là
                     # KHÔNG đáng tin, thay vì tưởng file đạt ngưỡng mực.
                     #
-                    # Điều kiện là danh sách engine ĐÁNG TIN, không phải so bằng với
-                    # "ghostscript": PPE cũng tách kênh thật trong không gian mực, và
-                    # facade đã loại sẵn mọi trang mà chính engine khai là lượng mực
-                    # chưa đủ tin. So bằng một tên engine sẽ ném kết quả PPE đúng vào
-                    # nhánh "chưa kiểm tra được" và cảnh báo oan trên file sạch.
+                    # PPE chỉ được tin khi facade xác nhận lượng mực đủ chắc chắn;
+                    # mọi kết quả xấp xỉ phải đi nhánh "chưa kiểm tra được".
                     logger.warning(
                         "TAC trang %d: không có engine tách kênh đáng tin (engine=%s).",
                         page_num,
@@ -209,8 +206,8 @@ class InkRulesMixin:
                     )
                     # Nói đúng NGUYÊN NHÂN. `quality_note` do engine dựng sát chỗ
                     # xảy ra nên chính xác hơn mọi câu đoán ở đây; chỉ khi không có
-                    # nó mới dùng câu chung. Ghi sai lý do khiến người dùng đi cài
-                    # Ghostscript trong khi Ghostscript đã có và vấn đề là màu.
+                    # nó mới dùng câu chung. Không hướng người dùng sang cài engine
+                    # ngoài khi giới hạn nằm ở nội dung màu của file.
                     detail = (sep.get("quality_note") or "").strip()
                     issues.append(PreflightIssue(
                         rule_id="TAC_EXCEEDED",

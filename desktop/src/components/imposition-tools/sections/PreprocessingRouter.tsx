@@ -18,6 +18,7 @@ import MergeTool from '../../preprocess-tools/MergeTool';
 import PreflightTool from '../../preprocess-tools/PreflightTool';
 import FontToolsTool from '../../preprocess-tools/FontToolsTool';
 import HairlinesTool from '../../preprocess-tools/HairlinesTool';
+import InkManagerTool from '../../preprocess-tools/InkManagerTool';
 import ConvertColorsTool from '../../preprocess-tools/ConvertColorsTool';
 import TrapPresetsTool from '../../preprocess-tools/TrapPresetsTool';
 import SavePdfxTool from '../../preprocess-tools/SavePdfxTool';
@@ -50,6 +51,7 @@ const TOOL_HEADERS: Record<string, { icon: React.ReactNode; title: string; desc:
     preflight: { icon: '🩺', title: 'Preflight (Kiểm tra chuẩn in)', desc: 'Quét lỗi hệ màu, font, DPI và tự động sửa.' },
     font_tools: { icon: '🔤', title: 'Chữ & Font', desc: 'Kiểm tra font nhúng, chữ sống và khóa chữ có hậu kiểm.' },
     hairlines: { icon: '✏️', title: 'Sửa nét mảnh (Fix Hairlines)', desc: 'Phát hiện & tăng độ dày nét quá mảnh.' },
+    inkmanager: { icon: '🖨️', title: 'Quản lý mực (Ink Manager)', desc: 'Kiểm tra kênh Process/Spot và chuyển màu Spot có chủ đích.' },
     convertcolors: { icon: '🎨', title: 'Chuyển đổi màu (Convert Colors)', desc: 'RGB→CMYK, Spot→CMYK, ICC Profile, Rendering Intent.' },
     trapping: { icon: '🔲', title: 'Chồng tràn (Trapping)', desc: 'Overprint text đen, chống lỗi knockout.' },
     pdfx: { icon: '📄', title: 'Xuất PDF/X', desc: 'Kiểm tra & xuất chuẩn PDF/X-1a hoặc PDF/X-4.' },
@@ -78,6 +80,8 @@ interface PreprocessingRouterProps {
     activeTool: string;
     pdfFile: File | null;
     sourceImageFile?: File | null;
+    viewerActivePage?: number;
+    viewerPageOrder?: number[];
     isActive?: boolean;
     isProcessing: boolean;
     onStartShuffle?: (settings: any) => void;
@@ -97,7 +101,7 @@ interface PreprocessingRouterProps {
 }
 
 export default function PreprocessingRouter({
-    tabId, activeTool, pdfFile, sourceImageFile, isProcessing, isActive, ensureCropFileId, onCropApplied, onCropClose,
+    tabId, activeTool, pdfFile, sourceImageFile, viewerActivePage, viewerPageOrder, isProcessing, isActive, ensureCropFileId, onCropApplied, onCropClose,
     onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge,
     onIssueSelect, onOpenOutputPreview, onOpenTool, onFileFixed, officeSourceFile, officeSourceFiles,
 }: PreprocessingRouterProps) {
@@ -232,6 +236,10 @@ export default function PreprocessingRouter({
                 <HairlinesTool pdfFile={pdfFile} onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }} />
             )}
 
+            {activeTool === 'inkmanager' && (
+                <InkManagerTool pdfFile={pdfFile} onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }} />
+            )}
+
             {activeTool === 'convertcolors' && (
                 <ConvertColorsTool pdfFile={pdfFile} onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }} />
             )}
@@ -258,7 +266,12 @@ export default function PreprocessingRouter({
                         tabId={tabId}
                         pdfFile={pdfFile}
                         sourceImageFile={sourceImageFile}
+                        activeSourcePage={viewerPageOrder?.[Math.max(0, (viewerActivePage || 1) - 1)]
+                            ?? viewerActivePage
+                            ?? 1}
+                        pageOrder={viewerPageOrder}
                         isActive={isActive === true}
+                        onOpenTool={onOpenTool}
                         onFileFixed={(blob, name, path) => onFileFixed?.(blob, name, path)}
                     />
                 </StickerToolErrorBoundary>
@@ -273,7 +286,12 @@ export default function PreprocessingRouter({
             )}
 
             {activeTool === 'upscale' && (
-                <UpscaleTool tabId={tabId} pdfFile={pdfFile} />
+                <UpscaleTool
+                    tabId={tabId}
+                    pdfFile={pdfFile}
+                    sourceImageFile={sourceImageFile}
+                    onFileFixed={(blob, name, path) => onFileFixed?.(blob, name, path)}
+                />
             )}
 
             {activeTool === 'logo_rebuild' && (

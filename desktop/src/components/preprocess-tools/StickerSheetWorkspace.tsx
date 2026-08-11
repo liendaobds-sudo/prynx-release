@@ -1,7 +1,15 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import {
+    useCallback,
+    useEffect,
+    useRef,
+    useState,
+    type PointerEvent as ReactPointerEvent,
+    type RefObject,
+} from 'react';
 import { Hand, Pencil } from 'lucide-react';
 
 import { tv } from '../../i18n';
+import type { StickerCutlinePreview } from '../../lib/stickerSheetApi';
 import {
     decodeLabelRgb,
     type StickerMaskWorkerResponse,
@@ -12,6 +20,90 @@ import { useStickerSheetStore, type NormalizedMaskPoint } from './stickerSheetSt
 interface Props {
     tabId: string;
     isActive: boolean;
+    /** Chỉ phủ preview/mask lên trang của AcrobatViewer, không dựng viewport riêng. */
+    embedded?: boolean;
+    /** Viewer đang ở Pointer tool; Hand/Dimension phải nhận thao tác từ Viewer gốc. */
+    editingEnabled?: boolean;
+    /** Số trang nguồn đang được thumbnail/Viewer chọn (không phải vị trí thumbnail). */
+    sourcePage?: number;
+}
+
+function CutlineOverlay({
+    preview,
+    selectedInstanceId,
+}: {
+    preview: StickerCutlinePreview;
+    selectedInstanceId: number | null;
+}) {
+    return (
+        <svg
+            data-testid="sticker-cutline-preview"
+            viewBox={`0 0 ${preview.preview_width_px} ${preview.preview_height_px}`}
+            preserveAspectRatio="none"
+            aria-label={tv('Đường bế xem trước', 'preprocess.stickerSheet')}
+            className="pointer-events-none absolute inset-0 z-10 h-full w-full overflow-visible"
+        >
+            {preview.paths.map(path => (
+                <path
+                    key={path.instance_id}
+                    d={path.d}
+                    fill="none"
+                    stroke={selectedInstanceId === path.instance_id ? '#d946ef' : '#7c3aed'}
+                    strokeWidth={selectedInstanceId === path.instance_id ? 2 : 1.4}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    vectorEffect="non-scaling-stroke"
+                />
+            ))}
+        </svg>
+    );
+}
+
+function BrushCursorOverlay({
+    cursorRef,
+    width,
+    height,
+    radius,
+}: {
+    cursorRef: RefObject<SVGGElement | null>;
+    width: number;
+    height: number;
+    radius: number;
+}) {
+    const radiusPx = Math.max(1, radius * Math.max(width, height));
+    return (
+        <svg
+            viewBox={`0 0 ${width} ${height}`}
+            preserveAspectRatio="none"
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 z-30 h-full w-full overflow-visible"
+        >
+            <g
+                ref={cursorRef}
+                data-testid="sticker-brush-cursor"
+                opacity="0"
+            >
+                <circle
+                    cx="0"
+                    cy="0"
+                    r={radiusPx}
+                    fill="none"
+                    stroke="rgba(0,0,0,0.9)"
+                    strokeWidth="3"
+                    vectorEffect="non-scaling-stroke"
+                />
+                <circle
+                    cx="0"
+                    cy="0"
+                    r={radiusPx}
+                    fill="none"
+                    stroke="rgba(255,255,255,0.98)"
+                    strokeWidth="1"
+                    vectorEffect="non-scaling-stroke"
+                />
+            </g>
+        </svg>
+    );
 }
 
 async function loadImageData(url: string, width: number, height: number): Promise<ImageData> {
@@ -28,7 +120,7 @@ async function loadImageData(url: string, width: number, height: number): Promis
     return context.getImageData(0, 0, width, height);
 }
 
-function normalizedPoint(event: ReactPointerEvent<HTMLCanvasElement>): NormalizedMaskPoint {
+function normalizedPoint(event: ReactPointerEvent<HTMLElement>): NormalizedMaskPoint {
     const rect = event.currentTarget.getBoundingClientRect();
     return {
         x: Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width))),
@@ -36,16 +128,34 @@ function normalizedPoint(event: ReactPointerEvent<HTMLCanvasElement>): Normalize
     };
 }
 
-export default function StickerSheetWorkspace({ tabId, isActive }: Props) {
+function isEditableShortcutTarget(target: EventTarget | null): boolean {
+    return target instanceof Element && Boolean(target.closest(
+        'input, textarea, select, [contenteditable]:not([contenteditable="false"])',
+    ));
+}
+
+export default function StickerSheetWorkspace({
+    tabId,
+    isActive,
+    embedded = false,
+    editingEnabled = false,
+    sourcePage,
+}: Props) {
     const tab = useStickerSheetStore(state => state.tabs[tabId]);
-    const state = tab || useStickerSheetStore.getState().getTab(tabId);
+    const tabState = tab || useStickerSheetStore.getState().getTab(tabId);
+    const requestedPage = sourcePage || tabState.activeSourcePage;
+    const requestedPageState = tabState.pages[requestedPage];
+    const state = requestedPageState
+        ? { ...tabState, ...requestedPageState, activeSourcePage: requestedPage }
+        : tabState;
     const actionsRef = useRef(useStickerSheetStore.getState());
     const actions = actionsRef.current;
     const fileInputRef = useRef<HTMLInputElement>(null);
     const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
+    const brushCursorRef = useRef<SVGGElement>(null);
     const workspaceRef = useRef<HTMLDivElement>(null);
     const panLayerRef = useRef<HTMLDivElement>(null);
-    const zoomLayerRef = useRef<HTMLDivElement>(null);
+    const zoomLayerRef = useRef<HTMLElement>(null);
     const workerRef = useRef<Worker | null>(null);
     const workerReadyRef = useRef(false);
     const labelIdsRef = useRef<Uint32Array | null>(null);
@@ -65,9 +175,35 @@ export default function StickerSheetWorkspace({ tabId, isActive }: Props) {
     const [interactionMode, setInteractionMode] = useState<'edit' | 'pan'>('edit');
     const [isPanning, setIsPanning] = useState(false);
     const [isSpaceHeld, setIsSpaceHeld] = useState(false);
+    const maskVisible = ['mask-review', 'confirming', 'mask-ready', 'exporting'].includes(state.status);
+    const canEditMask = (
+        state.status === 'mask-review' || state.status === 'mask-ready'
+    ) && !state.isRefining;
+    const brushToolActive = state.activeTool === 'erase' || state.activeTool === 'restore';
+    const brushCursorEnabled = Boolean(
+        isActive
+        && canEditMask
+        && brushToolActive
+        && (embedded
+            ? editingEnabled
+            : interactionMode === 'edit' && !isPanning && !isSpaceHeld),
+    );
+    const isPdfSource = state.sourceFile?.type === 'application/pdf'
+        || /\.pdf$/i.test(state.sourceFile?.name || '');
+    const sourcePreviewVisible = Boolean(
+        state.sourceFile
+        && state.sourcePreviewUrl
+        && (state.inspection || !isPdfSource),
+    );
+    const canNavigateView = !embedded && (maskVisible || sourcePreviewVisible);
 
     editsRef.current = state.edits;
     selectedRef.current = state.selectedInstanceId;
+
+    useEffect(() => {
+        if (!isActive || !sourcePage) return;
+        actions.setActivePage(tabId, sourcePage);
+    }, [actions, isActive, sourcePage, tabId]);
 
     const applyViewTransform = useCallback(() => {
         if (frameRef.current !== null) return;
@@ -113,7 +249,7 @@ export default function StickerSheetWorkspace({ tabId, isActive }: Props) {
 
     useEffect(() => {
         resetView();
-    }, [resetView, state.manifest?.session_id]);
+    }, [resetView, state.manifest?.session_id, state.sourcePreviewUrl]);
 
     const requestRender = useCallback(() => {
         if (!workerReadyRef.current || !workerRef.current) return;
@@ -128,7 +264,7 @@ export default function StickerSheetWorkspace({ tabId, isActive }: Props) {
 
     useEffect(() => {
         if (
-            state.status !== 'ready'
+            !maskVisible
             || !state.manifest
             || !state.labelsUrl
             || !state.uncertaintyUrl
@@ -195,7 +331,7 @@ export default function StickerSheetWorkspace({ tabId, isActive }: Props) {
             worker.terminate();
             if (workerRef.current === worker) workerRef.current = null;
         };
-    }, [requestRender, state.labelsUrl, state.manifest, state.status, state.uncertaintyUrl]);
+    }, [maskVisible, requestRender, state.labelsUrl, state.manifest, state.uncertaintyUrl]);
 
     useEffect(() => {
         requestRender();
@@ -212,24 +348,62 @@ export default function StickerSheetWorkspace({ tabId, isActive }: Props) {
         return labels[y * width + x] || 0;
     };
 
-    const handlePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-        if (!isActive || state.status !== 'ready') return;
-        workspaceRef.current?.focus({ preventScroll: true });
-        const wantsPan = event.button === 1 || interactionMode === 'pan' || spaceHeldRef.current;
-        if (wantsPan) {
-            event.preventDefault();
-            event.currentTarget.setPointerCapture(event.pointerId);
-            panningRef.current = true;
-            setIsPanning(true);
-            panStartRef.current = {
-                x: event.clientX,
-                y: event.clientY,
-                panX: viewRef.current.panX,
-                panY: viewRef.current.panY,
-            };
+    const hideBrushCursor = useCallback(() => {
+        brushCursorRef.current?.setAttribute('opacity', '0');
+    }, []);
+
+    const syncBrushCursor = (event: ReactPointerEvent<HTMLElement>) => {
+        const cursor = brushCursorRef.current;
+        const manifest = state.manifest;
+        if (!cursor || !manifest || !brushCursorEnabled) {
+            hideBrushCursor();
             return;
         }
+        const point = normalizedPoint(event);
+        cursor.setAttribute(
+            'transform',
+            `translate(${point.x * manifest.preview_width_px} ${point.y * manifest.preview_height_px})`,
+        );
+        cursor.setAttribute('opacity', '1');
+    };
+
+    useEffect(() => {
+        if (!brushCursorEnabled) hideBrushCursor();
+    }, [brushCursorEnabled, hideBrushCursor]);
+
+    const beginPan = (event: ReactPointerEvent<HTMLElement>) => {
+        hideBrushCursor();
+        workspaceRef.current?.focus({ preventScroll: true });
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        panningRef.current = true;
+        setIsPanning(true);
+        panStartRef.current = {
+            x: event.clientX,
+            y: event.clientY,
+            panX: viewRef.current.panX,
+            panY: viewRef.current.panY,
+        };
+    };
+
+    const handleSourcePointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+        if (!isActive || (event.button !== 0 && event.button !== 1)) return;
+        beginPan(event);
+    };
+
+    const handlePointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+        if (!isActive) return;
+        if (!embedded) {
+            const wantsPan = event.button === 1 || interactionMode === 'pan' || spaceHeldRef.current;
+            if (wantsPan) {
+                beginPan(event);
+                return;
+            }
+        }
+        if (!canEditMask || (embedded && !editingEnabled)) return;
         if (event.button !== 0) return;
+        if (embedded) event.stopPropagation();
+        syncBrushCursor(event);
         const point = normalizedPoint(event);
         const hit = instanceAt(point);
         if (state.activeTool === 'merge') {
@@ -251,15 +425,18 @@ export default function StickerSheetWorkspace({ tabId, isActive }: Props) {
         pointsRef.current = [point];
     };
 
-    const handlePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const handlePointerMove = (event: ReactPointerEvent<HTMLElement>) => {
         if (panningRef.current) {
+            hideBrushCursor();
             const start = panStartRef.current;
             viewRef.current.panX = start.panX + event.clientX - start.x;
             viewRef.current.panY = start.panY + event.clientY - start.y;
             applyViewTransform();
             return;
         }
+        syncBrushCursor(event);
         if (!drawingRef.current || !isActive) return;
+        if (embedded) event.stopPropagation();
         const point = normalizedPoint(event);
         const previous = pointsRef.current[pointsRef.current.length - 1];
         if (!previous || Math.hypot(point.x - previous.x, point.y - previous.y) >= 0.002) {
@@ -267,7 +444,7 @@ export default function StickerSheetWorkspace({ tabId, isActive }: Props) {
         }
     };
 
-    const finishStroke = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const finishStroke = (event: ReactPointerEvent<HTMLElement>) => {
         if (panningRef.current) {
             panningRef.current = false;
             setIsPanning(false);
@@ -277,6 +454,7 @@ export default function StickerSheetWorkspace({ tabId, isActive }: Props) {
             return;
         }
         if (!drawingRef.current) return;
+        if (embedded) event.stopPropagation();
         drawingRef.current = false;
         if (event.currentTarget.hasPointerCapture(event.pointerId)) {
             event.currentTarget.releasePointerCapture(event.pointerId);
@@ -310,7 +488,7 @@ export default function StickerSheetWorkspace({ tabId, isActive }: Props) {
     }, [applyViewTransform, updateZoom]);
 
     useEffect(() => {
-        if (state.status !== 'ready') return;
+        if (!canNavigateView || !isActive) return;
         const workspace = workspaceRef.current;
         if (!workspace) return;
         // UIUX (audit 2026-08-05 §AI2.VIEW2): React đăng ký wheel dạng passive trong
@@ -318,15 +496,50 @@ export default function StickerSheetWorkspace({ tabId, isActive }: Props) {
         // trong vùng xem và không làm cuộn panel bên ngoài.
         workspace.addEventListener('wheel', handleWheel, { passive: false });
         return () => workspace.removeEventListener('wheel', handleWheel);
-    }, [handleWheel, state.status]);
+    }, [canNavigateView, handleWheel, isActive]);
+
+    useEffect(() => {
+        if (!isActive) return;
+        // UIUX (feedback 2026-08-10 §AI.BRUSH1): bắt lịch sử mask ở capture phase
+        // để Ctrl+Z không đồng thời hoàn tác tài liệu trong Viewer nằm phía dưới.
+        const handleHistoryShortcut = (event: KeyboardEvent) => {
+            if (
+                !(event.ctrlKey || event.metaKey)
+                || event.altKey
+                || event.isComposing
+                || isEditableShortcutTarget(event.target)
+            ) return;
+
+            const key = event.key.toLowerCase();
+            const wantsUndo = key === 'z' && !event.shiftKey;
+            const wantsRedo = (key === 'z' && event.shiftKey) || (key === 'y' && !event.shiftKey);
+            if (!wantsUndo && !wantsRedo) return;
+
+            const before = useStickerSheetStore.getState().getTab(tabId);
+            if (wantsUndo) actions.undo(tabId);
+            else actions.redo(tabId);
+            const after = useStickerSheetStore.getState().getTab(tabId);
+
+            // Không nuốt Undo của Viewer khi lịch sử mask không đổi hoặc đang bị khóa.
+            if (
+                before.edits.length === after.edits.length
+                && before.redoEdits.length === after.redoEdits.length
+            ) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        };
+
+        window.addEventListener('keydown', handleHistoryShortcut, true);
+        return () => window.removeEventListener('keydown', handleHistoryShortcut, true);
+    }, [actions, isActive, tabId]);
 
     const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
         if (!isActive || event.code !== 'Space' || event.repeat) return;
-        const target = event.target as HTMLElement | null;
-        if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+        if (isEditableShortcutTarget(event.target)) return;
         event.preventDefault();
         spaceHeldRef.current = true;
         setIsSpaceHeld(true);
+        hideBrushCursor();
     };
 
     const releaseSpace = () => {
@@ -334,17 +547,21 @@ export default function StickerSheetWorkspace({ tabId, isActive }: Props) {
         setIsSpaceHeld(false);
     };
 
-    if (state.status === 'idle' || state.status === 'error') {
+    // UIUX (feedback 2026-08-09 §AI.VIEW1): trước khi có mask, AI không được
+    // che hay thay thế AcrobatViewer. Sidebar vẫn điều khiển inspect/detect.
+    if (embedded && !maskVisible) return null;
+
+    if (state.status === 'idle' || (state.status === 'error' && !state.sourceFile)) {
         return (
             <div className="flex h-full items-center justify-center bg-slate-100 p-6 dark:bg-zinc-950">
                 <input
                     ref={fileInputRef}
                     type="file"
-                    accept="image/png,image/jpeg,image/webp,image/bmp,image/tiff"
+                    accept="application/pdf,image/png,image/jpeg,image/webp,image/bmp,image/tiff"
                     className="hidden"
                     onChange={event => {
                         const file = event.target.files?.[0];
-                        if (file) void actions.analyze(tabId, file);
+                        if (file) actions.selectSource(tabId, file);
                         event.currentTarget.value = '';
                     }}
                 />
@@ -355,31 +572,161 @@ export default function StickerSheetWorkspace({ tabId, isActive }: Props) {
                     onDrop={event => {
                         event.preventDefault();
                         const file = event.dataTransfer.files?.[0];
-                        if (file) void actions.analyze(tabId, file);
+                        if (file) actions.selectSource(tabId, file);
                     }}
                     className="flex max-w-xl flex-col items-center gap-4 rounded-3xl border-2 border-dashed border-violet-300 bg-white px-12 py-14 text-center shadow-sm hover:border-violet-500 hover:bg-violet-50 dark:border-violet-800 dark:bg-zinc-900 dark:hover:bg-violet-950/20"
                 >
                     <span className="text-6xl">✂️</span>
-                    <span className="text-xl font-black text-slate-800 dark:text-white">{tv('Tách tem từ ảnh AI')}</span>
+                    <span className="text-xl font-black text-slate-800 dark:text-white">{tv('Nhận diện và tạo đường cắt')}</span>
                     <span className="text-[13px] leading-relaxed text-slate-500 dark:text-zinc-400">
-                        {tv('Kéo ảnh JPG/PNG chứa nhiều tem vào đây. PrynX sẽ loại nền và bóng, sau đó tạo từng đường cắt.')}
+                        {tv('Kéo PDF hoặc ảnh tem vào đây. PrynX sẽ ưu tiên CutContour, vector và nền trong suốt trước khi dùng AI.')}
                     </span>
                 </button>
             </div>
         );
     }
 
-    if (state.status === 'analyzing') {
+    if (
+        ['source-ready', 'error', 'inspecting', 'detecting'].includes(state.status)
+        && state.sourceFile
+    ) {
         return (
-            <div className="flex h-full flex-col items-center justify-center gap-4 bg-slate-100 dark:bg-zinc-950">
-                <div className="h-10 w-10 animate-spin rounded-full border-4 border-violet-500 border-t-transparent" />
-                <div className="text-sm font-bold text-slate-700 dark:text-zinc-200">{tv('Đang nhận diện từng tem…')}</div>
+            <div
+                ref={workspaceRef}
+                data-testid="sticker-sheet-workspace"
+                tabIndex={0}
+                onKeyDown={handleKeyDown}
+                onKeyUp={event => { if (event.code === 'Space') releaseSpace(); }}
+                onBlur={releaseSpace}
+                className="relative flex h-full flex-col overflow-hidden bg-[#d9d9d9] outline-none dark:bg-[#181818]"
+            >
+                {sourcePreviewVisible && state.sourcePreviewUrl ? (
+                    <>
+                        <div className="absolute left-3 top-3 z-20 flex items-center gap-1 rounded-lg bg-white/90 p-1 shadow dark:bg-zinc-900/90">
+                            <button
+                                type="button"
+                                aria-label={tv('Thu nhỏ')}
+                                onClick={() => updateZoom(viewRef.current.zoom / 1.2)}
+                                className="h-7 w-8 rounded text-sm font-bold hover:bg-slate-100 dark:hover:bg-zinc-800"
+                            >−</button>
+                            <button
+                                type="button"
+                                aria-label={tv('Đặt lại vùng xem')}
+                                onClick={resetView}
+                                className="h-7 min-w-14 rounded px-2 text-[11px] font-bold hover:bg-slate-100 dark:hover:bg-zinc-800"
+                            >{Math.round(zoom * 100)}%</button>
+                            <button
+                                type="button"
+                                aria-label={tv('Phóng to')}
+                                onClick={() => updateZoom(viewRef.current.zoom * 1.2)}
+                                className="h-7 w-8 rounded text-sm font-bold hover:bg-slate-100 dark:hover:bg-zinc-800"
+                            >+</button>
+                            <span className="mx-0.5 h-5 w-px bg-slate-200 dark:bg-zinc-700" />
+                            <span className="flex h-7 items-center gap-1 rounded bg-violet-100 px-2 text-[10px] font-bold text-violet-700 dark:bg-violet-950/60 dark:text-violet-200">
+                                <Hand className="h-3.5 w-3.5" /> {tv('Di chuyển')}
+                            </span>
+                        </div>
+                        <div
+                            className={`relative h-full touch-none overflow-hidden ${isPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
+                            onPointerDown={handleSourcePointerDown}
+                            onPointerMove={handlePointerMove}
+                            onPointerUp={finishStroke}
+                            onPointerCancel={finishStroke}
+                        >
+                            <div
+                                ref={panLayerRef}
+                                data-testid="sticker-source-pan-layer"
+                                className="absolute inset-6 flex items-center justify-center will-change-transform"
+                            >
+                                <img
+                                    ref={element => { zoomLayerRef.current = element; }}
+                                    src={state.sourcePreviewUrl}
+                                    alt={tv('Ảnh gốc chưa nhận diện')}
+                                    draggable={false}
+                                    className="max-h-full max-w-full select-none object-contain shadow-2xl will-change-transform"
+                                />
+                            </div>
+                        </div>
+                        <div className="pointer-events-none absolute bottom-3 left-1/2 z-20 -translate-x-1/2 rounded-full bg-black/55 px-3 py-1 text-[10px] font-medium text-white backdrop-blur-sm">
+                            {tv('Kéo để di chuyển · Ctrl + cuộn để thu phóng')}
+                        </div>
+                    </>
+                ) : (
+                    <div className="m-auto rounded-xl bg-white/90 px-4 py-3 text-sm font-semibold text-slate-700 shadow dark:bg-zinc-900/90 dark:text-zinc-200">
+                        {state.sourceFile.name}
+                    </div>
+                )}
+                <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-full bg-black/60 px-3 py-1.5 text-[11px] font-bold text-white backdrop-blur-sm">
+                    {state.status === 'detecting'
+                        ? tv('Đang nhận diện · vẫn giữ preview gốc')
+                        : state.status === 'inspecting'
+                            ? tv('Đang chuẩn bị preview gốc')
+                            : tv('File gốc · chưa nhận diện')}
+                </div>
+                {state.status === 'error' && state.error && (
+                    <div className="absolute bottom-10 left-1/2 z-20 max-w-xl -translate-x-1/2 rounded-lg border border-rose-300 bg-rose-50/95 px-3 py-2 text-center text-[11px] text-rose-700 shadow dark:border-rose-800 dark:bg-rose-950/90 dark:text-rose-300">
+                        {state.error}
+                    </div>
+                )}
             </div>
         );
     }
 
     const manifest = state.manifest;
     if (!manifest) return null;
+    const cutlinePreview = (
+        state.cutlinePreview?.mask_revision === (manifest.mask_revision ?? 1)
+        && state.cutlinePreview.preview_width_px === manifest.preview_width_px
+        && state.cutlinePreview.preview_height_px === manifest.preview_height_px
+    ) ? state.cutlinePreview : null;
+    const hidePixelBoundary = Boolean(cutlinePreview || state.isCutlinePreviewing);
+    const editCursorClass = brushToolActive && canEditMask && isActive
+        ? 'cursor-none'
+        : 'cursor-crosshair';
+    const brushCursor = brushToolActive ? (
+        <BrushCursorOverlay
+            cursorRef={brushCursorRef}
+            width={manifest.preview_width_px}
+            height={manifest.preview_height_px}
+            radius={state.brushRadius}
+        />
+    ) : null;
+
+    if (embedded) {
+        const editMask = isActive && editingEnabled && canEditMask;
+        return (
+            <div
+                data-testid="sticker-sheet-page-overlay"
+                className="pointer-events-none absolute inset-0 z-[35] overflow-hidden bg-white"
+            >
+                <img
+                    src={state.previewUrl}
+                    alt={tv('Ảnh tem đã khử nền')}
+                    draggable={false}
+                    className="pointer-events-none absolute inset-0 h-full w-full select-none"
+                />
+                {cutlinePreview ? (
+                    <CutlineOverlay
+                        preview={cutlinePreview}
+                        selectedInstanceId={state.selectedInstanceId}
+                    />
+                ) : null}
+                <canvas
+                    ref={overlayCanvasRef}
+                    width={manifest.preview_width_px}
+                    height={manifest.preview_height_px}
+                    className={`absolute inset-0 z-20 h-full w-full touch-none ${hidePixelBoundary ? 'opacity-0' : ''} ${editMask ? `pointer-events-auto ${editCursorClass}` : 'pointer-events-none'}`}
+                    onPointerDown={handlePointerDown}
+                    onPointerMove={handlePointerMove}
+                    onPointerUp={finishStroke}
+                    onPointerCancel={finishStroke}
+                    onPointerEnter={syncBrushCursor}
+                    onPointerLeave={hideBrushCursor}
+                />
+                {brushCursor}
+            </div>
+        );
+    }
 
     return (
         <div
@@ -409,8 +756,9 @@ export default function StickerSheetWorkspace({ tabId, isActive }: Props) {
                     type="button"
                     aria-pressed={interactionMode === 'edit'}
                     onClick={() => setInteractionMode('edit')}
+                    disabled={!canEditMask}
                     title={tv('Sửa vùng tem bằng công cụ đang chọn')}
-                    className={`flex h-7 items-center gap-1 rounded px-2 text-[10px] font-bold ${interactionMode === 'edit' ? 'bg-violet-100 text-violet-700 dark:bg-violet-950/60 dark:text-violet-200' : 'hover:bg-slate-100 dark:hover:bg-zinc-800'}`}
+                    className={`flex h-7 items-center gap-1 rounded px-2 text-[10px] font-bold disabled:cursor-not-allowed disabled:opacity-40 ${interactionMode === 'edit' ? 'bg-violet-100 text-violet-700 dark:bg-violet-950/60 dark:text-violet-200' : 'hover:bg-slate-100 dark:hover:bg-zinc-800'}`}
                 >
                     <Pencil className="h-3.5 w-3.5" /> {tv('Sửa vùng tem')}
                 </button>
@@ -424,7 +772,7 @@ export default function StickerSheetWorkspace({ tabId, isActive }: Props) {
                     className="absolute inset-0 flex items-center justify-center will-change-transform"
                 >
                     <div
-                        ref={zoomLayerRef}
+                        ref={element => { zoomLayerRef.current = element; }}
                         className="relative shrink-0 shadow-2xl will-change-transform"
                         style={{
                             width: `${manifest.preview_width_px}px`,
@@ -442,16 +790,25 @@ export default function StickerSheetWorkspace({ tabId, isActive }: Props) {
                             }}
                         />
                         <img src={state.previewUrl} alt={tv('Ảnh tách tem')} draggable={false} className="absolute inset-0 h-full w-full select-none" />
+                        {cutlinePreview ? (
+                            <CutlineOverlay
+                                preview={cutlinePreview}
+                                selectedInstanceId={state.selectedInstanceId}
+                            />
+                        ) : null}
                         <canvas
                             ref={overlayCanvasRef}
                             width={manifest.preview_width_px}
                             height={manifest.preview_height_px}
-                            className={`absolute inset-0 h-full w-full touch-none ${isPanning ? 'cursor-grabbing' : interactionMode === 'pan' || isSpaceHeld ? 'cursor-grab' : 'cursor-crosshair'}`}
+                            className={`absolute inset-0 z-20 h-full w-full touch-none ${hidePixelBoundary ? 'opacity-0' : ''} ${isPanning ? 'cursor-grabbing' : interactionMode === 'pan' || isSpaceHeld ? 'cursor-grab' : editCursorClass}`}
                             onPointerDown={handlePointerDown}
                             onPointerMove={handlePointerMove}
                             onPointerUp={finishStroke}
                             onPointerCancel={finishStroke}
+                            onPointerEnter={syncBrushCursor}
+                            onPointerLeave={hideBrushCursor}
                         />
+                        {brushCursor}
                     </div>
                 </div>
             </div>

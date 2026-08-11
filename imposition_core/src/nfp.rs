@@ -12,8 +12,14 @@ pub struct NfpSolver {
 
 impl NfpSolver {
     pub fn new(base_coords: Vec<(f64, f64)>, rot_coords: Vec<(f64, f64)>) -> Self {
-        let base_ls: LineString<f64> = base_coords.into_iter().map(|(x, y)| Coord { x, y }).collect();
-        let rot_ls: LineString<f64> = rot_coords.into_iter().map(|(x, y)| Coord { x, y }).collect();
+        let base_ls: LineString<f64> = base_coords
+            .into_iter()
+            .map(|(x, y)| Coord { x, y })
+            .collect();
+        let rot_ls: LineString<f64> = rot_coords
+            .into_iter()
+            .map(|(x, y)| Coord { x, y })
+            .collect();
         Self {
             base_poly: Polygon::new(base_ls, vec![]),
             rot_poly: Polygon::new(rot_ls, vec![]),
@@ -22,7 +28,14 @@ impl NfpSolver {
 
     /// Tìm biên NFP bằng binary search trên các bước dy rời rạc.
     /// Trả danh sách (dx, dy) hợp lệ trên biên.
-    pub fn solve_candidates(&self, bh: f64, bw: f64, rw: f64, gap_px: f64, step: f64) -> Vec<(f64, f64)> {
+    pub fn solve_candidates(
+        &self,
+        bh: f64,
+        bw: f64,
+        rw: f64,
+        gap_px: f64,
+        step: f64,
+    ) -> Vec<(f64, f64)> {
         let mut dy_range = Vec::new();
         let mut current_dy = -bh + step;
         while current_dy < bh {
@@ -58,7 +71,14 @@ impl NfpSolver {
     }
 
     /// Tìm bước lặp ngoài (dx_step, dy_step) cho một cặp interlocking.
-    pub fn solve_outer_step(&self, dx: f64, dy: f64, c_w: f64, c_h: f64, gap_px: f64) -> (f64, f64) {
+    pub fn solve_outer_step(
+        &self,
+        dx: f64,
+        dy: f64,
+        c_w: f64,
+        c_h: f64,
+        gap_px: f64,
+    ) -> (f64, f64) {
         let rot_placed = self.rot_poly.translate(dx, dy);
 
         let mut lo_dx = 0.0;

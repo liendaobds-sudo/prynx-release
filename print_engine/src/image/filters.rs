@@ -12,8 +12,10 @@
 //! `JPXDecode`, `CCITTFaxDecode`) để bàn phần còn lại cho bộ giải mã ảnh, việc
 //! mà API all-or-nothing của lopdf không làm được.
 
+use std::borrow::Cow;
 use std::io::Read;
 
+use crate::cancel::CancelToken;
 use crate::error::{PpeError, PpeResult};
 
 /// Codec ảnh — filter cuối chuỗi, không giải bằng bộ giải nén thông thường.
@@ -91,6 +93,17 @@ pub struct DecodedStream {
 /// Chống "decompression bomb": vài KB nén có thể phình ra hàng GB. Không có trần
 /// thì một PDF hỏng đủ sức giết tiến trình backend.
 const MAX_DECODED: usize = 512 * 1024 * 1024;
+/// PERF (audit 2026-08-10 §L5B.1): một checkpoint mỗi 64 KiB giữ độ trễ hủy
+/// hữu hạn mà không đưa atomic load vào từng byte/pixel trên máy mạnh.
+const CANCEL_BLOCK_BYTES: usize = 64 * 1024;
+
+#[inline]
+fn check_cancelled(cancel_token: Option<&CancelToken>) -> PpeResult<()> {
+    match cancel_token {
+        Some(token) => token.check(),
+        None => Ok(()),
+    }
+}
 
 /// Giải chuỗi filter, dừng lại khi gặp codec ảnh.
 ///
@@ -101,9 +114,24 @@ pub fn decode_chain(
     filters: &[String],
     parms: &[Option<PredictorParams>],
 ) -> PpeResult<DecodedStream> {
-    let mut data = raw.to_vec();
+    decode_chain_with_cancel(raw, filters, parms, None)
+}
+
+/// Như [`decode_chain`] nhưng có checkpoint hợp tác trong các codec thuần Rust.
+pub fn decode_chain_with_cancel(
+    raw: &[u8],
+    filters: &[String],
+    parms: &[Option<PredictorParams>],
+    cancel_token: Option<&CancelToken>,
+) -> PpeResult<DecodedStream> {
+    check_cancelled(cancel_token)?;
+    // PERF (audit 2026-08-09 §PERF.9): mượn stream nén cho tới filter đầu
+    // tiên; ảnh Flate lớn không cần thêm một bản sao compressed trước khi
+    // allocator tạo buffer giải nén.
+    let mut data: Cow<'_, [u8]> = Cow::Borrowed(raw);
 
     for (i, filter) in filters.iter().enumerate() {
+        check_cancelled(cancel_token)?;
         if let Some(codec) = ImageCodec::from_filter_name(filter) {
             // Codec ảnh phải là filter cuối. Nếu còn filter sau nó thì file lệch
             // spec — báo rõ thay vì giải mã bừa.
@@ -114,20 +142,26 @@ pub fn decode_chain(
                 )));
             }
             return Ok(DecodedStream {
-                data,
+                data: data.into_owned(),
                 remaining_codec: Some(codec),
             });
         }
 
         data = match filter.as_str() {
-            "FlateDecode" | "Fl" => inflate(&data)?,
+            "FlateDecode" | "Fl" => Cow::Owned(inflate(data.as_ref(), cancel_token)?),
             "LZWDecode" | "LZW" => {
                 let early = parms.get(i).and_then(|p| *p).map(|p| p.early_change);
-                lzw_decode(&data, early)?
+                Cow::Owned(lzw_decode(data.as_ref(), early, cancel_token)?)
             }
-            "ASCII85Decode" | "A85" => ascii85_decode(&data)?,
-            "ASCIIHexDecode" | "AHx" => asciihex_decode(&data)?,
-            "RunLengthDecode" | "RL" => runlength_decode(&data)?,
+            "ASCII85Decode" | "A85" => {
+                Cow::Owned(ascii85_decode_with_cancel(data.as_ref(), cancel_token)?)
+            }
+            "ASCIIHexDecode" | "AHx" => {
+                Cow::Owned(asciihex_decode_with_cancel(data.as_ref(), cancel_token)?)
+            }
+            "RunLengthDecode" | "RL" => {
+                Cow::Owned(runlength_decode_with_cancel(data.as_ref(), cancel_token)?)
+            }
             // Crypt với /Identity là no-op; dạng khác thì tài liệu đã mã hoá.
             "Crypt" => data,
             other => {
@@ -137,54 +171,78 @@ pub fn decode_chain(
 
         if let Some(p) = parms.get(i).and_then(|p| *p) {
             if p.predictor > 1 {
-                data = apply_predictor(&data, p)?;
+                data = Cow::Owned(apply_predictor_with_cancel(data.as_ref(), p, cancel_token)?);
             }
         }
     }
 
+    check_cancelled(cancel_token)?;
     Ok(DecodedStream {
-        data,
+        data: data.into_owned(),
         remaining_codec: None,
     })
 }
 
-fn inflate(input: &[u8]) -> PpeResult<Vec<u8>> {
+fn inflate(input: &[u8], cancel_token: Option<&CancelToken>) -> PpeResult<Vec<u8>> {
     // Thử zlib trước (đúng spec), rồi deflate thô: nhiều PDF thực tế thiếu header
     // zlib. Chấp nhận cả hai là điều kiện để đọc được file từ encoder cũ.
-    if let Ok(out) = inflate_with(input, true) {
-        return Ok(out);
+    match inflate_with(input, true, cancel_token) {
+        Ok(out) => return Ok(out),
+        Err(error @ PpeError::Cancelled) => return Err(error),
+        Err(_) => {}
     }
     // Một số file có rác trước dữ liệu nén; thử bỏ byte đầu.
     if input.len() > 1 {
-        if let Ok(out) = inflate_with(&input[1..], true) {
-            return Ok(out);
+        match inflate_with(&input[1..], true, cancel_token) {
+            Ok(out) => return Ok(out),
+            Err(error @ PpeError::Cancelled) => return Err(error),
+            Err(_) => {}
         }
     }
-    inflate_with(input, false)
+    inflate_with(input, false, cancel_token)
 }
 
-fn inflate_with(input: &[u8], zlib: bool) -> PpeResult<Vec<u8>> {
+fn inflate_with(
+    input: &[u8],
+    zlib: bool,
+    cancel_token: Option<&CancelToken>,
+) -> PpeResult<Vec<u8>> {
     let mut out = Vec::new();
     let taken = Read::take(std::io::Cursor::new(input), input.len() as u64);
-    let result = if zlib {
-        flate2::read::ZlibDecoder::new(taken)
-            .take(MAX_DECODED as u64)
-            .read_to_end(&mut out)
+    let mut decoder: Box<dyn Read> = if zlib {
+        Box::new(flate2::read::ZlibDecoder::new(taken))
     } else {
-        flate2::read::DeflateDecoder::new(taken)
-            .take(MAX_DECODED as u64)
-            .read_to_end(&mut out)
+        Box::new(flate2::read::DeflateDecoder::new(taken))
     };
-    match result {
-        // Dữ liệu bị cắt vẫn dùng được phần đã giải: ảnh thiếu đuôi còn hơn mất
-        // cả trang. Chỉ coi là lỗi khi không giải được byte nào.
-        Ok(_) => Ok(out),
-        Err(_) if !out.is_empty() => Ok(out),
-        Err(e) => Err(PpeError::MalformedPdf(format!("FlateDecode lỗi: {e}"))),
+    let mut block = [0u8; CANCEL_BLOCK_BYTES];
+    loop {
+        check_cancelled(cancel_token)?;
+        let read = match decoder.read(&mut block) {
+            Ok(0) => break,
+            Ok(read) => read,
+            // Dữ liệu bị cắt vẫn dùng được phần đã giải: ảnh thiếu đuôi còn hơn
+            // mất cả trang. `Cancelled` không đi qua nhánh này vì được kiểm riêng.
+            Err(_) if !out.is_empty() => break,
+            Err(error) => return Err(PpeError::MalformedPdf(format!("FlateDecode lỗi: {error}"))),
+        };
+        if out.len().saturating_add(read) > MAX_DECODED {
+            return Err(PpeError::MalformedPdf(
+                "FlateDecode vượt trần bộ nhớ".into(),
+            ));
+        }
+        out.extend_from_slice(&block[..read]);
     }
+    check_cancelled(cancel_token)?;
+    Ok(out)
 }
 
-fn lzw_decode(input: &[u8], early_change: Option<bool>) -> PpeResult<Vec<u8>> {
+fn lzw_decode(
+    input: &[u8],
+    early_change: Option<bool>,
+    cancel_token: Option<&CancelToken>,
+) -> PpeResult<Vec<u8>> {
+    use weezl::LzwStatus;
+
     let early = early_change.unwrap_or(true);
     let mut decoder = if early {
         weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 7)
@@ -192,15 +250,43 @@ fn lzw_decode(input: &[u8], early_change: Option<bool>) -> PpeResult<Vec<u8>> {
         weezl::decode::Decoder::new(weezl::BitOrder::Msb, 7)
     };
     let mut out = Vec::new();
-    let result = decoder.into_stream(&mut out).decode_all(input);
-    if result.status.is_err() && out.is_empty() {
-        return Err(PpeError::MalformedPdf("LZWDecode lỗi".into()));
+    let mut offset = 0usize;
+    let mut block = [0u8; CANCEL_BLOCK_BYTES];
+    while offset < input.len() {
+        check_cancelled(cancel_token)?;
+        let end = (offset + CANCEL_BLOCK_BYTES).min(input.len());
+        let result = decoder.decode_bytes(&input[offset..end], &mut block);
+        offset += result.consumed_in;
+        if out.len().saturating_add(result.consumed_out) > MAX_DECODED {
+            return Err(PpeError::MalformedPdf("LZWDecode vượt trần bộ nhớ".into()));
+        }
+        out.extend_from_slice(&block[..result.consumed_out]);
+        match result.status {
+            Ok(LzwStatus::Done) => break,
+            Ok(LzwStatus::Ok) => {}
+            Ok(LzwStatus::NoProgress) => {
+                if result.consumed_in == 0 && result.consumed_out == 0 {
+                    break;
+                }
+            }
+            Err(_) if out.is_empty() => return Err(PpeError::MalformedPdf("LZWDecode lỗi".into())),
+            Err(_) => break,
+        }
     }
+    check_cancelled(cancel_token)?;
     Ok(out)
 }
 
 /// ASCII85 (§7.4.3).
 pub fn ascii85_decode(input: &[u8]) -> PpeResult<Vec<u8>> {
+    ascii85_decode_with_cancel(input, None)
+}
+
+fn ascii85_decode_with_cancel(
+    input: &[u8],
+    cancel_token: Option<&CancelToken>,
+) -> PpeResult<Vec<u8>> {
+    check_cancelled(cancel_token)?;
     let mut out = Vec::with_capacity(input.len() * 4 / 5);
     let mut tuple = [0u8; 5];
     let mut count = 0usize;
@@ -212,6 +298,9 @@ pub fn ascii85_decode(input: &[u8]) -> PpeResult<Vec<u8>> {
     }
 
     while i < input.len() {
+        if i % CANCEL_BLOCK_BYTES == 0 {
+            check_cancelled(cancel_token)?;
+        }
         let c = input[i];
         i += 1;
         match c {
@@ -260,9 +349,20 @@ fn decode_a85_group(tuple: &[u8; 5], count: usize) -> Vec<u8> {
 
 /// ASCIIHex (§7.4.2).
 pub fn asciihex_decode(input: &[u8]) -> PpeResult<Vec<u8>> {
+    asciihex_decode_with_cancel(input, None)
+}
+
+fn asciihex_decode_with_cancel(
+    input: &[u8],
+    cancel_token: Option<&CancelToken>,
+) -> PpeResult<Vec<u8>> {
+    check_cancelled(cancel_token)?;
     let mut out = Vec::with_capacity(input.len() / 2);
     let mut hi: Option<u8> = None;
-    for &c in input {
+    for (index, &c) in input.iter().enumerate() {
+        if index % CANCEL_BLOCK_BYTES == 0 {
+            check_cancelled(cancel_token)?;
+        }
         if c == b'>' {
             break;
         }
@@ -296,9 +396,20 @@ pub fn asciihex_decode(input: &[u8]) -> PpeResult<Vec<u8>> {
 
 /// RunLength (§7.4.5).
 pub fn runlength_decode(input: &[u8]) -> PpeResult<Vec<u8>> {
+    runlength_decode_with_cancel(input, None)
+}
+
+fn runlength_decode_with_cancel(
+    input: &[u8],
+    cancel_token: Option<&CancelToken>,
+) -> PpeResult<Vec<u8>> {
+    check_cancelled(cancel_token)?;
     let mut out = Vec::new();
     let mut i = 0usize;
     while i < input.len() {
+        if i % CANCEL_BLOCK_BYTES == 0 {
+            check_cancelled(cancel_token)?;
+        }
         let len = input[i];
         i += 1;
         match len {
@@ -329,6 +440,15 @@ pub fn runlength_decode(input: &[u8]) -> PpeResult<Vec<u8>> {
 
 /// Áp predictor PNG (≥10) hoặc TIFF (2).
 pub fn apply_predictor(data: &[u8], p: PredictorParams) -> PpeResult<Vec<u8>> {
+    apply_predictor_with_cancel(data, p, None)
+}
+
+pub fn apply_predictor_with_cancel(
+    data: &[u8],
+    p: PredictorParams,
+    cancel_token: Option<&CancelToken>,
+) -> PpeResult<Vec<u8>> {
+    check_cancelled(cancel_token)?;
     let colors = p.colors.max(1);
     let bpc = p.bits_per_component.max(1);
     let columns = p.columns.max(1);
@@ -336,7 +456,7 @@ pub fn apply_predictor(data: &[u8], p: PredictorParams) -> PpeResult<Vec<u8>> {
     let row_len = (columns * colors * bpc + 7) / 8;
 
     if p.predictor == 2 {
-        return Ok(tiff_predictor(data, colors, bpc, columns, row_len));
+        return tiff_predictor(data, colors, bpc, columns, row_len, cancel_token);
     }
 
     // PNG: mỗi hàng có thêm 1 byte đầu ghi loại filter.
@@ -346,6 +466,7 @@ pub fn apply_predictor(data: &[u8], p: PredictorParams) -> PpeResult<Vec<u8>> {
     let mut prev_row = vec![0u8; row_len];
 
     for r in 0..rows {
+        check_cancelled(cancel_token)?;
         let start = r * stride;
         let filter_type = data[start];
         let src = &data[start + 1..start + 1 + row_len];
@@ -414,11 +535,13 @@ fn tiff_predictor(
     bpc: usize,
     columns: usize,
     row_len: usize,
-) -> Vec<u8> {
+    cancel_token: Option<&CancelToken>,
+) -> PpeResult<Vec<u8>> {
     // Chỉ 8 bit có ý nghĩa thực tế trong PDF; bpc khác trả nguyên bản thay vì
     // biến đổi sai.
     if bpc != 8 {
-        return data.to_vec();
+        check_cancelled(cancel_token)?;
+        return Ok(data.to_vec());
     }
     let mut out = data.to_vec();
     let rows = if row_len == 0 {
@@ -427,6 +550,7 @@ fn tiff_predictor(
         data.len() / row_len
     };
     for r in 0..rows {
+        check_cancelled(cancel_token)?;
         let base = r * row_len;
         for col in 1..columns {
             for ch in 0..colors {
@@ -438,7 +562,7 @@ fn tiff_predictor(
             }
         }
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]

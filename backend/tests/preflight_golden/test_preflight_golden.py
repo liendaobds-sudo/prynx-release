@@ -9,7 +9,7 @@ Fixture PDF: tests/preflight_fixtures/pdfs/
 Kỳ vọng:     tests/preflight_fixtures/expected_rules.json
 
 So sánh: tập rule_id thực tế phải chứa must_have và không chứa must_not_have.
-`17_tac_heavy_cmyk.pdf` phải chạy bằng PPE trong hợp đồng no-GS và phát hiện TAC.
+`17_tac_heavy_cmyk.pdf` phải chạy bằng PPE và phát hiện TAC.
 """
 from __future__ import annotations
 
@@ -18,8 +18,6 @@ from pathlib import Path
 
 import pytest
 
-from app.config import settings
-from app.core import gs_usage
 from app.core.preflight_engine import PreflightEngine
 from app.core.preflight_models import ALL_RULES
 
@@ -69,12 +67,10 @@ def test_preflight_fixture_golden(
     is_tac_fixture = fixture_name == "17_tac_heavy_cmyk.pdf"
     observed_tac_engines = []
     if is_tac_fixture:
-        # BUILD (audit 2026-08-03 §REL.12): TAC là coverage PPE/no-GS bắt buộc,
-        # không còn là fixture optional phụ thuộc Ghostscript.
+        # BUILD (audit 2026-08-03 §REL.12): TAC là coverage PPE bắt buộc,
+        # không còn là fixture optional phụ thuộc engine bên ngoài.
         from app.core.separations import SeparationEngine
 
-        assert settings.GHOSTSCRIPT_PATH == ""
-        gs_usage.reset_for_tests()
         original_extract = SeparationEngine.extract_separations
 
         async def tracked_extract(instance, *args, **kwargs):
@@ -90,7 +86,6 @@ def test_preflight_fixture_golden(
 
     if is_tac_fixture:
         tac_issues = [issue for issue in report.issues if issue.rule_id == "TAC_EXCEEDED"]
-        assert gs_usage.summary()["total_gs_calls"] == 0
         assert observed_tac_engines == ["ppe"]
         assert any(
             issue.severity == "warning" and "TAC tối đa" in issue.description

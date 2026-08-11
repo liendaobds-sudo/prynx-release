@@ -169,6 +169,73 @@ describe('TileRenderScheduler', () => {
         expect(order).toEqual(['running', 'interactive', 'background']);
     });
 
+    it('giữ riêng một slot để tương tác không phải chờ background đang chạy', async () => {
+        const scheduler = new TileRenderScheduler<string>(2);
+        const backgroundGate = deferred<string>();
+        const backgroundStarted = deferred<void>();
+        const order: string[] = [];
+        const background = scheduler.enqueue({
+            requestKey: 'background-running',
+            groupKey: 'background-running',
+            ownerId: 'tab-background',
+            priority: 100,
+            run: async () => {
+                order.push('background');
+                backgroundStarted.resolve();
+                return backgroundGate.promise;
+            },
+        });
+        await backgroundStarted.promise;
+
+        const interactive = scheduler.enqueue({
+            requestKey: 'interactive-now',
+            groupKey: 'interactive-now',
+            ownerId: 'tab-active',
+            priority: 0,
+            run: async () => {
+                order.push('interactive');
+                return 'interactive';
+            },
+        });
+
+        await expect(interactive).resolves.toBe('interactive');
+        expect(order).toEqual(['background', 'interactive']);
+        backgroundGate.resolve('background');
+        await expect(background).resolves.toBe('background');
+    });
+
+    it('không cho hai background chiếm hết cả hai slot', async () => {
+        const scheduler = new TileRenderScheduler<string>(2);
+        const firstGate = deferred<string>();
+        const firstStarted = deferred<void>();
+        const secondRun = vi.fn(async () => 'second');
+        const first = scheduler.enqueue({
+            requestKey: 'background-first',
+            groupKey: 'background-first',
+            ownerId: 'tab-1',
+            priority: 100,
+            run: async () => {
+                firstStarted.resolve();
+                return firstGate.promise;
+            },
+        });
+        const second = scheduler.enqueue({
+            requestKey: 'background-second',
+            groupKey: 'background-second',
+            ownerId: 'tab-2',
+            priority: 100,
+            run: secondRun,
+        });
+        await firstStarted.promise;
+        await Promise.resolve();
+        expect(secondRun).not.toHaveBeenCalled();
+
+        firstGate.resolve('first');
+        await expect(first).resolves.toBe('first');
+        await expect(second).resolves.toBe('second');
+        expect(secondRun).toHaveBeenCalledTimes(1);
+    });
+
     it('loại yêu cầu zoom cũ còn nằm trong cùng nhóm', async () => {
         const scheduler = new TileRenderScheduler<string>();
         const gate = deferred<string>();
@@ -208,25 +275,27 @@ describe('TileRenderScheduler', () => {
 
     it('gộp yêu cầu trùng và nâng mức ưu tiên của bản đang chờ', async () => {
         const scheduler = new TileRenderScheduler<string>();
-        const run = vi.fn(async () => 'same');
+        const backgroundRun = vi.fn(async () => 'background');
+        const interactiveRun = vi.fn(async () => 'interactive');
         const first = scheduler.enqueue({
             requestKey: 'same',
             groupKey: 'same',
             ownerId: 'tab-1',
             priority: 100,
-            run,
+            run: backgroundRun,
         });
         const duplicate = scheduler.enqueue({
             requestKey: 'same',
             groupKey: 'same',
             ownerId: 'tab-1',
             priority: 0,
-            run,
+            run: interactiveRun,
         });
 
         expect(duplicate).toBe(first);
-        await expect(first).resolves.toBe('same');
-        expect(run).toHaveBeenCalledTimes(1);
+        await expect(first).resolves.toBe('interactive');
+        expect(backgroundRun).not.toHaveBeenCalled();
+        expect(interactiveRun).toHaveBeenCalledTimes(1);
     });
 
     it('hủy toàn bộ công việc nền chưa chạy khi viewer đóng hoặc đổi file', async () => {

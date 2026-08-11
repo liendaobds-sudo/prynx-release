@@ -5,7 +5,7 @@ model MÔ TẢ endpoint đang chạy, field lỏng để `Optional`, và ghi rõ
 """
 
 from pydantic import BaseModel, Field
-from typing import Any, Optional
+from typing import Optional
 
 
 class GpuStatusResponse(BaseModel):
@@ -44,15 +44,3 @@ class RecoverJobsResponse(BaseModel):
 
     status: str
     recovered_jobs_count: int
-
-
-class GsUsageResponse(BaseModel):
-    """Kết quả `GET /api/system/gs-usage` — thiết bị đo cho gate loại bỏ Ghostscript.
-
-    Hai khối số liệu là dict tự do (khoá = tên lệnh GS) nên để `dict` thay vì bịa
-    schema chặt: đây là endpoint đo lường, hình dạng còn đổi theo nhu cầu audit.
-    """
-
-    since_process_start: dict[str, Any] = Field(default_factory=dict)
-    persisted: dict[str, Any] = Field(default_factory=dict)
-    log_path: Optional[str] = None

@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 import pytest
 
+import app.workers.sticker_sheet_engine as sticker_engine_module
 from app.workers.sticker_sheet_engine import (
     DEFAULT_MODEL,
     StickerSheetError,
@@ -305,3 +306,96 @@ def test_rejects_invalid_alpha_threshold(threshold: int):
             alpha_threshold=threshold,
             model_runner=_synthetic_runner([(20, 20, 40, 30)]),
         )
+
+
+def test_shadow_cleanup_chi_xu_ly_roi_cua_tung_tem(monkeypatch):
+    rectangles = [
+        (15, 10, 38, 24), (74, 12, 42, 22), (136, 9, 35, 27),
+        (12, 55, 41, 28), (72, 58, 45, 23), (137, 54, 37, 29),
+        (16, 101, 36, 25), (75, 99, 40, 28), (139, 102, 34, 24),
+    ]
+    source, runner = _shadowed_rectangles_fixture(
+        rectangles,
+        size=(190, 140),
+        shadow_offset=(5, 4),
+    )
+    original = sticker_engine_module._remove_attached_neutral_shadow
+    processed_shapes: list[tuple[int, int]] = []
+
+    def traced(source_rgb, component, **kwargs):
+        processed_shapes.append(component.shape)
+        return original(source_rgb, component, **kwargs)
+
+    monkeypatch.setattr(
+        sticker_engine_module,
+        "_remove_attached_neutral_shadow",
+        traced,
+    )
+    result = analyze_sticker_sheet(source, model_runner=runner)
+
+    assert len(result.instances) == 9
+    assert len(processed_shapes) == 9
+    assert all(height < 140 and width < 190 for height, width in processed_shapes)
+
+
+@pytest.mark.parametrize(
+    ("model", "module_name"),
+    (
+        ("birefnet-lite", "birefnet_engine"),
+        ("isnet", "isnet_engine"),
+    ),
+)
+def test_sticker_engine_chi_lay_alpha_khong_refine_lai_mau(
+    monkeypatch,
+    model: str,
+    module_name: str,
+):
+    module = __import__(f"app.workers.{module_name}", fromlist=[module_name])
+    alpha = Image.new("L", (32, 24), 0)
+    alpha.paste(255, (7, 5, 25, 20))
+    monkeypatch.setattr(module, "predict_alpha", lambda *_args, **_kwargs: alpha, raising=False)
+    monkeypatch.setattr(
+        module,
+        "remove_background",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Luồng tách tem không được refine RGB rồi vứt bỏ")
+        ),
+    )
+
+    result = sticker_engine_module._run_background_model(
+        Image.new("RGB", (32, 24), (20, 80, 160)),
+        model,
+    )
+
+    assert result.mode == "RGBA"
+    assert np.array_equal(np.asarray(result.getchannel("A")), np.asarray(alpha))
+    assert tuple(np.asarray(result)[10, 10, :3]) == (20, 80, 160)
+
+
+def test_ai_alpha_cache_tai_su_dung_dung_anh_va_dung_tham_so(
+    tmp_path,
+    monkeypatch,
+):
+    calls = 0
+
+    def fake_model(image: Image.Image, _model: str) -> Image.Image:
+        nonlocal calls
+        calls += 1
+        rgba = np.asarray(image.convert("RGBA"), dtype=np.uint8).copy()
+        rgba[12:66, 14:82, 3] = 255
+        return Image.fromarray(rgba, "RGBA")
+
+    monkeypatch.setattr(sticker_engine_module, "_AI_ALPHA_CACHE_ROOT", tmp_path)
+    monkeypatch.setattr(sticker_engine_module, "_run_background_model", fake_model)
+    monkeypatch.setattr(sticker_engine_module, "_DEFAULT_BACKGROUND_RUNNER", fake_model)
+    source = Image.new("RGB", (100, 80), (248, 248, 248))
+
+    first = analyze_sticker_sheet(source, alpha_threshold=128)
+    second = analyze_sticker_sheet(source, alpha_threshold=128)
+    analyze_sticker_sheet(source, alpha_threshold=150)
+
+    assert calls == 2
+    assert first.model_seconds > 0
+    assert second.model_seconds == 0
+    assert np.array_equal(first.alpha, second.alpha)
+    assert np.array_equal(first.labels, second.labels)

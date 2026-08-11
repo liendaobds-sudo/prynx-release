@@ -12,7 +12,6 @@ param(
     [Parameter(Mandatory = $true)][string]$Installer,
     [Parameter(Mandatory = $true)][string]$Manifest,
     [string]$ExpectedVersion = "",
-    [switch]$ExpectNoGhostscript,
     [ValidateRange(10, 180)][int]$StartupTimeoutSeconds = 90
 )
 
@@ -96,8 +95,6 @@ try {
     if (-not [string]::IsNullOrWhiteSpace($ExpectedVersion)) {
         $arguments += @("-ExpectedVersion", $ExpectedVersion)
     }
-    if ($ExpectNoGhostscript) { $arguments += "-ExpectNoGhostscript" }
-
     Write-Host "  [CLEAN USER] Dang chay verifier trong profile tam $userName ($createdSid)..." -ForegroundColor Cyan
     $process = Start-Process -FilePath "powershell.exe" -ArgumentList $arguments `
         -Credential $credential -LoadUserProfile -WindowStyle Hidden -Wait -PassThru `

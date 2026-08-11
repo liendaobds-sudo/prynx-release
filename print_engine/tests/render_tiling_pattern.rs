@@ -451,7 +451,7 @@ fn uncoloured_pattern_without_base_colourspace_is_reported() {
 #[test]
 fn too_many_tiles_is_reported_instead_of_partially_drawn() {
     // Bước rất nhỏ ⇒ số ô vượt trần. Vẽ một phần sẽ cho lượng mực thấp hơn thực tế,
-    // nên engine phải báo thiếu tính năng và nhường Ghostscript.
+    // nên engine phải báo thiếu tính năng và dừng an toàn.
     let r = render_pattern(
         &format!("/CS0 cs /P0 scn 0 0 {PAGE} {PAGE} re f"),
         "0 0 0 1 k 0 0 1 1 re f",

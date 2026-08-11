@@ -18,7 +18,20 @@ Nguyên tắc chung (giống `schemas/imposition.py`): model MÔ TẢ, không si
 """
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator  # noqa: F401
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
+
+
+OutputPreviewFilter = Literal[
+    "all",
+    "device-cmyk",
+    "device-rgb",
+    "device-gray",
+    "spot",
+    "text",
+    "images",
+    "line-art",
+    "smooth-shades",
+]
 
 
 class FixFileResponse(BaseModel):
@@ -96,6 +109,9 @@ class OverprintPreviewResponse(BaseModel):
     diff_pixel_count: Optional[int] = None
     diff_overlay: Optional[str] = None
     overprint_image: Optional[str] = None
+    page_has_overprint: Optional[bool] = None
+    profile_id: Optional[str] = None
+    intent: Optional[str] = None
     width: Optional[int] = None
     height: Optional[int] = None
     engine: Optional[str] = Field(
@@ -109,7 +125,7 @@ class OverprintPreviewResponse(BaseModel):
 class FixFileWithLogResponse(FixFileResponse):
     """Nhóm "sửa file + trả log": `/fix-hairlines`, `/set-overprint`, `/convert-colors`.
 
-    `log` là chuỗi nhật ký của engine (Ghostscript/PPE) để người dùng đọc khi kết quả
+    `log` là chuỗi nhật ký của engine (PPE/pikepdf) để người dùng đọc khi kết quả
     không như mong đợi; `error` có mặt ở nhánh thất bại. Cả hai đều `Optional` vì nhánh
     thành công không nhất thiết có log.
     """
@@ -123,7 +139,7 @@ class ExportPdfxResponse(FixFileResponse):
 
     `warnings` là danh sách cảnh báo nghiệp vụ (thiếu OutputIntent, spot bị chuyển…) —
     người vận hành cần thấy, không được lặng lẽ bỏ. `engine` cho biết đường nào đã dựng
-    (PPE hay Ghostscript) để truy vết khác biệt kết quả.
+    (PPE, pikepdf hay PDFium xấp xỉ) để truy vết khác biệt kết quả.
     """
 
     warnings: list[str] = Field(default_factory=list)
@@ -302,9 +318,11 @@ class SeparationsPathRequest(BaseModel):
     file_path: str
     page: int = 1
     dpi: int = 150
-    # Tên legacy: None/True = PPE chính xác; False = buộc đường xấp xỉ.
-    use_gs: bool | None = None
+    # GS-SUNSET (audit 2026-08-08 §GS.4): hợp đồng mới nói theo chất lượng.
+    render_mode: Literal["accurate", "approximate"] = "accurate"
     profile_id: str = "fogra39"
+    intent: Literal["perceptual", "relative", "saturation", "absolute"] = "relative"
+    output_preview_filter: OutputPreviewFilter = "all"
 
 class SetPageBoxesRequest(BaseModel):
     file_id: str
@@ -363,6 +381,77 @@ class SoftProofRequest(BaseModel):
     intent: str = "relative"
     show_gamut_warning: bool = False
     dpi: int = 150
+    simulate_overprint: bool = True
+    output_preview_filter: OutputPreviewFilter = "all"
+    simulate_paper_color: bool = False
+    simulate_black_ink: bool = False
+    page_background_rgb: Optional[tuple[int, int, int]] = None
+
+    @field_validator("page_background_rgb")
+    @classmethod
+    def validate_page_background_rgb(cls, value):
+        if value is not None and any(not 0 <= channel <= 255 for channel in value):
+            raise ValueError("page_background_rgb phải gồm ba kênh 0..255")
+        return value
+
+
+class SeparationCompositePlateRequest(BaseModel):
+    """Một mặt phẳng lượng mực đã nén của Output Preview."""
+
+    name: str = Field(min_length=1, max_length=256)
+    alpha_data: str = Field(min_length=1)
+    is_spot: bool = False
+    alternate_cmyk_lut: Optional[List[List[float]]] = None
+
+    @field_validator("alternate_cmyk_lut")
+    @classmethod
+    def validate_spot_lut(cls, value):
+        if value is None:
+            return value
+        # COLOR (audit 2026-08-10 §OP.1): PPE lấy 33 mẫu tint. Cho LUT lệch
+        # kích thước qua API sẽ khiến native phải đoán hoặc cho màu spot khác
+        # Soft-Proof, nên fail-loud ngay tại biên contract.
+        if len(value) != 33:
+            raise ValueError("alternate_cmyk_lut phải có đúng 33 mẫu")
+        for sample in value:
+            if len(sample) != 4 or any(
+                not isinstance(channel, (int, float))
+                or isinstance(channel, bool)
+                or not 0 <= float(channel) <= 1
+                for channel in sample
+            ):
+                raise ValueError("mỗi mẫu LUT phải gồm bốn kênh CMYK trong miền 0..1")
+        return value
+
+
+class SeparationCompositeRequest(BaseModel):
+    """Ghép tập kẽm đang bật qua ICC mà không raster lại PDF."""
+
+    width: int = Field(ge=1, le=4_294_967_295)
+    height: int = Field(ge=1, le=4_294_967_295)
+    plates: List[SeparationCompositePlateRequest] = Field(min_length=1, max_length=64)
+    enabled_names: List[str] = Field(default_factory=list, max_length=64)
+    profile_id: str = Field(
+        default="fogra39",
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    intent: Literal["perceptual", "relative", "saturation", "absolute"] = "relative"
+
+    @model_validator(mode="after")
+    def validate_plate_identity(self):
+        if self.width * self.height > 80_000_000:
+            raise ValueError("ảnh composite vượt giới hạn an toàn 80 triệu pixel")
+        names = [plate.name for plate in self.plates]
+        if len(names) != len(set(names)):
+            raise ValueError("tên bản kẽm không được trùng")
+        unknown = set(self.enabled_names) - set(names)
+        if unknown:
+            raise ValueError(
+                f"bản kẽm được chọn không có trong payload: {', '.join(sorted(unknown))}"
+            )
+        return self
 
 
 class ViewerAccurateRenderRequest(BaseModel):
@@ -374,10 +463,69 @@ class ViewerAccurateRenderRequest(BaseModel):
     # trong ngân sách bitmap. Giới hạn này chỉ chặn payload IPC bất thường, không hạ
     # chất lượng zoom hợp lệ trên máy mạnh.
     dpi: int = Field(default=96, ge=24, le=9600)
-    profile_id: str = "fogra39"
-    intent: str = "relative"
+    profile_id: str = Field(
+        default="fogra39",
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    intent: Literal["perceptual", "relative", "saturation", "absolute"] = "relative"
+    output_preview_filter: OutputPreviewFilter = "all"
+    simulate_paper_color: bool = False
+    simulate_black_ink: bool = False
+    page_background_rgb: Optional[tuple[int, int, int]] = None
+    # PERF (audit 2026-08-08 §RENDER.5): endpoint Viewer luôn phải có danh tính
+    # latest-wins; cho phép caller bỏ trống sẽ tái tạo backlog khi zoom nhanh.
+    owner_id: str = Field(min_length=1, max_length=128)
+    # PERF (audit 2026-08-09 §L2C): full-page nền và viewport có request owner
+    # khác nhau nhưng phải dùng chung một PPE session theo tab/tài liệu.
+    # Client cũ không gửi field này vẫn giữ contract owner cũ.
+    session_owner_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    request_id: str = Field(min_length=1, max_length=128)
+    generation: int = Field(ge=1)
+    purpose: Literal["interactive", "background"] = "interactive"
+    # PERF (audit 2026-08-08 §RENDER.3/5): clip dùng pixel của ảnh PPE full-page
+    # tại đúng DPI request, sau `/Rotate`, gốc trên-trái. None cả bốn = full-page.
+    clip_x: Optional[int] = Field(default=None, ge=0, le=4_294_967_295)
+    clip_y: Optional[int] = Field(default=None, ge=0, le=4_294_967_295)
+    clip_width: Optional[int] = Field(default=None, ge=1, le=4_294_967_295)
+    clip_height: Optional[int] = Field(default=None, ge=1, le=4_294_967_295)
+
+    @model_validator(mode="after")
+    def validate_complete_clip(self):
+        values = (self.clip_x, self.clip_y, self.clip_width, self.clip_height)
+        if any(value is not None for value in values) and not all(
+            value is not None for value in values
+        ):
+            raise ValueError("clip Viewer phải truyền đủ x/y/width/height")
+        return self
+
+    @field_validator("page_background_rgb")
+    @classmethod
+    def validate_viewer_page_background_rgb(cls, value):
+        if value is not None and any(not 0 <= channel <= 255 for channel in value):
+            raise ValueError("page_background_rgb phải gồm ba kênh 0..255")
+        return value
+
+    @property
+    def raster_clip(self) -> tuple[int, int, int, int] | None:
+        if self.clip_x is None:
+            return None
+        return (
+            self.clip_x,
+            self.clip_y,
+            self.clip_width or 0,
+            self.clip_height or 0,
+        )
 
 class OverprintPreviewRequest(BaseModel):
     file_id: str
     page: int = 1
     dpi: int = 150
+    profile_id: str = Field(
+        default="fogra39",
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    intent: Literal["perceptual", "relative", "saturation", "absolute"] = "relative"

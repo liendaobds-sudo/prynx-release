@@ -167,11 +167,8 @@ async def execute_plan_json(body: dict, license_info: dict = Depends(require_fea
     except Exception as e:
         raise_http(e, "Thực thi kế hoạch bình thất bại")
 
-# GS-SUNSET (2026-07-28): ba route `/viewer-preview/*` đã được CÁCH LY sang
-# `attic/gs-sunset-2026-07-28/`. Chúng dựng preview tạm bằng Ghostscript, mà GS bị chặn
-# vô điều kiện ở `subprocess_utils._guard_ghostscript` → luôn trả 503 → frontend lùi về
-# PDFium. Bên gọi duy nhất (`desktop/src/lib/viewerPreview.ts`) cũng không được import ở
-# đâu. Muốn có lại lớp preview tạm thì viết bằng PPE/pdfium, đừng khôi phục đường GS.
+# GS-SUNSET (audit 2026-08-08 §GS.4): ba route preview Python cũ đã được cách ly.
+# Viewer hiện dùng PDFium/PPE; không khôi phục một lớp preview backend thứ ba.
 
 # Cache kết quả nhận diện theo (path tuyệt đối, mtime, size) → đổi công cụ / mở lại
 # cùng file trả tức thì, không tính lại. Bounded để tránh phình bộ nhớ.
@@ -255,7 +252,7 @@ async def _raster_fallback_shape(engine, file_path, page_idx, config, _logger):
             file_path,
             page_num=page_idx + 1,
             dpi=config.raster_fallback_dpi,
-            use_ghostscript=True,
+            render_mode="accurate",
         )
     except Exception as exc:
         _logger.warning(
@@ -2030,34 +2027,73 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         margin_top=getattr(req, 'margin_top', 0) or 0,
                         exclude_zones=cnc_exclude or None,
                     )
+                    _cnc_unplaced = list(cnc_layout.get('unplaced_pages') or [])
+                    if _cnc_unplaced:
+                        doc.close()
+                        _missing_cnc = ", ".join(str(int(pi) + 1) for pi in _cnc_unplaced[:20])
+                        _suffix_cnc = "…" if len(_cnc_unplaced) > 20 else ""
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                f"Không xếp đủ mẫu CNC lên các tờ. Trang chưa được đặt: "
+                                f"{_missing_cnc}{_suffix_cnc}. Hãy tăng khổ tờ, giảm lề/"
+                                f"khoảng hở hoặc kiểm tra kích thước mẫu."
+                            ),
+                        )
                     doc.close()
                     # ── Branch D: dùng placements (abs_x + original_cell_y TOP-DOWN) khớp
                     # cnc_render. Convert sang abs bottom-up: absY = sheet_h - original_cell_y - h.
                     _sheet_h = getattr(req, 'sheet_h', 0) or 0
-                    items = []
-                    ov_w = 0.0
-                    ov_h = 0.0
-                    for pl in cnc_layout['placements']:
-                        c = pl['cell']
-                        w = pl['width']
-                        h = pl['height']
-                        abs_x = pl['abs_x']
-                        abs_y = _sheet_h - pl['original_cell_y'] - h
-                        items.append({
-                            'x': c.get('x', 0), 'y': c.get('y', 0),
-                            'absX': abs_x, 'absY': abs_y,
-                            'width': w, 'height': h,
-                            'isRotated': c.get('isRotated', False), 'isRotated180': False,
-                            'pageIdx': pl['src_page_idx'],
-                        })
-                        ov_w = max(ov_w, abs_x + w)
-                        ov_h = max(ov_h, abs_y + h)
+                    def _cnc_preview_sheet(_layout, _sheet_index):
+                        _items = []
+                        _ov_w = 0.0
+                        _ov_h = 0.0
+                        for pl in _layout.get('placements', []):
+                            c = pl['cell']
+                            w = pl['width']
+                            h = pl['height']
+                            abs_x = pl['abs_x']
+                            abs_y = _sheet_h - pl['original_cell_y'] - h
+                            _items.append({
+                                'x': c.get('x', 0), 'y': c.get('y', 0),
+                                'absX': abs_x, 'absY': abs_y,
+                                'width': w, 'height': h,
+                                'isRotated': c.get('isRotated', False),
+                                'isRotated180': False,
+                                'pageIdx': pl['src_page_idx'],
+                            })
+                            _ov_w = max(_ov_w, abs_x + w)
+                            _ov_h = max(_ov_h, abs_y + h)
+                        return {
+                            'cells': _items,
+                            'overallWidth': _ov_w,
+                            'overallHeight': _ov_h,
+                            'totalItems': len(_items),
+                            'runCount': max(1, int(_layout.get('sheets_needed', 1) or 1)),
+                            'physicalSheetIndex': _sheet_index,
+                            'placedByPage': {
+                                str(k): v
+                                for k, v in (_layout.get('placed_by_page') or {}).items()
+                            },
+                        }
+
+                    # CNC MULTI-SHEET FIX 2026-08-10 §MSHEET.1: trả đủ mọi tờ mẫu;
+                    # top-level vẫn giữ tờ đầu để tương thích consumer cũ.
+                    _cnc_layout_sheets = cnc_layout.get('sheets') or [cnc_layout]
+                    _cnc_preview_sheets = [
+                        _cnc_preview_sheet(_layout, _index)
+                        for _index, _layout in enumerate(_cnc_layout_sheets)
+                    ]
+                    _cnc_first = _cnc_preview_sheets[0] if _cnc_preview_sheets else {
+                        'cells': [], 'overallWidth': 0.0, 'overallHeight': 0.0,
+                        'totalItems': 0, 'placedByPage': {},
+                    }
                     return {
                         "success": True,
-                        "cells": items,
-                        "overallWidth": ov_w,
-                        "overallHeight": ov_h,
-                        "totalItems": cnc_layout['items_per_sheet'],
+                        "cells": _cnc_first['cells'],
+                        "overallWidth": _cnc_first['overallWidth'],
+                        "overallHeight": _cnc_first['overallHeight'],
+                        "totalItems": _cnc_first['totalItems'],
                         "sheetsNeeded": cnc_layout['sheets_needed'],
                         "strategyUsed": "cnc_mixed",
                         "isMixedPreview": True,
@@ -2065,7 +2101,8 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         "cncTwoSided": cnc_two_sided,
                         "cncFlipEdge": cnc_flip_edge,
                         "absPlacement": True,
-                        "placedByPage": {str(k): v for k, v in (cnc_layout.get('placed_by_page') or {}).items()},
+                        "placedByPage": _cnc_first['placedByPage'],
+                        **({"sheets": _cnc_preview_sheets} if len(_cnc_preview_sheets) > 1 else {}),
                         "diePolygonsByPage": {str(pi): poly for pi, poly in _cnc_die_poly_by_page.items() if poly},
                     }
 
@@ -2753,6 +2790,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 from app.workers.nup_layout_solver import (
                     solve_optimal_layout, solve_manual,
                     compute_ratio_stack_templates,
+                    build_sequential_product_sequence,
                     build_guillotine_preview_sheet,
                     build_mixed_preview_response,
                 )
@@ -2801,6 +2839,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         return 0
 
                 _slot_page = []
+                _preview_sheets_mp = []
                 _sheets_needed = 1
                 _strategy_label = _lt or 'sequential'
                 _unplaced_mp = []
@@ -2850,18 +2889,31 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                             template_sheets=_ratio_sheets_mp,
                         )
                 elif _lt == 'cut_stacks' and _mp_cap > 0:
-                    # Tờ 0: cell j → page j * n_sheets (cọc đầu mỗi stack)
+                    # Mỗi tờ s: cell j → page j * n_sheets + s. Phải trả đủ mọi
+                    # tờ khác nhau để UI lật xem, không chỉ gửi tờ 0 + sheetsNeeded.
                     _n_sheets_cs = max(1, _math_mp.ceil(_n_src / _mp_cap))
-                    for _j in range(_mp_cap):
-                        _src = _j * _n_sheets_cs  # sheet 0
-                        if _src < _n_src:
-                            _slot_page.append(_src)
+                    for _sheet_idx_cs in range(_n_sheets_cs):
+                        _pages_cs = []
+                        for _j in range(_mp_cap):
+                            _src = _j * _n_sheets_cs + _sheet_idx_cs
+                            if _src < _n_src:
+                                _pages_cs.append(_src)
+                        if _pages_cs:
+                            _preview_sheets_mp.append(build_guillotine_preview_sheet(
+                                _mp_cells, _pages_cs, **_sheet_kwargs_mp,
+                                physical_sheet_index=_sheet_idx_cs,
+                            ))
+                    if _preview_sheets_mp:
+                        _slot_page = [
+                            int(cell['pageIdx'])
+                            for cell in _preview_sheets_mp[0]['cells']
+                        ]
                     _sheets_needed = _n_sheets_cs
                     _strategy_label = 'cut_stacks'
                 elif _mp_cap > 0:
                     # sequential lần lượt.
                     # 2 mặt: mỗi SP = cặp (2k|2k+1); preview tờ 0 = mặt TRƯỚC (trang chẵn).
-                    # 1 mặt: trang0×q0…; trống = lấp 1 tờ wrap.
+                    # 1 mặt: trang0×q0…; nhiều trang và SL trống = mỗi trang một lần.
                     # 2 mặt chỉ khi số trang CHẴN (khớp engine — trang lẻ → 1 mặt).
                     _duplex_mp = (
                         (getattr(req, 'duplex_flow', None) or 'normal') == 'double'
@@ -2872,32 +2924,13 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     if _duplex_mp and _n_prod_mp < 1:
                         _duplex_mp = False
                         _n_prod_mp = _n_src
-
-                    def _qty_prod(_pi):
-                        if _duplex_mp:
-                            return _qty_mp(_pi * 2)
-                        return _qty_mp(_pi)
-
-                    _seq_mp = []
-                    _any_q = any(_qty_prod(i) > 0 for i in range(_n_prod_mp))
-                    if _any_q:
-                        for _i in range(_n_prod_mp):
-                            _seq_mp.extend([_i] * _qty_prod(_i))
-                    elif _gq_mp > 0:
-                        for _i in range(_n_prod_mp):
-                            _seq_mp.extend([_i] * int(_gq_mp))
-                    else:
-                        # Trống = lấp đầy 1 tờ, GOM THEO LOẠI (A-A-A B-B-B), KHÔNG xen
-                        # kẽ A-B-C-A-B-C. Chia đều capacity thành khối liền (dư dồn loại
-                        # đầu) → KHỚP output nup_engine sequential nhánh trống.
-                        if _n_prod_mp > 0:
-                            _base_mp = _mp_cap // _n_prod_mp
-                            _rem_mp = _mp_cap % _n_prod_mp
-                            _seq_mp = []
-                            for _i in range(_n_prod_mp):
-                                _seq_mp.extend([_i] * (_base_mp + (1 if _i < _rem_mp else 0)))
-                        else:
-                            _seq_mp = [0] * _mp_cap
+                    _seq_mp = build_sequential_product_sequence(
+                        page_count=_n_src,
+                        capacity=_mp_cap,
+                        target_quantity=_gq_mp,
+                        target_quantities_by_page=_tqbp_mp,
+                        duplex=_duplex_mp,
+                    )
                     if not _seq_mp:
                         _seq_mp = [0]
                     _n_front_mp = max(1, _math_mp.ceil(len(_seq_mp) / _mp_cap))
@@ -2915,14 +2948,35 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         _sheets_needed = _n_front_mp
                         _strategy_label = 'sequential'
 
+                    # [NUP SEQUENTIAL FIX 2026-08-10] `sheetsNeeded` chỉ là con số;
+                    # bộ chuyển tờ của UI cần cả dữ liệu ô của từng tờ khác nhau.
+                    for _sheet_idx_mp in range(_n_front_mp):
+                        _chunk_mp = _seq_mp[
+                            _sheet_idx_mp * _mp_cap:(_sheet_idx_mp + 1) * _mp_cap
+                        ]
+                        if _duplex_mp:
+                            _pages_mp = [int(product) * 2 for product in _chunk_mp]
+                        else:
+                            _pages_mp = [int(page_idx) for page_idx in _chunk_mp]
+                        if _pages_mp:
+                            _preview_sheets_mp.append(build_guillotine_preview_sheet(
+                                _mp_cells, _pages_mp, **_sheet_kwargs_mp,
+                                physical_sheet_index=_sheet_idx_mp,
+                            ))
+
                 if _mp_cap > 0 and _slot_page:
-                    _sheet_mp = build_guillotine_preview_sheet(
-                        _mp_cells, _slot_page, **_sheet_kwargs_mp,
+                    _sheet_mp = (
+                        _preview_sheets_mp[0]
+                        if _preview_sheets_mp
+                        else build_guillotine_preview_sheet(
+                            _mp_cells, _slot_page, **_sheet_kwargs_mp,
+                        )
                     )
                     doc.close()
                     return build_mixed_preview_response(
                         _sheet_mp, _strategy_label, _sheets_needed,
                         ratio_unplaced=_unplaced_mp if _lt == 'ratio_stack' else [],
+                        template_sheets=_preview_sheets_mp or None,
                     )
 
             # ── SINGLE-PAGE PREVIEW (S&R or single-page N-Up) ──

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
-import { ToolSectionLabel, ToolCardOption, ToolCheckboxOption, ToolNumberInput, ToolInfo } from './ToolUI';
+import { ToolSectionLabel, ToolCheckboxOption, ToolNumberInput } from './ToolUI';
 import { RichSelect, ToolItem } from '../imposition-tools/SharedUI';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
@@ -22,7 +22,16 @@ import { useToolActivationGuard } from '../../hooks/useToolActivationGuard';
 
 interface Props {
     pdfFile: File | null;
-    onFileFixed?: (blob: Blob, filename: string, path?: string) => void;
+    onFileFixed?: (blob: Blob, filename: string, path?: string) => void | Promise<void>;
+    onProcessingChange?: (processing: boolean) => void;
+    preferPdfFile?: boolean;
+    productType?: 'sticker' | 'rectangle';
+    onProductTypeChange?: (type: 'sticker' | 'rectangle') => void;
+    showProductTypeSelector?: boolean;
+}
+
+interface DesktopFile extends File {
+    path?: string;
 }
 
 interface CutlineRunOverrides {
@@ -208,7 +217,15 @@ export function resetStickerPreferences(): boolean {
     }
 }
 
-export default function StickerTool({ pdfFile, onFileFixed }: Props) {
+export default function StickerTool({
+    pdfFile,
+    onFileFixed,
+    onProcessingChange,
+    preferPdfFile = false,
+    productType: controlledProductType,
+    onProductTypeChange,
+    showProductTypeSelector = true,
+}: Props) {
   const { t } = useTranslation();
     const getWorkingFile = useWorkingPdf();
     const {
@@ -224,9 +241,10 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     const requestToolActivation = useToolActivationGuard();
     
     // Tab State
-    const [productType, setProductType] = useState<'sticker' | 'rectangle'>(() =>
+    const [internalProductType, setInternalProductType] = useState<'sticker' | 'rectangle'>(() =>
         readStickerEnum('productType', 'sticker', ['sticker', 'rectangle']) as 'sticker' | 'rectangle'
     );
+    const productType = controlledProductType ?? internalProductType;
     const setTaskMode = useImposerSettingsStore(s => s.setTaskMode);
     const openImpositionTool = (toolKey: 'booklet' | 'nup' | 'sticker_imposer') => {
         const definition = findToolByUniqueKey(toolKey);
@@ -351,7 +369,9 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
 
     const runVectorMirror = async () => {
         // Step 1: Upload
-        const uploadRes = await uploadPDF((await getWorkingFile()) || pdfFile!);
+        const uploadRes = await uploadPDF(
+            preferPdfFile ? pdfFile! : ((await getWorkingFile()) || pdfFile!),
+        );
         const currentFid = uploadRes.id;
         
         // Khổ trang hiện tại là khổ thành phẩm. Không pixel-auto-trim trước khi
@@ -376,12 +396,16 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     const runOpenCVBleed = async (overrides?: CutlineRunOverrides) => {
         const requestedCornerStyle = overrides?.cornerStyle ?? cornerStyle;
         const requestedForceContour = overrides?.forceContour ?? forceContour;
-        const targetFile = (await getWorkingFile()) || pdfFile!;
+        const targetFile = preferPdfFile
+            ? pdfFile!
+            : ((await getWorkingFile()) || pdfFile!);
+        const desktopFile = targetFile as DesktopFile;
+        const desktopWindow = window as Window & { __TAURI_INTERNALS__?: unknown };
         const localPath = (
-            (window as any).__TAURI_INTERNALS__
-            && typeof (targetFile as any).path === 'string'
-            && (targetFile as any).path.length > 0
-        ) ? (targetFile as any).path as string : undefined;
+            desktopWindow.__TAURI_INTERNALS__
+            && typeof desktopFile.path === 'string'
+            && desktopFile.path.length > 0
+        ) ? desktopFile.path : undefined;
 
         // An unchanged desktop working file already exists on the same machine as
         // the sidecar. Use its path directly; baked page edits have no path and
@@ -472,6 +496,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
 
         setIsSuccess(false);
         setIsProcessing(true);
+        onProcessingChange?.(true);
         setError('');
         setWarning('');
 
@@ -503,20 +528,26 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
             if (onFileFixed) {
                 const prefix = productType === 'rectangle' ? 'autobleed' : 'sticker';
                 const baseName = pdfFile.name.replace(/\.[^/.]+$/, "");
-                onFileFixed(resultBlob, `${prefix}_${baseName}.pdf`, resultPath);
+                await onFileFixed(resultBlob, `${prefix}_${baseName}.pdf`, resultPath);
                 setIsSuccess(true);
             }
-        } catch (e: any) {
+        } catch (error: unknown) {
             if (recordedRecipeOperation) recipeRecorder.discardPending();
-            setError(e.message || t('preprocess.sticker:da_xay_ra_loi_khong_xac_dinh'));
+            setError(
+                error instanceof Error && error.message
+                    ? error.message
+                    : t('preprocess.sticker:da_xay_ra_loi_khong_xac_dinh'),
+            );
         } finally {
             setIsProcessing(false);
+            onProcessingChange?.(false);
         }
     };
 
     // Auto-fix bleedColorType when switching tabs
     const handleProductTypeChange = (type: 'sticker' | 'rectangle') => {
-        setProductType(type);
+        if (controlledProductType === undefined) setInternalProductType(type);
+        onProductTypeChange?.(type);
         const normalizedBleedColorType = normalizeStickerBleedColorType(bleedColorType, type);
         if (normalizedBleedColorType !== bleedColorType) {
             setBleedColorType(normalizedBleedColorType);
@@ -524,10 +555,8 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         // Removing the aggressive override when switching to rectangle to preserve user choice
     };
 
-    // UIUX (audit 2026-07-28 §BX.6): cho thấy rõ bleed được đo từ đường cắt,
-    // không đổi công thức backend đã chốt.
-    // UIUX (audit 2026-08-01 §ALPHA.1): Alpha tự lùi 0,15 mm; phần tóm tắt
-    // phải phản chiếu đúng hình học backend thay vì vẫn báo offset 0 mm.
+    // UIUX (rollback 2026-08-08 §STICKER.UI1): khôi phục đúng phần tóm tắt
+    // hình học của commit chốt trước hợp nhất, nhưng vẫn dùng engine hiện tại.
     const bleedGeometry = computeStickerBleedGeometry(
         cutMode,
         cutMode === 'alpha' ? offsetMm - ALPHA_CONTOUR_INSET_MM : offsetMm,
@@ -537,7 +566,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     return (
         <div className="flex flex-col gap-4">
             {/* TABS SELECTOR */}
-            <div className="flex bg-slate-100 dark:bg-zinc-800/50 p-1 rounded-xl shadow-inner border border-slate-200 dark:border-white/5 relative z-10">
+            {showProductTypeSelector && <div className="flex bg-slate-100 dark:bg-zinc-800/50 p-1 rounded-xl shadow-inner border border-slate-200 dark:border-white/5 relative z-10">
                 <button
                     onClick={() => handleProductTypeChange('sticker')}
                     aria-pressed={productType === 'sticker'}
@@ -562,7 +591,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                     <span className="text-lg">🟦</span>
                     {t('preprocess.sticker:xen_vuong_goc')}
                 </button>
-            </div>
+            </div>}
 
             {/* --- TAB 1: BẾ TEM NHÃN --- */}
             {productType === 'sticker' && (
@@ -663,17 +692,18 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                             </span>
                         </label>
                     ) : null}
-                    {/* 1. Đường cắt */}
+                    {/* UIUX (rollback 2026-08-08 §STICKER.UI1): bố cục nguyên bản
+                        của commit 89a9048, tách rõ đường cắt và tràn lề. */}
                     <div>
                         <ToolSectionLabel>{t('preprocess.sticker:1_duong_cat_dieline')}</ToolSectionLabel>
                         <div className="flex flex-col gap-1.5 mb-4 relative z-[60]">
                             <RichSelect
                                 value={cutMode}
-                                onChange={(v) => setCutMode(v)}
+                                onChange={(value) => setCutMode(value)}
                                 options={CUT_MODES_RICH}
                             />
                         </div>
-                        
+
                         {cutMode !== 'none' && (
                             <>
                                 <div className="flex gap-2 mt-2 items-end">
@@ -744,22 +774,24 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                     </label>
                                 </div>
                                 <p className="text-[10px] text-slate-400 mt-1">{t('preprocess.sticker:so_am_vd_0_5_ep_duong_cat_lun_vao_trong')}</p>
-                                {cutMode !== 'alpha' && <div className="flex gap-1.5 mt-2 mb-4">
-                                    {CORNER_STYLES.map(opt => (
-                                        <button
-                                            key={opt.id}
-                                            onClick={() => setCornerStyle(opt.id)}
-                                            aria-pressed={cornerStyle === opt.id}
-                                            className={`flex-1 h-[32px] rounded border text-[12px] transition-all flex items-center justify-center font-bold ${
-                                                cornerStyle === opt.id
-                                                    ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
-                                                    : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'
-                                            }`}
-                                        >
-                                            {tv(opt.label)}
-                                        </button>
-                                    ))}
-                                </div>}
+                                {cutMode !== 'alpha' && (
+                                    <div className="flex gap-1.5 mt-2 mb-4">
+                                        {CORNER_STYLES.map(option => (
+                                            <button
+                                                key={option.id}
+                                                onClick={() => setCornerStyle(option.id)}
+                                                aria-pressed={cornerStyle === option.id}
+                                                className={`flex-1 h-[32px] rounded border text-[12px] transition-all flex items-center justify-center font-bold ${
+                                                    cornerStyle === option.id
+                                                        ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
+                                                        : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'
+                                                }`}
+                                            >
+                                                {tv(option.label)}
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
                                 {!activeObjectSelection && (
                                     <div className="mt-2 mb-4">
                                         <ToolCheckboxOption
@@ -773,7 +805,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                             </>
                         )}
                     </div>
-                    {/* 2. Tràn lề */}
+
                     <div>
                         <ToolSectionLabel>{t('preprocess.sticker:2_tran_le_dac_ruot')}</ToolSectionLabel>
                         <div className="flex gap-2 mb-4 items-end">
@@ -803,18 +835,18 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                     {fillHoles ? t('preprocess.sticker:dac_ruot') : t('preprocess.sticker:dac_ruot_2')}
                                 </button>
                                 {cutMode !== 'alpha' && (
-                                <button
-                                    onClick={() => setRemoveWhiteBg(!removeWhiteBg)}
-                                    aria-pressed={removeWhiteBg}
-                                    title={t('preprocess.sticker:chi_do_vien_cua_chi_tiet_bo_qua_mang')}
-                                    className={`flex-1 h-[32px] rounded border text-[11px] transition-all flex items-center justify-center font-bold px-1 whitespace-nowrap overflow-hidden ${
-                                        removeWhiteBg
-                                            ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
-                                            : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'
-                                    }`}
-                                >
-                                    {removeWhiteBg ? t('preprocess.sticker:bo_nen_trang') : t('preprocess.sticker:bo_nen_trang_2')}
-                                </button>
+                                    <button
+                                        onClick={() => setRemoveWhiteBg(!removeWhiteBg)}
+                                        aria-pressed={removeWhiteBg}
+                                        title={t('preprocess.sticker:chi_do_vien_cua_chi_tiet_bo_qua_mang')}
+                                        className={`flex-1 h-[32px] rounded border text-[11px] transition-all flex items-center justify-center font-bold px-1 whitespace-nowrap overflow-hidden ${
+                                            removeWhiteBg
+                                                ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
+                                                : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'
+                                        }`}
+                                    >
+                                        {removeWhiteBg ? t('preprocess.sticker:bo_nen_trang') : t('preprocess.sticker:bo_nen_trang_2')}
+                                    </button>
                                 )}
                             </div>
                         </div>
@@ -832,7 +864,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 })}
                             </div>
                         )}
-                        
+
                         {(cutMode === 'bleed' || cutMode === 'none' || bleedMm > 0) && (
                             <div className="mt-6 p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-xl border border-slate-200 dark:border-zinc-700/50">
                                 <label className="block text-xs font-bold text-slate-700 dark:text-zinc-300 mb-2">{t('preprocess.sticker:mau_nen_bu_xen')}</label>
@@ -846,18 +878,24 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 {bleedColorType === 'solid' && (
                                     <div className="mt-2 flex flex-col gap-2 bg-white dark:bg-zinc-800 p-3 rounded-lg border border-slate-200 dark:border-zinc-700">
                                         <div className="grid grid-cols-4 gap-2">
-                                            {['C', 'M', 'Y', 'K'].map((ch, idx) => {
-                                                const val = bleedColorHex.split(',').length === 4 ? bleedColorHex.split(',')[idx] : (ch === 'K' ? '0' : '0');
+                                            {['C', 'M', 'Y', 'K'].map((channel, index) => {
+                                                const value = bleedColorHex.split(',').length === 4
+                                                    ? bleedColorHex.split(',')[index]
+                                                    : '0';
                                                 return (
-                                                    <div key={ch} className="flex flex-col gap-1">
-                                                        <label className="text-[10px] font-bold text-center text-slate-700 dark:text-zinc-300">{ch}</label>
-                                                        <input 
-                                                            type="number" min="0" max="100" 
-                                                            value={val}
-                                                            onChange={(e) => {
-                                                                const v = Math.min(100, Math.max(0, parseInt(e.target.value) || 0));
-                                                                const current = bleedColorHex.split(',').length === 4 ? bleedColorHex.split(',') : ['0','0','0','0'];
-                                                                current[idx] = String(v);
+                                                    <div key={channel} className="flex flex-col gap-1">
+                                                        <label className="text-[10px] font-bold text-center text-slate-700 dark:text-zinc-300">{channel}</label>
+                                                        <input
+                                                            type="number"
+                                                            min="0"
+                                                            max="100"
+                                                            value={value}
+                                                            onChange={(event) => {
+                                                                const nextValue = Math.min(100, Math.max(0, parseInt(event.target.value) || 0));
+                                                                const current = bleedColorHex.split(',').length === 4
+                                                                    ? bleedColorHex.split(',')
+                                                                    : ['0', '0', '0', '0'];
+                                                                current[index] = String(nextValue);
                                                                 setBleedColorHex(current.join(','));
                                                             }}
                                                             className="w-full text-center text-xs h-8 border border-slate-200 dark:border-zinc-600 rounded bg-slate-50 dark:bg-zinc-900"

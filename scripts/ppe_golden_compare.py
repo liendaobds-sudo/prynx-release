@@ -108,8 +108,8 @@ class PageStats:
 
 
 def find_ghostscript() -> str | None:
-    """Dò Ghostscript theo đúng thứ tự backend/app/config.py dùng."""
-    env = os.environ.get("GHOSTSCRIPT_PATH", "")
+    """Dò renderer tham chiếu chỉ dành cho phép đo golden trên máy phát triển."""
+    env = os.environ.get("PPE_GOLDEN_GHOSTSCRIPT_PATH", "")
     if env and os.path.isfile(env):
         return env
     for name in ("gswin64c", "gswin32c", "gs"):

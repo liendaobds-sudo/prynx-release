@@ -138,6 +138,16 @@ impl SampledShading {
             Some((ink, *mask, *rgb))
         }
     }
+
+    /// `true` khi toàn bộ LUT chỉ khai báo bốn kênh process.
+    ///
+    /// Dùng để chọn đường song song cố định C/M/Y/K. Chỉ nhìn giá trị mực là
+    /// không đủ: một spot đang ở tint 0 vẫn tham gia knockout/overprint.
+    pub(crate) fn uses_only_process_channels(&self) -> bool {
+        self.lut
+            .iter()
+            .all(|(ink, declared, _)| (4..ink.len()).all(|channel| !declared.contains(channel)))
+    }
 }
 
 /// Tham số chuẩn hoá 0..1 cho shading dọc trục.

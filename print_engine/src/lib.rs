@@ -30,6 +30,7 @@
 //! đọc, không port, không tham chiếu source Ghostscript / MuPDF / Poppler.
 
 pub mod blend;
+pub mod cancel;
 pub mod color;
 pub mod content;
 pub mod error;
@@ -38,14 +39,22 @@ pub mod image;
 pub mod ink;
 pub mod oc;
 pub mod page;
+pub mod page_program;
 pub mod pdf;
 pub mod raster;
+pub mod session;
 pub mod shading;
 pub mod text;
 
 pub use blend::BlendMode;
+pub use cancel::CancelToken;
 pub use color::{ColorSpace, PdfFunction};
 pub use content::{RenderOptions, Renderer};
 pub use error::{PpeError, PpeResult, RenderWarnings};
 pub use ink::{Colorant, InkBuffer, InkPaint, InkSpace};
 pub use page::{render_page, PageRender};
+pub use page_program::PageProgram;
+pub use session::{
+    DocumentIdentity, ProfileFileIdentity, ProfileIdentity, RenderSession, ResourceCacheStats,
+    SessionIdentity, SharedRenderSession, SESSION_ENGINE_VERSION,
+};

@@ -6,6 +6,7 @@ import {
     appendImagePageToPdfDoc,
     imageBytesToPdfDoc,
     imageFileToPdfIfNeeded,
+    imageFilesToPdfFile,
     isSupportedImageFileName,
     SUPPORTED_IMAGE_EXTENSIONS,
 } from './imageNormalizer';
@@ -13,6 +14,8 @@ import {
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
 const PNG_2X3_NO_DPI = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAFklEQVR4nGP8////fwYGBgYmEIHCAABiCgQCEYu24wAAAABJRU5ErkJggg==';
+// PNG RGBA 2×3, pHYs 300 DPI và iCCP chứa profile sRGB thật (LittleCMS/Pillow).
+const PNG_2X3_RGB_ICC_300_DPI = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAABdWlDQ1BJQ0MgUHJvZmlsZQAAeJx1kbtLw1AUxn+NimIrDnVQcehQxaGCKIijVNBFHWoFX0sa+xCaGJIUKa6Ci4PgILr4GvwPdBVcFQRBEUScHX0tUuK5RqiIveHm/Pju/Q4nX0CbKBqmWz8CpuU5qfFkbHZuPtb4TBNhNKJ06IZrT06Ppam5Pm4JqXrTp3rVvvfvCi9lXQNCTcJDhu14wjINE6uerXhTuM0o6EvCB8IJRwYUvlR6JuAnxfmA3xQ76dQoaKpnLP+LM7/YKDimcK9w3CyWjJ951JdEstbMtNRO2V24pBgnSYwMJZYp4tEn1ZLM/vf1f/umWBGPIW+bMo448hTEmxC1JF2zUnOiZ+UpUla5/83TzQ0OBN0jSWh49P3XbmjchsqW738e+n7lCOoe4Nyq+lckp+F30beqWnwfWtfh9KKqZXbgbAPa723d0b+lOtlaLgcvJ9AyB9FraF4Isvo55/gO0mvyi65gdw965H7r4hfisWf82PfVZwAAAAlwSFlzAAAuIwAALiMBeKU/dgAAABVJREFUeJxjFNGw2cLAwMDABCJQGAAcKAEygQHOVQAAAABJRU5ErkJggg==';
 // Chunk pHYs hợp lệ: 1181 pixel/mét ≈ 30 DPI, unit=1, kèm CRC.
 const PHYS_30_DPI_HEX = '00000009704859730000049d0000049d017c346ba1';
 
@@ -61,6 +64,23 @@ describe('imageBytesToPdfDoc — khổ vật lý theo DPI', () => {
 
         expect(page.getWidth()).toBe(2);
         expect(page.getHeight()).toBe(3);
+    });
+
+    it('giữ ICCBased N=3, alpha và khổ 300 DPI trong PDF fallback', async () => {
+        const document = await imageBytesToPdfDoc(
+            fromBase64(PNG_2X3_RGB_ICC_300_DPI),
+            'upscaled-icc.png',
+        );
+        const pdfBytes = await document.save({ useObjectStreams: false });
+        const serialized = new TextDecoder('latin1').decode(pdfBytes);
+        const page = document.getPage(0);
+
+        expect(serialized).toContain('/ICCBased');
+        expect(serialized).toMatch(/\/N\s+3\b/);
+        expect(serialized).toContain('/SMask');
+        expect(page.getWidth()).toBeCloseTo((2 / 300) * 72, 3);
+        expect(page.getHeight()).toBeCloseTo((3 / 300) * 72, 3);
+        await expect(PDFDocument.load(pdfBytes)).resolves.toBeDefined();
     });
 });
 const JPG_2X3_NO_DPI = '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAADAAIDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDi6KKK+ZP3E//Z';
@@ -141,5 +161,54 @@ describe('imageFileToPdfIfNeeded — chuỗi ảnh → PDF cho viewer', () => {
         const source = new File([corrupt as unknown as BlobPart], 'hong.webp');
 
         await expect(imageFileToPdfIfNeeded(source, async () => corrupt)).rejects.toThrow();
+    });
+});
+
+describe('imageFilesToPdfFile — nhiều ảnh dùng chung Viewer/thumbnail', () => {
+    it('giữ đúng thứ tự ảnh, định dạng JPG/PNG và DPI riêng từng trang', async () => {
+        const pngNoDpi = fromBase64(PNG_2X3_NO_DPI);
+        const png30Dpi = insertPhysChunk(pngNoDpi);
+        const jpgNoDpi = fromBase64(JPG_2X3_NO_DPI);
+        const files = [
+            new File([], 'trang-1.png', { type: 'image/png' }),
+            new File([], 'trang-2.JPG', { type: 'image/jpeg' }),
+            new File([], 'trang-3.png', { type: 'image/png' }),
+        ];
+        const bytesByName: Record<string, Uint8Array> = {
+            'trang-1.png': pngNoDpi,
+            'trang-2.JPG': jpgNoDpi,
+            'trang-3.png': png30Dpi,
+        };
+        const readBytes = vi.fn(async (file: File) => bytesByName[file.name]);
+
+        const output = await imageFilesToPdfFile(files, readBytes);
+        const document = await readPdfFile(output);
+        const dpi30 = 1181 * 0.0254;
+
+        expect(output.name).toBe('3_anh_nhieu_tem.pdf');
+        expect(output.type).toBe('application/pdf');
+        expect(document.getPageCount()).toBe(3);
+        expect(readBytes.mock.calls.map(([file]) => file.name)).toEqual([
+            'trang-1.png', 'trang-2.JPG', 'trang-3.png',
+        ]);
+        expect(document.getPage(0).getSize()).toEqual({ width: 2, height: 3 });
+        expect(document.getPage(1).getSize()).toEqual({ width: 2, height: 3 });
+        expect(document.getPage(2).getWidth()).toBeCloseTo((2 / dpi30) * 72, 5);
+        expect(document.getPage(2).getHeight()).toBeCloseTo((3 / dpi30) * 72, 5);
+    });
+
+    it('giữ fallback 72 DPI và từ chối đầu vào rỗng/không hỗ trợ', async () => {
+        const png = fromBase64(PNG_2X3_NO_DPI);
+        const output = await imageFilesToPdfFile(
+            [new File([], 'khong-dpi.png', { type: 'image/png' })],
+            async () => png,
+        );
+        const document = await readPdfFile(output);
+
+        expect(output.name).toBe('khong-dpi.pdf');
+        expect(document.getPage(0).getSize()).toEqual({ width: 2, height: 3 });
+        await expect(imageFilesToPdfFile([])).rejects.toThrow('Chưa có ảnh');
+        await expect(imageFilesToPdfFile([new File([], 'anh.gif')]))
+            .rejects.toThrow('Định dạng ảnh chưa được hỗ trợ');
     });
 });

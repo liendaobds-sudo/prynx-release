@@ -2,6 +2,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // PERF (audit 2026-08-08 §RENDER.2): display worker dài hạn dùng chính PrynX.exe;
+    // phải rẽ nhánh trước khi khởi tạo Tauri để stdout chỉ chứa protocol framed binary.
+    if std::env::args().any(|arg| arg == "--prynx-render-worker") {
+        std::process::exit(app_lib::run_render_worker_stdio());
+    }
+
     // Print worker out-of-process: driver GDI crash chỉ giết worker, không kéo UI.
     // Spawn: PrynX.exe --prynx-print-job <job.json> --prynx-print-result <out.json>
     let args: Vec<String> = std::env::args().collect();

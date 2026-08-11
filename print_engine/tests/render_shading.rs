@@ -5,6 +5,7 @@
 //! dẫn, và việc kiểu lưới chưa dựng phải bị **báo** chứ không được vẽ xấp xỉ.
 
 use lopdf::{dictionary, Dictionary, Document, Object, Stream};
+use print_engine::color::space::OutputPreviewFilter;
 use print_engine::content::RenderOptions;
 use print_engine::page::{render_page, PageBox, PageRender};
 
@@ -117,6 +118,47 @@ fn axial(extend: Option<[bool; 2]>) -> Dictionary {
     d
 }
 
+fn render_with_options(
+    content: &str,
+    resources: Dictionary,
+    options: RenderOptions,
+) -> PageRender {
+    let doc = build(content, resources);
+    render_page(&doc, 1, 72.0, PageBox::Crop, options).expect("render phải thành công")
+}
+
+fn spot_axial() -> Dictionary {
+    let separation = Object::Array(vec![
+        Object::Name(b"Separation".to_vec()),
+        Object::Name(b"PANTONE 485 C".to_vec()),
+        Object::Name(b"DeviceCMYK".to_vec()),
+        Object::Dictionary(dictionary! {
+            "FunctionType" => 2,
+            "Domain" => vec![0.into(), 1.into()],
+            "C0" => vec![0.into(), 0.into(), 0.into(), 0.into()],
+            "C1" => vec![0.into(), 1.into(), 1.into(), 0.into()],
+            "N" => 1,
+            "Range" => vec![
+                0.into(), 1.into(), 0.into(), 1.into(),
+                0.into(), 1.into(), 0.into(), 1.into(),
+            ],
+        }),
+    ]);
+    dictionary! {
+        "ShadingType" => 2,
+        "ColorSpace" => separation,
+        "Coords" => vec![0.into(), 0.into(), PAGE.into(), 0.into()],
+        "Function" => dictionary! {
+            "FunctionType" => 2,
+            "Domain" => vec![0.into(), 1.into()],
+            "C0" => vec![0.into()],
+            "C1" => vec![1.into()],
+            "N" => 1,
+            "Range" => vec![0.into(), 1.into()],
+        },
+    }
+}
+
 fn shading_res(shading: Dictionary) -> Dictionary {
     dictionary! { "Shading" => dictionary! { "Sh0" => Object::Dictionary(shading) } }
 }
@@ -212,6 +254,64 @@ fn sh_respects_the_current_clip() {
 }
 
 #[test]
+fn output_preview_smooth_shades_filter_keeps_gradient_and_rejects_other_objects() {
+    let smooth = render_with_options(
+        "/Sh0 sh",
+        shading_res(axial(None)),
+        RenderOptions::softproof()
+            .with_output_preview_filter(OutputPreviewFilter::SmoothShades),
+    );
+    assert!(smooth.buffer.max_tac_percent() > 90.0, "Show=Smooth Shades phải giữ gradient");
+
+    for filter in [
+        OutputPreviewFilter::Text,
+        OutputPreviewFilter::Images,
+        OutputPreviewFilter::LineArt,
+    ] {
+        let hidden = render_with_options(
+            "/Sh0 sh",
+            shading_res(axial(None)),
+            RenderOptions::softproof().with_output_preview_filter(filter),
+        );
+        assert_eq!(hidden.buffer.max_tac_percent(), 0.0, "{filter:?} không được giữ gradient");
+    }
+}
+
+#[test]
+fn q_q_restores_the_shading_clip_region() {
+    let r = render(
+        "q 0 0 10 100 re W n Q /Sh0 sh",
+        shading_res(axial(Some([true, true]))),
+    );
+    let w = r.buffer.width() as usize;
+    let h = r.buffer.height() as usize / 2;
+    assert!(
+        px(&r, 3, w - 2, h) > 235,
+        "Q phải phục hồi cả clip thật lẫn hộp bao dùng để giới hạn vòng lặp"
+    );
+}
+
+#[test]
+fn empty_clip_still_registers_shading_spot_colorant() {
+    // Dù không có pixel để tô, LUT vẫn phải được dựng: đây là lúc kênh spot
+    // được đăng ký và cảnh báo màu được thu thập.
+    let r = render("W n /Sh0 sh", shading_res(spot_axial()));
+    let names: Vec<&str> = r
+        .buffer
+        .space()
+        .colorants()
+        .iter()
+        .map(|colorant| colorant.name())
+        .collect();
+    assert!(names.contains(&"PANTONE 485 C"), "{names:?}");
+    assert_eq!(
+        r.buffer.max_tac_percent(),
+        0.0,
+        "clip rỗng không được lên mực"
+    );
+}
+
+#[test]
 fn radial_shading_paints_from_centre_outwards() {
     let d = dictionary! {
         "ShadingType" => 3,
@@ -258,7 +358,7 @@ fn shading_bbox_limits_the_painted_area() {
 
 #[test]
 fn clean_shading_page_is_not_flagged_degraded() {
-    // Đây là điểm của cả milestone: trang gradient không còn bị nhường Ghostscript.
+    // Đây là điểm của cả milestone: trang gradient không còn bị hạ độ tin cậy.
     let r = render("/Sh0 sh", shading_res(axial(None)));
     assert!(!r.warnings.degrades_accuracy(), "{:?}", r.warnings);
     assert_eq!(r.warnings.dropped_objects, 0);

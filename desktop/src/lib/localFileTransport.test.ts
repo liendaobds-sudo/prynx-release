@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { prepareFileForUpload } from './api';
 import { fetchLocalFileBuffer, localFileUrl } from './localFileTransport';
-import { detectColorSpace, getFileArrayBuffer } from './utils';
+import { detectColorSpace, getFileArrayBuffer, stripBytesIfOnDisk } from './utils';
 
 type TauriWindow = Window & { __TAURI_INTERNALS__?: Record<string, never> };
 const tauriWindow = window as TauriWindow;
@@ -99,5 +99,24 @@ describe('local file transport', () => {
       .mockResolvedValueOnce(new Response('/DeviceRGB', { status: 403 }));
     await expect(detectColorSpace(pdf)).resolves.toBeNull();
     expect(warn).toHaveBeenCalled();
+  });
+
+  it('history stub file lớn chỉ đọc hai byte range khi dò màu dự phòng', async () => {
+    const diskSize = 5 * 1024 * 1024;
+    const source = new File([], 'large.pdf', { type: 'application/pdf' });
+    Object.defineProperty(source, 'path', { value: 'D:\\jobs\\large.pdf' });
+    Object.defineProperty(source, 'size', { value: diskSize });
+    const historyFile = stripBytesIfOnDisk(source);
+
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('backend unavailable', { status: 500 }))
+      .mockResolvedValueOnce(new Response('/DeviceCMYK', { status: 206 }))
+      .mockResolvedValueOnce(new Response('/DeviceRGB', { status: 206 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(detectColorSpace(historyFile)).resolves.toBe('CMYK/RGB');
+
+    expect((fetchMock.mock.calls[1][1]?.headers as Headers).get('Range')).toBe('bytes=0-1048575');
+    expect((fetchMock.mock.calls[2][1]?.headers as Headers).get('Range')).toBe('bytes=4194304-5242879');
   });
 });

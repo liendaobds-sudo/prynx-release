@@ -601,7 +601,7 @@ export async function runResize(ctx: ProcessContext, settings: any) {
     // XObject) + save (dựng Uint8Array mới) → đỉnh RAM ~3-4× kích thước file. File
     // lớn/nhiều ảnh vượt trần cấp phát ArrayBuffer của V8 → "Array buffer allocation
     // failed". Vượt ngưỡng này BỎ QUA pdf-lib, đẩy thẳng backend (xử lý theo path
-    // trên đĩa qua Ghostscript/pypdfium2, KHÔNG nạp vào WebView).
+    // trên đĩa qua backend/PDFium, KHÔNG nạp vào WebView).
     const FE_SIZE_LIMIT = 50 * 1024 * 1024;
 
     const emit = async (blob: Blob) => {

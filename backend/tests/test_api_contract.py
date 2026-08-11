@@ -304,7 +304,6 @@ def test_overprint_preview_bao_phu_ca_ba_nhanh():
         ("/system/gpu-status", "GET"),
         ("/system/install-gpu-plugin", "POST"),
         ("/system/recover-jobs", "POST"),
-        ("/system/gs-usage", "GET"),
     ],
 )
 def test_system_moi_endpoint_deu_co_model(path, method):

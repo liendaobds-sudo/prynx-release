@@ -8,14 +8,18 @@ Provides endpoints for:
 - POST /pdf-tools/shuffle   — Reorder pages
 """
 
+import asyncio
 import os
+import base64
+import hashlib
+import hmac
 import math
 import uuid
 import shutil
 import time
 import logging
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from fastapi import APIRouter, File, UploadFile, HTTPException, Form, Request, Depends
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
@@ -87,6 +91,51 @@ def _validate_upscale_memory(width: int, height: int) -> None:
                 "không còn đủ bộ nhớ. Hãy đóng bớt ứng dụng hoặc dùng ảnh nhỏ hơn."
             ),
         )
+
+
+def _upscale_output_dpi(source_dpi: object, scale_factor: int) -> tuple[float, float]:
+    """Tăng mật độ điểm ảnh để kích thước vật lý không đổi sau Upscale.
+
+    Ảnh không khai DPI được workspace hiểu là 72 DPI (`imageNormalizer.ts`), nên
+    đầu ra x2/x4 phải là 144/288 DPI. Giữ DPI cũ sẽ biến 8000 px thành 8000 pt và
+    buộc viewer dựng raster 10667 px ở 96 DPI.
+    """
+    dpi_x = dpi_y = 72.0
+    try:
+        if isinstance(source_dpi, (tuple, list)) and len(source_dpi) >= 2:
+            candidate_x = float(source_dpi[0])
+            candidate_y = float(source_dpi[1])
+            if math.isfinite(candidate_x) and candidate_x > 0:
+                dpi_x = candidate_x
+            if math.isfinite(candidate_y) and candidate_y > 0:
+                dpi_y = candidate_y
+        elif source_dpi is not None:
+            candidate = float(source_dpi)
+            if math.isfinite(candidate) and candidate > 0:
+                dpi_x = dpi_y = candidate
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return dpi_x * scale_factor, dpi_y * scale_factor
+
+
+def _icc_data_colorspace(icc_bytes: bytes | None) -> str | None:
+    """Đọc colorspace từ ICC profile header (4 byte tại offset 16).
+
+    SECURITY (audit 2026-08-10 §UP.X.05): model AI luôn trả RGB. Nếu source có ICC
+    Gray/LAB mà vẫn gắn nguyên lên output RGB thì native PDF từ chối và fallback
+    mất ICC im lặng. Phải phát hiện sớm để chuyển đổi hoặc bỏ ICC + cảnh báo.
+    """
+    if not icc_bytes or len(icc_bytes) < 20:
+        return None
+    sig = icc_bytes[16:20]
+    mapping = {
+        b'RGB ': 'RGB',
+        b'GRAY': 'GRAY',
+        b'Lab ': 'LAB',
+        b'CMYK': 'CMYK',
+        b'XYZ ': 'XYZ',
+    }
+    return mapping.get(sig)
 
 
 def _plan_background_work_size(width: int, height: int) -> tuple[tuple[int, int], list[str]]:
@@ -171,6 +220,177 @@ def _cleanup_file(path: str) -> None:
         pass
 
 
+# ── Scope check cho file_path do client gửi ──────────────────────────────────
+# SECURITY (audit 2026-08-10 §UP.X.04): chặn đọc arbitrary local path qua biên
+# WebView → sidecar. Trước đây endpoint chỉ validate extension + tồn tại → bất
+# kỳ ảnh nào OS user đọc được đều bị expose cho renderer/XSS.
+
+_IMAGE_PATH_ALLOWED_EXTS = ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tif', '.tiff')
+
+# Chỉ giữ thư mục do PrynX sở hữu. File người dùng bên ngoài phải có capability
+# native riêng; không cho phép toàn bộ %TEMP%/Desktop/ổ đĩa.
+_IMAGE_PATH_ALLOWED_DIRS: list[str] = []
+_UPSCALE_FILE_GRANT_PURPOSE = "prynx-upscale-file-grant:v1:"
+_UPSCALE_FILE_GRANT_TTL_SECONDS = 120
+_UPSCALE_FILE_GRANT_CLOCK_SKEW_SECONDS = 5
+_USED_UPSCALE_FILE_GRANTS: dict[str, int] = {}
+_USED_UPSCALE_FILE_GRANTS_LOCK = threading.Lock()
+
+
+def _canonical_image_path(path: str) -> str:
+    return os.path.realpath(os.path.abspath(path))
+
+
+def _image_path_key(path: str) -> str:
+    return os.path.normcase(os.path.normpath(_canonical_image_path(path)))
+
+
+def _is_path_inside(path: str, directory: str) -> bool:
+    try:
+        return os.path.commonpath((_image_path_key(path), _image_path_key(directory))) == _image_path_key(directory)
+    except (ValueError, OSError):
+        return False
+
+
+def _init_image_path_allowed_dirs() -> None:
+    """Gọi một lần sau khi settings đã resolve."""
+    dirs = [
+        _canonical_image_path(settings.UPLOAD_DIR),
+        _canonical_image_path(settings.RESULTS_DIR),
+    ]
+    _IMAGE_PATH_ALLOWED_DIRS.clear()
+    _IMAGE_PATH_ALLOWED_DIRS.extend(dirs)
+
+
+def _validate_image_file_path(file_path: str, *, allow_external: bool = False) -> str:
+    """Validate và canonicalize path do client gửi; trả real path hoặc ném 400/403.
+
+    Bước kiểm tra:
+    1. Chặn traversal (..)
+    2. Chặn UNC path (\\\\), device path (\\\\?\\, \\\\.\\)
+    3. Chặn symlink/reparse TRƯỚC canonicalization
+    4. Canonicalize (realpath)
+    5. Validate extension
+    6. Validate tồn tại
+    7. Scope check: path phải nằm trong thư mục PrynX, trừ khi capability native
+       đã được xác minh riêng cho đúng path.
+    """
+    if not file_path or '\x00' in file_path:
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    normalized = file_path.replace('/', '\\')
+    if any(part == '..' for part in normalized.split('\\')):
+        raise HTTPException(status_code=400, detail="Invalid path: directory traversal not allowed")
+
+    # Chặn UNC/device path trên Windows
+    if normalized.startswith('\\\\'):
+        raise HTTPException(status_code=403, detail="UNC and device paths are not allowed")
+    if not os.path.isabs(file_path):
+        raise HTTPException(status_code=400, detail="Absolute path required")
+
+    # Chặn symlink TRƯỚC realpath — đây là lỗi cũ: kiểm sau realpath vô hiệu.
+    if os.path.islink(file_path):
+        raise HTTPException(status_code=403, detail="Symbolic links are not allowed")
+
+    real = _canonical_image_path(file_path)
+
+    if not os.path.isfile(real):
+        raise HTTPException(status_code=400, detail="File not found")
+    if not real.lower().endswith(_IMAGE_PATH_ALLOWED_EXTS):
+        raise HTTPException(status_code=400, detail="Unsupported file type")
+
+    if not allow_external:
+        # SEC (audit 2026-08-11 §UP.R.01): candidate và roots đi cùng pipeline
+        # realpath/normcase/commonpath, nên alias 8.3 và path dài không tự lệch scope.
+        if not _IMAGE_PATH_ALLOWED_DIRS:
+            _init_image_path_allowed_dirs()
+        if not any(_is_path_inside(real, directory) for directory in _IMAGE_PATH_ALLOWED_DIRS):
+            raise HTTPException(
+                status_code=403,
+                detail="Path is outside the allowed directories",
+            )
+
+    return real
+
+
+def _consume_upscale_file_grant(nonce: str, expires_at: int, now: int) -> bool:
+    with _USED_UPSCALE_FILE_GRANTS_LOCK:
+        stale = [
+            used_nonce for used_nonce, expiry in _USED_UPSCALE_FILE_GRANTS.items()
+            if expiry + _UPSCALE_FILE_GRANT_CLOCK_SKEW_SECONDS < now
+        ]
+        for used_nonce in stale:
+            _USED_UPSCALE_FILE_GRANTS.pop(used_nonce, None)
+        if nonce in _USED_UPSCALE_FILE_GRANTS:
+            return False
+        _USED_UPSCALE_FILE_GRANTS[nonce] = expires_at
+        return True
+
+
+def _verify_upscale_file_grant(file_path: str, tab_id: str, grant: str) -> str:
+    """Xác minh capability native, bind path + tab + TTL và dùng đúng một lần."""
+    if not grant or len(grant) > 65_536 or not tab_id or len(tab_id) > 128:
+        raise HTTPException(status_code=403, detail="Invalid file grant")
+
+    try:
+        version, payload, provided_signature = grant.split('.', 2)
+        if version != 'v1' or len(provided_signature) != 64:
+            raise ValueError("grant version/signature")
+        from app.core import license_guard
+        token = license_guard._SIDECAR_TOKEN
+        if not token:
+            raise ValueError("sidecar token unavailable")
+        expected_signature = hmac.new(
+            token.encode('utf-8'),
+            f"{_UPSCALE_FILE_GRANT_PURPOSE}{payload}".encode('utf-8'),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(provided_signature, expected_signature):
+            raise ValueError("grant signature")
+
+        padded_payload = payload + ('=' * (-len(payload) % 4))
+        claims = json.loads(base64.urlsafe_b64decode(padded_payload).decode('utf-8'))
+        if not isinstance(claims, dict) or claims.get('v') != 1:
+            raise ValueError("grant claims")
+        issued_at = claims.get('iat')
+        expires_at = claims.get('exp')
+        nonce = claims.get('nonce')
+        granted_tab = claims.get('tab')
+        granted_path = claims.get('path')
+        if (
+            not isinstance(issued_at, int)
+            or not isinstance(expires_at, int)
+            or not isinstance(nonce, str)
+            or len(nonce) != 32
+            or any(char not in '0123456789abcdef' for char in nonce)
+            or not isinstance(granted_tab, str)
+            or not isinstance(granted_path, str)
+        ):
+            raise ValueError("grant claim types")
+
+        now = int(time.time())
+        if (
+            issued_at > now + _UPSCALE_FILE_GRANT_CLOCK_SKEW_SECONDS
+            or expires_at < now
+            or expires_at <= issued_at
+            or expires_at - issued_at > _UPSCALE_FILE_GRANT_TTL_SECONDS
+            or granted_tab != tab_id
+        ):
+            raise ValueError("grant expired or wrong tab")
+
+        real = _validate_image_file_path(file_path, allow_external=True)
+        if _image_path_key(real) != _image_path_key(granted_path):
+            raise ValueError("grant path mismatch")
+        if not _consume_upscale_file_grant(nonce, expires_at, now):
+            raise ValueError("grant replay")
+        return real
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.info("Từ chối capability file Upscale: %s", type(exc).__name__)
+        raise HTTPException(status_code=403, detail="Invalid or expired file grant") from exc
+
+
 def _create_split_zip(results: list[dict], zip_path: str, license_info: dict) -> None:
     """Watermark and archive split outputs entirely off the async event loop."""
     import zipfile
@@ -231,8 +451,8 @@ def _strip_pdf_metadata(pdf_path: str) -> None:
     """Xóa metadata thật khỏi PDF: XMP (Root/Metadata) + Document Info (tác giả,
     tiêu đề, producer, history Photoshop...).
 
-    Ghostscript KHÔNG xóa metadata — cờ -dFastWebView chỉ liên quan linearization.
-    Muốn strip thật phải hậu xử lý bằng pikepdf. Gọi TRƯỚC watermark để XMP watermark
+    Cờ linearization không xóa metadata. Muốn strip thật phải hậu xử lý bằng
+    pikepdf. Gọi TRƯỚC watermark để XMP watermark
     (thêm sau) không bị xóa nhầm. Non-blocking: lỗi chỉ log, giữ nguyên file."""
     import tempfile
     import pikepdf
@@ -264,10 +484,10 @@ def _strip_pdf_metadata(pdf_path: str) -> None:
 
 
 def _normalize_compat(pdf_path: str) -> None:
-    """Chuẩn hóa cấu trúc GS-output về xref cổ điển để pdf-lib (frontend) đọc lại
+    """Chuẩn hóa cấu trúc PDF về xref cổ điển để pdf-lib (frontend) đọc lại
     được khi onFileFixed nạp blob về working file.
 
-    Ghostscript pdfwrite ghi object stream + xref stream (Flate) mà pdf-lib/pako
+    Một số PDF writer ghi object stream + xref stream (Flate) mà pdf-lib/pako
     không giải nén được → 'Invalid header in flate stream'. Chạy CUỐI CÙNG (sau
     watermark) để giữ mọi nội dung. Non-blocking: lỗi chỉ log, giữ nguyên file."""
     import tempfile
@@ -859,9 +1079,9 @@ async def optimize_pdf_endpoint(
     license_info: dict = Depends(require_license),
 ):
     """
-    Compress/optimize a PDF using Ghostscript.
+    Nén/tối ưu PDF bằng engine object-level nội bộ.
 
-    Presets (maps to -dPDFSETTINGS):
+    Preset chất lượng ảnh:
       - screen:   72 DPI images, max compression, smallest file
       - ebook:    150 DPI images, good quality, small file (DEFAULT)
       - printer:  300 DPI images, high quality, larger file
@@ -870,10 +1090,7 @@ async def optimize_pdf_endpoint(
 
     Returns the optimized PDF with compression stats in headers.
     """
-    import subprocess
     import asyncio
-    from app.config import settings
-    from app.utils.subprocess_utils import run_hidden
 
     source_path = await save_upload(file)
     job_id = uuid.uuid4().hex[:8]
@@ -882,14 +1099,15 @@ async def optimize_pdf_endpoint(
     original_size = os.path.getsize(source_path)
     do_strip = strip_metadata.lower() in ("true", "1", "yes")
     do_gray = grayscale.lower() in ("true", "1", "yes")
+    if preset not in {"screen", "ebook", "printer", "prepress", "custom"}:
+        preset = "ebook"
 
-    # Đường object-level trước: lắp từ downscale_images + convert_to_grayscale
-    # + nén cấu trúc qua qpdf. Khác `pdfwrite` ở chỗ nó KHÔNG subset lại font và
-    # không quy đổi colorspace ngoài yêu cầu — người dùng bấm "tối ưu" để file
-    # nhẹ hơn, không phải để đổi màu. Route này trước đây gọi Ghostscript thẳng.
     try:
         from app.core import pdf_actions_native
 
+        # GS-SUNSET (audit 2026-08-08 §GS.1): optimize chỉ dùng engine nội bộ.
+        # Kết quả unsupported là giới hạn có chủ đích, không phải lỗi server và
+        # không được chuyển tiếp sang một executable ngoài sản phẩm.
         native = await asyncio.to_thread(
             pdf_actions_native.optimize_pdf,
             source_path,
@@ -898,156 +1116,53 @@ async def optimize_pdf_endpoint(
             float(image_dpi) if preset == "custom" else None,
             do_gray,
         )
-    except Exception as ne:  # noqa: BLE001
-        logger.warning("optimize object-level lỗi, fallback Ghostscript: %s", ne)
-        native = None
+        if not native.get("supported"):
+            warnings = "; ".join(native.get("warnings", []))
+            logger.info(
+                "optimize: engine nội bộ không xử lý chắc chắn được (%s)",
+                warnings or "không có chi tiết",
+            )
+            from app.core.engine_support import unsupported_message
 
-    if native is not None and native.get("supported"):
-        if do_strip:
-            try:
-                _strip_pdf_metadata(output_path)
-            except Exception as se:  # noqa: BLE001
-                logger.warning("strip metadata sau optimize lỗi: %s", se)
-        new_size = os.path.getsize(output_path)
-        return FileResponse(
-            path=output_path,
-            filename=f"optimized_{file.filename}",
-            media_type="application/pdf",
-            headers={
-                "X-Original-Size": str(original_size),
-                "X-Optimized-Size": str(new_size),
-                "X-Compression-Ratio": f"{(1 - new_size / max(original_size, 1)) * 100:.1f}",
-                "X-PrynX-Engine": "pikepdf",
-            },
-        )
-    if native is not None:
-        logger.info(
-            "optimize: object-level không xử lý được (%s) → Ghostscript",
-            "; ".join(native.get("warnings", [])),
-        )
-
-    # Build Ghostscript command
-    gs_path = settings.GHOSTSCRIPT_PATH
-    cmd = [
-        gs_path,
-        "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
-        "-sDEVICE=pdfwrite",
-        "-dCompatibilityLevel=1.5",
-    ]
-
-    # Preset-specific settings
-    if preset == "custom":
-        cmd += [
-            "-dPDFSETTINGS=/default",
-            "-dDownsampleColorImages=true",
-            f"-dColorImageResolution={image_dpi}",
-            "-dDownsampleGrayImages=true",
-            f"-dGrayImageResolution={image_dpi}",
-            "-dDownsampleMonoImages=true",
-            f"-dMonoImageResolution={min(image_dpi * 2, 1200)}",
-        ]
-    else:
-        valid_presets = {"screen", "ebook", "printer", "prepress"}
-        if preset not in valid_presets:
-            preset = "ebook"
-        cmd.append(f"-dPDFSETTINGS=/{preset}")
-
-    # Subset fonts always
-    cmd += ["-dSubsetFonts=true", "-dEmbedAllFonts=true"]
-
-    # Grayscale conversion. Đặt SAU preset để thắng: preset /prepress vốn set
-    # ColorConversionStrategy=/LeaveColorUnchanged (giữ CMYK) — sẽ nuốt grayscale
-    # nếu không ghi đè. -dOverrideICC + strategy Gray ép chuyển xám kể cả prepress.
-    if do_gray:
-        cmd += [
-            "-sProcessColorModel=DeviceGray",
-            "-sColorConversionStrategy=Gray",
-            "-dOverrideICC=true",
-        ]
-
-    # KHÔNG strip metadata bằng Ghostscript ở đây: -dFastWebView chỉ về
-    # linearization, không xóa XMP/docinfo. Việc strip thật do _strip_pdf_metadata
-    # (pikepdf) làm ở khâu hậu xử lý bên dưới.
-
-    cmd += [f"-sOutputFile={output_path}", source_path]
-
-    try:
-        import time as _time
-        t0 = _time.perf_counter()
-
-        def _run_gs():
-            return run_hidden(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=600,  # 10 min max for large files
+            raise HTTPException(
+                status_code=422,
+                detail=unsupported_message("Tối ưu PDF"),
             )
 
-        result = await asyncio.to_thread(_run_gs)
-        t_gs = _time.perf_counter() - t0
-
-        if result.returncode != 0:
-            err = result.stderr.decode("utf-8", errors="ignore").strip()
-            raise RuntimeError(f"Hệ thống nén báo lỗi nội bộ, không thể xử lý file này.")
-
-        if not os.path.exists(output_path):
-            raise RuntimeError("Hệ thống nén không xuất được file kết quả.")
-
-        gs_size = os.path.getsize(output_path)
-        output_size = gs_size
-        ratio = round((1 - output_size / original_size) * 100, 1) if original_size > 0 else 0
-
-        # If output is actually larger, just return original
-        if output_size >= original_size:
-            os.replace(source_path, output_path)
-            output_size = original_size
-            ratio = 0
-
-        # Strip metadata THẬT (pikepdf) — trước watermark để XMP watermark thêm
-        # sau không bị xóa nhầm. Chạy kể cả khi GS không nén được (đã trả file gốc)
-        # vì đây là yêu cầu riêng của user, độc lập với việc nén.
-        t1 = _time.perf_counter()
         if do_strip:
-            await run_in_threadpool(_strip_pdf_metadata, output_path)
-        t_strip = _time.perf_counter() - t1
+            try:
+                await run_in_threadpool(_strip_pdf_metadata, output_path)
+            except Exception as se:  # noqa: BLE001
+                logger.warning("strip metadata sau optimize lỗi: %s", se)
 
-        t2 = _time.perf_counter()
-        await run_in_threadpool(_safe_watermark, output_path, license_info)
-        t_wm = _time.perf_counter() - t2
-
-        # Chuẩn hóa xref cổ điển CUỐI CÙNG để pdf-lib (frontend) mở lại được.
-        t3 = _time.perf_counter()
-        await run_in_threadpool(_normalize_compat, output_path)
-        t_compat = _time.perf_counter() - t3
-
-        # Kích thước có thể đổi sau hậu xử lý → cập nhật lại header cho chính xác.
         output_size = os.path.getsize(output_path)
-        ratio = round((1 - output_size / original_size) * 100, 1) if original_size > 0 else 0
-
-        t_total = _time.perf_counter() - t0
-        logger.info(
-            "[OPTIMIZE_TIMING] job=%s preset=%s in=%.2fMB gs_out=%.2fMB final=%.2fMB "
-            "gs=%.2fs strip=%.2fs(%s) wm=%.2fs compat=%.2fs total=%.2fs",
-            job_id, preset,
-            original_size / (1024 * 1024), gs_size / (1024 * 1024), output_size / (1024 * 1024),
-            t_gs, t_strip, "on" if do_strip else "off", t_wm, t_compat, t_total,
+        ratio = (
+            round((1 - output_size / original_size) * 100, 1)
+            if original_size > 0
+            else 0
         )
-
         return FileResponse(
             path=output_path,
             filename=f"optimized_{file.filename}",
             media_type="application/pdf",
             headers={
                 "X-Original-Size": str(original_size),
-                "X-Output-Size": str(output_size),
+                "X-Optimized-Size": str(output_size),
                 "X-Compression-Ratio": str(ratio),
+                "X-PrynX-Engine": "pikepdf",
             },
             background=BackgroundTask(_cleanup_file, output_path),
         )
+    except HTTPException:
+        _cleanup_file(output_path)
+        raise
     except Exception as e:
         _cleanup_file(output_path)
-        logger.exception("Tối ưu thất bại")
-        raise HTTPException(status_code=500, detail=f"Tối ưu thất bại ({type(e).__name__})")
+        logger.exception("Tối ưu thất bại trong engine nội bộ")
+        raise HTTPException(
+            status_code=500,
+            detail="Tối ưu thất bại do engine nội bộ không xử lý được file này.",
+        ) from e
     finally:
         try: os.remove(source_path)
         except OSError: pass
@@ -1629,18 +1744,8 @@ async def remove_background_endpoint(
         source_path = await save_upload(file)
         is_temp = True
     elif file_path:
-        # Defense-in-depth: validate client-supplied path
-        if '..' in file_path:
-            raise HTTPException(status_code=400, detail="Invalid path: directory traversal not allowed")
-        real = os.path.realpath(file_path)
-        if os.path.islink(real):
-            raise HTTPException(status_code=400, detail="Invalid path: symbolic links not allowed")
-        if not os.path.isfile(real):
-            raise HTTPException(status_code=400, detail="File not found")
-        allowed_exts = ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tif', '.tiff')
-        if not real.lower().endswith(allowed_exts):
-            raise HTTPException(status_code=400, detail="Unsupported file type")
-        source_path = real
+        # SECURITY (audit 2026-08-10 §UP.X.04): dùng helper chung — scope check.
+        source_path = _validate_image_file_path(file_path)
         is_temp = False
     else:
         raise HTTPException(status_code=400, detail="Vui lòng cung cấp file hoặc file_path hợp lệ")
@@ -1719,6 +1824,10 @@ async def remove_background_endpoint(
                 save_kwargs["icc_profile"] = output_icc
             if source_dpi:
                 save_kwargs["dpi"] = source_dpi
+            # PERF (feedback 2026-08-10 §UP.SPEED.1): PNG vẫn lossless ở mọi
+            # mức. Trên ảnh 2000×2000 → 8000×8000, level 3 giảm thời gian encode
+            # 6,15s → 3,64s so với mặc định level 6, dung lượng chỉ tăng 2,3%.
+            save_kwargs["compress_level"] = 3
             result_img.save(output_path, format="PNG", **save_kwargs)
             output_meta["size"] = result_img.size
 
@@ -1782,16 +1891,23 @@ async def remove_background_warmup(engine: str = Form("general")):
 
 @router.post("/upscale", dependencies=[Depends(require_feature("util.upscale"))])
 async def upscale_endpoint(
+    request: Request,
     file: Optional[UploadFile] = File(None),
     file_path: Optional[str] = Form(None),
+    file_grant: Optional[str] = Form(None),
+    file_grant_tab_id: Optional[str] = Form(None),
     engine: str = Form('general'),
     scale_factor: int = Form(4),
+    include_working_pdf: bool = Form(False),
 ):
     """Phóng to ảnh 2x/4x bằng AI super-resolution (ONNX), trả PNG.
 
     Hỗ trợ model general (nhanh) và quality (RRDBNet). Giữ alpha nếu ảnh có.
     """
-    from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
+    from app.core.heavy_job_scheduler import (
+        HeavyJobQueueCancelled,
+        run_scheduled_in_threadpool,
+    )
     from io import BytesIO
     from PIL import Image, ImageCms, ImageOps
 
@@ -1799,18 +1915,18 @@ async def upscale_endpoint(
         source_path = await save_upload(file)
         is_temp = True
     elif file_path:
-        # Defense-in-depth: validate client-supplied path (giống remove-background).
-        if '..' in file_path:
-            raise HTTPException(status_code=400, detail="Invalid path: directory traversal not allowed")
-        real = os.path.realpath(file_path)
-        if os.path.islink(real):
-            raise HTTPException(status_code=400, detail="Invalid path: symbolic links not allowed")
-        if not os.path.isfile(real):
-            raise HTTPException(status_code=400, detail="File not found")
-        allowed_exts = ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tif', '.tiff')
-        if not real.lower().endswith(allowed_exts):
-            raise HTTPException(status_code=400, detail="Unsupported file type")
-        source_path = real
+        # SEC (audit 2026-08-11 §UP.R.01): file người dùng bên ngoài thư mục PrynX
+        # chỉ đi fast-path khi native đã cấp capability bind path+tab+TTL.
+        if file_grant or file_grant_tab_id:
+            if not file_grant or not file_grant_tab_id:
+                raise HTTPException(status_code=403, detail="Incomplete file grant")
+            source_path = _verify_upscale_file_grant(
+                file_path,
+                file_grant_tab_id,
+                file_grant,
+            )
+        else:
+            source_path = _validate_image_file_path(file_path)
         is_temp = False
     else:
         raise HTTPException(status_code=400, detail="Vui lòng cung cấp file hoặc file_path hợp lệ")
@@ -1825,10 +1941,45 @@ async def upscale_endpoint(
     variant = requested_engine if requested_engine in ('general', 'balanced', 'quality') else 'balanced'
     job_id = uuid.uuid4().hex[:8]
     output_path = os.path.join(RESULTS_DIR, f"upscaled_{job_id}.png")
-    output_meta: dict[str, object] = {"warnings": []}
+    working_pdf_path = os.path.join(RESULTS_DIR, f"upscaled_{job_id}.pdf")
+    output_meta: dict[str, object] = {
+        "warnings": [],
+        "working_pdf_path": "",
+        "artifact_lease": "",
+    }
+    cancel_event = threading.Event()
+
+    async def _watch_disconnect() -> None:
+        while not cancel_event.is_set():
+            if await request.is_disconnected():
+                cancel_event.set()
+                return
+            await asyncio.sleep(0.05)
+
+    if await request.is_disconnected():
+        cancel_event.set()
+    disconnect_watcher = asyncio.create_task(_watch_disconnect())
+
+    def _cleanup_working_pdf_artifact() -> None:
+        lease = str(output_meta.get("artifact_lease") or "")
+        if lease:
+            from app.core.cleanup import release_upscale_artifact_lease
+            release_upscale_artifact_lease(lease)
+        else:
+            _cleanup_file(working_pdf_path)
 
     def _process_upscale():
-        from app.workers.realesrgan_engine import guard_runtime, upscale as _upscale
+        from app.workers.realesrgan_engine import (
+            UpscaleCancelled,
+            guard_runtime,
+            upscale as _upscale,
+        )
+
+        def _checkpoint() -> None:
+            if cancel_event.is_set():
+                raise UpscaleCancelled("Tác vụ Upscale đã bị hủy.")
+
+        _checkpoint()
         with Image.open(source_path) as img:
             # PERF (audit 2026-07-28 §UP-01/07): đọc kích thước từ header và kiểm
             # RAM trước img.load(), không giải nén ảnh cực lớn rồi mới giới hạn.
@@ -1837,14 +1988,21 @@ async def upscale_endpoint(
             # policy, cạnh chốt RAM. Trước đây hàm này là code chết nên máy thiếu
             # GPU vẫn nhận job Chất lượng và chạy hàng chục phút không lời giải thích.
             guard_runtime(img.width, img.height, variant)
+            _checkpoint()
             img.load()
             source_mode = img.mode
             source_icc = img.info.get("icc_profile")
             source_dpi = img.info.get("dpi")
             work = ImageOps.exif_transpose(img)
+            output_dpi = _upscale_output_dpi(source_dpi, scale_factor)
+            if work.size == (img.height, img.width) and img.width != img.height:
+                output_dpi = output_dpi[1], output_dpi[0]
 
             warnings: list[str] = output_meta["warnings"]  # type: ignore[assignment]
             output_icc = source_icc
+            # UPSCALE (audit 2026-08-10 §UP.X.05): xác định colorspace ICC thật để
+            # không gắn nhầm profile Gray/LAB/CMYK lên output RGB.
+            icc_cs = _icc_data_colorspace(source_icc)
             if source_mode == "CMYK":
                 # UPSCALE (audit 2026-07-28 §UP-03): model chỉ nhận RGB. Nếu có
                 # profile nguồn thì chuyển sang sRGB có quản lý màu; không bao giờ
@@ -1865,11 +2023,35 @@ async def upscale_endpoint(
                     work = work.convert("RGB")
                     output_icc = None
                 warnings.append("color-converted-to-srgb")
+            elif source_icc and icc_cs and icc_cs not in ("RGB",):
+                # UPSCALE (audit 2026-08-10 §UP.X.05): Gray/LAB/XYZ ICC trên ảnh
+                # sẽ bị model ép RGB → gắn profile cũ lên output RGB là SAI.
+                # Chuyển profile-to-profile sang sRGB nếu được, nếu không thì bỏ ICC.
+                try:
+                    source_profile = ImageCms.ImageCmsProfile(BytesIO(source_icc))
+                    srgb_profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB"))
+                    work = ImageCms.profileToProfile(
+                        work, source_profile, srgb_profile, outputMode="RGB"
+                    )
+                    output_icc = srgb_profile.tobytes()
+                    warnings.append("icc-converted-to-srgb")
+                except Exception:
+                    logger.warning(
+                        "Không chuyển được ICC %s sang sRGB; bỏ ICC",
+                        icc_cs, exc_info=True,
+                    )
+                    output_icc = None
+                    warnings.append("icc-dropped-incompatible")
 
             if source_mode.startswith("I;16") or source_mode in ("I", "F"):
                 warnings.append("bit-depth-reduced-to-8")
 
-            result_img = _upscale(work, variant=variant)
+            result_img = _upscale(
+                work,
+                variant=variant,
+                cancelled=cancel_event.is_set,
+            )
+            _checkpoint()
             if scale_factor == 2:
                 # UPSCALE (audit 2026-07-28 §UP-04): hậu xử lý xác định ở backend,
                 # tránh canvas WebView và bảo đảm đúng kích thước đã cam kết.
@@ -1880,15 +2062,60 @@ async def upscale_endpoint(
             save_kwargs: dict[str, object] = {}
             if output_icc:
                 save_kwargs["icc_profile"] = output_icc
-            if source_dpi:
-                save_kwargs["dpi"] = source_dpi
+            # UPSCALE (feedback 2026-08-10 §UP.PHYSICAL.1): tăng pixel nhưng giữ
+            # nguyên kích thước vật lý của tem/trang khi mở lại hoặc tạo PDF làm việc.
+            save_kwargs["dpi"] = output_dpi
+            # PERF (feedback 2026-08-10 §UP.SPEED.1): PNG vẫn lossless ở mọi
+            # mức. Trên ảnh 2000×2000 → 8000×8000, level 3 giảm thời gian encode
+            # 6,15s → 3,64s so với mặc định level 6, dung lượng chỉ tăng 2,3%.
+            save_kwargs["compress_level"] = 3
+            _checkpoint()
             result_img.save(output_path, format="PNG", **save_kwargs)
+            _checkpoint()
             output_meta["size"] = result_img.size
+            if include_working_pdf:
+                try:
+                    # PERF (feedback 2026-08-10 §UP.SPEED.3): native giữ thẳng
+                    # luồng IDAT của PNG RGB khi bọc thành PDF. Mẫu 8000×8000 chỉ
+                    # mất 0,39s; pdf-lib trong WebView mất 7,78s và phình 38→60MB.
+                    from app.workers.pdf_manifest_engine import merge_manifest
+                    merge_manifest(
+                        [output_path],
+                        [{"file_index": 0}],
+                        working_pdf_path,
+                    )
+                    _checkpoint()
+                    from app.core.cleanup import create_upscale_artifact_lease
+                    output_meta["artifact_lease"] = create_upscale_artifact_lease(
+                        working_pdf_path
+                    )
+                    output_meta["working_pdf_path"] = working_pdf_path
+                except UpscaleCancelled:
+                    _cleanup_working_pdf_artifact()
+                    raise
+                except Exception:
+                    _cleanup_working_pdf_artifact()
+                    logger.warning(
+                        "Không tạo được PDF làm việc nhanh cho kết quả Upscale; frontend sẽ fallback",
+                        exc_info=True,
+                    )
 
-    from app.workers.realesrgan_engine import UpscaleUnavailable
+    from app.workers.realesrgan_engine import UpscaleCancelled, UpscaleUnavailable
 
     try:
-        await run_in_threadpool(_process_upscale)
+        await run_scheduled_in_threadpool(
+            "upscale",
+            _process_upscale,
+            queue_cancelled=cancel_event.is_set,
+        )
+        if cancel_event.is_set():
+            raise UpscaleCancelled("Tác vụ Upscale đã bị hủy.")
+
+        # PNG response là artifact truyền tải ngắn; companion PDF được quản lý bằng
+        # marker lease bền qua restart trong cleanup.py, không tạo Timer/thread riêng.
+        def _cleanup_upscale_artifacts():
+            _cleanup_file(output_path)
+
         return FileResponse(
             path=output_path,
             filename=f"upscaled_{os.path.splitext(file.filename)[0]}.png" if file and file.filename else f"upscaled_{job_id}.png",
@@ -1896,27 +2123,69 @@ async def upscale_endpoint(
             headers={
                 "X-Upscale-Output-Size": "x".join(str(v) for v in output_meta.get("size", ())),
                 "X-Upscale-Warnings": ",".join(output_meta["warnings"]),
+                "X-Upscale-Working-Pdf-Path": str(output_meta.get("working_pdf_path", "")),
+                "X-Upscale-Artifact-Lease": str(output_meta.get("artifact_lease", "")),
             },
-            background=BackgroundTask(_cleanup_file, output_path),
+            background=BackgroundTask(_cleanup_upscale_artifacts),
         )
     except HTTPException:
         _cleanup_file(output_path)
+        _cleanup_working_pdf_artifact()
         raise
+    except (UpscaleCancelled, HeavyJobQueueCancelled) as e:
+        _cleanup_file(output_path)
+        _cleanup_working_pdf_artifact()
+        logger.info("upscale đã dừng cooperative: %s", e)
+        raise HTTPException(status_code=499, detail="Tác vụ Upscale đã bị hủy") from e
     except UpscaleUnavailable as e:
         # UPSCALE (audit 2026-07-29 §NET.04): engine đã soạn sẵn thông điệp tiếng
         # Việt cho người dùng (thiếu GPU / vượt trần thời gian). Trước đây nó rơi
         # vào nhánh 500 chung nên người dùng chỉ thấy "Phóng to ảnh thất bại".
         _cleanup_file(output_path)
+        _cleanup_working_pdf_artifact()
         logger.info("upscale bị chặn trước khi chạy: %s", e)
         raise HTTPException(status_code=422, detail=str(e)) from e
     except Exception as e:
         _cleanup_file(output_path)
+        _cleanup_working_pdf_artifact()
         logger.error("upscale thất bại: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Phóng to ảnh thất bại ({type(e).__name__})")
     finally:
+        cancel_event.set()
+        disconnect_watcher.cancel()
+        with suppress(asyncio.CancelledError):
+            await disconnect_watcher
         if is_temp:
             try: os.remove(source_path)
             except OSError: pass
+
+
+@router.post(
+    "/upscale/artifact/claim",
+    dependencies=[Depends(require_feature("util.upscale"))],
+)
+async def claim_upscale_artifact(lease_token: str = Form(...)):
+    """Gắn companion PDF vào vòng đời tab sau khi workspace commit thành công."""
+    from app.core.cleanup import claim_upscale_artifact_lease
+    from starlette.concurrency import run_in_threadpool
+
+    claimed = await run_in_threadpool(claim_upscale_artifact_lease, lease_token)
+    if not claimed:
+        raise HTTPException(status_code=404, detail="Artifact lease không còn hợp lệ")
+    return {"ok": True}
+
+
+@router.post(
+    "/upscale/artifact/release",
+    dependencies=[Depends(require_feature("util.upscale"))],
+)
+async def release_upscale_artifact(lease_token: str = Form(...)):
+    """Thu hồi idempotent companion PDF khi tab owner đóng."""
+    from app.core.cleanup import release_upscale_artifact_lease
+    from starlette.concurrency import run_in_threadpool
+
+    await run_in_threadpool(release_upscale_artifact_lease, lease_token)
+    return {"ok": True}
 
 
 @router.post(
@@ -1925,9 +2194,24 @@ async def upscale_endpoint(
     response_model=WarmupResponse,
 )
 async def upscale_warmup(engine: str = Form("general")):
-    """Nạp sẵn model upscale (chạy nền) để lần bấm đầu không phải chờ cold-start."""
-    from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
-    from app.workers.realesrgan_engine import warmup
+    """Nạp model và đo sẵn ô chuẩn để lần bấm đầu không phải chờ hai lượt probe."""
+    # PERF (audit 2026-08-10 §UP.X.08): warmup KHÔNG chiếm heavy slot vì probe
+    # đã có _probe_lock serialize bên trong engine. Dùng threadpool Starlette thường
+    # để request upscale thật không bị hàng đợi khi warmup trùng.
+    from starlette.concurrency import run_in_threadpool
+    from app.workers.realesrgan_engine import probe_tile_seconds
     variant = "quality" if (engine or "").strip().lower() == "quality" else "general"
-    ok = await run_in_threadpool(warmup, variant)
+
+    def _warm_and_probe() -> bool:
+        try:
+            # PERF (feedback 2026-08-10 §UP.SPEED.2): frontend gọi endpoint này
+            # ngay khi mở công cụ. Probe vừa nạp/biên dịch model vừa được cache cho
+            # guard_runtime, tránh trả chi phí này thêm một lần sau khi bấm chạy.
+            probe_tile_seconds(variant)
+            return True
+        except Exception:
+            logger.warning("Không warm/probe được Upscale[%s]", variant, exc_info=True)
+            return False
+
+    ok = await run_in_threadpool(_warm_and_probe)
     return {"ok": bool(ok)}

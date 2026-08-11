@@ -6,6 +6,63 @@ import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
 import { formatRotatedPageSizePx96 } from './dimensionMath';
 
+export type ThumbPageWorkflowStatus = 'pending' | 'processing' | 'review' | 'ready' | 'error';
+
+const WORKFLOW_BADGE: Record<ThumbPageWorkflowStatus, {
+    label: string;
+    className: string;
+    symbol: string;
+}> = {
+    pending: {
+        label: 'Chưa nhận diện',
+        className: 'bg-slate-500 text-white',
+        symbol: '•',
+    },
+    processing: {
+        label: 'Đang nhận diện',
+        className: 'bg-violet-600 text-white',
+        symbol: '',
+    },
+    review: {
+        label: 'Cần xác nhận',
+        className: 'bg-amber-500 text-white',
+        symbol: '!',
+    },
+    ready: {
+        label: 'Sẵn sàng',
+        className: 'bg-emerald-600 text-white',
+        symbol: '✓',
+    },
+    error: {
+        label: 'Lỗi',
+        className: 'bg-rose-600 text-white',
+        symbol: '!',
+    },
+};
+
+export function ThumbWorkflowBadge({
+    status,
+    pageLabel,
+}: {
+    status: ThumbPageWorkflowStatus;
+    pageLabel: number;
+}) {
+    const badge = WORKFLOW_BADGE[status];
+    const label = tv(badge.label);
+    return (
+        <span
+            aria-label={`${tv('Trang')} ${pageLabel}: ${label}`}
+            title={label}
+            data-workflow-status={status}
+            className={`absolute right-1 top-1 z-20 flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-black leading-none shadow ${badge.className}`}
+        >
+            {status === 'processing' ? (
+                <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-white/50 border-t-white" />
+            ) : badge.symbol}
+        </span>
+    );
+}
+
 interface ThumbSidebarProps {
     // Page state
     pageOrder: number[];
@@ -45,6 +102,7 @@ interface ThumbSidebarProps {
     file: any;
     pdfUrl: string | null;
     isViewerActive?: boolean;
+    pageWorkflowStatuses?: Partial<Record<number, ThumbPageWorkflowStatus>>;
     onCrossFileCopy?: (sourcePdfUrl: string, sourcePageNum: number, targetIndex: number) => void;
 }
 
@@ -54,7 +112,7 @@ const MemoThumbItem = React.memo((props: any) => {
         isSelected, isActive, isDragged, showCopyBadge, showCopyDropBadge, hoverTargetState,
         rot, localDim, thumbBaseWidth,
         pdfUrl, file, thumbRev, pageCount, isLoadable, isViewerActive, registerRef,
-        handleThumbClick, handlePointerDown, onContextMenu
+        handleThumbClick, handlePointerDown, onContextMenu, workflowStatus,
     } = props;
     const { t } = useTranslation();
     const isBlankDoc = !!(file as any)?.isBlank;
@@ -109,28 +167,31 @@ const MemoThumbItem = React.memo((props: any) => {
         : { widthMm: '0', heightMm: '0' };
     const tooltipText = originalPageNum !== -1 ? t('misc.thumbSidebar:trang_kich_thuoc_tooltip', { page: logicalPageLabel, w: dimW, h: dimH }) : t('misc.thumbSidebar:trang_trong');
     // Luôn contain: giữ tỉ lệ trang, không kéo giãn ảnh preview (tránh méo khi
-    // tỉ lệ khung lệch nhẹ so với ảnh GS do làm tròn pixel, và không phóng đại mờ).
+    // tỉ lệ khung lệch nhẹ so với bitmap do làm tròn pixel, và không phóng đại mờ).
     const imgObjectFit: 'fill' | 'contain' = 'contain';
 
-    // Thumbnail render: PDFium TRƯỚC (đảo với bản cũ chạy Ghostscript trước). Đo thật
-    // 2026-07-22 cho thấy GS parse LẠI toàn bộ file mỗi khối 6 trang → ~40s/khối trên
+    // Thumbnail dùng chung PDFium với trang chính. Đo thật 2026-07-22 cho thấy parser
+    // phụ dựng lại toàn bộ file mỗi khối 6 trang → ~40s/khối trên
     // file đã bình. PDFium giữ doc mở sẵn + page LRU (render_tile_png) → trang đã xem ở
     // view chính được TÁI DÙNG, thumbnail gần như tức thì; zoom nhỏ nên bitmap bé + encode
-    // rẻ. GS chỉ còn là fallback khi PDFium ném lỗi (view chính cũng dùng PDFium nên nếu
-    // nó hỏng thì cả 2 hỏng — fallback chỉ cho edge case hiếm).
+    // rẻ. Nếu PDFium từ chối thì không dựng thumbnail bằng một parser ẩn khác, để giao
+    // diện và trang chính luôn có cùng một nguồn render xác định.
     useEffect(() => {
         if (!needsNativeRender) return;
         let cancelled = false;
         let ownBlobUrl: string | null = null;
+        const requestId = `thumb-${globalThis.crypto?.randomUUID?.()
+            ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`}`;
+        const groupKey = `thumbnail:${originalPageNum}`;
         (async () => {
             let src: string | null = null;
             try {
-                // PERF (audit 2026-07-29 ?R.10): thumbnail ph?i ?i chung scheduler v?i
-                // trang ch?nh; g?i invoke tr?c ti?p t?ng gi? RENDER_LOCK t?i v?i gi?y v?
-                // l?m tile/trang ?ang xem m?c k?t d? frontend ?? x?p ??ng ?u ti?n.
+                // PERF (audit 2026-08-08 §RENDER.2): thumbnail đi lane nền riêng;
+                // scheduler vẫn giữ một slot dự phòng để trang đang xem luôn tới được
+                // interactive worker và có thể preempt nền trên máy ít RAM.
                 const bytes = await nativeTileRenderScheduler.enqueue({
                     ownerId: thumbRenderOwnerId,
-                    groupKey: `thumbnail:${originalPageNum}`,
+                    groupKey,
                     requestKey: `${thumbRenderOwnerId}|${file.path}|${originalPageNum}|${optimalZoom.toFixed(3)}`,
                     priority: 500,
                     run: async () => {
@@ -138,6 +199,15 @@ const MemoThumbItem = React.memo((props: any) => {
                         return invoke<ArrayBuffer>('render_pdf_page', {
                             filePath: file.path, page: originalPageNum, zoom: optimalZoom, rotation: 0,
                             clipX: null, clipY: null, clipW: null, clipH: null,
+                            requestContext: {
+                                requestId,
+                                ownerId: thumbRenderOwnerId,
+                                groupKey,
+                                generation: 1,
+                                purpose: 'background',
+                                priority: 500,
+                                pipelineIdentity: 'pdfium-display-png-v1',
+                            },
                         });
                     },
                 });
@@ -146,8 +216,7 @@ const MemoThumbItem = React.memo((props: any) => {
                 ownBlobUrl = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
                 src = ownBlobUrl;
             } catch {
-                // Fallback GS (hiếm): PDFium lỗi thì thử Ghostscript.
-                // Disabled: Ghostscript reparses the full PDF for each thumbnail block.
+                // Không có nguồn render phụ: giữ ô trống và để lần cập nhật kế tiếp thử lại.
                 src = null;
             }
             if (cancelled) {
@@ -159,6 +228,9 @@ const MemoThumbItem = React.memo((props: any) => {
         return () => {
             cancelled = true;
             nativeTileRenderScheduler.cancelOwner(thumbRenderOwnerId);
+            void import('@tauri-apps/api/core')
+                .then(({ invoke }) => invoke('cancel_pdf_render', { requestId }))
+                .catch(() => undefined);
             if (ownBlobUrl) URL.revokeObjectURL(ownBlobUrl);
         };
     }, [needsNativeRender, nativeRequestKey, file?.path, originalPageNum, pageCount, thumbRev, pdfUrl, optimalZoom, thumbRenderOwnerId]);
@@ -185,6 +257,9 @@ const MemoThumbItem = React.memo((props: any) => {
                 <div className="absolute top-1 right-1 z-20 flex items-center gap-0.5 bg-green-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full shadow pointer-events-none">
                     <span className="text-[11px] leading-none">＋</span> {tv('Sao chép')}
                 </div>
+            )}
+            {workflowStatus && (
+                <ThumbWorkflowBadge status={workflowStatus} pageLabel={logicalPageLabel} />
             )}
             {/* UIUX (audit 2026-07-27 §C-11): badge tại CHỖ THẢ khi copy-drag — phân biệt
                 sao chép/di chuyển không chỉ bằng màu viền drop (xanh lá vs xanh dương). */}
@@ -282,7 +357,8 @@ const MemoThumbItem = React.memo((props: any) => {
         prev.isViewerActive === next.isViewerActive &&
         prev.pdfUrl === next.pdfUrl &&
         prev.thumbRev === next.thumbRev &&
-        prev.pageCount === next.pageCount;
+        prev.pageCount === next.pageCount &&
+        prev.workflowStatus === next.workflowStatus;
 });
 
 // Cổng tải thumbnail: hoãn render thumbnail (qua cache ảnh phụ) cho đến khi trang chính
@@ -320,7 +396,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
         commitSnapshot, handleQuickRotate,
         setActiveDashboardTool, setIsSidebarOpen,
         setContextMenu, sidebarRef, mainVirtuosoRef, internalScrollRef,
-        file, pdfUrl, isViewerActive, onCrossFileCopy,
+        file, pdfUrl, isViewerActive, onCrossFileCopy, pageWorkflowStatuses,
         setIsDeleteModalOpen, navigatePage,
     } = props;
 
@@ -564,6 +640,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                                         file={file}
                                         isLoadable={thumbsGateOpen && visibleThumbs.has(index)}
                                         isViewerActive={isViewerActive}
+                                        workflowStatus={pageWorkflowStatuses?.[originalPageNum]}
                                         registerRef={registerThumbRef}
                                         handleThumbClick={handleThumbClick}
                                         handlePointerDown={handlePointerDown}

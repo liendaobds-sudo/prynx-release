@@ -67,7 +67,7 @@ Trên artifact audit, PNG encode mất `4–10 ms`, JPEG q90 mất `133–334 ms
 ### Thay đổi
 
 - Thêm `/api/preflight/viewer-accurate`: nhận path PDF local đã được chuẩn hóa/kiểm đuôi/tồn tại, trang, DPI và profile.
-- Dùng PPE/FOGRA39 qua `SoftProofEngine`; giữ các fallback hiện có khi PPE không khả dụng.
+- Dùng PPE/FOGRA39 qua `SoftProofEngine` cho lớp màu chính xác; nếu PPE không đủ tin cậy, giữ ảnh hiển thị PDFium với nhãn xấp xỉ, không chuyển sang executable ngoài sản phẩm.
 - Trả `image/png` lossless, không nén JPEG sau bước ICC.
 - Route Viewer không bị khóa nhầm sau capability chuyển màu vì nó chỉ hiển thị, không sửa file.
 - Giới hạn DPI `24–9600` chỉ là validation chống payload bất thường; ngân sách bitmap/zoom thật vẫn do Viewer quyết định.
@@ -75,7 +75,7 @@ Trên artifact audit, PNG encode mất `4–10 ms`, JPEG q90 mất `133–334 ms
 ### Verify
 
 - `py_compile` cho schema/core/route/test: **pass**.
-- `pytest -q backend/tests/test_icc_and_color_preview.py`: **9 pass, 1 skip** (Ghostscript tùy máy).
+- **Đối chứng lịch sử tại Lô 3a:** `pytest -q backend/tests/test_icc_and_color_preview.py`: **9 pass, 1 skip**. Skip khi đó thuộc test nhánh Ghostscript legacy trên máy dev; nhánh này đã bị xoá và không phải dependency runtime của Viewer hiện tại.
 
 ## Lô 3b — Nối accurate path vào Viewer
 
@@ -100,7 +100,7 @@ Trên artifact audit, PNG encode mất `4–10 ms`, JPEG q90 mất `133–334 ms
 ### Thay đổi
 
 - Mọi ứng viên `srgb` được LittleCMS đọc tên/mô tả trước khi resolver trả cho consumer.
-- `backend/app/assets/icc/sRGB.icc` hiện là Adobe RGB (1998), nên bị bỏ qua thay vì tiếp tục đầu độc Soft-Proof/Ghostscript.
+- `backend/app/assets/icc/sRGB.icc` hiện là Adobe RGB (1998), nên bị bỏ qua thay vì tiếp tục đầu độc Soft-Proof và các đường quản lý màu.
 - Resolver tìm profile sRGB chuẩn của hệ điều hành; nếu không có, tự materialize profile `sRGB built-in` chuẩn từ LittleCMS vào thư mục tạm nội bộ PrynX.
 - Test khóa hai bất biến: kết quả không chứa `Adobe RGB`, và bundle gắn nhãn sai phải bị cách ly ngay cả khi là ứng viên duy nhất.
 

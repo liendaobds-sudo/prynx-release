@@ -128,7 +128,7 @@ def test_native_verify_accepts_explained_one_pixel_edge_growth(tmp_path, monkeyp
         original, outlined, native_object_level=True
     )
 
-    assert strict_ok is False, "profile GS vẫn phải giữ ngưỡng mean/coverage"
+    assert strict_ok is False, "profile nghiêm ngặt vẫn phải giữ ngưỡng mean/coverage"
     assert native_ok is True, reason
 
 
@@ -253,24 +253,14 @@ def test_incomplete_type0_font_is_declined_not_guessed(tmp_path):
     assert any("Type0" in w or "phạm vi" in w for w in result["warnings"])
 
 
-def test_action_outline_without_ghostscript(text_pdf, tmp_path, monkeypatch):
-    from app.config import settings
-    from app.core import gs_usage
+def test_action_outline_uses_native_pikepdf(text_pdf):
     from app.core.action_engine import ActionEngine
 
-    missing = str(tmp_path / "khong-co-gs.exe")
-    monkeypatch.setattr(settings, "GHOSTSCRIPT_PATH", missing)
-    gs_usage.reset_for_tests()
-
     engine = ActionEngine()
-    engine.gs_path = missing
-    result = asyncio.run(
-        engine.execute(text_pdf, "OUTLINE_FONTS", {"force_gs": True})
-    )
+    result = asyncio.run(engine.execute(text_pdf, "OUTLINE_FONTS", {}))
 
     assert result.success, result.error
     assert result.log[0].engine == "pikepdf"
-    assert gs_usage.summary()["total_gs_calls"] == 0
     assert result.log[0].report["glyphs_outlined"] == 5
 
 

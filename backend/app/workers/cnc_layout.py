@@ -1,10 +1,10 @@
 """
 Layout_Helper dùng chung cho công cụ Bình Bế Rớt (CNC) — NGUỒN CHÂN LÝ DUY NHẤT.
 
-`build_cnc_front_layout` dựng layout TRỘN nhiều mẫu cho MỘT tờ Mặt trước:
+`build_cnc_front_layout` dựng TOÀN BỘ tờ mẫu Mặt trước cho layout TRỘN:
   - Chọn solver theo tổng số lượng:
-      * tổng SL > 0  → solve_offset_mixed  (trộn theo tỉ lệ, có sheets_needed)
-      * tổng SL == 0 → solve_auto_fill_mixed (lấp đầy 1 tờ, sheets_needed = 1)
+      * tổng SL > 0  → chia nhóm vừa tờ rồi lấp đầy từng tờ theo tỉ lệ SL.
+      * tổng SL == 0 → solve_auto_fill_mixed (mở thêm tờ cho tới khi phủ hết mẫu).
   - Căn giữa bbox nội dung trên usable area (lề dư trái = phải, trên = dưới).
   - Mỗi placement mang src_page_idx của mẫu tương ứng.
 
@@ -23,7 +23,6 @@ Toạ độ:
 from typing import List, Tuple, Dict, Any
 
 from app.workers.sticker_imposer_pkg.bin_packing import (
-    solve_offset_mixed,
     solve_auto_fill_mixed,
     _MaxRectsPacker,
 )
@@ -112,7 +111,7 @@ def build_cnc_front_layout(
     allow_rotation: bool = True,
     exclude_zones=None,
 ) -> Dict[str, Any]:
-    """Dựng layout trộn nhiều mẫu cho MỘT tờ Mặt trước.
+    """Dựng toàn bộ tờ mẫu Mặt trước cho layout trộn nhiều mẫu.
 
     Args:
         page_dims_qty: List[(page_idx, trim_w, trim_h, qty)]. qty=0 nghĩa là chưa nhập.
@@ -124,8 +123,9 @@ def build_cnc_front_layout(
             re-center (giữ nguyên toạ độ packer để khớp đúng vị trí boong trên tờ).
 
     Returns:
-        {placements, cells, items_per_sheet, placed_by_page, sheets_needed,
-         overall_w, overall_h}
+        Top-level giữ tờ đầu để tương thích caller cũ. Khi có nhiều tờ mẫu,
+        ``sheets`` chứa đầy đủ từng layout; ``sheets_needed`` top-level là tổng
+        lượt in của mọi tờ mẫu khác nhau.
     """
     if not page_dims_qty:
         return _empty_result()
@@ -139,21 +139,58 @@ def build_cnc_front_layout(
     gap = round(float(gap), 6)
 
     total_qty = 0
-    for _, _, _, q in page_dims_qty:
+    normalized_qty: Dict[int, int] = {}
+    for page_idx, _, _, q in page_dims_qty:
         try:
             qi = int(q)
         except (TypeError, ValueError):
             qi = 0
-        if qi > 0:
-            total_qty += qi
+        qi = max(0, qi)
+        normalized_qty[page_idx] = qi
+        total_qty += qi
 
-    # Có SL → lấp đầy theo TRỌNG SỐ tỉ lệ SL (bounded, không bùng nổ với SL lớn).
-    # Không SL → auto_fill (lấp đầy đều). Cả hai đều kín tờ. Vùng cấm boong (nếu có)
-    # được LOẠI ngay lúc xếp (exclude_zones) thay vì xóa tem sau.
+    # CNC MULTI-SHEET FIX 2026-08-10 §MSHEET.1:
+    # - Solver auto-fill đã biết mở thêm tờ khi số loại vượt sức chứa.
+    # - Với ca có SL, dùng auto-fill CHỈ để chia nhóm loại vừa từng tờ, rồi giữ nguyên
+    #   thuật toán ratio-fill hiện tại trên từng nhóm. Như vậy không enumerate theo SL
+    #   lớn và không làm đổi mật độ/tỉ lệ của ca vốn vừa một tờ.
     try:
         if total_qty > 0:
-            res = _ratio_fill_layout(usable_w, usable_h, page_dims_qty, gap, allow_rotation,
-                                     exclude_zones=exclude_zones)
+            active_dims_qty = [
+                (p, w, h, normalized_qty.get(p, 0))
+                for p, w, h, _q in page_dims_qty
+                if normalized_qty.get(p, 0) > 0
+            ]
+            group_probe = solve_auto_fill_mixed(
+                sheet_w=usable_w,
+                sheet_h=usable_h,
+                page_dims=[(p, w, h) for p, w, h, _q in active_dims_qty],
+                gap=gap,
+                allow_rotation=allow_rotation,
+                exclude_zones=exclude_zones,
+            )
+            probe_sheets = group_probe.get('sheets') or [group_probe]
+            dims_by_page = {p: (p, w, h, q) for p, w, h, q in active_dims_qty}
+            raw_sheets = []
+            for probe_sheet in probe_sheets:
+                group_pages = {
+                    int(item['page_idx'])
+                    for item in (probe_sheet.get('placements') or [])
+                }
+                group = [
+                    dims_by_page[p]
+                    for p in dims_by_page
+                    if p in group_pages
+                ]
+                if group:
+                    raw_sheets.append(_ratio_fill_layout(
+                        usable_w,
+                        usable_h,
+                        group,
+                        gap,
+                        allow_rotation,
+                        exclude_zones=exclude_zones,
+                    ))
         else:
             page_dims = [(p, w, h) for p, w, h, _ in page_dims_qty]
             res = solve_auto_fill_mixed(
@@ -162,82 +199,105 @@ def build_cnc_front_layout(
                 gap=gap, allow_rotation=allow_rotation,
                 exclude_zones=exclude_zones,
             )
+            raw_sheets = res.get('sheets') or [res]
     except Exception:
         return _empty_result()
 
-    raw = res.get('placements', []) or []
-    if not raw:
-        return _empty_result()
+    def _materialize_sheet(raw_result: Dict[str, Any], sheet_index: int) -> Dict[str, Any]:
+        raw = raw_result.get('placements', []) or []
+        if not raw:
+            return _empty_result()
 
-    # LUÔN căn giữa nội dung trên usable (nhất quán + KHỚP preview). Vùng cấm boong
-    # đã được packer LOẠI ở 4 góc; căn giữa chỉ dịch nội dung VỀ TÂM (ra XA góc boong)
-    # nên boong vẫn trống an toàn. (Nhánh has_zones "map trực tiếp không căn giữa" cũ
-    # khiến output dồn sát lề trên, khác preview — đã bỏ.)
-    min_x = min(it['x'] for it in raw)
-    min_y = min(it['y'] for it in raw)
-    content_w = max((it['x'] - min_x + it['w'] for it in raw), default=0.0)
-    content_h = max((it['y'] - min_y + it['h'] for it in raw), default=0.0)
-    x_pad = (usable_w - content_w) / 2.0 if content_w < usable_w else 0.0
-    y_pad = (usable_h - content_h) / 2.0 if content_h < usable_h else 0.0
-    out_overall_w = content_w
-    out_overall_h = content_h
+        # LUÔN căn giữa từng tờ trên usable (nhất quán + KHỚP preview). Vùng cấm boong
+        # đã được packer loại lúc xếp; dịch về tâm chỉ đưa nội dung ra xa các góc boong.
+        min_x = min(it['x'] for it in raw)
+        min_y = min(it['y'] for it in raw)
+        content_w = max((it['x'] - min_x + it['w'] for it in raw), default=0.0)
+        content_h = max((it['y'] - min_y + it['h'] for it in raw), default=0.0)
+        x_pad = (usable_w - content_w) / 2.0 if content_w < usable_w else 0.0
+        y_pad = (usable_h - content_h) / 2.0 if content_h < usable_h else 0.0
 
-    placements: List[Dict[str, Any]] = []
-    cells: List[Dict[str, Any]] = []
-    for it in raw:
-        x = it['x'] - min_x; y = it['y'] - min_y; w = it['w']; h = it['h']
-        is_rot = bool(it.get('is_rotated', False))
-        pidx = it['page_idx']
+        placements: List[Dict[str, Any]] = []
+        cells: List[Dict[str, Any]] = []
+        placed: Dict[int, int] = {}
+        for it in raw:
+            x = it['x'] - min_x
+            y = it['y'] - min_y
+            w = it['w']
+            h = it['h']
+            is_rot = bool(it.get('is_rotated', False))
+            pidx = int(it['page_idx'])
+            placed[pidx] = placed.get(pidx, 0) + 1
 
-        abs_x = margin_left + x_pad + x
-        # original_cell_y = trim_rect.y0 mà place_one_artwork/show_pdf_page hiểu theo
-        # TOP-DOWN (y0 nhỏ = TRÊN). Packer y cũng top-down (y=0 = trên) → cùng chiều
-        # với cells (preview) → preview == output, KHÔNG lật dọc.
-        original_cell_y = margin_top + y_pad + y
-
-        placements.append({
-            'cluster_idx': 0,
-            'cell': {
+            abs_x = margin_left + x_pad + x
+            # original_cell_y = trim_rect.y0 mà place_one_artwork/show_pdf_page hiểu
+            # theo TOP-DOWN; cùng chiều packer và cells preview, không lật dọc.
+            original_cell_y = margin_top + y_pad + y
+            placements.append({
+                'cluster_idx': 0,
+                'cell': {
+                    'x': x, 'y': y, 'width': w, 'height': h,
+                    'isRotated': is_rot, 'isRotated180': False, 'blockId': 0,
+                },
+                'src_page_idx': pidx,
+                'abs_x': abs_x,
+                'abs_y': original_cell_y,
+                'width': w,
+                'height': h,
+                'original_cell_y': original_cell_y,
+            })
+            cells.append({
                 'x': x, 'y': y, 'width': w, 'height': h,
-                'isRotated': is_rot, 'isRotated180': False, 'blockId': 0,
-            },
-            'src_page_idx': pidx,
-            'abs_x': abs_x,
-            'abs_y': original_cell_y,
-            'width': w, 'height': h,
-            'original_cell_y': original_cell_y,
-        })
-        cells.append({
-            'x': x, 'y': y, 'width': w, 'height': h,
-            'isRotated': is_rot, 'isRotated180': False, 'pageIdx': pidx,
-        })
+                'isRotated': is_rot, 'isRotated180': False, 'pageIdx': pidx,
+            })
 
-    # Số tờ cần in: theo SL từng mẫu ÷ số con thực mỗi mẫu trên tờ.
-    placed = dict(res.get('placed_by_page', {}) or {})
-    if total_qty > 0:
-        sheets_needed = 1
-        for p, _w, _h, q in page_dims_qty:
-            try:
-                qi = int(q)
-            except (TypeError, ValueError):
-                qi = 0
-            cnt = placed.get(p, placed.get(str(p), 0))
-            if qi > 0 and cnt > 0:
-                need = -(-qi // cnt)  # ceil(qi / cnt)
-                if need > sheets_needed:
-                    sheets_needed = need
-    else:
-        sheets_needed = 1
+        local_runs = 1
+        if total_qty > 0:
+            for pidx, count in placed.items():
+                qty = normalized_qty.get(pidx, 0)
+                if qty > 0 and count > 0:
+                    local_runs = max(local_runs, -(-qty // count))
 
-    return {
-        'placements': placements,
-        'cells': cells,
-        'items_per_sheet': int(res.get('total_placed', len(raw))),
-        'placed_by_page': placed,
-        'sheets_needed': sheets_needed,
-        'overall_w': out_overall_w,
-        'overall_h': out_overall_h,
+        return {
+            'placements': placements,
+            'cells': cells,
+            'items_per_sheet': len(placements),
+            'placed_by_page': placed,
+            'sheets_needed': local_runs,
+            'overall_w': content_w,
+            'overall_h': content_h,
+            'physical_sheet_index': sheet_index,
+        }
+
+    sheets = []
+    for index, raw_sheet in enumerate(raw_sheets):
+        sheet = _materialize_sheet(raw_sheet, index)
+        if sheet['placements']:
+            sheets.append(sheet)
+
+    required_pages = {
+        p for p, _w, _h, _q in page_dims_qty
+        if total_qty == 0 or normalized_qty.get(p, 0) > 0
     }
+    covered_pages = {
+        placement['src_page_idx']
+        for sheet in sheets
+        for placement in sheet['placements']
+    }
+    unplaced_pages = sorted(required_pages - covered_pages)
+    if not sheets:
+        empty = _empty_result()
+        empty['unplaced_pages'] = unplaced_pages
+        empty['sheet_count'] = 0
+        return empty
+
+    first = dict(sheets[0])
+    first['sheets_needed'] = sum(sheet['sheets_needed'] for sheet in sheets)
+    first['sheet_count'] = len(sheets)
+    first['unplaced_pages'] = unplaced_pages
+    if len(sheets) > 1:
+        first['sheets'] = sheets
+    return first
 
 
 def build_cnc_gang_layout(
@@ -287,12 +347,15 @@ def build_cnc_gang_layout(
         target['shapeProps'] = dict(sh.props or {})
         target['poly'] = [list(pt) for pt in (sh.poly or ())]
 
-    for cell in res.get('cells', []):
-        _enrich(cell, cell.get('pageIdx'))
-    for pl in res.get('placements', []):
-        _enrich(pl, pl.get('src_page_idx'))
-        if isinstance(pl.get('cell'), dict):
-            _enrich(pl['cell'], pl.get('src_page_idx'))
+    # Metadata phải đi theo TẤT CẢ tờ mẫu, không chỉ top-level/tờ đầu.
+    layouts = [res] + list(res.get('sheets') or [])
+    for layout in layouts:
+        for cell in layout.get('cells', []):
+            _enrich(cell, cell.get('pageIdx'))
+        for pl in layout.get('placements', []):
+            _enrich(pl, pl.get('src_page_idx'))
+            if isinstance(pl.get('cell'), dict):
+                _enrich(pl['cell'], pl.get('src_page_idx'))
 
     return res
 

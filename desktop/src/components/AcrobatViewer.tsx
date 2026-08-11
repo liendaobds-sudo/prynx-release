@@ -1,9 +1,9 @@
-import { useState, useRef, useEffect, useCallback, useMemo, forwardRef } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, forwardRef, type ReactNode } from 'react';
 import { pdfjs } from 'react-pdf';
 import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
 import 'react-pdf/dist/esm/Page/TextLayer.css';
 import { Virtuoso } from 'react-virtuoso';
-import { useWorkspaceStore } from '../stores/useWorkspaceStore';
+import { outputPreviewProofIdentity, useWorkspaceStore } from '../stores/useWorkspaceStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useImposerSettingsStore } from './imposition-tools/useImposerSettingsStore';
 import { useAppSettingsStore } from '../stores/appSettingsStore';
@@ -11,16 +11,21 @@ import { useActiveViewerStore } from '../stores/useActiveViewerStore'; // UIUX (
 
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { LivePageFrame, clearTileUrlCache } from './workspace/LivePageFrame';
+import { shouldPrefetchViewerPage } from './workspace/renderZoomPolicy';
 import ExportImageModal, { type ExportImageTab } from './workspace/ExportImageModal';
 import { uploadPDF, getApiUrl, authenticatedFetch } from '../lib/api';
 import { toast } from './ui/Toast';
 import { QuickDeleteModal, ExtractPagesModal, InsertBlankPageModal, AcrobatToolbar, Ruler, GuideLayer, DimensionLayer, findDimensionCandidate, ThumbSidebar, ViewerContextMenu, type Guide, type DimensionMeasurement } from './acrobat';
+import type { ThumbPageWorkflowStatus } from './acrobat/ThumbSidebar';
 import { StatusBar } from './acrobat/StatusBar'; // UIUX (audit 2026-07-27 §M-1+C-05)
 import { CrossFileInsertModal, type CrossFileInsertPending } from './acrobat/CrossFileInsertModal';
 import { formatPageSizeMm } from './acrobat/dimensionMath';
 
 import { usePdfLoader, genPageId, genPageIds, flattenRotations } from '../hooks/viewer/usePdfLoader';
-import { useTileRenderer } from '../hooks/viewer/useTileRenderer';
+import {
+    shouldAutoDisableAccurateColor,
+    useTileRenderer,
+} from '../hooks/viewer/useTileRenderer';
 import { useViewerHotkeys } from '../hooks/viewer/useViewerHotkeys';
 import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
 import { useViewerZoom } from '../hooks/viewer/useViewerZoom';
@@ -83,12 +88,18 @@ interface Props {
     toolbarExtra?: React.ReactNode;
     /** Nút phụ mép phải toolbar, vd Mở bằng AI/Corel */
     toolbarExtraRight?: React.ReactNode;
+    /** Lớp nghiệp vụ bám đúng khung trang; không thay toolbar/zoom/pan của Viewer. */
+    pageOverlay?: ReactNode;
+    /** Số trang nguồn một-based nhận lớp phủ. */
+    pageOverlayPage?: number;
+    /** Trạng thái nghiệp vụ theo số trang nguồn, hiển thị trên thumbnail. */
+    pageWorkflowStatuses?: Partial<Record<number, ThumbPageWorkflowStatus>>;
     /** PHIÊN chỉnh sửa trong bộ nhớ (spec `pdf-edit-session`) — sở hữu bởi ImpositionTab,
         chuyển tiếp xuống LivePageFrame để Apply_In_Memory + overlay clip (task 11.1). */
     editSession?: UseEditSession;
 }
 
-export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onDocumentUndo, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, onViewerDirtyChange, editSession }: Props) {
+export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onDocumentUndo, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, pageOverlay, pageOverlayPage = 1, pageWorkflowStatuses, onViewerDirtyChange, editSession }: Props) {
   const { t } = useTranslation();
     // ═══ Global Store ═══
     const {
@@ -96,7 +107,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, selectionFileId,
         isObjectEditMode, isCropMode, undoCropSelection, redoCropSelection,
         hiddenOcgLayerIds,
-        separationPlates, vdpFields, selectedVdpFieldIds,
+        vdpFields, selectedVdpFieldIds,
         setSelectedVdpFieldIds, setVdpFields, setIsSidebarOpen,
         setViewerPageOrder, setViewerPageInstanceIds, setViewerPageRotations, setViewerDirty,
         error, setError,
@@ -110,9 +121,14 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         viewerThumbMenuOpen: isThumbMenuOpen, setViewerThumbMenuOpen: setIsThumbMenuOpen,
         setHoveredPdfPosition,
         detectedDimensionsByPage,
-        softProofImageUrl, gamutWarningUrl,
-        tacHeatmapUrl, overprintPreviewUrl,
         ocgPreviewUrl,
+        outputPreviewProfileId: simulationProfileId,
+        outputPreviewRenderingIntent: simulationIntent,
+        showOutputPreview,
+        outputPreviewShowFilter,
+        outputPreviewSimulatePaperColor,
+        outputPreviewSimulateBlackInk,
+        outputPreviewPageBackgroundRgb,
     } = useWorkspaceStore(useShallow(state => ({
         file: state.file, setFile: state.setFile, pdfUrl: state.pdfUrl, setPdfUrl: state.setPdfUrl, bleedView: state.bleedView, highlightedIssue: state.highlightedIssue,
         selectedObjectIds: state.selectedObjectIds,
@@ -122,9 +138,10 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         isCropMode: state.isCropMode,
         undoCropSelection: state.undoCropSelection,
         redoCropSelection: state.redoCropSelection,
-        separationPlates: state.separationPlates,
         vdpFields: state.vdpFields, selectedVdpFieldIds: state.selectedVdpFieldIds, setSelectedVdpFieldIds: state.setSelectedVdpFieldIds,
-        softProofImageUrl: state.softProofImageUrl, gamutWarningUrl: state.gamutWarningUrl, tacHeatmapUrl: state.tacHeatmapUrl, overprintPreviewUrl: state.overprintPreviewUrl,
+        // PERF (audit 2026-08-10 §OP.6): các overlay Preflight được LivePageFrame
+        // tiêu thụ trực tiếp. Subscribe ở Viewer cha làm toàn bộ trang/toolbar render
+        // lại dù component này không hề đọc các giá trị đó.
         ocgPreviewUrl: state.ocgPreviewUrl,
         setVdpFields: state.setVdpFields, setIsSidebarOpen: state.setIsSidebarOpen,
         setViewerPageOrder: state.setViewerPageOrder, setViewerPageInstanceIds: state.setViewerPageInstanceIds, setViewerPageRotations: state.setViewerPageRotations, setViewerDirty: state.setViewerDirty,
@@ -138,8 +155,31 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         viewerNumPages: state.viewerNumPages, setViewerNumPages: state.setViewerNumPages,
         viewerThumbMenuOpen: state.viewerThumbMenuOpen, setViewerThumbMenuOpen: state.setViewerThumbMenuOpen,
         setHoveredPdfPosition: state.setHoveredPdfPosition,
-        detectedDimensionsByPage: state.detectedDimensionsByPage
+        detectedDimensionsByPage: state.detectedDimensionsByPage,
+        outputPreviewProfileId: state.outputPreviewProfileId,
+        outputPreviewRenderingIntent: state.outputPreviewRenderingIntent,
+        showOutputPreview: state.showOutputPreview,
+        outputPreviewShowFilter: state.outputPreviewShowFilter,
+        outputPreviewSimulatePaperColor: state.outputPreviewSimulatePaperColor,
+        outputPreviewSimulateBlackInk: state.outputPreviewSimulateBlackInk,
+        outputPreviewPageBackgroundRgb: state.outputPreviewPageBackgroundRgb,
     })));
+
+    // PREFLIGHT (audit 2026-08-10 §OP.8): lựa chọn Output Preview chỉ tác động
+    // khi bảng đang mở. Đóng bảng trả Viewer về contract Page Display mặc định,
+    // nhưng vẫn giữ lựa chọn trong store để lần mở sau không mất cấu hình.
+    const viewerSimulationProfileId = showOutputPreview ? simulationProfileId : 'fogra39';
+    const viewerSimulationIntent = showOutputPreview ? simulationIntent : 'relative';
+    const viewerOutputPreviewFilter = showOutputPreview ? outputPreviewShowFilter : 'all';
+    const viewerSimulatePaperColor = showOutputPreview && outputPreviewSimulatePaperColor;
+    const viewerSimulateBlackInk = showOutputPreview && outputPreviewSimulateBlackInk;
+    const viewerPageBackgroundRgb = showOutputPreview ? outputPreviewPageBackgroundRgb : null;
+    const viewerOutputPreviewProofIdentity = outputPreviewProofIdentity(
+        viewerOutputPreviewFilter,
+        viewerSimulatePaperColor,
+        viewerSimulateBlackInk,
+        viewerPageBackgroundRgb,
+    );
 
     const { activeDashboardTool, setActiveDashboardTool } = useImposerSettingsStore(useShallow(s => ({
         activeDashboardTool: s.activeDashboardTool,
@@ -259,6 +299,9 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     const sidebarRef = useRef<HTMLDivElement>(null);
     const mainVirtuosoRef = useRef<any>(null);
     const internalScrollRef = useRef<HTMLElement | null>(null);
+    const geometryActivePageRef = useRef(activePage);
+    geometryActivePageRef.current = activePage;
+    const pageGeometryAnchorRef = useRef<{ page: number; top: number; left: number } | null>(null);
     const explicitNavRef = useRef(false);
     const pendingPageViewportRef = useRef<{ page: number; anchor: PageViewportAnchor } | null>(null);
 
@@ -295,8 +338,42 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         selectedIndices, setSelectedIndices, lastSelectedIndex, setLastSelectedIndex,
         pageRotations, setPageRotations, pastStack, setPastStack, futureStack, setFutureStack,
         updatePageDimForPage, generateThumb, loadError, loadStatus, retryLoad, cancelLoad,
-        colorRisk,
+        colorRisk, viewerEngineMode, viewerShadowEnabled,
+        renderDocumentToken: loaderRenderDocumentToken,
+        notifyFirstPageRenderReady,
     } = loader;
+
+    // PERF (audit 2026-08-08 §RENDER.1): metadata pha B có thể đổi khổ các trang đứng
+    // trước trang active. Giữ đúng điểm neo viewport qua commit hình học để không nhảy
+    // scroll khi người dùng mở thẳng trang khác trang 1 hoặc đang đọc mixed-size PDF.
+    useLayoutEffect(() => {
+        const pending = pageGeometryAnchorRef.current;
+        const scroller = internalScrollRef.current;
+        if (pending && scroller) {
+            const page = scroller.querySelector<HTMLElement>(`#pdf-page-container-${pending.page}`);
+            if (page) {
+                const pageRect = page.getBoundingClientRect();
+                const scrollerRect = scroller.getBoundingClientRect();
+                scroller.scrollTop += (pageRect.top - scrollerRect.top) - pending.top;
+                scroller.scrollLeft += (pageRect.left - scrollerRect.left) - pending.left;
+            }
+        }
+        pageGeometryAnchorRef.current = null;
+
+        return () => {
+            const currentScroller = internalScrollRef.current;
+            const pageNumber = geometryActivePageRef.current;
+            const page = currentScroller?.querySelector<HTMLElement>(`#pdf-page-container-${pageNumber}`);
+            if (!currentScroller || !page) return;
+            const pageRect = page.getBoundingClientRect();
+            const scrollerRect = currentScroller.getBoundingClientRect();
+            pageGeometryAnchorRef.current = {
+                page: pageNumber,
+                top: pageRect.top - scrollerRect.top,
+                left: pageRect.left - scrollerRect.left,
+            };
+        };
+    }, [allPageDims]);
 
     // COLOR (audit 2026-08-07 §GV.3): tự bật cho PDF rủi ro cao, nhưng cho phép
     // người dùng tắt/bật theo từng file. Không ghi global store để tab khác không bị ảnh hưởng.
@@ -309,6 +386,20 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     const accurateColorEnabled = accurateColorPreference?.sourceKey === accurateColorSourceKey
         ? accurateColorPreference.enabled
         : colorRisk?.highRisk === true;
+    const [accuratePrefetchGate, setAccuratePrefetchGate] = useState<{
+        sourceKey: string;
+        page: number;
+    } | null>(null);
+    const handleActivePageRenderReady = useCallback(() => {
+        notifyFirstPageRenderReady();
+        setAccuratePrefetchGate(previous => (
+            previous?.sourceKey === accurateColorSourceKey && previous.page === activePage
+                ? previous
+                : { sourceKey: accurateColorSourceKey, page: activePage }
+        ));
+    }, [accurateColorSourceKey, activePage, notifyFirstPageRenderReady]);
+    const accuratePrefetchReady = accuratePrefetchGate?.sourceKey === accurateColorSourceKey
+        && accuratePrefetchGate.page === activePage;
 
     // Helper: mọi thao tác đổi thứ tự trang PHẢI cập nhật pageOrder VÀ pageInstanceIds
     // cùng lúc (bất biến: 2 mảng luôn cùng độ dài). Rotation keyed theo instance-id nên
@@ -336,11 +427,42 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     // Việc kiểm tra loadError được dời xuống SAU TẤT CẢ hook (ngay trước RENDER).
 
     // ═══ Hook: Tile Renderer ═══
-    const { getTileUrl, getTextBlocksForPage, renderOwnerId, accurateColorError } = useTileRenderer({
+    const {
+        getTileUrl,
+        getTextBlocksForPage,
+        renderOwnerId,
+        renderDocumentToken,
+        accurateColorError,
+        cancelAccurateGroup,
+    } = useTileRenderer({
         file, pdfRef, pdfUrl, activePage, tabId, isActive,
         accurateColorEnabled,
         accurateColorPages,
+        accurateColorProfileId: viewerSimulationProfileId,
+        accurateColorIntent: viewerSimulationIntent,
+        outputPreviewFilter: viewerOutputPreviewFilter,
+        simulatePaperColor: viewerSimulatePaperColor,
+        simulateBlackInk: viewerSimulateBlackInk,
+        pageBackgroundRgb: viewerPageBackgroundRgb,
+        viewerEngineMode,
+        viewerShadowEnabled,
+        renderDocumentToken: loaderRenderDocumentToken,
     });
+
+    useEffect(() => {
+        if (
+            !accurateColorEnabled
+            || !shouldAutoDisableAccurateColor(accurateColorError, viewerEngineMode)
+        ) return;
+        // Giữ lỗi để nút CMYK! giải thích rằng đây là preview tương thích, không
+        // gắn nhãn màu chính xác cho trang có font không nhúng.
+        setAccurateColorPreference({ sourceKey: accurateColorSourceKey, enabled: false });
+    }, [
+        accurateColorEnabled,
+        accurateColorError,
+        accurateColorSourceKey,
+        viewerEngineMode,
+    ]);
 
     // ═══ Edit-session lifecycle (COMMIT-ON-EXIT) ═══
     // Mở phiên in-memory khi VÀO edit mode + có selectionFileId. Phiên SỐNG SUỐT phiên
@@ -1532,6 +1654,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         const rot = instId ? (pageRotations[instId] || 0) : 0;
         const localDim = allPageDims[originalPageNum] || pageDim;
         const localWidth100 = localDim ? localDim.w : actualWidth100;
+        const accurateColorPage = viewerEngineMode !== 'current'
+            || (accurateColorEnabled && accurateColorPages.includes(originalPageNum));
 
         // Show OCG preview overlay on active page when layers are hidden
         const showOcgOverlay = ocgPreviewUrl && originalPageNum === activePage;
@@ -1561,7 +1685,13 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                         onVdpFieldsChange={onVdpFieldsChange}
                         getTileUrl={getTileUrl}
                         renderOwnerId={renderOwnerId}
-                        accurateColorPage={accurateColorEnabled && accurateColorPages.includes(originalPageNum)}
+                        renderDocumentToken={renderDocumentToken}
+                        cancelAccurateGroup={cancelAccurateGroup}
+                        accurateColorPage={accurateColorPage}
+                        accurateColorProfileId={viewerSimulationProfileId}
+                        accurateColorIntent={viewerSimulationIntent}
+                        accurateColorProofIdentity={viewerOutputPreviewProofIdentity}
+                        onFirstPageRenderReady={handleActivePageRenderReady}
                         textBlocks={nativeTextBlocks[originalPageNum]}
                         setHoveredPdfPosition={setHoveredPdfPosition}
                         isBlankDoc={!!(file as any)?.isBlank}
@@ -1571,13 +1701,18 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                         detectedDimension={activeDashboardTool === 'sticker_imposer' && !file?.name.startsWith('Imposed_') ? detectedDimensionsByPage[originalPageNum - 1] : undefined}
                         editSession={editSession} totalPages={numPages}
                         isActivePage={viewerPagePosition === activePage}
-                        prefetchPage={Math.abs(viewerPagePosition - activePage) <= 1}
+                        prefetchPage={shouldPrefetchViewerPage(
+                            Math.abs(viewerPagePosition - activePage),
+                            accurateColorPage,
+                            accuratePrefetchReady,
+                        )}
                     />
+                    {pageOverlay && originalPageNum === pageOverlayPage && pageOverlay}
                     {showOcgOverlay && <OcgPreviewOverlay url={ocgPreviewUrl} />}
                 </div>
             </div>
         );
-    }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, zoom, bleedView, highlightBoxes, isVdpMode, getTileUrl, renderOwnerId, accurateColorEnabled, accurateColorPages, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage, tabId, isActive]);
+    }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, zoom, bleedView, highlightBoxes, isVdpMode, getTileUrl, renderOwnerId, renderDocumentToken, cancelAccurateGroup, accurateColorEnabled, accurateColorPages, viewerSimulationProfileId, viewerSimulationIntent, viewerOutputPreviewProofIdentity, viewerEngineMode, handleActivePageRenderReady, accuratePrefetchReady, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage, tabId, isActive, pageOverlay, pageOverlayPage]);
 
     // Kiểm tra loadError SAU khi mọi hook đã được gọi (xem ghi chú ở đầu component).
     if (loadError) {
@@ -1718,20 +1853,20 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                                 sourceKey: accurateColorSourceKey,
                                 enabled: !accurateColorEnabled,
                             })}
-                            title={accurateColorEnabled && accurateColorError
+                            title={accurateColorError
                                 ? accurateColorError
                                 : t('tabs.outputPreview:gia_lap_may_rip_thuc_te_boc_chinh_xac')}
                             aria-label={t('tabs.outputPreview:gia_lap_may_rip_thuc_te_boc_chinh_xac')}
                             aria-pressed={accurateColorEnabled}
                             className={`h-8 px-2 rounded text-[11px] font-bold tracking-wide transition-colors ${
-                                accurateColorError && accurateColorEnabled
+                                accurateColorError
                                     ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 ring-1 ring-amber-300 dark:ring-amber-700'
                                     : accurateColorEnabled
                                         ? 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-300 ring-1 ring-cyan-300 dark:ring-cyan-700'
                                         : 'text-slate-600 dark:text-zinc-300 hover:bg-black/5 dark:hover:bg-white/10'
                             }`}
                         >
-                            CMYK{accurateColorError && accurateColorEnabled ? '!' : accurateColorEnabled ? '✓' : ''}
+                            CMYK{accurateColorError ? '!' : accurateColorEnabled ? '✓' : ''}
                         </button>
                     )}
                     {toolbarExtraRight}
@@ -1766,6 +1901,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                             navigatePage={navigatePage}
                             sidebarRef={sidebarRef} mainVirtuosoRef={mainVirtuosoRef} internalScrollRef={internalScrollRef}
                              file={file} pdfUrl={pdfUrl} isViewerActive={isActive}
+                             pageWorkflowStatuses={pageWorkflowStatuses}
                         />
                     )}
 

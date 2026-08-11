@@ -203,13 +203,12 @@ async def test_raster_removed_channel_is_near_zero(tmp_path):
 
     engine = SeparationEngine()
 
-    # Bắt buộc đường xấp xỉ pypdfium2 (use_ghostscript=False):
-    # FOGRA-managed GS tiffsep biến DeviceCMYK (0,0,0,0.3) thành multi-channel
-    # (Yellow mean ~46) → false-fail dù stream PDF đã gỡ đúng kênh Y.
+    # Bắt buộc đường xấp xỉ PDFium (render_mode=approximate):
+    # Không dùng soft-proof ICC để đo kênh sau khi sửa; mode này độc lập màu quản lý.
     # Mode direct + pseudo-CMYK khớp design test (độc lập ICC).
     # Bản tách của file GỐC: kênh Yellow phải có nhiều mực (sanity).
     in_sep = await engine.extract_separations(
-        str(in_path), page_num=1, dpi=72, use_ghostscript=False
+        str(in_path), page_num=1, dpi=72, render_mode="approximate"
     )
     in_w, in_h = in_sep["width"], in_sep["height"]
     in_yellow = _decode_plate_density(_plate_by_name(in_sep, "Yellow"), in_w, in_h)
@@ -220,7 +219,7 @@ async def test_raster_removed_channel_is_near_zero(tmp_path):
 
     # Bản tách của file OUTPUT: kênh Yellow (đã bỏ) ≈ 0.
     out_sep = await engine.extract_separations(
-        str(out_path), page_num=1, dpi=72, use_ghostscript=False
+        str(out_path), page_num=1, dpi=72, render_mode="approximate"
     )
     out_w, out_h = out_sep["width"], out_sep["height"]
     out_yellow = _decode_plate_density(_plate_by_name(out_sep, "Yellow"), out_w, out_h)

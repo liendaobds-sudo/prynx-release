@@ -258,6 +258,65 @@ def get_src_page_idx(sheet_idx, cell_on_sheet_idx, layout_type, total_capacity, 
     return _py_get_src_page_idx(sheet_idx, cell_on_sheet_idx, layout_type, total_capacity, page_count)
 
 
+def build_sequential_product_sequence(
+    page_count: int,
+    capacity: int,
+    target_quantity: int = 0,
+    target_quantities_by_page: Optional[Dict[Any, Any]] = None,
+    duplex: bool = False,
+) -> List[int]:
+    """Dựng thứ tự sản phẩm cho N-Up xếp lần lượt.
+
+    Khi file có nhiều mẫu mà không nhập số lượng, mỗi mẫu phải xuất đúng một lần;
+    không được cắt danh sách theo sức chứa của tờ đầu. File một mẫu vẫn giữ hành vi
+    tự lấp đầy một tờ để tương thích luồng N-Up cũ.
+    """
+    safe_page_count = max(0, int(page_count or 0))
+    safe_capacity = max(0, int(capacity or 0))
+    if safe_page_count <= 0 or safe_capacity <= 0:
+        return []
+
+    use_duplex = bool(
+        duplex and safe_page_count >= 2 and safe_page_count % 2 == 0
+    )
+    product_count = safe_page_count // 2 if use_duplex else safe_page_count
+    quantities = target_quantities_by_page or {}
+
+    try:
+        global_quantity = max(0, int(target_quantity or 0))
+    except (TypeError, ValueError):
+        global_quantity = 0
+
+    def quantity_for_product(product_index: int) -> int:
+        page_index = product_index * 2 if use_duplex else product_index
+        value = quantities.get(
+            str(page_index), quantities.get(page_index, global_quantity)
+        )
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+
+    per_product = [quantity_for_product(index) for index in range(product_count)]
+    if any(quantity > 0 for quantity in per_product):
+        sequence: List[int] = []
+        for product_index, quantity in enumerate(per_product):
+            sequence.extend([product_index] * quantity)
+        return sequence
+
+    if global_quantity > 0:
+        sequence = []
+        for product_index in range(product_count):
+            sequence.extend([product_index] * global_quantity)
+        return sequence
+
+    # [NUP SEQUENTIAL FIX 2026-08-10] Nhiều trang là nhiều mẫu cần bảo toàn;
+    # chỉ file một mẫu mới dùng số lượng trống như lệnh tự lấp đầy một tờ.
+    if product_count == 1:
+        return [0] * safe_capacity
+    return list(range(product_count))
+
+
 def _py_solve_manual(item_w, item_h, gap_x, gap_y, cols, rows):
     """Lưới thủ công đúng cols×rows (Req 4.3) — fallback Python."""
     cols = min(int(cols), 2000)

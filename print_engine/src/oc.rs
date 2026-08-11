@@ -32,6 +32,30 @@ use crate::pdf;
 /// Trần độ sâu khi tính visibility expression (`/VE`), chống dict trỏ vòng.
 const MAX_VE_DEPTH: u32 = 16;
 
+/// Mục đích sử dụng quyết định nhánh `/AS` và `/Usage` phải đọc.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum OptionalContentUsage {
+    #[default]
+    Print,
+    View,
+}
+
+impl OptionalContentUsage {
+    fn event_name(self) -> &'static str {
+        match self {
+            Self::Print => "Print",
+            Self::View => "View",
+        }
+    }
+
+    fn state_name(self) -> &'static str {
+        match self {
+            Self::Print => "PrintState",
+            Self::View => "ViewState",
+        }
+    }
+}
+
 /// Trạng thái bật/tắt của các nhóm optional content trong một tài liệu.
 #[derive(Debug, Default, Clone)]
 pub struct OptionalContent {
@@ -45,13 +69,23 @@ pub struct OptionalContent {
     /// khác nhau, và cũng là chỗ Ghostscript hành xử khác: GS đọc cấu hình mặc định
     /// `/D` mà bỏ qua `/AS`, nên nó **vẫn in** lớp này. PPE theo cấu hình in vì nó đo
     /// mực sẽ lên giấy — nhưng lệch đó phải nói ra, không được im lặng.
-    print_state_off: HashSet<ObjectId>,
+    usage_state_off: HashSet<ObjectId>,
+    usage: OptionalContentUsage,
 }
 
 impl OptionalContent {
     /// Đọc cấu hình mặc định (`/OCProperties /D`) của tài liệu.
     pub fn load(doc: &Document) -> Self {
-        let mut oc = OptionalContent::default();
+        Self::load_for_usage(doc, OptionalContentUsage::Print)
+    }
+
+    /// Đọc cấu hình theo đúng mục đích. Viewer dùng `/View`; separations/TAC giữ
+    /// `/Print`, nên hai đường không còn dùng nhầm một trạng thái lớp.
+    pub fn load_for_usage(doc: &Document, usage: OptionalContentUsage) -> Self {
+        let mut oc = OptionalContent {
+            usage,
+            ..OptionalContent::default()
+        };
 
         let Some(catalog) = catalog_dict(doc) else {
             return oc;
@@ -82,12 +116,12 @@ impl OptionalContent {
             oc.off.insert(id);
         }
 
-        oc.apply_print_usage(doc, config);
+        oc.apply_usage(doc, config);
         oc
     }
 
-    /// Áp `/AS` cho sự kiện **in**: `/Usage /Print /PrintState`.
-    fn apply_print_usage(&mut self, doc: &Document, config: &Dictionary) {
+    /// Áp `/AS` cho đúng sự kiện: `/Usage /Print|View /...State`.
+    fn apply_usage(&mut self, doc: &Document, config: &Dictionary) {
         let Some(Object::Array(entries)) = pdf::dict_get(doc, config, "AS") else {
             return;
         };
@@ -96,12 +130,10 @@ impl OptionalContent {
                 Object::Dictionary(d) => d.clone(),
                 _ => continue,
             };
-            // Chỉ quan tâm sự kiện in. `/View` là cấu hình màn hình và không nói gì
-            // về mực trên giấy.
             if pdf::dict_get(doc, &dict, "Event")
                 .and_then(pdf::name_str)
                 .as_deref()
-                != Some("Print")
+                != Some(self.usage.event_name())
             {
                 continue;
             }
@@ -112,10 +144,11 @@ impl OptionalContent {
                 let Some(usage) = pdf::dict_get_dict(doc, ocg, "Usage") else {
                     continue;
                 };
-                let Some(print) = pdf::dict_get_dict(doc, usage, "Print") else {
+                let Some(usage_dict) = pdf::dict_get_dict(doc, usage, self.usage.event_name())
+                else {
                     continue;
                 };
-                match pdf::dict_get(doc, print, "PrintState")
+                match pdf::dict_get(doc, usage_dict, self.usage.state_name())
                     .and_then(pdf::name_str)
                     .as_deref()
                 {
@@ -123,12 +156,12 @@ impl OptionalContent {
                         if self.off.insert(id) {
                             // Chỉ ghi khi lớp *đang bật* theo cấu hình xem: nếu nó đã
                             // nằm trong `/OFF` thì không có gì lệch để nói.
-                            self.print_state_off.insert(id);
+                            self.usage_state_off.insert(id);
                         }
                     }
                     Some("ON") => {
                         self.off.remove(&id);
-                        self.print_state_off.remove(&id);
+                        self.usage_state_off.remove(&id);
                     }
                     _ => {}
                 }
@@ -151,8 +184,11 @@ impl OptionalContent {
     /// Dùng để ghi vết: cấu hình xem và cấu hình in nói khác nhau ở đúng những lớp
     /// này, nên người đọc báo cáo cần biết chúng tồn tại.
     pub fn hidden_only_for_print(&self, raw: &Object) -> bool {
+        if self.usage != OptionalContentUsage::Print {
+            return false;
+        }
         match pdf::ref_id(raw) {
-            Some(id) => self.print_state_off.contains(&id),
+            Some(id) => self.usage_state_off.contains(&id),
             None => false,
         }
     }

@@ -15,11 +15,9 @@ Cách chạy:
 
     backend/venv/Scripts/python.exe scripts/gen_third_party_notices.py
     ...                            scripts/gen_third_party_notices.py --check
-    ...                            scripts/gen_third_party_notices.py --no-ghostscript
 
 `--check` không ghi file, chỉ báo NOTICE có lệch thực tế hay không (dùng trong CI
-và trong build_production.ps1). `--no-ghostscript` sinh bản NOTICE cho installer
-đã gỡ Ghostscript.
+và trong build_production.ps1). Thành phần có `bundled=false` luôn bị loại tự động.
 """
 
 from __future__ import annotations
@@ -240,13 +238,11 @@ def _npm_repo(info: dict) -> str:
 
 # ── Kết xuất ─────────────────────────────────────────────────────────────────
 
-def load_native(include_ghostscript: bool) -> list[dict]:
+def load_native() -> list[dict]:
     data = json.loads(COMPONENTS.read_text(encoding="utf-8"))
     out = []
     for c in data["native_components"]:
         if not c.get("bundled", True):
-            continue
-        if c["id"] == "ghostscript" and not include_ghostscript:
             continue
         out.append(c)
     return out
@@ -289,8 +285,8 @@ def license_summary(
     return sorted(strong), sorted(weak), sorted(build_only_strong)
 
 
-def render(include_ghostscript: bool) -> str:
-    native = load_native(include_ghostscript)
+def render() -> str:
+    native = load_native()
     python_pkgs = collect_python()
     rust_pkgs = collect_rust()
     npm_pkgs = collect_npm()
@@ -469,12 +465,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Sinh THIRD_PARTY_NOTICES.md")
     ap.add_argument("--check", action="store_true",
                     help="chỉ kiểm tra NOTICE có khớp thực tế, không ghi file")
-    ap.add_argument("--no-ghostscript", action="store_true",
-                    help="sinh bản cho installer đã gỡ Ghostscript")
     ap.add_argument("--out", default=str(OUTPUT))
     args = ap.parse_args()
 
-    content = render(include_ghostscript=not args.no_ghostscript)
+    content = render()
     out_path = Path(args.out)
 
     if args.check:

@@ -2,7 +2,9 @@
 
 use tiny_skia::{Mask, Path, PathBuilder, Stroke, Transform};
 
+use crate::error::{PpeError, PpeResult};
 use crate::geom::{Matrix, Region};
+use crate::ink::{InkBuffer, MemoryLease, SoftMask};
 
 /// Độ phủ của một thao tác vẽ, kèm vùng bao của nó.
 ///
@@ -68,6 +70,10 @@ fn to_ts(m: &Matrix) -> Transform {
 /// dần theo tỷ lệ khi DPI tăng.
 const CONSERVATIVE_FILL_ADJUST_PX: f32 = 0.16;
 
+/// Scratch luôn tồn tại: một mask u8 + một coverage f32.
+const RASTER_BASE_BYTES_PER_PIXEL: usize = std::mem::size_of::<u8>() + std::mem::size_of::<f32>();
+const RASTER_RING_BYTES_PER_PIXEL: usize = std::mem::size_of::<u8>();
+
 /// Bộ rasterize dùng lại buffer giữa các thao tác vẽ.
 ///
 /// Một trang A4 @300 DPI là ~8.7 triệu pixel. Cấp phát mặt nạ mới cho từng
@@ -91,19 +97,59 @@ pub struct Rasterizer {
     ring_scratch: Option<Mask>,
     /// Vùng bẩn của `ring_scratch`.
     ring_dirty: Region,
+    /// Reservation dùng chung với InkBuffer của lần render; `None` cho caller
+    /// độc lập dùng constructor cũ ngoài pipeline render trang.
+    _memory_lease: Option<MemoryLease>,
+    /// Ring mask chỉ đặt chỗ khi fill-adjust thật sự được gọi.
+    _ring_memory_lease: Option<MemoryLease>,
 }
 
 impl Rasterizer {
     pub fn new(width: u32, height: u32) -> Option<Self> {
+        Self::allocate(width, height, None)
+    }
+
+    /// Rasterizer production có scratch được tính vào MemoryBudget của buffer.
+    pub(crate) fn new_budgeted(width: u32, height: u32, owner: &InkBuffer) -> PpeResult<Self> {
+        if width == 0 || height == 0 {
+            return Err(PpeError::BadRasterSize {
+                w: width as i64,
+                h: height as i64,
+                dpi: 0.0,
+            });
+        }
+        let pixel_count =
+            (width as usize)
+                .checked_mul(height as usize)
+                .ok_or(PpeError::BadRasterSize {
+                    w: width as i64,
+                    h: height as i64,
+                    dpi: 0.0,
+                })?;
+        let reserved_bytes = pixel_count
+            .checked_mul(RASTER_BASE_BYTES_PER_PIXEL)
+            .ok_or_else(|| owner.temporary_allocation_error(usize::MAX))?;
+        let lease = owner.reserve_temporary(reserved_bytes)?;
+        Self::allocate(width, height, Some(lease))
+            .ok_or_else(|| owner.temporary_allocation_error(reserved_bytes))
+    }
+
+    fn allocate(width: u32, height: u32, memory_lease: Option<MemoryLease>) -> Option<Self> {
+        let pixel_count = (width as usize).checked_mul(height as usize)?;
         let scratch_mask = Mask::new(width, height)?;
+        let mut coverage = Vec::new();
+        coverage.try_reserve_exact(pixel_count).ok()?;
+        coverage.resize(pixel_count, 0.0);
         Some(Rasterizer {
             width,
             height,
             scratch_mask,
-            coverage: vec![0.0; (width as usize) * (height as usize)],
+            coverage,
             dirty: Region::EMPTY,
             ring_scratch: None,
             ring_dirty: Region::EMPTY,
+            _memory_lease: memory_lease,
+            _ring_memory_lease: None,
         })
     }
 
@@ -132,7 +178,7 @@ impl Rasterizer {
         rule: FillRule,
         anti_alias: bool,
         clip: Option<&Mask>,
-        soft_mask: Option<&[f32]>,
+        soft_mask: Option<&SoftMask>,
     ) -> Option<Coverage<'_>> {
         self.fill_path_impl(path, rule, anti_alias, clip, soft_mask, false)
     }
@@ -144,7 +190,7 @@ impl Rasterizer {
         rule: FillRule,
         anti_alias: bool,
         clip: Option<&Mask>,
-        soft_mask: Option<&[f32]>,
+        soft_mask: Option<&SoftMask>,
     ) -> Option<Coverage<'_>> {
         self.fill_path_impl(path, rule, anti_alias, clip, soft_mask, true)
     }
@@ -158,27 +204,65 @@ impl Rasterizer {
     /// nó chỉ được phép THÊM mực — để nó knock out kênh khác sẽ có ngày ăn
     /// đúng vào pixel đỉnh TAC (đo được −8.9 điểm trên corpus khi vành dùng
     /// ngữ nghĩa composite thường).
+    /// API tương thích cũ: caller độc lập nhận `None` nếu scratch không cấp được.
+    /// Pipeline render trang dùng [`Self::fill_adjust_ring_checked`] để không nuốt
+    /// lỗi MemoryBudget.
     pub fn fill_adjust_ring(
         &mut self,
         path: &Path,
         rule: FillRule,
         clip: Option<&Mask>,
-        soft_mask: Option<&[f32]>,
+        soft_mask: Option<&SoftMask>,
     ) -> Option<Coverage<'_>> {
+        self.fill_adjust_ring_checked(path, rule, clip, soft_mask)
+            .ok()
+            .flatten()
+    }
+
+    pub(crate) fn fill_adjust_ring_checked(
+        &mut self,
+        path: &Path,
+        rule: FillRule,
+        clip: Option<&Mask>,
+        soft_mask: Option<&SoftMask>,
+    ) -> PpeResult<Option<Coverage<'_>>> {
         let stroke = Stroke {
             width: 2.0 * CONSERVATIVE_FILL_ADJUST_PX,
             line_cap: tiny_skia::LineCap::Round,
             line_join: tiny_skia::LineJoin::Round,
             ..Stroke::default()
         };
-        let ring = path.stroke(&stroke, 1.0)?;
+        let Some(ring) = path.stroke(&stroke, 1.0) else {
+            return Ok(None);
+        };
 
         // Hình gốc vào mặt nạ phụ: pixel đã thuộc ruột fill thì KHÔNG thuộc
         // vành. Thiếu bước loại trừ này, dải biên bị composite hai lần — vô hại
         // với alpha 1 nhưng với alpha < 1 sẽ đậm gấp đôi so với một lần tô.
+        if self.ring_scratch.is_none() {
+            let pixel_count = (self.width as usize) * (self.height as usize);
+            let bytes = pixel_count * RASTER_RING_BYTES_PER_PIXEL;
+            let ring_memory_lease = match self._memory_lease.as_ref() {
+                Some(base) => Some(base.reserve_sibling(bytes)?),
+                None => None,
+            };
+            let allocation_error = self
+                ._memory_lease
+                .as_ref()
+                .map(|base| base.allocation_error(0))
+                .unwrap_or(PpeError::BadRasterSize {
+                    w: self.width as i64,
+                    h: self.height as i64,
+                    dpi: 0.0,
+                });
+            let ring_mask = Mask::new(self.width, self.height).ok_or(allocation_error)?;
+            self.ring_scratch = Some(ring_mask);
+            self._ring_memory_lease = ring_memory_lease;
+        }
         let interior = self
             .ring_scratch
-            .get_or_insert_with(|| Mask::new(self.width, self.height).expect("kích thước đã kiểm"));
+            .as_mut()
+            .expect("ring scratch vừa được cấp phát");
         if !self.ring_dirty.is_empty() {
             let w = self.width as usize;
             let data = interior.data_mut();
@@ -198,7 +282,10 @@ impl Rasterizer {
             self.height,
         );
 
-        let cov = self.fill_path_impl(&ring, FillRule::NonZero, false, clip, soft_mask, true)?;
+        let Some(cov) = self.fill_path_impl(&ring, FillRule::NonZero, false, clip, soft_mask, true)
+        else {
+            return Ok(None);
+        };
         let region = cov.region;
         // Loại phần trùng ruột (mượn lại các buffer qua self để né borrow kép).
         let w = self.width as usize;
@@ -217,12 +304,12 @@ impl Rasterizer {
             }
         }
         if any {
-            Some(Coverage {
+            Ok(Some(Coverage {
                 data: &self.coverage,
                 region,
-            })
+            }))
         } else {
-            None
+            Ok(None)
         }
     }
 
@@ -236,7 +323,7 @@ impl Rasterizer {
         rule: FillRule,
         anti_alias: bool,
         clip: Option<&Mask>,
-        soft_mask: Option<&[f32]>,
+        soft_mask: Option<&SoftMask>,
     ) -> Option<Coverage<'_>> {
         self.fill_path_impl(path, rule, anti_alias, clip, soft_mask, false)
     }
@@ -248,7 +335,7 @@ impl Rasterizer {
         rule: FillRule,
         anti_alias: bool,
         clip: Option<&Mask>,
-        soft_mask: Option<&[f32]>,
+        soft_mask: Option<&SoftMask>,
         binary_geometry: bool,
     ) -> Option<Coverage<'_>> {
         // Xoá vết của lần vẽ trước — chỉ trong vùng nó đã chạm.
@@ -309,7 +396,7 @@ impl Rasterizer {
         &mut self,
         region: Region,
         clip: Option<&Mask>,
-        soft_mask: Option<&[f32]>,
+        soft_mask: Option<&SoftMask>,
         binary_geometry: bool,
     ) -> Option<Coverage<'_>> {
         let src = self.scratch_mask.data();
@@ -333,7 +420,7 @@ impl Rasterizer {
                         v *= c.data()[i] as f32 / 255.0;
                     }
                     if let Some(sm) = soft_mask {
-                        v *= sm.get(i).copied().unwrap_or(1.0);
+                        v *= sm.value_at(x, y);
                     }
                 }
                 self.coverage[i] = v;
@@ -399,6 +486,7 @@ pub fn rect_path(x: f32, y: f32, w: f32, h: f32) -> Option<Path> {
 mod tests {
     use super::*;
     use crate::geom::Matrix;
+    use crate::ink::{InkBuffer, InkSpace};
 
     fn unit_square_at(x: f32, y: f32, size: f32) -> Path {
         rect_path(x, y, size, size).unwrap()
@@ -451,9 +539,11 @@ mod tests {
     fn soft_mask_scales_coverage_per_pixel() {
         let mut r = Rasterizer::new(4, 4).unwrap();
         let path = unit_square_at(0.0, 0.0, 4.0);
-        let mut sm = vec![1.0f32; 16];
-        sm[0] = 0.25;
-        sm[1] = 0.0;
+        let owner = InkBuffer::new(4, 4, InkSpace::new()).unwrap();
+        let mut sm = owner.new_soft_mask(Region::full(4, 4), 0.0).unwrap();
+        sm.values_mut().fill(1.0);
+        sm.values_mut()[0] = 0.25;
+        sm.values_mut()[1] = 0.0;
         let cov = r
             .fill_path(&path, FillRule::NonZero, false, None, Some(&sm))
             .unwrap();
@@ -466,7 +556,8 @@ mod tests {
     fn soft_mask_of_all_zero_returns_none() {
         let mut r = Rasterizer::new(4, 4).unwrap();
         let path = unit_square_at(0.0, 0.0, 4.0);
-        let sm = vec![0.0f32; 16];
+        let owner = InkBuffer::new(4, 4, InkSpace::new()).unwrap();
+        let sm = owner.new_soft_mask(Region::full(4, 4), 0.0).unwrap();
         assert!(r
             .fill_path(&path, FillRule::NonZero, false, None, Some(&sm))
             .is_none());
@@ -539,7 +630,11 @@ mod tests {
         let ring = r
             .fill_adjust_ring(&path, FillRule::NonZero, None, None)
             .unwrap();
-        assert_eq!(ring[1 * 8 + 4], 1.0, "vành nở phải với sang pixel 4 theo x (3.99+0.16=4.15)");
+        assert_eq!(
+            ring[1 * 8 + 4],
+            1.0,
+            "vành nở phải với sang pixel 4 theo x (3.99+0.16=4.15)"
+        );
         assert_eq!(ring[4 * 8 + 1], 1.0, "vành nở phải với sang pixel 4 theo y");
         // Góc chéo (4,4) KHÔNG bị ràng buộc: phần vành ló sang đường chéo chỉ
         // ~0.16/√2 ≈ 0.11 px mỗi trục và bộ raster có thể bỏ mảnh tam giác đó;
@@ -549,7 +644,11 @@ mod tests {
         let cov = r
             .fill_path_conservative(&path, FillRule::NonZero, false, None, None)
             .unwrap();
-        assert_eq!(cov[1 * 8 + 4], 0.0, "fill bảo thủ không tự nở khi thiếu vành");
+        assert_eq!(
+            cov[1 * 8 + 4],
+            0.0,
+            "fill bảo thủ không tự nở khi thiếu vành"
+        );
         assert_eq!(cov[2 * 8 + 2], 1.0, "ruột fill giữ nguyên");
     }
 
@@ -614,6 +713,30 @@ mod tests {
     fn normal_line_width_is_left_alone() {
         let ctm = Matrix::scale(1.0, 1.0);
         assert_eq!(effective_line_width(2.0, &ctm), 2.0);
+    }
+
+    #[test]
+    fn budgeted_rasterizer_releases_its_temporary_reservation() {
+        // Buffer 4×4 CMYK+alpha = 320 byte; raster scratch luôn sống 5 byte/pixel
+        // = 80 byte. Ngân sách 400 chỉ chứa đúng một rasterizer tại một thời điểm.
+        let owner = InkBuffer::new_with_memory_budget(4, 4, InkSpace::new(), 400).unwrap();
+        {
+            let _first = Rasterizer::new_budgeted(4, 4, &owner).unwrap();
+        }
+        let _second = Rasterizer::new_budgeted(4, 4, &owner)
+            .expect("drop rasterizer phải trả reservation cho lần cấp tiếp theo");
+    }
+
+    #[test]
+    fn lazy_ring_scratch_is_budgeted_and_released() {
+        let owner = InkBuffer::new_with_memory_budget(4, 4, InkSpace::new(), 400).unwrap();
+        let path = unit_square_at(0.0, 0.0, 4.0);
+        let mut raster = Rasterizer::new_budgeted(4, 4, &owner).unwrap();
+        let result = raster.fill_adjust_ring_checked(&path, FillRule::NonZero, None, None);
+        assert!(matches!(result, Err(PpeError::MemoryBudgetExceeded { .. })));
+        drop(raster);
+        Rasterizer::new_budgeted(4, 4, &owner)
+            .expect("reservation lỗi phải không làm rò scratch raster");
     }
 
     #[test]

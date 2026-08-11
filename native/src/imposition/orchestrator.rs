@@ -1,13 +1,13 @@
 //! Orchestrator — WRAPPER PyO3 mỏng quanh `imposition_core::orchestrator`
 //! (Task 6 / Req 1.2). Chỉ chuyển đổi kiểu.
 
-use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
 use imposition_core::orchestrator as core;
 use imposition_core::sticker::{ClusterParams, ColAltParams, RowAltParams};
+use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
 
-use super::sticker_layouts::opt_f64;
 use super::shape_solvers::{item_to_pydict, props_from_pydict};
+use super::sticker_layouts::opt_f64;
 
 fn cluster(p: Option<&Bound<'_, PyDict>>) -> Option<ClusterParams> {
     p.map(|_| ClusterParams {
@@ -18,15 +18,27 @@ fn cluster(p: Option<&Bound<'_, PyDict>>) -> Option<ClusterParams> {
     })
 }
 fn row_alt(p: Option<&Bound<'_, PyDict>>) -> Option<RowAltParams> {
-    p.map(|_| RowAltParams { offset_x: opt_f64(p, "offset_x"), row_h: opt_f64(p, "row_h"), step_x: opt_f64(p, "step_x") })
+    p.map(|_| RowAltParams {
+        offset_x: opt_f64(p, "offset_x"),
+        row_h: opt_f64(p, "row_h"),
+        step_x: opt_f64(p, "step_x"),
+    })
 }
 fn col_alt(p: Option<&Bound<'_, PyDict>>) -> Option<ColAltParams> {
-    p.map(|_| ColAltParams { offset_y: opt_f64(p, "offset_y"), col_w: opt_f64(p, "col_w"), step_y: opt_f64(p, "step_y") })
+    p.map(|_| ColAltParams {
+        offset_y: opt_f64(p, "offset_y"),
+        col_w: opt_f64(p, "col_w"),
+        step_y: opt_f64(p, "step_y"),
+    })
 }
 
 fn candidate_to_pydict(py: Python<'_>, c: &core::LayoutCandidate) -> PyResult<Py<PyAny>> {
     let d = PyDict::new(py);
-    let items: Vec<Py<PyDict>> = c.items.iter().map(|it| item_to_pydict(py, it)).collect::<PyResult<_>>()?;
+    let items: Vec<Py<PyDict>> = c
+        .items
+        .iter()
+        .map(|it| item_to_pydict(py, it))
+        .collect::<PyResult<_>>()?;
     d.set_item("totalItems", c.total_items)?;
     d.set_item("items", items)?;
     d.set_item("widthUsed", c.width_used)?;
@@ -40,9 +52,12 @@ fn candidate_to_pydict(py: Python<'_>, c: &core::LayoutCandidate) -> PyResult<Py
 #[allow(clippy::too_many_arguments)]
 pub fn generate_layout_candidates(
     py: Python<'_>,
-    usable_w: f64, usable_h: f64,
-    item_w: f64, item_h: f64,
-    gap_x: f64, gap_y: f64,
+    usable_w: f64,
+    usable_h: f64,
+    item_w: f64,
+    item_h: f64,
+    gap_x: f64,
+    gap_y: f64,
     strategy: &str,
     p5_params: Option<&Bound<'_, PyDict>>,
     p6_params: Option<&Bound<'_, PyDict>>,

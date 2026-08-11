@@ -272,6 +272,26 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   },
   {
     id: 'imposition',
+    title: 'Quản lý mực',
+    tabTitle: 'Bình bài (Chưa có file)',
+    icon: '🖨️',
+    description: 'Kiểm tra kênh Process/Spot và quản lý màu pha',
+    longDescription: 'Liệt kê mực Process và Spot trong PDF, xem độ phủ và chuyển từng màu Spot hoặc toàn bộ Spot sang CMYK.',
+    category: 'print',
+    component: ImpositionTab,
+    isEnabled: true,
+    featureId: 'prepress.convert_colors',
+    // UIUX (audit 2026-08-10 §OP.11): đăng ký route thật để shortcut từ
+    // Output Preview đi qua cùng capability guard như các công cụ prepress khác.
+    defaultPayload: { focusFeature: 'inkmanager' },
+    hoverColor: 'hover:border-cyan-500 hover:text-cyan-600 text-slate-800 dark:text-white',
+    hoverBorder: 'hover:border-cyan-500',
+    hoverShadow: 'hover:shadow-[0_8px_30px_rgb(6,182,212,0.15)]',
+    bgIcon: 'bg-cyan-100 dark:bg-cyan-500/10',
+    textIcon: 'text-cyan-600',
+  },
+  {
+    id: 'imposition',
     title: 'Chuyển hệ màu',
     tabTitle: 'Bình bài (Chưa có file)',
     icon: '🎨',

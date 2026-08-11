@@ -151,6 +151,15 @@ cd ..
 set "UPLOAD_DIR=%TEMP%\PrynX-dev\uploads"
 set "RESULTS_DIR=%TEMP%\PrynX-dev\results"
 
+:: SEC (audit 2026-08-11 §UP.R.01): backend dev chạy tách process nên không nhận
+:: token stdin như sidecar release. Sinh token riêng cho MỖI phiên và để cả uvicorn
+:: lẫn Tauri kế thừa, nhờ đó capability file Upscale vẫn xác minh được trong run_dev.
+for /f "delims=" %%T in ('backend\venv\Scripts\python.exe -c "import secrets; print(secrets.token_hex(32))"') do set "PRYNX_SIDECAR_TOKEN=%%T"
+if not defined PRYNX_SIDECAR_TOKEN (
+    echo *** LOI: Khong tao duoc token noi bo cho phien dev. ***
+    exit /b 1
+)
+
 echo - Khoi dong Backend (FastAPI - Port 8321)
 start "PDF Inspector - Backend" cmd /k "cd backend && venv\Scripts\python.exe -m uvicorn app.main:app --port 8321 --reload --reload-dir app"
 

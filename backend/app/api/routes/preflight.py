@@ -17,19 +17,18 @@ import base64
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, Request
+from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, Request, Query
 from fastapi.responses import FileResponse, Response
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Literal
 import pikepdf
 
 from app.core.preflight_engine import PreflightEngine, PreflightReport, PreflightIssue
 from app.core.separations import SeparationEngine
 from app.core.action_engine import ActionEngine, AVAILABLE_ACTIONS
-from app.core.print_engine import softproof as ppe_softproof
+from app.core.print_engine import PpeUnavailable, softproof as ppe_softproof
 from app.utils.file_handler import save_upload_file
-from app.utils.subprocess_utils import run_hidden
 from app.utils.errors import raise_http
 from app.config import settings
 from app.core.license_guard import enforce_feature, require_license
@@ -75,6 +74,7 @@ from app.schemas.preflight import (  # noqa: F401
     InspectByIdRequest,
     ObjectToDelete,
     OverprintPreviewRequest,
+    OutputPreviewFilter,
     PdfObjectResponse,
     PipelineAction,
     PipelineRequest,
@@ -83,6 +83,7 @@ from app.schemas.preflight import (  # noqa: F401
     PreviewLayersRequest,
     RenameLayerRequest,
     ReorderLayersRequest,
+    SeparationCompositeRequest,
     SeparationsPathRequest,
     SetPageBoxesRequest,
     SetVisibilityRequest,
@@ -112,9 +113,11 @@ _PREFLIGHT_ROUTE_FEATURES: dict[str, str | None] = {
     "/preflight/convert-colors": "prepress.convert_colors",
     "/preflight/icc-profiles": "prepress.convert_colors",
     "/preflight/softproof": "prepress.convert_colors",
+    "/preflight/separation-composite": "prepress.convert_colors",
     # COLOR (audit 2026-08-07 §GV.3): đây là fidelity của Viewer thường, không phải
     # thao tác sửa/chuyển màu file nên không khóa sau capability chế bản nâng cao.
     "/preflight/viewer-accurate": None,
+    "/preflight/viewer-accurate/session": None,
     "/preflight/set-overprint": "prepress.trapping",
     "/preflight/overprint-preview": "prepress.trapping",
     "/preflight/check-pdfx/{file_id}/{standard}": "prepress.pdfx",
@@ -951,31 +954,100 @@ async def get_separations(
     file_id: str,
     page: int,
     dpi: int = 150,
-    use_gs: bool | None = None,
+    render_mode: Literal["accurate", "approximate"] = "accurate",
     profile_id: str = "fogra39",
+    intent: Literal["perceptual", "relative", "saturation", "absolute"] = "relative",
+    output_preview_filter: OutputPreviewFilter = "all",
 ):
     """
     Trích xuất bản kẽm (Separations) — gần Acrobat Output Preview.
 
     Mặc định dùng PrynX Print Engine (PPE) để dựng kẽm process + spot.
-    ``use_gs=false`` là tên query legacy, hiện có nghĩa buộc đường xem nhanh
-    PDF→RGB→CMYK xấp xỉ.
+    ``render_mode=accurate`` dùng PPE; ``approximate`` buộc đường xem nhanh
+    PDF→RGB→CMYK có nhãn xấp xỉ.
     """
     pdf_path = _get_file_path(file_id)
 
     try:
         engine = SeparationEngine()
-        # Query legacy `use_gs` được giữ để không phá client cũ: None/True =
-        # PPE chính xác; False = buộc đường xấp xỉ.
         result = await engine.extract_separations(
             pdf_path, page, dpi,
-            use_ghostscript=use_gs,
             cmyk_profile_id=profile_id or "fogra39",
+            rendering_intent=intent,
+            render_mode=render_mode,
+            output_preview_filter=output_preview_filter,
         )
+        # CORRECTNESS (audit 2026-08-10 §PPE.REAUDIT.4): response mang danh
+        # tính filter để UI không dùng plate của request cũ cho sampling/TAC.
+        result["output_preview_filter"] = output_preview_filter
         return result
+    except PpeUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
     except Exception as e:
         raise_http(e, "Lỗi khi tạo Separations")
 
+
+
+@router.post("/preflight/separation-composite")
+async def compose_separation_preview(req: SeparationCompositeRequest):
+    """Ghép tập kẽm đang bật thành PNG color-managed, không raster lại PDF."""
+    from io import BytesIO
+    from PIL import Image
+    from app.core.print_engine.facade import (
+        PpeUnavailable,
+        compose_separation_subset,
+    )
+
+    intent_codes = {
+        "perceptual": 0,
+        "relative": 1,
+        "saturation": 2,
+        "absolute": 3,
+    }
+
+    def _compose_png() -> tuple[bytes, dict[str, Any]]:
+        result = compose_separation_subset(
+            width=req.width,
+            height=req.height,
+            plates=[plate.model_dump() for plate in req.plates],
+            enabled_names=req.enabled_names,
+            cmyk_profile_id=req.profile_id,
+            render_intent=intent_codes[req.intent],
+        )
+        image = Image.frombytes(
+            "RGB",
+            (int(result["width"]), int(result["height"])),
+            bytes(result["rgb"]),
+        )
+        buffer = BytesIO()
+        image.save(buffer, format="PNG", optimize=False, compress_level=1)
+        return buffer.getvalue(), result
+
+    try:
+        png, metadata = await asyncio.to_thread(_compose_png)
+    except PpeUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - lỗi CMM/native cần nổi rõ tại API
+        logger.exception("Lỗi khi ghép tập bản kẽm Output Preview")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Không ghép được tập bản kẽm: {exc}",
+        ) from exc
+
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "no-store",
+            "X-PrynX-Color-Accuracy": "rip-separation-subset",
+            "X-PrynX-Color-Profile": req.profile_id,
+            "X-PrynX-Missing-Spot-Alternates": str(
+                len(metadata.get("missing_spot_alternates") or [])
+            ),
+        },
+    )
 
 
 @router.post("/preflight/separations-by-path")
@@ -990,10 +1062,15 @@ async def get_separations_by_path(req: SeparationsPathRequest):
         engine = SeparationEngine()
         result = await engine.extract_separations(
             safe_path, req.page, req.dpi,
-            use_ghostscript=req.use_gs,
             cmyk_profile_id=req.profile_id or "fogra39",
+            rendering_intent=req.intent,
+            render_mode=req.render_mode,
+            output_preview_filter=req.output_preview_filter,
         )
+        result["output_preview_filter"] = req.output_preview_filter
         return result
+    except PpeUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
     except Exception as e:
         raise_http(e, "Lỗi khi tạo Separations (by path)")
 
@@ -1214,7 +1291,9 @@ async def list_inks(file_id: str):
     from app.core.ink_manager import InkManagerEngine
     engine = InkManagerEngine()
     try:
-        return {"inks": engine.list_inks(file_path)}
+        # PREFLIGHT (audit 2026-08-10 §OP.5): inventory đi toàn bộ Resources/
+        # Form XObject của tài liệu; không được chặn event loop uvicorn.
+        return {"inks": await asyncio.to_thread(engine.list_inks, file_path)}
     except Exception as e:
         raise_http(e, "Không liệt kê được kênh mực")
 
@@ -1231,6 +1310,10 @@ async def convert_spot(req: ConvertSpotRequest):
         output = await engine.convert_spot_to_cmyk(file_path, req.spot_name)
         return {"success": True, "output_filename": Path(output).name}
     except Exception as e:
+        from app.core.engine_support import InternalEngineUnsupported
+
+        if isinstance(e, InternalEngineUnsupported):
+            raise HTTPException(status_code=422, detail=str(e)) from e
         raise_http(e, "Chuyển Spot Color sang CMYK thất bại")
 
 
@@ -1274,8 +1357,8 @@ async def check_pdfx_compliance(file_id: str, standard: str):
 async def export_pdfx(req: ExportPdfxRequest):
     """Xuất file chuẩn PDF/X."""
     file_path = _get_file_path(req.file_id)
-    from app.core.pdfx_export import PdfxExportEngine, GhostscriptNotFoundError
-    from app.core.gs_availability import (
+    from app.core.pdfx_export import PdfxExportEngine
+    from app.core.engine_support import (
         InternalEngineUnsupported,
         unsupported_message,
     )
@@ -1295,13 +1378,6 @@ async def export_pdfx(req: ExportPdfxRequest):
         # GS-SUNSET (audit 2026-07-28 §3.2): giới hạn file là 422, không phải
         # lỗi server. UI hiển thị nguyên hướng xử lý an toàn cho người dùng.
         raise HTTPException(status_code=422, detail=str(e))
-    except GhostscriptNotFoundError as e:
-        # Nhánh legacy chỉ tồn tại ở bản dev/đối chiếu. Không hướng người dùng
-        # bản thương mại đi cài công cụ ngoài để thay đổi engine của sản phẩm.
-        raise HTTPException(
-            status_code=422,
-            detail=unsupported_message(f"Xuất PDF/X-{req.standard.upper()}"),
-        ) from e
     except Exception as e:
         # Log full traceback ở server; UI chỉ nhận ngữ cảnh tác vụ.
         import logging
@@ -1316,15 +1392,6 @@ async def export_pdfx(req: ExportPdfxRequest):
 
 
 # Map UI key → bundle filename; resolve_cmyk_profile_path() is preferred (bundle + OS).
-ICC_FILE_MAP = {
-    "fogra39": "FOGRA39.icc",
-    "swop": "SWOP.icc",
-    "japan_color": "JapanColor.icc",
-    "gracol": "GRACoL.icc",
-    "uncoated": "UncoatedFOGRA29.icc",
-}
-
-
 @router.post("/preflight/convert-colors", response_model=FixFileWithLogResponse)
 async def convert_colors(req: ConvertColorsRequest):
     """Chuyển đổi không gian màu toàn bộ file PDF."""
@@ -1357,13 +1424,12 @@ async def convert_colors(req: ConvertColorsRequest):
                 log.append({"action_id": conv, "status": "success", "message": "Spot → CMYK", "duration_ms": ms})
 
             elif conv in ("rgb_to_cmyk", "gray_to_cmyk"):
-                import subprocess, uuid, asyncio
+                import uuid, asyncio
 
-                # Đường object-level trước: chỉ sửa đúng object cần sửa và GIỮ
-                # SPOT, trong khi pdfwrite dựng lại cả tài liệu và hay nuốt
-                # Separation thành process (mất kênh bế / Pantone). Route này
-                # trước đây gọi thẳng Ghostscript, không fallback — thiếu GS là
-                # hỏng hẳn chức năng.
+                # GS-SUNSET (audit 2026-08-08 §GS.1): chỉ sửa đúng object cần sửa
+                # và GIỮ SPOT. Nếu engine nội bộ không chứng minh được kết quả thì
+                # dừng ngay; không dựng lại cả tài liệu bằng engine ngoài.
+                native_out: str | None = None
                 try:
                     from app.core import icc_profiles, pdf_actions_native
 
@@ -1390,8 +1456,16 @@ async def convert_colors(req: ConvertColorsRequest):
                             native_out,
                         )
                 except Exception as ne:  # noqa: BLE001
-                    logger.warning("convert-colors object-level lỗi, fallback GS: %s", ne)
-                    native = None
+                    _cleanup_intermediate(native_out)
+                    logger.warning("convert-colors: engine nội bộ lỗi, dừng an toàn: %s", ne)
+                    from app.core.engine_support import (
+                        InternalEngineUnsupported,
+                        unsupported_message,
+                    )
+
+                    raise InternalEngineUnsupported(
+                        unsupported_message("Chuyển đổi không gian màu")
+                    ) from ne
 
                 if native is not None and native.get("supported"):
                     _cleanup_intermediate(prev_intermediate)
@@ -1406,91 +1480,27 @@ async def convert_colors(req: ConvertColorsRequest):
                     continue
                 if native is not None:
                     logger.info(
-                        "convert-colors: object-level không xử lý được (%s) → Ghostscript",
+                        "convert-colors: engine nội bộ không xử lý chắc chắn được (%s)",
                         "; ".join(native.get("blockers", [])),
                     )
+                _cleanup_intermediate(native_out)
+                from app.core.engine_support import (
+                    InternalEngineUnsupported,
+                    unsupported_message,
+                )
 
-                gs_path = settings.GHOSTSCRIPT_PATH
-                # Ghi output vào preflight_output — ĐÚNG nơi /preflight/download phục
-                # vụ. (Trước đây ghi cạnh file gốc trong UPLOAD_DIR → download 404.)
-                out_dir = Path(settings.RESULTS_DIR) / "preflight_output"
-                out_dir.mkdir(parents=True, exist_ok=True)
-                output = str(out_dir / f"cc_{conv}_{Path(current_path).stem}_{uuid.uuid4().hex[:6]}.pdf")
-
-                # Pre-pass GIỮ ĐEN 100%K: GS biến RGB(0,0,0) thành rich-black 4 màu.
-                # Đổi trước màu RGB-đen-thuần sang DeviceGray đen (→ GS map thành K-only).
-                # Chỉ áp cho RGB→CMYK; gray/CMYK-đen vốn đã ra K thuần.
-                gs_input = str(current_path)
-                prepass_tmp = None
-                if conv == "rgb_to_cmyk" and req.preserve_black:
-                    from app.core.preserve_black import force_pure_black_to_gray
-                    prepass_tmp = str(out_dir / f"pb_{Path(current_path).stem}_{uuid.uuid4().hex[:6]}.pdf")
-                    try:
-                        await asyncio.to_thread(force_pure_black_to_gray, str(current_path), prepass_tmp)
-                        gs_input = prepass_tmp
-                    except Exception as pe:
-                        logger.warning("Pre-pass giữ đen thất bại (%s) — tiếp tục không pre-pass.", pe)
-                        prepass_tmp = None
-
-                intent_map = {"relative": 1, "perceptual": 0, "saturation": 2, "absolute": 3}
-                ri = intent_map.get(req.rendering_intent, 1)
-                strategy = "CMYK" if conv == "rgb_to_cmyk" else "Gray"
-
-                gs_args = [
-                    gs_path, "-dNOSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
-                    "-sDEVICE=pdfwrite",
-                    f"-sOutputFile={output}",
-                    "-dPDFSETTINGS=/prepress",
-                    f"-sColorConversionStrategy={strategy}",
-                    "-dConvertCMYKImagesToProcess=false",
-                    f"-dRenderIntent={ri}",
-                ]
-                # Gắn ICC Profile đích theo lựa chọn người dùng (chỉ cho RGB→CMYK).
-                # 'auto' = không ép (giữ profile nhúng / mặc định GS). -dNOSAFER ở trên
-                # cho phép GS đọc file ICC bundle (GS 10 mặc định SAFER chặn).
-                if conv == "rgb_to_cmyk" and req.icc_profile and req.icc_profile != "auto":
-                    from app.core.icc_profiles import resolve_cmyk_profile_path
-                    icc_path = resolve_cmyk_profile_path(req.icc_profile)
-                    if not icc_path:
-                        icc_file = ICC_FILE_MAP.get(req.icc_profile)
-                        if icc_file:
-                            cand = os.path.join(settings.ICC_PROFILE_DIR, icc_file)
-                            if os.path.exists(cand):
-                                icc_path = cand
-                    if icc_path and os.path.exists(icc_path):
-                        gs_args += [
-                            "-sProcessColorModel=DeviceCMYK",
-                            f"-sOutputICCProfile={icc_path}",
-                            f"-sDefaultCMYKProfile={icc_path}",
-                            "-dOverrideICC=true",
-                        ]
-                    else:
-                        logger.warning(
-                            "ICC profile '%s' không tìm thấy — dùng mặc định GS.",
-                            req.icc_profile,
-                        )
-
-                gs_args.append(gs_input)
-
-                proc = await asyncio.to_thread(run_hidden, gs_args, capture_output=True, timeout=300)
-                if prepass_tmp:
-                    try:
-                        os.remove(prepass_tmp)
-                    except OSError:
-                        pass
-                if proc.returncode != 0:
-                    raise Exception(f"Ghostscript failed: {proc.stderr.decode()[:200]}")
-
-                _cleanup_intermediate(prev_intermediate)
-                prev_intermediate = output
-                current_path = output
-                label = "RGB → CMYK" if conv == "rgb_to_cmyk" else "Chuyển sang Grayscale (đen trắng)"
-                ms = round((time.time() - t0) * 1000)
-                log.append({"action_id": conv, "status": "success", "message": label, "duration_ms": ms})
+                label = "RGB → CMYK" if conv == "rgb_to_cmyk" else "Chuyển sang Grayscale"
+                raise InternalEngineUnsupported(unsupported_message(label))
 
         except Exception as e:
+            # GS-SUNSET (audit 2026-08-08 §GS.1): pipeline thất bại không được
+            # để lại output trung gian hoặc tiếp tục trên một file nửa hoàn tất.
+            _cleanup_intermediate(prev_intermediate)
+            prev_intermediate = None
+            current_path = file_path
             ms = round((time.time() - t0) * 1000)
             log.append({"action_id": conv, "status": "error", "message": str(e), "duration_ms": ms})
+            break
 
     all_ok = all(l["status"] == "success" for l in log)
     return {
@@ -1534,6 +1544,11 @@ async def render_softproof(req: SoftProofRequest):
             intent=req.intent,
             show_gamut_warning=req.show_gamut_warning,
             dpi=req.dpi,
+            simulate_overprint=req.simulate_overprint,
+            output_preview_filter=req.output_preview_filter,
+            simulate_paper_color=req.simulate_paper_color,
+            simulate_black_ink=req.simulate_black_ink,
+            page_background_rgb=req.page_background_rgb,
         )
         return result
     except Exception as e:
@@ -1542,18 +1557,63 @@ async def render_softproof(req: SoftProofRequest):
 
 
 @router.post("/preflight/viewer-accurate")
-async def render_viewer_accurate(req: ViewerAccurateRenderRequest):
+async def render_viewer_accurate(req: ViewerAccurateRenderRequest, request: Request):
     """Dựng PNG color-managed cho một trang Viewer từ đường dẫn local đã kiểm tra."""
+    from app.core.ppe_viewer_session import (
+        ViewerBackgroundSessionDeferred,
+        ViewerSessionSuperseded,
+        resolve_viewer_session_identity,
+        viewer_session_identity_is_current,
+        viewer_session_manager,
+    )
+    from app.core.print_engine.facade import PpeRequestSuperseded
     from app.core.softproof import SoftProofEngine
     from app.core.viewer_accurate_cache import (
+        AccurateRenderInterest,
+        AccurateRequestSuperseded,
         RenderedAccuratePng,
         build_accurate_cache_key,
+        build_accurate_request_scope,
+        current_accurate_render_is_interested,
         get_or_render_accurate_png,
     )
 
     pdf_path = _validate_local_pdf_path(req.file_path)
     try:
         profile_id = req.profile_id or "fogra39"
+        clip = req.raster_clip
+        session_owner_id = req.session_owner_id or req.owner_id
+        # PERF/COLOR (audit 2026-08-09 §L2C): cache key và session phải cùng
+        # một snapshot PDF + ICC. Không stat lại riêng rẽ rồi có thể ghi
+        # pixel revision mới dưới khóa của revision cũ.
+        try:
+            source_identity = await asyncio.to_thread(
+                resolve_viewer_session_identity,
+                pdf_path,
+                profile_id,
+                req.intent,
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Profile/intent Viewer không hợp lệ: {exc}",
+            ) from exc
+        # Bind trước khi đọc cache để disk-hit cũng giữ owner; native
+        # session vẫn chỉ mở lazy khi thật sự cache-miss.
+        await viewer_session_manager.bind_owner(
+            source_identity,
+            owner_id=session_owner_id,
+            purpose=req.purpose,
+            owner_generation=req.generation,
+        )
+        interest = AccurateRenderInterest(
+            scope=await asyncio.to_thread(
+                build_accurate_request_scope, pdf_path, req.owner_id
+            ),
+            generation=req.generation,
+            purpose=req.purpose,
+            request_id=req.request_id,
+        )
         cache_key = await asyncio.to_thread(
             build_accurate_cache_key,
             pdf_path,
@@ -1561,18 +1621,65 @@ async def render_viewer_accurate(req: ViewerAccurateRenderRequest):
             dpi=req.dpi,
             profile_id=profile_id,
             intent=req.intent,
+            clip=clip,
+            output_preview_filter=req.output_preview_filter,
+            simulate_paper_color=req.simulate_paper_color,
+            simulate_black_ink=req.simulate_black_ink,
+            page_background_rgb=req.page_background_rgb,
+            source_identity=source_identity,
         )
 
         async def render_png() -> RenderedAccuratePng:
-            result = await SoftProofEngine().render_softproof(
-                pdf_path=pdf_path,
-                page_num=req.page,
-                profile_id=profile_id,
-                intent=req.intent,
-                show_gamut_warning=False,
-                dpi=req.dpi,
-                output_format="png",
-            )
+            try:
+                lease = await viewer_session_manager.render_lease(
+                    source_identity,
+                    owner_id=session_owner_id,
+                    purpose=req.purpose,
+                    owner_generation=req.generation,
+                    # Cache có thể đã đánh dấu renderer "started" trong khi
+                    # nó còn xếp hàng sau request cùng PDF. Kiểm lại ngay
+                    # trước khi cấp native generation để zoom cũ không render thừa.
+                    still_interested=current_accurate_render_is_interested,
+                )
+            except (ViewerBackgroundSessionDeferred, ViewerSessionSuperseded) as exc:
+                raise AccurateRequestSuperseded(str(exc)) from exc
+            try:
+                async with lease:
+                    result = await SoftProofEngine().render_softproof(
+                        pdf_path=pdf_path,
+                        page_num=req.page,
+                        profile_id=profile_id,
+                        intent=req.intent,
+                        show_gamut_warning=False,
+                        dpi=req.dpi,
+                        output_format="png",
+                        clip=clip,
+                        # PERF (audit 2026-08-08 §RENDER.3): frontend đã giữ PDFium
+                        # display; endpoint này không dựng fallback full-page rồi mới loại.
+                        accurate_only=True,
+                        ppe_session=lease.session,
+                        # Native owner/generation là nội bộ của shared session.
+                        # Hai tab cùng gửi generation=1 không được hủy nhầm nhau.
+                        owner_id=lease.native_owner_id,
+                        request_generation=lease.native_generation,
+                        # COLOR (feedback 2026-08-10 §VIEWER.C1): Viewer thường
+                        # giống Acrobat Page Display; overprint chỉ bật trong
+                        # Output Preview/Soft-proof khi người dùng yêu cầu.
+                        simulate_overprint=False,
+                        output_preview_filter=req.output_preview_filter,
+                        simulate_paper_color=req.simulate_paper_color,
+                        simulate_black_ink=req.simulate_black_ink,
+                        page_background_rgb=req.page_background_rgb,
+                    )
+                    if not await asyncio.to_thread(
+                        viewer_session_identity_is_current,
+                        source_identity,
+                    ):
+                        raise AccurateRequestSuperseded(
+                            "PDF hoặc ICC đã thay đổi trong lúc dựng trang"
+                        )
+            except PpeRequestSuperseded as exc:
+                raise AccurateRequestSuperseded(str(exc)) from exc
             if not result.get("success") or not result.get("softproof_b64"):
                 raise RuntimeError(result.get("error") or "Bộ dựng màu không trả ảnh.")
             if result.get("accuracy") != "rip_softproof":
@@ -1580,28 +1687,104 @@ async def render_viewer_accurate(req: ViewerAccurateRenderRequest):
                 # CMYK/spot trước khi đổi profile, không được gắn nhãn "CMYK chính xác".
                 raise RuntimeError(
                     result.get("warning")
-                    or "Không có PPE/Ghostscript đủ chính xác để dựng màu CMYK."
+                    or "PPE chưa đủ tin cậy để dựng màu CMYK chính xác cho trang này."
                 )
-            image_bytes = base64.b64decode(result["softproof_b64"], validate=True)
+            if result.get("ink_unsound") or result.get("degraded"):
+                # COLOR (audit 2026-08-08 §RENDER.4): phòng thủ tại biên cache.
+                # Dù engine con gắn nhầm nhãn RIP, ảnh thiếu nội dung/hình học vẫn
+                # không được trả về dưới badge CMYK✓ hoặc ghi vào cache accurate.
+                raise RuntimeError(
+                    result.get("warning")
+                    or "Bộ dựng màu chưa giữ đủ nội dung để xác nhận CMYK chính xác."
+                )
+            if clip is not None and (
+                int(result.get("width") or 0) != clip[2]
+                or int(result.get("height") or 0) != clip[3]
+            ):
+                raise RuntimeError("Bộ dựng màu trả sai kích thước viewport clip.")
+            # PERF (audit 2026-08-09 §L2C): PNG lớn có thể tạo hàng chục
+            # MB base64; decode trên event loop sẽ làm request trang khác khựng.
+            image_bytes = await asyncio.to_thread(
+                base64.b64decode,
+                result["softproof_b64"],
+                validate=True,
+            )
             if not image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
                 raise RuntimeError("Bộ dựng màu không trả đúng PNG lossless.")
             return RenderedAccuratePng(
                 data=image_bytes,
                 engine=str(result.get("engine") or "unknown"),
                 accuracy=str(result.get("accuracy") or "unknown"),
+                session_mode=str(
+                    (result.get("ppe_session") or {}).get("mode") or "unknown"
+                ),
             )
 
-        cached = await get_or_render_accurate_png(cache_key, render_png)
+        async def watch_disconnect() -> bool:
+            """Theo dõi ngắt kết nối vì ASGI không tự hủy route đang xử lý."""
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        return True
+                    await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # pragma: no cover - phòng thủ adapter ASGI
+                logger.debug("Không đọc được trạng thái kết nối Viewer: %s", exc)
+                return False
+
+        # PERF (audit 2026-08-08 §RENDER.5): AbortController chỉ đóng kết nối
+        # phía client; watcher này hủy waiter backend để job chưa vào PPE rời hàng thật.
+        cache_task = asyncio.create_task(
+            get_or_render_accurate_png(
+                cache_key,
+                render_png,
+                interest=interest,
+            )
+        )
+        disconnect_task = asyncio.create_task(watch_disconnect())
+        try:
+            done, _pending = await asyncio.wait(
+                {cache_task, disconnect_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if cache_task not in done and disconnect_task.result():
+                cache_task.cancel()
+                await asyncio.gather(cache_task, return_exceptions=True)
+                raise AccurateRequestSuperseded(
+                    f"Request {req.request_id} đã bị hủy vì Viewer ngắt kết nối"
+                )
+            cached = await cache_task
+        finally:
+            disconnect_task.cancel()
+            if not cache_task.done():
+                cache_task.cancel()
+            await asyncio.gather(cache_task, disconnect_task, return_exceptions=True)
+        # Bao gồm cả disk-hit: không trả/cache artifact của snapshot đã
+        # hết hiệu lực sau save-over PDF hoặc thay ICC.
+        if not await asyncio.to_thread(
+            viewer_session_identity_is_current,
+            source_identity,
+        ):
+            raise AccurateRequestSuperseded(
+                "PDF hoặc ICC đã thay đổi trước khi trả ảnh Viewer"
+            )
+        response_headers = {
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "X-PrynX-Color-Engine": cached.rendered.engine,
+            "X-PrynX-Color-Accuracy": cached.rendered.accuracy,
+            "X-PrynX-Viewer-Cache": cached.status,
+            "X-PrynX-Viewer-Generation": str(req.generation),
+            "X-PrynX-PPE-Session": cached.rendered.session_mode,
+        }
+        response_headers["X-PrynX-Request-ID"] = req.request_id
         return Response(
             content=cached.rendered.data,
             media_type="image/png",
-            headers={
-                "Cache-Control": "private, max-age=31536000, immutable",
-                "X-PrynX-Color-Engine": cached.rendered.engine,
-                "X-PrynX-Color-Accuracy": cached.rendered.accuracy,
-                "X-PrynX-Viewer-Cache": cached.status,
-            },
+            headers=response_headers,
         )
+    except (AccurateRequestSuperseded, ViewerSessionSuperseded) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as exc:
@@ -1612,19 +1795,110 @@ async def render_viewer_accurate(req: ViewerAccurateRenderRequest):
         ) from exc
 
 
+@router.delete("/preflight/viewer-accurate/session")
+async def release_viewer_accurate_session(
+    owner_id: str = Query(min_length=1, max_length=128),
+    generation: int | None = Query(default=None, ge=0),
+):
+    """Nhả cache native đúng owner khi tab/file Viewer đóng hoặc đổi epoch."""
+    from app.core.ppe_viewer_session import viewer_session_manager
+
+    released = await viewer_session_manager.release_owner(
+        owner_id,
+        through_generation=generation,
+    )
+    return {"success": True, "released": released}
 
 
-def _render_ppe_overprint_pair(pdf_path: str, page: int, dpi: int) -> tuple[dict, dict]:
+
+
+def _page_has_used_overprint(pdf_path: str, page: int) -> bool | None:
+    """Đọc ExtGState *được dùng thật* trên page/Form, không suy từ pixel diff.
+
+    Chỉ thấy `/OP` trong Resources chưa đủ vì resource có thể không được gọi. Hàm
+    lần theo operator `gs` và Form `Do`, đồng thời chống vòng tham chiếu XObject.
+    """
+    try:
+        with pikepdf.Pdf.open(pdf_path) as doc:
+            page_obj = doc.pages[page - 1]
+            visited: set[tuple[int, int] | tuple[str, int]] = set()
+
+            def resolve(value):
+                resolver = getattr(value, "resolve", None)
+                return resolver() if callable(resolver) else value
+
+            def object_key(value) -> tuple[int, int] | tuple[str, int]:
+                objgen = getattr(value, "objgen", None)
+                if isinstance(objgen, tuple) and objgen != (0, 0):
+                    return objgen
+                return ("direct", id(value))
+
+            def inspect_stream(container, inherited_resources=None) -> bool:
+                resolved = resolve(container)
+                key = object_key(resolved)
+                if key in visited:
+                    return False
+                visited.add(key)
+                resources = resolve(resolved.get("/Resources") or inherited_resources or {})
+                extgstates = resolve(resources.get("/ExtGState") or {})
+                xobjects = resolve(resources.get("/XObject") or {})
+                try:
+                    instructions = pikepdf.parse_content_stream(container)
+                except Exception:
+                    instructions = []
+                for operands, operator in instructions:
+                    op = str(operator)
+                    if op == "gs" and operands:
+                        state_ref = extgstates.get(str(operands[0]))
+                        if state_ref is not None:
+                            state = resolve(state_ref)
+                            if bool(state.get("/OP", False)) or bool(state.get("/op", False)):
+                                return True
+                    elif op == "Do" and operands:
+                        xobject_ref = xobjects.get(str(operands[0]))
+                        if xobject_ref is None:
+                            continue
+                        xobject = resolve(xobject_ref)
+                        if str(xobject.get("/Subtype", "")) != "/Form":
+                            continue
+                        if inspect_stream(xobject, resources):
+                            return True
+                return False
+
+            return inspect_stream(page_obj, page_obj.get("/Resources"))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Không đọc được metadata Overprint trang %s: %s", page, exc)
+        return None
+
+
+def _render_ppe_overprint_pair(
+    pdf_path: str,
+    page: int,
+    dpi: int,
+    profile_id: str,
+    intent: str,
+) -> tuple[dict, dict]:
     """Dựng cùng một trang ở chế độ knockout và overprint bằng PPE.
 
     Hai ảnh phải đi qua cùng engine/profile; trộn PDFium với PPE sẽ tạo diff màu
     giả trên cả trang. Kết quả thiếu object bị từ chối thay vì báo false-negative.
     """
+    intent_code = {
+        "perceptual": 0,
+        "relative": 1,
+        "saturation": 2,
+        "absolute": 3,
+    }[intent]
+    common = {
+        "dpi": dpi,
+        "cmyk_profile_id": profile_id,
+        "render_intent": intent_code,
+    }
     knockout = ppe_softproof(
-        pdf_path, page, dpi=dpi, simulate_overprint=False,
+        pdf_path, page, simulate_overprint=False, **common,
     )
     simulated = ppe_softproof(
-        pdf_path, page, dpi=dpi, simulate_overprint=True,
+        pdf_path, page, simulate_overprint=True, **common,
     )
     for label, result in (("knockout", knockout), ("overprint", simulated)):
         if result.get("ink_unsound"):
@@ -1654,9 +1928,17 @@ async def render_overprint_preview(req: OverprintPreviewRequest):
             if req.page < 1 or req.page > len(doc.pages):
                 raise HTTPException(status_code=400, detail=f"Trang {req.page} không tồn tại")
 
+        page_has_overprint = await asyncio.to_thread(
+            _page_has_used_overprint, pdf_path, req.page,
+        )
         try:
             knockout, simulated = await asyncio.to_thread(
-                _render_ppe_overprint_pair, pdf_path, req.page, req.dpi,
+                _render_ppe_overprint_pair,
+                pdf_path,
+                req.page,
+                req.dpi,
+                req.profile_id,
+                req.intent,
             )
         except Exception as exc:
             # GS-SUNSET (audit 2026-07-27 §4.1): fail-loud thay vì trả hai ảnh
@@ -1686,14 +1968,19 @@ async def render_overprint_preview(req: OverprintPreviewRequest):
         buf_diff = BytesIO()
         Image.fromarray(overlay).save(buf_diff, format="PNG")
         buf_op = BytesIO()
-        Image.fromarray(img_overprint).save(buf_op, format="JPEG", quality=85)
+        # PREFLIGHT (audit 2026-08-10 §OP.9): ảnh mô phỏng là nguồn màu để đọc,
+        # không phải thumbnail; giữ PNG lossless giống Viewer accurate.
+        Image.fromarray(img_overprint).save(buf_op, format="PNG")
 
         return {
             "success": True,
             "has_differences": diff_count > 0,
             "diff_pixel_count": diff_count,
             "diff_overlay": f"data:image/png;base64,{base64.b64encode(buf_diff.getvalue()).decode()}",
-            "overprint_image": f"data:image/jpeg;base64,{base64.b64encode(buf_op.getvalue()).decode()}",
+            "overprint_image": f"data:image/png;base64,{base64.b64encode(buf_op.getvalue()).decode()}",
+            "page_has_overprint": page_has_overprint,
+            "profile_id": req.profile_id,
+            "intent": req.intent,
             "width": w,
             "height": h,
             "engine": "ppe",

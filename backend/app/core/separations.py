@@ -1,15 +1,9 @@
-import os
 import re
-import uuid
 import asyncio
 import logging
 import base64
 import zlib
 import numpy as np
-import pikepdf
-from PIL import Image
-from pathlib import Path
-from app.config import settings
 from app.core.print_engine import facade as ppe_facade
 
 logger = logging.getLogger(__name__)
@@ -164,10 +158,6 @@ def _lookup_spot_rgb(spot_name: str) -> list[int]:
 
 class SeparationEngine:
     def __init__(self):
-        self.gs_path = settings.GHOSTSCRIPT_PATH
-        self.output_dir = Path(settings.RESULTS_DIR) / "separations"
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-
         # Base colors for the process plates (RGB, approximate ISO Coated v2 ink colors)
         self.PLATE_COLORS = {
             "Cyan": [0, 158, 224],      # #009EE0
@@ -182,11 +172,13 @@ class SeparationEngine:
 
     async def extract_separations(
         self, pdf_path: str, page_num: int, dpi: int = 72,
-        use_ghostscript: bool | None = None,
         cmyk_profile_id: str | None = "fogra39",
         *,
+        rendering_intent: str = "relative",
+        render_mode: str = "accurate",
         ink_accurate: bool = False,
         use_ppe: bool = True,
+        output_preview_filter: str = "all",
     ) -> dict:
         """
         Extract separation plates (Acrobat Output Preview style).
@@ -195,8 +187,8 @@ class SeparationEngine:
         1. **PrynX Print Engine (PPE)** — tách kẽm trong không gian mực n kênh.
         2. Nếu PPE không đủ tin cậy: PDFium RGB → CMYK xấp xỉ và ghi rõ độ tin cậy.
 
-        ``use_ghostscript`` chỉ còn để tương thích API cũ: ``False`` buộc đường
-        xấp xỉ; ``None/True`` chạy PPE. Tham số này không thể kích hoạt GS.
+        ``render_mode=accurate`` ưu tiên PPE; ``render_mode=approximate`` buộc
+        đường PDFium RGB xấp xỉ.
 
         ``use_ppe=False`` buộc đường xấp xỉ để phục vụ kiểm tra chéo.
 
@@ -205,11 +197,26 @@ class SeparationEngine:
             Color-managed FOGRA soft-proof plates under-report solid TAC and must
             not be used for total-area-coverage gates.
         """
-        spot_names = self._detect_spot_inks(pdf_path)
-        has_spots = len(spot_names) > 0
-
-        force_approximate = use_ghostscript is False
+        if render_mode not in {"accurate", "approximate"}:
+            raise ValueError(f"Chế độ tách kẽm không hợp lệ: {render_mode}")
+        # PREFLIGHT (audit 2026-08-10 §OP.8): cùng intent phải đi xuyên suốt PPE,
+        # alternate spot swatch và fallback metadata; không hard-code Relative ở giữa.
+        intent_codes = {
+            "perceptual": 0,
+            "relative": 1,
+            "saturation": 2,
+            "absolute": 3,
+        }
+        normalized_intent = (rendering_intent or "relative").strip().lower()
+        if normalized_intent not in intent_codes:
+            raise ValueError(f"Rendering intent không hợp lệ: {rendering_intent}")
+        force_approximate = render_mode == "approximate"
         try_ppe = bool(use_ppe) and not force_approximate
+        normalized_filter = (output_preview_filter or "all").strip().lower()
+        if normalized_filter != "all" and not try_ppe:
+            raise ppe_facade.PpeUnavailable(
+                f"Show={normalized_filter} cần đường tách kẽm PPE chính xác"
+            )
 
         # ── Nhánh 1: PrynX Print Engine (PPE) ───────────────────────────────
         # PPE là engine chính duy nhất; chỉ nhận kết quả khi chính engine khai
@@ -218,9 +225,8 @@ class SeparationEngine:
         # bù lại nó chưa vẽ được shading/transparency, và những trang đó bị facade
         # loại thẳng thay vì trả số thấp hơn thực tế.
         #
-        # `use_ghostscript=False` là cờ "buộc đường xấp xỉ" của caller (debug /
-        # máy không có GS) nên KHÔNG được lặng lẽ đưa PPE vào thay: giữ đúng ý
-        # nghĩa cũ của tham số.
+        # Chế độ approximate là yêu cầu kiểm tra chéo có chủ đích nên KHÔNG được
+        # lặng lẽ đưa PPE vào thay.
         if try_ppe:
             try:
                 result = await asyncio.to_thread(
@@ -230,48 +236,58 @@ class SeparationEngine:
                     dpi,
                     ink_accurate=ink_accurate,
                     cmyk_profile_id=cmyk_profile_id,
+                    render_intent=intent_codes[normalized_intent],
+                    output_preview_filter=normalized_filter,
                 )
                 if result.get("plates"):
-                    result["has_spot_colors"] = bool(result.get("has_spot_colors")) or has_spots
-                    result["detected_spots"] = result.get("detected_spots") or spot_names
+                    # PREFLIGHT (audit 2026-08-10 §OP.E1): frontend đổi cỡ mẫu
+                    # mm → pixel từ chính DPI artifact, không được ngầm đoán 150.
+                    result["render_dpi"] = int(dpi)
                     return result
             except ppe_facade.PpeResultUntrusted as e:
+                if normalized_filter != "all":
+                    raise ppe_facade.PpeUnavailable(
+                        f"PPE không thể lọc kẽm theo Show={normalized_filter}: {e}"
+                    ) from e
                 # Không phải lỗi: engine tự khai giới hạn; chuyển sang kết quả xấp xỉ có nhãn.
                 logger.info("PPE không đủ tin cậy (trang %d), chuyển sang xấp xỉ: %s", page_num, e)
-                # ── Ngoại lệ: đo mực trên nội dung RGB thì GS KHÔNG phải thước ──
-                #
-                # Ở chế độ `ink_accurate`, GS buộc phải chạy `-dUseFastColor=true`
-                # (tắt quản lý màu) vì với GS, ICC là all-or-nothing: bật lên thì
-                # `DeviceCMYK` 400% bị nén xuống ~292% và file quá mực thành "đạt".
-                # Hệ quả đo được trên fixture: với ảnh RGB, GS lệch PPE −9.4 đến
-                # +30.6 điểm TAC (GS không sinh đen: RGB đen → C+M+Y 300%).
-                #
-                # Cả hai con số không thể cùng đúng trên một cổng ngưỡng 300%: cùng
-                # một file sẽ "đạt" hay "vượt" tuỳ engine nào tình cờ chạy. Nên khi
-                # lý do PPE bị loại ĐÚNG LÀ màu RGB, thà báo "chưa kiểm được" còn
-                # hơn trả một con số mà ta đã biết là lệch.
-                #
-                # Chỉ chặn đúng nguyên nhân màu. PPE bị loại vì shading /
-                # transparency / `/OC` thì GS vẫn chạy: trên trang không có ảnh RGB,
-                # chế độ UseFastColor của GS khớp PPE tuyệt đối (0.0 điểm — đo trên
-                # `17_tac_heavy_cmyk` và `10_overprint`), nên cấm rộng sẽ tự tay bỏ
-                # mất cổng TAC trên chính lớp file mà PPE chưa vẽ được.
+                # Không suy TAC từ bản dựng RGB: chuyển ngược RGB → CMYK phụ thuộc
+                # profile, GCR/UCR và không khôi phục được lượng mực gốc. Chỉ trả
+                # "không kiểm được" khi chính nguyên nhân PPE từ chối là không gian
+                # màu đã phải xấp xỉ; các giới hạn dựng hình khác vẫn đi fallback có nhãn.
                 if ink_accurate and e.detail.get("approximated_colorspaces"):
-                    return self._tac_unverifiable(
+                    spot_names = await asyncio.to_thread(
+                        self._detect_spot_inks, pdf_path
+                    )
+                    result = self._tac_unverifiable(
                         spot_names,
                         reason=str(e),
                         approximated=list(e.detail.get("approximated_colorspaces") or []),
                     )
+                    result["render_dpi"] = int(dpi)
+                    return result
             except ppe_facade.PpeUnavailable as e:
+                if normalized_filter != "all":
+                    raise
                 logger.debug("PPE chưa khả dụng: %s", e)
             except Exception as e:  # noqa: BLE001
+                if normalized_filter != "all":
+                    raise
                 logger.warning("PPE lỗi (trang %d): %s. Chuyển sang xấp xỉ.", page_num, e)
 
-        result = self._run_pikepdf_fallback(pdf_path, page_num, dpi)
-        result["has_spot_colors"] = has_spots
-        result["detected_spots"] = spot_names
+        # PDFium render + resource traversal đều là I/O/CPU blocking. Không chạy
+        # trực tiếp trên event loop của route Preflight.
+        result = await asyncio.to_thread(
+            self._run_pikepdf_fallback,
+            pdf_path,
+            page_num,
+            dpi,
+            cmyk_profile_id,
+            normalized_intent,
+        )
         result["engine"] = "pdfium_approx"
         result["accuracy"] = "approximate"
+        result["render_dpi"] = int(dpi)
         result["quality_note"] = (
             "Xấp xỉ: PDF→RGB→tách CMYK giả (không ICC). PrynX PPE chưa dựng "
             "được trang này đủ tin cậy; không dùng kết quả để chốt kẽm."
@@ -283,9 +299,9 @@ class SeparationEngine:
     ) -> dict:
         """Kết quả "không kiểm được tổng mực" — KHÔNG kèm plate nào.
 
-        Cố ý trả `plates = []` thay vì plate của GS: nếu trả plate, `ink.py` sẽ tính
-        TAC trên đó và kết luận, mà đó đúng là con số ta vừa xác định là lệch. Không
-        có plate thì không thể kết luận sai.
+        Cố ý trả `plates = []`: nếu trả kẽm xấp xỉ từ RGB, `ink.py` sẽ tính TAC
+        trên dữ liệu không còn phản ánh lượng mực gốc. Không có plate thì không thể
+        kết luận sai.
 
         `engine` KHÔNG nằm trong `TAC_TRUSTED_ENGINES`, nên `ink.py` tự động phát
         issue "chưa kiểm được TAC" thay vì coi trang là đạt ngưỡng — đường fail-loud
@@ -302,9 +318,9 @@ class SeparationEngine:
             "quality_note": (
                 "Chưa kiểm được tổng mực: nội dung dùng màu chưa quản lý được "
                 f"({', '.join(approximated) or 'không rõ'}). "
-                "PrynX Print Engine cần profile ICC cho phần này, còn Ghostscript ở "
-                "chế độ đo mực phải tắt quản lý màu nên con số của nó lệch tới ~30 "
-                "điểm TAC. Thà không kết luận còn hơn kết luận sai."
+                "PrynX Print Engine cần dữ liệu màu đầu vào đủ tin cậy; bản dựng "
+                "RGB không thể khôi phục chính xác lượng mực gốc. Thà không kết luận "
+                "còn hơn kết luận sai."
             ),
             "ppe_reject_reason": reason,
         }
@@ -314,320 +330,28 @@ class SeparationEngine:
     # ──────────────────────────────────────────────────────────
 
     def _detect_spot_inks(self, pdf_path: str) -> list[str]:
-        """
-        Quick scan PDF for Separation/DeviceN color spaces.
-        Uses pikepdf xref_object text parsing — very fast (< 50ms).
-        Returns list of spot ink names found.
-        """
-        spot_names = []
-        seen = set()
+        """Inventory spot toàn tài liệu từ resource traversal dùng chung."""
+        from app.core.ink_manager import analyze_ink_inventory
 
-        try:
-            doc = pikepdf.Pdf.open(pdf_path)
-            for page_idx in range(len(doc.pages)):
-                page = doc.pages[page_idx]
-                try:
-                    page_obj = str(page.obj)
-
-                    # Find /Separation /SpotName entries
-                    sep_matches = re.findall(r'/Separation\s*/([^\s/\[\]]+)', page_obj)
-                    for spot_name in sep_matches:
-                        # Decode PDF name encoding (#XX → char)
-                        decoded = re.sub(
-                            r'#([0-9A-Fa-f]{2})',
-                            lambda m: chr(int(m.group(1), 16)),
-                            spot_name
-                        )
-                        if decoded not in seen and decoded not in ("All", "None"):
-                            seen.add(decoded)
-                            spot_names.append(decoded)
-
-                    # Also check ColorSpace dict refs for deeper scan
-                    cs_refs = re.findall(r'/CS\d+\s+(\d+)\s+\d+\s+R', page_obj)
-                    for ref in cs_refs:
-                        try:
-                            obj_str = str(doc.get_object(int(ref)))
-                            sep_names = re.findall(r'/Separation\s*/([^\s/\[\]]+)', obj_str)
-                            for sn in sep_names:
-                                decoded = re.sub(
-                                    r'#([0-9A-Fa-f]{2})',
-                                    lambda m: chr(int(m.group(1), 16)),
-                                    sn
-                                )
-                                if decoded not in seen and decoded not in ("All", "None"):
-                                    seen.add(decoded)
-                                    spot_names.append(decoded)
-                        except Exception:
-                            pass
-
-                    # Also scan DeviceN arrays for spot names
-                    devicen_matches = re.findall(r'/DeviceN\s*\[([^\]]+)\]', page_obj)
-                    for dn_match in devicen_matches:
-                        names = re.findall(r'/([^\s/\[\]]+)', dn_match)
-                        for n in names:
-                            decoded = re.sub(
-                                r'#([0-9A-Fa-f]{2})',
-                                lambda m: chr(int(m.group(1), 16)),
-                                n
-                            )
-                            if decoded not in seen and decoded not in ("Cyan", "Magenta", "Yellow", "Black", "All", "None"):
-                                seen.add(decoded)
-                                spot_names.append(decoded)
-
-                except Exception as e:
-                    logger.debug(f"Spot scan failed for page {page_idx}: {e}")
-
-            doc.close()
-        except Exception as e:
-            logger.warning(f"Spot ink detection failed: {e}")
-
-        return spot_names
-
-    # ──────────────────────────────────────────────────────────
-    #  GHOSTSCRIPT TIFFSEP (supports Spot Colors)
-    # ──────────────────────────────────────────────────────────
-
-    async def _run_ghostscript_tiffsep(
-        self,
-        pdf_path: str,
-        page_num: int,
-        dpi: int,
-        cmyk_profile_id: str | None = "fogra39",
-        *,
-        ink_accurate: bool = False,
-    ) -> dict:
-        """Run Ghostscript tiffsep to generate plate TIFFs, then convert to base64 PNGs."""
-        import subprocess
-        import shutil
-        from app.utils.subprocess_utils import run_hidden
-        from app.core.icc_profiles import resolve_cmyk_profile_path
-
-        job_id = uuid.uuid4().hex[:8]
-        job_dir = self.output_dir / job_id
-        job_dir.mkdir(exist_ok=True)
-
-        output_base = str(job_dir / "plate")
-
-        # ink_accurate: đo lượng mực DeviceCMYK (TAC) — không khử răng cưa, và
-        # DeviceCMYK phải đi qua ánh xạ ĐỒNG NHẤT (cùng profile nguồn/đích) chứ
-        # không phải qua đường fast color: fast color tắt overprint.
-        # Preview path: color-managed FOGRA plates with mild AA (Acrobat-like).
-        alpha_bits = 1 if ink_accurate else 4
-        # NOSAFER so GS can read bundled FOGRA39.icc outside process cwd.
-        cmd = [
-            self.gs_path,
-            "-sDEVICE=tiffsep",
-            "-dNOPAUSE", "-dBATCH", "-dNOSAFER",
-            f"-dFirstPage={page_num}", f"-dLastPage={page_num}",
-            f"-r{dpi}",
-            f"-dGraphicsAlphaBits={alpha_bits}",
-            f"-dTextAlphaBits={alpha_bits}",
-            "-dMaxSpots=32",
-            # `-dSimulateOverprint` đã bị Ghostscript 10.x LOẠI BỎ; GS chỉ in một
-            # dòng cảnh báo ra stderr rồi chạy tiếp với mặc định. Cờ đúng bây giờ là
-            # `-sOverprint=simulate`. Truyền cờ chết ở đây nghĩa là mọi kẽm đo được
-            # đều mất overprint — báo **thiếu** mực, đúng chiều sai làm hỏng lô in.
-            "-sOverprint=simulate",
-            # Và `-dUseFastColor=true` TẮT overprint trong Ghostscript: đường fast
-            # color bỏ qua toàn bộ logic overprint. Đo được: đen K-only overprint
-            # trên nền Cyan cho 100% TAC với fast color, 200% khi tắt nó.
-            #
-            # Nhưng tắt fast color thì DeviceCMYK bị quy đổi qua profile CMYK mặc
-            # định của GS và vùng đặc 400% nén xuống ~292%. Cách giữ được cả hai:
-            # tắt fast color rồi đặt **cùng một** profile cho nguồn và đích, biến
-            # DeviceCMYK→DeviceCMYK thành ánh xạ đồng nhất (đã kiểm: solid vẫn
-            # 400.0, rich black 240.0, overprint 200.0).
-            "-dUseFastColor=false",
+        inventory = analyze_ink_inventory(pdf_path)
+        return [
+            item["name"]
+            for item in inventory.get("document_colorants", [])
+            if item.get("is_spot")
         ]
-        cmyk_icc = resolve_cmyk_profile_path(cmyk_profile_id) if cmyk_profile_id else None
-        if ink_accurate:
-            if cmyk_icc:
-                cmd.append(f"-sDefaultCMYKProfile={cmyk_icc}")
-                cmd.append(f"-sOutputICCProfile={cmyk_icc}")
-                cmd.append("-dOverrideICC=true")
-            else:
-                # Không có profile ⇒ không giữ được đồng nhất DeviceCMYK. Quay về
-                # fast color và nói rõ: overprint sẽ KHÔNG được tính.
-                cmd = [c for c in cmd if c != "-dUseFastColor=false"]
-                cmd.append("-dUseFastColor=true")
-                logger.warning(
-                    "GS tiffsep ink_accurate: không có profile CMYK ⇒ dùng fast color, "
-                    "overprint sẽ không được tính vào lượng mực."
-                )
-        elif cmyk_profile_id:
-            if cmyk_icc:
-                # `-sDefaultCMYKProfile` là profile NGUỒN — nó dạy Ghostscript cách
-                # hiểu dữ liệu DeviceCMYK trong file. Profile ĐÍCH (kết xuất) là
-                # `-sOutputICCProfile`. Thiếu cờ đích thì GS kết xuất ra profile CMYK
-                # mặc định dựng sẵn của nó, nghĩa là "kẽm FOGRA39" mà app quảng cáo
-                # thực chất KHÔNG phải FOGRA39. Đo được: thiếu cờ này lệch tới 30
-                # điểm TAC và MAE 42/255 so với khi đặt đúng (< 1 điểm, MAE < 1.1).
-                cmd.append(f"-sDefaultCMYKProfile={cmyk_icc}")
-                cmd.append(f"-sOutputICCProfile={cmyk_icc}")
-                cmd.append("-dOverrideICC=true")
-        cmd.extend([
-            f"-sOutputFile={output_base}.tif",
-            pdf_path,
-        ])
-
-        def _run_sync():
-            return run_hidden(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=120,
-            )
-
-        res = await asyncio.to_thread(_run_sync)
-
-        # Parse stderr for %%SeparationName lines (Ghostscript reports spot names here)
-        stderr_text = res.stderr.decode("utf-8", errors="ignore")
-        gs_spot_names = re.findall(r'%%SeparationName:\s*(.+)', stderr_text)
-        gs_spot_names = [n.strip() for n in gs_spot_names if n.strip()]
-        if gs_spot_names:
-            logger.info(f"GS detected spot inks from stderr: {gs_spot_names}")
-
-        # Ghostscript KHÔNG lỗi khi gặp cờ đã bị loại bỏ — nó chỉ in cảnh báo rồi
-        # chạy tiếp với mặc định. Nếu không đọc cảnh báo đó, một cờ chết sẽ âm thầm
-        # đổi ý nghĩa của kẽm (đúng chuyện đã xảy ra với `-dSimulateOverprint`).
-        if "no longer supported" in stderr_text:
-            dead = [
-                line.strip()
-                for line in stderr_text.splitlines()
-                if "no longer supported" in line
-            ]
-            logger.error(
-                "GS báo cờ đã bị loại bỏ — kẽm đo được có thể KHÔNG đúng cấu hình "
-                "mong muốn: %s",
-                "; ".join(dead[:3]),
-            )
-
-        if res.returncode != 0:
-            logger.error(f"GS tiffsep stderr: {stderr_text[:500]}")
-            raise RuntimeError(f"GS exited with {res.returncode}")
-
-        plates = []
-        width, height = 0, 0
-        spot_inks_meta = []
-
-        # tiffsep output patterns vary by Ghostscript version:
-        #   Pattern A: plate(Cyan).tif, plate(PANTONE 485 C).tif
-        #   Pattern B: plate.Cyan.tif, plate.PANTONE 485 C.tif
-        #   Composite: plate.tif (skip this)
-        try:
-          for file in os.listdir(job_dir):
-            if not file.endswith(".tif"):
-                continue
-
-            # Skip the composite file
-            if file == "plate.tif":
-                continue
-
-            # Extract ink name from filename
-            name_part = None
-
-            # Pattern A: plate(Name).tif
-            match_a = re.match(r'^plate\((.+)\)\.tif$', file)
-            if match_a:
-                name_part = match_a.group(1)
-
-            # Pattern B: plate.Name.tif  (but NOT plate.tif itself)
-            if not name_part:
-                match_b = re.match(r'^plate\.(.+)\.tif$', file)
-                if match_b:
-                    name_part = match_b.group(1)
-
-            # Pattern C: plate%d(Name).tif  (multi-page output)
-            if not name_part:
-                match_c = re.match(r'^plate\d*\((.+)\)\.tif$', file)
-                if match_c:
-                    name_part = match_c.group(1)
-
-            if not name_part:
-                logger.debug(f"Skipping unrecognized tiffsep output: {file}")
-                continue
-
-            # Read TIFF
-            tif_path = job_dir / file
-            try:
-                img = Image.open(tif_path)
-                if width == 0:
-                    width, height = img.size
-
-                arr = np.array(img)
-
-                # tiffsep is inverted: 255 = no ink, 0 = 100% ink
-                ink_density = 255 - arr
-
-                # Determine if this is a spot color
-                is_spot = name_part not in ("Cyan", "Magenta", "Yellow", "Black")
-
-                plate_info = self._create_colored_plate(name_part, ink_density, is_spot=is_spot)
-                plates.append(plate_info)
-
-                # Build spot metadata
-                if is_spot:
-                    rgb = plate_info["color"]
-                    total_ink = int(np.sum(ink_density > 5))
-                    coverage_pct = round(total_ink / (width * height) * 100, 1) if width > 0 else 0
-                    spot_inks_meta.append({
-                        "name": name_part,
-                        "rgb": rgb,
-                        "coverage_pct": coverage_pct,
-                        "is_pantone": "pantone" in name_part.lower(),
-                    })
-
-            except Exception as e:
-                logger.warning(f"Failed to read tiffsep plate '{file}': {e}")
-                continue
-
-        finally:
-            # Luôn dọn temp plate dir kể cả khi lỗi giữa chừng (C15).
-            shutil.rmtree(job_dir, ignore_errors=True)
-
-        # Sort plates: Cyan, Magenta, Yellow, Black, then Spots alphabetically
-        order = {"Cyan": 0, "Magenta": 1, "Yellow": 2, "Black": 3}
-        plates.sort(key=lambda p: (order.get(p["name"], 99), p["name"]))
-
-        if not plates:
-            raise RuntimeError("No plates generated by Ghostscript tiffsep")
-
-        # Page metadata (using pikepdf — fast, just reads dictionary)
-        page_has_transparency = False
-        blending_cs = "DeviceCMYK"
-        try:
-            doc = pikepdf.Pdf.open(pdf_path)
-            page = doc.pages[page_num - 1]
-            group = page.get("/Group")
-            if group:
-                page_has_transparency = True
-                cs = group.get("/CS")
-                if cs:
-                    cs_name = str(cs)
-                    if "CMYK" in cs_name:
-                        blending_cs = "DeviceCMYK"
-                    elif "RGB" in cs_name:
-                        blending_cs = "DeviceRGB"
-                    elif "Gray" in cs_name:
-                        blending_cs = "DeviceGray"
-            doc.close()
-        except Exception:
-            pass
-
-        return {
-            "width": width,
-            "height": height,
-            "plates": plates,
-            "spot_inks": spot_inks_meta,
-            "page_has_transparency": page_has_transparency,
-            "blending_color_space": blending_cs,
-        }
 
     # ──────────────────────────────────────────────────────────
     #  PYPDFIUM2 FALLBACK (CMYK Process only — fast)
     # ──────────────────────────────────────────────────────────
 
-    def _run_pikepdf_fallback(self, pdf_path: str, page_num: int, dpi: int) -> dict:
+    def _run_pikepdf_fallback(
+        self,
+        pdf_path: str,
+        page_num: int,
+        dpi: int,
+        cmyk_profile_id: str | None = "fogra39",
+        rendering_intent: str = "relative",
+    ) -> dict:
         """Fallback: render page via pypdfium2 and split into pseudo-CMYK plates."""
         import pypdfium2 as pdfium
         from app.core.pdfium_lock import pdfium_guard
@@ -644,10 +368,9 @@ class SeparationEngine:
         arr_rgb = np.array(img)
         width, height = img.size
 
-        # XẤP XỈ: RGB → CMYK bằng công thức GCR/UCR naive (KHÔNG ICC, KHÔNG dot gain,
-        # KHÔNG FOGRA). ĐÂY KHÔNG PHẢI công thức của Ghostscript — GS tiffsep tách kẽm
-        # qua ICC devicelink. Path này chỉ để xem nhanh khi thiếu GS; % mực C/M/Y/K
-        # lệch xa RIP/Acrobat. Kết quả LUÔN gắn accuracy="approximate" (xem caller).
+        # XẤP XỈ: RGB → CMYK bằng công thức GCR/UCR đơn giản (KHÔNG ICC, dot gain
+        # hoặc FOGRA). Đường này chỉ phục vụ xem nhanh; % mực C/M/Y/K có thể lệch
+        # xa RIP/Acrobat. Kết quả LUÔN gắn accuracy="approximate" (xem caller).
         r = arr_rgb[:, :, 0].astype(np.float32) / 255.0
         g = arr_rgb[:, :, 1].astype(np.float32) / 255.0
         b = arr_rgb[:, :, 2].astype(np.float32) / 255.0
@@ -670,27 +393,49 @@ class SeparationEngine:
             plate_info = self._create_colored_plate(name, cmyk_channels[name])
             plates.append(plate_info)
 
-        # Page metadata via pikepdf
-        page_has_transparency = False
-        blending_cs = "DeviceCMYK"
+        # PREFLIGHT (audit 2026-08-10 §OP.4/5): fallback vẫn phải trả cùng
+        # contract inventory/metadata như PPE, không tự điền DeviceCMYK/false.
+        inventory = None
+        inventory_error = None
+        page_inventory: dict = {}
+        document_colorants: list[dict] = []
+        spot_inks: list[dict] = []
         try:
-            pike_doc = pikepdf.Pdf.open(pdf_path)
-            pike_page = pike_doc.pages[page_num - 1]
-            group = pike_page.get("/Group")
-            if group:
-                page_has_transparency = True
-                cs = group.get("/CS")
-                if cs:
-                    cs_name = str(cs)
-                    if "CMYK" in cs_name:
-                        blending_cs = "DeviceCMYK"
-                    elif "RGB" in cs_name:
-                        blending_cs = "DeviceRGB"
-                    elif "Gray" in cs_name:
-                        blending_cs = "DeviceGray"
-            pike_doc.close()
-        except Exception:
-            pass
+            from app.core.ink_manager import analyze_ink_inventory, colorant_rgb_map
+
+            inventory = analyze_ink_inventory(pdf_path)
+            document_colorants = list(inventory.get("document_colorants", []))
+            page_inventory = next(
+                (
+                    item for item in inventory.get("pages", [])
+                    if int(item.get("page", 0)) == page_num
+                ),
+                {},
+            )
+            display = colorant_rgb_map(
+                document_colorants,
+                cmyk_profile_id or "fogra39",
+                rendering_intent=rendering_intent,
+            )
+            for colorant in document_colorants:
+                if not colorant.get("is_spot"):
+                    continue
+                name = colorant["name"]
+                swatch = display.get(name, {})
+                spot_inks.append({
+                    "name": name,
+                    "rgb": swatch.get("rgb") or _lookup_spot_rgb(name),
+                    "coverage_pct": 0.0,
+                    "is_pantone": "pantone" in name.lower(),
+                    "present_on_page": name in page_inventory.get("spot_colorants", []),
+                    "pages": list(colorant.get("pages") or []),
+                    "alternate_space": colorant.get("alternate_space"),
+                    "alternate_cmyk": colorant.get("alternate_cmyk"),
+                    "color_source": swatch.get("source") or "name_fallback",
+                })
+        except Exception as exc:  # noqa: BLE001
+            inventory_error = str(exc)
+            logger.warning("Không đọc được inventory ở separations fallback: %s", exc)
 
         # KIENTRUC (audit 2026-07-29 §C.1): `close()` cũng là lời gọi PDFium → phải
         # trong guard. Giữ nguyên thứ tự cũ (đóng SAU khi đã dùng xong `img`) vì
@@ -702,9 +447,16 @@ class SeparationEngine:
             "width": width,
             "height": height,
             "plates": plates,
-            "spot_inks": [],
-            "page_has_transparency": page_has_transparency,
-            "blending_color_space": blending_cs,
+            "spot_inks": spot_inks,
+            "has_spot_colors": bool(spot_inks),
+            "detected_spots": [item["name"] for item in spot_inks],
+            "document_colorants": document_colorants,
+            "page_colorants": list(page_inventory.get("colorants") or []),
+            "page_spot_colorants": list(page_inventory.get("spot_colorants") or []),
+            "page_has_transparency": page_inventory.get("page_has_transparency"),
+            "blending_color_space": page_inventory.get("blending_color_space"),
+            "inventory_source": (inventory or {}).get("metadata_source"),
+            "inventory_error": inventory_error,
         }
 
     # ──────────────────────────────────────────────────────────

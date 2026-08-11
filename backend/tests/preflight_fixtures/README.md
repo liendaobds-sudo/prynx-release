@@ -29,6 +29,6 @@ cd backend && bash scripts/run_preflight_qa.sh
 
 ## Lưu ý
 
-- `17_tac_heavy_cmyk.pdf` — skip nếu thiếu Ghostscript
+- `17_tac_heavy_cmyk.pdf` — kiểm tra `TAC_EXCEEDED` bằng PrynX Print Engine
 - `14_progressive_jpeg.pdf` — manual QA; unit test SOF2 trong `test_preflight_engine.py`
 - XMP Illustrator linked — chỉ QA bằng file `.ai`/PDF thật (xem `QA_CHECKLIST.md` mục C3)

@@ -1,10 +1,8 @@
 """Flatten phải NÓI khi nó raster hoá — không được im lặng trả success.
 
-Bối cảnh (GS-SUNSET 2026-07-28): `LayerEngine.flatten_visible` gọi Ghostscript
-`-dFlattenOCGs`. GS đã bị `subprocess_utils._guard_ghostscript` chặn vô điều kiện,
-nên nhánh `except Exception` → `_flatten_raster_fallback` là đường DUY NHẤT còn chạy.
-Đường đó dựng lại file từ ảnh 300 DPI RGB: mất vector, mất chữ chọn được, CMYK sang
-RGB, và MẤT màu pha — tức mất Pantone và kênh bế.
+GS-SUNSET (audit 2026-08-08 §GS.3): `LayerEngine.flatten_visible` đi thẳng qua
+PDFium và dựng lại file từ ảnh 300 DPI RGB. Đường này mất vector, mất chữ chọn được,
+đổi CMYK sang RGB và MẤT màu pha — tức mất Pantone và kênh bế.
 
 Trước đây chỗ đó chỉ `logger.warning` rồi trả success=True, thợ không hề biết. Tệ hơn:
 hộp thoại xác nhận trên UI đã HỨA "PrynX sẽ cảnh báo trong kết quả".
@@ -52,8 +50,8 @@ def test_engine_moi_khong_co_canh_bao():
     assert LayerEngine().last_flatten_warning is None
 
 
-def test_raster_fallback_dat_canh_bao(pdf_with_layer):
-    """Ghostscript không chạy được ⇒ raster hoá ⇒ PHẢI có cảnh báo."""
+def test_flatten_raster_dat_canh_bao(pdf_with_layer):
+    """Raster hoá trực tiếp ⇒ PHẢI có cảnh báo."""
     engine = LayerEngine()
     output = engine.flatten_visible(pdf_with_layer)
 

@@ -34,7 +34,7 @@ use crate::pdf;
 /// Trần số tam giác của một shading.
 ///
 /// Chặn file thù địch (hoặc hỏng) khai lưới khổng lồ. 400 000 tam giác đã vượt xa
-/// mọi gradient mesh thật; vượt trần thì báo lỗi để trang rơi về Ghostscript.
+/// mọi gradient mesh thật; vượt trần thì báo lỗi để caller dừng an toàn.
 const MAX_TRIANGLES: usize = 400_000;
 
 /// Số ô mỗi chiều khi chia một patch Coons/tensor thành lưới.

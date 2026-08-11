@@ -10,6 +10,12 @@ const tauriMocks = vi.hoisted(() => ({
     invoke: vi.fn(),
 }));
 
+const tileCacheMocks = vi.hoisted(() => ({
+    claimOwner: vi.fn(),
+    clear: vi.fn(),
+    releaseOwner: vi.fn(),
+}));
+
 vi.mock('react-pdf', () => ({
     pdfjs: {
         getDocument: pdfMocks.getDocument,
@@ -21,8 +27,10 @@ vi.mock('../../components/workspace/thumbnailCache', () => ({
     putThumbCache: vi.fn(),
 }));
 
-vi.mock('../../components/workspace/LivePageFrame', () => ({
-    clearTileUrlCache: vi.fn(),
+vi.mock('../../lib/tileUrlCache', () => ({
+    claimTileUrlCacheOwner: tileCacheMocks.claimOwner,
+    clearTileUrlCache: tileCacheMocks.clear,
+    releaseTileUrlCacheOwner: tileCacheMocks.releaseOwner,
 }));
 
 import { PDF_LOAD_SLOW_NOTICE_MS, usePdfLoader } from './usePdfLoader';
@@ -51,6 +59,9 @@ describe('usePdfLoader — trạng thái tải PDF trong bộ nhớ', () => {
     beforeEach(() => {
         pdfMocks.getDocument.mockReset();
         tauriMocks.invoke.mockReset();
+        tileCacheMocks.claimOwner.mockReset();
+        tileCacheMocks.clear.mockReset();
+        tileCacheMocks.releaseOwner.mockReset();
         vi.spyOn(console, 'info').mockImplementation(() => undefined);
         vi.spyOn(console, 'error').mockImplementation(() => undefined);
     });
@@ -116,6 +127,33 @@ describe('usePdfLoader — trạng thái tải PDF trong bộ nhớ', () => {
         expect(second.setNumPages).toHaveBeenCalledWith(1);
     });
 
+    it('giữ một owner cache ổn định theo tab và release đúng namespace khi đổi file/unmount', async () => {
+        pdfMocks.getDocument
+            .mockReturnValueOnce({ promise: Promise.resolve(makePdfDoc(1)), destroy: vi.fn() })
+            .mockReturnValueOnce({ promise: Promise.resolve(makePdfDoc(1)), destroy: vi.fn() });
+        const first = makeProps(new File(['a'], 'a.pdf', { type: 'application/pdf' }), 'blob:first');
+        const second = makeProps(new File(['b'], 'b.pdf', { type: 'application/pdf' }), 'blob:second');
+        const { result, rerender, unmount } = renderHook(
+            ({ props }) => usePdfLoader(props),
+            { initialProps: { props: first } },
+        );
+
+        await waitFor(() => expect(result.current.loadStatus).toBe('ready'));
+        expect(tileCacheMocks.claimOwner).toHaveBeenCalledTimes(1);
+        const ownerId = tileCacheMocks.claimOwner.mock.calls[0][0];
+        expect(ownerId).toMatch(/^pdf-loader:/);
+        expect(tileCacheMocks.claimOwner).toHaveBeenCalledWith(ownerId, 'blob:first');
+
+        rerender({ props: second });
+        await waitFor(() => expect(result.current.loadStatus).toBe('ready'));
+        expect(tileCacheMocks.releaseOwner).toHaveBeenCalledWith(ownerId);
+        expect(tileCacheMocks.claimOwner).toHaveBeenCalledWith(ownerId, 'blob:second');
+        expect(tileCacheMocks.clear).toHaveBeenCalledTimes(2);
+
+        unmount();
+        expect(tileCacheMocks.releaseOwner.mock.calls.filter(([value]) => value === ownerId)).toHaveLength(2);
+    });
+
     it('thử lại đúng lượt tải hiện tại sau khi PDF.js lỗi', async () => {
         pdfMocks.getDocument
             .mockReturnValueOnce({
@@ -164,6 +202,8 @@ describe('usePdfLoader — trạng thái tải PDF trong bộ nhớ', () => {
                         appVersion: '1.0.0-rc.4',
                         tileCacheVersion: 'v7_userunit_lossless_png',
                     },
+                    viewerEngineMode: 'hybrid',
+                    viewerShadowEnabled: true,
                     allDims: {
                         1: { widthPt: 595, heightPt: 842 },
                         2: { widthPt: 595, heightPt: 842 },
@@ -196,7 +236,313 @@ describe('usePdfLoader — trạng thái tải PDF trong bộ nhớ', () => {
         expect(result.current.colorRisk?.highRisk).toBe(true);
         expect(result.current.colorRisk?.riskyPages).toEqual([1]);
         expect(result.current.renderEngine?.libraryPath).toBe('D:\\PrynX\\pdfium.dll');
+        expect(result.current.viewerEngineMode).toBe('hybrid');
+        expect(result.current.viewerShadowEnabled).toBe(true);
         expect(pdfMocks.getDocument).not.toHaveBeenCalled();
+    });
+
+    it('dựng trang đầu với cảnh báo màu bootstrap trước khi metadata đầy đủ hoàn tất', async () => {
+        Object.defineProperty(window, '__TAURI_INTERNALS__', {
+            configurable: true,
+            value: { invoke: tauriMocks.invoke },
+        });
+        let resolveFullMetadata!: (value: unknown) => void;
+        const fullMetadata = new Promise(resolve => {
+            resolveFullMetadata = resolve;
+        });
+        tauriMocks.invoke.mockImplementation((command: string) => {
+            if (command === 'get_pdf_viewer_bootstrap') {
+                return Promise.resolve({
+                    numPages: 2,
+                    widthPt: 595,
+                    heightPt: 842,
+                    fileIdentity: '18:100:90',
+                    colorRisk: {
+                        highRisk: true,
+                        accurateColorRecommended: true,
+                        hasOutputIntent: false,
+                        riskyPages: [1],
+                        pages: [{
+                            page: 1,
+                            highRisk: true,
+                            accurateColorRecommended: true,
+                            hasDeviceCmyk: true,
+                            hasDeviceN: false,
+                            hasSeparation: false,
+                            hasTransparency: true,
+                            hasSoftMask: false,
+                            hasBlendMode: true,
+                        }],
+                        reasonCodes: ['missing_output_intent', 'device_cmyk'],
+                    },
+                    renderEngine: { libraryPath: 'D:\\PrynX\\pdfium.dll' },
+                });
+            }
+            if (command === 'get_pdf_metadata') return fullMetadata;
+            if (command === 'close_pdf_document') return Promise.resolve(true);
+            return Promise.reject(new Error(`Unexpected command: ${command}`));
+        });
+
+        const file = new File([], 'mixed-size.pdf', { type: 'application/pdf' });
+        Object.defineProperty(file, 'path', { value: 'D:\\jobs\\mixed-size.pdf' });
+        const props = makeProps(file, 'localfile://mixed-size');
+        const { result } = renderHook(() => usePdfLoader(props));
+
+        await waitFor(() => expect(result.current.loadStatus).toBe('ready'));
+        expect(result.current.renderDocumentToken).toBe('18:100:90');
+        expect(props.setNumPages).toHaveBeenCalledWith(2);
+        expect(result.current.allPageDims[2]).toEqual({
+            w: 595 * (96 / 72),
+            h: 842 * (96 / 72),
+            widthPt: 595,
+        });
+        expect(result.current.colorRisk?.highRisk).toBe(true);
+        expect(result.current.colorRisk?.riskyPages).toEqual([1]);
+        expect(tauriMocks.invoke.mock.calls.some(([command]) => command === 'get_pdf_metadata')).toBe(false);
+        const activePageCallsAfterBootstrap = props.setActivePage.mock.calls.length;
+        const zoomCallsAfterBootstrap = props.setZoom.mock.calls.length;
+
+        act(() => result.current.notifyFirstPageRenderReady());
+        await waitFor(() => expect(tauriMocks.invoke).toHaveBeenCalledWith(
+            'get_pdf_metadata',
+            { filePath: 'D:\\jobs\\mixed-size.pdf', expectedIdentity: '18:100:90' },
+            undefined,
+        ));
+
+        await act(async () => {
+            resolveFullMetadata({
+                numPages: 2,
+                widthPt: 595,
+                heightPt: 842,
+                colorRisk: {
+                    highRisk: true,
+                    accurateColorRecommended: true,
+                    hasOutputIntent: false,
+                    riskyPages: [2],
+                    pages: [],
+                    reasonCodes: ['device_cmyk'],
+                },
+                fileIdentity: '18:100:90',
+                renderEngine: { libraryPath: 'D:\\PrynX\\pdfium.dll' },
+                allDims: {
+                    1: { widthPt: 595, heightPt: 842 },
+                    2: { widthPt: 1200, heightPt: 600 },
+                },
+            });
+        });
+
+        await waitFor(() => expect(result.current.allPageDims[2]).toEqual({
+            w: 1200 * (96 / 72),
+            h: 600 * (96 / 72),
+            widthPt: 1200,
+        }));
+        expect(result.current.colorRisk?.riskyPages).toEqual([2]);
+        expect(props.setActivePage).toHaveBeenCalledTimes(activePageCallsAfterBootstrap);
+        expect(props.setZoom).toHaveBeenCalledTimes(zoomCallsAfterBootstrap);
+    });
+
+    it('không mount trang khi bootstrap thiếu kết quả detector màu', async () => {
+        Object.defineProperty(window, '__TAURI_INTERNALS__', {
+            configurable: true,
+            value: { invoke: tauriMocks.invoke },
+        });
+        let resolveFullMetadata!: (value: unknown) => void;
+        const fullMetadata = new Promise(resolve => {
+            resolveFullMetadata = resolve;
+        });
+        tauriMocks.invoke.mockImplementation((command: string) => {
+            if (command === 'get_pdf_viewer_bootstrap') {
+                return Promise.resolve({
+                    numPages: 1,
+                    widthPt: 595,
+                    heightPt: 842,
+                    fileIdentity: 'missing-risk:1',
+                    renderEngine: { libraryPath: 'D:\\PrynX\\pdfium.dll' },
+                });
+            }
+            if (command === 'get_pdf_metadata') return fullMetadata;
+            if (command === 'close_pdf_document') return Promise.resolve(true);
+            return Promise.resolve(null);
+        });
+        const nativeFile = new File([], 'missing-risk.pdf', { type: 'application/pdf' });
+        Object.defineProperty(nativeFile, 'path', { value: 'D:\\jobs\\missing-risk.pdf' });
+        const props = makeProps(nativeFile, 'localfile://missing-risk');
+
+        const { result } = renderHook(() => usePdfLoader(props));
+
+        await waitFor(() => expect(tauriMocks.invoke).toHaveBeenCalledWith(
+            'get_pdf_metadata',
+            { filePath: 'D:\\jobs\\missing-risk.pdf', expectedIdentity: 'missing-risk:1' },
+            undefined,
+        ));
+        expect(result.current.loadStatus).toBe('loading');
+        expect(props.setNumPages).not.toHaveBeenCalledWith(1);
+
+        await act(async () => {
+            resolveFullMetadata({
+                numPages: 1,
+                widthPt: 595,
+                heightPt: 842,
+                fileIdentity: 'missing-risk:1',
+                colorRisk: {
+                    highRisk: false,
+                    accurateColorRecommended: false,
+                    hasOutputIntent: true,
+                    riskyPages: [],
+                    pages: [],
+                    reasonCodes: [],
+                },
+                renderEngine: { libraryPath: 'D:\\PrynX\\pdfium.dll' },
+                allDims: { 1: { widthPt: 595, heightPt: 842 } },
+            });
+        });
+
+        await waitFor(() => expect(result.current.loadStatus).toBe('ready'));
+        expect(props.setNumPages).toHaveBeenCalledWith(1);
+        expect(result.current.colorRisk?.highRisk).toBe(false);
+    });
+
+    it('không cho metadata nền của file cũ ghi đè file đang xem', async () => {
+        Object.defineProperty(window, '__TAURI_INTERNALS__', {
+            configurable: true,
+            value: { invoke: tauriMocks.invoke },
+        });
+        let resolveFirstFull!: (value: unknown) => void;
+        const firstFull = new Promise(resolve => {
+            resolveFirstFull = resolve;
+        });
+        tauriMocks.invoke.mockImplementation((command: string, args?: { filePath?: string }) => {
+            const isFirst = args?.filePath?.endsWith('first.pdf');
+            if (command === 'get_pdf_viewer_bootstrap') {
+                return Promise.resolve({
+                    numPages: 1,
+                    widthPt: isFirst ? 500 : 700,
+                    heightPt: 800,
+                    fileIdentity: isFirst ? 'first:1' : 'second:1',
+                    colorRisk: {
+                        highRisk: false,
+                        accurateColorRecommended: false,
+                        hasOutputIntent: true,
+                        riskyPages: [],
+                        pages: [],
+                        reasonCodes: [],
+                    },
+                    renderEngine: { libraryPath: 'D:\\PrynX\\pdfium.dll' },
+                });
+            }
+            if (command === 'get_pdf_metadata' && isFirst) return firstFull;
+            if (command === 'get_pdf_metadata') {
+                return Promise.resolve({
+                    numPages: 1,
+                    widthPt: 700,
+                    heightPt: 800,
+                    colorRisk: {
+                        highRisk: false,
+                        accurateColorRecommended: false,
+                        hasOutputIntent: true,
+                        riskyPages: [],
+                        pages: [],
+                        reasonCodes: [],
+                    },
+                    fileIdentity: 'second:1',
+                    renderEngine: { libraryPath: 'D:\\PrynX\\pdfium.dll' },
+                    allDims: { 1: { widthPt: 700, heightPt: 800 } },
+                });
+            }
+            if (command === 'close_pdf_document') return Promise.resolve(true);
+            return Promise.reject(new Error(`Unexpected command: ${command}`));
+        });
+
+        const firstFile = new File([], 'first.pdf', { type: 'application/pdf' });
+        const secondFile = new File([], 'second.pdf', { type: 'application/pdf' });
+        Object.defineProperty(firstFile, 'path', { value: 'D:\\jobs\\first.pdf' });
+        Object.defineProperty(secondFile, 'path', { value: 'D:\\jobs\\second.pdf' });
+        const first = makeProps(firstFile, 'localfile://first');
+        const second = makeProps(secondFile, 'localfile://second');
+        const { result, rerender } = renderHook(
+            ({ props }) => usePdfLoader(props),
+            { initialProps: { props: first } },
+        );
+
+        await waitFor(() => expect(result.current.loadStatus).toBe('ready'));
+        act(() => result.current.notifyFirstPageRenderReady());
+        rerender({ props: second });
+        await waitFor(() => expect(result.current.pageWidthPt).toBe(700));
+        act(() => result.current.notifyFirstPageRenderReady());
+        await waitFor(() => expect(result.current.colorRisk?.hasOutputIntent).toBe(true));
+
+        await act(async () => {
+            resolveFirstFull({
+                numPages: 1,
+                widthPt: 500,
+                heightPt: 800,
+                colorRisk: {
+                    highRisk: true,
+                    accurateColorRecommended: true,
+                    hasOutputIntent: false,
+                    riskyPages: [1],
+                    pages: [],
+                    reasonCodes: ['device_cmyk'],
+                },
+                fileIdentity: 'first:1',
+                allDims: { 1: { widthPt: 500, heightPt: 800 } },
+            });
+            await Promise.resolve();
+        });
+
+        expect(result.current.pageWidthPt).toBe(700);
+        expect(result.current.colorRisk?.hasOutputIntent).toBe(true);
+        expect(result.current.colorRisk?.riskyPages).toEqual([]);
+    });
+
+    it('giữ nguyên Viewer pha nhanh nếu file cùng đường dẫn đổi identity giữa hai pha', async () => {
+        Object.defineProperty(window, '__TAURI_INTERNALS__', {
+            configurable: true,
+            value: { invoke: tauriMocks.invoke },
+        });
+        vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        tauriMocks.invoke.mockImplementation((command: string) => {
+            if (command === 'get_pdf_viewer_bootstrap') {
+                return Promise.resolve({
+                    numPages: 3,
+                    widthPt: 600,
+                    heightPt: 900,
+                    fileIdentity: 'old-file:1',
+                    colorRisk: {
+                        highRisk: false,
+                        accurateColorRecommended: false,
+                        hasOutputIntent: true,
+                        riskyPages: [],
+                        pages: [],
+                        reasonCodes: [],
+                    },
+                    renderEngine: { libraryPath: 'D:\\PrynX\\pdfium.dll' },
+                });
+            }
+            if (command === 'get_pdf_metadata') {
+                return Promise.reject(new Error('File PDF đã thay đổi giữa hai pha.'));
+            }
+            if (command === 'close_pdf_document') return Promise.resolve(true);
+            return Promise.reject(new Error(`Unexpected command: ${command}`));
+        });
+
+        const file = new File([], 'replaced.pdf', { type: 'application/pdf' });
+        Object.defineProperty(file, 'path', { value: 'D:\\jobs\\replaced.pdf' });
+        const props = makeProps(file, 'localfile://replaced');
+        const { result } = renderHook(() => usePdfLoader(props));
+
+        await waitFor(() => expect(result.current.loadStatus).toBe('ready'));
+        act(() => result.current.notifyFirstPageRenderReady());
+        await waitFor(() => expect(tauriMocks.invoke.mock.calls.some(
+            ([command]) => command === 'get_pdf_metadata',
+        )).toBe(true));
+        await act(async () => Promise.resolve());
+
+        expect(result.current.loadStatus).toBe('ready');
+        expect(result.current.loadError).toBeNull();
+        expect(result.current.colorRisk?.highRisk).toBe(false);
+        expect(result.current.pageWidthPt).toBe(600);
+        expect(result.current.allPageDims[3].widthPt).toBe(600);
     });
 
     it('dùng PDF.js dự phòng nếu việc tạo đường dẫn native thất bại', async () => {
@@ -264,7 +610,7 @@ describe('usePdfLoader — trạng thái tải PDF trong bộ nhớ', () => {
         rerender({ props: second });
         await waitFor(() => expect(tauriMocks.invoke).toHaveBeenCalledWith(
             'close_pdf_document',
-            { filePath: firstPath },
+            { filePath: firstPath, ownerId: expect.stringMatching(/^pdf-loader:/) },
             undefined,
         ));
         await waitFor(() => expect(result.current.loadStatus).toBe('ready'));
@@ -272,7 +618,7 @@ describe('usePdfLoader — trạng thái tải PDF trong bộ nhớ', () => {
         unmount();
         await waitFor(() => expect(tauriMocks.invoke).toHaveBeenCalledWith(
             'close_pdf_document',
-            { filePath: secondPath },
+            { filePath: secondPath, ownerId: expect.stringMatching(/^pdf-loader:/) },
             undefined,
         ));
     });

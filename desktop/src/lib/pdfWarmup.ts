@@ -124,8 +124,9 @@ export async function warmupPdfium(): Promise<void> {
         const path = (f as any).path;
         if (!path) return;
         const { invoke } = await import('@tauri-apps/api/core');
-        // get_pdf_metadata vừa bind pdfium vừa nạp doc vào cache → làm nóng engine.
-        await invoke('get_pdf_metadata', { filePath: path });
+        // PERF (audit 2026-08-08 §RENDER.2): bootstrap đi lane tương tác; metadata đi
+        // background pool nên không làm nóng đúng worker phục vụ lần mở trang đầu tiên.
+        await invoke('get_pdf_viewer_bootstrap', { filePath: path });
     } catch {
         pdfiumWarmed = false;
     }

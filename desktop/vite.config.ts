@@ -3,6 +3,10 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 const ENTRY_BUNDLE_BUDGET_BYTES = 1_500_000;
+// PERF (audit 2026-08-10 §OP.8): Vite không quét bare import chỉ xuất hiện trong
+// Web Worker trước lần worker chạy đầu tiên. Prebundle ngay để lần mở tính năng
+// không phát hiện dependency muộn rồi tự reload toàn bộ trang dev.
+export const WORKER_ONLY_OPTIMIZED_DEPS = ['pako', 'diff'] as const;
 
 function bundleBudgetPlugin() {
   return {
@@ -78,7 +82,7 @@ export default defineConfig({
     // KIENTRUC (audit 2026-07-29 §B.3): đã bỏ '@pdfme/common' + '@pdfme/generator'.
     // Hai package đó KHÔNG được import ở bất kỳ file source nào — chỉ còn tên ở đây và
     // trong package.json, tức là một engine sinh PDF thứ hai được cài mà không ai dùng.
-    include: ['pdf-lib', 'pdfjs-dist', 'papaparse'],
+    include: ['pdf-lib', 'pdfjs-dist', 'papaparse', ...WORKER_ONLY_OPTIMIZED_DEPS],
     entries: ['index.html']
   }
 })

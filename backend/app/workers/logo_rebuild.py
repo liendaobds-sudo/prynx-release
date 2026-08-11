@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
-from copy import deepcopy
 import math
 import threading
+from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, Literal
@@ -56,15 +58,43 @@ class LogoPreviewResult:
     complexity: dict[str, int | float]
     review_reasons: list[str]
     review_actions: list[str]
+    physical_width_mm: float | None = None
+    physical_height_mm: float | None = None
+    result_schema_version: int | None = None
+    artifact_sha256: str | None = None
+    preprocess_hash: str | None = None
+    native_metrics: dict[str, int | float] | None = None
+
+
+@dataclass(frozen=True)
+class StructuredNativeResult:
+    svg: str
+    artifact_sha256: str
+    width_px: int
+    height_px: int
+    physical_width_mm: float | None
+    physical_height_mm: float | None
+    engine: str
+    engine_version: str
+    preprocess_hash: str
+    metrics: dict[str, int | float]
+    warnings: list[str]
 
 
 _ACTIVE_JOBS_LOCK = threading.Lock()
 _ACTIVE_JOBS: dict[str, Any] = {}
+_LOGO_MEMORY_LOCK = threading.Lock()
+_RESERVED_LOGO_MEMORY_MB = 0.0
 _PALETTE_KMEANS_LOCK = threading.Lock()
 _MAX_PALETTE_SAMPLE_PIXELS = 40_000
 _MIN_PALETTE_COVERAGE = 0.01
+_MIN_SMALL_ACCENT_COVERAGE = 0.001
+_MIN_SMALL_ACCENT_CHROMA = 48.0
+_MAX_SMALL_ACCENT_RMS_RGB = 45.0
+_MAX_SMALL_ACCENT_SUGGESTIONS = 4
 _MERGE_PALETTE_DISTANCE_RGB = 18.0
 _MAX_ENGINE_DESPECKLE_AREA_PX = 128
+_STRUCTURED_RESULT_SCHEMA_VERSION = 1
 
 
 def _load_native_module() -> Any:
@@ -88,12 +118,23 @@ def logo_vectorizer_capabilities() -> dict[str, Any] | None:
     try:
         native = _load_native_module()
         info = dict(native.logo_vectorizer_info())
-    except (LogoEngineUnavailable, RuntimeError, TypeError, ValueError):
+        structured_version = int(info.get("structured_result_version", 0))
+        if (
+            not bool(info.get("structured_result", False))
+            or structured_version != _STRUCTURED_RESULT_SCHEMA_VERSION
+            or not callable(getattr(native, "logo_vectorize_structured_rgba", None))
+        ):
+            return None
+    except (LogoEngineUnavailable, RuntimeError, TypeError, ValueError, OverflowError):
         return None
     return {
-        "engine": str(info.get("engine", "vtracer")),
-        "version": str(info.get("version", "unknown")),
+        "engine": str(info.get("core_engine", "prynx-logo-core")),
+        "version": str(info.get("core_engine_version", "unknown")),
         "cancellable": bool(info.get("cancellable", False)),
+        "structured_result": True,
+        "result_schema_version": structured_version,
+        "legacy_engine": str(info.get("engine", "vtracer")),
+        "legacy_version": str(info.get("version", "unknown")),
     }
 
 
@@ -130,6 +171,12 @@ def reserve_logo_job(job_id: str) -> Any:
     return token
 
 
+def release_logo_job(job_id: str, token: Any) -> None:
+    """Dọn reservation ở route nếu worker chưa chạy hoặc thoát trước engine."""
+
+    _discard_job(job_id, token)
+
+
 def _target_dimensions(
     width: int,
     height: int,
@@ -153,19 +200,21 @@ def _target_dimensions(
     return width, height
 
 
-def _plan_work_size(width: int, height: int) -> tuple[tuple[int, int], list[str]]:
-    """Lập ngân sách RAM; chỉ máy dưới 16 GB mới tự giảm kích thước."""
+def _estimated_logo_memory_mb(width: int, height: int) -> float:
+    """Ước lượng đỉnh engine + reference/raster QC ở scale 4×."""
 
+    return width * height * 112 / (1024 * 1024)
+
+
+def _plan_work_size_for_budget(
+    width: int,
+    height: int,
+    total_mb: float,
+    usable_mb: float,
+) -> tuple[tuple[int, int], list[str]]:
     if width <= 0 or height <= 0:
         raise LogoInputError("Kích thước vùng logo không hợp lệ.")
-    total_mb, available_mb = read_memory_status_mb()
-    if total_mb is None or available_mb is None:
-        return (width, height), []
-
-    # ColorImage + phân vùng/đường cong của VTracer có đỉnh cao hơn nhiều so với RGBA.
-    estimated_mb = width * height * 112 / (1024 * 1024)
-    reserve_mb = 512.0 if total_mb < 8 * 1024 else 1024.0
-    usable_mb = max(0.0, available_mb - reserve_mb) * (0.55 if total_mb < 8 * 1024 else 0.65)
+    estimated_mb = _estimated_logo_memory_mb(width, height)
 
     if total_mb >= 16 * 1024:
         if estimated_mb > usable_mb:
@@ -183,6 +232,72 @@ def _plan_work_size(width: int, height: int) -> tuple[tuple[int, int], list[str]
     return target, [
         f"Máy dưới 16 GB RAM: preview được giảm còn {target[0]}×{target[1]} px để tránh hết bộ nhớ."
     ]
+
+
+def _usable_logo_memory_mb(total_mb: float, available_mb: float) -> float:
+    reserve_mb = 512.0 if total_mb < 8 * 1024 else 1024.0
+    return max(0.0, available_mb - reserve_mb) * (
+        0.55 if total_mb < 8 * 1024 else 0.65
+    )
+
+
+def _plan_work_size(width: int, height: int) -> tuple[tuple[int, int], list[str]]:
+    """Lập ngân sách RAM; chỉ máy dưới 16 GB mới tự giảm kích thước."""
+
+    if width <= 0 or height <= 0:
+        raise LogoInputError("Kích thước vùng logo không hợp lệ.")
+    total_mb, available_mb = read_memory_status_mb()
+    if total_mb is None or available_mb is None:
+        return (width, height), []
+    return _plan_work_size_for_budget(
+        width,
+        height,
+        total_mb,
+        _usable_logo_memory_mb(total_mb, available_mb),
+    )
+
+
+@contextmanager
+def _reserve_logo_work_size(width: int, height: int):
+    """Reserve RAM ước lượng xuyên suốt một lượt engine/QC.
+
+    PERF (audit 2026-08-09 §LR3.01): reservation nguyên tử chặn hai job cùng
+    nhìn thấy một lượng RAM trống rồi đồng thời cam kết toàn bộ. Máy mạnh vẫn
+    giữ đủ kích thước khi job chạy một mình; job cạnh tranh nhận lỗi có hướng
+    xử lý thay vì âm thầm hạ chất lượng.
+    """
+
+    global _RESERVED_LOGO_MEMORY_MB
+
+    if width <= 0 or height <= 0:
+        raise LogoInputError("Kích thước vùng logo không hợp lệ.")
+    total_mb, available_mb = read_memory_status_mb()
+    if total_mb is None or available_mb is None:
+        yield (width, height), []
+        return
+
+    with _LOGO_MEMORY_LOCK:
+        remaining_mb = max(
+            0.0,
+            _usable_logo_memory_mb(total_mb, available_mb)
+            - _RESERVED_LOGO_MEMORY_MB,
+        )
+        planned_size, warnings = _plan_work_size_for_budget(
+            width,
+            height,
+            total_mb,
+            remaining_mb,
+        )
+        reservation_mb = _estimated_logo_memory_mb(*planned_size)
+        _RESERVED_LOGO_MEMORY_MB += reservation_mb
+    try:
+        yield planned_size, warnings
+    finally:
+        with _LOGO_MEMORY_LOCK:
+            _RESERVED_LOGO_MEMORY_MB = max(
+                0.0,
+                _RESERVED_LOGO_MEMORY_MB - reservation_mb,
+            )
 
 
 def _upscale_target_dimensions(width: int, height: int) -> tuple[int, int]:
@@ -203,6 +318,23 @@ def _upscale_target_dimensions(width: int, height: int) -> tuple[int, int]:
 
     scale = target_shortest_side / shortest_side
     return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+def _requested_logo_work_size(
+    source_bytes: bytes,
+    settings: LogoRebuildSettings,
+) -> tuple[int, int]:
+    """Đọc header để reserve RAM trước khi giải mã/warp ảnh đầy đủ."""
+
+    try:
+        with Image.open(BytesIO(source_bytes)) as image:
+            width, height = image.size
+            if image.getexif().get(274, 1) in (5, 6, 7, 8):
+                width, height = height, width
+    except (OSError, SyntaxError, ValueError) as exc:
+        raise LogoInputError("File ảnh không thể giải mã.") from exc
+    selected_width, selected_height = _target_dimensions(width, height, settings)
+    return _upscale_target_dimensions(selected_width, selected_height)
 
 
 def _read_image_dpi(raw: object) -> tuple[float, float] | None:
@@ -408,23 +540,31 @@ def suggest_logo_palette(
     import cv2
     import numpy as np
 
-    pixels = np.asarray(image.convert("RGBA"), dtype=np.uint8).reshape(-1, 4)
-    visible = pixels[:, 3] > 0
+    rgba = np.asarray(image.convert("RGBA"), dtype=np.uint8)
+    sample_rgba = rgba
+    sample_height, sample_width = rgba.shape[:2]
+    if sample_width * sample_height > _MAX_PALETTE_SAMPLE_PIXELS:
+        scale = math.sqrt(
+            _MAX_PALETTE_SAMPLE_PIXELS / float(sample_width * sample_height)
+        )
+        sample_width = max(1, int(sample_width * scale))
+        sample_height = max(1, int(sample_height * scale))
+        # LOGO-REBUILD (audit 2026-08-09 §LR3.02): giữ lưới không gian để
+        # phân biệt dấu màu liền khối với nhiễu JPEG rải rác. NEAREST cũng
+        # không kéo RGB ẩn từ pixel alpha=0 vào palette.
+        sample_rgba = cv2.resize(
+            rgba,
+            (sample_width, sample_height),
+            interpolation=cv2.INTER_NEAREST,
+        )
+
+    visible = sample_rgba[:, :, 3] > 0
     if not bool(np.any(visible)):
         warnings.append("Ảnh không có pixel nhìn thấy để gợi ý màu.")
         return [], warnings
 
-    colors = pixels[visible, :3]
-    alpha_weights = pixels[visible, 3].astype(np.float32) / 255.0
-    if len(colors) > _MAX_PALETTE_SAMPLE_PIXELS:
-        indices = np.linspace(
-            0,
-            len(colors) - 1,
-            _MAX_PALETTE_SAMPLE_PIXELS,
-            dtype=np.int64,
-        )
-        colors = colors[indices]
-        alpha_weights = alpha_weights[indices]
+    colors = sample_rgba[visible, :3]
+    alpha_weights = sample_rgba[visible, 3].astype(np.float32) / 255.0
 
     unique_count = len(np.unique(colors, axis=0))
     cluster_count = min(12, unique_count, len(colors))
@@ -457,25 +597,101 @@ def suggest_logo_palette(
         minlength=cluster_count,
     )
     total_weight = float(alpha_weights.sum())
-    merged: list[tuple[Any, float]] = []
+
+    merged: list[tuple[Any, float, bool]] = []
     for index in np.argsort(weights)[::-1]:
         coverage = float(weights[index]) / total_weight
         if coverage < _MIN_PALETTE_COVERAGE:
             continue
         center = centers[index].astype(np.float64)
-        for merged_index, (existing, existing_coverage) in enumerate(merged):
+        for merged_index, (existing, existing_coverage, existing_small) in enumerate(
+            merged
+        ):
             if float(np.linalg.norm(center - existing)) < _MERGE_PALETTE_DISTANCE_RGB:
                 combined = existing_coverage + coverage
                 merged[merged_index] = (
                     (existing * existing_coverage + center * coverage) / combined,
                     combined,
+                    existing_small,
                 )
                 break
         else:
-            merged.append((center, coverage))
+            merged.append((center, coverage, False))
+
+    # K-means có thể chia một dấu đỏ JPEG thành nhiều cụm đều dưới 0,1% rồi
+    # loại hết. Bổ sung detector theo vùng hue liên kết: giữ mảng đủ lớn/sắc,
+    # nhưng bỏ nhiễu rời và màu viền gần màu chủ đạo.
+    rgb_sample = sample_rgba[:, :, :3]
+    hsv = cv2.cvtColor(rgb_sample, cv2.COLOR_RGB2HSV)
+    hue_bins = ((hsv[:, :, 0].astype(np.int16) + 7) // 15) % 12
+    saturated = visible & (hsv[:, :, 1] >= 96) & (hsv[:, :, 2] >= 32)
+    minimum_component_pixels = max(8, math.ceil(len(colors) * 0.0005))
+    for hue_bin in range(12):
+        mask = (saturated & (hue_bins == hue_bin)).astype(np.uint8)
+        component_count, component_labels, stats, _centroids = (
+            cv2.connectedComponentsWithStats(mask, connectivity=8)
+        )
+        for component_index in range(1, component_count):
+            area = int(stats[component_index, cv2.CC_STAT_AREA])
+            if area < minimum_component_pixels:
+                continue
+            coverage = area / float(len(colors))
+            if not _MIN_SMALL_ACCENT_COVERAGE <= coverage < _MIN_PALETTE_COVERAGE:
+                continue
+            box_area = max(
+                1,
+                int(stats[component_index, cv2.CC_STAT_WIDTH])
+                * int(stats[component_index, cv2.CC_STAT_HEIGHT]),
+            )
+            if area / box_area < 0.15:
+                continue
+            component_mask = component_labels == component_index
+            component_colors = rgb_sample[component_mask].astype(np.float64)
+            component_alpha = (
+                sample_rgba[:, :, 3][component_mask].astype(np.float64) / 255.0
+            )
+            center = np.average(component_colors, axis=0, weights=component_alpha)
+            if float(np.max(center) - np.min(center)) < _MIN_SMALL_ACCENT_CHROMA:
+                continue
+            rms_distance = math.sqrt(
+                float(
+                    np.average(
+                        np.sum((component_colors - center) ** 2, axis=1),
+                        weights=component_alpha,
+                    )
+                )
+            )
+            if rms_distance > _MAX_SMALL_ACCENT_RMS_RGB:
+                continue
+            if any(
+                float(np.linalg.norm(center - existing)) < 48.0
+                for existing, _existing_coverage, _existing_small in merged
+            ):
+                continue
+            merged.append((center, coverage, True))
 
     suggestions: list[LogoPaletteSuggestion] = []
-    for center, coverage in sorted(merged, key=lambda item: item[1], reverse=True)[:12]:
+    dominant_candidates = sorted(
+        (item for item in merged if not item[2]),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    accent_candidates = sorted(
+        (item for item in merged if item[2]),
+        key=lambda item: item[1],
+        reverse=True,
+    )[:_MAX_SMALL_ACCENT_SUGGESTIONS]
+    # Màu nhấn đã vượt cổng liên kết/sắc độ phải có chỗ trong giới hạn 12 màu,
+    # không lại bị top-coverage loại lần hai.
+    selected = sorted(
+        [
+            *dominant_candidates[: 12 - len(accent_candidates)],
+            *accent_candidates,
+        ],
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    for center, coverage, _is_small_accent in selected:
         red, green, blue = (
             int(np.clip(np.rint(channel), 0, 255)) for channel in center
         )
@@ -485,25 +701,60 @@ def suggest_logo_palette(
                 coverage_ratio=round(coverage, 6),
             )
         )
+    small_accent_count = sum(1 for _center, _coverage, is_small in selected if is_small)
+    if small_accent_count:
+        warnings.append(
+            f"Đã giữ {small_accent_count} màu nhấn nhỏ dưới 1% vì tạo vùng màu "
+            "liên kết và có sắc độ rõ; hãy kiểm tra trước khi áp dụng palette."
+        )
     return suggestions, warnings
 
 
-def prepare_logo_image(source_bytes: bytes, settings: LogoRebuildSettings) -> PreparedLogo:
+def prepare_logo_image(
+    source_bytes: bytes,
+    settings: LogoRebuildSettings,
+    planned_size: tuple[int, int] | None = None,
+    memory_warnings: list[str] | None = None,
+) -> PreparedLogo:
     warnings: list[str] = []
     image, source_dpi = _load_logo_image(source_bytes)
     image = _convert_to_srgb(image, warnings)
     image = _apply_perspective(image, settings)
     image = _apply_crop(image, settings)
-    physical_width_mm = None
-    physical_height_mm = None
-    if source_dpi is not None:
-        physical_width_mm = image.width * 25.4 / source_dpi[0]
-        physical_height_mm = image.height * 25.4 / source_dpi[1]
+    physical_width_mm = settings.physical_width_mm
+    physical_height_mm = settings.physical_height_mm
+    if physical_width_mm is not None and physical_height_mm is not None:
+        source_ratio = image.width / image.height
+        physical_ratio = physical_width_mm / physical_height_mm
+        # LOGO-ENGINE-V2 (audit 2026-08-11 Lô G2): khớp tolerance writer
+        # Rust để input sai tỷ lệ bị chặn ở backend thay vì thành lỗi ABI 500.
+        if not math.isclose(source_ratio, physical_ratio, rel_tol=0.0001):
+            raise LogoInputError(
+                "Kích thước in đã xác nhận không khớp tỷ lệ ảnh; hãy khóa tỷ lệ "
+                "rộng/cao rồi nhập lại."
+            )
+    elif source_dpi is not None:
+        suggested_width_mm = image.width * 25.4 / source_dpi[0]
+        suggested_height_mm = image.height * 25.4 / source_dpi[1]
+        # LOGO-REBUILD (audit 2026-08-09 §LR3.03): DPI ảnh web/JPEG chỉ là
+        # gợi ý; không được âm thầm biến thành kích thước in của artifact.
+        warnings.append(
+            "DPI nguồn chỉ gợi ý kích thước "
+            f"{suggested_width_mm:.2f}×{suggested_height_mm:.2f} mm; SVG chưa "
+            "gắn kích thước in cho tới khi người dùng xác nhận rộng/cao mm."
+        )
+    else:
+        warnings.append(
+            "Chưa xác nhận kích thước in rộng/cao mm; SVG tạm dùng đơn vị pixel."
+        )
 
     source_work_area = image.width * image.height
     requested_size = _upscale_target_dimensions(*image.size)
-    planned_size, memory_warnings = _plan_work_size(*requested_size)
-    warnings.extend(memory_warnings)
+    if planned_size is None:
+        planned_size, local_memory_warnings = _plan_work_size(*requested_size)
+        warnings.extend(local_memory_warnings)
+    else:
+        warnings.extend(memory_warnings or [])
     if image.size != planned_size:
         is_upscale = planned_size[0] > image.width or planned_size[1] > image.height
         image = image.resize(
@@ -547,6 +798,18 @@ def prepare_logo_image(source_bytes: bytes, settings: LogoRebuildSettings) -> Pr
             warnings.append(
                 "Đã tự xác định nền sáng/tối và chuẩn hóa mực đen cho chế độ đơn sắc."
             )
+        if settings.engine == "prynx_core":
+            # LOGO-ENGINE-V2 (audit 2026-08-11 Lô G2): Silhouette core trace
+            # alpha mask; chuyển nền trắng/mực đen đã chuẩn hóa thành alpha,
+            # không để nền opaque biến thành một outer phủ toàn canvas.
+            alpha_mask = ImageOps.invert(rgba.convert("L"))
+            if alpha_mask.getextrema()[1] == 0:
+                raise LogoInputError(
+                    "Không tách được mảng logo đơn sắc khỏi nền; hãy chọn lại vùng hoặc dùng chế độ màu."
+                )
+            core_rgba = Image.new("RGBA", rgba.size, (0, 0, 0, 0))
+            core_rgba.putalpha(alpha_mask)
+            rgba = core_rgba
 
     return PreparedLogo(
         width_px=rgba.width,
@@ -576,7 +839,7 @@ def _format_svg_number(value: float) -> str:
 
 
 def _apply_svg_geometry(svg: str, prepared: PreparedLogo) -> str:
-    """Gắn hệ tọa độ ổn định và kích thước vật lý khi ảnh có DPI."""
+    """Gắn hệ tọa độ ổn định; mm chỉ đến từ xác nhận tường minh của người dùng."""
 
     try:
         root = ElementTree.fromstring(svg)
@@ -674,37 +937,242 @@ def _strip_svg_background(svg: str, background_color: str) -> tuple[str, int]:
     return ElementTree.tostring(root, encoding="unicode"), len(matches)
 
 
-def process_logo_preview(
+def _structured_mapping(value: object, field: str) -> dict[str, Any]:
+    try:
+        mapped = dict(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"Structured result thiếu object {field} hợp lệ.") from exc
+    return mapped
+
+
+def _structured_int(value: object, field: str, *, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise RuntimeError(f"Structured result có {field} không hợp lệ.")
+    return value
+
+
+def _structured_float(
+    value: object,
+    field: str,
+    *,
+    minimum: float = 0.0,
+    maximum: float | None = None,
+) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeError(f"Structured result có {field} không hợp lệ.")
+    parsed = float(value)
+    if (
+        not math.isfinite(parsed)
+        or parsed < minimum
+        or (maximum is not None and parsed > maximum)
+    ):
+        raise RuntimeError(f"Structured result có {field} không hợp lệ.")
+    return parsed
+
+
+def _structured_hash(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        raise RuntimeError(f"Structured result có {field} không hợp lệ.")
+    normalized = value.lower()
+    if len(normalized) != 64 or any(ch not in "0123456789abcdef" for ch in normalized):
+        raise RuntimeError(f"Structured result có {field} không hợp lệ.")
+    return normalized
+
+
+def _parse_structured_native_result(
+    raw: object,
+    prepared: PreparedLogo,
+    settings: LogoRebuildSettings,
+    info: dict[str, Any],
+) -> StructuredNativeResult:
+    """Fail-closed trước khi dữ liệu native đi vào response/API."""
+
+    result = _structured_mapping(raw, "gốc")
+    schema_version = _structured_int(result.get("schema_version"), "schema_version", minimum=1)
+    if schema_version != _STRUCTURED_RESULT_SCHEMA_VERSION:
+        raise RuntimeError("Structured result dùng schema version không được hỗ trợ.")
+    if _structured_int(result.get("scene_version"), "scene_version", minimum=1) != 1:
+        raise RuntimeError("Structured result dùng VectorScene version không được hỗ trợ.")
+    if result.get("coordinate_system") != "pixel_top_left":
+        raise RuntimeError("Structured result có hệ tọa độ không được hỗ trợ.")
+
+    svg = result.get("svg")
+    if not isinstance(svg, str) or "<svg" not in svg or "<script" in svg.lower():
+        raise RuntimeError("Structured result không chứa SVG artifact hợp lệ.")
+    artifact = _structured_mapping(result.get("artifact"), "artifact")
+    artifact_sha256 = _structured_hash(artifact.get("sha256"), "artifact.sha256")
+    if hashlib.sha256(svg.encode("utf-8")).hexdigest() != artifact_sha256:
+        raise RuntimeError("Structured result có hash artifact không khớp chuỗi SVG.")
+    artifact_bytes = _structured_int(artifact.get("byte_len"), "artifact.byte_len")
+    if artifact_bytes != len(svg.encode("utf-8")):
+        raise RuntimeError("Structured result có byte length không khớp chuỗi SVG.")
+    width_px = _structured_int(artifact.get("width_px"), "artifact.width_px", minimum=1)
+    height_px = _structured_int(artifact.get("height_px"), "artifact.height_px", minimum=1)
+    if (width_px, height_px) != (prepared.width_px, prepared.height_px):
+        raise RuntimeError("Structured result có kích thước pixel lệch ảnh làm việc.")
+
+    actual_width_mm = artifact.get("physical_width_mm")
+    actual_height_mm = artifact.get("physical_height_mm")
+    if (actual_width_mm is None) != (actual_height_mm is None):
+        raise RuntimeError("Structured result có cặp kích thước mm không đầy đủ.")
+    parsed_width_mm = (
+        None
+        if actual_width_mm is None
+        else _structured_float(actual_width_mm, "artifact.physical_width_mm", minimum=1e-12)
+    )
+    parsed_height_mm = (
+        None
+        if actual_height_mm is None
+        else _structured_float(actual_height_mm, "artifact.physical_height_mm", minimum=1e-12)
+    )
+    expected_mm = (prepared.physical_width_mm, prepared.physical_height_mm)
+    actual_mm = (parsed_width_mm, parsed_height_mm)
+    if (expected_mm[0] is None) != (actual_mm[0] is None):
+        raise RuntimeError("Structured result không giữ đúng hợp đồng kích thước mm.")
+    if expected_mm[0] is not None and (
+        not math.isclose(expected_mm[0], actual_mm[0], abs_tol=0.005)  # type: ignore[arg-type]
+        or not math.isclose(expected_mm[1], actual_mm[1], abs_tol=0.005)  # type: ignore[arg-type]
+    ):
+        raise RuntimeError("Structured result không giữ đúng hợp đồng kích thước mm.")
+
+    provenance = _structured_mapping(result.get("provenance"), "provenance")
+    engine = provenance.get("engine")
+    engine_version = provenance.get("engine_version")
+    expected_engine = str(info.get("core_engine", "prynx-logo-core"))
+    expected_version = str(info.get("core_engine_version", "unknown"))
+    if engine != expected_engine or engine_version != expected_version:
+        raise RuntimeError("Structured result có provenance engine lệch capabilities.")
+    expected_profile = "silhouette" if settings.mode == "monochrome" else "flat_color"
+    if provenance.get("profile") != expected_profile:
+        raise RuntimeError("Structured result có profile lệch request.")
+    _structured_hash(provenance.get("settings_hash"), "provenance.settings_hash")
+    preprocess_hash = _structured_hash(result.get("preprocess_hash"), "preprocess_hash")
+
+    raw_metrics = _structured_mapping(result.get("metrics"), "metrics")
+    metrics: dict[str, int | float] = {}
+    for field in (
+        "layer_count",
+        "component_count",
+        "outer_count",
+        "hole_count",
+        "source_nodes",
+        "output_nodes",
+    ):
+        metrics[field] = _structured_int(raw_metrics.get(field), f"metrics.{field}")
+    metrics["max_error_px"] = _structured_float(
+        raw_metrics.get("max_error_px"), "metrics.max_error_px"
+    )
+    metrics["raster_scale"] = _structured_int(
+        raw_metrics.get("raster_scale"), "metrics.raster_scale", minimum=1
+    )
+    metrics["iou"] = _structured_float(
+        raw_metrics.get("iou"), "metrics.iou", maximum=1.0
+    )
+    metrics["mae"] = _structured_float(
+        raw_metrics.get("mae"), "metrics.mae", maximum=1.0
+    )
+    raw_warnings = result.get("warnings")
+    if not isinstance(raw_warnings, list) or any(
+        not isinstance(warning, str) for warning in raw_warnings
+    ):
+        raise RuntimeError("Structured result có warnings không hợp lệ.")
+
+    return StructuredNativeResult(
+        svg=svg,
+        artifact_sha256=artifact_sha256,
+        width_px=width_px,
+        height_px=height_px,
+        physical_width_mm=parsed_width_mm,
+        physical_height_mm=parsed_height_mm,
+        engine=str(engine),
+        engine_version=str(engine_version),
+        preprocess_hash=preprocess_hash,
+        metrics=metrics,
+        warnings=list(raw_warnings),
+    )
+
+
+def _process_logo_preview_reserved(
     source_bytes: bytes,
     settings: LogoRebuildSettings,
-    job_id: str,
-    token: Any | None = None,
+    token: Any,
+    native: Any,
+    info: dict[str, Any],
+    planned_size: tuple[int, int],
+    memory_warnings: list[str],
 ) -> LogoPreviewResult:
-    native = _load_native_module()
-    info = dict(native.logo_vectorizer_info())
-    if token is None:
-        token = reserve_logo_job(job_id)
-    try:
-        if token.is_cancelled():
-            raise LogoJobCancelled("Đã hủy preview logo.")
-        prepared = prepare_logo_image(source_bytes, settings)
-        if token.is_cancelled():
-            raise LogoJobCancelled("Đã hủy preview logo.")
-        warnings = list(prepared.warnings)
-        effective_despeckle_size = _scaled_despeckle_size(
-            settings.despeckle_size_px,
-            prepared.work_area_scale,
+    if token.is_cancelled():
+        raise LogoJobCancelled("Đã hủy preview logo.")
+    prepared = prepare_logo_image(
+        source_bytes,
+        settings,
+        planned_size=planned_size,
+        memory_warnings=memory_warnings,
+    )
+    if token.is_cancelled():
+        raise LogoJobCancelled("Đã hủy preview logo.")
+    warnings = list(prepared.warnings)
+    effective_despeckle_size = _scaled_despeckle_size(
+        settings.despeckle_size_px,
+        prepared.work_area_scale,
+    )
+    if effective_despeckle_size != settings.despeckle_size_px:
+        warnings.append(
+            "Khử hạt đã quy đổi từ "
+            f"{settings.despeckle_size_px} px ảnh nguồn thành "
+            f"{effective_despeckle_size} px ở kích thước dựng nét."
         )
-        if effective_despeckle_size != settings.despeckle_size_px:
-            warnings.append(
-                "Khử hạt đã quy đổi từ "
-                f"{settings.despeckle_size_px} px ảnh nguồn thành "
-                f"{effective_despeckle_size} px ở kích thước dựng nét."
+
+    from app.workers.logo_svg_cleanup import (
+        LogoSvgCleanupCancelled,
+        LogoSvgCleanupError,
+        analyze_logo_svg,
+        cleanup_redundant_logo_paths,
+    )
+
+    engine_palette = list(settings.palette)
+    background_label: int | None = None
+    if settings.background_color is not None:
+        background_label = len(engine_palette)
+        engine_palette.append(settings.background_color)
+    structured: StructuredNativeResult | None = None
+    removed_path_count = 0
+    try:
+        if settings.engine == "prynx_core":
+            if (
+                not callable(getattr(native, "logo_vectorize_structured_rgba", None))
+                or not bool(info.get("structured_result", False))
+                or int(info.get("structured_result_version", 0))
+                != _STRUCTURED_RESULT_SCHEMA_VERSION
+            ):
+                raise LogoEngineUnavailable(
+                    "Bản pdfcompare_native hiện tại chưa có structured Logo Engine v2."
+                )
+            raw_result = native.logo_vectorize_structured_rgba(
+                prepared.width_px,
+                prepared.height_px,
+                prepared.rgba,
+                settings.mode,
+                palette=engine_palette or None,
+                smoothing=settings.smoothing,
+                despeckle_size_px=effective_despeckle_size,
+                background_label=background_label,
+                physical_width_mm=prepared.physical_width_mm,
+                physical_height_mm=prepared.physical_height_mm,
+                raster_scale=4,
+                cancel=token,
             )
-        try:
-            engine_palette = list(settings.palette)
-            if settings.background_color is not None:
-                engine_palette.append(settings.background_color)
+            structured = _parse_structured_native_result(
+                raw_result,
+                prepared,
+                settings,
+                info,
+            )
+            svg = structured.svg
+            warnings.extend(structured.warnings)
+            engine = structured.engine
+            engine_version = structured.engine_version
+        else:
             svg = native.logo_vectorize_rgba(
                 prepared.width_px,
                 prepared.height_px,
@@ -715,25 +1183,23 @@ def process_logo_preview(
                 despeckle_size_px=effective_despeckle_size,
                 cancel=token,
             )
-        except RuntimeError as exc:
-            if token.is_cancelled() or "hủy" in str(exc).lower():
-                raise LogoJobCancelled("Đã hủy preview logo.") from exc
-            raise
-        # LOGO-REBUILD (audit 2026-07-30 §LG.06): mọi SVG có viewBox;
-        # ảnh có DPI còn giữ đúng kích thước vật lý khi mở trong phần mềm chế bản.
-        svg = _apply_svg_geometry(svg, prepared)
-        if "<svg" not in svg or "<script" in svg.lower():
-            raise RuntimeError("Engine trả về SVG không hợp lệ.")
+            # SVG legacy chưa có hợp đồng writer riêng nên backend vẫn gắn
+            # viewBox/mm và dọn path theo quy trình VTracer cũ.
+            svg = _apply_svg_geometry(svg, prepared)
+            engine = str(info.get("engine", "vtracer"))
+            engine_version = str(info.get("version", "unknown"))
+    except ValueError as exc:
+        raise RuntimeError("Engine từ chối hợp đồng đầu vào đã được backend xác nhận.") from exc
+    except RuntimeError as exc:
+        if token.is_cancelled() or "hủy" in str(exc).lower():
+            raise LogoJobCancelled("Đã hủy preview logo.") from exc
+        raise
+    if "<svg" not in svg or "<script" in svg.lower():
+        raise RuntimeError("Engine trả về SVG không hợp lệ.")
 
-        # LOGO-REBUILD (audit 2026-08-03 §LR2.03): dọn từng path nhỏ chỉ khi lớp
-        # nhìn thấy bên dưới đã cùng màu; không union toàn artwork nên giữ counter và lớp xen giữa.
-        from app.workers.logo_svg_cleanup import (
-            LogoSvgCleanupCancelled,
-            LogoSvgCleanupError,
-            analyze_logo_svg,
-            cleanup_redundant_logo_paths,
-        )
-
+    if structured is None:
+        # LOGO-REBUILD (audit 2026-08-03 §LR2.03): cleanup chỉ áp lên legacy;
+        # sửa artifact core sẽ làm hash và metrics native mất hiệu lực.
         try:
             cleaned = cleanup_redundant_logo_paths(
                 svg,
@@ -746,35 +1212,97 @@ def process_logo_preview(
         except LogoSvgCleanupError as exc:
             raise RuntimeError("Engine trả về path SVG không hợp lệ.") from exc
         svg = cleaned.svg
-        if cleaned.removed_path_count:
+        removed_path_count = cleaned.removed_path_count
+        if removed_path_count:
             warnings.append(
-                f"Đã dọn {cleaned.removed_path_count} mảng vector nhỏ bị lớp cùng màu phủ kín."
+                f"Đã dọn {removed_path_count} mảng vector nhỏ bị lớp cùng màu phủ kín."
             )
         if settings.background_color is not None:
             svg, removed = _strip_svg_background(svg, settings.background_color)
             if removed == 0:
                 warnings.append("Không tìm thấy vùng nền khớp màu đã xác nhận trong SVG.")
-        try:
-            quality = analyze_logo_svg(
-                svg,
-                prepared.width_px,
-                prepared.height_px,
-                cleaned.removed_path_count,
-            )
-        except LogoSvgCleanupError as exc:
-            raise RuntimeError("Không thể kiểm tra chất lượng SVG đầu ra.") from exc
-        warnings.extend(reason for reason in quality.reasons if reason not in warnings)
-        return LogoPreviewResult(
-            svg=svg,
-            width_px=prepared.width_px,
-            height_px=prepared.height_px,
-            warnings=warnings,
-            engine=str(info.get("engine", "vtracer")),
-            engine_version=str(info.get("version", "unknown")),
-            status=quality.status,
-            complexity=quality.complexity.to_dict(),
-            review_reasons=quality.reasons,
-            review_actions=quality.actions,
+    try:
+        quality = analyze_logo_svg(
+            svg,
+            prepared.width_px,
+            prepared.height_px,
+            removed_path_count,
+            expected_physical_size_mm=(
+                (prepared.physical_width_mm, prepared.physical_height_mm)
+                if prepared.physical_width_mm is not None
+                and prepared.physical_height_mm is not None
+                else None
+            ),
+            expected_artifact_sha256=(
+                structured.artifact_sha256 if structured is not None else None
+            ),
+            require_physical_size=True,
         )
+    except LogoSvgCleanupError as exc:
+        raise RuntimeError("Không thể kiểm tra chất lượng SVG đầu ra.") from exc
+    warnings.extend(reason for reason in quality.reasons if reason not in warnings)
+    status = quality.status
+    review_reasons = list(quality.reasons)
+    review_actions = list(quality.actions)
+    if structured is not None and effective_despeckle_size > 0:
+        reason = "Core PrynX chưa áp dụng khử hạt đã yêu cầu."
+        action = "Đặt khử hạt về 0 hoặc tiếp tục chỉnh thủ công trước khi xuất."
+        if reason not in review_reasons:
+            review_reasons.append(reason)
+        if action not in review_actions:
+            review_actions.append(action)
+        if status == "ready":
+            status = "review"
+    return LogoPreviewResult(
+        svg=svg,
+        width_px=prepared.width_px,
+        height_px=prepared.height_px,
+        warnings=warnings,
+        engine=engine,
+        engine_version=engine_version,
+        status=status,
+        complexity=quality.complexity.to_dict(),
+        review_reasons=review_reasons,
+        review_actions=review_actions,
+        physical_width_mm=prepared.physical_width_mm,
+        physical_height_mm=prepared.physical_height_mm,
+        result_schema_version=(
+            _STRUCTURED_RESULT_SCHEMA_VERSION if structured is not None else None
+        ),
+        artifact_sha256=(structured.artifact_sha256 if structured is not None else None),
+        preprocess_hash=(structured.preprocess_hash if structured is not None else None),
+        native_metrics=(structured.metrics if structured is not None else None),
+    )
+
+
+def process_logo_preview(
+    source_bytes: bytes,
+    settings: LogoRebuildSettings,
+    job_id: str,
+    token: Any | None = None,
+) -> LogoPreviewResult:
+    if token is None:
+        token = reserve_logo_job(job_id)
+    try:
+        # LOGO-REBUILD (audit 2026-08-09 §LR3.08): metadata native cũng phải nằm
+        # trong lifetime đã có finally; ABI lỗi không được để UUID mắc trong registry.
+        native = _load_native_module()
+        info = dict(native.logo_vectorizer_info())
+        if token.is_cancelled():
+            raise LogoJobCancelled("Đã hủy preview logo.")
+        requested_size = _requested_logo_work_size(source_bytes, settings)
+        with _reserve_logo_work_size(*requested_size) as (
+            planned_size,
+            memory_warnings,
+        ):
+            return _process_logo_preview_reserved(
+                source_bytes,
+                settings,
+                token,
+                native,
+                info,
+                planned_size,
+                memory_warnings,
+            )
     finally:
         _discard_job(job_id, token)

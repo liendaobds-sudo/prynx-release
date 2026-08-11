@@ -1,9 +1,12 @@
 import asyncio
+import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,6 +68,174 @@ _PRESSURE_UPLOAD_PATTERNS = (
 _PRESSURE_RECOVERY_MIN_BYTES = 512 * 1024 * 1024
 _PRESSURE_RECOVERY_MAX_BYTES = 2 * 1024 * 1024 * 1024
 _CLEANUP_PROCESS_STARTED_AT = time.time()
+
+# LIFECYCLE (audit 2026-08-11 §UP.X.07): companion PDF Upscale có lease bền
+# bằng marker atomic trên đĩa. Initial lease giữ tương thích 2 giờ; frontend claim
+# sau khi commit workspace để tab sở hữu tối đa một phiên dài 26 giờ. Restart không
+# làm mất lịch dọn như threading.Timer cũ.
+UPSCALE_ARTIFACT_INITIAL_LEASE_SECONDS = 2 * 3600
+UPSCALE_ARTIFACT_CLAIMED_LEASE_SECONDS = FS_CLEANUP_MAX_AGE_HOURS * 3600
+_UPSCALE_ARTIFACT_PATTERN = re.compile(r"^upscaled_[0-9a-f]{8}\.pdf$", re.IGNORECASE)
+_UPSCALE_LEASE_TOKEN_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+_UPSCALE_LEASE_PREFIX = ".upscale_lease_"
+_UPSCALE_LEASE_LOCK = threading.Lock()
+
+
+def _upscale_lease_marker(token: str) -> Path | None:
+    if not _UPSCALE_LEASE_TOKEN_PATTERN.fullmatch(token or ""):
+        return None
+    return Path(settings.RESULTS_DIR) / f"{_UPSCALE_LEASE_PREFIX}{token}.json"
+
+
+def _upscale_artifact_path(file_name: str) -> Path | None:
+    if not isinstance(file_name, str) or not _UPSCALE_ARTIFACT_PATTERN.fullmatch(file_name):
+        return None
+    return Path(settings.RESULTS_DIR) / file_name
+
+
+def _write_upscale_lease_marker(marker: Path, payload: dict[str, object]) -> None:
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    temporary = marker.with_name(
+        f"{marker.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
+    try:
+        with open(temporary, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, marker)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _read_upscale_lease_marker(marker: Path) -> dict[str, object] | None:
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("v") != 1:
+        return None
+    token = payload.get("token")
+    artifact_name = payload.get("artifact")
+    expires_at = payload.get("expires_at")
+    if (
+        not isinstance(token, str)
+        or marker != _upscale_lease_marker(token)
+        or _upscale_artifact_path(artifact_name) is None
+        or not isinstance(expires_at, (int, float))
+    ):
+        return None
+    return payload
+
+
+def create_upscale_artifact_lease(artifact_path: str) -> str:
+    """Tạo marker lease atomic cho companion PDF vừa sinh trong RESULTS_DIR."""
+    artifact = Path(artifact_path)
+    expected = _upscale_artifact_path(artifact.name)
+    if expected is None or _path_key(expected) != _path_key(artifact):
+        raise ValueError("Artifact Upscale nằm ngoài RESULTS_DIR hoặc sai tên")
+    if artifact.is_symlink() or not artifact.is_file():
+        raise ValueError("Artifact Upscale không phải file thường")
+
+    token = secrets.token_hex(16)
+    marker = _upscale_lease_marker(token)
+    if marker is None:
+        raise RuntimeError("Không tạo được token lease Upscale")
+    now = time.time()
+    payload: dict[str, object] = {
+        "v": 1,
+        "token": token,
+        "artifact": artifact.name,
+        "created_at": now,
+        "expires_at": now + UPSCALE_ARTIFACT_INITIAL_LEASE_SECONDS,
+        "claimed": False,
+    }
+    with _UPSCALE_LEASE_LOCK:
+        _write_upscale_lease_marker(marker, payload)
+    return token
+
+
+def claim_upscale_artifact_lease(token: str) -> bool:
+    """Gia hạn lease sau khi frontend commit PDF vào workspace thành công."""
+    marker = _upscale_lease_marker(token)
+    if marker is None:
+        return False
+    with _UPSCALE_LEASE_LOCK:
+        payload = _read_upscale_lease_marker(marker)
+        if payload is None:
+            return False
+        now = time.time()
+        if float(payload["expires_at"]) < now:
+            return False
+        artifact = _upscale_artifact_path(payload["artifact"])
+        if artifact is None or artifact.is_symlink() or not artifact.is_file():
+            return False
+        payload["claimed"] = True
+        payload["expires_at"] = now + UPSCALE_ARTIFACT_CLAIMED_LEASE_SECONDS
+        _write_upscale_lease_marker(marker, payload)
+        return True
+
+
+def release_upscale_artifact_lease(token: str) -> bool:
+    """Thu hồi artifact khi tab owner đóng; idempotent nếu sweep đã dọn trước."""
+    marker = _upscale_lease_marker(token)
+    if marker is None:
+        return False
+    removed = False
+    with _UPSCALE_LEASE_LOCK:
+        payload = _read_upscale_lease_marker(marker)
+        artifact = _upscale_artifact_path(payload["artifact"]) if payload else None
+        if artifact is not None:
+            try:
+                artifact.unlink(missing_ok=True)
+                removed = True
+            except OSError:
+                pass
+        try:
+            marker.unlink(missing_ok=True)
+            removed = True
+        except OSError:
+            pass
+    return removed
+
+
+def _cleanup_upscale_artifact_leases(now: float) -> tuple[set[str], int, int]:
+    """Đọc marker sau restart; bảo vệ lease sống và xóa lease hết hạn."""
+    results = Path(settings.RESULTS_DIR)
+    protected: set[str] = set()
+    deleted = 0
+    freed = 0
+    if not results.is_dir():
+        return protected, deleted, freed
+
+    with _UPSCALE_LEASE_LOCK:
+        try:
+            markers = list(results.glob(f"{_UPSCALE_LEASE_PREFIX}*.json"))
+        except OSError:
+            return protected, deleted, freed
+        for marker in markers:
+            payload = _read_upscale_lease_marker(marker)
+            if payload is None:
+                continue
+            artifact = _upscale_artifact_path(payload["artifact"])
+            if artifact is None:
+                continue
+            if float(payload["expires_at"]) > now:
+                protected.add(_path_key(marker))
+                protected.add(_path_key(artifact))
+                continue
+            for item in (artifact, marker):
+                try:
+                    size = item.stat().st_size if item.is_file() else 0
+                    item.unlink(missing_ok=True)
+                    deleted += 1
+                    freed += size
+                except OSError as error:
+                    logger.debug("Không xóa được lease Upscale hết hạn %s: %s", item, error)
+    return protected, deleted, freed
 
 
 async def cleanup_expired_files_loop():
@@ -158,6 +329,12 @@ def cleanup_orphan_files():
     """
     max_age_seconds = FS_CLEANUP_MAX_AGE_HOURS * 3600
     now = time.time()
+    # FILEIO (audit 2026-08-10 §RENDER.11): upload/local ưu tiên hard-link và
+    # copy2, nên file backend có thể giữ mtime cũ của PDF nguồn. Tuổi filesystem
+    # không được phép biến một file vẫn còn bản ghi DB thành "orphan".
+    registered_path_keys = _registered_file_path_keys()
+    lease_paths, lease_deleted, lease_freed = _cleanup_upscale_artifact_leases(now)
+    registered_path_keys.update(lease_paths)
     
     dirs_to_clean = [
         Path(settings.UPLOAD_DIR),
@@ -165,14 +342,19 @@ def cleanup_orphan_files():
         Path(settings.UPLOAD_DIR).parent / "temp",  # backend/temp/
     ]
     
-    total_deleted = 0
-    total_freed_bytes = 0
+    total_deleted = lease_deleted
+    total_freed_bytes = lease_freed
     
     for target_dir in dirs_to_clean:
         if not target_dir.is_dir():
             continue
 
-        deleted, freed = _cleanup_directory(target_dir, now, max_age_seconds)
+        deleted, freed = _cleanup_directory(
+            target_dir,
+            now,
+            max_age_seconds,
+            protected_path_keys=registered_path_keys,
+        )
         total_deleted += deleted
         total_freed_bytes += freed
 
@@ -196,7 +378,10 @@ def cleanup_orphan_files():
 
 
 def _cleanup_directory(
-    directory: Path, now: float, max_age_seconds: float
+    directory: Path,
+    now: float,
+    max_age_seconds: float,
+    protected_path_keys: set[str] | None = None,
 ) -> tuple[int, int]:
     """Delete old files in a directory tree. Returns (deleted_count, freed_bytes)."""
     deleted = 0
@@ -207,6 +392,8 @@ def _cleanup_directory(
         if not item.is_file():
             continue
         try:
+            if protected_path_keys and _path_key(item) in protected_path_keys:
+                continue
             file_age = now - item.stat().st_mtime
             if file_age > max_age_seconds:
                 file_size = item.stat().st_size
@@ -226,6 +413,25 @@ def _cleanup_directory(
                 pass  # Directory not empty, skip
 
     return deleted, freed
+
+
+def _path_key(path: str | os.PathLike[str]) -> str:
+    """Chuẩn hóa path để so DB ↔ filesystem ổn định trên Windows."""
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
+def _registered_file_path_keys() -> set[str]:
+    """Lấy mọi file còn được DB sở hữu; lỗi DB phải chặn sweep, không xóa liều."""
+    db = SessionLocal()
+    try:
+        rows = db.query(UploadedFile).filter(UploadedFile.file_path.isnot(None)).all()
+        return {
+            _path_key(row.file_path)
+            for row in rows
+            if isinstance(row.file_path, str) and row.file_path
+        }
+    finally:
+        db.close()
 
 
 def _cleanup_os_temp_by_prefix(now: float, max_age_seconds: float) -> tuple[int, int]:

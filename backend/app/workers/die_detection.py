@@ -1135,7 +1135,7 @@ def detect_die_shapes(doc, config: DetectionConfig = DetectionConfig()) -> Detec
     - Mỗi trang trong scope cô lập lỗi (R4): lỗi 1 trang → CUSTOM, không dừng.
     - Trả về đúng N DetectedShape theo thứ tự trang (R1.1, R5.1, R6.4).
 
-    Lưu ý: nhánh raster fallback (cần Ghostscript/IO bất đồng bộ) do caller thực
+    Lưu ý: nhánh raster fallback (cần render/IO bất đồng bộ) do caller thực
     hiện và gọi `build_shape_from_raster` để giữ logic phân loại trong module này.
     Trang không có đường bế vector trả về CUSTOM với source='custom' để caller
     có thể thử raster.

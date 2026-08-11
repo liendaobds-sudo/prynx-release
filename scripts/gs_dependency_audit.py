@@ -1,4 +1,4 @@
-"""Đo phụ thuộc Ghostscript thật trên corpus — Bước 0 của lộ trình gỡ hẳn GS.
+"""Release gate đo mọi lần production corpus cố quay lại Ghostscript.
 
 # Vì sao cần bộ đo này thay vì đọc code
 
@@ -11,9 +11,9 @@ fontTools, lạc hậu ngay khi engine đổi.
 
 # Cách đo
 
-Chặn Ghostscript ở mức **cấu hình sản phẩm** (`PRYNX_NO_GS_BUILD=1` ⇒
-`GHOSTSCRIPT_PATH` rỗng; cấu hình fallback GS đã bị xoá) rồi chạy từng đường sản
-xuất trên từng file. Năm kết quả có thể:
+Chạy từng đường sản xuất trên từng file với tripwire subprocess luôn bật. Nếu một
+call site cố khởi tạo executable Ghostscript, tripwire ném lỗi trước khi hệ điều
+hành tạo tiến trình. Năm kết quả có thể:
 
 * `OK`      — chạy xong bằng engine nội bộ.
 * `REFUSED` — dừng an toàn có lý do (fail-closed). Đây **không** phải phụ thuộc GS,
@@ -22,8 +22,8 @@ xuất trên từng file. Năm kết quả có thể:
 * `ERROR`   — nổ ngoài dự kiến; phải xem từng ca.
 * `TIMEOUT` — vượt thời gian an toàn của một thao tác; là lỗi chặn release.
 
-Bộ đếm `gs_usage` được reset trước mỗi thao tác nên `GS` là số đo, không phải suy
-diễn từ thông điệp lỗi.
+Trạng thái `GS` chỉ được gắn khi bắt đúng tripwire hoặc lỗi bọc lại còn mang dấu
+hiệu của tripwire; không còn telemetry ghi đĩa hay cấu hình engine song song.
 
 Chạy:
     backend\\venv\\Scripts\\python.exe scripts\\gs_dependency_audit.py private_test_corpus\\incoming
@@ -86,8 +86,6 @@ WORKER_ENV_KEYS = (
 WORKER_STARTUP_TIMEOUT_SECONDS = 30.0
 RUNTIME_MODULES = ("pdfcompare_native", "pypdfium2", "pypdfium2_raw")
 FINGERPRINT_ENV_KEYS = (
-    "PRYNX_NO_GS_BUILD",
-    "GHOSTSCRIPT_PATH",
     "PRYNX_PPE_MEMORY_BUDGET_MB",
     "PRYNX_OUTLINE_TRUST_PPE",
     "PRYNX_DETECT_RASTER_MAX",
@@ -104,11 +102,6 @@ FINGERPRINT_ENV_KEYS = (
     "LANG",
     "LC_ALL",
 )
-
-# PHẢI đặt trước khi import app.config: `Settings` đọc marker no-GS ngay lúc dựng
-# class, nên đặt sau đó thì đo một cấu hình khác cấu hình sản phẩm.
-os.environ["PRYNX_NO_GS_BUILD"] = "1"
-os.environ.pop("GHOSTSCRIPT_PATH", None)
 
 sys.path.insert(0, str(REPO / "backend"))
 
@@ -153,36 +146,30 @@ OUTLINE_COUNTER = _PpeOutlineCounter()
 
 
 def _run(fn) -> Outcome:
-    """Chạy một thao tác, phân loại kết quả, đo số lần GS bị gọi."""
-    from app.core import gs_usage
-    from app.core.gs_availability import GhostscriptUnavailable, InternalEngineUnsupported
+    """Chạy một thao tác và phân loại mọi lần cố gọi engine đã bị loại bỏ."""
+    from app.core.engine_support import InternalEngineUnsupported
+    from app.utils.subprocess_utils import GhostscriptBlocked
 
-    gs_usage.reset_for_tests()
     OUTLINE_COUNTER.reset()
     started = time.perf_counter()
     try:
         status, detail, extra = fn()
     except InternalEngineUnsupported as exc:
-        return Outcome("REFUSED", str(exc)[:200], gs_usage.summary()["total_gs_calls"],
-                       time.perf_counter() - started)
-    except GhostscriptUnavailable as exc:
-        return Outcome("GS", str(exc)[:160], gs_usage.summary()["total_gs_calls"],
-                       time.perf_counter() - started)
+        return Outcome("REFUSED", str(exc)[:200], 0, time.perf_counter() - started)
+    except GhostscriptBlocked as exc:
+        return Outcome("GS", str(exc)[:160], 1, time.perf_counter() - started)
     except Exception as exc:  # noqa: BLE001
-        # Thông điệp GS có thể bị nuốt rồi bọc lại ở tầng trên; nhận cả hai dấu hiệu.
+        # Tripwire có thể bị tầng trên bọc lại; giữ dấu hiệu để gate không lọt caller.
         text = f"{type(exc).__name__}: {exc}"
-        calls = gs_usage.summary()["total_gs_calls"]
-        status = "GS" if calls or "Ghostscript" in text or "ghostscript" in text else "ERROR"
+        calls = 1 if "Ghostscript" in text or "ghostscript" in text else 0
+        status = "GS" if calls else "ERROR"
         return Outcome(status, text[:200], calls,
                        time.perf_counter() - started)
-    calls = gs_usage.summary()["total_gs_calls"]
-    if calls:
-        status = "GS"
     if OUTLINE_COUNTER.ppe or OUTLINE_COUNTER.fallback:
         extra = dict(extra or {})
         extra["ppe_glyphs"] = OUTLINE_COUNTER.ppe
         extra["fallback_glyphs"] = OUTLINE_COUNTER.fallback
-    return Outcome(status, detail[:200], calls, time.perf_counter() - started, extra or {})
+    return Outcome(status, detail[:200], 0, time.perf_counter() - started, extra or {})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -516,7 +503,6 @@ def _fingerprint_environment_facts() -> list[str]:
 
 def _runtime_config_from_settings(settings) -> dict[str, str]:
     names = (
-        "GHOSTSCRIPT_PATH",
         "PRYNX_PPE_MEMORY_BUDGET_MB",
         "ICC_PROFILE_DIR",
         "DEFAULT_CMYK_PROFILE",
@@ -1201,22 +1187,8 @@ def main() -> int:
         print("DỪNG: không dọn sạch được settings workspace.", file=sys.stderr)
         return 2
 
-    # Chốt: nếu vẫn còn đường dẫn GS thì phép đo vô nghĩa (mọi thứ sẽ báo OK nhờ GS).
-    if settings.GHOSTSCRIPT_PATH:
-        print(
-            "DỪNG: GHOSTSCRIPT_PATH vẫn có giá trị — phép đo sẽ sai. "
-            "Kiểm PRYNX_NO_GS_BUILD.",
-            file=sys.stderr,
-        )
-        return 2
-    # GS-SUNSET (audit 2026-07-28 §FL.4): thuộc tính fallback đã bị xoá khỏi Settings.
-    # getattr giữ cổng audit tương thích và không crash với hợp đồng no-GS cố định.
-    if getattr(settings, "PRYNX_ALLOW_GS_FALLBACK", False):
-        print("DỪNG: PRYNX_ALLOW_GS_FALLBACK vẫn bật.", file=sys.stderr)
-        return 2
-
     print(f"Corpus: {len(files)} file | thao tác: {len(ops)}")
-    print(f"GHOSTSCRIPT_PATH = {settings.GHOSTSCRIPT_PATH!r}  (đã chặn)")
+    print("Tripwire executable Ghostscript = bật")
     print(f"Timeout mỗi thao tác = {args.operation_timeout:g} giây")
     print("Đang tính fingerprint nội dung source/corpus/operations...", flush=True)
     runtime_config = _runtime_config_from_settings(settings)

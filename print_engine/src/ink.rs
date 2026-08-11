@@ -22,6 +22,7 @@ use std::sync::Arc;
 use rayon::prelude::*;
 
 use crate::blend::{blend_nonseparable_cmyk, BlendMode};
+use crate::cancel::CancelToken;
 use crate::color::icc::ColorManager;
 use crate::error::{PpeError, PpeResult};
 use crate::geom::Region;
@@ -33,6 +34,7 @@ const BYTES_PER_SAMPLE: usize = std::mem::size_of::<f32>();
 /// Đây là ngưỡng theo kích thước công việc, không phải hard-cap phần cứng: trang
 /// lớn luôn dùng toàn bộ pool Rayon dùng chung, kể cả trên máy mạnh nhiều lõi.
 const PARALLEL_FRAME_MIN_PIXELS: usize = 512 * 1024;
+const COLOR_CANCEL_CHUNK_PIXELS: usize = 64 * 1024;
 
 #[inline]
 fn should_parallelize_frame(pixel_count: usize) -> bool {
@@ -50,6 +52,38 @@ pub const DEFAULT_RENDER_MEMORY_BUDGET_BYTES: usize = 512 * MIB;
 struct MemoryBudget {
     limit: usize,
     used: AtomicUsize,
+}
+
+/// Phần ngân sách tạm thời sống cùng một scratch/raster cục bộ.
+///
+/// MEMORY (audit 2026-08-09 §PRE.0B): lease RAII giúp mọi đường lỗi và thay
+/// raster con tự trả reservation, không cần caller nhớ gọi `release` thủ công.
+#[derive(Debug)]
+pub(crate) struct MemoryLease {
+    budget: Arc<MemoryBudget>,
+    reserved_bytes: usize,
+}
+
+impl Drop for MemoryLease {
+    fn drop(&mut self) {
+        self.budget.release(self.reserved_bytes);
+    }
+}
+
+impl MemoryLease {
+    /// Đặt chỗ một scratch cấp lười trong cùng ngân sách.
+    pub(crate) fn reserve_sibling(&self, bytes: usize) -> PpeResult<MemoryLease> {
+        self.budget.reserve(bytes)?;
+        Ok(MemoryLease {
+            budget: Arc::clone(&self.budget),
+            reserved_bytes: bytes,
+        })
+    }
+
+    pub(crate) fn allocation_error(&self, additional_bytes: usize) -> PpeError {
+        let used = self.budget.used.load(Ordering::Relaxed);
+        memory_budget_error(used.saturating_add(additional_bytes), self.budget.limit)
+    }
 }
 
 impl MemoryBudget {
@@ -278,6 +312,15 @@ impl SpotAlternate {
             out[ch] = (a[ch] + (b[ch] - a[ch]) * f).clamp(0.0, 1.0);
         }
         out
+    }
+
+    /// Trả bảng tint → CMYK đã được PPE lấy mẫu để lớp binding có thể giữ nguyên
+    /// phép đổi màu khi người dùng bật/tắt từng bản kẽm mà không raster lại PDF.
+    ///
+    /// PERF/COLOR (audit 2026-08-10 §OP.1): chỉ công khai lát cắt bất biến; caller
+    /// không thể sửa LUT đang thuộc `InkSpace` của lần render.
+    pub fn samples(&self) -> &[[f32; 4]] {
+        &self.lut
     }
 }
 
@@ -655,6 +698,126 @@ impl InkBuffer {
 
     pub fn height(&self) -> u32 {
         self.height
+    }
+
+    /// Cấp một mặt phẳng soft-mask cục bộ trong cùng ngân sách của lần render.
+    ///
+    /// PERF (audit 2026-08-09 §RENDER.F4): đặt chỗ trước khi xin `Vec` để mặt nạ
+    /// lớn hoặc lồng sâu thất bại có kiểm soát, thay vì vượt ngân sách rồi mới bị
+    /// allocator của hệ điều hành từ chối.
+    ///
+    /// API công khai để caller tích hợp có thể truyền mask vào các hàm raster và
+    /// merge vốn cũng công khai, thay vì nhận một kiểu không thể tự dựng.
+    pub fn new_soft_mask(&self, region: Region, outside: f32) -> PpeResult<SoftMask> {
+        let width = region.x1.saturating_sub(region.x0) as usize;
+        let height = region.y1.saturating_sub(region.y0) as usize;
+        let px = width
+            .checked_mul(height)
+            .ok_or_else(|| memory_budget_error(usize::MAX, self.budget.limit))?;
+        let reserved_bytes = buffer_bytes(px, 1)?;
+        self.budget.reserve(reserved_bytes)?;
+        let values = match zeroed_plane(px, self.budget.limit) {
+            Ok(values) => values,
+            Err(error) => {
+                self.budget.release(reserved_bytes);
+                return Err(error);
+            }
+        };
+        Ok(SoftMask {
+            region,
+            values,
+            outside: outside.clamp(0.0, 1.0),
+            budget: Arc::clone(&self.budget),
+            reserved_bytes,
+        })
+    }
+
+    /// Đặt chỗ cho raster/scratch tạm thời trong cùng ngân sách lần render.
+    pub(crate) fn reserve_temporary(&self, bytes: usize) -> PpeResult<MemoryLease> {
+        self.budget.reserve(bytes)?;
+        Ok(MemoryLease {
+            budget: Arc::clone(&self.budget),
+            reserved_bytes: bytes,
+        })
+    }
+
+    /// Chuyển lỗi allocator của scratch thành lỗi tài nguyên có kiểm soát.
+    pub(crate) fn temporary_allocation_error(&self, additional_bytes: usize) -> PpeError {
+        let used = self.budget.used.load(Ordering::Relaxed);
+        memory_budget_error(used.saturating_add(additional_bytes), self.budget.limit)
+    }
+
+    /// Cắt buffer theo hệ pixel hiện tại mà không dựng lại các mặt phẳng mực.
+    ///
+    /// PERF (audit 2026-08-08 §RENDER.3/5): renderer viewport dựng thêm một
+    /// guard-band nhỏ để anti-alias không phụ thuộc mép tile, rồi dồn phần cần
+    /// trả về đầu các buffer. Capacity cũ được giữ lại để ngân sách bộ nhớ vẫn
+    /// phản ánh đúng phần cấp phát thực tế cho tới khi `InkBuffer` bị drop.
+    pub(crate) fn crop_raster_in_place(
+        &mut self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    ) -> PpeResult<()> {
+        let right = x.checked_add(width);
+        let bottom = y.checked_add(height);
+        if width == 0
+            || height == 0
+            || right.is_none_or(|value| value > self.width)
+            || bottom.is_none_or(|value| value > self.height)
+        {
+            return Err(PpeError::BadRasterClip {
+                x,
+                y,
+                w: width,
+                h: height,
+                page_w: self.width,
+                page_h: self.height,
+            });
+        }
+        if x == 0 && y == 0 && width == self.width && height == self.height {
+            return Ok(());
+        }
+
+        let source_width = self.width as usize;
+        let crop_x = x as usize;
+        let crop_y = y as usize;
+        let crop_width = width as usize;
+        let crop_height = height as usize;
+        for plane in &mut self.planes {
+            crop_plane_in_place(plane, source_width, crop_x, crop_y, crop_width, crop_height);
+        }
+        crop_plane_in_place(
+            &mut self.alpha,
+            source_width,
+            crop_x,
+            crop_y,
+            crop_width,
+            crop_height,
+        );
+        if let Some(sidecar) = self.rgb_sidecar.as_mut() {
+            crop_plane_in_place(
+                &mut sidecar.pixels,
+                source_width,
+                crop_x,
+                crop_y,
+                crop_width,
+                crop_height,
+            );
+            crop_plane_in_place(
+                &mut sidecar.state,
+                source_width,
+                crop_x,
+                crop_y,
+                crop_width,
+                crop_height,
+            );
+        }
+        self.ring_filter_scratch.clear();
+        self.width = width;
+        self.height = height;
+        Ok(())
     }
 
     pub fn space(&self) -> &InkSpace {
@@ -1201,6 +1364,99 @@ impl InkBuffer {
         *da = *da * (1.0 - a) + a;
     }
 
+    /// Trộn shading chỉ dùng bốn kênh process theo các hàng độc lập.
+    ///
+    /// PERF (audit 2026-08-09 §L4B.SMASK): mỗi pixel shading chỉ đọc/ghi đúng
+    /// vị trí của nó. Chỉ bật khi RGB sidecar không tồn tại và mọi spot trong
+    /// vùng đều bằng 0, nên bỏ vòng spot vẫn khớp tuyệt đối đường tổng quát.
+    pub(crate) fn composite_process_shading_pixels_parallel<F>(
+        &mut self,
+        region: Region,
+        blend: BlendMode,
+        overprint: bool,
+        cancel_token: Option<&CancelToken>,
+        sample: F,
+    ) -> bool
+    where
+        F: Fn(u32, u32, usize) -> Option<([f32; 4], ChannelMask, f32)> + Sync,
+    {
+        let region = region.clamped(self.width, self.height);
+        let region_pixels = (region.x1.saturating_sub(region.x0) as usize)
+            .saturating_mul(region.y1.saturating_sub(region.y0) as usize);
+        if !should_parallelize_frame(region_pixels)
+            || self.planes.len() < 4
+            || self.rgb_sidecar.is_some()
+            || !blend.is_separable()
+        {
+            return false;
+        }
+
+        let width = self.width as usize;
+        let start = region.y0 as usize * width;
+        let end = region.y1 as usize * width;
+        if self.planes[4..]
+            .par_iter()
+            .any(|plane| plane[start..end].par_iter().any(|value| *value != 0.0))
+        {
+            return false;
+        }
+
+        let (process, _zero_spots) = self.planes.split_at_mut(4);
+        let [cyan, magenta, yellow, black] = process else {
+            return false;
+        };
+        cyan[start..end]
+            .par_chunks_mut(width)
+            .zip(magenta[start..end].par_chunks_mut(width))
+            .zip(yellow[start..end].par_chunks_mut(width))
+            .zip(black[start..end].par_chunks_mut(width))
+            .zip(self.alpha[start..end].par_chunks_mut(width))
+            .enumerate()
+            .for_each(
+                |(row_offset, ((((cyan_row, magenta_row), yellow_row), black_row), alpha_row))| {
+                    if cancel_token.is_some_and(CancelToken::is_cancelled) {
+                        return;
+                    }
+                    let y = region.y0 + row_offset as u32;
+                    for x in region.x0..region.x1 {
+                        let index = y as usize * width + x as usize;
+                        let Some((source, declared, alpha)) = sample(x, y, index) else {
+                            continue;
+                        };
+                        let alpha = alpha.clamp(0.0, 1.0);
+                        if alpha <= 0.0 {
+                            continue;
+                        }
+                        let column = x as usize;
+                        for (channel, (target, source_ink)) in [
+                            (&mut cyan_row[column], source[0]),
+                            (&mut magenta_row[column], source[1]),
+                            (&mut yellow_row[column], source[2]),
+                            (&mut black_row[column], source[3]),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            if !declared.contains(channel) && overprint {
+                                continue;
+                            }
+                            let source_ink = if declared.contains(channel) {
+                                source_ink.clamp(0.0, 1.0)
+                            } else {
+                                0.0
+                            };
+                            let backdrop = *target;
+                            let blended = blend.blend_ink(backdrop, source_ink);
+                            *target = backdrop * (1.0 - alpha) + blended * alpha;
+                        }
+                        let backdrop_alpha = alpha_row[column];
+                        alpha_row[column] = backdrop_alpha * (1.0 - alpha) + alpha;
+                    }
+                },
+            );
+        true
+    }
+
     /// Độ phủ tích luỹ theo từng pixel — xem [`InkBuffer::alpha`].
     pub fn alpha_plane(&self) -> &[f32] {
         &self.alpha
@@ -1265,12 +1521,58 @@ impl InkBuffer {
         self.child_buffer(false, Some(RgbSurfaceMode::PremultipliedAlpha))
     }
 
+    /// Buffer cách ly chỉ lớn bằng cửa sổ soft-mask cần dựng.
+    pub(crate) fn child_isolated_region(&self, width: u32, height: u32) -> PpeResult<InkBuffer> {
+        self.child_buffer_region(width, height, false, None)
+    }
+
+    /// Bản RGB của [`InkBuffer::child_isolated_region`], giữ màu trước ICC.
+    pub(crate) fn child_isolated_rgb_region(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> PpeResult<InkBuffer> {
+        self.child_buffer_region(
+            width,
+            height,
+            false,
+            Some(RgbSurfaceMode::PremultipliedAlpha),
+        )
+    }
+
     fn child_buffer(
         &self,
         copy_planes: bool,
         rgb_surface_mode: Option<RgbSurfaceMode>,
     ) -> PpeResult<InkBuffer> {
-        let px = self.alpha.len();
+        self.child_buffer_region(self.width, self.height, copy_planes, rgb_surface_mode)
+    }
+
+    fn child_buffer_region(
+        &self,
+        width: u32,
+        height: u32,
+        copy_planes: bool,
+        rgb_surface_mode: Option<RgbSurfaceMode>,
+    ) -> PpeResult<InkBuffer> {
+        if width == 0 || height == 0 {
+            return Err(PpeError::BadRasterSize {
+                w: width as i64,
+                h: height as i64,
+                dpi: 0.0,
+            });
+        }
+        debug_assert!(
+            !copy_planes || (width == self.width && height == self.height),
+            "buffer có nền chỉ được sao chép khi cùng kích thước"
+        );
+        let px = (width as usize)
+            .checked_mul(height as usize)
+            .ok_or(PpeError::BadRasterSize {
+                w: width as i64,
+                h: height as i64,
+                dpi: 0.0,
+            })?;
         let reserved_bytes = buffer_bytes(px, self.space.len() + 1)?;
         self.budget.reserve(reserved_bytes)?;
 
@@ -1294,8 +1596,8 @@ impl InkBuffer {
         };
 
         Ok(InkBuffer {
-            width: self.width,
-            height: self.height,
+            width,
+            height,
             rgb_surface_mode: rgb_surface_mode.unwrap_or(RgbSurfaceMode::OpaqueBackdrop),
             space: self.space.clone(),
             planes,
@@ -1306,6 +1608,75 @@ impl InkBuffer {
             rgb_sidecar_allowed: rgb_surface_mode.is_some(),
             ring_filter_scratch: Vec::new(),
         })
+    }
+
+    /// Tô kín buffer bằng một màu mà không dựng mảng coverage trung gian.
+    pub(crate) fn composite_solid(&mut self, paint: &InkPaint) -> PpeResult<()> {
+        self.sync_channels()?;
+        // PERF (audit 2026-08-10 §L4B2.SMASK): backdrop của luminosity mask là
+        // một màu đục Normal phủ trọn buffer. Đi qua `composite_at` từng pixel sẽ
+        // lặp lại cùng phép blend trên mọi plane; fill trực tiếp cho kết quả y hệt.
+        if paint.alpha == 1.0 && !paint.overprint && paint.blend.is_normal() {
+            let parallel = should_parallelize_frame(self.alpha.len());
+            for (channel, plane) in self.planes.iter_mut().enumerate() {
+                let source = if paint.declared.contains(channel) {
+                    paint
+                        .ink
+                        .get(channel)
+                        .copied()
+                        .unwrap_or(0.0)
+                        .clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                if parallel {
+                    plane.par_iter_mut().for_each(|value| *value = source);
+                } else {
+                    plane.fill(source);
+                }
+            }
+            if parallel {
+                self.alpha.par_iter_mut().for_each(|value| *value = 1.0);
+            } else {
+                self.alpha.fill(1.0);
+            }
+            if let Some(sidecar) = self.rgb_sidecar.as_mut() {
+                if let Some(source) = paint.blend_rgb {
+                    let source = source.map(|value| value.clamp(0.0, 1.0));
+                    if parallel {
+                        sidecar
+                            .pixels
+                            .par_iter_mut()
+                            .for_each(|value| *value = source);
+                        sidecar
+                            .state
+                            .par_iter_mut()
+                            .for_each(|state| *state = RGB_VALID_DIRTY);
+                    } else {
+                        sidecar.pixels.fill(source);
+                        sidecar.state.fill(RGB_VALID_DIRTY);
+                    }
+                } else {
+                    let state = match sidecar.mode {
+                        RgbSurfaceMode::OpaqueBackdrop => RGB_INVALID,
+                        RgbSurfaceMode::PremultipliedAlpha => RGB_LOSSY,
+                    };
+                    if parallel {
+                        sidecar
+                            .state
+                            .par_iter_mut()
+                            .for_each(|value| *value = state);
+                    } else {
+                        sidecar.state.fill(state);
+                    }
+                }
+            }
+            return Ok(());
+        }
+        for index in 0..self.alpha.len() {
+            self.composite_at(index, 1.0, paint);
+        }
+        Ok(())
     }
 
     /// Tổng byte của mọi buffer đang sống trong cùng lần render.
@@ -1429,66 +1800,155 @@ impl InkBuffer {
         true
     }
 
+    fn merge_non_isolated_process_parallel(
+        &mut self,
+        child: &InkBuffer,
+        region: Region,
+        group_alpha: f32,
+        blend: BlendMode,
+        overprint: bool,
+    ) {
+        // PERF (audit 2026-08-09 §ZOOM.7): mỗi kênh và mỗi hàng là độc lập ở
+        // blend separable. Chạy trên pool Rayon chung; không cấp scratch và không
+        // song song thứ tự operator PDF, nên backdrop/overprint vẫn giữ nguyên.
+        let width = self.width as usize;
+        let start = region.y0 as usize * width;
+        let end = region.y1 as usize * width;
+        let x0 = region.x0 as usize;
+        let x1 = region.x1 as usize;
+        let factor = group_alpha.clamp(0.0, 1.0);
+        let child_alpha = &child.alpha[start..end];
+
+        for channel in 0..4 {
+            let child_plane = &child.planes[channel][start..end];
+            self.planes[channel][start..end]
+                .par_chunks_mut(width)
+                .zip(child_plane.par_chunks(width))
+                .zip(child_alpha.par_chunks(width))
+                .for_each(|((parent_row, child_row), alpha_row)| {
+                    for x in x0..x1 {
+                        let ga = alpha_row[x].clamp(0.0, 1.0);
+                        if ga <= 0.0 {
+                            continue;
+                        }
+                        if blend.is_normal() {
+                            parent_row[x] = parent_row[x] * (1.0 - factor) + child_row[x] * factor;
+                            continue;
+                        }
+                        let alpha = (ga * factor).clamp(0.0, 1.0);
+                        let backdrop = parent_row[x];
+                        let source = non_isolated_group_source(backdrop, child_row[x], ga);
+                        if overprint && source <= 0.0 {
+                            continue;
+                        }
+                        parent_row[x] =
+                            backdrop * (1.0 - alpha) + blend.blend_ink(backdrop, source) * alpha;
+                    }
+                });
+        }
+
+        self.alpha[start..end]
+            .par_chunks_mut(width)
+            .zip(child_alpha.par_chunks(width))
+            .for_each(|(parent_row, child_row)| {
+                for x in x0..x1 {
+                    let ga = child_row[x].clamp(0.0, 1.0);
+                    if ga <= 0.0 {
+                        continue;
+                    }
+                    let alpha = (ga * factor).clamp(0.0, 1.0);
+                    parent_row[x] = parent_row[x] * (1.0 - alpha) + alpha;
+                }
+            });
+    }
+
     pub fn merge_non_isolated(
         &mut self,
         child: &InkBuffer,
-        factor: &[f32],
+        region: Region,
+        group_alpha: f32,
+        soft_mask: Option<&SoftMask>,
         blend: BlendMode,
         overprint: bool,
     ) {
         let n = self.planes.len().min(child.planes.len());
         let separable = blend.is_separable();
-        for i in 0..self.alpha.len() {
-            let ga = child.alpha.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
-            let f = factor.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
-            if f <= 0.0 || ga <= 0.0 {
-                continue;
-            }
-
-            if blend.is_normal() {
-                // Dạng rút gọn chính xác; tránh phép chia khi không cần blend.
-                for ch in 0..n {
-                    let dst = self.planes[ch][i];
-                    self.planes[ch][i] = dst * (1.0 - f) + child.planes[ch][i] * f;
+        let region = region
+            .clamped(self.width, self.height)
+            .clamped(child.width, child.height);
+        let region_pixels = (region.x1.saturating_sub(region.x0) as usize)
+            .saturating_mul(region.y1.saturating_sub(region.y0) as usize);
+        if n == 4
+            && self.planes.len() == 4
+            && child.planes.len() == 4
+            && self.width == child.width
+            && self.height == child.height
+            && self.rgb_sidecar.is_none()
+            && child.rgb_sidecar.is_none()
+            && soft_mask.is_none()
+            && separable
+            && should_parallelize_frame(region_pixels)
+        {
+            self.merge_non_isolated_process_parallel(child, region, group_alpha, blend, overprint);
+            return;
+        }
+        let width = self.width as usize;
+        for y in region.y0..region.y1 {
+            let row = y as usize * width;
+            for x in region.x0..region.x1 {
+                let i = row + x as usize;
+                let ga = child.alpha.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                let mask = soft_mask.map_or(1.0, |mask| mask.value_at(x, y));
+                let f = (group_alpha * mask).clamp(0.0, 1.0);
+                if f <= 0.0 || ga <= 0.0 {
+                    continue;
                 }
-            } else {
+
+                if blend.is_normal() {
+                    // Dạng rút gọn chính xác; tránh phép chia khi không cần blend.
+                    for ch in 0..n {
+                        let dst = self.planes[ch][i];
+                        self.planes[ch][i] = dst * (1.0 - f) + child.planes[ch][i] * f;
+                    }
+                } else {
+                    let a = (ga * f).clamp(0.0, 1.0);
+                    if !separable && n >= 4 {
+                        let bd = [
+                            self.planes[0][i],
+                            self.planes[1][i],
+                            self.planes[2][i],
+                            self.planes[3][i],
+                        ];
+                        let src = [
+                            non_isolated_group_source(bd[0], child.planes[0][i], ga),
+                            non_isolated_group_source(bd[1], child.planes[1][i], ga),
+                            non_isolated_group_source(bd[2], child.planes[2][i], ga),
+                            non_isolated_group_source(bd[3], child.planes[3][i], ga),
+                        ];
+                        let blended = blend_nonseparable_cmyk(blend, bd, src);
+                        for ch in 0..4 {
+                            self.planes[ch][i] = bd[ch] * (1.0 - a) + blended[ch] * a;
+                        }
+                    }
+
+                    let start = if separable { 0 } else { 4.min(n) };
+                    for ch in start..n {
+                        let dst = self.planes[ch][i];
+                        let src = non_isolated_group_source(dst, child.planes[ch][i], ga);
+                        if overprint && src <= 0.0 {
+                            continue;
+                        }
+                        let mode = if separable { blend } else { BlendMode::Normal };
+                        self.planes[ch][i] = dst * (1.0 - a) + mode.blend_ink(dst, src) * a;
+                    }
+                }
+
                 let a = (ga * f).clamp(0.0, 1.0);
-                if !separable && n >= 4 {
-                    let bd = [
-                        self.planes[0][i],
-                        self.planes[1][i],
-                        self.planes[2][i],
-                        self.planes[3][i],
-                    ];
-                    let src = [
-                        non_isolated_group_source(bd[0], child.planes[0][i], ga),
-                        non_isolated_group_source(bd[1], child.planes[1][i], ga),
-                        non_isolated_group_source(bd[2], child.planes[2][i], ga),
-                        non_isolated_group_source(bd[3], child.planes[3][i], ga),
-                    ];
-                    let blended = blend_nonseparable_cmyk(blend, bd, src);
-                    for ch in 0..4 {
-                        self.planes[ch][i] = bd[ch] * (1.0 - a) + blended[ch] * a;
-                    }
+                let dst = &mut self.alpha[i];
+                *dst = *dst * (1.0 - a) + a;
+                if !self.merge_non_isolated_rgb_at(child, i, ga, f, blend) {
+                    self.note_group_merge_for_rgb(i);
                 }
-
-                let start = if separable { 0 } else { 4.min(n) };
-                for ch in start..n {
-                    let dst = self.planes[ch][i];
-                    let src = non_isolated_group_source(dst, child.planes[ch][i], ga);
-                    if overprint && src <= 0.0 {
-                        continue;
-                    }
-                    let mode = if separable { blend } else { BlendMode::Normal };
-                    self.planes[ch][i] = dst * (1.0 - a) + mode.blend_ink(dst, src) * a;
-                }
-            }
-
-            let a = (ga * f).clamp(0.0, 1.0);
-            let dst = &mut self.alpha[i];
-            *dst = *dst * (1.0 - a) + a;
-            if !self.merge_non_isolated_rgb_at(child, i, ga, f, blend) {
-                self.note_group_merge_for_rgb(i);
             }
         }
     }
@@ -1501,54 +1961,65 @@ impl InkBuffer {
     pub fn merge_isolated(
         &mut self,
         child: &InkBuffer,
-        factor: &[f32],
+        region: Region,
+        group_alpha: f32,
+        soft_mask: Option<&SoftMask>,
         blend: BlendMode,
         overprint: bool,
     ) {
         let n = self.planes.len().min(child.planes.len());
         let separable = blend.is_separable();
-        for i in 0..self.alpha.len() {
-            let ga = child.alpha.get(i).copied().unwrap_or(0.0);
-            if ga <= 0.0 {
-                continue;
-            }
-            let f = factor.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
-            if f <= 0.0 {
-                continue;
-            }
-            let a = (ga * f).clamp(0.0, 1.0);
-            if !separable && n >= 4 {
-                let bd = [
-                    self.planes[0][i],
-                    self.planes[1][i],
-                    self.planes[2][i],
-                    self.planes[3][i],
-                ];
-                let src = [
-                    (child.planes[0][i] / ga).clamp(0.0, 1.0),
-                    (child.planes[1][i] / ga).clamp(0.0, 1.0),
-                    (child.planes[2][i] / ga).clamp(0.0, 1.0),
-                    (child.planes[3][i] / ga).clamp(0.0, 1.0),
-                ];
-                let blended = blend_nonseparable_cmyk(blend, bd, src);
-                for ch in 0..4 {
-                    self.planes[ch][i] = bd[ch] * (1.0 - a) + blended[ch] * a;
-                }
-            }
-            let start = if separable { 0 } else { 4.min(n) };
-            for ch in start..n {
-                let src = (child.planes[ch][i] / ga).clamp(0.0, 1.0);
-                if overprint && src <= 0.0 {
-                    // Group overprint: kênh group không dùng thì giữ nguyên nền.
+        let region = region
+            .clamped(self.width, self.height)
+            .clamped(child.width, child.height);
+        let width = self.width as usize;
+        for y in region.y0..region.y1 {
+            let row = y as usize * width;
+            for x in region.x0..region.x1 {
+                let i = row + x as usize;
+                let ga = child.alpha.get(i).copied().unwrap_or(0.0);
+                if ga <= 0.0 {
                     continue;
                 }
-                let dst = self.planes[ch][i];
-                let mode = if separable { blend } else { BlendMode::Normal };
-                self.planes[ch][i] = dst * (1.0 - a) + mode.blend_ink(dst, src) * a;
+                let mask = soft_mask.map_or(1.0, |mask| mask.value_at(x, y));
+                let f = (group_alpha * mask).clamp(0.0, 1.0);
+                if f <= 0.0 {
+                    continue;
+                }
+                let a = (ga * f).clamp(0.0, 1.0);
+                if !separable && n >= 4 {
+                    let bd = [
+                        self.planes[0][i],
+                        self.planes[1][i],
+                        self.planes[2][i],
+                        self.planes[3][i],
+                    ];
+                    let src = [
+                        (child.planes[0][i] / ga).clamp(0.0, 1.0),
+                        (child.planes[1][i] / ga).clamp(0.0, 1.0),
+                        (child.planes[2][i] / ga).clamp(0.0, 1.0),
+                        (child.planes[3][i] / ga).clamp(0.0, 1.0),
+                    ];
+                    let blended = blend_nonseparable_cmyk(blend, bd, src);
+                    for ch in 0..4 {
+                        self.planes[ch][i] = bd[ch] * (1.0 - a) + blended[ch] * a;
+                    }
+                }
+                let start = if separable { 0 } else { 4.min(n) };
+                for ch in start..n {
+                    let src = (child.planes[ch][i] / ga).clamp(0.0, 1.0);
+                    if overprint && src <= 0.0 {
+                        // Group overprint: kênh group không dùng thì giữ nguyên nền.
+                        continue;
+                    }
+                    let dst = self.planes[ch][i];
+                    let mode = if separable { blend } else { BlendMode::Normal };
+                    self.planes[ch][i] = dst * (1.0 - a) + mode.blend_ink(dst, src) * a;
+                }
+                let da = &mut self.alpha[i];
+                *da = *da * (1.0 - a) + a;
+                self.note_group_merge_for_rgb(i);
             }
-            let da = &mut self.alpha[i];
-            *da = *da * (1.0 - a) + a;
-            self.note_group_merge_for_rgb(i);
         }
     }
 
@@ -1561,27 +2032,41 @@ impl InkBuffer {
     ///
     /// Chỉ trả kết quả khi mọi pixel còn biểu diễn chính xác trong RGB. Nếu một paint
     /// CMYK/spot đã làm surface mất tính đảo ngược, caller phải quay về đường CMYK.
-    pub(crate) fn rgb_luminosity_plane(&self) -> Option<Vec<f32>> {
+    pub(crate) fn has_complete_rgb_luminosity(&self) -> bool {
+        self.rgb_sidecar
+            .as_ref()
+            .is_some_and(|sidecar| sidecar.state.iter().all(|state| rgb_state_is_valid(*state)))
+    }
+
+    pub(crate) fn rgb_luminosity_at(&self, index: usize) -> Option<f32> {
         let sidecar = self.rgb_sidecar.as_ref()?;
-        let mut out = Vec::with_capacity(sidecar.pixels.len());
-        for (rgb, state) in sidecar.pixels.iter().zip(sidecar.state.iter()) {
-            if !rgb_state_is_valid(*state) {
-                return None;
-            }
-            out.push((0.3 * rgb[0] + 0.59 * rgb[1] + 0.11 * rgb[2]).clamp(0.0, 1.0));
-        }
-        Some(out)
+        let rgb = *sidecar.pixels.get(index)?;
+        let state = *sidecar.state.get(index)?;
+        rgb_state_is_valid(state)
+            .then_some((0.3 * rgb[0] + 0.59 * rgb[1] + 0.11 * rgb[2]).clamp(0.0, 1.0))
+    }
+
+    pub(crate) fn luminosity_at(&self, index: usize) -> f32 {
+        let component = |channel: usize| {
+            self.planes
+                .get(channel)
+                .and_then(|plane| plane.get(index))
+                .copied()
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0)
+        };
+        let k = component(3);
+        let r = (1.0 - component(0)) * (1.0 - k);
+        let g = (1.0 - component(1)) * (1.0 - k);
+        let b = (1.0 - component(2)) * (1.0 - k);
+        (0.3 * r + 0.59 * g + 0.11 * b).clamp(0.0, 1.0)
     }
 
     pub fn luminosity_plane(&self) -> Vec<f32> {
         let px = self.alpha.len();
         let mut out = vec![0.0f32; px];
-        for i in 0..px {
-            let k = self.planes[3][i].clamp(0.0, 1.0);
-            let r = (1.0 - self.planes[0][i].clamp(0.0, 1.0)) * (1.0 - k);
-            let g = (1.0 - self.planes[1][i].clamp(0.0, 1.0)) * (1.0 - k);
-            let b = (1.0 - self.planes[2][i].clamp(0.0, 1.0)) * (1.0 - k);
-            out[i] = (0.3 * r + 0.59 * g + 0.11 * b).clamp(0.0, 1.0);
+        for (index, value) in out.iter_mut().enumerate() {
+            *value = self.luminosity_at(index);
         }
         out
     }
@@ -1657,12 +2142,45 @@ impl InkBuffer {
     /// `None` khi không có quản lý màu: đoán một công thức CMYK→RGB rồi gọi đó là
     /// soft-proof là hứa một thứ không có.
     pub fn to_srgb(&self, cm: &crate::color::icc::ColorManager) -> Option<Vec<u8>> {
+        self.to_srgb_with_cancel(cm, None).ok().flatten()
+    }
+
+    /// Biến thể có token cho Viewer tương tác. `Cancelled` là trạng thái riêng,
+    /// không bị nén thành `None`/"không quy màu được".
+    pub fn to_srgb_with_cancel(
+        &self,
+        cm: &crate::color::icc::ColorManager,
+        cancel_token: Option<&CancelToken>,
+    ) -> PpeResult<Option<Vec<u8>>> {
+        self.to_srgb_with_cancel_and_settings(
+            cm,
+            cancel_token,
+            crate::color::icc::SoftProofSettings::default(),
+        )
+    }
+
+    /// Biến thể Output Preview: giữ nguyên buffer mực, chỉ thay semantics proof
+    /// CMYK→màn hình (Paper/Black/Background) ở bước cuối.
+    pub fn to_srgb_with_cancel_and_settings(
+        &self,
+        cm: &crate::color::icc::ColorManager,
+        cancel_token: Option<&CancelToken>,
+        settings: crate::color::icc::SoftProofSettings,
+    ) -> PpeResult<Option<Vec<u8>>> {
+        if let Some(token) = cancel_token {
+            token.check()?;
+        }
         let px = self.alpha.len();
         // Kênh spot không biểu diễn được trên màn hình, nên đây là chỗ chúng được
         // gộp về CMYK — SAU khi overprint/knockout đã được tính trong không gian
         // mực đầy đủ (xem `InkSpace::fold_spots_at_output`).
         let mut cmyk: Vec<[f32; 4]> = Vec::with_capacity(px);
         for i in 0..px {
+            if i % COLOR_CANCEL_CHUNK_PIXELS == 0 {
+                if let Some(token) = cancel_token {
+                    token.check()?;
+                }
+            }
             cmyk.push([
                 self.planes[0][i].clamp(0.0, 1.0),
                 self.planes[1][i].clamp(0.0, 1.0),
@@ -1678,6 +2196,11 @@ impl InkBuffer {
             match self.space.spot_alternate(ch) {
                 Some(alt) => {
                     for i in 0..px {
+                        if i % COLOR_CANCEL_CHUNK_PIXELS == 0 {
+                            if let Some(token) = cancel_token {
+                                token.check()?;
+                            }
+                        }
                         let t = plane[i].clamp(0.0, 1.0);
                         if t <= 0.0 {
                             continue;
@@ -1694,6 +2217,11 @@ impl InkBuffer {
                     // lượng phủ: sai sắc, nhưng thấy được. Bỏ hẳn kênh sẽ làm một
                     // vùng có mực hiện ra giấy trắng — đó là im lặng nói sai.
                     for i in 0..px {
+                        if i % COLOR_CANCEL_CHUNK_PIXELS == 0 {
+                            if let Some(token) = cancel_token {
+                                token.check()?;
+                            }
+                        }
                         let t = plane[i].clamp(0.0, 1.0);
                         if t > 0.0 {
                             cmyk[i][3] = (cmyk[i][3] + t).min(1.0);
@@ -1702,12 +2230,24 @@ impl InkBuffer {
                 }
             }
         }
-        let rgb = cm.cmyk_to_srgb_batch(&cmyk)?;
+        let Some(rgb) =
+            cm.cmyk_to_srgb_batch_with_cancel_and_settings(&cmyk, cancel_token, settings)?
+        else {
+            return Ok(None);
+        };
         let mut out = Vec::with_capacity(px * 3);
-        for p in rgb {
-            out.extend_from_slice(&p);
+        for chunk in rgb.chunks(COLOR_CANCEL_CHUNK_PIXELS) {
+            if let Some(token) = cancel_token {
+                token.check()?;
+            }
+            for pixel in chunk {
+                out.extend_from_slice(pixel);
+            }
         }
-        Some(out)
+        if let Some(token) = cancel_token {
+            token.check()?;
+        }
+        Ok(Some(out))
     }
 
     /// Xuất buffer mực ra CMYK composite 8 bit (4 byte/pixel) — đường **export production**.
@@ -1820,6 +2360,103 @@ impl Drop for InkBuffer {
     }
 }
 
+/// Soft mask đã raster trong một cửa sổ thiết bị hữu hạn.
+///
+/// Ngoài [`SoftMask::region`], giá trị không phải lúc nào cũng bằng 1: `/Alpha`
+/// dùng 0, còn `/Luminosity` dùng độ sáng của `/BC` sau `/TR`. Giữ giá trị nền
+/// ngay trong đối tượng giúp mọi đường vẽ lấy mẫu cùng một ngữ nghĩa, kể cả khi
+/// mặt nạ chỉ chiếm vài chục pixel trên một trang rất lớn.
+#[derive(Debug)]
+pub struct SoftMask {
+    region: Region,
+    values: Vec<f32>,
+    outside: f32,
+    budget: Arc<MemoryBudget>,
+    reserved_bytes: usize,
+}
+
+impl SoftMask {
+    pub fn region(&self) -> Region {
+        self.region
+    }
+
+    #[inline]
+    pub fn value_at(&self, x: u32, y: u32) -> f32 {
+        if x < self.region.x0 || x >= self.region.x1 || y < self.region.y0 || y >= self.region.y1 {
+            return self.outside;
+        }
+        let width = (self.region.x1 - self.region.x0) as usize;
+        let local_x = (x - self.region.x0) as usize;
+        let local_y = (y - self.region.y0) as usize;
+        self.values
+            .get(local_y * width + local_x)
+            .copied()
+            .unwrap_or(self.outside)
+    }
+
+    #[inline]
+    pub(crate) fn value_at_index(&self, index: usize, frame_width: usize) -> f32 {
+        if frame_width == 0 {
+            return self.outside;
+        }
+        self.value_at((index % frame_width) as u32, (index / frame_width) as u32)
+    }
+
+    /// Mẫu cục bộ theo thứ tự hàng của [`Self::region`].
+    pub fn values(&self) -> &[f32] {
+        &self.values
+    }
+
+    /// Mẫu cục bộ có thể ghi để caller dựng mask rồi truyền vào raster/merge API.
+    pub fn values_mut(&mut self) -> &mut [f32] {
+        &mut self.values
+    }
+
+    pub(crate) fn peak_at(
+        &self,
+        x: i64,
+        y: i64,
+        frame_width: i64,
+        frame_height: i64,
+        radius: i64,
+    ) -> f32 {
+        if frame_width <= 0 || frame_height <= 0 {
+            return self.outside;
+        }
+        let mut value = 0.0_f32;
+        for oy in -radius..=radius {
+            for ox in -radius..=radius {
+                let px = (x + ox).clamp(0, frame_width - 1) as u32;
+                let py = (y + oy).clamp(0, frame_height - 1) as u32;
+                value = value.max(self.value_at(px, py));
+            }
+        }
+        value
+    }
+}
+
+impl Drop for SoftMask {
+    fn drop(&mut self) {
+        self.budget.release(self.reserved_bytes);
+    }
+}
+
+fn crop_plane_in_place<T: Copy>(
+    plane: &mut Vec<T>,
+    source_width: usize,
+    crop_x: usize,
+    crop_y: usize,
+    crop_width: usize,
+    crop_height: usize,
+) {
+    for row in 0..crop_height {
+        let source_start = (crop_y + row) * source_width + crop_x;
+        let target_start = row * crop_width;
+        plane.copy_within(source_start..source_start + crop_width, target_start);
+    }
+    plane.truncate(crop_width * crop_height);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1830,6 +2467,98 @@ mod tests {
 
     fn cmyk(c: f32, m: f32, y: f32, k: f32) -> Vec<f32> {
         vec![c, m, y, k]
+    }
+
+    #[test]
+    fn composite_solid_opaque_khop_duong_pixel_voi_rgb_va_spot() {
+        let mut space = InkSpace::new();
+        space
+            .register(Colorant::Spot("PANTONE Test".to_string()))
+            .unwrap();
+        let parent = InkBuffer::new(17, 13, space).unwrap();
+        let mut fast = parent.child_isolated_rgb().unwrap();
+        let mut scalar = parent.child_isolated_rgb().unwrap();
+        assert!(fast.ensure_rgb_sidecar().unwrap());
+        assert!(scalar.ensure_rgb_sidecar().unwrap());
+
+        let mut paint = InkPaint::opaque(vec![0.2, 0.4, 0.6, 0.8, 0.9], ChannelMask::PROCESS);
+        paint.blend_rgb = Some([0.1, 0.3, 0.7]);
+
+        fast.composite_solid(&paint).unwrap();
+        scalar.sync_channels().unwrap();
+        for index in 0..scalar.alpha.len() {
+            scalar.composite_at(index, 1.0, &paint);
+        }
+
+        assert_eq!(fast.planes, scalar.planes);
+        assert_eq!(fast.alpha, scalar.alpha);
+        assert_eq!(
+            fast.rgb_sidecar.as_ref().unwrap().pixels,
+            scalar.rgb_sidecar.as_ref().unwrap().pixels
+        );
+        assert_eq!(
+            fast.rgb_sidecar.as_ref().unwrap().state,
+            scalar.rgb_sidecar.as_ref().unwrap().state
+        );
+
+        let mut fast_without_rgb = parent.child_isolated_rgb().unwrap();
+        let mut scalar_without_rgb = parent.child_isolated_rgb().unwrap();
+        assert!(fast_without_rgb.ensure_rgb_sidecar().unwrap());
+        assert!(scalar_without_rgb.ensure_rgb_sidecar().unwrap());
+        let paint_without_rgb =
+            InkPaint::opaque(vec![0.8, 0.6, 0.4, 0.2, 0.9], ChannelMask::PROCESS);
+        fast_without_rgb
+            .composite_solid(&paint_without_rgb)
+            .unwrap();
+        scalar_without_rgb.sync_channels().unwrap();
+        for index in 0..scalar_without_rgb.alpha.len() {
+            scalar_without_rgb.composite_at(index, 1.0, &paint_without_rgb);
+        }
+        assert_eq!(fast_without_rgb.planes, scalar_without_rgb.planes);
+        assert_eq!(fast_without_rgb.alpha, scalar_without_rgb.alpha);
+        assert_eq!(
+            fast_without_rgb.rgb_sidecar.as_ref().unwrap().pixels,
+            scalar_without_rgb.rgb_sidecar.as_ref().unwrap().pixels
+        );
+        assert_eq!(
+            fast_without_rgb.rgb_sidecar.as_ref().unwrap().state,
+            scalar_without_rgb.rgb_sidecar.as_ref().unwrap().state
+        );
+    }
+
+    #[test]
+    fn crop_raster_giu_dung_plane_alpha_va_rgb_sidecar() {
+        let mut buffer = InkBuffer::new(4, 3, InkSpace::new()).unwrap();
+        for index in 0..12 {
+            buffer.planes[0][index] = index as f32;
+            buffer.alpha[index] = (index as f32) / 12.0;
+        }
+        assert!(buffer.ensure_rgb_sidecar().unwrap());
+        let sidecar = buffer.rgb_sidecar.as_mut().unwrap();
+        for index in 0..12 {
+            sidecar.pixels[index] = [index as f32, 0.0, 0.0];
+            sidecar.state[index] = index as u8;
+        }
+
+        buffer.crop_raster_in_place(1, 1, 2, 2).unwrap();
+
+        assert_eq!((buffer.width(), buffer.height()), (2, 2));
+        assert_eq!(buffer.planes[0], vec![5.0, 6.0, 9.0, 10.0]);
+        assert_eq!(
+            buffer.alpha,
+            vec![5.0 / 12.0, 6.0 / 12.0, 9.0 / 12.0, 10.0 / 12.0]
+        );
+        let sidecar = buffer.rgb_sidecar.as_ref().unwrap();
+        assert_eq!(
+            sidecar.pixels,
+            vec![
+                [5.0, 0.0, 0.0],
+                [6.0, 0.0, 0.0],
+                [9.0, 0.0, 0.0],
+                [10.0, 0.0, 0.0],
+            ]
+        );
+        assert_eq!(sidecar.state, vec![5, 6, 9, 10]);
     }
 
     #[test]
@@ -2097,6 +2826,182 @@ mod tests {
     }
 
     #[test]
+    fn parallel_process_shading_khop_tuyet_doi_va_tu_choi_spot_co_muc() {
+        const WIDTH: u32 = 1024;
+        const HEIGHT: u32 = 520;
+
+        fn sample(x: u32, y: u32, _index: usize) -> Option<([f32; 4], ChannelMask, f32)> {
+            if (x + y) % 13 == 0 {
+                return None;
+            }
+            let declared = match (x + 2 * y) % 3 {
+                0 => ChannelMask::PROCESS,
+                1 => ChannelMask::single(3),
+                _ => ChannelMask::single(0).union(ChannelMask::single(2)),
+            };
+            Some((
+                [
+                    (x % 251) as f32 / 250.0,
+                    (y % 239) as f32 / 238.0,
+                    ((x + y) % 233) as f32 / 232.0,
+                    ((3 * x + 5 * y) % 229) as f32 / 228.0,
+                ],
+                declared,
+                ((x + 2 * y) % 101) as f32 / 100.0,
+            ))
+        }
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        for overprint in [false, true] {
+            let mut space = InkSpace::new();
+            space
+                .register(Colorant::Spot("PANTONE Test".to_string()))
+                .unwrap();
+            let mut scalar = InkBuffer::new(WIDTH, HEIGHT, space.clone()).unwrap();
+            let mut parallel = InkBuffer::new(WIDTH, HEIGHT, space).unwrap();
+            for (channel, plane) in scalar.planes.iter_mut().take(4).enumerate() {
+                plane.fill(0.07 * (channel + 1) as f32);
+            }
+            for (target, source) in parallel.planes.iter_mut().zip(&scalar.planes) {
+                target.copy_from_slice(source);
+            }
+            scalar.alpha.fill(0.25);
+            parallel.alpha.copy_from_slice(&scalar.alpha);
+
+            for y in 0..HEIGHT {
+                for x in 0..WIDTH {
+                    let index = y as usize * WIDTH as usize + x as usize;
+                    let Some((source, declared, alpha)) = sample(x, y, index) else {
+                        continue;
+                    };
+                    let mut ink = source.to_vec();
+                    ink.resize(5, 0.0);
+                    scalar.composite_at(
+                        index,
+                        1.0,
+                        &InkPaint {
+                            ink,
+                            declared,
+                            overprint,
+                            alpha,
+                            blend: BlendMode::SoftLight,
+                            blend_rgb: None,
+                        },
+                    );
+                }
+            }
+
+            assert!(
+                pool.install(|| parallel.composite_process_shading_pixels_parallel(
+                    Region::full(WIDTH, HEIGHT),
+                    BlendMode::SoftLight,
+                    overprint,
+                    None,
+                    sample,
+                ))
+            );
+            assert_eq!(parallel.planes, scalar.planes);
+            assert_eq!(parallel.alpha, scalar.alpha);
+        }
+
+        let mut space = InkSpace::new();
+        space
+            .register(Colorant::Spot("PANTONE Test".to_string()))
+            .unwrap();
+        let mut with_spot = InkBuffer::new(WIDTH, HEIGHT, space).unwrap();
+        with_spot.planes[4][0] = 0.5;
+        assert!(
+            !pool.install(|| with_spot.composite_process_shading_pixels_parallel(
+                Region::full(WIDTH, HEIGHT),
+                BlendMode::Normal,
+                false,
+                None,
+                sample,
+            ))
+        );
+        assert_eq!(with_spot.planes[4][0], 0.5);
+    }
+
+    #[test]
+    fn parallel_non_isolated_softlight_matches_scalar_planes_and_alpha() {
+        let width = 1040u32;
+        let height = 520u32;
+        let region = Region {
+            x0: 8,
+            y0: 0,
+            x1: width,
+            y1: height,
+        };
+        assert!(
+            (region.x1 - region.x0) as usize * (region.y1 - region.y0) as usize
+                >= PARALLEL_FRAME_MIN_PIXELS
+        );
+
+        let build = || {
+            let mut parent = InkBuffer::new(width, height, InkSpace::new()).unwrap();
+            let pixels = width as usize * height as usize;
+            for index in 0..pixels {
+                parent.alpha[index] = 1.0;
+                for channel in 0..4 {
+                    parent.planes[channel][index] =
+                        ((index * (channel + 3) + channel * 17) % 251) as f32 / 250.0;
+                }
+            }
+            let mut child = parent.child_non_isolated().unwrap();
+            for index in 0..pixels {
+                child.alpha[index] = if index % 13 == 0 {
+                    0.0
+                } else {
+                    (index % 101) as f32 / 100.0
+                };
+                for channel in 0..4 {
+                    child.planes[channel][index] =
+                        ((index * (channel + 5) + 31) % 241) as f32 / 240.0;
+                }
+            }
+            (parent, child)
+        };
+
+        let (mut scalar, scalar_child) = build();
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(|| {
+                scalar.merge_non_isolated(
+                    &scalar_child,
+                    region,
+                    0.73,
+                    None,
+                    BlendMode::SoftLight,
+                    false,
+                );
+            });
+
+        let (mut parallel, parallel_child) = build();
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap()
+            .install(|| {
+                parallel.merge_non_isolated(
+                    &parallel_child,
+                    region,
+                    0.73,
+                    None,
+                    BlendMode::SoftLight,
+                    false,
+                );
+            });
+
+        assert_eq!(parallel.planes, scalar.planes);
+        assert_eq!(parallel.alpha, scalar.alpha);
+    }
+
+    #[test]
     fn none_and_all_colorants_are_recognised() {
         assert!(InkSpace::is_none_colorant("None"));
         assert!(!InkSpace::is_none_colorant("PANTONE 485 C"));
@@ -2166,7 +3071,14 @@ mod tests {
         source.blend_rgb = Some([0.0, 0.0, 1.0]);
         child.composite(&[1.0], &source).unwrap();
 
-        parent.merge_non_isolated(&child, &[0.4], BlendMode::Normal, false);
+        parent.merge_non_isolated(
+            &child,
+            Region::full(1, 1),
+            0.4,
+            None,
+            BlendMode::Normal,
+            false,
+        );
         let sidecar = parent.rgb_sidecar.as_ref().unwrap();
         let rgb = sidecar.pixels[0];
         // Group coverage 0.5 × group alpha 0.4 = 0.2.

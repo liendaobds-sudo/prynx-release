@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { tv } from '../../i18n';
 import { saveBlob } from '../../lib/saveBlob';
@@ -12,7 +12,10 @@ interface Props {
     tabId: string;
     pdfFile: File | null;
     sourceImageFile?: File | null;
+    activeSourcePage?: number;
+    pageOrder?: number[];
     isActive?: boolean;
+    onOpenTool?: (tool: 'sticker_imposer' | 'cnc_imposer') => void;
     onFileFixed: (blob: Blob, name: string, path?: string) => void | Promise<void>;
 }
 
@@ -20,45 +23,91 @@ const MODES: Array<{ id: StickerSourceMode; label: string; description: string }
     {
         id: 'existing',
         label: 'PDF/PNG đã có biên',
-        description: 'Bù xén hoặc tạo đường cắt từ trang và kênh trong suốt hiện có.',
+        description: 'Bù xén hoặc tạo đường cắt trực tiếp với đầy đủ tùy chọn cũ.',
     },
     {
         id: 'ai-sheet',
         label: 'Ảnh AI nhiều tem',
-        description: 'Tách từng tem, loại bóng mockup rồi tạo CutContour.',
+        description: 'Chỉ dùng khi cần tách nhiều tem, loại bóng hoặc sửa vùng tem.',
     },
 ];
 
-export default function StickerCutlineTool({ tabId, pdfFile, sourceImageFile, isActive = true, onFileFixed }: Props) {
+export default function StickerCutlineTool({
+    tabId,
+    pdfFile,
+    sourceImageFile,
+    activeSourcePage = 1,
+    pageOrder,
+    isActive = true,
+    onOpenTool,
+    onFileFixed,
+}: Props) {
     const tab = useStickerSheetStore(state => state.tabs[tabId]);
-    const mode = tab?.mode || 'existing';
     const actionsRef = useRef(useStickerSheetStore.getState());
     const actions = actionsRef.current;
+    const mode = tab?.mode || 'existing';
+    const [directProcessing, setDirectProcessing] = useState(false);
+    const [completedExport, setCompletedExport] = useState<{
+        filename: string;
+        stickerCount: number;
+    } | null>(null);
+    const exportedFilenameRef = useRef<string | null>(null);
+    const workflowBusy = (
+        tab?.status === 'confirming'
+        || tab?.status === 'exporting'
+        || directProcessing
+    );
 
     useEffect(() => actions.initTab(tabId), [actions, tabId]);
 
     useEffect(() => {
-        if (!isActive || mode !== 'ai-sheet' || !sourceImageFile) return;
+        if (!isActive || mode !== 'ai-sheet') return;
+        // UIUX (audit 2026-08-09 §MP.6): trang AI bám số trang nguồn đang được
+        // thumbnail chọn; đổi thumbnail không thay viewport hoặc trạng thái zoom/Hand.
+        actions.setActivePage(tabId, activeSourcePage);
+    }, [actions, activeSourcePage, isActive, mode, tabId]);
+
+    useEffect(() => {
+        if (!isActive || mode !== 'ai-sheet') return;
+        const workspaceSource = pdfFile || sourceImageFile;
+        if (!workspaceSource) return;
+        // UIUX (feedback 2026-08-10): PDF vừa xuất là kết quả đang xem, không phải
+        // nguồn AI mới. Chỉ bỏ chốt khi Viewer thực sự chuyển sang một file khác.
+        const exportedFilename = exportedFilenameRef.current;
+        if (exportedFilename && workspaceSource.name === exportedFilename) return;
+        if (exportedFilename) {
+            exportedFilenameRef.current = null;
+            setCompletedExport(null);
+        }
         const current = useStickerSheetStore.getState().getTab(tabId);
-        if (current.status !== 'idle' || current.sourceFile) return;
-        // NAV (audit 2026-08-05 §AI2.ROUTE1): chỉ auto-analyze đúng ảnh nguồn của
-        // tab active; ảnh do người dùng đã chọn trong workspace luôn được ưu tiên.
-        void actions.analyze(tabId, sourceImageFile);
-    }, [actions, isActive, mode, sourceImageFile, tabId]);
+        if (current.sourceFile === workspaceSource) return;
+        // UIUX (feedback 2026-08-09 §MP.THUMBNAIL): tài liệu trong Viewer là nguồn
+        // duy nhất; đổi file/thumbnail không giữ lại một nguồn ảnh riêng trong panel.
+        // Chỉ đồng bộ file, tuyệt đối không inspect/detect ngầm.
+        actions.selectSource(tabId, workspaceSource, 'workspace');
+    }, [actions, isActive, mode, pdfFile, sourceImageFile, tabId]);
 
     const handleExport = async () => {
-        const result = await actions.exportFile(tabId, 'pdf');
+        const result = await actions.exportFile(tabId, 'pdf', pageOrder);
         if (!result) return;
-        await onFileFixed(result.blob, result.filename, result.outputPath);
-        // NAV (audit 2026-08-05 §AI2.ROUTE3): commit xong phải bỏ lớp chỉnh mask để
-        // PDF kết quả hiện ngay trong viewer. Đây chỉ là submode của cùng công cụ,
-        // không điều hướng sang Bình tem bế; session AI vẫn còn để quay lại chỉnh tiếp.
-        actions.setMode(tabId, 'existing');
-        toast.success(`${tv('Kết quả')}: ${result.filename} · ${result.stickerCount} ${tv('tem')}`);
+        exportedFilenameRef.current = result.filename;
+        try {
+            await onFileFixed(result.blob, result.filename, result.outputPath);
+            setCompletedExport({
+                filename: result.filename,
+                stickerCount: result.stickerCount,
+            });
+            toast.success(`${tv('Kết quả')}: ${result.filename} · ${result.stickerCount} ${tv('tem')}`);
+        } catch {
+            exportedFilenameRef.current = null;
+            toast.error(tv('Đã tạo PDF nhưng không đưa được vào tài liệu đang mở. Hãy thử lại.'));
+        } finally {
+            actions.finishExport(tabId);
+        }
     };
 
     const handleExportPng = async () => {
-        const result = await actions.exportFile(tabId, 'png_zip');
+        const result = await actions.exportFile(tabId, 'png_zip', pageOrder);
         if (!result) return;
         try {
             const saved = await saveBlob(result.blob, result.filename, {
@@ -71,6 +120,8 @@ export default function StickerCutlineTool({ tabId, pdfFile, sourceImageFile, is
             }
         } catch {
             toast.error(tv('Không lưu được bộ PNG. Hãy thử lại.'));
+        } finally {
+            actions.finishExport(tabId);
         }
     };
 
@@ -82,9 +133,15 @@ export default function StickerCutlineTool({ tabId, pdfFile, sourceImageFile, is
                         key={option.id}
                         type="button"
                         title={tv(option.description)}
+                        disabled={workflowBusy}
                         aria-pressed={mode === option.id}
-                        onClick={() => actions.setMode(tabId, option.id)}
-                        className={`min-h-11 rounded-lg px-2 text-[10px] font-bold leading-tight transition-colors ${
+                        onClick={() => {
+                            if (workflowBusy || option.id === mode) return;
+                            exportedFilenameRef.current = null;
+                            setCompletedExport(null);
+                            actions.setMode(tabId, option.id);
+                        }}
+                        className={`min-h-11 rounded-lg px-2 text-[10px] font-bold leading-tight transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                             mode === option.id
                                 ? 'bg-white text-violet-700 shadow-sm dark:bg-zinc-900 dark:text-violet-300'
                                 : 'text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200'
@@ -96,14 +153,55 @@ export default function StickerCutlineTool({ tabId, pdfFile, sourceImageFile, is
             </div>
 
             {mode === 'existing' ? (
-                <StickerTool pdfFile={pdfFile} onFileFixed={onFileFixed} />
-            ) : (
-                <StickerSheetPanel
-                    tabId={tabId}
-                    onExport={() => { void handleExport(); }}
-                    onExportPng={() => { void handleExportPng(); }}
-                    isExporting={tab?.isExporting === true}
+                <StickerTool
+                    pdfFile={pdfFile}
+                    onFileFixed={onFileFixed}
+                    onProcessingChange={setDirectProcessing}
                 />
+            ) : (
+                <>
+                    {completedExport && (
+                        <div
+                            role="status"
+                            className="rounded-xl border border-emerald-300 bg-emerald-50 p-3 dark:border-emerald-800 dark:bg-emerald-950/30"
+                        >
+                            <div className="text-[12px] font-bold text-emerald-800 dark:text-emerald-200">
+                                ✓ {tv('Kết quả')}
+                            </div>
+                            <div
+                                className="mt-1 truncate text-[10px] text-emerald-700 dark:text-emerald-300"
+                                title={completedExport.filename}
+                            >
+                                {completedExport.filename} · {completedExport.stickerCount} {tv('tem')}
+                            </div>
+                            <div className="mt-3 grid grid-cols-2 gap-2">
+                                <button
+                                    type="button"
+                                    disabled={workflowBusy || !onOpenTool}
+                                    onClick={() => onOpenTool?.('sticker_imposer')}
+                                    className="min-h-11 rounded-lg bg-violet-600 px-2 text-[10px] font-bold text-white shadow-sm transition-colors hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                    {tv('Bình tem bế')}
+                                </button>
+                                <button
+                                    type="button"
+                                    disabled={workflowBusy || !onOpenTool}
+                                    onClick={() => onOpenTool?.('cnc_imposer')}
+                                    className="min-h-11 rounded-lg border border-violet-300 bg-white px-2 text-[10px] font-bold text-violet-700 shadow-sm transition-colors hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-violet-800 dark:bg-zinc-900 dark:text-violet-300"
+                                >
+                                    {tv('Bình bế rớt (CNC)')}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                    <StickerSheetPanel
+                        tabId={tabId}
+                        onExport={() => { void handleExport(); }}
+                        onExportPng={() => { void handleExportPng(); }}
+                        isExporting={tab?.isExporting === true}
+                        pageOrder={pageOrder}
+                    />
+                </>
             )}
         </div>
     );

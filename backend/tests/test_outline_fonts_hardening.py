@@ -1,10 +1,10 @@
 """
 Test outline-fonts hardening: flatten annotation/form + verify + detect unembedded.
 
-Điểm mù đã audit của GS ``-dNoOutputFonts``:
-  - Text trong AcroForm field / annotation → phải flatten vào content trước.
-  - Font chưa nhúng → cảnh báo rủi ro rơi ký tự.
-  - Verify text còn sót sau outline.
+Các chốt an toàn của engine nội bộ:
+  - Text trong AcroForm field / annotation phải flatten vào content trước.
+  - Font chưa nhúng hoặc không có dữ liệu glyph phải bị từ chối.
+  - Output phải được hậu kiểm text còn sót và so kẽm.
 """
 import pikepdf
 import pytest
@@ -157,9 +157,8 @@ def test_count_live_text_empty_pdf(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_outline_pipeline_flattens_and_verifies(tmp_path):
-    """End-to-end: OUTLINE_FONTS trên PDF có form field → output phải KHÔNG còn
-    annotation mang text (đã flatten + outline)."""
+async def test_outline_pipeline_refuses_base14_without_glyph_data(tmp_path):
+    """Base-14 hiển thị được nhưng không có glyph nhúng để dựng path an toàn."""
     from app.core.action_engine import ActionEngine
 
     src = str(tmp_path / "form.pdf")
@@ -168,11 +167,13 @@ async def test_outline_pipeline_flattens_and_verifies(tmp_path):
     engine = ActionEngine()
     result = await engine.execute(src, "OUTLINE_FONTS")
 
-    if not result.success:
-        pytest.skip(f"Ghostscript không khả dụng: {result.error}")
-
-    after = count_live_text(result.output_path)
-    assert after["annot_text_pages"] == [], "output không được còn annotation mang text"
+    # GS-SUNSET (audit 2026-08-08 §GS.2): không skip theo môi trường. Fixture
+    # chỉ có Helvetica base-14 nên engine phải từ chối thay vì mượn glyph khác.
+    assert result.success is False
+    assert result.output_path is None
+    assert result.log[0].status == "refused"
+    assert result.log[0].engine == "none"
+    assert "dừng an toàn" in (result.error or "")
 
 
 @pytest.mark.asyncio

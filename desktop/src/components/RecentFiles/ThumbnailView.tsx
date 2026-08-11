@@ -52,7 +52,9 @@ const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
         if (isPdf) {
           const enc = encodeURIComponent(path);
           // page=1, zoom nhỏ (~0.3) đủ nét cho thumbnail 180px; object-contain tự vừa khung.
-          setSrc(`http://tile.localhost/${enc}/1/0.3/0/0/0/0/0`);
+          // PERF (audit 2026-08-08 §RENDER.2): lưới gần đây là tải nền; không được
+          // chiếm lane tương tác của trang PDF mà người dùng đang mở.
+          setSrc(`http://tile.localhost/${enc}/1/0.3/0/0/0/0/0?purpose=background`);
           setFileExists(true);
         } else if (!isOffice) {
           // FILEIO (audit 2026-07-28 §FL.03): ảnh recent có thể ở ổ ngoài scope.
@@ -86,6 +88,11 @@ const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
         {ext && <span className="text-[10px] font-semibold text-slate-400">{ext}</span>}
       </div>
     );
+  }
+  if (!active) {
+    // PERF (feedback 2026-08-09 §RENDER.F4): tháo <img> khi rời Home. Chỉ bỏ qua
+    // effect mới vẫn để URL tile.localhost cũ tải ngầm và có thể báo 500 trong Viewer.
+    return <div className="w-full h-full bg-slate-100 dark:bg-zinc-800" />;
   }
   if (!src) {
     return <div className="animate-pulse w-full h-full bg-slate-100 dark:bg-zinc-800" />;

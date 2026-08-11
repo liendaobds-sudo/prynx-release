@@ -27,11 +27,19 @@ def _blank_pdf(tmp_path) -> str:
 
 def test_endpoint_uses_ppe_pair_and_returns_real_diff(tmp_path, monkeypatch):
     source = _blank_pdf(tmp_path)
-    calls: list[bool] = []
+    calls: list[tuple[bool, str, int]] = []
 
-    def fake_softproof(_path, _page, *, dpi, simulate_overprint):
+    def fake_softproof(
+        _path,
+        _page,
+        *,
+        dpi,
+        simulate_overprint,
+        cmyk_profile_id,
+        render_intent,
+    ):
         assert dpi == 72
-        calls.append(simulate_overprint)
+        calls.append((simulate_overprint, cmyk_profile_id, render_intent))
         value = 0 if simulate_overprint else 255
         return {
             "width": 2,
@@ -42,22 +50,27 @@ def test_endpoint_uses_ppe_pair_and_returns_real_diff(tmp_path, monkeypatch):
 
     monkeypatch.setattr(preflight, "_get_file_path", lambda _file_id: source)
     monkeypatch.setattr(preflight, "ppe_softproof", fake_softproof)
-    monkeypatch.setattr(
-        preflight,
-        "run_hidden",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("không được gọi GS")),
-    )
     result = asyncio.run(
         preflight.render_overprint_preview(
-            preflight.OverprintPreviewRequest(file_id="fixture", page=1, dpi=72)
+            preflight.OverprintPreviewRequest(
+                file_id="fixture",
+                page=1,
+                dpi=72,
+                profile_id="swop",
+                intent="perceptual",
+            )
         )
     )
     assert result["success"] is True
     assert result["engine"] == "ppe"
     assert result["has_differences"] is True
     assert result["diff_pixel_count"] == 4
-    assert calls == [False, True]
+    assert calls == [(False, "swop", 0), (True, "swop", 0)]
     assert result["diff_overlay"].startswith("data:image/png;base64,")
+    assert result["overprint_image"].startswith("data:image/png;base64,")
+    assert result["page_has_overprint"] is False
+    assert result["profile_id"] == "swop"
+    assert result["intent"] == "perceptual"
 
 
 def _spot_overprint_pdf(tmp_path) -> str:
@@ -101,6 +114,37 @@ def _spot_overprint_pdf(tmp_path) -> str:
     return str(path)
 
 
+def _form_overprint_pdf(tmp_path) -> str:
+    pdf = pikepdf.Pdf.new()
+    form = pdf.make_stream(b"/Over gs 0 0 10 10 re f")
+    form["/Type"] = pikepdf.Name("/XObject")
+    form["/Subtype"] = pikepdf.Name("/Form")
+    form["/BBox"] = pikepdf.Array([0, 0, 10, 10])
+    form["/Resources"] = pikepdf.Dictionary(
+        ExtGState=pikepdf.Dictionary(
+            Over=pikepdf.Dictionary(OP=True, op=True, OPM=1),
+        ),
+    )
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"),
+        MediaBox=[0, 0, 20, 20],
+        Resources=pikepdf.Dictionary(
+            XObject=pikepdf.Dictionary(Fm=form),
+        ),
+        Contents=pdf.make_indirect(pikepdf.Stream(pdf, b"/Fm Do")),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    path = tmp_path / "form_overprint.pdf"
+    pdf.save(str(path))
+    pdf.close()
+    return str(path)
+
+
+def test_metadata_overprint_lan_theo_form_xobject_duoc_dung(tmp_path):
+    source = _form_overprint_pdf(tmp_path)
+    assert preflight._page_has_used_overprint(source, 1) is True
+
+
 def test_spot_overprint_is_detected_by_real_ppe_render(tmp_path, monkeypatch):
     """Hồi quy §A.1 (audit 2026-07-27) — KHÔNG mock engine.
 
@@ -118,11 +162,6 @@ def test_spot_overprint_is_detected_by_real_ppe_render(tmp_path, monkeypatch):
 
     source = _spot_overprint_pdf(tmp_path)
     monkeypatch.setattr(preflight, "_get_file_path", lambda _file_id: source)
-    monkeypatch.setattr(
-        preflight,
-        "run_hidden",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("không được gọi GS")),
-    )
     result = asyncio.run(
         preflight.render_overprint_preview(
             preflight.OverprintPreviewRequest(file_id="fixture", page=1, dpi=72)
@@ -134,6 +173,7 @@ def test_spot_overprint_is_detected_by_real_ppe_render(tmp_path, monkeypatch):
         "overprint trên mực pha phải hiện ra khác biệt; 0 pixel nghĩa là kẽm spot "
         "đã bị gộp về CMYK trước khi tính overprint"
     )
+    assert result["page_has_overprint"] is True
     # Ô phủ chiếm 1/4 diện tích trang; chấp nhận sai số viền chứ không chấp nhận
     # một con số nhỏ do vài pixel nhiễu.
     total = result["width"] * result["height"]

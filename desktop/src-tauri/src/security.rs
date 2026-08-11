@@ -669,7 +669,9 @@ pub fn apply_optional_process_mitigations() {
     let raw = std::env::var("PRYNX_MITIGATIONS").unwrap_or_default();
     let mode = raw.trim().to_lowercase();
     if mode.is_empty() || mode == "0" || mode == "false" || mode == "off" {
-        log::info!("[SECURITY] process mitigations: disabled (default) — set PRYNX_MITIGATIONS to test");
+        log::info!(
+            "[SECURITY] process mitigations: disabled (default) — set PRYNX_MITIGATIONS to test"
+        );
         return;
     }
 
@@ -704,7 +706,10 @@ pub fn apply_optional_process_mitigations() {
                 &flags as *const _ as *const std::ffi::c_void,
                 std::mem::size_of::<u32>(),
             );
-            log::warn!("[SECURITY] mitigation ProhibitDynamicCode applied={}", ok != 0);
+            log::warn!(
+                "[SECURITY] mitigation ProhibitDynamicCode applied={}",
+                ok != 0
+            );
         }
 
         if want_signed_only {
@@ -869,6 +874,87 @@ pub fn set_sidecar_token(token: &str) {
     }
 }
 
+fn decrypt_sidecar_token() -> Result<String, String> {
+    let enc = SIDECAR_TOKEN.lock().map_err(|e| format!("Lock: {}", e))?;
+    let decrypted = enc.decrypt();
+    if decrypted.is_empty() {
+        return Err("Sidecar not initialized".to_string());
+    }
+    Ok(decrypted)
+}
+
+const UPSCALE_FILE_GRANT_TTL_SECONDS: u64 = 120;
+
+#[derive(serde::Serialize)]
+struct UpscaleFileGrantClaims<'a> {
+    v: u8,
+    iat: u64,
+    exp: u64,
+    nonce: &'a str,
+    tab: &'a str,
+    path: &'a str,
+}
+
+fn build_upscale_file_grant(
+    token: &str,
+    canonical_path: &str,
+    tab_id: &str,
+    issued_at: u64,
+    nonce: &str,
+) -> Result<String, String> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let claims = UpscaleFileGrantClaims {
+        v: 1,
+        iat: issued_at,
+        exp: issued_at.saturating_add(UPSCALE_FILE_GRANT_TTL_SECONDS),
+        nonce,
+        tab: tab_id,
+        path: canonical_path,
+    };
+    let payload = URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&claims).map_err(|e| format!("Grant encode error: {}", e))?);
+    let sign_payload = format!("prynx-upscale-file-grant:v1:{}", payload);
+    let mut mac = Hmac::<Sha256>::new_from_slice(token.as_bytes())
+        .map_err(|e| format!("HMAC init error: {}", e))?;
+    mac.update(sign_payload.as_bytes());
+    Ok(format!(
+        "v1.{}.{}",
+        payload,
+        hex::encode(mac.finalize().into_bytes())
+    ))
+}
+
+/// SEC (audit 2026-08-11 §UP.R.01): tạo capability ngắn hạn cho đúng một file
+/// ảnh + tab. Command native phải kiểm scope trước khi gọi hàm này; secret sidecar
+/// vẫn chỉ sống trong Rust và grant không thể bị renderer tự sửa đường dẫn.
+pub(crate) fn issue_upscale_file_grant(
+    canonical_path: &str,
+    tab_id: &str,
+) -> Result<String, String> {
+    if tab_id.is_empty() || tab_id.len() > 128 {
+        return Err("Tab Upscale không hợp lệ".to_string());
+    }
+    if canonical_path.is_empty() || canonical_path.len() > 32_768 {
+        return Err("Đường dẫn ảnh không hợp lệ".to_string());
+    }
+
+    let token = decrypt_sidecar_token()?;
+    let issued_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "Đồng hồ hệ thống không hợp lệ".to_string())?
+        .as_secs();
+    let nonce = {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let bytes: [u8; 16] = rng.gen();
+        hex::encode(bytes)
+    };
+    build_upscale_file_grant(&token, canonical_path, tab_id, issued_at, &nonce)
+}
+
 /// Frontend calls this to get signed headers for API requests.
 /// The sidecar secret never leaves Rust; only a short-lived timestamp + HMAC do.
 /// Also gates on license validation: if license is not in cache, refuses to sign.
@@ -893,14 +979,7 @@ pub fn sign_api_request(
     };
 
     // Gate 2: Decrypt token from encrypted memory (VECTOR #14)
-    let token_str = {
-        let enc = SIDECAR_TOKEN.lock().map_err(|e| format!("Lock: {}", e))?;
-        let decrypted = enc.decrypt();
-        if decrypted.is_empty() {
-            return Err("Sidecar not initialized".to_string());
-        }
-        decrypted
-    }; // enc lock released here
+    let token_str = decrypt_sidecar_token()?;
 
     // Gate 3: Bind the proof to the native-verified license and hardware id.
     // A patched WebView cannot substitute different entitlement headers after
@@ -920,7 +999,9 @@ pub fn sign_api_request(
     let timestamp = now_secs.to_string();
     let normalized_method = method.trim().to_ascii_uppercase();
     if normalized_method.is_empty()
-        || !normalized_method.bytes().all(|b| b.is_ascii_uppercase() || b == b'-')
+        || !normalized_method
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b == b'-')
     {
         return Err("Invalid HTTP method".to_string());
     }
@@ -952,6 +1033,38 @@ pub fn sign_api_request(
     headers.insert("X-PrynX-Signature".to_string(), signature);
 
     Ok(headers)
+}
+
+#[cfg(test)]
+mod upscale_file_grant_tests {
+    use super::*;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    #[test]
+    fn grant_gan_dung_path_tab_han_dung_va_nonce() {
+        let nonce = "00112233445566778899aabbccddeeff";
+        let grant = build_upscale_file_grant(
+            "sidecar-test-secret",
+            r"C:\Mẫu in\tem.png",
+            "tab-17",
+            1_700_000_000,
+            nonce,
+        )
+        .expect("tạo grant");
+        let parts: Vec<&str> = grant.split('.').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], "v1");
+        let claims: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1]).expect("decode payload"))
+                .expect("parse claims");
+        assert_eq!(claims["v"], 1);
+        assert_eq!(claims["iat"], 1_700_000_000_u64);
+        assert_eq!(claims["exp"], 1_700_000_120_u64);
+        assert_eq!(claims["nonce"], nonce);
+        assert_eq!(claims["tab"], "tab-17");
+        assert_eq!(claims["path"], r"C:\Mẫu in\tem.png");
+        assert_eq!(parts[2].len(), 64);
+    }
 }
 
 // ══════════════════════════════════════════════════════════════

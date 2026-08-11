@@ -9,6 +9,9 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum PpeError {
+    #[error("đã hủy lần dựng PPE lỗi thời")]
+    Cancelled,
+
     #[error("không mở được PDF: {0}")]
     OpenFailed(String),
 
@@ -23,6 +26,16 @@ pub enum PpeError {
 
     #[error("kích thước raster không hợp lệ: {w}x{h} @ {dpi} DPI")]
     BadRasterSize { w: i64, h: i64, dpi: f32 },
+
+    #[error("vùng raster không hợp lệ: ({x},{y}) {w}x{h} ngoài trang {page_w}x{page_h}")]
+    BadRasterClip {
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        page_w: u32,
+        page_h: u32,
+    },
 
     #[error(
         "vượt ngân sách bộ nhớ raster: cần khoảng {requested_mib} MiB, giới hạn {limit_mib} MiB"

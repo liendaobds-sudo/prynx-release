@@ -577,7 +577,7 @@ def _strip_prynx_watermark(chunk: bytes) -> bytes:
     artwork và đường bế nằm chung stream đó, nên loại cả stream = mất sạch path
     vector của trang → không nhận được khuôn, âm thầm lùi về khổ trang.
 
-    Nếu regex không khớp (vd file đã bị Ghostscript dựng lại, đổi thứ tự toán tử),
+    Nếu regex không khớp (vd file đã qua một trình tối ưu làm đổi thứ tự toán tử),
     hàm trả nguyên chunk. Đó là fallback an toàn: khối watermark chỉ gồm toán tử
     CHỮ (BT/Tr/Tf/Td/Tj/ET) trong cặp q…Q cân bằng, không có toán tử path nào, nên
     để lại cũng không sinh ra drawing rác.

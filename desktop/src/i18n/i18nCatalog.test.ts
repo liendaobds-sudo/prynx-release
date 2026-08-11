@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import enLocale from './locales/en.json';
 import viLocale from './locales/vi.json';
+import i18n, { tv } from './index';
 import { BOX_GROUPS, BOX_VARIANTS } from '../lib/dieline/variants';
 
 type LocaleCatalog = Record<string, Record<string, unknown>>;
@@ -50,6 +51,30 @@ function collectStaticTranslationKeys(): Set<string> {
     visit(sourceFile);
   }
   return keys;
+}
+
+function collectStaticTvStrings(filePath: string): Set<string> {
+  const values = new Set<string>();
+  const sourceFile = ts.createSourceFile(
+    filePath,
+    fs.readFileSync(filePath, 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node)
+      && ts.isIdentifier(node.expression)
+      && node.expression.text === 'tv'
+    ) {
+      const firstArgument = node.arguments[0];
+      if (firstArgument && ts.isStringLiteralLike(firstArgument)) values.add(firstArgument.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return values;
 }
 
 function hasTranslation(locale: LocaleCatalog, fullKey: string): boolean {
@@ -101,6 +126,50 @@ describe('danh mục i18n', () => {
       .filter((key) => typeof enNs[key] !== 'string' || !enNs[key])
       .sort();
     expect(missingEn).toEqual([]);
+  });
+
+  it('workspace Logo có đầy đủ VI + EN cho mọi chuỗi tv() tĩnh', () => {
+    const namespace = 'preprocess.logoRebuild';
+    const sourcePath = path.join(
+      SOURCE_ROOT,
+      'components',
+      'preprocess-tools',
+      'LogoRebuildWorkspace.tsx',
+    );
+    const tvStrings = collectStaticTvStrings(sourcePath);
+    const viNamespace = (viLocale as LocaleCatalog)[namespace] ?? {};
+    const enNamespace = (enLocale as LocaleCatalog)[namespace] ?? {};
+    const viValueToKey = new Map(
+      Object.entries(viNamespace)
+        .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+        .map(([key, value]) => [value, key]),
+    );
+
+    expect(tvStrings.size).toBeGreaterThanOrEqual(80);
+    expect([...tvStrings].filter(value => !viValueToKey.has(value)).sort()).toEqual([]);
+    expect(
+      [...tvStrings]
+        .filter(value => {
+          const key = viValueToKey.get(value);
+          return !key || typeof enNamespace[key] !== 'string' || !enNamespace[key];
+        })
+        .sort(),
+    ).toEqual([]);
+  });
+
+  it('workspace Logo đổi sang English qua đúng namespace lúc runtime', async () => {
+    try {
+      await i18n.changeLanguage('en');
+      expect(tv('Phục hồi & Vector hóa Logo', 'preprocess.logoRebuild')).toBe(
+        'Restore & Vectorize Logo',
+      );
+      expect(tv('Chọn ảnh có logo', 'preprocess.logoRebuild')).toBe('Choose a logo image');
+      expect(tv('Không kiểm tra được engine', 'preprocess.logoRebuild')).toBe(
+        'Could not check the preview engine',
+      );
+    } finally {
+      await i18n.changeLanguage('vi');
+    }
   });
 
   it('locale không chứa HTML entity bị hiển thị nguyên văn', () => {

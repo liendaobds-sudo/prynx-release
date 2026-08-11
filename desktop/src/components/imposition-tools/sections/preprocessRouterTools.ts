@@ -9,20 +9,27 @@
  */
 export const PREPROCESS_ROUTER_TOOLS = [
     'shuffle', 'resize', 'trim_shift', 'split', 'pages',
-    'preflight', 'font_tools', 'hairlines', 'convertcolors', 'trapping', 'pdfx',
+    'preflight', 'font_tools', 'hairlines', 'inkmanager', 'convertcolors', 'trapping', 'pdfx',
     'ocr', 'optimize', 'sticker', 'bgremover', 'watermark', 'upscale', 'logo_rebuild',
     'encrypt', 'metadata', 'office_convert', 'crop',
 ] as const;
 
 export type PreprocessRouterTool = (typeof PREPROCESS_ROUTER_TOOLS)[number];
 
-export function isLogoRebuildEnabled(isDevelopment: boolean): boolean {
-    return isDevelopment;
+export function isLogoRebuildEnabled(
+    isDevelopment: boolean,
+    releaseEnabled = false,
+): boolean {
+    return isDevelopment || releaseEnabled;
 }
 
-// UIUX (audit 2026-08-01 §LG.RUNTIME): chỉ mở trong vòng dev để nghiệm thu;
-// Vite đóng gói production với DEV=false nên mọi đường mở vẫn bị khóa.
-export const LOGO_REBUILD_ENABLED = isLogoRebuildEnabled(import.meta.env.DEV);
+// LOGO-REBUILD (audit 2026-08-09 §LR3.10): production mặc định HOLD; pipeline
+// phát hành phải bật đồng thời cờ Vite này và cờ backend tương ứng.
+const LOGO_REBUILD_RELEASE_ENABLED = import.meta.env.VITE_LOGO_REBUILD_ENABLED === 'true';
+export const LOGO_REBUILD_ENABLED = isLogoRebuildEnabled(
+    import.meta.env.DEV,
+    LOGO_REBUILD_RELEASE_ENABLED,
+);
 
 /** Các công cụ mở thành tab chuyên dụng và không dùng workspace PDF làm màn hình gốc. */
 export const DEDICATED_STANDALONE_TOOLS = ['bgremover', 'upscale', 'logo_rebuild', 'office_convert'] as const;

@@ -14,9 +14,9 @@ pub fn load_pdfium() -> Pdfium {
             }
         }
         // Try the platform-specific name helper
-        if let Ok(bindings) = Pdfium::bind_to_library(
-            Pdfium::pdfium_platform_library_name_at_path(&path)
-        ) {
+        if let Ok(bindings) =
+            Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&path))
+        {
             return Pdfium::new(bindings);
         }
     }
@@ -38,6 +38,6 @@ pub fn load_pdfium() -> Pdfium {
     // 3. System library
     Pdfium::new(
         Pdfium::bind_to_system_library()
-            .expect("Cannot find pdfium.dll. Set PDFIUM_DLL_PATH or VIRTUAL_ENV env var.")
+            .expect("Cannot find pdfium.dll. Set PDFIUM_DLL_PATH or VIRTUAL_ENV env var."),
     )
 }

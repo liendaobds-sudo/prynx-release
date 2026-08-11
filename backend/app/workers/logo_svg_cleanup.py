@@ -1,7 +1,8 @@
-"""Dọn topology dư và chấm chất lượng SVG do VTracer tạo cho Logo Rebuild."""
+"""Dọn SVG legacy và kiểm độc lập artifact của mọi Logo Engine."""
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from dataclasses import asdict, dataclass
@@ -13,6 +14,10 @@ _SVG_NAMESPACE = "http://www.w3.org/2000/svg"
 _COMMAND_RE = re.compile(r"[MmLlHhVvCcSsQqTtAaZz]")
 _TOKEN_RE = re.compile(
     r"[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:(?:\d+\.\d*)|(?:\.\d+)|(?:\d+))(?:[eE][-+]?\d+)?"
+)
+_SVG_LENGTH_MM_RE = re.compile(
+    r"^\s*([-+]?(?:(?:\d+\.\d*)|(?:\.\d+)|(?:\d+))(?:[eE][-+]?\d+)?)\s*mm\s*$",
+    re.IGNORECASE,
 )
 _TINY_PATH_AREA_RATIO = 1e-4
 _REDUNDANT_COVERAGE_RATIO = 0.995
@@ -464,8 +469,12 @@ def analyze_logo_svg(
     width_px: int,
     height_px: int,
     removed_redundant_paths: int = 0,
+    *,
+    expected_physical_size_mm: tuple[float, float] | None = None,
+    expected_artifact_sha256: str | None = None,
+    require_physical_size: bool = False,
 ) -> LogoSvgQuality:
-    """Trả QC có kiểu; SVG rỗng bị rejected, SVG khó sửa bị review."""
+    """Trả QC có kiểu cho hình học, độ phức tạp và kích thước artifact."""
 
     root = _parse_root(svg)
     all_entries = _path_entries(root, drawable_only=False)
@@ -515,6 +524,50 @@ def analyze_logo_svg(
     )
     reasons: list[str] = []
     actions: list[str] = []
+    # LOGO-ENGINE-V2 (audit 2026-08-11 Lô G2): validator Python đọc lại
+    # chính artifact cuối; không tin hash native nếu chuỗi đã bị thay trên đường về.
+    if expected_artifact_sha256 is not None:
+        actual_sha256 = hashlib.sha256(svg.encode("utf-8")).hexdigest()
+        if actual_sha256 != expected_artifact_sha256:
+            reasons.append("Hash SVG cuối không khớp artifact do native xác nhận.")
+            actions.append("Tạo lại preview; không dùng artifact đã thay đổi ngoài hợp đồng.")
+    # LOGO-REBUILD (audit 2026-08-09 §LR3.03): QC chính chuỗi SVG cuối,
+    # không suy rằng bước gắn metadata trước đó chắc chắn còn nguyên sau cleanup.
+    view_box_raw = root.attrib.get("viewBox", "").replace(",", " ").split()
+    try:
+        view_box = [float(value) for value in view_box_raw]
+    except ValueError:
+        view_box = []
+    if (
+        len(view_box) != 4
+        or not all(math.isfinite(value) for value in view_box)
+        or not math.isclose(view_box[0], 0.0, abs_tol=1e-6)
+        or not math.isclose(view_box[1], 0.0, abs_tol=1e-6)
+        or not math.isclose(view_box[2], float(width_px), abs_tol=1e-4)
+        or not math.isclose(view_box[3], float(height_px), abs_tol=1e-4)
+    ):
+        reasons.append("SVG đầu ra không giữ đúng viewBox theo kích thước ảnh làm việc.")
+        actions.append("Tạo lại preview; không dùng artifact có hệ tọa độ sai.")
+
+    if expected_physical_size_mm is not None:
+        parsed_lengths: list[float] = []
+        for attribute in ("width", "height"):
+            match = _SVG_LENGTH_MM_RE.fullmatch(root.attrib.get(attribute, ""))
+            if match is None:
+                parsed_lengths = []
+                break
+            parsed_lengths.append(float(match.group(1)))
+        expected_width_mm, expected_height_mm = expected_physical_size_mm
+        if (
+            len(parsed_lengths) != 2
+            or not all(math.isfinite(value) and value > 0.0 for value in parsed_lengths)
+            or not math.isclose(parsed_lengths[0], expected_width_mm, abs_tol=0.005)
+            or not math.isclose(parsed_lengths[1], expected_height_mm, abs_tol=0.005)
+        ):
+            reasons.append(
+                "SVG đầu ra không giữ đúng kích thước vật lý mm đã được người dùng xác nhận."
+            )
+            actions.append("Tạo lại preview sau khi xác nhận đúng chiều rộng/cao mm.")
     if valid_drawable_count == 0:
         reasons.append("SVG không có mảng vector nhìn thấy để sử dụng.")
         actions.append("Đổi chế độ hoặc bảng màu rồi tạo lại preview.")
@@ -525,6 +578,10 @@ def analyze_logo_svg(
         return LogoSvgQuality("rejected", complexity, reasons, actions)
 
     review = False
+    if require_physical_size and expected_physical_size_mm is None:
+        reasons.append("Kích thước in mm chưa được người dùng xác nhận.")
+        actions.append("Xác nhận chiều rộng/cao mm theo đúng tỷ lệ trước khi xuất SVG.")
+        review = True
     if complexity.path_count > 1000:
         reasons.append("SVG còn quá nhiều mảng rời nên khó chỉnh sửa trong phần mềm vector.")
         review = True

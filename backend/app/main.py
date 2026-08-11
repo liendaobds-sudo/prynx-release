@@ -149,16 +149,45 @@ async def lifespan(app: FastAPI):
 
     app.state.edit_session_sweep_task = asyncio.create_task(_edit_session_sweep_loop())
 
-    yield
+    # PERF (audit 2026-08-09 §L2C): frontend có DELETE khi đóng tab/file;
+    # vòng nền này là lưới an toàn cho WebView crash/mất kết nối. Chỉ
+    # có một task monotonic, không tạo Timer/thread theo từng lần zoom.
+    from app.core.ppe_viewer_session import viewer_session_manager
 
-    # Shutdown
-    if getattr(app.state, "cleanup_task", None):
-        app.state.cleanup_task.cancel()  # Application runs here
-    if getattr(app.state, "edit_session_sweep_task", None):
-        app.state.edit_session_sweep_task.cancel()
+    async def _ppe_viewer_session_sweep_loop():
+        while True:
+            try:
+                await asyncio.sleep(30)
+                swept = await viewer_session_manager.sweep_orphans()
+                if swept:
+                    logger.info("🧹 Dọn %d owner PPE ViewerSession hết TTL.", swept)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:  # noqa: BLE001 - không để một vòng giết sweeper
+                logger.warning("Không quét được PPE ViewerSession: %s", exc)
 
-    # Shutdown (cleanup if needed)
-    logger.info(f"👋 {settings.APP_NAME} shutting down")
+    app.state.ppe_viewer_session_sweep_task = asyncio.create_task(
+        _ppe_viewer_session_sweep_loop()
+    )
+
+    try:
+        yield
+    finally:
+        # Shutdown phải chạy cả khi lifespan bị exception/cancel; nếu
+        # để sau `yield` trần, native session/cache có thể bị bỏ lại.
+        if getattr(app.state, "cleanup_task", None):
+            app.state.cleanup_task.cancel()  # Application runs here
+        if getattr(app.state, "edit_session_sweep_task", None):
+            app.state.edit_session_sweep_task.cancel()
+        ppe_sweep_task = getattr(app.state, "ppe_viewer_session_sweep_task", None)
+        if ppe_sweep_task:
+            ppe_sweep_task.cancel()
+            await asyncio.gather(ppe_sweep_task, return_exceptions=True)
+        # close() native có thể chờ render cuối; manager tự đẩy việc
+        # đó ra worker, không chặn event loop shutdown.
+        await viewer_session_manager.close_all()
+
+        logger.info(f"👋 {settings.APP_NAME} shutting down")
 
 
 # ── OpenAPI docs: CHỈ bật khi chạy từ source (dev) ──
@@ -207,7 +236,9 @@ app.add_middleware(
         "X-Sticker-Width-MM", "X-Sticker-Height-MM", "X-Sticker-Boxes",
         "X-Sticker-Shape-Type", "X-Sticker-Shape-Params", "X-Sticker-Pages",
         "X-Sticker-Cut-Kind", "X-Sticker-Cut-Confidence", "X-Sticker-Warning",
-        "X-Sticker-Output-Path",
+        "X-Sticker-Output-Path", "X-Sticker-Sheet-Count", "Content-Disposition",
+        "X-Upscale-Output-Size", "X-Upscale-Warnings", "X-Upscale-Working-Pdf-Path",
+        "X-Upscale-Artifact-Lease",
     ],
 )
 

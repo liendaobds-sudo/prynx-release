@@ -17,6 +17,7 @@ khoá các bất biến đó lại.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -25,9 +26,16 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 BUILD = REPO / "build_production.ps1"
 VERIFIER = REPO / "scripts" / "verify_installed_artifact.ps1"
+TAURI_CONFIG = REPO / "desktop" / "src-tauri" / "tauri.conf.json"
 AUDIT = REPO / "scripts" / "gs_dependency_audit.py"
 RELEASE_QA = REPO / "scripts" / "run_release_qa.ps1"
 RELEASE_UPDATE = REPO / "release_update.ps1"
+CLEAN_USER_VERIFIER = REPO / "scripts" / "verify_artifact_clean_user.ps1"
+NOTICE_GENERATOR = REPO / "scripts" / "gen_third_party_notices.py"
+DEV_SETUP = REPO / "setup_dev_env.ps1"
+README = REPO / "README.md"
+ENV_EXAMPLE = REPO / ".env.example"
+GITIGNORE = REPO / ".gitignore"
 # Mọi entry mà người phát hành thực sự bấm/chạy.
 RELEASE_ENTRIES = [
     REPO / "release_update.ps1",
@@ -46,30 +54,69 @@ def _read(path: Path) -> str:
 #  §3.1 — no-GS là BẤT BIẾN, không có opt-in bật lại
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_build_script_defaults_to_no_ghostscript():
-    """`$BUNDLE_GS` khởi tạo `$false`.
-
-    Đảo mặc định là cách đóng §3.1 ở MỘT chỗ: mọi wrapper không truyền gì sẽ tự
-    hưởng no-GS. Vá từng wrapper thì wrapper thêm sau này lại hở.
-    """
+def test_build_has_no_ghostscript_staging_branch():
+    """Build chỉ còn tripwire fail-closed, không còn dò/copy/tạo marker GS."""
     text = _read(BUILD)
-    assert re.search(r'^\s*\$BUNDLE_GS\s*=\s*\$false\s*$', text, re.M), (
-        "build_production.ps1 phải khởi tạo $BUNDLE_GS = $false"
-    )
-    assert not re.search(r'^\s*\$BUNDLE_GS\s*=\s*\$true\s*$', text, re.M), (
-        "không được có dòng đặt $BUNDLE_GS = $true ở mức mặc định"
-    )
+    assert r"C:\Program Files\gs" not in text
+    assert "$GS_SRC" not in text
+    assert "$GS_DEST" not in text
+    assert "$BUNDLE_GS" not in text
+    assert "NO_GHOSTSCRIPT.txt" not in text
+    assert "forbiddenGhostscriptPayload" in text
+    assert "Build aborted to preserve the PPE-only release contract" in text
 
 
 def test_build_has_no_ghostscript_opt_in():
     text = _read(BUILD)
     assert "WithGhostscript" not in text
+    assert "NoGhostscript" not in text
     assert "PRYNX_BUNDLE_GS" not in text
     assert not re.search(r'\$BUNDLE_GS\s*=\s*\$true', text)
 
 
+def test_tauri_resources_do_not_bundle_ghostscript_tree():
+    config = json.loads(_read(TAURI_CONFIG))
+    resources = config["bundle"]["resources"]
+    normalized = [str(resource).replace("\\", "/").casefold() for resource in resources]
+    assert not any("binaries/gs" in resource for resource in normalized)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [DEV_SETUP, README, ENV_EXAMPLE, GITIGNORE],
+    ids=lambda path: path.name,
+)
+def test_current_setup_and_operator_docs_do_not_require_ghostscript(path):
+    """Luồng dev hiện hành chỉ mô tả PPE/PDFium, không được kéo GS trở lại."""
+    text = _read(path)
+    forbidden = (
+        "ghostscript",
+        "artifexsoftware.ghostscript",
+        "gswin64c",
+        "gswin32c",
+        "ghostscript_path",
+        "prynx_no_gs_build",
+        "prynx_print_engine",
+        "no_ghostscript.txt",
+    )
+    hits = [token for token in forbidden if token in text.casefold()]
+    assert not hits, f"{path.name} còn yêu cầu/cấu hình engine cũ: {hits}"
+
+
+def test_dev_setup_has_six_contiguous_steps_after_dependency_cleanup():
+    text = _read(DEV_SETUP)
+    numbered = re.findall(r'Write-Step\s+"(\d+)/(\d+)\s+-', text)
+    assert numbered == [(str(step), "6") for step in range(1, 7)]
+
+
+def test_current_docs_name_the_bundled_ppe_pdfium_stack():
+    combined = _read(README) + _read(ENV_EXAMPLE)
+    assert "PrynX Print Engine (PPE)" in combined
+    assert "PDFium" in combined
+
+
 def test_runtime_policy_ignores_all_gs_environment(monkeypatch):
-    """Mọi môi trường đều phải khởi tạo cùng một hợp đồng PPE/no-GS."""
+    """Biến legacy không được dựng lại field cấu hình hay engine song song."""
     monkeypatch.setenv("GHOSTSCRIPT_PATH", r"C:\Program Files\gs\gswin64c.exe")
     monkeypatch.setenv("PRYNX_PRINT_ENGINE", "gs")
     monkeypatch.setenv("PRYNX_ALLOW_GS_FALLBACK", "true")
@@ -78,20 +125,19 @@ def test_runtime_policy_ignores_all_gs_environment(monkeypatch):
     from app.config import Settings
 
     configured = Settings()
-    assert configured.GHOSTSCRIPT_PATH == ""
+    assert not hasattr(configured, "GHOSTSCRIPT_PATH")
     assert not hasattr(configured, "PRYNX_PRINT_ENGINE")
     assert not hasattr(configured, "PRYNX_ALLOW_GS_FALLBACK")
     assert not hasattr(configured, "PRYNX_FORCE_GS")
 
 
 def test_corpus_gate_uses_fixed_no_gs_contract():
-    """Cổng corpus không được đọc thuộc tính fallback đã bị xoá khỏi Settings."""
+    """Cổng corpus dùng tripwire, không đọc telemetry/cấu hình engine đã xoá."""
     text = _read(AUDIT)
-    assert not re.search(r"settings\s*\.\s*PRYNX_ALLOW_GS_FALLBACK", text), (
-        "gs_dependency_audit.py còn đọc thuộc tính Settings đã bị xoá; "
-        "cổng phát hành sẽ crash trước khi audit corpus"
-    )
-    assert "settings.GHOSTSCRIPT_PATH" in text
+    assert "settings.GHOSTSCRIPT_PATH" not in text
+    assert "PRYNX_NO_GS_BUILD" not in text
+    assert "gs_usage" not in text
+    assert "GhostscriptBlocked" in text
 
 
 @pytest.mark.parametrize("entry", RELEASE_ENTRIES, ids=lambda p: p.name)
@@ -145,10 +191,28 @@ def test_notice_matcher_is_not_simple_match():
         pytest.fail("không tìm thấy chốt kiểm NOTICE trong verifier")
 
 
-def test_verifier_checks_the_no_gs_marker():
-    """Marker là thứ backend đọc để không mượn GS của máy khách."""
+def test_verifier_always_rejects_ghostscript_without_flag_or_marker():
+    """Mọi verifier run đều quét binary/NOTICE, không phụ thuộc caller hay marker."""
     text = _read(VERIFIER)
-    assert "NO_GHOSTSCRIPT.txt" in text
+    assert "ExpectNoGhostscript" not in text
+    assert "NO_GHOSTSCRIPT.txt" not in text
+    assert r"gs(?:win(?:32|64)c?)?\.exe" in text
+    assert r"gsdll\d*\.dll" in text
+    assert "Ghostscript|Artifex|AGPL" in text
+    assert re.search(r"\$gsBinaries\s*=\s*@\(", text)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [BUILD, RELEASE_UPDATE, CLEAN_USER_VERIFIER, NOTICE_GENERATOR],
+    ids=lambda path: path.name,
+)
+def test_release_pipeline_has_no_legacy_no_gs_switch(path):
+    """PPE-only là bất biến, không còn cờ tùy chọn mà caller có thể truyền/quên."""
+    text = _read(path)
+    assert "ExpectNoGhostscript" not in text
+    assert "NoGhostscript" not in text
+    assert "--no-ghostscript" not in text
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  §3.6 — bộ đo no-GS là release gate thật
@@ -314,22 +378,16 @@ def test_release_scripts_parse_under_windows_powershell(script):
 # ─────────────────────────────────────────────────────────────────────────────
 #  NOTICE trong repo — khoá lỗ hổng đã gây hồi quy ngày 2026-07-28
 #
-#  Chuyện đã xảy ra: có người thêm Real-ESRGAN vào `bundled_components.json` rồi
-#  chạy tay `gen_third_party_notices.py` để cập nhật NOTICE, THIẾU cờ
-#  `--no-ghostscript`. Vì entry ghostscript vẫn `bundled: true`, việc thiếu cờ
-#  lặng lẽ dựng LẠI lời khai "Ghostscript AGPL-3.0 có trong bản phát hành,
-#  binaries/gs/" — trong khi build gõ cứng `$BUNDLE_GS=$false`. HEAD sạch, working
-#  tree khai sai: đúng loại lỗi không ai thấy.
+#  Chuyện đã xảy ra: dữ liệu từng khai nhầm một component không đóng gói là
+#  `bundled:true`, khiến NOTICE tái tạo tuyên bố sai về payload phát hành.
 #
 #  Gate cũ chỉ canh (a) build script truyền cờ, (b) verifier soi artifact ĐÃ CÀI.
 #  Không gì canh chính file NOTICE trong repo — tức là văn bản mà người đọc repo và
 #  bên pháp lý nhìn vào. Ba test dưới đóng chỗ đó.
 #
-#  Cách sửa gốc: đặt `bundled: false` trong dữ liệu. `load_native` bỏ mọi component
-#  `bundled=false` BẤT KỂ cờ dòng lệnh, nên sinh lại NOTICE mà quên cờ vẫn ra đúng.
+#  Cách sửa gốc: `load_native` luôn bỏ mọi component `bundled=false`; không còn
+#  cờ dòng lệnh điều khiển nội dung pháp lý.
 # ─────────────────────────────────────────────────────────────────────────────
-
-import json  # noqa: E402
 
 NOTICE = REPO / "THIRD_PARTY_NOTICES.md"
 COMPONENTS = REPO / "scripts" / "bundled_components.json"
@@ -381,6 +439,6 @@ def test_repo_notice_never_mentions_agpl():
     ]
     assert not hits, (
         "NOTICE còn nhắc AGPL:\n  " + "\n  ".join(hits)
-        + "\nPrynX không đóng gói thành phần AGPL nào (xem $BUNDLE_GS trong "
-        "build_production.ps1). Chạy lại scripts/gen_third_party_notices.py."
+        + "\nPrynX không đóng gói thành phần AGPL nào. "
+        "Chạy lại scripts/gen_third_party_notices.py."
     )

@@ -15,6 +15,7 @@
 
 use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, Stream};
 use print_engine::content::RenderOptions;
+use print_engine::oc::OptionalContentUsage;
 use print_engine::page::{render_page, PageBox, PageRender};
 
 const PAGE: i64 = 40;
@@ -92,6 +93,17 @@ impl Builder {
 fn render(doc: &Document) -> PageRender {
     render_page(doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate())
         .expect("render phải thành công")
+}
+
+fn render_view(doc: &Document) -> PageRender {
+    render_page(
+        doc,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::ink_accurate().with_optional_content_usage(OptionalContentUsage::View),
+    )
+    .expect("render Viewer phải thành công")
 }
 
 fn solid_k() -> String {
@@ -177,6 +189,44 @@ fn layer_marked_not_to_print_is_not_painted() {
         render(&doc).buffer.max_tac_percent(),
         0.0,
         "lớp không-in phải không lên mực"
+    );
+}
+
+#[test]
+fn viewer_uses_view_state_instead_of_print_state() {
+    let mut b = Builder::new();
+    let l = b.ocg(
+        "Huong dan man hinh",
+        Some(dictionary! {
+            "Print" => dictionary! { "PrintState" => "OFF" },
+            "View" => dictionary! { "ViewState" => "ON" },
+        }),
+    );
+    let id = b.id(l);
+    let content = format!("/OC /L0 BDC {} EMC", solid_k());
+    let config = dictionary! {
+        "AS" => Object::Array(vec![
+            Object::Dictionary(dictionary! {
+                "Event" => "Print",
+                "OCGs" => Object::Array(vec![Object::Reference(id)]),
+            }),
+            Object::Dictionary(dictionary! {
+                "Event" => "View",
+                "OCGs" => Object::Array(vec![Object::Reference(id)]),
+            }),
+        ]),
+    };
+    let doc = b.finish(&content, properties("L0", id), config, no_extra);
+
+    assert_eq!(
+        render(&doc).buffer.max_tac_percent(),
+        0.0,
+        "đường in phải tắt lớp"
+    );
+    assert_eq!(
+        render_view(&doc).buffer.max_tac_percent(),
+        100.0,
+        "Viewer phải bật lớp theo /ViewState"
     );
 }
 

@@ -172,6 +172,9 @@ def test_property2_mirror_flags_and_position_preserved():
 # ─────────────────────────────────────────────────────────────
 import io as _io
 
+from pypdf import PdfReader
+
+from app.api.routes import imposition as imposition_route
 from app.workers import pdf_wrapper as _pdf_lib
 from app.workers.cnc_render import run_cnc_two_sided
 
@@ -194,7 +197,7 @@ def _page_count(path):
     return n
 
 
-def test_property8_two_sided_one_unit_three_pages(tmp_path):
+def test_property8_two_sided_opens_one_unit_per_distinct_sheet(tmp_path):
     p = str(tmp_path / "src.pdf")
     out = str(tmp_path / "out.pdf")
     _make_plain_pdf(p, 4)  # 2 mẫu × (trước+sau)
@@ -202,19 +205,19 @@ def test_property8_two_sided_one_unit_three_pages(tmp_path):
         'cncTwoSided': True, 'sheetWidth': 320, 'sheetHeight': 450,
         'targetQuantity': 0,
     })
-    # ĐÚNG 1 cụm [Front, Back, Cut] — độc lập số mẫu / số tờ
-    assert _page_count(out) == 3
+    # Mỗi mẫu bằng đúng khổ tờ → 2 tờ mẫu × [Front, Back, Cut].
+    assert _page_count(out) == 6
 
 
-def test_property8_one_sided_two_pages(tmp_path):
+def test_property8_one_sided_opens_one_unit_per_distinct_sheet(tmp_path):
     p = str(tmp_path / "src1.pdf")
     out = str(tmp_path / "out1.pdf")
     _make_plain_pdf(p, 3)  # 3 mẫu 1 mặt
     run_cnc_two_sided(p, out, {
         'cncTwoSided': False, 'sheetWidth': 320, 'sheetHeight': 450,
     })
-    # ĐÚNG 1 cụm [Front, Cut]
-    assert _page_count(out) == 2
+    # Mỗi mẫu bằng đúng khổ tờ → 3 tờ mẫu × [Front, Cut].
+    assert _page_count(out) == 6
 
 
 def test_property8_pages_independent_of_quantity(tmp_path):
@@ -238,6 +241,161 @@ def test_property9_report_contains_sheets_needed(tmp_path):
         'targetQuantity': 50,
     })
     assert "Số tờ cần in" in report
+
+
+# ─────────────────────────────────────────────────────────────
+# CNC MULTI-SHEET FIX 2026-08-10 §MSHEET.1
+# Mọi tờ mẫu khác nhau phải đi xuyên helper → preview → artifact.
+# ─────────────────────────────────────────────────────────────
+def _make_labeled_pdf(path, labels, size_mm=90.0):
+    doc = _pdf_lib.open()
+    for label in labels:
+        page = doc.new_page(width=size_mm * 2.83465, height=size_mm * 2.83465)
+        page.insert_text(_pdf_lib.Point(10 * 2.83465, 20 * 2.83465), label, fontsize=18)
+    doc.save(path)
+    doc.close()
+
+
+@pytest.mark.parametrize("quantity", [0, 1])
+def test_cnc_layout_opens_every_distinct_sheet(quantity):
+    result = build_cnc_front_layout(
+        [(page_idx, 90.0, 90.0, quantity) for page_idx in range(5)],
+        usable_w=100.0,
+        usable_h=100.0,
+        gap=0.0,
+        allow_rotation=False,
+    )
+
+    assert result['sheet_count'] == 5
+    assert result['sheets_needed'] == 5
+    assert result['unplaced_pages'] == []
+    assert [
+        [placement['src_page_idx'] for placement in sheet['placements']]
+        for sheet in result['sheets']
+    ] == [[0], [1], [2], [3], [4]]
+    assert [sheet['sheets_needed'] for sheet in result['sheets']] == [1] * 5
+
+
+@pytest.mark.parametrize("with_quantity", [False, True])
+def test_cnc_preview_exposes_every_distinct_sheet(tmp_path, monkeypatch, with_quantity):
+    monkeypatch.setattr(imposition_route, 'enforce_feature', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(imposition_route, '_validate_file_path', lambda path: path)
+    source_path = str(tmp_path / 'cnc-five-models.pdf')
+    _make_labeled_pdf(source_path, [f'MODEL_{index + 1}' for index in range(5)])
+
+    quantities = {str(index): 1 for index in range(5)} if with_quantity else {}
+    request = imposition_route.PreviewLayoutRequest(
+        usable_w=100 * 2.83465,
+        usable_h=100 * 2.83465,
+        item_w=90 * 2.83465,
+        item_h=90 * 2.83465,
+        gap_x=0,
+        gap_y=0,
+        strategy='optimal_auto',
+        sheet_w=100 * 2.83465,
+        sheet_h=100 * 2.83465,
+        path=source_path,
+        total_pages=5,
+        layout_type='sequential',
+        task_mode='nup',
+        is_die_cut=True,
+        imposer_mode='cnc',
+        target_quantities_by_page=quantities,
+    )
+
+    result = imposition_route.preview_layout(request, license_info={})
+
+    assert result['sheetsNeeded'] == 5
+    assert result['placedByPage'] == {'0': 1}
+    assert [
+        [cell['pageIdx'] for cell in sheet['cells']]
+        for sheet in result['sheets']
+    ] == [[0], [1], [2], [3], [4]]
+    assert [sheet['runCount'] for sheet in result['sheets']] == [1] * 5
+
+
+@pytest.mark.parametrize("with_quantity", [False, True])
+def test_cnc_one_sided_artifact_contains_every_model(tmp_path, with_quantity):
+    source_path = str(tmp_path / 'cnc-five-models.pdf')
+    output_path = str(tmp_path / 'cnc-five-models-output.pdf')
+    labels = [f'MODEL_{index + 1}' for index in range(5)]
+    _make_labeled_pdf(source_path, labels)
+
+    settings = {
+        'layoutType': 'sequential',
+        'cncTwoSided': False,
+        'sheetWidth': 100,
+        'sheetHeight': 100,
+        'gapX': 0,
+        'gapY': 0,
+        'bleed': 0,
+    }
+    if with_quantity:
+        settings['targetQuantitiesByPage'] = {str(index): 1 for index in range(5)}
+    report = run_cnc_two_sided(source_path, output_path, settings)
+
+    reader = PdfReader(output_path)
+    assert len(reader.pages) == 10
+    assert [(reader.pages[index].extract_text() or '').strip() for index in range(0, 10, 2)] == labels
+    assert all(not (reader.pages[index].extract_text() or '').strip() for index in range(1, 10, 2))
+    assert 'Số tờ cần in (tổng): 5' in report
+
+
+def test_cnc_two_sided_artifact_keeps_each_front_back_pair(tmp_path):
+    source_path = str(tmp_path / 'cnc-three-pairs.pdf')
+    output_path = str(tmp_path / 'cnc-three-pairs-output.pdf')
+    labels = ['FRONT_1', 'BACK_1', 'FRONT_2', 'BACK_2', 'FRONT_3', 'BACK_3']
+    _make_labeled_pdf(source_path, labels)
+
+    run_cnc_two_sided(
+        source_path,
+        output_path,
+        {
+            'layoutType': 'sequential',
+            'cncTwoSided': True,
+            'cncFlipEdge': 'long',
+            'sheetWidth': 100,
+            'sheetHeight': 100,
+            'gapX': 0,
+            'gapY': 0,
+            'bleed': 0,
+            'targetQuantitiesByPage': {'0': 1, '2': 1, '4': 1},
+        },
+    )
+
+    reader = PdfReader(output_path)
+    assert len(reader.pages) == 9
+    assert [(reader.pages[index].extract_text() or '').strip() for index in (0, 3, 6)] == [
+        'FRONT_1', 'FRONT_2', 'FRONT_3',
+    ]
+    assert [(reader.pages[index].extract_text() or '').strip() for index in (1, 4, 7)] == [
+        'BACK_1', 'BACK_2', 'BACK_3',
+    ]
+
+
+def test_cnc_output_fails_closed_when_one_model_cannot_be_placed(tmp_path):
+    source_path = str(tmp_path / 'cnc-partial-overflow.pdf')
+    output_path = str(tmp_path / 'cnc-partial-overflow-output.pdf')
+    document = _pdf_lib.open()
+    document.new_page(width=90 * 2.83465, height=90 * 2.83465)
+    document.new_page(width=110 * 2.83465, height=110 * 2.83465)
+    document.save(source_path)
+    document.close()
+
+    with pytest.raises(ValueError, match='Trang chưa được đặt: 2'):
+        run_cnc_two_sided(
+            source_path,
+            output_path,
+            {
+                'layoutType': 'sequential',
+                'cncTwoSided': False,
+                'sheetWidth': 100,
+                'sheetHeight': 100,
+                'gapX': 0,
+                'gapY': 0,
+                'bleed': 0,
+            },
+        )
 
 
 def test_dispatch_routes_cnc_to_renderer(tmp_path, monkeypatch):

@@ -5,9 +5,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    ACCURATE_VIEWER_BASE_ZOOM_CAP,
+    ACCURATE_VIEWER_BASE_ZOOM_MIN,
+    computeAccurateViewerBaseZoom,
     computeRenderZoomPure,
     computeViewerBackgroundZoom,
     RENDER_BUDGET_PX,
+    shouldPrefetchViewerPage,
+    shouldUseViewerViewportTiles,
     VIEWPORT_TILE_SETTLE_MS,
 } from './renderZoomPolicy';
 
@@ -60,8 +65,8 @@ describe('computeRenderZoomPure — ngân sách pixel', () => {
 
 describe('Viewer — ưu tiên làm nét vùng đang nhìn', () => {
     it('bắt đầu tile sắc trong tối đa 100ms sau lần zoom cuối', () => {
-        expect(VIEWPORT_TILE_SETTLE_MS).toBe(90);
-        expect(VIEWPORT_TILE_SETTLE_MS).toBeLessThanOrEqual(100);
+        expect(VIEWPORT_TILE_SETTLE_MS).toBe(48);
+        expect(VIEWPORT_TILE_SETTLE_MS).toBeLessThanOrEqual(50);
     });
 
     it('hạ nền active xuống 2×DPR khi tile viewport đảm nhiệm độ nét cuối', () => {
@@ -77,5 +82,41 @@ describe('Viewer — ưu tiên làm nét vùng đang nhìn', () => {
     it('giữ chính sách nền nhẹ hiện có cho trang không active', () => {
         expect(computeViewerBackgroundZoom(5.5, 1, false, false)).toBe(2);
         expect(computeViewerBackgroundZoom(3, 2, false, false)).toBe(3);
+    });
+
+    it('bật viewport tile zoom cao cho cả display và accurate', () => {
+        expect(shouldUseViewerViewportTiles(true, true, false, 2, 4, 1, false)).toBe(true);
+        expect(shouldUseViewerViewportTiles(true, true, false, 2, 4, 1, true)).toBe(true);
+        expect(shouldUseViewerViewportTiles(true, false, false, 2, 4, 1, true)).toBe(false);
+        expect(shouldUseViewerViewportTiles(true, true, true, 2, 4, 1, true)).toBe(false);
+    });
+
+    it('giữ accurate full-page ở mức xem thường và chỉ chuyển viewport khi zoom cao', () => {
+        expect(shouldUseViewerViewportTiles(true, true, false, 1, 0.3, 1, true)).toBe(false);
+        expect(shouldUseViewerViewportTiles(true, true, false, 1, 1, 1, true)).toBe(false);
+        expect(shouldUseViewerViewportTiles(true, true, false, 2, 0.8, 2, true)).toBe(true);
+        expect(shouldUseViewerViewportTiles(true, true, false, 2, 1.6, 1, true)).toBe(true);
+    });
+
+    it('mở trang bằng nền accurate tối thiểu 96 DPI để chữ đọc được ngay', () => {
+        expect(ACCURATE_VIEWER_BASE_ZOOM_MIN).toBe(1);
+        expect(ACCURATE_VIEWER_BASE_ZOOM_CAP).toBe(1.5);
+        expect(computeAccurateViewerBaseZoom(1, 0.3, 1)).toBe(1);
+        expect(computeAccurateViewerBaseZoom(1, 0.5, 1)).toBe(1);
+        expect(computeAccurateViewerBaseZoom(2, 0.5, 2)).toBe(1.5);
+        expect(computeAccurateViewerBaseZoom(6, 6, 1)).toBe(1.5);
+    });
+
+    it('chỉ dựng trước trang accurate sau khi trang active đã hiện', () => {
+        expect(shouldPrefetchViewerPage(1, true, false)).toBe(false);
+        expect(shouldPrefetchViewerPage(1, true, true)).toBe(true);
+        expect(shouldPrefetchViewerPage(1, false, false)).toBe(true);
+        expect(shouldPrefetchViewerPage(2, true, true)).toBe(false);
+    });
+
+    it('không đổi accurate viewport sang full-page nặng khi giảm qua ngưỡng tiling', () => {
+        expect(shouldUseViewerViewportTiles(true, true, false, 6.0133, 6.33, 1, true)).toBe(true);
+        expect(shouldUseViewerViewportTiles(true, true, false, 6.0133, 6.32, 1, true)).toBe(true);
+        expect(shouldUseViewerViewportTiles(true, true, false, 6.0133, 6.32, 1, false)).toBe(false);
     });
 });

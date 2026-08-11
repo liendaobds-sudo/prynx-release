@@ -256,30 +256,30 @@ fn has_output_intent(document: &Document) -> bool {
     }
 }
 
-pub(crate) fn analyze_pdf_color_risk(document: &Document) -> PdfColorRiskSummary {
-    let has_output_intent = has_output_intent(document);
-    let mut memo = HashMap::new();
-    let mut pages = Vec::new();
-    let mut aggregate = ColorFlags::default();
-
-    for (page_index, page_id) in document.get_pages().values().enumerate() {
-        let mut flags = ColorFlags::default();
-        let mut visiting = HashSet::new();
-        for key in [b"Resources".as_slice(), b"Group".as_slice()] {
-            if let Some(value) = inherited_page_value(document, *page_id, key) {
-                flags.merge(scan_object(document, &value, &mut memo, &mut visiting, 0));
-            }
+fn analyze_page_color_risk(
+    document: &Document,
+    page: u32,
+    page_id: ObjectId,
+    has_output_intent: bool,
+    memo: &mut HashMap<ObjectId, ColorFlags>,
+) -> (PdfPageColorRisk, ColorFlags) {
+    let mut flags = ColorFlags::default();
+    let mut visiting = HashSet::new();
+    for key in [b"Resources".as_slice(), b"Group".as_slice()] {
+        if let Some(value) = inherited_page_value(document, page_id, key) {
+            flags.merge(scan_object(document, &value, memo, &mut visiting, 0));
         }
+    }
 
-        let accurate_color_recommended = flags.has_non_rgb_color();
-        let high_risk = accurate_color_recommended
-            && (!has_output_intent
-                || flags.has_transparency()
-                || flags.has_device_n
-                || flags.has_separation);
-        aggregate.merge(flags);
-        pages.push(PdfPageColorRisk {
-            page: page_index as u32 + 1,
+    let accurate_color_recommended = flags.has_non_rgb_color();
+    let high_risk = accurate_color_recommended
+        && (!has_output_intent
+            || flags.has_transparency()
+            || flags.has_device_n
+            || flags.has_separation);
+    (
+        PdfPageColorRisk {
+            page,
             high_risk,
             accurate_color_recommended,
             has_device_cmyk: flags.has_device_cmyk,
@@ -288,9 +288,16 @@ pub(crate) fn analyze_pdf_color_risk(document: &Document) -> PdfColorRiskSummary
             has_transparency: flags.has_transparency(),
             has_soft_mask: flags.has_soft_mask,
             has_blend_mode: flags.has_blend_mode,
-        });
-    }
+        },
+        flags,
+    )
+}
 
+fn summarize_color_risk(
+    has_output_intent: bool,
+    pages: Vec<PdfPageColorRisk>,
+    aggregate: ColorFlags,
+) -> PdfColorRiskSummary {
     let mut reason_codes = Vec::new();
     if !has_output_intent && aggregate.has_non_rgb_color() {
         reason_codes.push("missing_output_intent");
@@ -321,6 +328,63 @@ pub(crate) fn analyze_pdf_color_risk(document: &Document) -> PdfColorRiskSummary
         pages,
         reason_codes,
     }
+}
+
+pub(crate) fn analyze_pdf_color_risk_bootstrap(document: &Document) -> PdfColorRiskSummary {
+    let has_output_intent = has_output_intent(document);
+    let page_ids = document.get_pages();
+    let mut memo = HashMap::new();
+    let mut aggregate = ColorFlags::default();
+    let mut pages = Vec::with_capacity(page_ids.len());
+
+    for (page_index, page_id) in page_ids.values().enumerate() {
+        if page_index == 0 {
+            // PERF (audit 2026-08-10 §PPE.REAUDIT.1): trang đầu phải được phân tích
+            // thật trước khi mount để không lóe PDFium sai màu; không quét resources
+            // các trang còn lại trên đường first-pixel.
+            let (page_risk, flags) =
+                analyze_page_color_risk(document, 1, *page_id, has_output_intent, &mut memo);
+            aggregate.merge(flags);
+            pages.push(page_risk);
+        } else {
+            // Trang chưa quét phải fail-closed. Metadata nền sẽ thay toàn bộ summary
+            // này bằng kết quả thật; các cờ chi tiết giữ false để không khai sai bằng chứng.
+            pages.push(PdfPageColorRisk {
+                page: page_index as u32 + 1,
+                high_risk: true,
+                accurate_color_recommended: true,
+                has_device_cmyk: false,
+                has_device_n: false,
+                has_separation: false,
+                has_transparency: false,
+                has_soft_mask: false,
+                has_blend_mode: false,
+            });
+        }
+    }
+
+    summarize_color_risk(has_output_intent, pages, aggregate)
+}
+
+pub(crate) fn analyze_pdf_color_risk(document: &Document) -> PdfColorRiskSummary {
+    let has_output_intent = has_output_intent(document);
+    let mut memo = HashMap::new();
+    let mut pages = Vec::new();
+    let mut aggregate = ColorFlags::default();
+
+    for (page_index, page_id) in document.get_pages().values().enumerate() {
+        let (page_risk, flags) = analyze_page_color_risk(
+            document,
+            page_index as u32 + 1,
+            *page_id,
+            has_output_intent,
+            &mut memo,
+        );
+        aggregate.merge(flags);
+        pages.push(page_risk);
+    }
+
+    summarize_color_risk(has_output_intent, pages, aggregate)
 }
 
 #[cfg(test)]
@@ -369,6 +433,44 @@ mod tests {
             );
         }
         let catalog_id = document.add_object(catalog);
+        document.trailer.set("Root", catalog_id);
+        document
+    }
+
+    fn document_with_two_page_resources(
+        first_resources: lopdf::Dictionary,
+        second_resources: lopdf::Dictionary,
+    ) -> Document {
+        let mut document = Document::with_version("1.7");
+        let pages_id = document.new_object_id();
+        let first_content_id = document.add_object(Stream::new(dictionary! {}, Vec::new()));
+        let second_content_id = document.add_object(Stream::new(dictionary! {}, Vec::new()));
+        let first_page_id = document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 100.into(), 100.into()],
+            "Resources" => first_resources,
+            "Contents" => first_content_id,
+        });
+        let second_page_id = document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 100.into(), 100.into()],
+            "Resources" => second_resources,
+            "Contents" => second_content_id,
+        });
+        document.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![first_page_id.into(), second_page_id.into()],
+                "Count" => 2,
+            }),
+        );
+        let catalog_id = document.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
         document.trailer.set("Root", catalog_id);
         document
     }
@@ -483,5 +585,36 @@ mod tests {
         assert!(summary.has_output_intent);
         assert!(summary.high_risk);
         assert!(!summary.reason_codes.contains(&"missing_output_intent"));
+    }
+
+    #[test]
+    fn bootstrap_quet_that_trang_dau_va_fail_closed_cac_trang_con_lai() {
+        let document = document_with_two_page_resources(
+            dictionary! {
+                "ColorSpace" => dictionary! { "CS0" => "DeviceRGB" },
+            },
+            dictionary! {
+                "ColorSpace" => dictionary! { "CS0" => "DeviceCMYK" },
+            },
+        );
+
+        let bootstrap = analyze_pdf_color_risk_bootstrap(&document);
+        let full = analyze_pdf_color_risk(&document);
+
+        assert_eq!(bootstrap.pages.len(), 2);
+        assert!(!bootstrap.pages[0].accurate_color_recommended);
+        assert!(!bootstrap.pages[0].high_risk);
+        assert!(bootstrap.pages[1].accurate_color_recommended);
+        assert!(bootstrap.pages[1].high_risk);
+        assert!(!bootstrap.pages[1].has_device_cmyk);
+        assert_eq!(bootstrap.risky_pages, vec![2]);
+
+        assert!(!full.pages[0].accurate_color_recommended);
+        assert!(full.pages[1].accurate_color_recommended);
+        assert!(full.pages[1].has_device_cmyk);
+        assert_eq!(
+            full.reason_codes,
+            vec!["missing_output_intent", "device_cmyk"]
+        );
     }
 }

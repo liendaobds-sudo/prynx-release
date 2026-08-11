@@ -1,6 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { authenticatedFetch, getApiUrl } from '../lib/api';
-import { buildPagePlateOverlays, type PlateOverlay } from '../lib/outputPreviewOverlay';
+import {
+    buildColorManagedPlateCompositeOverlay,
+    type OutputPreviewPageBoxes,
+    type OutputPreviewPageBoxKind,
+    type PlateOverlay,
+} from '../lib/outputPreviewOverlay';
 import {
     clampOutputPreviewPanelOffset,
     OUTPUT_PREVIEW_WORKSPACE_GAP_PX,
@@ -10,7 +15,17 @@ import type {
     OutputPreviewWorkerRequestPayload,
     OutputPreviewWorkerResponse,
 } from '../lib/outputPreviewPixels';
-import { useWorkspaceStore } from '../stores/useWorkspaceStore';
+import { sampleOutputPreviewInk } from '../lib/outputPreviewSampling';
+import { useWorkspaceStore, WorkspaceContext } from '../stores/useWorkspaceStore';
+import type {
+    OutputPreviewMode,
+    OutputPreviewRenderingIntent,
+    OutputPreviewRgb,
+    OutputPreviewShowFilter,
+} from '../stores/useWorkspaceStore';
+import { useAppSettingsStore } from '../stores/appSettingsStore';
+import { useWorkspaceToolActivationGuard } from '../hooks/useToolActivationGuard';
+import { useImposerSettingsStore } from './imposition-tools/useImposerSettingsStore';
 import SoftProofPanel from './SoftProofPanel';
 import { toast } from './ui/Toast';
 import { useTranslation } from 'react-i18next';
@@ -20,7 +35,10 @@ interface PlateInfo {
     color: number[];
     alpha_data: string;
     is_spot?: boolean;
+    alternate_cmyk_lut?: number[][] | null;
 }
+
+type PlateListItem = PlateInfo & { dataUrl: string };
 
 interface SpotInkMeta {
     name: string;
@@ -32,6 +50,7 @@ interface SpotInkMeta {
 interface SeparationsData {
     width: number;
     height: number;
+    render_dpi?: number;
     plates: PlateInfo[];
     spot_inks?: SpotInkMeta[];
     has_spot_colors?: boolean;
@@ -41,6 +60,7 @@ interface SeparationsData {
     quality_note?: string;
     page_has_transparency?: boolean;
     blending_color_space?: string;
+    output_preview_filter?: OutputPreviewShowFilter;
 }
 
 export type { PlateOverlay } from '../lib/outputPreviewOverlay';
@@ -55,6 +75,171 @@ interface OutputPreviewTabProps {
     onFileFixed?: (blob: Blob, name: string) => void;
 }
 
+interface IccProfile {
+    id: string;
+    name: string;
+    description: string;
+    available: boolean;
+}
+
+const PAGE_BOX_LABEL_KEYS: Record<OutputPreviewPageBoxKind, string> = {
+    bleedbox: 'misc.cropDialog:bleedbox_tran_le',
+    trimbox: 'misc.cropDialog:trimbox_thanh_pham',
+    artbox: 'misc.cropDialog:artbox_noi_dung',
+};
+
+const PAGE_BOX_LINE_CLASSES: Record<OutputPreviewPageBoxKind, string> = {
+    bleedbox: 'border-blue-500',
+    trimbox: 'border-emerald-500',
+    artbox: 'border-rose-500',
+};
+
+function isPageBoxMm(value: unknown): value is OutputPreviewPageBoxes['cropbox'] {
+    if (!value || typeof value !== 'object') return false;
+    const box = value as Record<string, unknown>;
+    return ['x0', 'y0', 'x1', 'y1', 'width', 'height']
+        .every(key => typeof box[key] === 'number' && Number.isFinite(box[key]));
+}
+
+function parseOutputPreviewPageBoxes(
+    value: unknown,
+    viewerPageNum: number,
+    sourcePageNum: number,
+): OutputPreviewPageBoxes | null {
+    if (!value || typeof value !== 'object') return null;
+    const response = value as Record<string, unknown>;
+    if (
+        Number(response.page) !== sourcePageNum
+        || !isPageBoxMm(response.cropbox)
+        || !isPageBoxMm(response.trimbox)
+        || !isPageBoxMm(response.bleedbox)
+        || !isPageBoxMm(response.artbox)
+    ) return null;
+
+    const rawRotation = Number(response.rotation);
+    const normalizedRotation = Number.isFinite(rawRotation)
+        ? ((Math.trunc(rawRotation) % 360) + 360) % 360
+        : 0;
+
+    return {
+        viewerPageNum,
+        sourcePageNum,
+        cropbox: response.cropbox,
+        trimbox: response.trimbox,
+        bleedbox: response.bleedbox,
+        artbox: response.artbox,
+        has_trimbox: response.has_trimbox === true,
+        has_bleedbox: response.has_bleedbox === true,
+        has_artbox: response.has_artbox === true,
+        rotation: normalizedRotation === 90 || normalizedRotation === 180 || normalizedRotation === 270
+            ? normalizedRotation
+            : 0,
+    };
+}
+
+const SIMULATION_INTENTS: OutputPreviewRenderingIntent[] = [
+    'perceptual',
+    'relative',
+    'saturation',
+    'absolute',
+];
+
+const OUTPUT_PREVIEW_SHOW_FILTERS: OutputPreviewShowFilter[] = [
+    'all',
+    'device-cmyk',
+    'device-rgb',
+    'device-gray',
+    'spot',
+    'text',
+    'images',
+    'line-art',
+    'smooth-shades',
+];
+
+const OUTPUT_PREVIEW_MODES: OutputPreviewMode[] = [
+    'separations',
+    'color-warnings',
+];
+
+function rgbToHex(rgb: OutputPreviewRgb | null): string {
+    const source = rgb ?? [255, 255, 255];
+    return `#${source.map(channel => channel.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function hexToRgb(value: string): OutputPreviewRgb | null {
+    const match = /^#([0-9a-f]{6})$/i.exec(value);
+    if (!match) return null;
+    return [
+        Number.parseInt(match[1].slice(0, 2), 16),
+        Number.parseInt(match[1].slice(2, 4), 16),
+        Number.parseInt(match[1].slice(4, 6), 16),
+    ];
+}
+
+const PROCESS_NAMES = new Set(['Cyan', 'Magenta', 'Yellow', 'Black']);
+const PROCESS_PLATE_LABELS: Record<string, string> = {
+    Cyan: 'Process Cyan',
+    Magenta: 'Process Magenta',
+    Yellow: 'Process Yellow',
+    Black: 'Process Black',
+};
+
+function OutputPreviewSection({
+    id,
+    title,
+    defaultOpen = false,
+    warning = false,
+    children,
+}: {
+    id: string;
+    title: string;
+    defaultOpen?: boolean;
+    warning?: boolean;
+    children: React.ReactNode;
+}) {
+    const [open, setOpen] = useState(defaultOpen);
+    const contentId = `output-preview-section-${id}`;
+    return (
+        // UIUX (audit 2026-08-10 §OP.12): mỗi section giữ chiều cao nội dung;
+        // vùng cuộn của panel mới là nơi co/scroll khi không đủ chiều cao.
+        <section
+            data-output-preview-section={id}
+            className={`shrink-0 overflow-hidden rounded-lg border ${
+                warning
+                    ? 'border-amber-200 bg-amber-50/40 dark:border-amber-900/60 dark:bg-amber-950/15'
+                    : 'border-slate-200 bg-white dark:border-zinc-700 dark:bg-zinc-900'
+            }`}
+        >
+            <button
+                type="button"
+                aria-expanded={open}
+                aria-controls={contentId}
+                onClick={() => setOpen(current => !current)}
+                className={`flex w-full items-center justify-between px-3 py-2 text-left text-[11px] font-bold uppercase tracking-widest ${
+                    warning
+                        ? 'text-amber-700 hover:bg-amber-100/60 dark:text-amber-300 dark:hover:bg-amber-900/20'
+                        : 'text-slate-500 hover:bg-slate-50 dark:text-zinc-400 dark:hover:bg-zinc-800'
+                }`}
+            >
+                <span>{title}</span>
+                <svg
+                    className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`}
+                    fill="currentColor"
+                    viewBox="0 0 20 20"
+                    aria-hidden="true"
+                >
+                    <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" />
+                </svg>
+            </button>
+            {open && (
+                <div id={contentId} className="border-t border-inherit p-2.5">
+                    {children}
+                </div>
+            )}
+        </section>
+    );
+}
+
 interface PendingWorkerRequest {
     resolve: (response: OutputPreviewWorkerResponse) => void;
     reject: (error: Error) => void;
@@ -62,6 +247,9 @@ interface PendingWorkerRequest {
 
 export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPages = 1, onClose, onPlatesChange, onFileFixed }: OutputPreviewTabProps) {
   const { t } = useTranslation();
+    const workspaceStore = React.useContext(WorkspaceContext)!;
+    const setActiveDashboardTool = useImposerSettingsStore(state => state.setActiveDashboardTool);
+    const requestWorkspaceToolActivation = useWorkspaceToolActivationGuard();
     const viewerActivePage = useWorkspaceStore(s => s.viewerActivePage);
     const viewerPageOrder = useWorkspaceStore(s => s.viewerPageOrder);
     const setTacHeatmapUrl = useWorkspaceStore(s => s.setTacHeatmapUrl);
@@ -69,15 +257,38 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
     const setGamutWarningUrl = useWorkspaceStore(s => s.setGamutWarningUrl);
     const setSoftProofActive = useWorkspaceStore(s => s.setSoftProofActive);
     const setOverprintPreviewUrl = useWorkspaceStore(s => s.setOverprintPreviewUrl);
+    const simulationProfileId = useWorkspaceStore(s => s.outputPreviewProfileId);
+    const simulationIntent = useWorkspaceStore(s => s.outputPreviewRenderingIntent);
+    const showFilter = useWorkspaceStore(s => s.outputPreviewShowFilter);
+    const previewMode = useWorkspaceStore(s => s.outputPreviewMode);
+    const simulatePaperColor = useWorkspaceStore(s => s.outputPreviewSimulatePaperColor);
+    const simulateBlackInk = useWorkspaceStore(s => s.outputPreviewSimulateBlackInk);
+    const pageBackgroundRgb = useWorkspaceStore(s => s.outputPreviewPageBackgroundRgb);
+    const warningOpacity = useWorkspaceStore(s => s.outputPreviewWarningOpacity);
+    const outputPreviewPageBoxes = useWorkspaceStore(s => s.outputPreviewPageBoxes);
+    const showPageBoxes = useWorkspaceStore(s => s.outputPreviewShowPageBoxes);
+    const setSimulationProfileId = useWorkspaceStore(s => s.setOutputPreviewProfileId);
+    const setSimulationIntent = useWorkspaceStore(s => s.setOutputPreviewRenderingIntent);
+    const setShowFilter = useWorkspaceStore(s => s.setOutputPreviewShowFilter);
+    const setPreviewMode = useWorkspaceStore(s => s.setOutputPreviewMode);
+    const setSimulatePaperColor = useWorkspaceStore(s => s.setOutputPreviewSimulatePaperColor);
+    const setSimulateBlackInk = useWorkspaceStore(s => s.setOutputPreviewSimulateBlackInk);
+    const setPageBackgroundRgb = useWorkspaceStore(s => s.setOutputPreviewPageBackgroundRgb);
+    const setWarningOpacity = useWorkspaceStore(s => s.setOutputPreviewWarningOpacity);
+    const setOutputPreviewActiveViewerPage = useWorkspaceStore(s => s.setOutputPreviewActiveViewerPage);
+    const setOutputPreviewPageBoxes = useWorkspaceStore(s => s.setOutputPreviewPageBoxes);
+    const setShowPageBoxes = useWorkspaceStore(s => s.setOutputPreviewShowPageBoxes);
     const initialViewerPage = Math.min(totalPages, Math.max(1, viewerActivePage || initialPageNum));
     const [pageNum, setPageNum] = useState(initialViewerPage);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
-    // UIUX (audit 2026-07-28 §GS.3): PPE là engine chính; tên query cũ chỉ giữ để tương thích API.
-    const [useRipPreview, setUseRipPreview] = useState(true);
+    // GS-SUNSET (audit 2026-08-08 §GS.4): mode nói theo độ chính xác, không theo engine cũ.
+    const [useAccuratePreview, setUseAccuratePreview] = useState(true);
+    const filterRequiresPpe = showFilter !== 'all';
+    const effectiveAccuratePreview = useAccuratePreview || filterRequiresPpe;
     const [convertingSpot, setConvertingSpot] = useState('');
 
-    const [plateList, setPlateList] = useState<{ name: string; color: number[]; dataUrl: string; is_spot?: boolean }[]>([]);
+    const [plateList, setPlateList] = useState<PlateListItem[]>([]);
     const [visiblePlates, setVisiblePlates] = useState<Set<string>>(new Set());
     const [soloPlate, setSoloPlate] = useState<string | null>(null);
     
@@ -85,35 +296,74 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
     const [blendingColorSpace, setBlendingColorSpace] = useState('DeviceCMYK');
     const [tacThreshold, setTacThreshold] = useState(280);
     const [showTacWarning, setShowTacWarning] = useState(false);
+    const [sampleDiameterMm, setSampleDiameterMm] = useState(0);
     const [spotInksMeta, setSpotInksMeta] = useState<SpotInkMeta[]>([]);
     const [engineUsed, setEngineUsed] = useState('');
     const [accuracyLabel, setAccuracyLabel] = useState('');
     const [qualityNote, setQualityNote] = useState('');
     const [detectedSpots, setDetectedSpots] = useState<string[]>([]);
+    const [profiles, setProfiles] = useState<IccProfile[]>([]);
     const [showSoftProof, setShowSoftProof] = useState(false);
     const [showTacHeatmap, setShowTacHeatmap] = useState(false);
+    const [simulateOverprint, setSimulateOverprint] = useState(false);
+    const [pageBoxesLoading, setPageBoxesLoading] = useState(false);
+    const [pageBoxesError, setPageBoxesError] = useState('');
     
     const isRipResult =
         accuracyLabel === 'rip_separations'
         || accuracyLabel === 'rip_separations_approx_geometry';
-    const engineDisplayName = engineUsed === 'ppe'
-        ? 'PrynX PPE'
-        : engineUsed === 'ghostscript' ? 'RIP legacy' : engineUsed;
+    const engineDisplayName = engineUsed === 'ppe' ? 'PrynX PPE' : engineUsed;
 
 
-    const plateDataRef = React.useRef<{ width: number, height: number, arrays: Record<string, Uint8ClampedArray> } | null>(null);
+    const plateDataRef = React.useRef<{
+        width: number;
+        height: number;
+        renderDpi: number;
+        outputPreviewFilter: OutputPreviewShowFilter;
+        arrays: Record<string, Uint8ClampedArray>;
+    } | null>(null);
     const pctRefs = React.useRef<Record<string, HTMLSpanElement | null>>({});
     const tacRef = React.useRef<HTMLSpanElement | null>(null);
+    const sampleMetaRef = React.useRef<HTMLSpanElement | null>(null);
     const previewWorkerRef = React.useRef<Worker | null>(null);
     const workerRequestIdRef = React.useRef(0);
     const pendingWorkerRequestsRef = React.useRef(new Map<number, PendingWorkerRequest>());
     const plateObjectUrlsRef = React.useRef<string[]>([]);
+    const compositeAbortRef = React.useRef<AbortController | null>(null);
+    const compositeGenerationRef = React.useRef(0);
+    const compositeObjectUrlRef = React.useRef<string | null>(null);
     const tacObjectUrlRef = React.useRef<string | null>(null);
+    const pageBoxesGenerationRef = React.useRef(0);
     const onPlatesChangeRef = React.useRef(onPlatesChange);
     const mappedSourcePage = viewerPageOrder?.[pageNum - 1];
     const sourcePageNum = typeof mappedSourcePage === 'number' && mappedSourcePage > 0
         ? mappedSourcePage
         : pageNum;
+
+    const openRelatedTool = useCallback((tool: 'inkmanager' | 'crop') => {
+        requestWorkspaceToolActivation(tool, () => {
+            // UIUX (audit 2026-08-10 §OP.11): đóng lớp preview trước khi mở
+            // công cụ sửa file để hai ngữ cảnh không chồng lên nhau.
+            const appSettings = useAppSettingsStore.getState();
+            if (appSettings.toolMenuWidth < 280) appSettings.setToolMenuWidth(390);
+            appSettings.setWorkspaceSidebarOpen(true);
+            setActiveDashboardTool(tool);
+            onClose();
+        });
+    }, [onClose, requestWorkspaceToolActivation, setActiveDashboardTool]);
+
+    useEffect(() => {
+        let cancelled = false;
+        void authenticatedFetch(`${getApiUrl()}/preflight/icc-profiles`)
+            .then(response => response.ok ? response.json() : Promise.reject(new Error(String(response.status))))
+            .then(data => {
+                if (!cancelled) setProfiles(data.profiles || []);
+            })
+            .catch(() => {
+                if (!cancelled) setProfiles([]);
+            });
+        return () => { cancelled = true; };
+    }, []);
 
     useEffect(() => {
         onPlatesChangeRef.current = onPlatesChange;
@@ -185,6 +435,17 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
         plateObjectUrlsRef.current = [];
     }, []);
 
+    const clearColorManagedPlateComposite = useCallback(() => {
+        compositeGenerationRef.current += 1;
+        compositeAbortRef.current?.abort();
+        compositeAbortRef.current = null;
+        if (compositeObjectUrlRef.current) {
+            URL.revokeObjectURL(compositeObjectUrlRef.current);
+            compositeObjectUrlRef.current = null;
+        }
+        onPlatesChangeRef.current?.([]);
+    }, []);
+
     const clearTacHeatmap = useCallback(() => {
         if (tacObjectUrlRef.current) URL.revokeObjectURL(tacObjectUrlRef.current);
         tacObjectUrlRef.current = null;
@@ -196,17 +457,22 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
     const clearPagePreview = useCallback(() => {
         disposePreviewWorker();
         revokePlateObjectUrls();
+        clearColorManagedPlateComposite();
         clearTacHeatmap();
         plateDataRef.current = null;
         setPlateList([]);
         setVisiblePlates(new Set());
-        onPlatesChangeRef.current?.([]);
         setSoftProofImageUrl(null);
         setGamutWarningUrl(null);
         setSoftProofActive(false);
         setOverprintPreviewUrl(null);
+        // UIUX (audit 2026-08-10 §OP.E3): PageBox có vòng đời độc lập theo
+        // file/trang. Đổi profile/intent chỉ dựng lại bản kẽm, không được xóa box
+        // rồi để checkbox bị khóa vì effect PageBox không có dependency màu.
+        setSimulateOverprint(false);
     }, [
         clearTacHeatmap,
+        clearColorManagedPlateComposite,
         disposePreviewWorker,
         revokePlateObjectUrls,
         setGamutWarningUrl,
@@ -233,10 +499,60 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
         setPageNum(nextPage);
     }, [clearPagePreview, pageNum, totalPages, viewerActivePage]);
 
+    useEffect(() => {
+        setOutputPreviewActiveViewerPage(pageNum);
+        return () => setOutputPreviewActiveViewerPage(null);
+    }, [pageNum, setOutputPreviewActiveViewerPage]);
+
+    // PAGEBOX (audit 2026-08-10 §OP.E3): đọc box thật của trang nguồn và gắn
+    // viewerPageNum để response cũ/khác frame không thể vẽ lên trang hiện tại.
+    useEffect(() => {
+        const generation = ++pageBoxesGenerationRef.current;
+        const controller = new AbortController();
+        setPageBoxesLoading(true);
+        setPageBoxesError('');
+        setOutputPreviewPageBoxes(null);
+
+        void authenticatedFetch(
+            `${getApiUrl()}/preflight/page-boxes/${fileId}/${sourcePageNum}`,
+            { signal: controller.signal },
+        ).then(async (response) => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const parsed = parseOutputPreviewPageBoxes(
+                await response.json(),
+                pageNum,
+                sourcePageNum,
+            );
+            if (!parsed) throw new Error('Invalid PageBox response');
+            if (generation !== pageBoxesGenerationRef.current || controller.signal.aborted) return;
+            setOutputPreviewPageBoxes(parsed);
+        }).catch(() => {
+            if (generation !== pageBoxesGenerationRef.current || controller.signal.aborted) return;
+            setOutputPreviewPageBoxes(null);
+            setPageBoxesError(t('tabs.outputPreview:khong_doc_duoc_hop_trang'));
+        }).finally(() => {
+            if (generation === pageBoxesGenerationRef.current && !controller.signal.aborted) {
+                setPageBoxesLoading(false);
+            }
+        });
+
+        return () => {
+            controller.abort();
+            if (generation === pageBoxesGenerationRef.current) {
+                setOutputPreviewPageBoxes(null);
+            }
+        };
+    }, [fileId, pageNum, setOutputPreviewPageBoxes, sourcePageNum, t]);
+
     // ── TAC Heatmap Generation (Web Worker) ──
     useEffect(() => {
         const worker = previewWorkerRef.current;
-        if (!showTacHeatmap || !plateDataRef.current || !worker) {
+        if (
+            !showTacHeatmap
+            || !plateDataRef.current
+            || plateDataRef.current.outputPreviewFilter !== showFilter
+            || !worker
+        ) {
             clearTacHeatmap();
             return;
         }
@@ -263,6 +579,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
         sendPreviewWorkerRequest,
         setTacHeatmapUrl,
         showTacHeatmap,
+        showFilter,
         tacThreshold,
     ]);
 
@@ -300,21 +617,49 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
     useEffect(() => {
         let isMounted = true;
         const fetchSeparations = async () => {
-            clearPagePreview();
+            // PERF/UIUX (audit 2026-08-10 §PPE.REAUDIT.4): đổi Show/profile
+            // không làm panel nhảy về spinner trắng. Giữ danh sách nút cũ trong
+            // lúc fetch, nhưng vô hiệu dữ liệu mực/overlay ngay để không lấy mẫu
+            // hoặc ghép subset bằng request identity trước.
+            const preservePlateSelection = plateDataRef.current !== null;
+            plateDataRef.current = null;
+            clearColorManagedPlateComposite();
+            clearTacHeatmap();
+            for (const element of Object.values(pctRefs.current)) {
+                if (element) element.textContent = '—';
+            }
+            if (tacRef.current) tacRef.current.textContent = '—';
             setLoading(true);
             setError('');
             setSoloPlate(null);
             try {
-                // true → precise RIP path (PPE first); false → approximate RGB→CMYK.
-                const ripParam = useRipPreview ? '&use_gs=true' : '&use_gs=false';
+                const renderMode = effectiveAccuratePreview ? 'accurate' : 'approximate';
+                const query = new URLSearchParams({
+                    dpi: '150',
+                    render_mode: renderMode,
+                    profile_id: simulationProfileId,
+                    intent: simulationIntent,
+                    output_preview_filter: showFilter,
+                });
                 const res = await authenticatedFetch(
-                    `${getApiUrl()}/preflight/separations/${fileId}/${sourcePageNum}?dpi=150${ripParam}&profile_id=fogra39`
+                    `${getApiUrl()}/preflight/separations/${fileId}/${sourcePageNum}?${query.toString()}`
                 );
                 if (!res.ok) throw new Error(t('tabs.outputPreview:khong_the_phan_tach_kem'));
                 const result: SeparationsData = await res.json();
                 if (!isMounted) return;
+                // Request hiện tại đã được khóa bởi vòng đời effect; backend mới
+                // echo thêm filter để bắt mismatch. Mock/backend cũ không echo vẫn
+                // chỉ được gắn danh tính của chính request đang còn mounted.
+                const responseFilter = result.output_preview_filter ?? showFilter;
+                if (responseFilter !== showFilter) {
+                    throw new Error(t('tabs.outputPreview:khong_the_phan_tach_kem'));
+                }
+                const renderDpi = Number(result.render_dpi);
+                if (!Number.isFinite(renderDpi) || renderDpi <= 0) {
+                    throw new Error(t('tabs.outputPreview:backend_khong_tra_dpi'));
+                }
                 const arrays: Record<string, Uint8ClampedArray> = {};
-                let plates: { name: string; color: number[]; dataUrl: string; is_spot?: boolean }[] = [];
+                let plates: PlateListItem[] = [];
                 if (result.plates.length > 0) {
                     const worker = createPreviewWorker();
                     const response = await sendPreviewWorkerRequest(worker, {
@@ -332,7 +677,13 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                     if (response.type !== 'reconstructed') {
                         throw new Error('Worker không trả dữ liệu phân tách kẽm.');
                     }
+                    revokePlateObjectUrls();
+                    const sourcePlates = new Map(result.plates.map(plate => [plate.name, plate]));
                     plates = response.plates.map((plate) => {
+                        const sourcePlate = sourcePlates.get(plate.name);
+                        if (!sourcePlate) {
+                            throw new Error(t('tabs.outputPreview:khong_the_phan_tach_kem'));
+                        }
                         const dataUrl = URL.createObjectURL(plate.png);
                         plateObjectUrlsRef.current.push(dataUrl);
                         arrays[plate.name] = new Uint8ClampedArray(plate.alphaBuffer);
@@ -341,12 +692,24 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                             color: plate.color,
                             dataUrl,
                             is_spot: plate.isSpot,
+                            alpha_data: sourcePlate.alpha_data,
+                            alternate_cmyk_lut: sourcePlate.alternate_cmyk_lut,
                         };
                     });
                 }
-                plateDataRef.current = { width: result.width, height: result.height, arrays };
+                plateDataRef.current = {
+                    width: result.width,
+                    height: result.height,
+                    renderDpi,
+                    outputPreviewFilter: responseFilter,
+                    arrays,
+                };
                 setPlateList(plates);
-                setVisiblePlates(new Set(plates.map(p => p.name)));
+                setVisiblePlates(previous => {
+                    const available = plates.map(plate => plate.name);
+                    if (!preservePlateSelection) return new Set(available);
+                    return new Set(available.filter(name => previous.has(name)));
+                });
                 setPageHasTransparency(result.page_has_transparency ?? false);
                 setBlendingColorSpace(result.blending_color_space ?? 'DeviceCMYK');
                 setSpotInksMeta(result.spot_inks ?? []);
@@ -363,74 +726,237 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
         fetchSeparations();
         return () => { isMounted = false; };
     }, [
-        clearPagePreview,
+        clearColorManagedPlateComposite,
+        clearTacHeatmap,
         createPreviewWorker,
         fileId,
+        revokePlateObjectUrls,
         sendPreviewWorkerRequest,
         sourcePageNum,
-        useRipPreview,
+        simulationIntent,
+        simulationProfileId,
+        effectiveAccuratePreview,
+        showFilter,
+        t,
     ]);
 
     useEffect(() => {
-        const handlePdfHover = (e: any) => {
-            const pos = e.detail;
-            if (!pos || pos.pageNum !== sourcePageNum || !plateDataRef.current) return;
-            
-            const { x, y } = pos;
-            const { width, height, arrays } = plateDataRef.current;
-            const px = Math.floor(x * width);
-            const py = Math.floor(y * height);
-            if (px < 0 || px >= width || py < 0 || py >= height) return;
-            const idx = py * width + px;
-            
-            let total = 0;
-            for (const name in arrays) {
-                const alpha = arrays[name][idx];
-                const pct = Math.round((alpha / 255) * 100);
-                total += pct;
-                const el = pctRefs.current[name];
-                if (el) el.textContent = `${pct}%`;
+        const clearSample = () => {
+            for (const element of Object.values(pctRefs.current)) {
+                if (element) element.textContent = '—';
             }
-            if (tacRef.current) {
-                tacRef.current.textContent = `${total}%`;
-                if (total > tacThreshold && showTacWarning) {
-                    tacRef.current.className = "font-mono text-[13px] text-red-500 font-bold tabular-nums";
-                } else {
-                    tacRef.current.className = "font-mono text-[13px] text-slate-400 font-medium tabular-nums";
-                }
+            if (tacRef.current) tacRef.current.textContent = '—';
+            if (sampleMetaRef.current) {
+                sampleMetaRef.current.textContent = t('tabs.outputPreview:di_chuot_de_lay_mau');
             }
         };
 
-        window.addEventListener('pdf-hover', handlePdfHover);
-        return () => window.removeEventListener('pdf-hover', handlePdfHover);
-    }, [sourcePageNum, tacThreshold, showTacWarning]);
+        const updateSample = (position: { x: number; y: number; pageNum: number } | null) => {
+            const pageData = plateDataRef.current;
+            if (
+                !position
+                || position.pageNum !== sourcePageNum
+                || !pageData
+                || pageData.outputPreviewFilter !== showFilter
+            ) {
+                clearSample();
+                return;
+            }
+            const sample = sampleOutputPreviewInk({
+                arrays: pageData.arrays,
+                width: pageData.width,
+                height: pageData.height,
+                xRatio: position.x,
+                yRatio: position.y,
+                renderDpi: pageData.renderDpi,
+                sampleDiameterMm,
+            });
+            for (const [name, percentage] of Object.entries(sample.channelPercentages)) {
+                const element = pctRefs.current[name];
+                if (element) element.textContent = `${percentage}%`;
+            }
+            if (tacRef.current) {
+                tacRef.current.textContent = `${sample.totalPercent}%`;
+                tacRef.current.className = sample.totalPercent > tacThreshold && showTacWarning
+                    ? 'font-mono text-[13px] text-red-500 font-bold tabular-nums'
+                    : 'font-mono text-[13px] text-slate-500 font-medium tabular-nums';
+            }
+            if (sampleMetaRef.current) {
+                sampleMetaRef.current.textContent = t('tabs.outputPreview:vung_mau_n_px_tai_dpi', {
+                    count: sample.sampledPixels,
+                    dpi: Math.round(pageData.renderDpi),
+                });
+            }
+        };
+
+        updateSample(workspaceStore.getState().hoveredPdfPosition);
+        return workspaceStore.subscribe((state, previous) => {
+            if (state.hoveredPdfPosition !== previous.hoveredPdfPosition) {
+                updateSample(state.hoveredPdfPosition);
+            }
+        });
+    }, [plateList, sampleDiameterMm, showFilter, showTacWarning, sourcePageNum, t, tacThreshold, workspaceStore]);
 
     useEffect(() => {
         if (!onPlatesChange) return;
-        const pageData = plateDataRef.current;
-        if (!pageData || plateList.length === 0) {
-            onPlatesChange([]);
+        if (previewMode !== 'separations') {
+            clearColorManagedPlateComposite();
             return;
         }
-        onPlatesChange(buildPagePlateOverlays(
-            plateList,
-            visiblePlates,
-            soloPlate,
-            {
-                viewerPageNum: pageNum,
-                sourcePageNum,
-                pixelWidth: pageData.width,
-                pixelHeight: pageData.height,
-            },
-        ));
-    }, [onPlatesChange, pageNum, plateList, soloPlate, sourcePageNum, visiblePlates]);
+        const pageData = plateDataRef.current;
+        if (
+            !pageData
+            || pageData.outputPreviewFilter !== showFilter
+            || plateList.length === 0
+        ) {
+            clearColorManagedPlateComposite();
+            return;
+        }
+        const enabledNames = soloPlate
+            ? [soloPlate]
+            : plateList.filter(plate => visiblePlates.has(plate.name)).map(plate => plate.name);
+        const allVisible = soloPlate === null
+            && enabledNames.length === plateList.length;
+        if (allVisible) {
+            // COLOR (audit 2026-08-10 §OP.1): trạng thái mặc định dùng thẳng bitmap
+            // Viewer color-managed đang sẵn có; không dựng hoặc chồng lại một ảnh giống hệt.
+            clearColorManagedPlateComposite();
+            return;
+        }
+
+        const generation = ++compositeGenerationRef.current;
+        compositeAbortRef.current?.abort();
+        const controller = new AbortController();
+        compositeAbortRef.current = controller;
+        const timer = window.setTimeout(() => {
+            void authenticatedFetch(`${getApiUrl()}/preflight/separation-composite`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                signal: controller.signal,
+                body: JSON.stringify({
+                    width: pageData.width,
+                    height: pageData.height,
+                    plates: plateList.map(plate => ({
+                        name: plate.name,
+                        alpha_data: plate.alpha_data,
+                        is_spot: Boolean(plate.is_spot),
+                        alternate_cmyk_lut: plate.alternate_cmyk_lut ?? null,
+                    })),
+                    enabled_names: enabledNames,
+                    profile_id: simulationProfileId,
+                    intent: simulationIntent,
+                }),
+            }).then(async (response) => {
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const missingAlternates = Number(
+                    response.headers.get('X-PrynX-Missing-Spot-Alternates') || 0,
+                );
+                if (missingAlternates > 0) {
+                    throw new Error('PPE không có tint transform của một bản kẽm spot.');
+                }
+                const blob = await response.blob();
+                if (blob.type && blob.type !== 'image/png') {
+                    throw new Error(`MIME composite không hợp lệ: ${blob.type}`);
+                }
+                if (typeof createImageBitmap === 'function') {
+                    const bitmap = await createImageBitmap(blob);
+                    bitmap.close();
+                }
+                if (controller.signal.aborted || generation !== compositeGenerationRef.current) return;
+
+                const nextUrl = URL.createObjectURL(blob);
+                if (controller.signal.aborted || generation !== compositeGenerationRef.current) {
+                    URL.revokeObjectURL(nextUrl);
+                    return;
+                }
+                const previousUrl = compositeObjectUrlRef.current;
+                compositeObjectUrlRef.current = nextUrl;
+                onPlatesChange(buildColorManagedPlateCompositeOverlay(nextUrl, {
+                    viewerPageNum: pageNum,
+                    sourcePageNum,
+                    pixelWidth: pageData.width,
+                    pixelHeight: pageData.height,
+                }));
+                // Ảnh mới đã decode trước. Giữ URL cũ thêm một nhịp render để DOM
+                // không mất nguồn giữa lúc Zustand phát state và React commit frame mới.
+                if (previousUrl && previousUrl !== nextUrl) {
+                    window.setTimeout(() => URL.revokeObjectURL(previousUrl), 250);
+                }
+            }).catch((requestError) => {
+                if (controller.signal.aborted || generation !== compositeGenerationRef.current) return;
+                console.error('Không ghép được tập bản kẽm Output Preview:', requestError);
+                toast.error(t('tabs.outputPreview:khong_the_phan_tach_kem'));
+            });
+        }, 35);
+
+        return () => {
+            window.clearTimeout(timer);
+            controller.abort();
+            if (compositeAbortRef.current === controller) compositeAbortRef.current = null;
+        };
+    }, [
+        clearColorManagedPlateComposite,
+        onPlatesChange,
+        pageNum,
+        plateList,
+        previewMode,
+        simulationIntent,
+        simulationProfileId,
+        showFilter,
+        soloPlate,
+        sourcePageNum,
+        t,
+        visiblePlates,
+    ]);
+
+    // PREFLIGHT (audit 2026-08-10 §OP.8): Preview là hành vi pixel thật. Chế độ
+    // Color Warnings không được giữ plate subset của Separations; quay lại
+    // Separations thì gỡ Soft-Proof/Gamut tự động để Viewer trở về composite kẽm.
+    useEffect(() => {
+        if (previewMode === 'color-warnings') {
+            setSoloPlate(null);
+            clearColorManagedPlateComposite();
+            setSoftProofImageUrl(null);
+            setGamutWarningUrl(null);
+            setSoftProofActive(false);
+            return;
+        }
+        setSoftProofImageUrl(null);
+        setGamutWarningUrl(null);
+        setSoftProofActive(false);
+    }, [
+        clearColorManagedPlateComposite,
+        previewMode,
+        setGamutWarningUrl,
+        setSoftProofActive,
+        setSoftProofImageUrl,
+    ]);
+
+    useEffect(() => {
+        if (previewMode !== 'color-warnings') return;
+        setVisiblePlates(new Set(plateList.map(plate => plate.name)));
+    }, [plateList, previewMode]);
 
     useEffect(() => () => {
         disposePreviewWorker();
         revokePlateObjectUrls();
+        clearColorManagedPlateComposite();
         clearTacHeatmap();
-        onPlatesChangeRef.current?.([]);
-    }, [clearTacHeatmap, disposePreviewWorker, revokePlateObjectUrls]);
+        setSoftProofImageUrl(null);
+        setGamutWarningUrl(null);
+        setSoftProofActive(false);
+        setOverprintPreviewUrl(null);
+    }, [
+        clearTacHeatmap,
+        clearColorManagedPlateComposite,
+        disposePreviewWorker,
+        revokePlateObjectUrls,
+        setGamutWarningUrl,
+        setOverprintPreviewUrl,
+        setOutputPreviewPageBoxes,
+        setSoftProofActive,
+        setSoftProofImageUrl,
+    ]);
 
     const togglePlate = useCallback((name: string) => {
         setSoloPlate(null); // clear solo when toggling
@@ -445,17 +971,19 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
         setSoloPlate(prev => prev === name ? null : name);
     }, []);
 
-    const allProcessVisible = plateList.every(p => visiblePlates.has(p.name)) && !soloPlate;
-    const toggleAllProcess = useCallback(() => {
+    const togglePlateGroup = useCallback((names: string[]) => {
+        if (names.length === 0) return;
         setSoloPlate(null);
-        setVisiblePlates(allProcessVisible ? new Set() : new Set(plateList.map(p => p.name)));
-    }, [allProcessVisible, plateList]);
-
-    const PNAMES: Record<string, string> = {
-        'Cyan': 'Process Cyan', 'Magenta': 'Process Magenta',
-        'Yellow': 'Process Yellow', 'Black': 'Process Black'
-    };
-    const PROCESS_NAMES = new Set(['Cyan', 'Magenta', 'Yellow', 'Black']);
+        setVisiblePlates(previous => {
+            const next = new Set(previous);
+            const allVisible = names.every(name => next.has(name));
+            for (const name of names) {
+                if (allVisible) next.delete(name);
+                else next.add(name);
+            }
+            return next;
+        });
+    }, []);
 
     const convertSpot = useCallback(async (spotName?: string) => {
         setConvertingSpot(spotName || '__all__');
@@ -484,7 +1012,106 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
         setConvertingSpot('');
     }, [fileId, onFileFixed]);
 
-    const hasSpotInks = plateList.some(p => !PROCESS_NAMES.has(p.name));
+    const processPlates = plateList.filter(plate => !plate.is_spot && PROCESS_NAMES.has(plate.name));
+    const spotPlates = plateList.filter(plate => plate.is_spot || !PROCESS_NAMES.has(plate.name));
+    const hasSpotInks = spotPlates.length > 0;
+    const currentPageBoxes = outputPreviewPageBoxes?.viewerPageNum === pageNum
+        ? outputPreviewPageBoxes
+        : null;
+    const declaredPageBoxes = currentPageBoxes ? ([
+        { kind: 'bleedbox', box: currentPageBoxes.bleedbox, declared: currentPageBoxes.has_bleedbox },
+        { kind: 'trimbox', box: currentPageBoxes.trimbox, declared: currentPageBoxes.has_trimbox },
+        { kind: 'artbox', box: currentPageBoxes.artbox, declared: currentPageBoxes.has_artbox },
+    ] as const).filter(entry => entry.declared) : [];
+    const hasDeclaredPageBoxes = declaredPageBoxes.length > 0;
+
+    const renderPlateGroup = (
+        groupId: 'process' | 'spot',
+        label: string,
+        plates: typeof plateList,
+    ) => {
+        if (plates.length === 0) return null;
+        const names = plates.map(plate => plate.name);
+        const allVisible = names.every(name => visiblePlates.has(name)) && !soloPlate;
+        return (
+            <div data-plate-group={groupId} className="overflow-hidden rounded-lg border border-slate-200 bg-white dark:border-zinc-700 dark:bg-zinc-800">
+                <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50/80 px-2.5 py-1.5 dark:border-zinc-700 dark:bg-zinc-800/80">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-300">
+                        {label} · {plates.length}
+                    </span>
+                    <button
+                        type="button"
+                        onClick={() => togglePlateGroup(names)}
+                        className="rounded px-1.5 py-0.5 text-[10px] font-medium text-indigo-600 hover:bg-indigo-50 dark:text-indigo-300 dark:hover:bg-indigo-900/30"
+                    >
+                        {allVisible ? t('tabs.outputPreview:bo_chon_tat_ca') : t('tabs.outputPreview:chon_tat_ca')}
+                    </button>
+                </div>
+                {plates.map((plate, index) => {
+                    const isVisible = soloPlate ? soloPlate === plate.name : visiblePlates.has(plate.name);
+                    const isSolo = soloPlate === plate.name;
+                    const hex = `#${plate.color.map(channel => channel.toString(16).padStart(2, '0')).join('')}`;
+                    const spotMeta = spotInksMeta.find(spot => spot.name === plate.name);
+                    return (
+                        <div
+                            key={plate.name}
+                            className={`flex items-center justify-between transition-all ${
+                                index < plates.length - 1 ? 'border-b border-slate-100 dark:border-zinc-700' : ''
+                            } ${isSolo ? 'bg-indigo-50 ring-1 ring-inset ring-indigo-300 dark:bg-indigo-900/20 dark:ring-indigo-700' : ''} ${
+                                !isVisible && !isSolo ? 'opacity-40' : ''
+                            } hover:bg-slate-50 dark:hover:bg-zinc-750`}
+                            style={{ padding: '6px 10px' }}
+                        >
+                            <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5">
+                                <input
+                                    type="checkbox"
+                                    checked={isVisible}
+                                    onChange={() => togglePlate(plate.name)}
+                                    aria-label={`${isVisible ? t('tabs.outputPreview:bo_chon') : t('tabs.outputPreview:chon')} ${plate.name}`}
+                                    className="h-3.5 w-3.5 shrink-0 cursor-pointer rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 focus:ring-offset-0"
+                                />
+                                <span
+                                    className="h-4 w-4 shrink-0 rounded-sm ring-1 ring-black/10"
+                                    style={{ backgroundColor: hex }}
+                                    aria-hidden="true"
+                                />
+                                <span className="flex min-w-0 flex-col">
+                                    <span className="flex items-center gap-1.5">
+                                        <span className="truncate text-[12px] font-medium text-slate-700 dark:text-zinc-200">
+                                            {PROCESS_PLATE_LABELS[plate.name] || plate.name}
+                                        </span>
+                                        {groupId === 'spot' && (
+                                            <span className="shrink-0 rounded bg-amber-200 px-1 text-[8px] font-bold text-amber-800 dark:bg-amber-700/40 dark:text-amber-300">SPOT</span>
+                                        )}
+                                    </span>
+                                    {groupId === 'spot' && spotMeta && (
+                                        <span className="font-mono text-[9px] text-slate-400">
+                                            {t('tabs.outputPreview:do_phu')}: {spotMeta.coverage_pct}%{spotMeta.is_pantone ? ' · Pantone' : ''}
+                                        </span>
+                                    )}
+                                </span>
+                            </label>
+                            <div className="flex shrink-0 items-center gap-1.5">
+                                <span ref={element => { pctRefs.current[plate.name] = element; }} className="font-mono text-[11px] tabular-nums text-slate-400">—</span>
+                                <button
+                                    type="button"
+                                    onClick={() => handleSoloPlate(plate.name)}
+                                    className={`flex h-5 w-5 items-center justify-center rounded text-[11px] transition-colors ${
+                                        isSolo
+                                            ? 'bg-indigo-500 text-white'
+                                            : 'text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-zinc-700'
+                                    }`}
+                                    title={isSolo ? t('tabs.outputPreview:tat_xem_rieng') : t('tabs.outputPreview:xem_rieng_kenh', { name: plate.name })}
+                                >
+                                    {isSolo ? '◉' : '○'}
+                                </button>
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        );
+    };
 
     return (
         <div
@@ -515,6 +1142,15 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                     <span className="font-bold text-[13px] text-slate-700 dark:text-zinc-200 uppercase tracking-wide">{t('tabs.outputPreview:xem_truoc_ban_in')}</span>
                 </div>
                 <div className="flex items-center gap-1.5">
+                    {engineUsed && (
+                        <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                            isRipResult
+                                ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+                                : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+                        }`}>
+                            {isRipResult ? 'RIP' : t('tabs.outputPreview:xap_xi')} · {engineDisplayName}
+                        </span>
+                    )}
                     {detectedSpots.length > 0 && (
                         <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-bold dark:bg-amber-900/40 dark:text-amber-300">
                             {detectedSpots.length} SPOT
@@ -528,66 +1164,294 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                
-                {/* ─── Mode + Engine ─── */}
-                <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                        <span className="text-[12px] text-slate-500">{t('tabs.outputPreview:che_do')}</span>
-                        <span className="text-[12px] font-semibold text-indigo-600 dark:text-indigo-400">{t('tabs.outputPreview:tach_kem_separations')}</span>
-                    </div>
-                    {engineUsed && (
-                        <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${
-                            isRipResult
-                                ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
-                                : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
-                        }`}>
-                            {isRipResult ? 'RIP' : 'XẤP XỈ'} · {engineDisplayName}
-                        </span>
-                    )}
-                </div>
 
-                {/* ─── Page Navigation ─── */}
+                {/* UIUX (audit 2026-08-10 §OP.11): điều hướng trang là ngữ cảnh
+                    của toàn panel nên luôn nhìn thấy, không phụ thuộc section. */}
                 {totalPages > 1 && (
-                    <div className="flex items-center justify-center gap-3">
+                    <div data-output-preview-page-nav className="flex items-center justify-center gap-3">
                         <button
+                            type="button"
                             onClick={() => navigatePreviewPage(pageNum - 1)}
                             disabled={pageNum <= 1 || loading}
-                            className="w-7 h-7 flex items-center justify-center rounded-lg border border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-30 transition-colors text-slate-500 text-[14px]"
+                            className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-[14px] text-slate-500 transition-colors hover:bg-slate-100 disabled:opacity-30 dark:border-zinc-700 dark:hover:bg-zinc-800"
                         >←</button>
-                        <span className="text-[12px] font-semibold text-slate-600 dark:text-zinc-300 tabular-nums">
-                            Trang {pageNum} / {totalPages}
+                        <span className="text-[12px] font-semibold tabular-nums text-slate-600 dark:text-zinc-300">
+                            {t('tabs.outputPreview:trang_x_tren_y', { page: pageNum, total: totalPages })}
                         </span>
                         <button
+                            type="button"
                             onClick={() => navigatePreviewPage(pageNum + 1)}
                             disabled={pageNum >= totalPages || loading}
-                            className="w-7 h-7 flex items-center justify-center rounded-lg border border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-30 transition-colors text-slate-500 text-[14px]"
+                            className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-[14px] text-slate-500 transition-colors hover:bg-slate-100 disabled:opacity-30 dark:border-zinc-700 dark:hover:bg-zinc-800"
                         >→</button>
                     </div>
                 )}
 
-                {/* ─── Plate List ─── */}
-                <div>
-                    <div className="flex items-center justify-between" style={{ marginBottom: '4px' }}>
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{t('tabs.outputPreview:ban_kem')}</span>
-                        <button
-                            onClick={toggleAllProcess}
-                            className={`text-[11px] font-medium rounded transition-colors ${
-                                allProcessVisible ? 'text-indigo-600 hover:bg-indigo-50' : 'text-slate-500 hover:bg-slate-100'
-                            }`}
-                            style={{ padding: '2px 6px' }}
+                {/* PREFLIGHT (audit 2026-08-10 §OP.8): quyết định Simulation luôn
+                    nhìn thấy và là nguồn chung cho Separations/Soft-Proof/Viewer. */}
+                <OutputPreviewSection
+                    id="simulation"
+                    title={t('tabs.outputPreview:mo_phong')}
+                    defaultOpen
+                >
+                    <div className="rounded-lg bg-indigo-50/50 p-2.5 dark:bg-indigo-950/20">
+                    <label className="mb-2 block">
+                        <span className="mb-1 block text-[10px] font-semibold text-slate-500 dark:text-zinc-400">
+                            {t('tabs.outputPreview:ho_so_mo_phong')}
+                        </span>
+                        <select
+                            value={simulationProfileId}
+                            onChange={(event) => setSimulationProfileId(event.target.value)}
+                            className="h-8 w-full rounded-lg border border-slate-200 bg-white px-2 text-[12px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-400 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
                         >
-                            {allProcessVisible ? t('tabs.outputPreview:bo_chon_tat_ca') : t('tabs.outputPreview:chon_tat_ca')}
+                            {profiles.map(profile => (
+                                <option key={profile.id} value={profile.id} disabled={!profile.available}>
+                                    {profile.name}{profile.available ? '' : ` (${t('tabs.outputPreview:chua_cai')})`}
+                                </option>
+                            ))}
+                            {profiles.length === 0 && (
+                                <option value={simulationProfileId}>
+                                    {t('tabs.outputPreview:dang_tai_ho_so')}
+                                </option>
+                            )}
+                        </select>
+                        {profiles.find(profile => profile.id === simulationProfileId)?.description && (
+                            <span className="mt-1 block text-[10px] leading-snug text-slate-400">
+                                {profiles.find(profile => profile.id === simulationProfileId)?.description}
+                            </span>
+                        )}
+                    </label>
+                    <label className="block">
+                        <span className="mb-1 block text-[10px] font-semibold text-slate-500 dark:text-zinc-400">
+                            {t('tabs.outputPreview:rendering_intent')}
+                        </span>
+                        <select
+                            value={simulationIntent}
+                            onChange={(event) => setSimulationIntent(event.target.value as OutputPreviewRenderingIntent)}
+                            className="h-8 w-full rounded-lg border border-slate-200 bg-white px-2 text-[12px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-400 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+                        >
+                            {SIMULATION_INTENTS.map(intent => (
+                                <option key={intent} value={intent}>
+                                    {t(`tabs.outputPreview:intent_${intent}`)}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                    <div className="mt-2 grid gap-1.5 border-t border-indigo-100 pt-2 dark:border-indigo-900/50">
+                        <label className="flex cursor-pointer items-center gap-2">
+                            <input
+                                type="checkbox"
+                                checked={simulatePaperColor}
+                                onChange={(event) => setSimulatePaperColor(event.target.checked)}
+                                className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                            />
+                            <span className="text-[11px] font-medium text-slate-600 dark:text-zinc-300">
+                                {t('tabs.outputPreview:paper_color')}
+                            </span>
+                        </label>
+                        <label className="flex cursor-pointer items-center gap-2">
+                            <input
+                                type="checkbox"
+                                checked={simulateBlackInk}
+                                onChange={(event) => setSimulateBlackInk(event.target.checked)}
+                                className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                            />
+                            <span className="text-[11px] font-medium text-slate-600 dark:text-zinc-300">
+                                {t('tabs.outputPreview:black_ink')}
+                            </span>
+                        </label>
+                        <div className="flex items-center justify-between gap-2">
+                            <label className="flex min-w-0 cursor-pointer items-center gap-2">
+                                <input
+                                    type="checkbox"
+                                    checked={pageBackgroundRgb !== null}
+                                    aria-label={t('tabs.outputPreview:background_color')}
+                                    onChange={(event) => setPageBackgroundRgb(
+                                        event.target.checked ? [255, 255, 255] : null,
+                                    )}
+                                    className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                                />
+                                <span className="truncate text-[11px] font-medium text-slate-600 dark:text-zinc-300">
+                                    {t('tabs.outputPreview:background_color')}
+                                </span>
+                            </label>
+                            <input
+                                type="color"
+                                value={rgbToHex(pageBackgroundRgb)}
+                                disabled={pageBackgroundRgb === null}
+                                aria-label={t('tabs.outputPreview:background_color_picker')}
+                                onChange={(event) => {
+                                    const rgb = hexToRgb(event.target.value);
+                                    if (rgb) setPageBackgroundRgb(rgb);
+                                }}
+                                className="h-6 w-9 cursor-pointer rounded border border-slate-200 bg-white p-0.5 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-800"
+                            />
+                        </div>
+                    </div>
+                    <div className="mt-2 border-t border-indigo-100 pt-2 dark:border-indigo-900/50">
+                        <OverprintPreviewToggle
+                            fileId={fileId}
+                            pageNum={sourcePageNum}
+                            profileId={simulationProfileId}
+                            intent={simulationIntent}
+                            active={simulateOverprint}
+                            onActiveChange={setSimulateOverprint}
+                        />
+                        <button
+                            type="button"
+                            onClick={() => openRelatedTool('inkmanager')}
+                            className="mt-2 flex w-full items-center justify-between rounded-lg border border-indigo-200 bg-white px-2.5 py-2 text-[11px] font-semibold text-indigo-700 transition-colors hover:border-indigo-400 hover:bg-indigo-50 dark:border-indigo-900/70 dark:bg-zinc-900 dark:text-indigo-300 dark:hover:bg-indigo-950/30"
+                        >
+                            <span>{t('tabs.outputPreview:quan_ly_muc')}</span>
+                            <span aria-hidden="true">↗</span>
                         </button>
                     </div>
-
-                    {/* C4: composite nhiều plate chỉ là preview thị giác (CSS multiply),
-                        KHÔNG mô phỏng chồng mực CMYK thật → không dùng để chốt màu cuối.
-                        Từng plate riêng (solo) mới phản ánh đúng vùng phủ mực. */}
-                    <div className="text-[10px] leading-snug text-slate-500 dark:text-zinc-400 bg-slate-50 dark:bg-zinc-800/50 rounded px-2 py-1.5 mb-1.5">
-                        ⓘ Chồng nhiều bản kẽm cùng lúc chỉ để xem vùng phủ — KHÔNG phải màu in thật. Xem từng bản riêng để đánh giá chính xác.
                     </div>
+                </OutputPreviewSection>
 
-                    {loading ? (
+                {/* ─── Mode + Engine ─── */}
+                <OutputPreviewSection
+                    id="display"
+                    title={t('tabs.outputPreview:hien_thi')}
+                >
+                <div className="grid gap-2">
+                    <label className="block">
+                        <span className="mb-1 block text-[10px] font-semibold text-slate-500 dark:text-zinc-400">
+                            {t('tabs.outputPreview:show_label')}
+                        </span>
+                        <select
+                            value={showFilter}
+                            aria-label={t('tabs.outputPreview:show_label')}
+                            onChange={(event) => setShowFilter(event.target.value as OutputPreviewShowFilter)}
+                            className="h-8 w-full rounded-lg border border-slate-200 bg-white px-2 text-[12px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-400 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+                        >
+                            {OUTPUT_PREVIEW_SHOW_FILTERS.map(filter => (
+                                <option key={filter} value={filter}>
+                                    {t(`tabs.outputPreview:show_${filter.replace(/-/g, '_')}`)}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                    <label className="block">
+                        <span className="mb-1 block text-[10px] font-semibold text-slate-500 dark:text-zinc-400">
+                            {t('tabs.outputPreview:preview_label')}
+                        </span>
+                        <select
+                            value={previewMode}
+                            aria-label={t('tabs.outputPreview:preview_label')}
+                            onChange={(event) => setPreviewMode(event.target.value as OutputPreviewMode)}
+                            className="h-8 w-full rounded-lg border border-slate-200 bg-white px-2 text-[12px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-400 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+                        >
+                            {OUTPUT_PREVIEW_MODES.map(mode => (
+                                <option key={mode} value={mode}>
+                                    {t(`tabs.outputPreview:preview_${mode.replace(/-/g, '_')}`)}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                    {previewMode === 'color-warnings' && (
+                        <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 px-2.5 dark:border-emerald-900/60 dark:bg-emerald-950/20">
+                            <SoftProofPanel
+                                fileId={fileId}
+                                pageNum={sourcePageNum}
+                                profileId={simulationProfileId}
+                                intent={simulationIntent}
+                                simulateOverprint={simulateOverprint}
+                                outputPreviewFilter={showFilter}
+                                simulatePaperColor={simulatePaperColor}
+                                simulateBlackInk={simulateBlackInk}
+                                pageBackgroundRgb={pageBackgroundRgb}
+                                forceGamutWarning
+                                autoRender
+                            />
+                        </div>
+                    )}
+                </div>
+                <label className="mt-2 block">
+                    <span className="mb-1 flex items-center justify-between text-[10px] font-semibold text-slate-500 dark:text-zinc-400">
+                        <span>{t('tabs.outputPreview:do_mo_canh_bao')}</span>
+                        <span className="font-mono tabular-nums">{Math.round(warningOpacity * 100)}%</span>
+                    </span>
+                    <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={5}
+                        value={Math.round(warningOpacity * 100)}
+                        aria-label={t('tabs.outputPreview:do_mo_canh_bao')}
+                        onChange={(event) => setWarningOpacity(Number(event.target.value) / 100)}
+                        className="w-full accent-orange-500"
+                    />
+                    <span className="mt-0.5 block text-[9px] leading-snug text-slate-400">
+                        {t('tabs.outputPreview:do_mo_canh_bao_mo_ta')}
+                    </span>
+                </label>
+                <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5 dark:border-zinc-700 dark:bg-zinc-800/60">
+                    <label className={`flex items-center gap-2 ${hasDeclaredPageBoxes ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}>
+                        <input
+                            type="checkbox"
+                            checked={showPageBoxes && hasDeclaredPageBoxes}
+                            disabled={pageBoxesLoading || Boolean(pageBoxesError) || !hasDeclaredPageBoxes}
+                            aria-label={t('tabs.outputPreview:hien_khung_art_trim_bleed')}
+                            onChange={(event) => setShowPageBoxes(event.target.checked)}
+                            className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                        />
+                        <span className="text-[11px] font-semibold text-slate-600 dark:text-zinc-300">
+                            {t('tabs.outputPreview:hien_khung_art_trim_bleed')}
+                        </span>
+                    </label>
+                    {pageBoxesLoading && (
+                        <span className="mt-1.5 block text-[9px] text-slate-400">
+                            {t('tabs.outputPreview:dang_doc_hop_trang')}
+                        </span>
+                    )}
+                    {!pageBoxesLoading && pageBoxesError && (
+                        <span className="mt-1.5 block text-[9px] text-amber-600 dark:text-amber-400">
+                            {pageBoxesError}
+                        </span>
+                    )}
+                    {!pageBoxesLoading && !pageBoxesError && currentPageBoxes && !hasDeclaredPageBoxes && (
+                        <span className="mt-1.5 block text-[9px] leading-snug text-slate-400">
+                            {t('tabs.outputPreview:trang_khong_khai_bao_art_trim_bleed')}
+                        </span>
+                    )}
+                    {hasDeclaredPageBoxes && (
+                        <div className="mt-2 grid gap-1">
+                            {declaredPageBoxes.map(({ kind, box }) => (
+                                <div key={kind} className="flex items-center justify-between gap-2 text-[9px] text-slate-500 dark:text-zinc-400">
+                                    <span className="flex min-w-0 items-center gap-1.5">
+                                        <span className={`inline-block w-4 border-t-2 border-dashed ${PAGE_BOX_LINE_CLASSES[kind]}`} />
+                                        <span className="truncate">{t(PAGE_BOX_LABEL_KEYS[kind])}</span>
+                                    </span>
+                                    <span className="shrink-0 font-mono tabular-nums">
+                                        {box.width} × {box.height} mm
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+                <button
+                    type="button"
+                    onClick={() => openRelatedTool('crop')}
+                    className="mt-2 flex w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] font-semibold text-slate-600 transition-colors hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:border-indigo-800 dark:hover:bg-indigo-950/30 dark:hover:text-indigo-300"
+                >
+                    <span>{t('tabs.outputPreview:dat_hop_trang')}</span>
+                    <span aria-hidden="true">↗</span>
+                </button>
+                </OutputPreviewSection>
+
+                {/* ─── Plate List ─── */}
+                <OutputPreviewSection
+                    id="separations"
+                    title={t('tabs.outputPreview:ban_kem')}
+                    defaultOpen
+                >
+                    {previewMode !== 'separations' ? (
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] leading-snug text-slate-500 dark:border-zinc-700 dark:bg-zinc-800/60 dark:text-zinc-400">
+                            {t('tabs.outputPreview:separations_disabled_for_preview')}
+                        </div>
+                    ) : loading && plateList.length === 0 ? (
                         <div className="flex flex-col items-center gap-3 py-8 bg-slate-50 dark:bg-zinc-800/50 rounded-xl border border-slate-100 dark:border-zinc-800">
                             <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
                             <span className="text-[13px] text-slate-500 font-medium">{t('tabs.outputPreview:dang_phan_tach_kem')}</span>
@@ -597,87 +1461,44 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                             {error}
                         </div>
                     ) : (
-                        <div className="rounded-lg border border-slate-200 dark:border-zinc-700 overflow-hidden bg-white dark:bg-zinc-800">
-                            {plateList.map((plate, idx) => {
-                                const isVisible = soloPlate ? soloPlate === plate.name : visiblePlates.has(plate.name);
-                                const isSolo = soloPlate === plate.name;
-                                const hex = `#${plate.color.map(c => c.toString(16).padStart(2, '0')).join('')}`;
-                                const isSpot = plate.is_spot || !PROCESS_NAMES.has(plate.name);
-                                const spotMeta = spotInksMeta.find(s => s.name === plate.name);
-                                return (
-                                    <div
-                                        key={plate.name}
-                                        className={`flex items-center justify-between cursor-pointer transition-all ${
-                                            idx < plateList.length - 1 ? 'border-b border-slate-100 dark:border-zinc-700' : ''
-                                        } ${isSolo ? 'bg-indigo-50 dark:bg-indigo-900/20 ring-1 ring-inset ring-indigo-300 dark:ring-indigo-700' : ''} ${!isVisible && !isSolo ? 'opacity-40' : ''} hover:bg-slate-50 dark:hover:bg-zinc-750`}
-                                        style={{ padding: '6px 10px' }}
-                                    >
-                                        <div className="flex items-center gap-2.5 flex-1 min-w-0">
-                                            <input 
-                                                type="checkbox" 
-                                                checked={isVisible} 
-                                                onChange={() => togglePlate(plate.name)} 
-                                                className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 focus:ring-offset-0 cursor-pointer shrink-0" 
-                                            />
-                                            <div 
-                                                className="w-4 h-4 rounded-sm ring-1 ring-black/10 shrink-0" 
-                                                style={{ backgroundColor: hex }}
-                                            ></div>
-                                            <div className="flex flex-col min-w-0">
-                                                <div className="flex items-center gap-1.5">
-                                                    <span className="text-[12px] text-slate-700 dark:text-zinc-200 font-medium truncate">
-                                                        {PNAMES[plate.name] || plate.name}
-                                                    </span>
-                                                    {isSpot && (
-                                                        <span className="text-[8px] px-1 py-0 rounded bg-amber-200 text-amber-800 font-bold shrink-0 dark:bg-amber-700/40 dark:text-amber-300">SPOT</span>
-                                                    )}
-                                                </div>
-                                                {isSpot && spotMeta && (
-                                                    <span className="text-[9px] text-slate-400 font-mono">
-                                                        Phủ: {spotMeta.coverage_pct}%{spotMeta.is_pantone ? ' · Pantone' : ''}
-                                                    </span>
-                                                )}
-                                            </div>
-                                        </div>
-                                        <div className="flex items-center gap-1.5 shrink-0">
-                                            <span ref={el => { pctRefs.current[plate.name] = el; }} className="font-mono text-[11px] text-slate-400 tabular-nums">0%</span>
-                                            {/* Solo Plate Button */}
-                                            <button
-                                                onClick={(e) => { e.stopPropagation(); handleSoloPlate(plate.name); }}
-                                                className={`w-5 h-5 flex items-center justify-center rounded transition-colors text-[11px] ${
-                                                    isSolo 
-                                                        ? 'bg-indigo-500 text-white' 
-                                                        : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-zinc-700 hover:text-slate-600'
-                                                }`}
-                                                title={isSolo ? t('tabs.outputPreview:tat_xem_rieng') : `Xem riêng plate ${plate.name}`}
-                                            >
-                                                {isSolo ? '◉' : '○'}
-                                            </button>
-                                            {isSpot && (
-                                                <button
-                                                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); convertSpot(plate.name); }}
-                                                    disabled={!!convertingSpot}
-                                                    className="text-[9px] px-1.5 py-0.5 bg-amber-500 hover:bg-amber-600 text-white rounded font-bold disabled:opacity-50 transition-colors"
-                                                    title={`Chuyển ${plate.name} → CMYK`}
-                                                >
-                                                    {convertingSpot === plate.name ? '...' : '→CMYK'}
-                                                </button>
-                                            )}
-                                        </div>
-                                    </div>
-                                );
-                            })}
-                            {/* TAC Row */}
-                            <div className="flex items-center justify-between bg-slate-50/80 dark:bg-zinc-800/80 border-t border-slate-200 dark:border-zinc-700" style={{ padding: '5px 12px' }}>
-                                <span className="text-[11px] text-slate-500 italic" style={{ paddingLeft: '30px' }}>{t('tabs.outputPreview:tong_phu_muc_tac')}</span>
-                                <span ref={tacRef} className="font-mono text-[11px] text-slate-400 tabular-nums">0%</span>
-                            </div>
+                        <div className="flex flex-col gap-2">
+                            {renderPlateGroup('process', t('tabs.outputPreview:nhom_process_cmyk'), processPlates)}
+                            {renderPlateGroup('spot', t('tabs.outputPreview:nhom_spot'), spotPlates)}
                         </div>
                     )}
-                </div>
+                </OutputPreviewSection>
 
                 {/* ─── Options ─── */}
-                <div style={{ paddingTop: '8px', borderTop: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <OutputPreviewSection
+                    id="sampling"
+                    title={t('tabs.outputPreview:lay_mau_va_tac')}
+                >
+                <div className="flex flex-col gap-2">
+                    <label className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-semibold text-slate-600 dark:text-zinc-300">
+                            {t('tabs.outputPreview:co_mau')}
+                        </span>
+                        <select
+                            aria-label={t('tabs.outputPreview:co_mau')}
+                            value={sampleDiameterMm}
+                            onChange={(event) => setSampleDiameterMm(Number(event.target.value))}
+                            className="h-7 rounded border border-slate-200 bg-white px-2 text-[11px] text-slate-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+                        >
+                            <option value={0}>{t('tabs.outputPreview:diem_mot_pixel')}</option>
+                            {[1, 3, 5].map(diameter => (
+                                <option key={diameter} value={diameter}>
+                                    {t('tabs.outputPreview:trung_binh_duong_kinh_mm', { diameter })}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                    <span ref={sampleMetaRef} className="text-[10px] leading-snug text-slate-400">
+                        {t('tabs.outputPreview:di_chuot_de_lay_mau')}
+                    </span>
+                    <div className="flex items-center justify-between rounded bg-slate-50 px-2 py-1.5 dark:bg-zinc-800/60">
+                        <span className="text-[11px] italic text-slate-500">{t('tabs.outputPreview:tong_phu_muc_tac')}</span>
+                        <span ref={tacRef} className="font-mono text-[11px] tabular-nums text-slate-500">—</span>
+                    </div>
                     <div className="flex items-center justify-between">
                         <label className="flex items-center gap-2 cursor-pointer">
                             <input
@@ -718,85 +1539,19 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                             <span className="text-[10px] text-slate-400">TAC &gt; {tacThreshold}%</span>
                         </div>
                     </div>
-
-                    <div className="flex flex-col gap-1.5">
-                        <div className="flex items-center gap-2">
-                            <label className="flex items-center gap-2 cursor-pointer flex-1 min-w-0">
-                                <input 
-                                    type="checkbox" 
-                                    checked={useRipPreview}
-                                    onChange={(e) => setUseRipPreview(e.target.checked)}
-                                    className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 cursor-pointer" 
-                                />
-                                <span className="text-[12px] text-slate-600 dark:text-zinc-300">
-                                    Chế độ PPE chính xác
-                                    {!useRipPreview ? ' — đang xấp xỉ' : ''}
-                                </span>
-                            </label>
-                            <div className="relative group/tooltip flex items-center justify-center w-4 h-4 rounded-full bg-slate-100 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-[10px] text-slate-500 hover:bg-slate-200 dark:hover:bg-zinc-700 transition-colors cursor-help shrink-0">
-                                ?
-                                <div className="absolute bottom-full right-0 mb-2 w-max max-w-[280px] px-3 py-2.5 bg-slate-800 dark:bg-zinc-700 text-white text-[12px] font-normal leading-relaxed rounded-lg shadow-xl opacity-0 invisible group-hover/tooltip:opacity-100 group-hover/tooltip:visible transition-all z-[100] pointer-events-none text-left whitespace-normal break-words">
-                                    <p className="mb-1 text-emerald-300">Mặc định dùng PrynX PPE để dựng bản tách màu chính xác.</p>
-                                    <p className="opacity-90">Nếu PPE không thể dựng trang tin cậy, PrynX sẽ cảnh báo. Tắt = PDF→RGB→CMYK giả, không đủ chính xác để chốt kẽm.</p>
-                                </div>
-                            </div>
-                        </div>
-                        {(engineUsed || accuracyLabel || qualityNote) && (
-                            <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
-                                {engineUsed && (
-                                    <span className={`px-1.5 py-0.5 rounded font-bold ${
-                                        isRipResult
-                                            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
-                                            : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
-                                    }`}>
-                                        {isRipResult ? 'RIP' : 'XẤP XỈ'} · {engineDisplayName}
-                                    </span>
-                                )}
-                                {qualityNote && (
-                                    <span className="text-slate-500 dark:text-zinc-400 leading-snug">{qualityNote}</span>
-                                )}
-                            </div>
-                        )}
-                        {/* C11: PPE không dựng được kết quả tin cậy → cảnh báo nổi bật. */}
-                        {useRipPreview && accuracyLabel && !isRipResult && (
-                            <div className="mt-1.5 px-2.5 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-800 text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
-                                ⚠️ PrynX PPE không trả được kết quả tin cậy. Kết quả hiện tại là <strong>XẤP XỈ</strong>, không dùng để chốt kẽm.
-                            </div>
-                        )}
-                        {/* C4: composite nhiều plate = CSS multiply, KHÔNG mô phỏng chồng mực thật.
-                            Nhắc rõ để user không dùng ảnh ghép chốt màu. */}
-                        {plateList.length > 1 && (
-                            <div className="mt-1.5 px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-zinc-800/50 border border-slate-200 dark:border-zinc-700 text-[10px] text-slate-500 dark:text-zinc-400 leading-snug">
-                                ℹ️ Ảnh ghép nhiều bản kẽm chỉ là <strong>preview thị giác</strong> — không phải màu in cuối. Chốt màu bằng cách xem <strong>từng bản kẽm riêng</strong> hoặc soft-proof ICC.
-                            </div>
-                        )}
-                    </div>
                 </div>
-
-                {/* ─── Overprint Preview ─── */}
-                <OverprintPreviewToggle fileId={fileId} pageNum={sourcePageNum} />
-
-                {/* ─── Spot Convert All ─── */}
-                {hasSpotInks && (
-                    <button
-                        onClick={() => convertSpot()}
-                        disabled={!!convertingSpot}
-                        className="w-full px-3 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-[12px] font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-                    >
-                        {convertingSpot === '__all__' ? (
-                            <><div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('tabs.outputPreview:dang_chuyen')}</>
-                        ) : (
-                            <>{t('tabs.outputPreview:chuyen_tat_ca_spot_cmyk')}</>
-                        )}
-                    </button>
-                )}
+                </OutputPreviewSection>
 
                 {/* ─── Page Info ─── */}
-                <div className="bg-slate-50 dark:bg-zinc-800/50 rounded-lg border border-slate-100 dark:border-zinc-800" style={{ padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                <OutputPreviewSection
+                    id="metadata"
+                    title={t('tabs.outputPreview:thong_tin_trang')}
+                >
+                <div className="flex flex-col gap-1 rounded-lg bg-slate-50 px-3 py-2 dark:bg-zinc-800/50">
                     <div className="flex items-center justify-between">
                         <span className="text-[11px] text-slate-500">{t('tabs.outputPreview:tong_ban_kem')}</span>
                         <span className="text-[11px] font-semibold text-slate-600 dark:text-zinc-300">
-                            {plateList.length} ({plateList.filter(p => !PROCESS_NAMES.has(p.name)).length} Spot)
+                            {plateList.length} ({spotPlates.length} Spot)
                         </span>
                     </div>
                     <div className="flex items-center justify-between">
@@ -824,84 +1579,269 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                         là đã tách spot. */}
                     {detectedSpots.length > 0 && accuracyLabel && !isRipResult && (
                         <div className="mt-1 pt-1.5 border-t border-slate-200 dark:border-zinc-700 text-[10px] text-amber-700 dark:text-amber-300 leading-snug">
-                            ⚠️ Chế độ XẤP XỈ KHÔNG tách bản kẽm spot riêng — các màu spot trên bị trộn vào C/M/Y/K. Bật chế độ RIP chính xác để tách kẽm spot đúng.
+                            ⚠️ {t('tabs.outputPreview:canh_bao_spot_xap_xi')}
                         </div>
                     )}
                 </div>
+                </OutputPreviewSection>
 
                 {/* ─── ICC Soft-Proof ─── */}
-                <div style={{ borderTop: '1px solid #e2e8f0' }}>
-                    <button
+                <OutputPreviewSection
+                    id="advanced"
+                    title={t('tabs.outputPreview:nang_cao_prynx')}
+                >
+                <div className="flex flex-col gap-2">
+                    <div className="flex items-center gap-2">
+                        <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
+                            <input
+                                type="checkbox"
+                                checked={effectiveAccuratePreview}
+                                disabled={filterRequiresPpe}
+                                onChange={(event) => setUseAccuratePreview(event.target.checked)}
+                                className="h-3.5 w-3.5 cursor-pointer rounded border-slate-300 text-indigo-600 focus:ring-indigo-600"
+                            />
+                            <span className="text-[12px] text-slate-600 dark:text-zinc-300">
+                                {t('tabs.outputPreview:che_do_ppe_chinh_xac')}
+                                {!effectiveAccuratePreview ? ` — ${t('tabs.outputPreview:dang_xap_xi')}` : ''}
+                            </span>
+                        </label>
+                        <div className="group/tooltip relative flex h-4 w-4 shrink-0 cursor-help items-center justify-center rounded-full border border-slate-200 bg-slate-100 text-[10px] text-slate-500 transition-colors hover:bg-slate-200 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-700">
+                            ?
+                            <div className="invisible absolute bottom-full right-0 z-[100] mb-2 w-max max-w-[280px] rounded-lg bg-slate-800 px-3 py-2.5 text-left text-[12px] font-normal leading-relaxed text-white opacity-0 shadow-xl transition-all group-hover/tooltip:visible group-hover/tooltip:opacity-100 dark:bg-zinc-700">
+                                <p className="mb-1 text-emerald-300">{t('tabs.outputPreview:ppe_chinh_xac_mo_ta')}</p>
+                                <p className="opacity-90">{t('tabs.outputPreview:ppe_xap_xi_mo_ta')}</p>
+                            </div>
+                        </div>
+                    </div>
+                    {(engineUsed || accuracyLabel || qualityNote) && (
+                        <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                            {engineUsed && (
+                                <span className={`rounded px-1.5 py-0.5 font-bold ${
+                                    isRipResult
+                                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+                                        : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+                                }`}>
+                                    {isRipResult ? 'RIP' : t('tabs.outputPreview:xap_xi')} · {engineDisplayName}
+                                </span>
+                            )}
+                            {qualityNote && (
+                                <span className="leading-snug text-slate-500 dark:text-zinc-400">{qualityNote}</span>
+                            )}
+                        </div>
+                    )}
+                    {effectiveAccuratePreview && accuracyLabel && !isRipResult && (
+                        <div className="rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-2 text-[11px] leading-snug text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                            ⚠️ {t('tabs.outputPreview:ppe_khong_tin_cay')}
+                        </div>
+                    )}
+                    {plateList.length > 1 && (
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[10px] leading-snug text-slate-500 dark:border-zinc-700 dark:bg-zinc-800/50 dark:text-zinc-400">
+                            ℹ️ {t('tabs.outputPreview:anh_ghep_chi_la_preview')}
+                        </div>
+                    )}
+                    {previewMode === 'separations' && <button
+                        type="button"
                         onClick={() => setShowSoftProof(p => !p)}
-                        className="w-full flex items-center justify-between py-2 text-[11px] font-bold text-slate-400 uppercase tracking-widest hover:text-slate-600 dark:hover:text-zinc-300 transition-colors"
+                        aria-expanded={showSoftProof}
+                        className="flex w-full items-center justify-between rounded border border-slate-200 px-2.5 py-2 text-[11px] font-bold text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-700 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
                     >
                         <span>🔍 ICC Soft-Proof & Gamut</span>
                         <svg className={`w-3 h-3 transition-transform ${showSoftProof ? 'rotate-180' : ''}`} fill="currentColor" viewBox="0 0 20 20"><path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"/></svg>
-                    </button>
-                    {showSoftProof && <SoftProofPanel fileId={fileId} />}
+                    </button>}
+                    {previewMode === 'separations' && showSoftProof && (
+                        <SoftProofPanel
+                            fileId={fileId}
+                            pageNum={sourcePageNum}
+                            profileId={simulationProfileId}
+                            intent={simulationIntent}
+                            simulateOverprint={simulateOverprint}
+                            outputPreviewFilter={showFilter}
+                            simulatePaperColor={simulatePaperColor}
+                            simulateBlackInk={simulateBlackInk}
+                            pageBackgroundRgb={pageBackgroundRgb}
+                        />
+                    )}
                 </div>
+                </OutputPreviewSection>
+
+                <OutputPreviewSection
+                    id="actions"
+                    title={t('tabs.outputPreview:sua_file')}
+                    warning
+                >
+                    <div className="mb-2 text-[10px] leading-snug text-amber-700 dark:text-amber-300">
+                        {t('tabs.outputPreview:sua_file_tao_ban_moi')}
+                    </div>
+                    {hasSpotInks ? (
+                        <div className="flex flex-col gap-1.5">
+                            {spotPlates.map(plate => (
+                                <button
+                                    key={plate.name}
+                                    type="button"
+                                    onClick={() => convertSpot(plate.name)}
+                                    disabled={!!convertingSpot}
+                                    className="flex w-full items-center justify-between rounded-lg border border-amber-200 bg-white px-2.5 py-2 text-[11px] font-semibold text-amber-700 transition-colors hover:border-amber-400 hover:bg-amber-50 disabled:opacity-50 dark:border-amber-900/70 dark:bg-zinc-900 dark:text-amber-300 dark:hover:bg-amber-950/30"
+                                >
+                                    <span>{t('tabs.outputPreview:chuyen_mot_spot_cmyk', { name: plate.name })}</span>
+                                    <span>{convertingSpot === plate.name ? '…' : '→'}</span>
+                                </button>
+                            ))}
+                            <button
+                                type="button"
+                                onClick={() => convertSpot()}
+                                disabled={!!convertingSpot}
+                                className="flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-3 py-2 text-[12px] font-bold text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
+                            >
+                                {convertingSpot === '__all__' ? (
+                                    <><div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" /> {t('tabs.outputPreview:dang_chuyen')}</>
+                                ) : (
+                                    <>{t('tabs.outputPreview:chuyen_tat_ca_spot_cmyk')}</>
+                                )}
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="rounded bg-white/70 px-2 py-1.5 text-[11px] text-slate-500 dark:bg-zinc-900/60 dark:text-zinc-400">
+                            {t('tabs.outputPreview:khong_co_spot_de_chuyen')}
+                        </div>
+                    )}
+                </OutputPreviewSection>
 
             </div>
         </div>
     );
 }
 
-function OverprintPreviewToggle({ fileId, pageNum }: { fileId: string; pageNum: number }) {
+export function OverprintPreviewToggle({
+    fileId,
+    pageNum,
+    profileId,
+    intent,
+    active,
+    onActiveChange,
+}: {
+    fileId: string;
+    pageNum: number;
+    profileId: string;
+    intent: OutputPreviewRenderingIntent;
+    active: boolean;
+    onActiveChange: (active: boolean) => void;
+}) {
   const { t } = useTranslation();
-    const [active, setActive] = useState(false);
     const [loading, setLoading] = useState(false);
     const [diffCount, setDiffCount] = useState<number | null>(null);
+    const [showDiff, setShowDiff] = useState(false);
+    const [diffOverlayUrl, setDiffOverlayUrl] = useState<string | null>(null);
+    const [overprintImageUrl, setOverprintImageUrl] = useState<string | null>(null);
+    const [pageHasOverprint, setPageHasOverprint] = useState<boolean | null>(null);
     const [error, setError] = useState('');
+    const requestGenerationRef = React.useRef(0);
+    const abortRef = React.useRef<AbortController | null>(null);
     const setOverprintPreviewUrl = useWorkspaceStore(s => s.setOverprintPreviewUrl);
+    const setOverprintDiagnosticActive = useWorkspaceStore(s => s.setOutputPreviewOverprintDiagnosticActive);
+
+    const clearPreview = useCallback(() => {
+        onActiveChange(false);
+        setOverprintPreviewUrl(null);
+        setOverprintDiagnosticActive(false);
+        setDiffCount(null);
+        setShowDiff(false);
+        setDiffOverlayUrl(null);
+        setOverprintImageUrl(null);
+        setPageHasOverprint(null);
+    }, [onActiveChange, setOverprintDiagnosticActive, setOverprintPreviewUrl]);
+
+    const cancelInFlight = useCallback(() => {
+        requestGenerationRef.current += 1;
+        abortRef.current?.abort();
+        abortRef.current = null;
+        setLoading(false);
+    }, []);
 
     const toggle = useCallback(async () => {
-        if (active) {
-            // Turn off
-            setActive(false);
-            setOverprintPreviewUrl(null);
-            setDiffCount(null);
+        if (active || loading) {
+            cancelInFlight();
+            clearPreview();
             return;
         }
 
+        const generation = ++requestGenerationRef.current;
+        const controller = new AbortController();
+        abortRef.current?.abort();
+        abortRef.current = controller;
         setLoading(true);
         setError('');
         try {
             const res = await authenticatedFetch(`${getApiUrl()}/preflight/overprint-preview`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ file_id: fileId, page: pageNum, dpi: 150 }),
+                body: JSON.stringify({
+                    file_id: fileId,
+                    page: pageNum,
+                    dpi: 150,
+                    profile_id: profileId,
+                    intent,
+                }),
+                signal: controller.signal,
             });
-            const data = await res.json();
-            if (data.success) {
-                setActive(true);
-                setDiffCount(data.diff_pixel_count);
-                if (data.has_differences) {
-                    setOverprintPreviewUrl(data.diff_overlay);
-                } else {
-                    setOverprintPreviewUrl(null);
-                }
-            } else {
-                setError(data.error || t('tabs.outputPreview:loi_khong_xac_dinh'));
+            const data = await res.json().catch(() => ({}));
+            if (controller.signal.aborted || generation !== requestGenerationRef.current) return;
+            if (!res.ok || !data.success) {
+                throw new Error(data.error || data.detail || t('tabs.outputPreview:loi_khong_xac_dinh'));
             }
-        } catch (e: any) {
-            setError(e.message);
-        } finally {
-            setLoading(false);
-        }
-    }, [active, fileId, pageNum, setOverprintPreviewUrl]);
+            if (!data.overprint_image) {
+                throw new Error(t('tabs.outputPreview:ppe_khong_tra_anh_overprint'));
+            }
 
-    // Reset when page changes
+            setDiffCount(Number(data.diff_pixel_count || 0));
+            setDiffOverlayUrl(data.diff_overlay || null);
+            setOverprintImageUrl(data.overprint_image);
+            setPageHasOverprint(typeof data.page_has_overprint === 'boolean'
+                ? data.page_has_overprint
+                : null);
+            setShowDiff(false);
+            setOverprintDiagnosticActive(false);
+            onActiveChange(true);
+            // PREFLIGHT (audit 2026-08-10 §OP.9): mặc định hiển thị composite
+            // color-managed; diff chỉ là chế độ chẩn đoán do người dùng chọn riêng.
+            setOverprintPreviewUrl(data.overprint_image);
+        } catch (e: any) {
+            if (!controller.signal.aborted && generation === requestGenerationRef.current) {
+                setError(e.message || t('tabs.outputPreview:loi_khong_xac_dinh'));
+                clearPreview();
+            }
+        } finally {
+            if (generation === requestGenerationRef.current) {
+                setLoading(false);
+                if (abortRef.current === controller) abortRef.current = null;
+            }
+        }
+    }, [active, cancelInFlight, clearPreview, fileId, intent, loading, onActiveChange, pageNum, profileId, setOverprintDiagnosticActive, setOverprintPreviewUrl, t]);
+
+    const toggleDiff = useCallback(() => {
+        if (!active || !overprintImageUrl) return;
+        const next = !showDiff;
+        setShowDiff(next);
+        setOverprintDiagnosticActive(next && Boolean(diffOverlayUrl));
+        setOverprintPreviewUrl(next && diffOverlayUrl ? diffOverlayUrl : overprintImageUrl);
+    }, [active, diffOverlayUrl, overprintImageUrl, setOverprintDiagnosticActive, setOverprintPreviewUrl, showDiff]);
+
     useEffect(() => {
-        setActive(false);
-        setOverprintPreviewUrl(null);
-        setDiffCount(null);
-    }, [pageNum, fileId, setOverprintPreviewUrl]);
+        cancelInFlight();
+        clearPreview();
+        setError('');
+        return () => {
+            cancelInFlight();
+            setOverprintDiagnosticActive(false);
+            setOverprintPreviewUrl(null);
+        };
+    }, [cancelInFlight, clearPreview, fileId, intent, pageNum, profileId, setOverprintDiagnosticActive, setOverprintPreviewUrl]);
 
     return (
         <div className="flex flex-col gap-1.5">
             <button
+                type="button"
+                aria-pressed={active}
                 onClick={toggle}
-                disabled={loading}
                 className={`w-full px-3 py-2 rounded-lg text-[12px] font-bold transition-all flex items-center justify-center gap-2 border ${
                     active
                         ? 'bg-violet-500/15 border-violet-500 text-violet-700 dark:text-violet-300'
@@ -909,13 +1849,37 @@ function OverprintPreviewToggle({ fileId, pageNum }: { fileId: string; pageNum: 
                 }`}
             >
                 {loading ? (
-                    <><div className="w-3.5 h-3.5 border-2 border-violet-300 border-t-violet-600 rounded-full animate-spin" /> {t('tabs.outputPreview:dang_phan_tich')}</>
+                    <><div className="w-3.5 h-3.5 border-2 border-violet-300 border-t-violet-600 rounded-full animate-spin" /> {t('tabs.outputPreview:huy_phan_tich_overprint')}</>
                 ) : active ? (
                     <>{t('tabs.outputPreview:tat_overprint_preview')}</>
                 ) : (
-                    <>🔲 Overprint Preview</>
+                    <>🔲 {t('tabs.outputPreview:mo_phong_overprint')}</>
                 )}
             </button>
+            {active && (
+                <>
+                    <label className="flex items-center gap-2 px-2 text-[11px] text-slate-600 dark:text-zinc-300">
+                        <input
+                            type="checkbox"
+                            checked={showDiff}
+                            disabled={!diffOverlayUrl}
+                            onChange={toggleDiff}
+                            className="h-3.5 w-3.5 rounded border-slate-300 text-orange-500 focus:ring-orange-500"
+                        />
+                        {t('tabs.outputPreview:hien_vung_thay_doi_chan_doan')}
+                    </label>
+                    <div className="flex items-center justify-between px-2 text-[10px] text-slate-500 dark:text-zinc-400">
+                        <span>{t('tabs.outputPreview:trang_co_overprint')}</span>
+                        <strong className={pageHasOverprint === true ? 'text-amber-600' : 'text-slate-500'}>
+                            {pageHasOverprint === null
+                                ? t('tabs.outputPreview:chua_xac_dinh')
+                                : pageHasOverprint
+                                    ? t('tabs.outputPreview:co')
+                                    : t('tabs.outputPreview:khong')}
+                        </strong>
+                    </div>
+                </>
+            )}
             {active && diffCount !== null && (
                 <div className={`text-[10px] px-2 py-1 rounded ${
                     diffCount > 0
@@ -923,7 +1887,9 @@ function OverprintPreviewToggle({ fileId, pageNum }: { fileId: string; pageNum: 
                         : 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300'
                 }`}>
                     {diffCount > 0
-                        ? `⚠️ Phát hiện ${diffCount.toLocaleString()} pixel thay đổi khi bật Overprint`
+                        ? t('tabs.outputPreview:chan_doan_pixel_thay_doi', {
+                            count: diffCount.toLocaleString(),
+                        })
                         : t('tabs.outputPreview:khong_co_su_khac_biet_file_khong_bi_anh')}
                 </div>
             )}

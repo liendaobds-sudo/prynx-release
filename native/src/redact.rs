@@ -4,7 +4,12 @@ use pdfium_render::prelude::*;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-pub fn delete_objects(py: Python<'_>, pdf_path: &str, page_num: usize, indices: Vec<usize>) -> PyResult<Py<PyAny>> {
+pub fn delete_objects(
+    py: Python<'_>,
+    pdf_path: &str,
+    page_num: usize,
+    indices: Vec<usize>,
+) -> PyResult<Py<PyAny>> {
     let pdfium = crate::pdfium_init::load_pdfium();
     let mut doc = pdfium
         .load_pdf_from_file(pdf_path, None)
@@ -37,7 +42,8 @@ pub fn delete_objects(py: Python<'_>, pdf_path: &str, page_num: usize, indices: 
         let _ = page.regenerate_content();
     }
 
-    let output = doc.save_to_bytes()
+    let output = doc
+        .save_to_bytes()
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Save failed: {}", e)))?;
 
     Ok(PyBytes::new(py, &output).into())

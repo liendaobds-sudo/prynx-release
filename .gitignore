@@ -15,9 +15,6 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Ghostscript installer binary (62 MB — already installed, don't commit)
-backend/bin/gs_installer.exe
-
 # Legacy frontend (Next.js web — replaced by Tauri desktop)
 frontend/
 

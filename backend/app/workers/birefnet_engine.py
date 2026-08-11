@@ -152,8 +152,8 @@ def preprocess(image: Image.Image, size=(1024, 1024)):
     return np.expand_dims(img_arr, axis=0)
 
 
-def remove_background(image: Image.Image, variant: str = "full") -> Image.Image:
-    """Tách nền bằng BiRefNet (variant 'full' hoặc 'lite'), trả PIL RGBA."""
+def predict_alpha(image: Image.Image, variant: str = "full") -> Image.Image:
+    """Chạy BiRefNet và chỉ trả mask Alpha; caller không cần màu foreground."""
     if variant not in MODELS:
         variant = "full"
     orig_w, orig_h = image.size
@@ -191,7 +191,12 @@ def remove_background(image: Image.Image, variant: str = "full") -> Image.Image:
     # BILINEAR (không overshoot) thay BICUBIC: mask xác suất phóng to bằng BICUBIC bị
     # vọt lố quanh mép cứng → sinh vành alpha bán trong suốt ("viền rác"). BILINEAR êm hơn.
     mask_img = Image.fromarray((mask_prob * 255).astype(np.uint8), mode="L")
-    mask_final = mask_img.resize((orig_w, orig_h), Image.BILINEAR)
+    return mask_img.resize((orig_w, orig_h), Image.BILINEAR)
+
+
+def remove_background(image: Image.Image, variant: str = "full") -> Image.Image:
+    """Tách nền bằng BiRefNet (variant 'full' hoặc 'lite'), trả PIL RGBA."""
+    mask_final = predict_alpha(image, variant=variant)
 
     # refine_foreground: tẩy màu nền lẫn ở mép (thay cho GaussianBlur làm nhoè).
     from app.workers.image_postprocessor import refine_foreground_rgba

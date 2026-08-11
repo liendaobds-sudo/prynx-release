@@ -4,10 +4,11 @@ use tauri::Manager;
 // Add state struct for PDFium
 use image::ImageEncoder;
 use pdfium_render::prelude::*;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::ipc::Response;
+use tauri_plugin_fs::FsExt;
 
 // `creation_flags` (ẩn cửa sổ console) đến từ trait CommandExt — chỉ cần ở các block
 // bảo mật release-only trên Windows. Guard theo cfg để debug không cảnh báo unused.
@@ -70,6 +71,189 @@ fn pdf_file_identity(file_path: &str) -> Result<PdfFileIdentity, String> {
         modified_nanos,
         created_nanos,
     })
+}
+
+fn pdf_file_identity_token(identity: PdfFileIdentity) -> String {
+    // Chuỗi giữ nguyên nanosecond khi qua JSON/JavaScript; không dùng number vì vượt
+    // giới hạn integer an toàn của JS và có thể làm pha metadata B nhận nhầm file mới.
+    format!(
+        "{}:{}:{}",
+        identity.size,
+        identity.modified_nanos,
+        identity.created_nanos.unwrap_or(0)
+    )
+}
+
+#[cfg(test)]
+mod pdf_identity_tests {
+    use super::*;
+
+    #[test]
+    fn token_identity_giu_nguyen_nanosecond_khi_qua_javascript() {
+        let identity = PdfFileIdentity {
+            size: 17_869_243,
+            modified_nanos: 1_900_123_456_789_012_345,
+            created_nanos: Some(1_800_987_654_321_098_765),
+        };
+
+        assert_eq!(
+            pdf_file_identity_token(identity),
+            "17869243:1900123456789012345:1800987654321098765"
+        );
+    }
+}
+
+#[cfg(test)]
+mod viewer_metadata_benchmark_tests {
+    use super::*;
+    use std::time::Instant;
+
+    fn close_benchmark_document(file_path: &str) {
+        let removed = {
+            let mut cache = lock_mutex(document_cache());
+            cache.remove(file_path)
+        };
+        drop(removed);
+    }
+
+    fn read_metadata_dimensions(document: &CachedDocument, all_pages: bool) -> usize {
+        let handle = document.pool[0].get().expect("PDF pool phải có handle");
+        let _handle_guard = lock_mutex(&handle.lock);
+        let _pdfium_guard = lock_mutex(&RENDER_LOCK);
+        let pages = handle.doc.pages();
+        let page_count = pages.len();
+        let limit = if all_pages {
+            page_count
+        } else {
+            page_count.min(1)
+        };
+        for page_index in 0..limit {
+            pages.page_size(page_index).expect("đọc kích thước trang");
+        }
+        page_count as usize
+    }
+
+    #[test]
+    #[ignore = "benchmark thủ công cần PRYNX_METADATA_BENCH_PDF và PDFium runtime"]
+    fn benchmark_bootstrap_so_voi_metadata_day_du_tren_pdf_that() {
+        let file_path = std::env::var("PRYNX_METADATA_BENCH_PDF")
+            .expect("đặt PRYNX_METADATA_BENCH_PDF tới PDF cần đo");
+        let pdfium = ensure_pdfium().expect("bind PDFium cho benchmark");
+        let file_identity = pdf_file_identity(&file_path).expect("identity PDF benchmark");
+        let mut bootstrap_samples = Vec::new();
+        let mut background_samples = Vec::new();
+        let mut legacy_samples = Vec::new();
+        let mut page_count = 0;
+
+        for _ in 0..5 {
+            close_benchmark_document(&file_path);
+            let started = Instant::now();
+            let bootstrap =
+                get_or_load_cached_document_with_identity(pdfium, &file_path, file_identity, false)
+                    .expect("bootstrap document");
+            page_count = read_metadata_dimensions(&bootstrap, false);
+            bootstrap_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+
+            let started = Instant::now();
+            let (hydrated, _) =
+                get_or_load_cached_document_with_color_risk(pdfium, &file_path, file_identity)
+                    .expect("hydrate color risk");
+            read_metadata_dimensions(&hydrated, true);
+            background_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+
+            close_benchmark_document(&file_path);
+            let started = Instant::now();
+            let legacy =
+                get_or_load_cached_document_with_identity(pdfium, &file_path, file_identity, true)
+                    .expect("legacy full metadata document");
+            read_metadata_dimensions(&legacy, true);
+            legacy_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+        }
+        close_benchmark_document(&file_path);
+
+        bootstrap_samples.sort_by(f64::total_cmp);
+        background_samples.sort_by(f64::total_cmp);
+        legacy_samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "METADATA_BENCH pages={} bootstrap_ms={:?} background_ms={:?} legacy_ms={:?} median_bootstrap_ms={:.2} median_legacy_ms={:.2}",
+            page_count,
+            bootstrap_samples,
+            background_samples,
+            legacy_samples,
+            bootstrap_samples[2],
+            legacy_samples[2],
+        );
+    }
+
+    #[test]
+    #[ignore = "artifact thủ công cần PRYNX_METADATA_BENCH_PDF và PDFium runtime"]
+    fn tile_bon_goc_khop_anh_full_page_tren_pdf_that() {
+        let file_path = std::env::var("PRYNX_METADATA_BENCH_PDF")
+            .expect("đặt PRYNX_METADATA_BENCH_PDF tới PDF cần kiểm");
+        let full_png = render_tile_png_in_process(&file_path, 1, 0.5, 0, None, None, None, None)
+            .expect("render full page");
+        let full = image::load_from_memory(&full_png)
+            .expect("decode full page")
+            .to_rgba8();
+        let tile_size = 256_u32.min(full.width()).min(full.height());
+        let corners = [
+            (0, 0),
+            (full.width() - tile_size, 0),
+            (0, full.height() - tile_size),
+            (full.width() - tile_size, full.height() - tile_size),
+        ];
+
+        for (clip_x, clip_y) in corners {
+            let tile_png = render_tile_png_in_process(
+                &file_path,
+                1,
+                0.5,
+                0,
+                Some(clip_x as i32),
+                Some(clip_y as i32),
+                Some(tile_size as i32),
+                Some(tile_size as i32),
+            )
+            .expect("render viewport tile");
+            let tile = image::load_from_memory(&tile_png)
+                .expect("decode viewport tile")
+                .to_rgba8();
+            let expected =
+                image::imageops::crop_imm(&full, clip_x, clip_y, tile_size, tile_size).to_image();
+            assert_eq!(tile.dimensions(), expected.dimensions());
+            // PDFium LCD text có thể lệch 1–2 mức kênh khi bitmap bắt đầu tại origin khác;
+            // đo sai số ảnh thay vì đòi byte-identical để vẫn bắt lệch crop/hue thật.
+            let mut absolute_sum = 0_u64;
+            let mut max_channel_delta = 0_u8;
+            let mut pixels_over_two = 0_usize;
+            for (tile_pixel, expected_pixel) in tile.pixels().zip(expected.pixels()) {
+                let mut pixel_max = 0_u8;
+                for channel in 0..3 {
+                    let delta = tile_pixel[channel].abs_diff(expected_pixel[channel]);
+                    absolute_sum += u64::from(delta);
+                    pixel_max = pixel_max.max(delta);
+                    max_channel_delta = max_channel_delta.max(delta);
+                }
+                if pixel_max > 2 {
+                    pixels_over_two += 1;
+                }
+            }
+            let mae = absolute_sum as f64 / (tile.width() * tile.height() * 3) as f64;
+            let ratio_over_two = pixels_over_two as f64 / (tile.width() * tile.height()) as f64;
+            eprintln!(
+                "TILE_PARITY x={} y={} mae={:.4} max_delta={} ratio_over_2={:.6}",
+                clip_x, clip_y, mae, max_channel_delta, ratio_over_two
+            );
+            assert!(
+                mae <= 5.0,
+                "MAE tile quá lớn tại ({clip_x}, {clip_y}): {mae}"
+            );
+            assert!(
+                ratio_over_two <= 0.35,
+                "quá nhiều pixel lệch tại ({clip_x}, {clip_y}): {ratio_over_two}"
+            );
+        }
+    }
 }
 
 // STARTUP (fix 2026-08-04): cửa sổ chính chỉ được hiện sau khi Rust setup và
@@ -435,12 +619,24 @@ struct DocHandle {
     doc: PdfDocument<'static>,
 }
 
-// LRU các PdfPage đang mở. Mỗi page giữ ảnh đã giải nén → tốn RAM, nên có cận.
-// Cap 24 (trước 10): đo thật 2026-07-22 cho thấy decode trang lần đầu ~800ms là chi
-// phí lớn nhất khi cuộn (cả view chính lẫn thumbnail dùng CHUNG LRU này). Giữ nhiều
-// trang mở hơn → cuộn qua lại + prefetch trang lân cận không phải decode lại. 24 ×
-// ~16MB/trang (file bình nặng) ≈ 384MB trần/doc — đủ mượt mà không phình như 40+.
-const PAGE_LRU_CAP: usize = 24;
+// LRU các PdfPage đang mở. Mỗi page giữ ảnh đã giải nén (~16MB với file bình nặng).
+// PERF (audit 2026-08-08 §RENDER.9): máy >=16GB giữ nguyên cap 24; chỉ hai tier RAM
+// thấp giảm để nhiều tab không đẩy máy vào swap. Không xác định RAM cũng giữ full.
+const PAGE_LRU_CAP_LOW_RAM: usize = 6;
+const PAGE_LRU_CAP_MID_RAM: usize = 12;
+const PAGE_LRU_CAP_FULL: usize = 24;
+
+fn page_lru_cap_for_total_ram(total_bytes: Option<u64>) -> usize {
+    match total_bytes {
+        Some(bytes) if bytes < 8 * GIB => PAGE_LRU_CAP_LOW_RAM,
+        Some(bytes) if bytes < 16 * GIB => PAGE_LRU_CAP_MID_RAM,
+        _ => PAGE_LRU_CAP_FULL,
+    }
+}
+
+fn configured_page_lru_cap() -> usize {
+    page_lru_cap_for_total_ram(system_total_memory_bytes())
+}
 struct PageLru {
     map: HashMap<u16, PdfPage<'static>>,
     order: std::collections::VecDeque<u16>,
@@ -517,7 +713,13 @@ impl<T> DocumentCache<T> {
 struct CachedDocument {
     pool: Vec<OnceLock<DocHandle>>,
     user_units: Vec<f32>,
-    color_risk: pdf_color_risk::PdfColorRiskSummary,
+    page_lru_cap: usize,
+    // PERF (audit 2026-08-10 §PPE.REAUDIT.1): summary bootstrap là snapshot riêng:
+    // trang 1 đã quét thật, trang chưa quét fail-closed. Không được coi nó là metadata đầy đủ.
+    bootstrap_color_risk: pdf_color_risk::PdfColorRiskSummary,
+    // PERF (audit 2026-08-08 §RENDER.1): detector toàn tài liệu không thuộc đường
+    // first-pixel. Viewer bootstrap để trống và pha metadata nền mới điền một lần.
+    color_risk: Mutex<Option<pdf_color_risk::PdfColorRiskSummary>>,
     file_identity: PdfFileIdentity,
     next: AtomicUsize, // Round-robin index
 }
@@ -650,24 +852,45 @@ struct ParsedPdfStructure {
     color_risk: pdf_color_risk::PdfColorRiskSummary,
 }
 
+#[derive(Debug)]
+struct ParsedPdfBootstrapStructure {
+    user_units: Vec<f32>,
+    bootstrap_color_risk: pdf_color_risk::PdfColorRiskSummary,
+}
+
+fn load_lopdf_structure(bytes: &[u8], total_bytes: Option<u64>) -> Result<lopdf::Document, String> {
+    lopdf::Document::load_mem_with_options(bytes, lopdf_load_options_for_total_ram(total_bytes))
+        .map_err(|error| {
+            format!("Không thể đọc cấu trúc trang PDF an toàn để xác định /UserUnit: {error}")
+        })
+}
+
 fn parse_pdf_structure(
     bytes: &[u8],
     total_bytes: Option<u64>,
 ) -> Result<ParsedPdfStructure, String> {
     // PAGEBOX (audit 2026-08-04 §W1.PB6): parse ngay trên buffer sẽ chuyển cho
     // PDFium; Document lopdf được drop trước khi PDFium mở để không giữ hai bản PDF.
-    let document = lopdf::Document::load_mem_with_options(
-        bytes,
-        lopdf_load_options_for_total_ram(total_bytes),
-    )
-    .map_err(|error| {
-        format!("Không thể đọc cấu trúc trang PDF an toàn để xác định /UserUnit: {error}")
-    })?;
+    let document = load_lopdf_structure(bytes, total_bytes)?;
     // COLOR (audit 2026-08-07 §GV.3): tận dụng cùng lần parse để nhận diện trang
     // CMYK/DeviceN/transparency; không đọc file lần hai và không giải mã bitmap.
     Ok(ParsedPdfStructure {
         user_units: collect_pdf_user_units(&document),
         color_risk: pdf_color_risk::analyze_pdf_color_risk(&document),
+    })
+}
+
+fn parse_pdf_bootstrap_structure(
+    bytes: &[u8],
+    total_bytes: Option<u64>,
+) -> Result<ParsedPdfBootstrapStructure, String> {
+    // PERF (audit 2026-08-10 §PPE.REAUDIT.1): giữ kiểm `/UserUnit` cho mọi trang,
+    // nhưng chỉ quét risk thật ở trang đầu. Các trang còn lại được đánh dấu bảo thủ
+    // cho tới khi pha metadata nền trả kết quả đầy đủ.
+    let document = load_lopdf_structure(bytes, total_bytes)?;
+    Ok(ParsedPdfBootstrapStructure {
+        user_units: collect_pdf_user_units(&document),
+        bootstrap_color_risk: pdf_color_risk::analyze_pdf_color_risk_bootstrap(&document),
     })
 }
 
@@ -802,6 +1025,11 @@ pub fn lock_mutex<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// Entry print worker (gọi từ main khi --prynx-print-job).
 pub fn run_print_worker(job_path: &str, result_path: &str) -> i32 {
     pdf_engine::print_worker::run_print_worker(job_path, result_path)
+}
+
+/// Entry display worker dài hạn (gọi từ main khi --prynx-render-worker).
+pub fn run_render_worker_stdio() -> i32 {
+    pdf_engine::render_worker::run_worker_stdio()
 }
 
 /// Breadcrumb khởi động → %APPDATA%\PrynX\logs\startup_debug.log
@@ -1081,14 +1309,24 @@ fn build_cached_document(
     pdfium: &'static Pdfium,
     file_path: &str,
     file_identity: PdfFileIdentity,
+    include_color_risk: bool,
 ) -> Result<Arc<CachedDocument>, String> {
     // I/O và parse không giữ cache/PDFium mutex. Cùng buffer này được đọc đúng một
     // lần, parse bằng lopdf, drop parser rồi mới move vào PDFium để giảm peak RAM.
     let bytes = read_pdf_bytes_for_identity(file_path, file_identity)?;
-    let ParsedPdfStructure {
-        user_units,
-        color_risk,
-    } = parse_pdf_structure(&bytes, system_total_memory_bytes())?;
+    let (user_units, bootstrap_color_risk, color_risk) = if include_color_risk {
+        let ParsedPdfStructure {
+            user_units,
+            color_risk,
+        } = parse_pdf_structure(&bytes, system_total_memory_bytes())?;
+        (user_units, color_risk.clone(), Some(color_risk))
+    } else {
+        let ParsedPdfBootstrapStructure {
+            user_units,
+            bootstrap_color_risk,
+        } = parse_pdf_bootstrap_structure(&bytes, system_total_memory_bytes())?;
+        (user_units, bootstrap_color_risk, None)
+    };
     let doc = load_pdf_document_from_bytes(pdfium, bytes)?;
     let page_count = {
         let _pdfium_guard = lock_mutex(&RENDER_LOCK);
@@ -1102,22 +1340,49 @@ fn build_cached_document(
         }
     };
     let pool_size = get_doc_pool_size().max(1);
+    let page_lru_cap = configured_page_lru_cap();
     let mut pool = Vec::with_capacity(pool_size);
     for _ in 0..pool_size {
         pool.push(OnceLock::new());
     }
     let _ = pool[0].set(DocHandle {
-        pages: Mutex::new(PageLru::new(PAGE_LRU_CAP)),
+        pages: Mutex::new(PageLru::new(page_lru_cap)),
         lock: Mutex::new(()),
         doc,
     });
     Ok(Arc::new(CachedDocument {
         pool,
         user_units,
-        color_risk,
+        page_lru_cap,
+        bootstrap_color_risk,
+        color_risk: Mutex::new(color_risk),
         file_identity,
         next: AtomicUsize::new(0),
     }))
+}
+
+fn ensure_cached_color_risk(
+    document: &CachedDocument,
+    file_path: &str,
+) -> Result<pdf_color_risk::PdfColorRiskSummary, String> {
+    // Khóa riêng detector, không giữ cache lock hay PDFium lock nên tile trang đầu vẫn
+    // render được trong lúc pha metadata nền quét resources của toàn tài liệu.
+    let mut cached = lock_mutex(&document.color_risk);
+    if let Some(summary) = cached.as_ref() {
+        return Ok(summary.clone());
+    }
+
+    let bytes = read_pdf_bytes_for_identity(file_path, document.file_identity)?;
+    let ParsedPdfStructure { color_risk, .. } =
+        parse_pdf_structure(&bytes, system_total_memory_bytes())?;
+    if pdf_file_identity(file_path)? != document.file_identity {
+        return Err(
+            "File PDF đã thay đổi trong lúc phân tích màu; vui lòng thử lại để tải bản mới."
+                .to_string(),
+        );
+    }
+    *cached = Some(color_risk.clone());
+    Ok(color_risk)
 }
 
 fn cached_document_for_identity(
@@ -1136,6 +1401,7 @@ fn get_or_load_cached_document_with_identity(
     pdfium: &'static Pdfium,
     file_path: &str,
     file_identity: PdfFileIdentity,
+    include_color_risk: bool,
 ) -> Result<Arc<CachedDocument>, String> {
     let (existing, stale) = {
         let mut cache = lock_mutex(document_cache());
@@ -1144,12 +1410,15 @@ fn get_or_load_cached_document_with_identity(
     // Document cùng path nhưng khác size/mtime phải đóng ngoài cache mutex.
     drop(stale);
     if let Some(existing) = existing {
+        if include_color_risk {
+            ensure_cached_color_risk(&existing, file_path)?;
+        }
         return Ok(existing);
     }
 
     // Double-checked insert: đọc/parse file bên ngoài cache mutex. Hai request đua nhau
     // có thể cùng load; chỉ một entry cùng identity thắng.
-    let candidate = build_cached_document(pdfium, file_path, file_identity)?;
+    let candidate = build_cached_document(pdfium, file_path, file_identity, include_color_risk)?;
     if pdf_file_identity(file_path)? != file_identity {
         drop(candidate);
         return Err(
@@ -1162,6 +1431,9 @@ fn get_or_load_cached_document_with_identity(
         drop(cache);
         drop(candidate);
         if existing.file_identity == file_identity {
+            if include_color_risk {
+                ensure_cached_color_risk(&existing, file_path)?;
+            }
             return Ok(existing);
         }
         // Một request khác đã nạp identity mới hơn; không ghi đè ngược bằng bản cũ.
@@ -1180,7 +1452,18 @@ fn get_or_load_cached_document(
     file_path: &str,
 ) -> Result<Arc<CachedDocument>, String> {
     let file_identity = pdf_file_identity(file_path)?;
-    get_or_load_cached_document_with_identity(pdfium, file_path, file_identity)
+    get_or_load_cached_document_with_identity(pdfium, file_path, file_identity, false)
+}
+
+fn get_or_load_cached_document_with_color_risk(
+    pdfium: &'static Pdfium,
+    file_path: &str,
+    file_identity: PdfFileIdentity,
+) -> Result<(Arc<CachedDocument>, pdf_color_risk::PdfColorRiskSummary), String> {
+    let document =
+        get_or_load_cached_document_with_identity(pdfium, file_path, file_identity, true)?;
+    let color_risk = ensure_cached_color_risk(&document, file_path)?;
+    Ok((document, color_risk))
 }
 
 struct SystemFilesState(Mutex<Vec<String>>);
@@ -1210,7 +1493,7 @@ fn preview_perf_logging_enabled() -> bool {
 
 // ── Đo hiệu năng render (đo thật, không đoán) ────────────────────────────────
 // Đường log riêng cho render/thumbnail, set 1 lần trong setup(). KHÔNG dùng
-// chrono::Local::now() (đã PANIC ở release trong render_tile_png — xem note ~:609)
+// chrono::Local::now() (đã PANIC ở release trong render_tile_png_in_process — xem note ~:609)
 // → dùng epoch millis từ SystemTime (không timezone, không panic). Bật khi:
 //   - debug build (dev chạy run_dev.bat → tự bật, không cần thao tác), HOẶC
 //   - env PRYNX_PERF=1 (opt-in cho bản release khi cần chẩn đoán máy khách).
@@ -1224,6 +1507,10 @@ fn perf_log(msg: &str) {
     if !perf_enabled() {
         return;
     }
+    write_perf_log(msg);
+}
+
+fn write_perf_log(msg: &str) {
     if let Some(path) = PERF_LOG_PATH.get() {
         if let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
@@ -1237,6 +1524,15 @@ fn perf_log(msg: &str) {
                 .unwrap_or(0);
             let _ = writeln!(&mut file, "[{}] {}", epoch_ms, msg);
         }
+    }
+}
+
+fn shadow_perf_log(msg: &str) {
+    // COLOR/PERF (audit 2026-08-10 §L7A): cờ shadow tự nó đã là opt-in rõ
+    // ràng. Không bắt khách bật thêm PRYNX_PERF, nhưng vẫn dùng chung một file
+    // log và tuyệt đối không ghi path/nội dung PDF.
+    if pdf_engine::render_worker::viewer_shadow_render_enabled() {
+        write_perf_log(msg);
     }
 }
 
@@ -1406,100 +1702,302 @@ fn log_frontend_error(
     );
 }
 
-#[tauri::command]
-async fn close_pdf_document(file_path: String) -> Result<bool, String> {
-    if is_sensitive_path(&file_path) {
-        return Err("Access to this location is not allowed".to_string());
+#[derive(Default)]
+struct ViewerDocumentLeases {
+    owners_by_path: HashMap<String, HashSet<String>>,
+}
+
+impl ViewerDocumentLeases {
+    fn claim(&mut self, file_path: &str, owner_id: &str) -> bool {
+        self.owners_by_path
+            .entry(file_path.to_string())
+            .or_default()
+            .insert(owner_id.to_string())
     }
-    tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
-        let Some(cache_lock) = DOC_CACHE.get() else {
-            return Ok(false);
+
+    fn release_and_should_close(&mut self, file_path: &str, owner_id: &str) -> bool {
+        let Some(owners) = self.owners_by_path.get_mut(file_path) else {
+            return true;
         };
-        let removed = {
-            let mut cache = lock_mutex(cache_lock);
-            cache.remove(&file_path)
-        };
-        let existed = removed.is_some();
-        // Drop Arc/document bên ngoài cache mutex; nếu render đang giữ Arc thì document
-        // chỉ đóng sau khi render kết thúc, không invalid handle giữa chừng.
-        drop(removed);
-        perf_log(if existed {
-            "DOC_CACHE_CLOSE removed=1"
-        } else {
-            "DOC_CACHE_CLOSE removed=0"
-        });
-        Ok(existed)
+        owners.remove(owner_id);
+        if !owners.is_empty() {
+            return false;
+        }
+        self.owners_by_path.remove(file_path);
+        true
+    }
+}
+
+static VIEWER_DOCUMENT_LEASES: OnceLock<Mutex<ViewerDocumentLeases>> = OnceLock::new();
+
+fn viewer_document_leases() -> &'static Mutex<ViewerDocumentLeases> {
+    VIEWER_DOCUMENT_LEASES.get_or_init(|| Mutex::new(ViewerDocumentLeases::default()))
+}
+
+fn validate_viewer_lease_owner(owner_id: Option<String>) -> Result<Option<String>, String> {
+    match owner_id {
+        Some(owner) if owner.is_empty() || owner.len() > 256 => {
+            Err("Viewer owner_id không hợp lệ.".to_string())
+        }
+        value => Ok(value),
+    }
+}
+
+fn claim_viewer_document_lease(file_path: &str, owner_id: &str) -> bool {
+    lock_mutex(viewer_document_leases()).claim(file_path, owner_id)
+}
+
+fn release_viewer_document_lease(file_path: &str, owner_id: &str) -> bool {
+    lock_mutex(viewer_document_leases()).release_and_should_close(file_path, owner_id)
+}
+
+#[tauri::command]
+async fn close_pdf_document(file_path: String, owner_id: Option<String>) -> Result<bool, String> {
+    let owner_id = validate_viewer_lease_owner(owner_id)?;
+    if owner_id
+        .as_deref()
+        .is_some_and(|owner| !release_viewer_document_lease(&file_path, owner))
+    {
+        // PERF (audit 2026-08-08 §RENDER.2): tab khác vẫn dùng cùng PDF; giữ cache ở
+        // parent và mọi worker để không hủy nhầm hoặc bắt tab còn lại nạp lại tài liệu.
+        perf_log("DOC_CACHE_CLOSE deferred=shared-lease");
+        return Ok(false);
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        match pdf_engine::render_worker::close_document_with_policy(&file_path)? {
+            pdf_engine::render_worker::WorkerAttempt::Completed(closed) => Ok(closed),
+            pdf_engine::render_worker::WorkerAttempt::Disabled => {
+                close_pdf_document_in_process(&file_path)
+            }
+            pdf_engine::render_worker::WorkerAttempt::FallbackBeforeStart(reason) => {
+                log::warn!("[RENDER_WORKER] close fallback trước request: {}", reason);
+                close_pdf_document_in_process(&file_path)
+            }
+        }
     })
     .await
     .unwrap_or_else(|_| Err("Task panicked".into()))
 }
 
-#[tauri::command]
-async fn get_pdf_metadata(file_path: String) -> Result<serde_json::Value, String> {
+pub(crate) fn close_pdf_document_in_process(file_path: &str) -> Result<bool, String> {
     if is_sensitive_path(&file_path) {
         return Err("Access to this location is not allowed".to_string());
     }
-    tauri::async_runtime::spawn_blocking(move || -> Result<serde_json::Value, String> {
-        let pdfium = ensure_pdfium()?;
-        let document_arc = get_or_load_cached_document(pdfium, &file_path)?;
+    let Some(cache_lock) = DOC_CACHE.get() else {
+        return Ok(false);
+    };
+    let removed = {
+        let mut cache = lock_mutex(cache_lock);
+        cache.remove(file_path)
+    };
+    let existed = removed.is_some();
+    // Drop Arc/document bên ngoài cache mutex; nếu render đang giữ Arc thì document
+    // chỉ đóng sau khi render kết thúc, không invalid handle giữa chừng.
+    drop(removed);
+    perf_log(if existed {
+        "DOC_CACHE_CLOSE removed=1"
+    } else {
+        "DOC_CACHE_CLOSE removed=0"
+    });
+    Ok(existed)
+}
 
-        let handle = document_arc.pool[0].get().ok_or("PDF pool empty")?;
-        let _guard = lock_mutex(&handle.lock);
-        let _pdfium_guard = lock_mutex(&RENDER_LOCK);
-        let document = &handle.doc;
-        let num_pages = document.pages().len();
-
-        let mut width_pt = 595.0; // Default A4
-        let mut height_pt = 842.0;
-        let mut all_dims = serde_json::Map::new();
-
-        if num_pages > 0 {
-            let pages = document.pages();
-
-            // PERF (audit 2026-08-02 §LOAD.3): FPDF_GetPageSizeByIndex không load page
-            // và đã trả kích thước sau intrinsic rotation (đã có regression test ở print.rs).
-            if let Ok(size) = pages.page_size(0) {
-                let user_unit = document_arc.user_unit(0)?;
-                width_pt = physical_page_dimension(size.width().value, user_unit, 595.0);
-                height_pt = physical_page_dimension(size.height().value, user_unit, 842.0);
+#[tauri::command]
+async fn get_pdf_viewer_bootstrap(
+    file_path: String,
+    owner_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let owner_id = validate_viewer_lease_owner(owner_id)?;
+    let claimed = owner_id
+        .as_deref()
+        .is_some_and(|owner| claim_viewer_document_lease(&file_path, owner));
+    let rollback_path = file_path.clone();
+    let rollback_owner = owner_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        match pdf_engine::render_worker::bootstrap_with_policy(&file_path)? {
+            pdf_engine::render_worker::WorkerAttempt::Completed(value) => Ok(value),
+            pdf_engine::render_worker::WorkerAttempt::Disabled => {
+                viewer_bootstrap_in_process(&file_path)
             }
-
-            // PAGEBOX (audit 2026-08-04 §W1.PB6): page_size() không load trang nên
-            // đọc đủ cả tài liệu; không cho trang >2.000 mượn sai kích thước trang 1.
-            let dimensions = collect_physical_page_dimensions(
-                num_pages,
-                &document_arc.user_units,
-                width_pt,
-                height_pt,
-                |page_index| {
-                    pages
-                        .page_size(page_index)
-                        .ok()
-                        .map(|size| (size.width().value, size.height().value))
-                },
-            )?;
-            for (i, (page_width, page_height)) in dimensions.into_iter().enumerate() {
-                all_dims.insert(
-                    (i + 1).to_string(),
-                    serde_json::json!({
-                        "widthPt": page_width,
-                        "heightPt": page_height
-                    }),
+            pdf_engine::render_worker::WorkerAttempt::FallbackBeforeStart(reason) => {
+                log::warn!(
+                    "[RENDER_WORKER] bootstrap fallback trước request: {}",
+                    reason
                 );
+                viewer_bootstrap_in_process(&file_path)
             }
         }
+    })
+    .await
+    .unwrap_or_else(|_| Err("Task panicked".into()));
+    if result.is_err() && claimed {
+        if let Some(owner) = rollback_owner.as_deref() {
+            let _ = release_viewer_document_lease(&rollback_path, owner);
+        }
+    }
+    result
+}
 
-        Ok(serde_json::json!({
-            "numPages": num_pages,
-            "widthPt": width_pt,
-            "heightPt": height_pt,
-            "allDims": all_dims,
-            "colorRisk": document_arc.color_risk,
-            "renderEngine": current_pdfium_runtime_identity(),
-        }))
+#[cfg(test)]
+mod viewer_document_lease_tests {
+    use super::ViewerDocumentLeases;
+
+    #[test]
+    fn chi_dong_cache_sau_khi_owner_cuoi_cung_roi_pdf() {
+        let mut leases = ViewerDocumentLeases::default();
+        let path = "D:\\jobs\\shared.pdf";
+
+        assert!(leases.claim(path, "viewer:a"));
+        assert!(!leases.claim(path, "viewer:a"));
+        assert!(leases.claim(path, "viewer:b"));
+        assert!(!leases.release_and_should_close(path, "viewer:a"));
+        assert!(!leases.release_and_should_close(path, "viewer:khong-ton-tai"));
+        assert!(leases.release_and_should_close(path, "viewer:b"));
+        assert!(leases.release_and_should_close(path, "viewer:b"));
+    }
+}
+
+pub(crate) fn viewer_bootstrap_in_process(file_path: &str) -> Result<serde_json::Value, String> {
+    if is_sensitive_path(file_path) {
+        return Err("Access to this location is not allowed".to_string());
+    }
+    let pdfium = ensure_pdfium()?;
+    // PERF (audit 2026-08-10 §PPE.REAUDIT.1): bootstrap chỉ quét risk thật trang 1;
+    // trang chưa quét fail-closed nên vẫn không phát PDFium sai màu. Pha metadata nền
+    // thay summary bảo thủ bằng kết quả toàn tài liệu sau first-frame.
+    let file_identity = pdf_file_identity(file_path)?;
+    let document_arc =
+        get_or_load_cached_document_with_identity(pdfium, file_path, file_identity, false)?;
+    let color_risk = document_arc.bootstrap_color_risk.clone();
+    let handle = document_arc.pool[0].get().ok_or("PDF pool empty")?;
+    let _guard = lock_mutex(&handle.lock);
+    let _pdfium_guard = lock_mutex(&RENDER_LOCK);
+    let document = &handle.doc;
+    let num_pages = document.pages().len();
+    let mut width_pt = 595.0;
+    let mut height_pt = 842.0;
+    if num_pages > 0 {
+        if let Ok(size) = document.pages().page_size(0) {
+            let user_unit = document_arc.user_unit(0)?;
+            width_pt = physical_page_dimension(size.width().value, user_unit, 595.0);
+            height_pt = physical_page_dimension(size.height().value, user_unit, 842.0);
+        }
+    }
+    Ok(serde_json::json!({
+        "numPages": num_pages,
+        "widthPt": width_pt,
+        "heightPt": height_pt,
+        "colorRisk": color_risk,
+        "fileIdentity": pdf_file_identity_token(document_arc.file_identity),
+        "renderEngine": current_pdfium_runtime_identity(),
+        "viewerEngineMode": pdf_engine::render_worker::viewer_engine_mode().as_str(),
+        "viewerShadowEnabled": pdf_engine::render_worker::viewer_shadow_render_enabled(),
+    }))
+}
+
+#[tauri::command]
+async fn get_pdf_metadata(
+    file_path: String,
+    expected_identity: Option<String>,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let worker_identity = match expected_identity.as_deref() {
+            Some(identity) => identity.to_string(),
+            None => pdf_file_identity_token(pdf_file_identity(&file_path)?),
+        };
+        match pdf_engine::render_worker::metadata_with_policy(&file_path, &worker_identity)? {
+            pdf_engine::render_worker::WorkerAttempt::Completed(value) => Ok(value),
+            pdf_engine::render_worker::WorkerAttempt::Disabled => {
+                pdf_metadata_in_process(&file_path, expected_identity.as_deref())
+            }
+            pdf_engine::render_worker::WorkerAttempt::FallbackBeforeStart(reason) => {
+                log::warn!(
+                    "[RENDER_WORKER] metadata fallback trước request: {}",
+                    reason
+                );
+                pdf_metadata_in_process(&file_path, expected_identity.as_deref())
+            }
+        }
     })
     .await
     .unwrap_or_else(|_| Err("Task panicked".into()))
+}
+
+pub(crate) fn pdf_metadata_in_process(
+    file_path: &str,
+    expected_identity: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    if is_sensitive_path(file_path) {
+        return Err("Access to this location is not allowed".to_string());
+    }
+    let pdfium = ensure_pdfium()?;
+    let file_identity = pdf_file_identity(file_path)?;
+    if expected_identity.is_some_and(|expected| expected != pdf_file_identity_token(file_identity))
+    {
+        return Err(
+            "File PDF đã thay đổi giữa pha hiển thị nhanh và pha metadata nền.".to_string(),
+        );
+    }
+    let (document_arc, color_risk) =
+        get_or_load_cached_document_with_color_risk(pdfium, file_path, file_identity)?;
+
+    let handle = document_arc.pool[0].get().ok_or("PDF pool empty")?;
+    let _guard = lock_mutex(&handle.lock);
+    let _pdfium_guard = lock_mutex(&RENDER_LOCK);
+    let document = &handle.doc;
+    let num_pages = document.pages().len();
+
+    let mut width_pt = 595.0; // Default A4
+    let mut height_pt = 842.0;
+    let mut all_dims = serde_json::Map::new();
+
+    if num_pages > 0 {
+        let pages = document.pages();
+
+        // PERF (audit 2026-08-02 §LOAD.3): FPDF_GetPageSizeByIndex không load page
+        // và đã trả kích thước sau intrinsic rotation (đã có regression test ở print.rs).
+        if let Ok(size) = pages.page_size(0) {
+            let user_unit = document_arc.user_unit(0)?;
+            width_pt = physical_page_dimension(size.width().value, user_unit, 595.0);
+            height_pt = physical_page_dimension(size.height().value, user_unit, 842.0);
+        }
+
+        // PAGEBOX (audit 2026-08-04 §W1.PB6): page_size() không load trang nên
+        // đọc đủ cả tài liệu; không cho trang >2.000 mượn sai kích thước trang 1.
+        let dimensions = collect_physical_page_dimensions(
+            num_pages,
+            &document_arc.user_units,
+            width_pt,
+            height_pt,
+            |page_index| {
+                pages
+                    .page_size(page_index)
+                    .ok()
+                    .map(|size| (size.width().value, size.height().value))
+            },
+        )?;
+        for (i, (page_width, page_height)) in dimensions.into_iter().enumerate() {
+            all_dims.insert(
+                (i + 1).to_string(),
+                serde_json::json!({
+                    "widthPt": page_width,
+                    "heightPt": page_height
+                }),
+            );
+        }
+    }
+
+    Ok(serde_json::json!({
+        "numPages": num_pages,
+        "widthPt": width_pt,
+        "heightPt": height_pt,
+        "allDims": all_dims,
+        "colorRisk": color_risk,
+        "fileIdentity": pdf_file_identity_token(document_arc.file_identity),
+        "renderEngine": current_pdfium_runtime_identity(),
+        "viewerEngineMode": pdf_engine::render_worker::viewer_engine_mode().as_str(),
+        "viewerShadowEnabled": pdf_engine::render_worker::viewer_shadow_render_enabled(),
+    }))
 }
 
 // ═══ Shared tile rendering core (used by both IPC command and protocol handler) ═══
@@ -1517,7 +2015,7 @@ fn encode_viewer_png(rgba_image: &image::RgbaImage) -> Result<Vec<u8>, String> {
     Ok(buffer)
 }
 
-fn render_tile_png(
+pub(crate) fn render_tile_png_in_process(
     file_path: &str,
     page: i32,
     zoom: f32,
@@ -1582,25 +2080,24 @@ fn render_tile_png(
     {
         let dpath = tile_disk_path(&cache_key);
         let _disk_t0 = std::time::Instant::now();
-        if let Ok(bytes) = std::fs::read(&dpath) {
-            if !bytes.is_empty() {
-                let disk_read_ms = _disk_t0.elapsed().as_millis();
-                let total_ms = _total_t0.elapsed().as_millis();
-                perf_log(&format!(
-                    "CACHE_HIT tier=disk kind={} page={} zoom={:.3} disk_read_ms={} total_ms={} bytes={}",
-                    kind, page, zoom, disk_read_ms, total_ms, bytes.len()
-                ));
-                let cache_lock = tile_cache();
-                if let Ok(mut cache) = cache_lock.lock() {
-                    cache.insert(cache_key.clone(), bytes.clone());
-                }
-                return Ok(bytes);
+        if let Some(bytes) = tile_disk_cache::read_valid_tile_png(&dpath) {
+            let disk_read_ms = _disk_t0.elapsed().as_millis();
+            let total_ms = _total_t0.elapsed().as_millis();
+            perf_log(&format!(
+                "CACHE_HIT tier=disk kind={} page={} zoom={:.3} disk_read_ms={} total_ms={} bytes={}",
+                kind, page, zoom, disk_read_ms, total_ms, bytes.len()
+            ));
+            let cache_lock = tile_cache();
+            if let Ok(mut cache) = cache_lock.lock() {
+                cache.insert(cache_key.clone(), bytes.clone());
             }
+            return Ok(bytes);
         }
     }
 
     let pdfium = ensure_pdfium()?;
-    let document_arc = get_or_load_cached_document_with_identity(pdfium, file_path, file_identity)?;
+    let document_arc =
+        get_or_load_cached_document_with_identity(pdfium, file_path, file_identity, false)?;
 
     let pool_size = document_arc.pool.len();
     let pool_idx = document_arc.next.fetch_add(1, Ordering::Relaxed) % pool_size;
@@ -1624,7 +2121,7 @@ fn render_tile_png(
             );
         }
         let candidate = DocHandle {
-            pages: Mutex::new(PageLru::new(PAGE_LRU_CAP)),
+            pages: Mutex::new(PageLru::new(document_arc.page_lru_cap)),
             lock: Mutex::new(()),
             doc,
         };
@@ -1759,7 +2256,7 @@ fn render_tile_png(
     let dpath = tile_disk_path(&cache_key);
     let disk_decision = tile_disk_cache::tile_disk_write_decision(&dpath, buffer.len());
     if disk_decision.write {
-        let _ = std::fs::write(&dpath, &buffer);
+        let _ = tile_disk_cache::write_tile_png_atomic(&dpath, &buffer);
     }
     // Quét nền ngay lần ghi đầu; tier ít dung lượng quét thường hơn, tier rộng giữ
     // nhịp 64 lần cũ. AtomicBool trong module chặn nhiều thread prune trùng nhau.
@@ -1787,12 +2284,236 @@ fn render_tile_png(
     Ok(buffer)
 }
 
-// Giới hạn render đồng thời cho lệnh IPC render_pdf_page (giống TILE_SEMAPHORE của
-// đường tile://). Viewport-tiling gửi nhiều ô cùng lúc → nếu không chặn, mỗi render
-// round-robin qua doc pool khiến mỗi handle decode lại page (RAM) + spawn_blocking
-// không giới hạn. Semaphore ~4 giữ song song vừa phải, tránh thrash (audit render).
+// PERF (audit 2026-08-08 §RENDER.2): một semaphore dùng chung cho IPC và tile://.
+// Worker mode lấy số slot theo tier RAM/CPU; máy <8 GiB vẫn giữ hai cửa vào để request
+// interactive tới được manager và preempt background. Mode off giữ trần 4 cũ.
 static RENDER_SEMAPHORE: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
     std::sync::OnceLock::new();
+static RENDER_BACKGROUND_SEMAPHORE: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::OnceLock::new();
+static TILE_PROTOCOL_REQUEST_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+
+fn render_request_semaphore() -> std::sync::Arc<tokio::sync::Semaphore> {
+    RENDER_SEMAPHORE
+        .get_or_init(|| {
+            std::sync::Arc::new(tokio::sync::Semaphore::new(
+                pdf_engine::render_worker::configured_render_request_slots(),
+            ))
+        })
+        .clone()
+}
+
+fn background_render_request_slots(total_slots: usize) -> usize {
+    total_slots.saturating_sub(1).max(1)
+}
+
+fn background_render_semaphore() -> std::sync::Arc<tokio::sync::Semaphore> {
+    RENDER_BACKGROUND_SEMAPHORE
+        .get_or_init(|| {
+            let total_slots = pdf_engine::render_worker::configured_render_request_slots();
+            std::sync::Arc::new(tokio::sync::Semaphore::new(
+                background_render_request_slots(total_slots),
+            ))
+        })
+        .clone()
+}
+
+struct RenderRequestPermits {
+    _background: Option<tokio::sync::OwnedSemaphorePermit>,
+    _total: tokio::sync::OwnedSemaphorePermit,
+}
+
+async fn acquire_render_request_permits(
+    purpose: pdf_engine::render_worker::RenderPurpose,
+) -> Result<RenderRequestPermits, String> {
+    // PERF (audit 2026-08-08 §RENDER.2): request nền lấy quota nền trước nên không thể
+    // giữ chỗ trong semaphore tổng khi đang chờ lane. Luôn còn ít nhất một cửa cho trang
+    // người dùng đang xem đi tới worker manager và preempt việc nền trên máy ít RAM.
+    let background = if purpose == pdf_engine::render_worker::RenderPurpose::Interactive {
+        None
+    } else {
+        Some(
+            background_render_semaphore()
+                .acquire_owned()
+                .await
+                .map_err(|_| "Render background semaphore closed".to_string())?,
+        )
+    };
+    let total = render_request_semaphore()
+        .acquire_owned()
+        .await
+        .map_err(|_| "Render semaphore closed".to_string())?;
+    Ok(RenderRequestPermits {
+        _background: background,
+        _total: total,
+    })
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct TileProtocolRenderRequest {
+    file_path: String,
+    page: i32,
+    zoom: f32,
+    rotation: i32,
+    clip_x: Option<i32>,
+    clip_y: Option<i32>,
+    clip_w: Option<i32>,
+    clip_h: Option<i32>,
+    purpose: pdf_engine::render_worker::RenderPurpose,
+}
+
+fn parse_tile_protocol_purpose(
+    query: Option<&str>,
+) -> Result<pdf_engine::render_worker::RenderPurpose, String> {
+    let mut purpose = None;
+    for pair in query
+        .unwrap_or_default()
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+    {
+        let (key, raw_value) = pair.split_once('=').unwrap_or((pair, ""));
+        if key != "purpose" {
+            continue;
+        }
+        if purpose.is_some() {
+            return Err("Tham số purpose của tile bị lặp.".to_string());
+        }
+        let value = urlencoding::decode(raw_value)
+            .map_err(|_| "Tham số purpose của tile không hợp lệ.".to_string())?;
+        purpose = Some(match value.as_ref() {
+            "interactive" => pdf_engine::render_worker::RenderPurpose::Interactive,
+            "background" => pdf_engine::render_worker::RenderPurpose::Background,
+            _ => return Err("Tham số purpose của tile không được hỗ trợ.".to_string()),
+        });
+    }
+    Ok(purpose.unwrap_or(pdf_engine::render_worker::RenderPurpose::Interactive))
+}
+
+fn parse_tile_protocol_request(url: &str) -> Result<TileProtocolRenderRequest, String> {
+    // Query phải được tách trước rsplit; nếu không `purpose=background` dính vào clip_h
+    // và biến thumbnail thành render nguyên trang.
+    let (url_without_query, query) = url
+        .split_once('?')
+        .map_or((url, None), |(path, query)| (path, Some(query)));
+    let mut path = url_without_query;
+    if path.starts_with("http://tile.localhost/") {
+        path = &path["http://tile.localhost/".len()..];
+    } else if path.starts_with("https://tile.localhost/") {
+        path = &path["https://tile.localhost/".len()..];
+    } else if path.starts_with("tile://localhost/") {
+        path = &path["tile://localhost/".len()..];
+    } else if path.starts_with("tile://") {
+        path = &path["tile://".len()..];
+    }
+
+    let parts: Vec<&str> = path.rsplitn(8, '/').collect();
+    if parts.len() != 8 || parts[7].is_empty() {
+        return Err("Bad request".to_string());
+    }
+    let ch: Option<i32> = parts[0].parse().ok();
+    let cw: Option<i32> = parts[1].parse().ok();
+    let cy: Option<i32> = parts[2].parse().ok();
+    let cx: Option<i32> = parts[3].parse().ok();
+    let rotation: i32 = parts[4].parse().unwrap_or(0);
+    let zoom: f32 = parts[5].parse().unwrap_or(1.0);
+    let page: i32 = parts[6].parse().unwrap_or(1);
+    let file_path_encoded = parts[7];
+    let file_path = urlencoding::decode(file_path_encoded)
+        .unwrap_or_else(|_| file_path_encoded.into())
+        .to_string();
+
+    Ok(TileProtocolRenderRequest {
+        file_path,
+        page,
+        zoom,
+        rotation,
+        clip_x: cx.filter(|&value| value != 0 || cw.unwrap_or(0) != 0),
+        clip_y: cy.filter(|&value| value != 0 || ch.unwrap_or(0) != 0),
+        clip_w: cw.filter(|&value| value != 0),
+        clip_h: ch.filter(|&value| value != 0),
+        purpose: parse_tile_protocol_purpose(query)?,
+    })
+}
+
+fn tile_protocol_render_context(
+    request: &TileProtocolRenderRequest,
+) -> pdf_engine::render_worker::ViewerRenderContext {
+    let sequence = TILE_PROTOCOL_REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let kind = if request.clip_w.is_some() && request.clip_h.is_some() {
+        "viewport"
+    } else {
+        "page"
+    };
+    pdf_engine::render_worker::ViewerRenderContext {
+        request_id: format!("tile:{}:{sequence}", std::process::id()),
+        owner_id: "tauri:tile-protocol".to_string(),
+        group_key: format!("page:{}:{kind}", request.page),
+        generation: 0,
+        purpose: request.purpose,
+        priority: if request.purpose == pdf_engine::render_worker::RenderPurpose::Interactive {
+            0
+        } else {
+            500
+        },
+        pipeline_identity: pdf_engine::render_worker::RENDER_WORKER_DISPLAY_PIPELINE_ID.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tile_protocol_request_tests {
+    use super::*;
+
+    #[test]
+    fn query_background_khong_lam_hong_clip_goc_trai() {
+        let request = parse_tile_protocol_request(
+            "http://tile.localhost/D%3A%5Cjobs%5Cfile%20in.pdf/3/0.3/90/0/0/180/240?purpose=background",
+        )
+        .unwrap();
+
+        assert_eq!(request.file_path, "D:\\jobs\\file in.pdf");
+        assert_eq!(request.page, 3);
+        assert_eq!(request.zoom, 0.3);
+        assert_eq!(request.rotation, 90);
+        assert_eq!((request.clip_x, request.clip_y), (Some(0), Some(0)));
+        assert_eq!((request.clip_w, request.clip_h), (Some(180), Some(240)));
+        assert_eq!(
+            request.purpose,
+            pdf_engine::render_worker::RenderPurpose::Background
+        );
+    }
+
+    #[test]
+    fn url_cu_mac_dinh_interactive_va_khong_clip() {
+        let request =
+            parse_tile_protocol_request("tile://localhost/C%3A%5Cjobs%5Clegacy.pdf/1/1/0/0/0/0/0")
+                .unwrap();
+
+        assert_eq!(request.clip_x, None);
+        assert_eq!(request.clip_y, None);
+        assert_eq!(request.clip_w, None);
+        assert_eq!(request.clip_h, None);
+        assert_eq!(
+            request.purpose,
+            pdf_engine::render_worker::RenderPurpose::Interactive
+        );
+    }
+
+    #[test]
+    fn request_thieu_truong_va_purpose_sai_bi_tu_choi() {
+        assert!(parse_tile_protocol_request("tile://localhost/file.pdf/1/1/0/0/0/0").is_err());
+        assert!(parse_tile_protocol_request(
+            "tile://localhost/file.pdf/1/1/0/0/0/0/0?purpose=accurate",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn quota_background_luon_chua_mot_cua_tuong_tac() {
+        assert_eq!(background_render_request_slots(2), 1);
+        assert_eq!(background_render_request_slots(4), 3);
+        assert_eq!(background_render_request_slots(9), 8);
+    }
+}
 
 #[tauri::command]
 async fn render_pdf_page(
@@ -1805,8 +2526,8 @@ async fn render_pdf_page(
     clip_y: Option<i32>,
     clip_w: Option<i32>,
     clip_h: Option<i32>,
+    request_context: Option<pdf_engine::render_worker::ViewerRenderContext>,
 ) -> Result<tauri::ipc::Response, String> {
-    let sem = RENDER_SEMAPHORE.get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4)));
     let command_t0 = std::time::Instant::now();
     let kind = if clip_w.is_some() && clip_h.is_some() {
         "tile"
@@ -1814,18 +2535,70 @@ async fn render_pdf_page(
         "page"
     };
     let sem_t0 = std::time::Instant::now();
-    let _permit = sem
-        .acquire()
-        .await
-        .map_err(|_| "Render semaphore closed".to_string())?;
+    let request_purpose = request_context
+        .as_ref()
+        .map(|context| context.purpose)
+        .unwrap_or(pdf_engine::render_worker::RenderPurpose::Interactive);
+    // PERF (audit 2026-08-08 §RENDER.2): đăng ký request trước khi chờ quota. Nếu user
+    // đổi zoom trong lúc hàng đợi đang kín, cancel_pdf_render phải đánh dấu được request
+    // ngay; sau khi lấy permit nó bị loại trước khi chiếm worker/PDFium.
+    let pending_worker_lease = request_context
+        .as_ref()
+        .map(|context| pdf_engine::render_worker::PendingWorkerLease::register(&context.request_id))
+        .transpose()?;
+    let _permits = acquire_render_request_permits(request_purpose).await?;
+    if pending_worker_lease
+        .as_ref()
+        .is_some_and(|pending| pending.is_cancelled())
+    {
+        return Err("Render request đã bị hủy trong lúc chờ quota.".to_string());
+    }
     let sem_wait_ms = sem_t0.elapsed().as_millis();
     let submitted_t0 = std::time::Instant::now();
     let (result, worker_queue_ms, core_ms) = tauri::async_runtime::spawn_blocking(move || {
         let worker_queue_ms = submitted_t0.elapsed().as_millis();
         let core_t0 = std::time::Instant::now();
-        let result = match render_tile_png(
-            &file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h,
-        ) {
+        let worker_attempt = if let Some(pending) = pending_worker_lease.as_ref() {
+            pdf_engine::render_worker::render_display_with_reserved_policy(
+                &file_path,
+                page,
+                zoom,
+                rotation,
+                clip_x,
+                clip_y,
+                clip_w,
+                clip_h,
+                request_context.as_ref(),
+                pending,
+            )
+        } else {
+            pdf_engine::render_worker::render_display_with_policy(
+                &file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h, None,
+            )
+        };
+        let render_result = match worker_attempt {
+            Ok(pdf_engine::render_worker::WorkerAttempt::Completed(output)) => {
+                perf_log(&format!(
+                    "RENDER_WORKER_RESULT page={} zoom={:.3} total_ms={} bytes={}",
+                    page,
+                    zoom,
+                    output.response.timing.total_ms,
+                    output.bytes.len()
+                ));
+                Ok(output.bytes)
+            }
+            Ok(pdf_engine::render_worker::WorkerAttempt::Disabled) => render_tile_png_in_process(
+                &file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h,
+            ),
+            Ok(pdf_engine::render_worker::WorkerAttempt::FallbackBeforeStart(reason)) => {
+                log::warn!("[RENDER_WORKER] fallback trước request: {}", reason);
+                render_tile_png_in_process(
+                    &file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h,
+                )
+            }
+            Err(error) => Err(error),
+        };
+        let result = match render_result {
             Ok(data) => Ok(data),
             Err(e) => {
                 // Ghi LÝ DO thật ra log (release tắt devtools → console.error phía JS biến
@@ -1863,6 +2636,319 @@ async fn render_pdf_page(
         }
         Err(error) => Err(error),
     }
+}
+
+#[tauri::command]
+async fn render_ppe_page(
+    file_path: String,
+    page: i32,
+    dpi: f32,
+    rotation: i32,
+    clip_x: Option<i32>,
+    clip_y: Option<i32>,
+    clip_w: Option<i32>,
+    clip_h: Option<i32>,
+    session_owner_id: String,
+    request_context: pdf_engine::render_worker::ViewerRenderContext,
+) -> Result<tauri::ipc::Response, String> {
+    let command_t0 = std::time::Instant::now();
+    let request_purpose = pdf_engine::render_worker::render_lane_purpose(
+        request_context.purpose,
+        request_context.priority,
+    );
+    // PERF/COLOR (audit 2026-08-09 §L3C): đăng ký trước quota để wheel/unmount
+    // hủy được request PPE cả khi nó còn đang chờ lane vật lý.
+    let pending_worker_lease =
+        pdf_engine::render_worker::PendingWorkerLease::register(&request_context.request_id)?;
+    let sem_t0 = std::time::Instant::now();
+    let _permits = acquire_render_request_permits(request_purpose).await?;
+    if pending_worker_lease.is_cancelled() {
+        return Err("PPE request đã bị hủy trong lúc chờ quota.".to_string());
+    }
+    let sem_wait_ms = sem_t0.elapsed().as_millis();
+    let submitted_t0 = std::time::Instant::now();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let worker_queue_ms = submitted_t0.elapsed().as_millis();
+        let attempt = pdf_engine::render_worker::render_accurate_with_reserved_policy(
+            &file_path,
+            page,
+            dpi,
+            rotation,
+            clip_x,
+            clip_y,
+            clip_w,
+            clip_h,
+            &session_owner_id,
+            &request_context,
+            &pending_worker_lease,
+        );
+        match attempt {
+            Ok(pdf_engine::render_worker::AccurateWorkerAttempt::Completed(output)) => {
+                perf_log(&format!(
+                    "PPE_NATIVE_RESULT page={} dpi={:.1} total_ms={} sem_wait_ms={} worker_queue_ms={} bytes={}",
+                    page,
+                    dpi,
+                    output.response.timing.total_ms,
+                    sem_wait_ms,
+                    worker_queue_ms,
+                    output.bytes.len()
+                ));
+                Ok(output.bytes)
+            }
+            Ok(pdf_engine::render_worker::AccurateWorkerAttempt::Disabled) => Err(format!(
+                "{} worker-disabled",
+                pdf_engine::render_worker::PPE_NATIVE_FALLBACK_BEFORE_START_PREFIX
+            )),
+            Ok(pdf_engine::render_worker::AccurateWorkerAttempt::FallbackBeforeStart(reason)) => {
+                Err(format!(
+                    "{} {}",
+                    pdf_engine::render_worker::PPE_NATIVE_FALLBACK_BEFORE_START_PREFIX,
+                    reason
+                ))
+            }
+            Ok(pdf_engine::render_worker::AccurateWorkerAttempt::Unsupported(unsupported)) => {
+                // CORRECTNESS (audit 2026-08-10 §L7B): capability thiếu là trạng
+                // thái riêng; frontend hybrid được lùi compatibility, còn crash/I/O
+                // vẫn đi nhánh Err thường và tuyệt đối không bị che.
+                let payload = serde_json::to_string(&unsupported)
+                    .map_err(|error| format!("Không mã hóa được lý do PPE unsupported: {error}"))?;
+                Err(format!(
+                    "{}{}",
+                    pdf_engine::render_worker::PPE_NATIVE_UNSUPPORTED_PREFIX,
+                    payload
+                ))
+            }
+            Err(error) => Err(error),
+        }
+    })
+    .await
+    .unwrap_or_else(|_| Err("PPE native task panicked sau khi nhận request.".to_string()));
+    match result {
+        Ok(data) => {
+            perf_log(&format!(
+                "IPC_PPE page={} dpi={:.1} command_ms={} bytes={}",
+                page,
+                dpi,
+                command_t0.elapsed().as_millis(),
+                data.len()
+            ));
+            Ok(tauri::ipc::Response::new(data))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ViewerShadowRenderReport {
+    status: String,
+    document_hash: String,
+    artifact_hash: Option<String>,
+    display_artifact_hash: Option<String>,
+    rgb_mae: Option<f64>,
+    page: i32,
+    dpi: f32,
+    total_ms: u64,
+    display_total_ms: Option<u64>,
+    render_ms: Option<u64>,
+    encode_ms: Option<u64>,
+    cache_ms: Option<u64>,
+    unsupported_reason: Option<pdf_engine::render_worker::RenderUnsupportedReason>,
+    fallback_font_sha256: Option<String>,
+}
+
+fn shadow_png_rgb_mae(first: &[u8], second: &[u8]) -> Option<f64> {
+    let first = image::load_from_memory(first).ok()?.to_rgba8();
+    let second = image::load_from_memory(second).ok()?.to_rgba8();
+    if first.dimensions() != second.dimensions() || first.is_empty() {
+        return None;
+    }
+    let mut total = 0_u64;
+    for (left, right) in first.pixels().zip(second.pixels()) {
+        for channel in 0..3 {
+            let composite = |value: u8, alpha: u8| -> i32 {
+                let alpha = u32::from(alpha);
+                ((u32::from(value) * alpha + 255 * (255 - alpha) + 127) / 255) as i32
+            };
+            total += composite(left[channel], left[3]).abs_diff(composite(right[channel], right[3]))
+                as u64;
+        }
+    }
+    Some(total as f64 / (first.width() as f64 * first.height() as f64 * 3.0))
+}
+
+#[tauri::command]
+async fn shadow_render_ppe_page(
+    file_path: String,
+    page: i32,
+    dpi: f32,
+    rotation: i32,
+    session_owner_id: String,
+    mut request_context: pdf_engine::render_worker::ViewerRenderContext,
+) -> Result<Option<ViewerShadowRenderReport>, String> {
+    if !pdf_engine::render_worker::viewer_shadow_render_enabled() {
+        return Ok(None);
+    }
+    // PERF/COLOR (audit 2026-08-10 §L7A): shadow luôn ở lane nền và không trả
+    // bitmap cho WebView. Chỉ report hash/timing/soundness đi qua IPC/log.
+    request_context.purpose = pdf_engine::render_worker::RenderPurpose::Background;
+    request_context.priority = request_context.priority.max(500);
+    request_context.pipeline_identity =
+        pdf_engine::render_worker::RENDER_WORKER_ACCURATE_PIPELINE_ID.to_string();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        use sha2::Digest;
+
+        let identity = pdf_file_identity(&file_path)
+            .map_err(|_| "Không đọc được identity PDF cho shadow render.".to_string())?;
+        let document_token = pdf_file_identity_token(identity);
+        let document_hash = hex::encode(sha2::Sha256::digest(document_token.as_bytes()));
+        let attempt = pdf_engine::render_worker::render_accurate_with_policy(
+            &file_path,
+            page,
+            dpi,
+            rotation,
+            None,
+            None,
+            None,
+            None,
+            &session_owner_id,
+            Some(&request_context),
+        );
+        let report = match attempt {
+            Ok(pdf_engine::render_worker::AccurateWorkerAttempt::Completed(output)) => {
+                let ppe_timing = output.response.timing;
+                let fallback_font_sha256 = output.response.fallback_font_sha256.clone();
+                let artifact_hash = hex::encode(sha2::Sha256::digest(&output.bytes));
+                let mut display_context = request_context.clone();
+                display_context.request_id = format!("{}-display", display_context.request_id);
+                display_context.group_key = format!("shadow:display:page:{page}");
+                display_context.pipeline_identity =
+                    pdf_engine::render_worker::RENDER_WORKER_DISPLAY_PIPELINE_ID.to_string();
+                let display = pdf_engine::render_worker::render_display_with_policy(
+                    &file_path,
+                    page,
+                    dpi / 96.0,
+                    rotation,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(&display_context),
+                );
+                let (display_artifact_hash, rgb_mae, display_total_ms) = match display {
+                    Ok(pdf_engine::render_worker::WorkerAttempt::Completed(display)) => (
+                        Some(hex::encode(sha2::Sha256::digest(&display.bytes))),
+                        shadow_png_rgb_mae(&output.bytes, &display.bytes),
+                        Some(display.response.timing.total_ms),
+                    ),
+                    _ => (None, None, None),
+                };
+                ViewerShadowRenderReport {
+                    status: if rgb_mae.is_some() {
+                        "ready"
+                    } else {
+                        "comparison_error"
+                    }
+                    .to_string(),
+                    document_hash,
+                    artifact_hash: Some(artifact_hash),
+                    display_artifact_hash,
+                    rgb_mae,
+                    page,
+                    dpi,
+                    total_ms: ppe_timing.total_ms,
+                    display_total_ms,
+                    render_ms: ppe_timing.render_ms,
+                    encode_ms: ppe_timing.encode_ms,
+                    cache_ms: ppe_timing.cache_ms,
+                    unsupported_reason: None,
+                    fallback_font_sha256,
+                }
+            }
+            Ok(pdf_engine::render_worker::AccurateWorkerAttempt::Unsupported(unsupported)) => {
+                ViewerShadowRenderReport {
+                    status: "unsupported".to_string(),
+                    document_hash,
+                    artifact_hash: None,
+                    display_artifact_hash: None,
+                    rgb_mae: None,
+                    page,
+                    dpi,
+                    total_ms: unsupported.timing.total_ms,
+                    display_total_ms: None,
+                    render_ms: unsupported.timing.render_ms,
+                    encode_ms: unsupported.timing.encode_ms,
+                    cache_ms: unsupported.timing.cache_ms,
+                    unsupported_reason: Some(unsupported.reason),
+                    fallback_font_sha256: unsupported.fallback_font_sha256,
+                }
+            }
+            Ok(pdf_engine::render_worker::AccurateWorkerAttempt::Disabled)
+            | Ok(pdf_engine::render_worker::AccurateWorkerAttempt::FallbackBeforeStart(_)) => {
+                ViewerShadowRenderReport {
+                    status: "unavailable".to_string(),
+                    document_hash,
+                    artifact_hash: None,
+                    display_artifact_hash: None,
+                    rgb_mae: None,
+                    page,
+                    dpi,
+                    total_ms: 0,
+                    display_total_ms: None,
+                    render_ms: None,
+                    encode_ms: None,
+                    cache_ms: None,
+                    unsupported_reason: None,
+                    fallback_font_sha256: None,
+                }
+            }
+            Err(_) => ViewerShadowRenderReport {
+                status: "error".to_string(),
+                document_hash,
+                artifact_hash: None,
+                display_artifact_hash: None,
+                rgb_mae: None,
+                page,
+                dpi,
+                total_ms: 0,
+                display_total_ms: None,
+                render_ms: None,
+                encode_ms: None,
+                cache_ms: None,
+                unsupported_reason: None,
+                fallback_font_sha256: None,
+            },
+        };
+        if let Ok(serialized) = serde_json::to_string(&report) {
+            shadow_perf_log(&format!("PPE_SHADOW {serialized}"));
+        }
+        Ok(report)
+    })
+    .await
+    .unwrap_or_else(|_| Err("Shadow PPE task panicked.".to_string()))?;
+    Ok(Some(report))
+}
+
+#[tauri::command]
+async fn release_ppe_session_owner(session_owner_id: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        match pdf_engine::render_worker::release_accurate_session_owner_with_policy(
+            &session_owner_id,
+        )? {
+            pdf_engine::render_worker::WorkerAttempt::Completed(released) => Ok(released),
+            pdf_engine::render_worker::WorkerAttempt::Disabled => Ok(false),
+            pdf_engine::render_worker::WorkerAttempt::FallbackBeforeStart(_) => Ok(false),
+        }
+    })
+    .await
+    .unwrap_or_else(|_| Err("Task cleanup PPE panicked".to_string()))
+}
+
+#[tauri::command]
+fn cancel_pdf_render(request_id: String) -> bool {
+    // PERF (audit 2026-08-08 §RENDER.2): worker đang kẹt trong PDFium không thể đọc
+    // frame cancel; parent terminate đúng process lease theo request ID đang hoạt động.
+    pdf_engine::render_worker::cancel_render_request(&request_id)
 }
 
 #[tauri::command]
@@ -1950,6 +3036,77 @@ fn is_sensitive_path(path: &str) -> bool {
     }
 
     false
+}
+
+#[derive(serde::Serialize)]
+struct UpscaleFileGrant {
+    path: String,
+    grant: String,
+}
+
+fn is_network_or_device_path(path: &str) -> bool {
+    path.replace('/', "\\").starts_with(r"\\")
+}
+
+fn canonical_path_for_sidecar(path: &std::path::Path) -> Result<String, String> {
+    let raw = path.to_string_lossy();
+    #[cfg(target_os = "windows")]
+    {
+        if raw.starts_with(r"\\?\UNC\") {
+            return Err("Không hỗ trợ đường dẫn mạng cho Upscale".to_string());
+        }
+        if let Some(without_verbatim_prefix) = raw.strip_prefix(r"\\?\") {
+            return Ok(without_verbatim_prefix.to_string());
+        }
+    }
+    Ok(raw.into_owned())
+}
+
+#[tauri::command]
+fn grant_upscale_file_path(
+    app: tauri::AppHandle,
+    file_path: String,
+    tab_id: String,
+) -> Result<UpscaleFileGrant, String> {
+    // SEC (audit 2026-08-11 §UP.R.01): renderer không được tự biến một path tùy ý
+    // thành fast-path. Scope này chỉ được Tauri nới khi người dùng chọn/kéo file.
+    if file_path.is_empty()
+        || is_network_or_device_path(&file_path)
+        || is_sensitive_path(&file_path)
+    {
+        return Err("Không được phép cấp quyền cho đường dẫn này".to_string());
+    }
+
+    let source = std::path::PathBuf::from(&file_path);
+    let source_metadata =
+        std::fs::symlink_metadata(&source).map_err(|_| "Không tìm thấy ảnh đã chọn".to_string())?;
+    if source_metadata.file_type().is_symlink() || !source_metadata.is_file() {
+        return Err("Đường dẫn ảnh không phải file thường".to_string());
+    }
+
+    let canonical = std::fs::canonicalize(&source)
+        .map_err(|_| "Không chuẩn hóa được đường dẫn ảnh".to_string())?;
+    if !app.fs_scope().is_allowed(&canonical) {
+        return Err("Ảnh chưa được người dùng cấp quyền qua hộp chọn hoặc kéo-thả".to_string());
+    }
+
+    let path = canonical_path_for_sidecar(&canonical)?;
+    if is_network_or_device_path(&path) || is_sensitive_path(&path) {
+        return Err("Không được phép cấp quyền cho đường dẫn này".to_string());
+    }
+    let extension = std::path::Path::new(&path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    const UPSCALE_IMAGE_EXTENSIONS: [&str; 7] =
+        ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"];
+    if !UPSCALE_IMAGE_EXTENSIONS.contains(&extension.as_str()) {
+        return Err("Định dạng ảnh không được Upscale hỗ trợ".to_string());
+    }
+
+    let grant = security::issue_upscale_file_grant(&path, &tab_id)?;
+    Ok(UpscaleFileGrant { path, grant })
 }
 
 /// Guard RIÊNG cho GHI: ngoài các vị trí nhạy cảm dùng chung (is_sensitive_path),
@@ -2983,10 +4140,37 @@ mod doc_cache_tests {
         Arc::new(CachedDocument {
             pool: Vec::new(),
             user_units: vec![DEFAULT_PDF_USER_UNIT],
-            color_risk: pdf_color_risk::PdfColorRiskSummary::empty(),
+            page_lru_cap: PAGE_LRU_CAP_FULL,
+            bootstrap_color_risk: pdf_color_risk::PdfColorRiskSummary::empty(),
+            color_risk: Mutex::new(Some(pdf_color_risk::PdfColorRiskSummary::empty())),
             file_identity: identity,
             next: AtomicUsize::new(0),
         })
+    }
+
+    #[test]
+    fn summary_bootstrap_khong_bi_cache_nham_thanh_metadata_day_du() {
+        let identity = PdfFileIdentity {
+            size: 100,
+            modified_nanos: 1,
+            created_nanos: Some(1),
+        };
+        let mut bootstrap = pdf_color_risk::PdfColorRiskSummary::empty();
+        bootstrap.high_risk = true;
+        bootstrap.accurate_color_recommended = true;
+        bootstrap.risky_pages = vec![2];
+        let document = CachedDocument {
+            pool: Vec::new(),
+            user_units: vec![DEFAULT_PDF_USER_UNIT; 2],
+            page_lru_cap: PAGE_LRU_CAP_FULL,
+            bootstrap_color_risk: bootstrap.clone(),
+            color_risk: Mutex::new(None),
+            file_identity: identity,
+            next: AtomicUsize::new(0),
+        };
+
+        assert_eq!(document.bootstrap_color_risk, bootstrap);
+        assert!(lock_mutex(&document.color_risk).is_none());
     }
 
     #[test]
@@ -3052,6 +4236,16 @@ mod doc_cache_tests {
         assert_eq!(doc_cache_limit_for_total_ram(Some(16 * GIB)), None);
         assert_eq!(doc_cache_limit_for_total_ram(Some(64 * GIB)), None);
         assert_eq!(doc_cache_limit_for_total_ram(None), None);
+    }
+
+    #[test]
+    fn page_lru_chi_giam_tren_hai_tier_ram_thap() {
+        assert_eq!(page_lru_cap_for_total_ram(Some(4 * GIB)), 6);
+        assert_eq!(page_lru_cap_for_total_ram(Some(8 * GIB)), 12);
+        assert_eq!(page_lru_cap_for_total_ram(Some(15 * GIB)), 12);
+        assert_eq!(page_lru_cap_for_total_ram(Some(16 * GIB)), 24);
+        assert_eq!(page_lru_cap_for_total_ram(Some(64 * GIB)), 24);
+        assert_eq!(page_lru_cap_for_total_ram(None), 24);
     }
 
     #[test]
@@ -3353,7 +4547,10 @@ pub fn run() {
     {
         let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
         // CHỈ thêm các cờ AN TOÀN (không mở remote-debugging-port) — không tạo lỗ hổng.
-        let flags = "--disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows --disable-background-timer-throttling --disable-renderer-backgrounding";
+        // COLOR (feedback 2026-08-10 §VIEWER.C2): bitmap PPE đã là sRGB. Ép display
+        // surface về sRGB để WebView2 không đổi lần hai qua ICC màn hình rồi làm màu
+        // Viewer khác Acrobat trên cùng máy. Cờ này không đổi dữ liệu PDF/soft-proof.
+        let flags = "--force-color-profile=srgb --disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows --disable-background-timer-throttling --disable-renderer-backgrounding";
         let merged = if existing.trim().is_empty() {
             flags.to_string()
         } else {
@@ -3368,7 +4565,7 @@ pub fn run() {
         .manage(SystemFilesState(Mutex::new(Vec::new())))
         // SEC (audit 2026-08-04 §BE.03): không expose command nghiệp vụ không có
         // consumer/quyền native. Mọi bình bản và xóa đường bế đi qua sidecar đã gate.
-        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_startup_args, mark_frontend_interactive, read_system_file, get_file_size, stat_system_file, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, get_pending_system_files, write_file_atomic, copy_file_atomic, read_dir_json, preview_perf_logging_enabled, append_render_perf, log_frontend_error, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
+        .invoke_handler(tauri::generate_handler![render_pdf_page, render_ppe_page, shadow_render_ppe_page, release_ppe_session_owner, cancel_pdf_render, get_pdf_viewer_bootstrap, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_startup_args, mark_frontend_interactive, read_system_file, get_file_size, stat_system_file, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, get_pending_system_files, write_file_atomic, copy_file_atomic, read_dir_json, preview_perf_logging_enabled, append_render_perf, log_frontend_error, grant_upscale_file_path, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(state) = app.try_state::<SystemFilesState>() {
                 if let Ok(mut pending) = state.0.lock() {
@@ -3467,15 +4664,28 @@ pub fn run() {
             // LoadLibrary/code gen). Print GDI (EnumPrinters/CreateDC/PrintDlg/
             // FPDF_RenderPage→HDC) nạp driver third-party + đôi khi cấp exec mem.
             // Không thể vừa chặn DLL lạ tuyệt đối vừa in native in-process.
-            // pdfium vẫn warm-up; anti-debug chỉ GHI LOG (không exit) để chẩn đoán.
+            // PDFium warm trong display worker khi mode bật; anti-debug chỉ GHI LOG.
             // ══════════════════════════════════════════════════════════════
             #[cfg(not(debug_assertions))]
             {
                 startup_breadcrumb("release setup: begin");
-                match ensure_pdfium() {
-                    Ok(_) => {
-                        log::info!("[SECURITY] pdfium warmed up at startup");
-                        startup_breadcrumb("pdfium: OK");
+                let warm_result = match pdf_engine::render_worker::warm_worker_with_policy() {
+                    Ok(pdf_engine::render_worker::WorkerAttempt::Completed(())) => {
+                        Ok("worker")
+                    }
+                    Ok(pdf_engine::render_worker::WorkerAttempt::Disabled) => {
+                        ensure_pdfium().map(|_| "in-process")
+                    }
+                    Ok(pdf_engine::render_worker::WorkerAttempt::FallbackBeforeStart(reason)) => {
+                        log::warn!("[RENDER_WORKER] startup fallback: {}", reason);
+                        ensure_pdfium().map(|_| "in-process-fallback")
+                    }
+                    Err(error) => Err(error),
+                };
+                match warm_result {
+                    Ok(location) => {
+                        log::info!("[SECURITY] pdfium warmed up at startup ({})", location);
+                        startup_breadcrumb(&format!("pdfium: OK {location}"));
                     }
                     Err(e) => {
                         log::error!("[SECURITY] pdfium warmup FAILED: {}", e);
@@ -3520,12 +4730,19 @@ pub fn run() {
 
             // SECURITY: Generate a CSPRNG sidecar token for API authentication.
             // Uses OS-level cryptographic random (Windows CryptGenRandom / BCryptGenRandom).
-            let sidecar_token: String = {
+            let generate_sidecar_token = || {
                 use rand::Rng;
                 let mut rng = rand::thread_rng();
                 let bytes: [u8; 32] = rng.gen();
                 bytes.iter().map(|b| format!("{:02X}", b)).collect::<String>()
             };
+            #[cfg(debug_assertions)]
+            let sidecar_token: String = std::env::var("PRYNX_SIDECAR_TOKEN")
+                .ok()
+                .filter(|token| token.len() >= 32)
+                .unwrap_or_else(generate_sidecar_token);
+            #[cfg(not(debug_assertions))]
+            let sidecar_token: String = generate_sidecar_token();
 
             // VECTOR #5 FIX: Store token in Rust memory ONLY (not in JS).
             // Frontend will call invoke('sign_api_request') to get signed headers.
@@ -3689,6 +4906,12 @@ pub fn run() {
                             option_env!("PRYNX_FEATURE_GATING_ENABLED").unwrap_or(
                                 if cfg!(debug_assertions) { "false" } else { "true" }
                             ),
+                        ),
+                        // LOGO-REBUILD (audit 2026-08-09 §LR3.10): nung cùng cờ
+                        // frontend vào host; host ghi đè env kế thừa khi spawn sidecar.
+                        (
+                            "PRYNX_LOGO_REBUILD_ENABLED",
+                            option_env!("PRYNX_LOGO_REBUILD_ENABLED").unwrap_or("false"),
                         ),
                         // Cận chống-lùi-giờ PHẢI ≥ TTL token edge function cấp.
                         // Set qua env để override default compiled cũ mà KHÔNG cần recompile Nuitka.
@@ -4030,52 +5253,76 @@ pub fn run() {
             // tile://localhost/{encoded_filepath}/{page}/{zoom}/{rot}/{cx}/{cy}/{cw}/{ch}
             let url = request.uri().to_string();
 
-            // Limit concurrent tile renderings to prevent STATUS_STACK_BUFFER_OVERRUN and OOM
-            static TILE_SEMAPHORE: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
-            let sem = TILE_SEMAPHORE.get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4)));
-            let sem_clone = sem.clone();
-
             tauri::async_runtime::spawn(async move {
-                let _permit = match sem_clone.acquire().await {
-                    Ok(p) => p,
-                    Err(_) => return, // Semaphore closed
+                let render_request = match parse_tile_protocol_request(&url) {
+                    Ok(request) => request,
+                    Err(message) => {
+                        let response = http::Response::builder()
+                            .status(400)
+                            .header("Content-Type", "text/plain; charset=utf-8")
+                            .body(message.into_bytes())
+                            .unwrap_or_else(|_| http::Response::new(Vec::new()));
+                        responder.respond(response);
+                        return;
+                    }
+                };
+                let _permits = match acquire_render_request_permits(render_request.purpose).await {
+                    Ok(permits) => permits,
+                    Err(message) => {
+                        let response = http::Response::builder()
+                            .status(503)
+                            .header("Content-Type", "text/plain; charset=utf-8")
+                            .body(message.into_bytes())
+                            .unwrap_or_else(|_| http::Response::new(Vec::new()));
+                        responder.respond(response);
+                        return;
+                    }
                 };
 
                 // Now we are allowed to use 1 thread from the OS blocking pool
                 let res = tauri::async_runtime::spawn_blocking(move || {
-                    let mut path = url.as_str();
-                    if path.starts_with("http://tile.localhost/") {
-                        path = &path["http://tile.localhost/".len()..];
-                    } else if path.starts_with("https://tile.localhost/") {
-                        path = &path["https://tile.localhost/".len()..];
-                    } else if path.starts_with("tile://localhost/") {
-                        path = &path["tile://localhost/".len()..];
-                    } else if path.starts_with("tile://") {
-                        path = &path["tile://".len()..];
+                    let context = tile_protocol_render_context(&render_request);
+
+                    match pdf_engine::render_worker::render_display_with_policy(
+                        &render_request.file_path,
+                        render_request.page,
+                        render_request.zoom,
+                        render_request.rotation,
+                        render_request.clip_x,
+                        render_request.clip_y,
+                        render_request.clip_w,
+                        render_request.clip_h,
+                        Some(&context),
+                    )? {
+                        pdf_engine::render_worker::WorkerAttempt::Completed(output) => {
+                            Ok(output.bytes)
+                        }
+                        pdf_engine::render_worker::WorkerAttempt::Disabled => {
+                            render_tile_png_in_process(
+                                &render_request.file_path,
+                                render_request.page,
+                                render_request.zoom,
+                                render_request.rotation,
+                                render_request.clip_x,
+                                render_request.clip_y,
+                                render_request.clip_w,
+                                render_request.clip_h,
+                            )
+                        }
+                        pdf_engine::render_worker::WorkerAttempt::FallbackBeforeStart(reason) => {
+                            log::warn!("[RENDER_WORKER] tile protocol fallback: {}", reason);
+                            render_tile_png_in_process(
+                                &render_request.file_path,
+                                render_request.page,
+                                render_request.zoom,
+                                render_request.rotation,
+                                render_request.clip_x,
+                                render_request.clip_y,
+                                render_request.clip_w,
+                                render_request.clip_h,
+                            )
+                        }
                     }
-
-                    let parts: Vec<&str> = path.rsplitn(8, '/').collect();
-                    if parts.len() < 7 {
-                        return Err("Bad request".to_string());
-                    }
-                    let ch: Option<i32> = parts[0].parse().ok();
-                    let cw: Option<i32> = parts[1].parse().ok();
-                    let cy: Option<i32> = parts[2].parse().ok();
-                    let cx: Option<i32> = parts[3].parse().ok();
-                    let rot: i32 = parts[4].parse().unwrap_or(0);
-                    let zoom: f32 = parts[5].parse().unwrap_or(1.0);
-                    let page: i32 = parts[6].parse().unwrap_or(1);
-                    let file_path_encoded = parts[7..].iter().rev().cloned().collect::<Vec<&str>>().join("/");
-                    let file_path = urlencoding::decode(&file_path_encoded)
-                        .unwrap_or_else(|_| file_path_encoded.clone().into())
-                        .to_string();
-
-                    let clip_x = cx.filter(|&v| v != 0 || cw.unwrap_or(0) != 0);
-                    let clip_y = cy.filter(|&v| v != 0 || ch.unwrap_or(0) != 0);
-                    let clip_w = cw.filter(|&v| v != 0);
-                    let clip_h = ch.filter(|&v| v != 0);
-
-                    render_tile_png(&file_path, page, zoom, rot, clip_x, clip_y, clip_w, clip_h)
                 }).await;
 
                 match res {
@@ -4110,8 +5357,9 @@ pub fn run() {
         .run(|_app_handle, _event| {
             // Kill sidecar khi app thoát (mọi lý do) → chống pdf-inspector-backend.exe
             // treo ngầm làm NSIS update báo "Error opening file for writing".
-            #[cfg(all(not(debug_assertions), target_os = "windows"))]
             if let tauri::RunEvent::Exit = _event {
+                pdf_engine::render_worker::shutdown_render_worker();
+                #[cfg(all(not(debug_assertions), target_os = "windows"))]
                 kill_sidecar();
             }
         });

@@ -28,7 +28,8 @@ pub fn render_svg(pdf_path: &str, page_num: usize, dpi: u32) -> PyResult<String>
         .set_target_width(pixel_w as i32)
         .set_target_height(pixel_h as i32);
 
-    let bitmap = page.render_with_config(&config)
+    let bitmap = page
+        .render_with_config(&config)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Render failed: {}", e)))?;
 
     let img = bitmap.as_image();
@@ -37,7 +38,9 @@ pub fn render_svg(pdf_path: &str, page_num: usize, dpi: u32) -> PyResult<String>
         use std::io::Cursor;
         let mut cursor = Cursor::new(&mut png_buf);
         img.write_to(&mut cursor, image::ImageFormat::Png)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("PNG encode failed: {}", e)))?;
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("PNG encode failed: {}", e))
+            })?;
     }
 
     let png_b64 = base64_encode(&png_buf);
@@ -59,7 +62,9 @@ pub fn render_svg(pdf_path: &str, page_num: usize, dpi: u32) -> PyResult<String>
         if obj.object_type() != PdfPageObjectType::Path {
             continue;
         }
-        let Some(path_obj) = obj.as_path_object() else { continue };
+        let Some(path_obj) = obj.as_path_object() else {
+            continue;
+        };
         let segs = path_obj.segments();
         if segs.len() == 0 {
             continue;
@@ -67,7 +72,9 @@ pub fn render_svg(pdf_path: &str, page_num: usize, dpi: u32) -> PyResult<String>
 
         let mut d = String::new();
         for i in 0..segs.len() {
-            let Ok(seg) = segs.get(i as u32) else { continue };
+            let Ok(seg) = segs.get(i as u32) else {
+                continue;
+            };
             let x = seg.x().value;
             let y = page_h - seg.y().value;
 
@@ -82,13 +89,27 @@ pub fn render_svg(pdf_path: &str, page_num: usize, dpi: u32) -> PyResult<String>
             }
         }
 
-        if d.is_empty() { continue; }
+        if d.is_empty() {
+            continue;
+        }
 
         let fill = path_obj.fill_color().ok().map(|c: PdfColor| {
-            format!("rgba({},{},{},{:.2})", c.red(), c.green(), c.blue(), c.alpha() as f32 / 255.0)
+            format!(
+                "rgba({},{},{},{:.2})",
+                c.red(),
+                c.green(),
+                c.blue(),
+                c.alpha() as f32 / 255.0
+            )
         });
         let stroke = path_obj.stroke_color().ok().map(|c: PdfColor| {
-            format!("rgba({},{},{},{:.2})", c.red(), c.green(), c.blue(), c.alpha() as f32 / 255.0)
+            format!(
+                "rgba({},{},{},{:.2})",
+                c.red(),
+                c.green(),
+                c.blue(),
+                c.alpha() as f32 / 255.0
+            )
         });
         let stroke_width = path_obj.stroke_width().ok().map(|w| w.value).unwrap_or(0.0);
 
@@ -107,7 +128,12 @@ pub fn render_svg(pdf_path: &str, page_num: usize, dpi: u32) -> PyResult<String>
 }
 
 /// Render page to JPEG image bytes.
-pub fn render_image(py: Python<'_>, pdf_path: &str, page_num: usize, dpi: u32) -> PyResult<Py<PyAny>> {
+pub fn render_image(
+    py: Python<'_>,
+    pdf_path: &str,
+    page_num: usize,
+    dpi: u32,
+) -> PyResult<Py<PyAny>> {
     let pdfium = crate::pdfium_init::load_pdfium();
     let doc = pdfium
         .load_pdf_from_file(pdf_path, None)
@@ -127,7 +153,8 @@ pub fn render_image(py: Python<'_>, pdf_path: &str, page_num: usize, dpi: u32) -
         .set_target_width(pixel_w as i32)
         .set_target_height(pixel_h as i32);
 
-    let bitmap = page.render_with_config(&config)
+    let bitmap = page
+        .render_with_config(&config)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Render failed: {}", e)))?;
 
     let img = bitmap.as_image();
@@ -136,7 +163,9 @@ pub fn render_image(py: Python<'_>, pdf_path: &str, page_num: usize, dpi: u32) -
         use std::io::Cursor;
         let mut cursor = Cursor::new(&mut jpeg_buf);
         img.write_to(&mut cursor, image::ImageFormat::Jpeg)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("JPEG encode failed: {}", e)))?;
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("JPEG encode failed: {}", e))
+            })?;
     }
 
     Ok(PyBytes::new(py, &jpeg_buf).into())
@@ -152,10 +181,16 @@ fn base64_encode(data: &[u8]) -> String {
         let triple = (b0 << 16) | (b1 << 8) | b2;
         result.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
         result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 { result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char); }
-        else { result.push('='); }
-        if chunk.len() > 2 { result.push(CHARS[(triple & 0x3F) as usize] as char); }
-        else { result.push('='); }
+        if chunk.len() > 1 {
+            result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+        if chunk.len() > 2 {
+            result.push(CHARS[(triple & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
     }
     result
 }

@@ -1497,6 +1497,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     onStartTrimShift={onStartTrimShift}
                     onStartSplit={onStartSplit} onStartMerge={onStartMerge}
                     onIssueSelect={onIssueSelect} onOpenOutputPreview={onOpenOutputPreview} onOpenTool={(tool) => setActiveTool(tool as ActiveToolType)} onFileFixed={onFileFixed}
+                    viewerActivePage={viewerActivePage}
+                    viewerPageOrder={viewerPageOrder || undefined}
                     officeSourceFile={officeSourceFile}
                     officeSourceFiles={officeSourceFiles} sourceImageFile={sourceImageFile} ensureCropFileId={ensureCropFileId} onCropApplied={onCropApplied} onCropClose={onCropClose}
                 />

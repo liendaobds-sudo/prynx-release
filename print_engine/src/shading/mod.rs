@@ -2,8 +2,8 @@
 //!
 //! # Vì sao shading quan trọng với đo mực
 //!
-//! Trước milestone này, mọi trang có gradient đều bật `ink_unsound` và bị nhường
-//! hết cho Ghostscript. Đó là lớp file lớn nhất PPE chưa lấy được: nhãn, bao bì,
+//! Trước milestone này, mọi trang có gradient đều bật `ink_unsound` và bị loại
+//! khỏi kết quả tin cậy. Đó là lớp file lớn nhất PPE chưa lấy được: nhãn, bao bì,
 //! phông nền gần như luôn có ít nhất một dải chuyển màu.
 //!
 //! Gradient cũng là chỗ TAC dễ vượt ngưỡng nhất mà mắt không thấy: vùng tối của
@@ -15,7 +15,7 @@
 //!
 //! Kiểu 1 (theo hàm), 2 (dọc trục), 3 (theo bán kính) — ba kiểu này chiếm gần
 //! toàn bộ file thực tế. Kiểu 4–7 (lưới tam giác Gouraud, Coons, tensor) chưa
-//! dựng: chúng bị báo là chưa hỗ trợ để trang rơi về Ghostscript, chứ không được
+//! dựng: chúng bị báo là chưa hỗ trợ để caller dừng an toàn, chứ không được
 //! vẽ xấp xỉ rồi báo là tin được.
 
 pub mod eval;

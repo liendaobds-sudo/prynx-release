@@ -5,6 +5,7 @@ import { FlipBook } from './FlipBook';
 import { BookData, BookPage } from './types';
 import { generateBindingMap } from '../../lib/imposerEngine/VirtualMap';
 import { buildTileUrl, trimmedAspectRatio } from './tileUrl';
+import { flipbookRenderPurpose, shouldPromoteFlipbookUrl } from './flipbookLoadPolicy';
 
 // Ensure worker is set up
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
@@ -30,6 +31,7 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
 }) => {
   const { t } = useTranslation();
     const [bookData, setBookData] = useState<BookData>({ pages: [] });
+    const [bookRevision, setBookRevision] = useState(0);
     const [currentPageIndex, setCurrentPageIndex] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
     const [pageAspectRatio, setPageAspectRatio] = useState<number>(0.707); // Default A4
@@ -54,13 +56,13 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
                     if (!cancelled) {
                         pdfRef.current = null;
                         metaRef.current = meta;
-                        initBookData(null, meta);
+                        await initBookData(null, meta);
                     }
                 } else {
                     const doc = await pdfjs.getDocument(pdfUrl).promise;
                     if (!cancelled) {
                         pdfRef.current = doc;
-                        initBookData(doc, null);
+                        await initBookData(doc, null);
                     }
                 }
             } catch (err) {
@@ -162,13 +164,18 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
         }
 
         setBookData({ pages: initialPages });
+        // PERF (audit 2026-08-08 §RENDER.2): dialog luôn mounted; mở lại cùng PDF có thể
+        // giữ nguyên số trang. Revision buộc effect lazy-load chạy cho bộ URL rỗng mới.
+        setBookRevision(revision => revision + 1);
         setCurrentPageIndex(0);
-
-        // Pre-load first few pages
-        await loadPageImages(doc, initialPages, 0, 4);
     };
 
-    const renderPageToDataURL = async (doc: any, originalIndex: number, userRotation: number = 0): Promise<string> => {
+    const renderPageToDataURL = async (
+        doc: any,
+        originalIndex: number,
+        userRotation: number = 0,
+        purpose: 'interactive' | 'background' = 'interactive',
+    ): Promise<string> => {
         if (originalIndex === -1) return ''; // Blank page
 
         // --- NATIVE TAURI RENDER PIPELINE (ZERO LATENCY) ---
@@ -186,6 +193,7 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
                 pageWpt: dim?.widthPt,
                 pageHpt: dim?.heightPt,
                 bleedMm: bleed,
+                purpose,
             });
         }
 
@@ -211,14 +219,31 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
         }
     };
 
-    const loadPageImages = async (doc: any, currentPages: any[], startIndex: number, count: number) => {
+    const loadPageImages = async (
+        doc: any,
+        currentPages: any[],
+        startIndex: number,
+        count: number,
+        visibleStartIndex = startIndex,
+        visiblePageCount = 2,
+    ) => {
         const endIndex = Math.min(startIndex + count, currentPages.length);
         const pagesToUpdate: { index: number, url: string }[] = [];
 
         for (let i = startIndex; i < endIndex; i++) {
             const p = currentPages[i];
-            if (!p.imageUrl) {
-                const url = await renderPageToDataURL(doc, p._originalIndex, p._userRotation || 0);
+            // PERF (audit 2026-08-08 §RENDER.2): hai trang của spread hiện tại đi lane
+            // tương tác; phần nạp trước đi lane nền. Trang đã preload được nâng cấp URL khi
+            // lật tới để request mới có quyền preempt thay vì mắc sau hàng thumbnail.
+            const purpose = flipbookRenderPurpose(i, visibleStartIndex, visiblePageCount);
+            const shouldPromote = shouldPromoteFlipbookUrl(p.imageUrl, purpose);
+            if (!p.imageUrl || shouldPromote) {
+                const url = await renderPageToDataURL(
+                    doc,
+                    p._originalIndex,
+                    p._userRotation || 0,
+                    purpose,
+                );
                 pagesToUpdate.push({ index: i, url });
             }
         }
@@ -242,13 +267,29 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
         const isNative = !!((window as any).__TAURI_INTERNALS__ && pdfFile && (pdfFile as any).path);
         if (!isOpen || bookData.pages.length === 0 || (!isNative && !pdfRef.current)) return;
 
-        // Delay rendering by 750ms so it doesn't block the 700ms CSS flip animation
+        // Trang vừa lật tới phải được promote ngay; chỉ bốn trang kế tiếp mới chờ hết
+        // animation rồi nạp nền. Nhờ worker riêng, request ảnh không chặn CSS/WebView.
+        void loadPageImages(
+            pdfRef.current,
+            bookData.pages as any,
+            currentPageIndex,
+            2,
+            currentPageIndex,
+            2,
+        );
         const timeout = setTimeout(() => {
-            loadPageImages(pdfRef.current, bookData.pages as any, currentPageIndex, 6);
+            void loadPageImages(
+                pdfRef.current,
+                bookData.pages as any,
+                currentPageIndex + 2,
+                4,
+                currentPageIndex,
+                2,
+            );
         }, 750);
 
         return () => clearTimeout(timeout);
-    }, [currentPageIndex, isOpen, bookData.pages.length, bindingMode, foliosize]);
+    }, [currentPageIndex, isOpen, bookData.pages.length, bookRevision, bindingMode, foliosize]);
 
     if (!isOpen) return null;
 

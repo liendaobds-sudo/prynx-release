@@ -67,7 +67,11 @@ fn embed_font(doc: &mut Document, ttf: Vec<u8>) -> Dictionary {
 }
 
 /// Dựng PDF một trang; `extra_res` cho phép thêm XObject vào resources.
-fn build(content: &str, ttf: Vec<u8>, extra: Option<&dyn Fn(&mut Document, &mut Dictionary)>) -> Document {
+fn build(
+    content: &str,
+    ttf: Vec<u8>,
+    extra: Option<&dyn Fn(&mut Document, &mut Dictionary)>,
+) -> Document {
     let mut doc = Document::with_version("1.7");
     let mut resources = embed_font(&mut doc, ttf);
     if let Some(f) = extra {
@@ -200,10 +204,7 @@ fn text_inside_form_xobject_is_tagged_with_that_form() {
             },
             form_content.clone(),
         ));
-        res.set(
-            "XObject",
-            dictionary! { "X1" => Object::Reference(id) },
-        );
+        res.set("XObject", dictionary! { "X1" => Object::Reference(id) });
         // Ghi lại để test so sánh — dùng Cell vì closure là Fn.
         FORM_ID.with(|c| c.set(Some(id)));
     };
@@ -218,7 +219,10 @@ fn text_inside_form_xobject_is_tagged_with_that_form() {
         StreamKey::Form(id, gen),
         "chữ trong form phải mang khoá stream của form, không phải của trang"
     );
-    assert_eq!(g[0].text_object_index, 0, "bộ đếm khối BT của form là riêng");
+    assert_eq!(
+        g[0].text_object_index, 0,
+        "bộ đếm khối BT của form là riêng"
+    );
 }
 
 #[test]
@@ -333,7 +337,12 @@ fn block_code_count_includes_spaces_and_invisible_text() {
     let ttf = font_or_skip!();
     let doc = build("BT /F1 24 Tf 20 100 Td (A B) Tj ET", ttf, None);
     let r = collect(&doc);
-    assert_eq!(r.text_outlines.blocks.len(), 1, "{:?}", r.text_outlines.blocks);
+    assert_eq!(
+        r.text_outlines.blocks.len(),
+        1,
+        "{:?}",
+        r.text_outlines.blocks
+    );
     let b = &r.text_outlines.blocks[0];
     assert_eq!(b.stream, StreamKey::Page);
     assert_eq!(b.text_object_index, 0);
@@ -390,7 +399,11 @@ fn visible_glyph_after_invisible_run_keeps_the_python_ordinal() {
         .iter()
         .map(|g| g.glyph_index)
         .collect();
-    assert_eq!(idx, vec![3, 4], "chỉ số phải tính cả 3 mã vô hình phía trước");
+    assert_eq!(
+        idx,
+        vec![3, 4],
+        "chỉ số phải tính cả 3 mã vô hình phía trước"
+    );
     assert_eq!(r.text_outlines.blocks[0].code_count, 5);
 }
 
@@ -426,7 +439,10 @@ fn form_invoked_twice_reports_the_count_once_not_doubled() {
         .filter(|b| matches!(b.stream, StreamKey::Form(_, _)))
         .collect();
     assert_eq!(form_blocks.len(), 1, "{:?}", r.text_outlines.blocks);
-    assert_eq!(form_blocks[0].code_count, 2, "số mã bị cộng dồn theo số lần Do");
+    assert_eq!(
+        form_blocks[0].code_count, 2,
+        "số mã bị cộng dồn theo số lần Do"
+    );
 }
 
 use std::cell::Cell;

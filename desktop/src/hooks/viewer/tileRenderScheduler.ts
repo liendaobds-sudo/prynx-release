@@ -63,18 +63,21 @@ interface ScheduledTask<T> extends TileRenderTask<T> {
     resolve: (value: T) => void;
     reject: (reason: unknown) => void;
     state: 'queued' | 'running';
+    lane: 'interactive' | 'background' | null;
 }
 
 /**
- * PERF (audit 2026-07-29 §R.10): sắp hàng ở frontend trước khóa PDFium toàn cục.
+ * PERF (audit 2026-08-08 §RENDER.2): sắp hàng theo hai lane trước render worker.
  *
- * `maxConcurrent=1` không làm giảm công suất render: native vốn serialize mọi lần
- * PDFium bằng RENDER_LOCK. Nó chỉ ngăn nhiều invoke nền chiếm chỗ trước tile đang xem.
+ * Native singleton dùng hai slot nhưng chỉ cho một background chạy, luôn chừa một slot để
+ * request tương tác tới được worker manager và preempt nền trên máy ít RAM. Instance test/cũ
+ * với `maxConcurrent=1` vẫn giữ đúng hành vi tuần tự trước đây.
  */
 export class TileRenderScheduler<T> {
     private readonly queued: ScheduledTask<T>[] = [];
     private readonly byRequestKey = new Map<string, ScheduledTask<T>>();
     private activeCount = 0;
+    private activeBackgroundCount = 0;
     private sequence = 0;
     private pumpScheduled = false;
     private pumpTimer: ReturnType<typeof setTimeout> | null = null;
@@ -84,9 +87,15 @@ export class TileRenderScheduler<T> {
     constructor(
         private readonly maxConcurrent = 1,
         private readonly visibility: AppVisibilityGate = appVisibilityGate,
+        private readonly maxBackgroundConcurrent = maxConcurrent === 1 ? 1 : maxConcurrent - 1,
     ) {
         if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1) {
             throw new Error('maxConcurrent phải là số nguyên dương');
+        }
+        if (!Number.isInteger(maxBackgroundConcurrent)
+            || maxBackgroundConcurrent < 1
+            || maxBackgroundConcurrent > maxConcurrent) {
+            throw new Error('maxBackgroundConcurrent phải nằm trong 1..maxConcurrent');
         }
     }
 
@@ -96,7 +105,13 @@ export class TileRenderScheduler<T> {
         }
         const duplicate = this.byRequestKey.get(input.requestKey);
         if (duplicate) {
-            duplicate.priority = Math.min(duplicate.priority, input.priority);
+            if (input.priority < duplicate.priority) {
+                duplicate.priority = input.priority;
+                // PERF (audit 2026-08-08 §RENDER.2): preload và trang đang nhìn có thể
+                // cùng pixel/resultKey. Nếu task còn chờ, phải thay cả closure để context
+                // native thật sự đổi background → interactive, không chỉ đổi thứ tự JS.
+                if (duplicate.state === 'queued') duplicate.run = input.run;
+            }
             this.schedulePump();
             return duplicate.promise;
         }
@@ -118,6 +133,7 @@ export class TileRenderScheduler<T> {
             resolve,
             reject,
             state: 'queued',
+            lane: null,
         };
         this.queued.push(task);
         this.byRequestKey.set(task.requestKey, task);
@@ -239,16 +255,23 @@ export class TileRenderScheduler<T> {
             this.queued.sort((left, right) =>
                 left.priority - right.priority || left.sequence - right.sequence
             );
-            const task = this.queued.shift();
+            const runnableIndex = this.queued.findIndex(task =>
+                task.priority < 100 || this.activeBackgroundCount < this.maxBackgroundConcurrent
+            );
+            if (runnableIndex < 0) return;
+            const [task] = this.queued.splice(runnableIndex, 1);
             if (!task) return;
 
             task.state = 'running';
+            task.lane = task.priority < 100 ? 'interactive' : 'background';
             this.activeCount += 1;
+            if (task.lane === 'background') this.activeBackgroundCount += 1;
             Promise.resolve()
                 .then(task.run)
                 .then(task.resolve, task.reject)
                 .finally(() => {
                     this.activeCount -= 1;
+                    if (task.lane === 'background') this.activeBackgroundCount -= 1;
                     if (this.activeCount === 0) this.quarantined = false;
                     if (this.byRequestKey.get(task.requestKey) === task) {
                         this.byRequestKey.delete(task.requestKey);
@@ -286,12 +309,12 @@ interface TileSchedulerHotData {
 
 const schedulerHotData = import.meta.hot?.data as TileSchedulerHotData | undefined;
 export const nativeTileRenderScheduler = schedulerHotData?.nativeTileRenderScheduler
-    ?? new TileRenderScheduler<ArrayBuffer>(1);
+    ?? new TileRenderScheduler<ArrayBuffer>(2);
 
 if (schedulerHotData) schedulerHotData.nativeTileRenderScheduler = nativeTileRenderScheduler;
 
 // DEV (2026-08-02): giữ MỘT scheduler qua Fast Refresh. Tạo singleton mới trong khi
-// singleton cũ còn invoke native sẽ phá bất biến PDFium tuần tự dù mỗi scheduler đều cap 1.
+// singleton cũ còn invoke native sẽ tạo hai hàng đợi cạnh tranh cùng worker manager.
 if (import.meta.hot) {
     const prepareSchedulerForHotReload = () => nativeTileRenderScheduler.prepareForHotReload();
     import.meta.hot.on('vite:beforeUpdate', prepareSchedulerForHotReload);

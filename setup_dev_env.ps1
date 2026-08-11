@@ -99,7 +99,7 @@ $issues = @()
 # ============================================================
 # 1. RUST
 # ============================================================
-Write-Step "1/7 - Rust Toolchain"
+Write-Step "1/6 - Rust Toolchain"
 
 if (Test-Cmd "rustc") {
     $rustVer = rustc --version
@@ -139,7 +139,7 @@ if (Test-Cmd "rustc") {
 # ============================================================
 # 2. NODE.JS
 # ============================================================
-Write-Step "2/7 - Node.js"
+Write-Step "2/6 - Node.js"
 
 $nodeReady = $false
 if (Test-Cmd "node") {
@@ -184,7 +184,7 @@ if (Test-Cmd "node") {
 # ============================================================
 # 3. PYTHON
 # ============================================================
-Write-Step "3/7 - Python 3.11"
+Write-Step "3/6 - Python 3.11"
 
 $pythonCmd = $null
 foreach ($cmd in @("python", "python3", "py")) {
@@ -225,55 +225,9 @@ if ($pythonCmd) {
 }
 
 # ============================================================
-# 4. GHOSTSCRIPT
+# 4. VS BUILD TOOLS
 # ============================================================
-Write-Step "4/7 - Ghostscript"
-
-$gsFound = $false
-foreach ($gsName in @("gswin64c", "gswin32c", "gs")) {
-    if (Test-Cmd $gsName) {
-        $gsVer = & $gsName --version 2>&1
-        Write-OK "Ghostscript: $gsVer (command: $gsName)"
-        $gsFound = $true
-        break
-    }
-}
-
-if (-not $gsFound) {
-    $gsPaths = @(
-        "C:\Program Files\gs\*\bin\gswin64c.exe",
-        "C:\Program Files (x86)\gs\*\bin\gswin32c.exe"
-    )
-    foreach ($pattern in $gsPaths) {
-        $found = Get-Item $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($found) {
-            Write-OK "Ghostscript: $($found.FullName) (khong trong PATH)"
-            Write-Warn "Nen them vao PATH: $($found.DirectoryName)"
-            $gsFound = $true
-            break
-        }
-    }
-}
-
-if (-not $gsFound) {
-    if ($SkipInstall) {
-        Write-Err "Ghostscript chua cai. Tai tu: https://ghostscript.com"
-        $issues += "Ghostscript"
-    } else {
-        $installed = Install-WithWinget "ArtifexSoftware.GhostScript" "Ghostscript"
-        if ($installed) {
-            Write-OK "Ghostscript cai thanh cong"
-        } else {
-            Write-Warn "Khong the tu dong cai Ghostscript. Tai thu cong: https://ghostscript.com"
-            $issues += "Ghostscript (manual)"
-        }
-    }
-}
-
-# ============================================================
-# 5. VS BUILD TOOLS
-# ============================================================
-Write-Step "5/7 - Visual Studio Build Tools"
+Write-Step "4/6 - Visual Studio Build Tools"
 
 $vsWherePath = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 if (Test-Path $vsWherePath) {
@@ -302,9 +256,9 @@ if (Test-Path $vsWherePath) {
 }
 
 # ============================================================
-# 6. PYTHON BACKEND SETUP
+# 5. PYTHON BACKEND SETUP
 # ============================================================
-Write-Step "6/7 - Backend Python Dependencies"
+Write-Step "5/6 - Backend Python Dependencies"
 
 $backendDir = Join-Path $projectRoot "backend"
 $venvDir = Join-Path $backendDir "venv"
@@ -333,9 +287,9 @@ if ($pythonCmd) {
 }
 
 # ============================================================
-# 7. DESKTOP NODE DEPENDENCIES
+# 6. DESKTOP NODE DEPENDENCIES
 # ============================================================
-Write-Step "7/7 - Desktop Node Dependencies"
+Write-Step "6/6 - Desktop Node Dependencies"
 
 $desktopDir = Join-Path $projectRoot "desktop"
 $nodeModules = Join-Path $desktopDir "node_modules"

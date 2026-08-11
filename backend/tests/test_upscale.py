@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
+import os
+import time
+import uuid
 from io import BytesIO
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from PIL import Image
+import pikepdf
+import pytest
 
 from app.main import app
 
@@ -27,9 +37,44 @@ def _encoded_image(
     Image.new(mode, size, color).save(buffer, format=image_format, **save_kwargs)
     return buffer.getvalue()
 
-def _fake_upscale(image: Image.Image, variant: str = "general") -> Image.Image:
+def _fake_upscale(
+    image: Image.Image,
+    variant: str = "general",
+    cancelled=None,
+) -> Image.Image:
     del variant
+    if cancelled is not None and cancelled():
+        from app.workers.realesrgan_engine import UpscaleCancelled
+        raise UpscaleCancelled("test cancelled")
     return image.resize((image.width * 4, image.height * 4), Image.Resampling.NEAREST)
+
+
+def _upscale_file_grant(
+    path: str,
+    tab_id: str,
+    token: str,
+    *,
+    issued_at: int | None = None,
+    nonce: str | None = None,
+) -> str:
+    issued = int(time.time()) if issued_at is None else issued_at
+    claims = {
+        "v": 1,
+        "iat": issued,
+        "exp": issued + 120,
+        "nonce": nonce or uuid.uuid4().hex,
+        "tab": tab_id,
+        "path": os.path.realpath(os.path.abspath(path)),
+    }
+    payload = base64.urlsafe_b64encode(
+        json.dumps(claims, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    signature = hmac.new(
+        token.encode("utf-8"),
+        f"prynx-upscale-file-grant:v1:{payload}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"v1.{payload}.{signature}"
 
 
 def _bypass_route_guards(monkeypatch) -> None:
@@ -192,7 +237,7 @@ def test_upscale_normalizes_exif_orientation(monkeypatch):
         assert result.size == (4, 6)
 
 
-def test_upscale_preserves_rgba_icc_and_dpi(monkeypatch):
+def test_upscale_preserves_rgba_icc_and_physical_size(monkeypatch):
     monkeypatch.setattr("app.workers.realesrgan_engine.upscale", _fake_upscale)
     _bypass_route_guards(monkeypatch)
     icc = b"prynx-test-icc-profile"
@@ -209,7 +254,50 @@ def test_upscale_preserves_rgba_icc_and_dpi(monkeypatch):
     with Image.open(BytesIO(response.content)) as result:
         assert result.mode == "RGBA"
         assert result.info.get("icc_profile") == icc
-        assert abs(result.info["dpi"][0] - 300) < 1
+        # Pixel tăng x2 thì DPI cũng tăng x2: kích thước in vẫn giữ nguyên.
+        assert abs(result.info["dpi"][0] - 600) < 1
+
+
+def test_upscale_working_pdf_keeps_page_size_when_source_has_no_dpi(monkeypatch):
+    """Hồi quy lỗi 8000 px bị hiểu thành 8000 pt làm PPE dựng raster 10667 px."""
+    monkeypatch.setattr("app.workers.realesrgan_engine.upscale", _fake_upscale)
+    _bypass_route_guards(monkeypatch)
+
+    with TestClient(app) as client:
+        for factor in (2, 4):
+            response = client.post(
+                "/api/pdf-tools/upscale",
+                files={"file": ("khong-dpi.png", _png_bytes(), "image/png")},
+                data={
+                    "scale_factor": str(factor),
+                    "include_working_pdf": "true",
+                },
+            )
+
+            assert response.status_code == 200, response.text
+            with Image.open(BytesIO(response.content)) as result:
+                assert abs(result.info["dpi"][0] - 72 * factor) < 1
+
+            working_pdf = Path(response.headers["X-Upscale-Working-Pdf-Path"])
+            lease_token = response.headers["X-Upscale-Artifact-Lease"]
+            assert len(lease_token) == 32
+            claim = client.post(
+                "/api/pdf-tools/upscale/artifact/claim",
+                data={"lease_token": lease_token},
+            )
+            assert claim.status_code == 200, claim.text
+            try:
+                with pikepdf.open(working_pdf) as document:
+                    box = [float(value) for value in document.pages[0].MediaBox]
+                assert abs((box[2] - box[0]) - 7.0) < 0.02
+                assert abs((box[3] - box[1]) - 5.0) < 0.02
+            finally:
+                released = client.post(
+                    "/api/pdf-tools/upscale/artifact/release",
+                    data={"lease_token": lease_token},
+                )
+                assert released.status_code == 200, released.text
+            assert not working_pdf.exists()
 
 
 def test_upscale_warns_when_cmyk_is_converted(monkeypatch):
@@ -246,7 +334,8 @@ def test_upscale_tile_only_reduces_on_low_memory(monkeypatch):
 def test_upscale_routes_quality_model(monkeypatch):
     variants: list[str] = []
 
-    def _capture(image: Image.Image, variant: str = "general") -> Image.Image:
+    def _capture(image: Image.Image, variant: str = "general", cancelled=None) -> Image.Image:
+        del cancelled
         variants.append(variant)
         return image.resize((image.width * 4, image.height * 4), Image.Resampling.NEAREST)
 
@@ -316,7 +405,8 @@ def test_quality_model_rejects_implicit_cpu_session(monkeypatch):
 def test_upscale_routes_balanced_without_quality_model(monkeypatch):
     variants: list[str] = []
 
-    def _capture(image: Image.Image, variant: str = "general") -> Image.Image:
+    def _capture(image: Image.Image, variant: str = "general", cancelled=None) -> Image.Image:
+        del cancelled
         variants.append(variant)
         return image.resize((image.width * 4, image.height * 4), Image.Resampling.NEAREST)
 
@@ -359,8 +449,8 @@ def test_upscale_passes_mode_detail_into_tiling(monkeypatch):
     np = __import__("numpy")
     seen: list[float] = []
 
-    def _fake_tiling(rgb, variant, tile, tile_pad, detail=0.0):
-        del variant, tile, tile_pad
+    def _fake_tiling(rgb, variant, tile, tile_pad, detail=0.0, cancelled=None):
+        del variant, tile, tile_pad, cancelled
         seen.append(detail)
         return np.full((rgb.shape[0] * 4, rgb.shape[1] * 4, 3), 0.5, dtype="float32")
 
@@ -409,3 +499,247 @@ def test_quality_tile_pad_is_wider_than_light_model():
 
     assert _default_tile_pad("quality") > _default_tile_pad("general")
     assert _default_tile_pad("general") == 40
+
+
+def test_icc_data_colorspace_parser():
+    """§UP.X.05: helper phải đọc đúng colorspace từ ICC header."""
+    from app.api.routes.pdf_tools import _icc_data_colorspace
+
+    assert _icc_data_colorspace(None) is None
+    assert _icc_data_colorspace(b"short") is None
+    # Tạo fake ICC header 128 bytes với 4 byte colorspace ở offset 16
+    def _make_fake_icc(sig: bytes) -> bytes:
+        header = bytearray(128)
+        header[16:20] = sig
+        return bytes(header)
+
+    assert _icc_data_colorspace(_make_fake_icc(b"RGB ")) == "RGB"
+    assert _icc_data_colorspace(_make_fake_icc(b"GRAY")) == "GRAY"
+    assert _icc_data_colorspace(_make_fake_icc(b"Lab ")) == "LAB"
+    assert _icc_data_colorspace(_make_fake_icc(b"CMYK")) == "CMYK"
+    assert _icc_data_colorspace(_make_fake_icc(b"????")) is None
+
+
+def test_upscale_gray_icc_warns_and_outputs_rgb(monkeypatch):
+    """§UP.X.05: ảnh Gray có ICC Gray không được gắn profile Gray lên output RGB."""
+    monkeypatch.setattr("app.workers.realesrgan_engine.upscale", _fake_upscale)
+    _bypass_route_guards(monkeypatch)
+
+    # Tạo ảnh Gray 8-bit với ICC profile Gray
+    from PIL import ImageCms
+    gray_profile = ImageCms.createProfile("sRGB")  # dùng sRGB làm gốc
+    # Tạo real Gray profile
+    try:
+        # Pillow cài từ wheel thường có createProfile hạn chế, nhưng ta có thể
+        # xây bằng cách tạo ảnh L rồi gắn ICC sRGB — route sẽ thấy icc_cs = 'RGB'
+        # → không trigger fix. Thay vào đó, ta giả lập bằng cách tạo ảnh RGB
+        # nhưng gắn ICC header fake GRAY.
+        fake_gray_icc = bytearray(ImageCms.ImageCmsProfile(gray_profile).tobytes())
+        fake_gray_icc[16:20] = b"GRAY"  # giả lập colorspace GRAY
+        fake_gray_icc = bytes(fake_gray_icc)
+    except Exception:
+        return  # skip nếu không tạo được ICC giả lập
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/pdf-tools/upscale",
+            files={"file": ("gray.png", _encoded_image("RGB", (4, 3), "PNG", icc_profile=fake_gray_icc), "image/png")},
+            data={"scale_factor": "2"},
+        )
+
+    assert response.status_code == 200, response.text
+    warning_header = response.headers.get("X-Upscale-Warnings", "")
+    # Phải có cảnh báo chuyển đổi hoặc bỏ ICC
+    assert "icc-converted-to-srgb" in warning_header or "icc-dropped-incompatible" in warning_header
+
+
+def test_upscale_external_path_requires_native_grant(tmp_path, monkeypatch):
+    from app.api.routes import pdf_tools
+
+    source = tmp_path / "ngoai-scope.png"
+    source.write_bytes(_png_bytes())
+    pdf_tools._IMAGE_PATH_ALLOWED_DIRS.clear()
+    called = False
+
+    def _must_not_run(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("Path không grant không được vào inference")
+
+    monkeypatch.setattr("app.workers.realesrgan_engine.upscale", _must_not_run)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/pdf-tools/upscale",
+            data={"file_path": str(source), "scale_factor": "2"},
+        )
+
+    assert response.status_code == 403
+    assert called is False
+
+
+def test_upscale_accepts_scoped_native_grant_once(tmp_path, monkeypatch):
+    from app.core import license_guard
+
+    source = tmp_path / "picker.png"
+    source.write_bytes(_png_bytes())
+    token = "grant-test-sidecar-token"
+    tab_id = "tab-picker"
+    grant = _upscale_file_grant(str(source), tab_id, token)
+    monkeypatch.setattr(license_guard, "_SIDECAR_TOKEN", token)
+    monkeypatch.setattr("app.workers.realesrgan_engine.upscale", _fake_upscale)
+    _bypass_route_guards(monkeypatch)
+    payload = {
+        "file_path": str(source),
+        "file_grant": grant,
+        "file_grant_tab_id": tab_id,
+        "scale_factor": "2",
+    }
+
+    with TestClient(app) as client:
+        first = client.post("/api/pdf-tools/upscale", data=payload)
+        replay = client.post("/api/pdf-tools/upscale", data=payload)
+
+    assert first.status_code == 200, first.text
+    assert replay.status_code == 403
+
+
+def test_upscale_rejects_grant_for_other_path_tab_or_expiry(tmp_path, monkeypatch):
+    from app.core import license_guard
+
+    source = tmp_path / "source.png"
+    other = tmp_path / "other.png"
+    source.write_bytes(_png_bytes())
+    other.write_bytes(_png_bytes())
+    token = "grant-negative-sidecar-token"
+    monkeypatch.setattr(license_guard, "_SIDECAR_TOKEN", token)
+    monkeypatch.setattr(
+        "app.workers.realesrgan_engine.upscale",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Grant sai không được vào inference")
+        ),
+    )
+
+    cases = [
+        {
+            "file_path": str(other),
+            "file_grant": _upscale_file_grant(str(source), "tab-a", token),
+            "file_grant_tab_id": "tab-a",
+        },
+        {
+            "file_path": str(source),
+            "file_grant": _upscale_file_grant(str(source), "tab-a", token),
+            "file_grant_tab_id": "tab-b",
+        },
+        {
+            "file_path": str(source),
+            "file_grant": _upscale_file_grant(
+                str(source), "tab-a", token, issued_at=int(time.time()) - 300
+            ),
+            "file_grant_tab_id": "tab-a",
+        },
+    ]
+
+    with TestClient(app) as client:
+        responses = [client.post("/api/pdf-tools/upscale", data=case) for case in cases]
+
+    assert [response.status_code for response in responses] == [403, 403, 403]
+
+
+def test_upscale_rejects_tampered_grant_and_unc_before_inference(tmp_path, monkeypatch):
+    from app.core import license_guard
+
+    source = tmp_path / "tamper.png"
+    source.write_bytes(_png_bytes())
+    token = "grant-tamper-sidecar-token"
+    grant = _upscale_file_grant(str(source), "tab-a", token)
+    tampered = grant[:-1] + ("0" if grant[-1] != "0" else "1")
+    monkeypatch.setattr(license_guard, "_SIDECAR_TOKEN", token)
+
+    with TestClient(app) as client:
+        tampered_response = client.post(
+            "/api/pdf-tools/upscale",
+            data={
+                "file_path": str(source),
+                "file_grant": tampered,
+                "file_grant_tab_id": "tab-a",
+            },
+        )
+        unc_response = client.post(
+            "/api/pdf-tools/upscale",
+            data={"file_path": r"\\server\share\image.png"},
+        )
+
+    assert tampered_response.status_code == 403
+    assert unc_response.status_code == 403
+
+
+def test_image_scope_canonicalizes_both_root_and_candidate(monkeypatch):
+    from app.api.routes import pdf_tools
+
+    short_root = r"C:\Users\KHANHP~1\AppData\Local\Temp"
+    long_root = r"C:\Users\Khanh Pham\AppData\Local\Temp"
+    candidate = long_root + r"\PrynX-dev\results\alpha.png"
+    original_realpath = pdf_tools.os.path.realpath
+
+    def _fake_realpath(path):
+        normalized = os.path.normcase(os.path.normpath(os.fspath(path)))
+        if normalized == os.path.normcase(os.path.normpath(short_root)):
+            return long_root
+        return original_realpath(path) if os.path.exists(path) else os.path.normpath(os.fspath(path))
+
+    monkeypatch.setattr(pdf_tools.os.path, "realpath", _fake_realpath)
+    assert pdf_tools._is_path_inside(candidate, short_root) is True
+
+
+def test_upscale_disconnect_before_admission_never_runs_inference(monkeypatch):
+    from starlette.requests import Request
+
+    called = False
+
+    async def _disconnected(_request):
+        return True
+
+    def _must_not_run(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("Request đã disconnect không được vào inference")
+
+    monkeypatch.setattr(Request, "is_disconnected", _disconnected)
+    monkeypatch.setattr("app.workers.realesrgan_engine.upscale", _must_not_run)
+    _bypass_route_guards(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/pdf-tools/upscale",
+            files={"file": ("cancel.png", _png_bytes(), "image/png")},
+        )
+
+    assert response.status_code == 499
+    assert called is False
+
+
+def test_upscale_cancellation_stops_at_tile_boundary(monkeypatch):
+    from app.workers import realesrgan_engine as engine
+
+    np = __import__("numpy")
+    session_runs = 0
+
+    def _fake_session(_variant, tile_nchw):
+        nonlocal session_runs
+        session_runs += 1
+        _n, channels, height, width = tile_nchw.shape
+        return np.zeros((1, channels, height * 4, width * 4), dtype="float32")
+
+    monkeypatch.setattr(engine, "_run_session", _fake_session)
+    rgb = np.zeros((4, 8, 3), dtype="float32")
+
+    with pytest.raises(engine.UpscaleCancelled):
+        engine._upscale_rgb(
+            rgb,
+            "general",
+            tile=4,
+            tile_pad=0,
+            cancelled=lambda: session_runs >= 1,
+        )
+
+    assert session_runs == 1

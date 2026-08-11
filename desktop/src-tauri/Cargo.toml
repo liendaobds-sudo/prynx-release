@@ -31,6 +31,9 @@ pdfium-render = { version = "0.8", features = ["thread_safe", "pdfium_use_win32"
 # PAGEBOX (audit 2026-08-04 §W1.PB6): PDFium đi kèm bỏ qua /UserUnit;
 # dùng parser độc lập để đọc hệ số vật lý theo từng trang cho Viewer native.
 lopdf = { version = "0.44", default-features = false }
+# PERF/COLOR (audit 2026-08-09 §L3A): worker Viewer gọi thẳng PPE Rust;
+# không vòng HTTP/Python và không thêm renderer bên ngoài.
+print_engine = { path = "../../print_engine" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp", "webp", "gif"] }
 urlencoding = "2"
 tauri-plugin-single-instance = "2.4.2"

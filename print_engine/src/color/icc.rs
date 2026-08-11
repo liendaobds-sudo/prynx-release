@@ -24,9 +24,12 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use lcms2::{Flags, Intent, PixelFormat, Profile, Transform};
+use rayon::prelude::*;
 
+use crate::cancel::CancelToken;
 use crate::error::{PpeError, PpeResult};
 
 /// Rendering intent, ánh xạ 1-1 với `/RenderIntent` của PDF và `-dRenderIntent`
@@ -68,6 +71,19 @@ impl RenderIntent {
     }
 }
 
+/// Các lựa chọn chỉ tác động chiều **proof CMYK → màn hình**.
+///
+/// `RenderIntent` của [`ColorManager`] vẫn điều khiển việc đưa RGB/Lab nguồn vào
+/// profile CMYK. Paper/Black không được sửa intent đó, nếu không một checkbox xem
+/// trước sẽ âm thầm đổi cả lượng mực đã dựng.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SoftProofSettings {
+    pub simulate_paper_color: bool,
+    pub simulate_black_ink: bool,
+    /// Màu vật liệu nền tùy chọn ở sRGB 8-bit. `None` giữ nền theo profile.
+    pub page_background_rgb: Option<[u8; 3]>,
+}
+
 /// Số điểm lưới mỗi trục của LUT 3 chiều RGB→CMYK.
 ///
 /// 33 là số điểm mà devicelink ICC thực tế dùng, và cũng là điểm cân bằng: 33³ =
@@ -77,6 +93,19 @@ impl RenderIntent {
 /// DPI chỉ lấy mẫu vài chục nghìn. Gọi lcms cho từng pixel thiết bị là chậm,
 /// biến đổi cả ảnh trước là thừa. LUT + nội suy 3 tuyến tính giải quyết cả hai.
 const LUT_GRID: usize = 33;
+
+/// Chỉ chia lô LCMS khi ảnh đủ lớn để bù chi phí dựng context/profile an toàn luồng.
+const PARALLEL_SOFTPROOF_MIN_PIXELS: usize = 512 * 1024;
+/// 64K pixel giữ đủ task để cân bằng máy nhiều nhân mà không gọi LCMS quá vụn.
+const SOFTPROOF_CHUNK_PIXELS: usize = 64 * 1024;
+
+#[inline]
+fn check_cancelled(cancel_token: Option<&CancelToken>) -> PpeResult<()> {
+    match cancel_token {
+        Some(token) => token.check(),
+        None => Ok(()),
+    }
+}
 
 /// LUT 3 chiều cho một phép biến đổi 3 kênh → CMYK.
 struct Lut3 {
@@ -131,6 +160,9 @@ impl Lut3 {
 /// có nguy cơ deadlock.
 pub struct ColorManager {
     cmyk: Profile,
+    /// Byte ICC gốc để mỗi worker dựng profile riêng mà không serialize lại qua
+    /// LCMS (serialize lại làm lệch một số byte RGB do chuẩn hoá tag/profile).
+    cmyk_bytes: Arc<[u8]>,
     /// Profile RGB nguồn cho `DeviceRGB`.
     ///
     /// `None` = dùng sRGB dựng sẵn của Little CMS. Cho phép chỉ định file là cần
@@ -158,17 +190,24 @@ pub struct ColorManager {
 impl ColorManager {
     /// Dựng từ file profile CMYK đích (thường là FOGRA39.icc).
     pub fn from_cmyk_profile(path: &Path, intent: RenderIntent) -> PpeResult<Self> {
-        let cmyk = Profile::new_file(path).map_err(|e| {
+        let bytes = std::fs::read(path).map_err(|e| {
             PpeError::Unsupported(format!("không đọc được ICC CMYK '{}': {e}", path.display()))
         })?;
-        Ok(ColorManager::from_profile(cmyk, intent))
+        let cmyk = Profile::new_icc(&bytes).map_err(|e| {
+            PpeError::Unsupported(format!("ICC CMYK '{}' không hợp lệ: {e}", path.display()))
+        })?;
+        Ok(ColorManager::from_profile(cmyk, bytes.into(), intent))
     }
 
     /// Dựng từ byte của profile CMYK.
     pub fn from_cmyk_bytes(bytes: &[u8], intent: RenderIntent) -> PpeResult<Self> {
         let cmyk = Profile::new_icc(bytes)
             .map_err(|e| PpeError::Unsupported(format!("ICC CMYK không hợp lệ: {e}")))?;
-        Ok(ColorManager::from_profile(cmyk, intent))
+        Ok(ColorManager::from_profile(
+            cmyk,
+            Arc::<[u8]>::from(bytes),
+            intent,
+        ))
     }
 
     /// Dựng với cả profile CMYK đích và profile RGB nguồn.
@@ -187,9 +226,10 @@ impl ColorManager {
         Ok(cm)
     }
 
-    fn from_profile(cmyk: Profile, intent: RenderIntent) -> Self {
+    fn from_profile(cmyk: Profile, cmyk_bytes: Arc<[u8]>, intent: RenderIntent) -> Self {
         ColorManager {
             cmyk,
+            cmyk_bytes,
             rgb: None,
             intent,
             srgb_lut: RefCell::new(None),
@@ -220,6 +260,27 @@ impl ColorManager {
             Flags::BLACKPOINT_COMPENSATION
         } else {
             Flags::default()
+        }
+    }
+
+    fn proof_intent(&self, settings: SoftProofSettings) -> Intent {
+        // Absolute Colorimetric giữ media white point của profile — đây là phép
+        // mô phỏng màu giấy. Khi tắt, giữ nguyên intent hiện hành để mặc định mới
+        // byte-identical với pipeline đã nghiệm thu.
+        if settings.simulate_paper_color {
+            Intent::AbsoluteColorimetric
+        } else {
+            self.intent.to_lcms()
+        }
+    }
+
+    fn proof_flags(&self, settings: SoftProofSettings) -> Flags {
+        // BPC kéo điểm đen của profile về điểm đen màn hình. Muốn mô phỏng Black
+        // Ink phải bỏ phép kéo này để giữ điểm đen thật của profile mô phỏng.
+        if settings.simulate_black_ink {
+            Flags::default()
+        } else {
+            self.cms_flags()
         }
     }
 
@@ -318,24 +379,231 @@ impl ColorManager {
     /// Đây là chiều **ra**, không phải chiều đo: dùng để *xem* chứ không để kết
     /// luận lượng mực.
     pub fn cmyk_to_srgb_batch(&self, cmyk: &[[f32; 4]]) -> Option<Vec<[u8; 3]>> {
+        self.cmyk_to_srgb_batch_with_settings(cmyk, SoftProofSettings::default())
+    }
+
+    pub fn cmyk_to_srgb_batch_with_settings(
+        &self,
+        cmyk: &[[f32; 4]],
+        settings: SoftProofSettings,
+    ) -> Option<Vec<[u8; 3]>> {
+        if cmyk.len() >= PARALLEL_SOFTPROOF_MIN_PIXELS && rayon::current_num_threads() > 1 {
+            return self.cmyk_to_srgb_batch_parallel(cmyk, settings);
+        }
+        self.cmyk_to_srgb_batch_serial(cmyk, settings)
+    }
+
+    /// PERF (audit 2026-08-10 §L5B.4): biến đổi soft-proof có checkpoint giữa
+    /// các lô LCMS. LCMS không hỗ trợ callback giữa một lời gọi, nên 64K pixel là
+    /// biên preemption thật nhỏ nhất mà vẫn giữ throughput của máy nhiều nhân.
+    pub fn cmyk_to_srgb_batch_with_cancel(
+        &self,
+        cmyk: &[[f32; 4]],
+        cancel_token: Option<&CancelToken>,
+    ) -> PpeResult<Option<Vec<[u8; 3]>>> {
+        self.cmyk_to_srgb_batch_with_cancel_and_settings(
+            cmyk,
+            cancel_token,
+            SoftProofSettings::default(),
+        )
+    }
+
+    pub fn cmyk_to_srgb_batch_with_cancel_and_settings(
+        &self,
+        cmyk: &[[f32; 4]],
+        cancel_token: Option<&CancelToken>,
+        settings: SoftProofSettings,
+    ) -> PpeResult<Option<Vec<[u8; 3]>>> {
+        check_cancelled(cancel_token)?;
+        if cmyk.len() >= PARALLEL_SOFTPROOF_MIN_PIXELS && rayon::current_num_threads() > 1 {
+            return self.cmyk_to_srgb_batch_parallel_with_cancel(cmyk, cancel_token, settings);
+        }
+        self.cmyk_to_srgb_batch_serial_with_cancel(cmyk, cancel_token, settings)
+    }
+
+    fn cmyk_to_srgb_batch_serial(
+        &self,
+        cmyk: &[[f32; 4]],
+        settings: SoftProofSettings,
+    ) -> Option<Vec<[u8; 3]>> {
+        self.cmyk_to_srgb_batch_serial_with_cancel(cmyk, None, settings)
+            .ok()
+            .flatten()
+    }
+
+    fn cmyk_to_srgb_batch_serial_with_cancel(
+        &self,
+        cmyk: &[[f32; 4]],
+        cancel_token: Option<&CancelToken>,
+        settings: SoftProofSettings,
+    ) -> PpeResult<Option<Vec<[u8; 3]>>> {
+        check_cancelled(cancel_token)?;
         let srgb = Profile::new_srgb();
-        let t: Transform<[f32; 4], [u8; 3]> = Transform::new_flags(
+        let t: Option<Transform<[f32; 4], [u8; 3]>> = Transform::new_flags(
             &self.cmyk,
             PixelFormat::CMYK_FLT,
             &srgb,
             PixelFormat::RGB_8,
-            self.intent.to_lcms(),
-            self.cms_flags(),
+            self.proof_intent(settings),
+            self.proof_flags(settings),
         )
-        .ok()?;
+        .ok();
+        let Some(t) = t else {
+            return Ok(None);
+        };
         // lcms nhận CMYK theo thang 0..100.
-        let src: Vec<[f32; 4]> = cmyk
-            .iter()
-            .map(|c| [c[0] * 100.0, c[1] * 100.0, c[2] * 100.0, c[3] * 100.0])
-            .collect();
+        let mut src = Vec::with_capacity(cmyk.len());
+        for chunk in cmyk.chunks(SOFTPROOF_CHUNK_PIXELS) {
+            check_cancelled(cancel_token)?;
+            src.extend(
+                chunk
+                    .iter()
+                    .map(|c| [c[0] * 100.0, c[1] * 100.0, c[2] * 100.0, c[3] * 100.0]),
+            );
+        }
         let mut dst = vec![[0u8; 3]; src.len()];
-        t.transform_pixels(&src, &mut dst);
-        Some(dst)
+        if cancel_token.is_none() {
+            t.transform_pixels(&src, &mut dst);
+        } else {
+            for (input, output) in src
+                .chunks(SOFTPROOF_CHUNK_PIXELS)
+                .zip(dst.chunks_mut(SOFTPROOF_CHUNK_PIXELS))
+            {
+                check_cancelled(cancel_token)?;
+                t.transform_pixels(input, output);
+            }
+        }
+        check_cancelled(cancel_token)?;
+        self.apply_page_background(&mut dst, settings, cancel_token)?;
+        Ok(Some(dst))
+    }
+
+    fn cmyk_to_srgb_batch_parallel(
+        &self,
+        cmyk: &[[f32; 4]],
+        settings: SoftProofSettings,
+    ) -> Option<Vec<[u8; 3]>> {
+        self.cmyk_to_srgb_batch_parallel_with_cancel(cmyk, None, settings)
+            .ok()
+            .flatten()
+    }
+
+    fn cmyk_to_srgb_batch_parallel_with_cancel(
+        &self,
+        cmyk: &[[f32; 4]],
+        cancel_token: Option<&CancelToken>,
+        settings: SoftProofSettings,
+    ) -> PpeResult<Option<Vec<[u8; 3]>>> {
+        check_cancelled(cancel_token)?;
+        // PERF (audit 2026-08-09 §ZOOM.5): Transform GlobalContext không Sync,
+        // nên mỗi worker tự dựng profile/transform rồi chỉ dùng nó trong đúng task
+        // của mình. Cách này giữ nguyên cache và phép tối ưu LCMS của đường cũ —
+        // parity byte tuyệt đối — trong khi các chunk ghi dải dst không giao nhau.
+        let profile_bytes = Arc::clone(&self.cmyk_bytes);
+        let intent = self.proof_intent(settings);
+        let flags = self.proof_flags(settings);
+
+        // lcms nhận CMYK theo thang 0..100. Dùng global Rayon pool của process;
+        // không tạo pool riêng nên nhiều document không nhân chồng số worker.
+        let mut src = vec![[0.0f32; 4]; cmyk.len()];
+        src.par_chunks_mut(SOFTPROOF_CHUNK_PIXELS)
+            .zip(cmyk.par_chunks(SOFTPROOF_CHUNK_PIXELS))
+            .try_for_each(|(output, input)| -> PpeResult<()> {
+                check_cancelled(cancel_token)?;
+                for (dst, value) in output.iter_mut().zip(input) {
+                    *dst = [
+                        value[0] * 100.0,
+                        value[1] * 100.0,
+                        value[2] * 100.0,
+                        value[3] * 100.0,
+                    ];
+                }
+                Ok(())
+            })?;
+        let mut dst = vec![[0u8; 3]; src.len()];
+        let workers = rayon::current_num_threads()
+            .min(src.len().div_ceil(SOFTPROOF_CHUNK_PIXELS))
+            .max(1);
+        let chunk_pixels = src.len().div_ceil(workers);
+        let transformed: Vec<PpeResult<bool>> = src
+            .par_chunks(chunk_pixels)
+            .zip(dst.par_chunks_mut(chunk_pixels))
+            .map(|(input, output)| {
+                check_cancelled(cancel_token)?;
+                let Ok(cmyk_profile) = Profile::new_icc(&profile_bytes) else {
+                    return Ok(false);
+                };
+                let srgb_profile = Profile::new_srgb();
+                let Ok(transform) = Transform::new_flags(
+                    &cmyk_profile,
+                    PixelFormat::CMYK_FLT,
+                    &srgb_profile,
+                    PixelFormat::RGB_8,
+                    intent,
+                    flags,
+                ) else {
+                    return Ok(false);
+                };
+                for (input_chunk, output_chunk) in input
+                    .chunks(SOFTPROOF_CHUNK_PIXELS)
+                    .zip(output.chunks_mut(SOFTPROOF_CHUNK_PIXELS))
+                {
+                    check_cancelled(cancel_token)?;
+                    transform.transform_pixels(input_chunk, output_chunk);
+                }
+                check_cancelled(cancel_token)?;
+                Ok(true)
+            })
+            .collect();
+        for result in transformed {
+            if !result? {
+                return Ok(None);
+            }
+        }
+        check_cancelled(cancel_token)?;
+        self.apply_page_background(&mut dst, settings, cancel_token)?;
+        Ok(Some(dst))
+    }
+
+    /// Đặt một màu vật liệu nền mà không giả vờ nó là màu mực phủ trên trang.
+    ///
+    /// Mỗi kênh lấy tỉ lệ phản xạ `pixel / paper-white` trong miền tuyến tính rồi
+    /// nhân với nền mới. Vì thế 0% mực ra đúng màu nền, còn vùng có mực vẫn giữ
+    /// mức hấp thụ của profile thay vì chỉ đổi các pixel trắng bằng CSS.
+    fn apply_page_background(
+        &self,
+        pixels: &mut [[u8; 3]],
+        settings: SoftProofSettings,
+        cancel_token: Option<&CancelToken>,
+    ) -> PpeResult<()> {
+        let Some(background) = settings.page_background_rgb else {
+            return Ok(());
+        };
+        let paper_settings = SoftProofSettings {
+            page_background_rgb: None,
+            ..settings
+        };
+        let Some(paper) = self
+            .cmyk_to_srgb_batch_serial_with_cancel(&[[0.0; 4]], cancel_token, paper_settings)?
+            .and_then(|values| values.first().copied())
+        else {
+            return Err(PpeError::Unsupported(
+                "không lấy được media white của profile mô phỏng".into(),
+            ));
+        };
+
+        for (index, pixel) in pixels.iter_mut().enumerate() {
+            if index % SOFTPROOF_CHUNK_PIXELS == 0 {
+                check_cancelled(cancel_token)?;
+            }
+            for channel in 0..3 {
+                let paper_linear = srgb_u8_to_linear(paper[channel]).max(1e-6);
+                let ink_ratio = (srgb_u8_to_linear(pixel[channel]) / paper_linear).clamp(0.0, 1.0);
+                let output = srgb_u8_to_linear(background[channel]) * ink_ratio;
+                pixel[channel] = linear_to_srgb_u8(output);
+            }
+        }
+        check_cancelled(cancel_token)
     }
 
     /// Dựng LUT 33³ từ một profile nguồn 3 kênh.
@@ -377,6 +645,25 @@ impl ColorManager {
         }
         Some(Lut3 { data })
     }
+}
+
+fn srgb_u8_to_linear(value: u8) -> f32 {
+    let encoded = value as f32 / 255.0;
+    if encoded <= 0.04045 {
+        encoded / 12.92
+    } else {
+        ((encoded + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb_u8(value: f32) -> u8 {
+    let linear = value.clamp(0.0, 1.0);
+    let encoded = if linear <= 0.003_130_8 {
+        linear * 12.92
+    } else {
+        1.055 * linear.powf(1.0 / 2.4) - 0.055
+    };
+    (encoded * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8
 }
 
 fn hash_bytes(bytes: &[u8]) -> u64 {
@@ -534,6 +821,113 @@ mod tests {
             .expect("soft-proof phải chạy");
         assert!(out[0][0] > 200, "giấy trắng: {:?}", out[0]);
         assert!(out[1][0] < 90, "K đặc phải tối: {:?}", out[1]);
+    }
+
+    #[test]
+    fn parallel_softproof_is_byte_exact_with_serial_lcms() {
+        let cm = cm_or_skip!();
+        let pixels = PARALLEL_SOFTPROOF_MIN_PIXELS + 17;
+        let input: Vec<[f32; 4]> = (0..pixels)
+            .map(|index| {
+                let a = (index % 257) as f32 / 256.0;
+                let b = ((index / 257) % 257) as f32 / 256.0;
+                [a, b, 1.0 - a, (a * 0.37 + b * 0.63).clamp(0.0, 1.0)]
+            })
+            .collect();
+
+        let serial = cm
+            .cmyk_to_srgb_batch_serial(&input, SoftProofSettings::default())
+            .expect("LCMS tuần tự phải chạy");
+        let srgb = Profile::new_srgb();
+        let no_cache_transform = Transform::new_flags(
+            &cm.cmyk,
+            PixelFormat::CMYK_FLT,
+            &srgb,
+            PixelFormat::RGB_8,
+            cm.intent.to_lcms(),
+            Flags::NO_CACHE | cm.cms_flags(),
+        )
+        .expect("LCMS NO_CACHE phải chạy");
+        let input_percent: Vec<[f32; 4]> = input
+            .iter()
+            .map(|c| [c[0] * 100.0, c[1] * 100.0, c[2] * 100.0, c[3] * 100.0])
+            .collect();
+        let mut no_cache = vec![[0u8; 3]; input.len()];
+        no_cache_transform.transform_pixels(&input_percent, &mut no_cache);
+        let parallel = cm
+            .cmyk_to_srgb_batch_parallel(&input, SoftProofSettings::default())
+            .expect("LCMS song song phải chạy");
+        let differing = |left: &[[u8; 3]], right: &[[u8; 3]]| {
+            left.iter()
+                .zip(right)
+                .flat_map(|(a, b)| a.iter().zip(b))
+                .filter(|(a, b)| a != b)
+                .count()
+        };
+        let no_cache_diff = differing(&no_cache, &serial);
+        assert!(
+            no_cache_diff == 0,
+            "chỉ tắt cache một pixel làm lệch {no_cache_diff} byte màu"
+        );
+        let parallel_diff = differing(&parallel, &serial);
+        assert!(
+            parallel_diff == 0,
+            "chia chunk làm lệch {parallel_diff} byte màu"
+        );
+    }
+
+    #[test]
+    fn custom_page_background_replaces_zero_ink_and_keeps_ink_darker() {
+        let cm = cm_or_skip!();
+        let background = [214, 190, 142];
+        let pixels = cm
+            .cmyk_to_srgb_batch_with_settings(
+                &[[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+                SoftProofSettings {
+                    page_background_rgb: Some(background),
+                    ..SoftProofSettings::default()
+                },
+            )
+            .expect("profile phải dựng được nền giấy");
+        assert_eq!(pixels[0], background, "0% mực phải ra đúng màu nền đã chọn");
+        assert!(
+            pixels[1]
+                .iter()
+                .zip(background)
+                .all(|(ink, paper)| *ink <= paper),
+            "mực đen không được sáng hơn vật liệu nền: {:?}",
+            pixels[1]
+        );
+    }
+
+    #[test]
+    fn paper_and_black_simulation_are_independent_from_content_intent() {
+        let cm = cm_or_skip!();
+        let sample = [[0.72, 0.63, 0.48, 0.82]];
+        let baseline = cm
+            .cmyk_to_srgb_batch_with_settings(&sample, SoftProofSettings::default())
+            .unwrap();
+        let paper = cm
+            .cmyk_to_srgb_batch_with_settings(
+                &sample,
+                SoftProofSettings {
+                    simulate_paper_color: true,
+                    ..SoftProofSettings::default()
+                },
+            )
+            .unwrap();
+        let black = cm
+            .cmyk_to_srgb_batch_with_settings(
+                &sample,
+                SoftProofSettings {
+                    simulate_black_ink: true,
+                    ..SoftProofSettings::default()
+                },
+            )
+            .unwrap();
+        assert_ne!(paper, baseline, "Paper Color phải đổi proof intent đầu ra");
+        assert_ne!(black, baseline, "Black Ink phải đổi BPC đầu ra");
+        assert_eq!(cm.intent(), RenderIntent::RelativeColorimetric);
     }
 
     #[test]

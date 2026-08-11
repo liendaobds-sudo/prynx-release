@@ -159,10 +159,7 @@ pub fn encode_path(path: &Path) -> (Vec<u8>, Vec<f32>) {
                     cur.0 + 2.0 / 3.0 * (q.x - cur.0),
                     cur.1 + 2.0 / 3.0 * (q.y - cur.1),
                 );
-                let c2 = (
-                    p.x + 2.0 / 3.0 * (q.x - p.x),
-                    p.y + 2.0 / 3.0 * (q.y - p.y),
-                );
+                let c2 = (p.x + 2.0 / 3.0 * (q.x - p.x), p.y + 2.0 / 3.0 * (q.y - p.y));
                 verbs.push(verb::CUBIC);
                 coords.extend_from_slice(&[c1.0, c1.1, c2.0, c2.1, p.x, p.y]);
                 cur = (p.x, p.y);

@@ -17198,13 +17198,6 @@
       ],
       "kind": "string"
     },
-    "khi_xuat_pdf_x_ghostscript_tu_ha_nang": {
-      "vi": "Khi xuất PDF/X, Ghostscript tự hạ/nâng đúng phiên bản PDF theo chuẩn — nên mục này luôn được xử lý tự động.",
-      "files": [
-        "desktop\\src\\components\\preprocess-tools\\SavePdfxTool.tsx"
-      ],
-      "kind": "string"
-    },
     "chua_co_file_pdf": {
       "vi": "Chưa có file PDF",
       "files": [

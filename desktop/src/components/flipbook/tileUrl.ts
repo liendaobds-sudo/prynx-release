@@ -12,6 +12,8 @@
  */
 const MM_TO_PT = 2.83465;
 
+export type TileRenderPurpose = 'interactive' | 'background';
+
 export interface TileUrlOpts {
     path: string;
     page: number;
@@ -23,10 +25,15 @@ export interface TileUrlOpts {
     pageHpt?: number;
     /** Bleed mỗi cạnh (mm). 0/undefined → không clip (hiện nguyên trang). */
     bleedMm?: number;
+    /** Trang đang nhìn dùng interactive; trang nạp trước/thumbnail dùng background. */
+    purpose?: TileRenderPurpose;
 }
 
 export function buildTileUrl(opts: TileUrlOpts): string {
-    const { path, page, scale, rot = 0, pageWpt, pageHpt, bleedMm } = opts;
+    const {
+        path, page, scale, rot = 0, pageWpt, pageHpt, bleedMm,
+        purpose = 'interactive',
+    } = opts;
     const enc = encodeURIComponent(path);
 
     let cx = 0, cy = 0, cw = 0, ch = 0;
@@ -45,7 +52,7 @@ export function buildTileUrl(opts: TileUrlOpts): string {
         }
     }
 
-    return `http://tile.localhost/${enc}/${page}/${scale}/${rot}/${cx}/${cy}/${cw}/${ch}`;
+    return `http://tile.localhost/${enc}/${page}/${scale}/${rot}/${cx}/${cy}/${cw}/${ch}?purpose=${purpose}`;
 }
 
 /** Tỉ lệ khung trang SAU xén (để layout không kéo giãn ảnh đã clip). */

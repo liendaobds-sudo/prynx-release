@@ -1,18 +1,41 @@
 //! Assembler — WRAPPER PyO3 mỏng quanh `imposition_core::assembler`
 //! (Task 6 / Req 1.2). Chỉ chuyển đổi kiểu.
 
+use imposition_core::assembler as core;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use std::collections::HashMap;
-use imposition_core::assembler as core;
 
 fn cell_from_pydict(d: &Bound<'_, PyDict>) -> PyResult<core::AssemblyCell> {
-    let g = |k: &str, def: f64| -> f64 { d.get_item(k).ok().flatten().and_then(|v| v.extract().ok()).unwrap_or(def) };
-    let gb = |k: &str| -> bool { d.get_item(k).ok().flatten().and_then(|v| v.extract().ok()).unwrap_or(false) };
-    let gi = |k: &str| -> i64 { d.get_item(k).ok().flatten().and_then(|v| v.extract().ok()).unwrap_or(0) };
+    let g = |k: &str, def: f64| -> f64 {
+        d.get_item(k)
+            .ok()
+            .flatten()
+            .and_then(|v| v.extract().ok())
+            .unwrap_or(def)
+    };
+    let gb = |k: &str| -> bool {
+        d.get_item(k)
+            .ok()
+            .flatten()
+            .and_then(|v| v.extract().ok())
+            .unwrap_or(false)
+    };
+    let gi = |k: &str| -> i64 {
+        d.get_item(k)
+            .ok()
+            .flatten()
+            .and_then(|v| v.extract().ok())
+            .unwrap_or(0)
+    };
     Ok(core::AssemblyCell {
-        x: g("x", 0.0), y: g("y", 0.0), width: g("width", 0.0), height: g("height", 0.0),
-        is_rotated: gb("isRotated"), is_rotated_180: gb("isRotated180"), block_id: gi("blockId"),
+        x: g("x", 0.0),
+        y: g("y", 0.0),
+        width: g("width", 0.0),
+        height: g("height", 0.0),
+        is_rotated: gb("isRotated"),
+        is_rotated_180: gb("isRotated180"),
+        block_id: gi("blockId"),
     })
 }
 
@@ -72,17 +95,34 @@ pub fn compute_placements(
     let mapping: Option<HashMap<usize, usize>> = sheet_mapping.map(|m| {
         let mut hm = HashMap::new();
         for (k, v) in m.iter() {
-            let key = k.extract::<usize>().ok().or_else(|| k.extract::<String>().ok().and_then(|s| s.parse().ok()));
+            let key = k
+                .extract::<usize>()
+                .ok()
+                .or_else(|| k.extract::<String>().ok().and_then(|s| s.parse().ok()));
             let val = v.extract::<usize>().ok();
-            if let (Some(k), Some(v)) = (key, val) { hm.insert(k, v); }
+            if let (Some(k), Some(v)) = (key, val) {
+                hm.insert(k, v);
+            }
         }
         hm
     });
 
     let placements = core::compute_placements(
-        sheet_idx, &parsed, capacity, cx_count, cy_count, cluster_gap,
-        active_grid_w, active_grid_h, super_base_x, super_base_y, sheet_h,
-        layout_type, total_capacity, page_count, mapping.as_ref(),
+        sheet_idx,
+        &parsed,
+        capacity,
+        cx_count,
+        cy_count,
+        cluster_gap,
+        active_grid_w,
+        active_grid_h,
+        super_base_x,
+        super_base_y,
+        sheet_h,
+        layout_type,
+        total_capacity,
+        page_count,
+        mapping.as_ref(),
     );
 
     let out = PyList::empty(py);
@@ -95,13 +135,27 @@ pub fn compute_placements(
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn compute_alignment(
-    sheet_w: f64, sheet_h: f64,
-    sheet_usable_w: f64, sheet_usable_h: f64,
-    margin_left: f64, margin_bottom: f64,
-    super_grid_w: f64, super_grid_h: f64,
+    sheet_w: f64,
+    sheet_h: f64,
+    sheet_usable_w: f64,
+    sheet_usable_h: f64,
+    margin_left: f64,
+    margin_bottom: f64,
+    super_grid_w: f64,
+    super_grid_h: f64,
     align: &str,
 ) -> (f64, f64) {
-    core::compute_alignment(sheet_w, sheet_h, sheet_usable_w, sheet_usable_h, margin_left, margin_bottom, super_grid_w, super_grid_h, align)
+    core::compute_alignment(
+        sheet_w,
+        sheet_h,
+        sheet_usable_w,
+        sheet_usable_h,
+        margin_left,
+        margin_bottom,
+        super_grid_w,
+        super_grid_h,
+        align,
+    )
 }
 
 #[pyfunction]
@@ -118,9 +172,23 @@ pub fn compute_mark_coords(
     let mut parsed: Vec<core::AbsPlacement> = Vec::new();
     for item in placements.iter() {
         let d = item.cast::<PyDict>()?;
-        let g = |k: &str| -> f64 { d.get_item(k).ok().flatten().and_then(|v| v.extract().ok()).unwrap_or(0.0) };
-        let cluster_idx: usize = d.get_item("cluster_idx").ok().flatten().and_then(|v| v.extract().ok()).unwrap_or(0);
-        let block_id: i64 = d.get_item("cell").ok().flatten()
+        let g = |k: &str| -> f64 {
+            d.get_item(k)
+                .ok()
+                .flatten()
+                .and_then(|v| v.extract().ok())
+                .unwrap_or(0.0)
+        };
+        let cluster_idx: usize = d
+            .get_item("cluster_idx")
+            .ok()
+            .flatten()
+            .and_then(|v| v.extract().ok())
+            .unwrap_or(0);
+        let block_id: i64 = d
+            .get_item("cell")
+            .ok()
+            .flatten()
             .and_then(|c| c.cast_into::<PyDict>().ok())
             .and_then(|c| c.get_item("blockId").ok().flatten())
             .and_then(|v| v.extract().ok())
@@ -133,7 +201,15 @@ pub fn compute_mark_coords(
             original_cell_y: g("original_cell_y"),
             width: g("width"),
             height: g("height"),
-            cell: core::AssemblyCell { x: 0.0, y: 0.0, width: g("width"), height: g("height"), is_rotated: false, is_rotated_180: false, block_id },
+            cell: core::AssemblyCell {
+                x: 0.0,
+                y: 0.0,
+                width: g("width"),
+                height: g("height"),
+                is_rotated: false,
+                is_rotated_180: false,
+                block_id,
+            },
         });
     }
 

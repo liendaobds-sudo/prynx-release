@@ -13,7 +13,7 @@
  * viewerNumPages sau xóa. Xóa đuôi 10→4 còn [1,2,3,4] vẫn phải bake (bug preview
  * ratio_stack/N-Up vẫn thấy 10 loại).
  */
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback } from 'react';
 import { PDFDocument, degrees } from 'pdf-lib';
 import { useWorkspaceStore } from '../stores/useWorkspaceStore';
 import { getFileArrayBuffer } from '../lib/utils';
@@ -22,15 +22,26 @@ import {
     finishOptionalContentTransfer,
 } from '../lib/pdfOptionalContent';
 
+// PERF (audit 2026-08-10 §PPE.REAUDIT.5): các tool dùng hook riêng nhưng cùng
+// một File object. WeakMap chia sẻ đúng metadata nhỏ, tự giải phóng theo File và
+// không giữ byte PDF trong cache toàn cục.
+const sourcePageCountPromises = new WeakMap<File, Promise<number>>();
+
+function resolveSourcePageCount(f: File): Promise<number> {
+    const cached = sourcePageCountPromises.get(f);
+    if (cached) return cached;
+    const pending = getFileArrayBuffer(f)
+        .then(ab => PDFDocument.load(ab, { ignoreEncryption: true }))
+        .then(doc => doc.getPageCount());
+    sourcePageCountPromises.set(f, pending);
+    void pending.catch(() => sourcePageCountPromises.delete(f));
+    return pending;
+}
+
 export function useWorkingPdf(): (sourceFile?: File | null) => Promise<File | null> {
     const file = useWorkspaceStore(state => state.file);
     const viewerPageOrder = useWorkspaceStore(state => state.viewerPageOrder);
     const viewerPageRotations = useWorkspaceStore(state => state.viewerPageRotations);
-
-    const sourcePageCountCacheRef = useRef<{ key: string; count: number } | null>(null);
-    useEffect(() => {
-        sourcePageCountCacheRef.current = null;
-    }, [file]);
 
     return useCallback(async (sourceFile?: File | null): Promise<File | null> => {
         // EXPORT (re-audit 2026-07-31 §RA-04): nhận Working File vừa commit để
@@ -38,31 +49,33 @@ export function useWorkingPdf(): (sourceFile?: File | null) => Promise<File | nu
         const activeFile = sourceFile === undefined ? file : sourceFile;
         if (!activeFile) return null;
 
-        const resolveSourcePageCount = async (f: File): Promise<number> => {
-            const key = `${(f as any).path || f.name}|${f.size}|${(f as any).lastModified || 0}`;
-            if (sourcePageCountCacheRef.current?.key === key) {
-                return sourcePageCountCacheRef.current.count;
-            }
-            const ab = await getFileArrayBuffer(f);
-            const doc = await PDFDocument.load(ab, { ignoreEncryption: true });
-            const count = doc.getPageCount();
-            sourcePageCountCacheRef.current = { key, count };
-            return count;
-        };
-
+        // Góc xoay khác 0 đã đủ chứng minh cần Working PDF; không đọc cả file chỉ
+        // để đếm trang trước khi làm một việc chắc chắn phải materialize.
+        const hasRotEdits = !!(
+            viewerPageRotations
+            && Object.values(viewerPageRotations).some(
+                (r: any) => (((r as number) % 360) + 360) % 360 !== 0,
+            )
+        );
         let hasOrderEdits = false;
         if (viewerPageOrder && viewerPageOrder.length > 0) {
-            const srcCount = await resolveSourcePageCount(activeFile);
-            const isIdentity =
-                viewerPageOrder.length === srcCount
-                && viewerPageOrder.every((p: number, i: number) => p === i + 1);
-            hasOrderEdits = !isIdentity;
+            const isIdentityPrefix = viewerPageOrder.every(
+                (p: number, i: number) => p === i + 1,
+            );
+            if (!isIdentityPrefix) {
+                // Reorder/duplicate/trang trắng (-1) nhìn thấy ngay từ state.
+                hasOrderEdits = true;
+            } else if (!hasRotEdits) {
+                // Chỉ ca xóa các trang cuối mới cần đọc source count để phân biệt
+                // [1..N] thật với một prefix đã bị cắt ngắn.
+                const srcCount = await resolveSourcePageCount(activeFile);
+                hasOrderEdits = viewerPageOrder.length !== srcCount;
+            }
         }
 
         // viewerPageRotations là number[] THEO VỊ TRÍ (luôn đầy độ dài, kể cả toàn 0 khi
         // chưa xoay gì) → KHÔNG dùng .length/keys để đoán "có sửa" (sẽ bật oan → bake thừa).
         // Kiểm CÓ GÓC KHÁC 0. Dữ liệu cũ Record<pageNum,deg> thì Object.values cũng chạy.
-        const hasRotEdits = !!(viewerPageRotations && Object.values(viewerPageRotations).some((r: any) => (((r as number) % 360) + 360) % 360 !== 0));
         if (!hasOrderEdits && !hasRotEdits) return activeFile;
 
         const rotations = viewerPageRotations || {};

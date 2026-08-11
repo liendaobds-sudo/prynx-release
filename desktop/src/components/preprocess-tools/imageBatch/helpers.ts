@@ -69,6 +69,11 @@ export async function normalizeAndAddFiles<O>(files: File[], tabId: string, stor
         } else {
             url = URL.createObjectURL(file);
         }
+        // UIUX (audit 2026-08-10 §UP.X.01): danh tính nội dung — path canonical nếu
+        // có, nếu không thì token ngẫu nhiên. Name+size không phải danh tính nội dung.
+        const identity = path
+            ? `path:${path}`
+            : `ingest:${Date.now()}-${Math.random().toString(36).substring(2)}`;
         newItems.push({
             id: Math.random().toString(36).substring(7),
             path: path || 'browser-file',
@@ -76,6 +81,7 @@ export async function normalizeAndAddFiles<O>(files: File[], tabId: string, stor
             originalUrl: url,
             status: 'pending',
             fileObj,
+            sourceIdentity: identity,
         });
     }
     if (newItems.length > 0) s.addItems(tabId, newItems);

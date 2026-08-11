@@ -10,7 +10,19 @@ export interface TileUrlSource {
   cacheable?: boolean;
 }
 
-type TileUrlCacheEntry = TileUrlSource;
+type TileUrlCacheEntry = TileUrlSource & { namespace: string };
+
+export function tileUrlCacheNamespaceForFileKey(fileKey: string): string {
+  // PERF (audit 2026-08-08 §RENDER.5): revision/color chỉ phân biệt bitmap;
+  // owner sống theo tài liệu nguồn để clearUnowned/release dọn đúng toàn bộ revision.
+  const revisionMarker = fileKey.indexOf('|revision:');
+  const colorMarker = fileKey.indexOf('|color:');
+  const markerPositions = [revisionMarker, colorMarker].filter(position => position >= 0);
+  const namespaceEnd = markerPositions.length > 0
+    ? Math.min(...markerPositions)
+    : fileKey.length;
+  return fileKey.slice(0, namespaceEnd);
+}
 
 export function tileUrlCacheBudgetForTotalRam(totalBytes: number | null): number | null {
   if (totalBytes === null || !Number.isSafeInteger(totalBytes) || totalBytes <= 0) return null;
@@ -23,6 +35,8 @@ export function tileUrlCacheBudgetForTotalRam(totalBytes: number | null): number
 
 export class TileUrlLruCache {
   private readonly entries = new Map<string, TileUrlCacheEntry>();
+  private readonly ownerNamespaces = new Map<string, string>();
+  private readonly namespaceOwners = new Map<string, Set<string>>();
   private _currentBytes = 0;
 
   constructor(
@@ -42,7 +56,7 @@ export class TileUrlLruCache {
     return entry.url;
   }
 
-  set(key: string, url: string, byteLength: number): boolean {
+  set(key: string, url: string, byteLength: number, namespace = key): boolean {
     const safeBytes = Number.isSafeInteger(byteLength) && byteLength >= 0 ? byteLength : 0;
     const previous = this.entries.get(key);
     if (previous) {
@@ -53,7 +67,7 @@ export class TileUrlLruCache {
 
     if (this.maxBytes !== null && safeBytes > this.maxBytes) return false;
     this.evictUntilFits(safeBytes);
-    this.entries.set(key, { url, byteLength: safeBytes });
+    this.entries.set(key, { url, byteLength: safeBytes, namespace });
     this._currentBytes += safeBytes;
     return true;
   }
@@ -88,6 +102,38 @@ export class TileUrlLruCache {
     for (const url of removedUrls) this.revokeIfUnused(url);
   }
 
+  clearNamespace(namespace: string): void {
+    if (!namespace) return;
+    this.removeWhere(entry => entry.namespace === namespace);
+  }
+
+  claimOwner(ownerId: string, namespace: string): void {
+    if (!ownerId || !namespace) return;
+    const currentNamespace = this.ownerNamespaces.get(ownerId);
+    if (currentNamespace === namespace) return;
+    if (currentNamespace) this.releaseOwner(ownerId);
+
+    this.ownerNamespaces.set(ownerId, namespace);
+    const owners = this.namespaceOwners.get(namespace) ?? new Set<string>();
+    owners.add(ownerId);
+    this.namespaceOwners.set(namespace, owners);
+  }
+
+  releaseOwner(ownerId: string): void {
+    const namespace = this.ownerNamespaces.get(ownerId);
+    if (!namespace) return;
+    this.ownerNamespaces.delete(ownerId);
+    const owners = this.namespaceOwners.get(namespace);
+    owners?.delete(ownerId);
+    if (owners && owners.size > 0) return;
+    this.namespaceOwners.delete(namespace);
+    this.clearNamespace(namespace);
+  }
+
+  clearUnowned(): void {
+    this.removeWhere(entry => !this.namespaceOwners.has(entry.namespace));
+  }
+
   private evictUntilFits(incomingBytes: number): void {
     while (
       this.maxBytes !== null
@@ -105,6 +151,17 @@ export class TileUrlLruCache {
 
   private revokeIfUnused(url: string): void {
     if (!this.hasUrl(url)) this.revokeUrl(url);
+  }
+
+  private removeWhere(predicate: (entry: TileUrlCacheEntry, key: string) => boolean): void {
+    const removedUrls = new Set<string>();
+    for (const [key, entry] of this.entries) {
+      if (!predicate(entry, key)) continue;
+      this.entries.delete(key);
+      this._currentBytes = Math.max(0, this._currentBytes - entry.byteLength);
+      removedUrls.add(entry.url);
+    }
+    for (const url of removedUrls) this.revokeIfUnused(url);
   }
 }
 
@@ -151,8 +208,13 @@ export function configureTileUrlCacheForHardware(): Promise<void> {
   return hardwarePolicyPromise;
 }
 
-export function cacheTileUrl(key: string, source: TileUrlSource): boolean {
-  return tileUrlCache.set(key, source.url, source.byteLength);
+export function cacheTileUrl(key: string, source: TileUrlSource, fileKey = key): boolean {
+  return tileUrlCache.set(
+    key,
+    source.url,
+    source.byteLength,
+    tileUrlCacheNamespaceForFileKey(fileKey),
+  );
 }
 
 export function getCachedTileUrl(key: string): string | undefined {
@@ -164,10 +226,20 @@ export function hasCachedTileUrl(url: string): boolean {
 }
 
 export function clearTileUrlCache(): void {
-  tileUrlCache.clear();
+  // PERF (audit 2026-08-08 §RENDER.8): mở file ở tab B chỉ dọn cache mồ côi;
+  // owner của tab A còn sống qua suspend nên Blob của A không bị revoke.
+  tileUrlCache.clearUnowned();
 }
 
 export function clearTileUrlCacheForFile(fileKeyPrefix: string): void {
   if (!fileKeyPrefix) return;
-  tileUrlCache.clearPrefix(`${fileKeyPrefix}_`);
+  tileUrlCache.clearNamespace(tileUrlCacheNamespaceForFileKey(fileKeyPrefix));
+}
+
+export function claimTileUrlCacheOwner(ownerId: string, fileKey: string): void {
+  tileUrlCache.claimOwner(ownerId, tileUrlCacheNamespaceForFileKey(fileKey));
+}
+
+export function releaseTileUrlCacheOwner(ownerId: string): void {
+  tileUrlCache.releaseOwner(ownerId);
 }

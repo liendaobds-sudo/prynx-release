@@ -65,7 +65,72 @@ pub enum ColorSpace {
     },
 }
 
+/// Bộ lọc nguồn/nội dung dùng bởi Output Preview.
+///
+/// Các biến thể đầu lọc theo **không gian màu khai trong PDF**, trước khi PPE quy
+/// về profile mô phỏng. Các biến thể cuối lọc theo loại thao tác vẽ. Giữ một enum
+/// ở biên public giúp native/backend từ chối giá trị lạ thay vì âm thầm trả trang
+/// không lọc nhưng UI vẫn hiện một lựa chọn khác.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum OutputPreviewFilter {
+    #[default]
+    All,
+    DeviceCmyk,
+    DeviceRgb,
+    DeviceGray,
+    Spot,
+    Text,
+    Images,
+    LineArt,
+    SmoothShades,
+}
+
+impl OutputPreviewFilter {
+    /// `true` khi lựa chọn lọc theo colorspace nguồn thay vì loại object.
+    pub fn filters_source_space(self) -> bool {
+        matches!(
+            self,
+            Self::DeviceCmyk | Self::DeviceRgb | Self::DeviceGray | Self::Spot
+        )
+    }
+
+    /// So khớp colorspace nguồn. Indexed/ICCBased giữ phân loại của base/alternate;
+    /// Separation và DeviceN vẫn là nguồn spot dù alternate của chúng là CMYK.
+    pub fn matches_color_space(self, color_space: &ColorSpace) -> bool {
+        match self {
+            Self::All | Self::Text | Self::Images | Self::LineArt | Self::SmoothShades => true,
+            Self::DeviceCmyk => color_space.source_family() == SourceColorFamily::DeviceCmyk,
+            Self::DeviceRgb => color_space.source_family() == SourceColorFamily::DeviceRgb,
+            Self::DeviceGray => color_space.source_family() == SourceColorFamily::DeviceGray,
+            Self::Spot => color_space.source_family() == SourceColorFamily::Spot,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceColorFamily {
+    DeviceCmyk,
+    DeviceRgb,
+    DeviceGray,
+    Spot,
+    Other,
+}
+
 impl ColorSpace {
+    fn source_family(&self) -> SourceColorFamily {
+        match self {
+            ColorSpace::DeviceCMYK => SourceColorFamily::DeviceCmyk,
+            ColorSpace::DeviceRGB => SourceColorFamily::DeviceRgb,
+            ColorSpace::DeviceGray => SourceColorFamily::DeviceGray,
+            ColorSpace::Separation { .. } | ColorSpace::DeviceN { .. } => SourceColorFamily::Spot,
+            ColorSpace::IccBased { alternate, .. }
+            | ColorSpace::Indexed {
+                base: alternate, ..
+            } => alternate.source_family(),
+            ColorSpace::Lab | ColorSpace::Pattern { .. } => SourceColorFamily::Other,
+        }
+    }
+
     /// Số thành phần màu mà operator `sc`/`scn`/`g`/`rg`/`k` cung cấp.
     pub fn n_components(&self) -> usize {
         match self {
@@ -920,6 +985,24 @@ mod tests {
             alternate: Box::new(ColorSpace::DeviceCMYK),
             tint: Arc::new(PdfFunction::Identity { n_out: 4 }),
         }
+    }
+
+    #[test]
+    fn output_preview_filter_uses_declared_source_family() {
+        assert!(OutputPreviewFilter::DeviceCmyk.matches_color_space(&ColorSpace::DeviceCMYK));
+        assert!(OutputPreviewFilter::DeviceRgb.matches_color_space(&ColorSpace::DeviceRGB));
+        assert!(OutputPreviewFilter::DeviceGray.matches_color_space(&ColorSpace::DeviceGray));
+        assert!(OutputPreviewFilter::Spot.matches_color_space(&sep("PANTONE 186 C")));
+        assert!(
+            OutputPreviewFilter::DeviceCmyk.matches_color_space(&ColorSpace::IccBased {
+                alternate: Box::new(ColorSpace::DeviceCMYK),
+                profile: None,
+            })
+        );
+        assert!(
+            !OutputPreviewFilter::DeviceCmyk.matches_color_space(&sep("PANTONE 186 C")),
+            "Separation không được phân loại theo alternate CMYK"
+        );
     }
 
     #[test]

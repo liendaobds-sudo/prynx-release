@@ -18,14 +18,14 @@
 pub const CORE_NAME: &str = "imposition_core";
 
 // Hợp đồng dữ liệu (Task 4). Các module toán điền ở Task 5.
-pub mod model;
-pub mod grid;
 pub mod assembler;
-pub mod sticker;
-pub mod shape;
-pub mod orchestrator;
+pub mod grid;
+pub mod model;
 pub mod nfp;
+pub mod orchestrator;
 pub mod ratio_stack;
+pub mod shape;
+pub mod sticker;
 
 pub use model::*;
 

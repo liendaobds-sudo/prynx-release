@@ -1,7 +1,7 @@
 //! Test tích hợp `CCITTFaxDecode` — ảnh scan đen trắng.
 //!
 //! Đây thường là **toàn bộ** nội dung của một trang bản vẽ hoặc bản can, nên trước
-//! khi có bộ giải mã này, cả trang bị nhường cho Ghostscript.
+//! khi có bộ giải mã này, cả trang bị đánh dấu chưa hỗ trợ.
 //!
 //! Dữ liệu G4 dùng ở đây do một encoder độc lập (libtiff) sinh ra từ một bitmap đã
 //! biết, nên test chốt được cả bảng mã lẫn đường nối vào tầng ảnh.

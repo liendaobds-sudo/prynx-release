@@ -2,8 +2,8 @@
 Action Engine — Tự động sửa lỗi PDF (giống Action Lists của Enfocus PitStop).
 
 Sử dụng:
-  - Ghostscript (CLI): Convert CMYK, Flatten Transparency, Embed Fonts, Downscale
-  - pikepdf (QPDF):    Sửa Metadata, Dictionary, structural repairs
+  - pikepdf + LittleCMS: chuyển màu, sửa object và cấu trúc PDF
+  - PrynX Print Engine: flatten transparency và outline chữ có hậu kiểm
 
 Actions:
   CONVERT_TO_CMYK       — Chuyển toàn bộ hệ màu sang CMYK + gắn ICC Profile
@@ -16,6 +16,7 @@ import asyncio
 import logging
 import os
 import shutil
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -24,12 +25,43 @@ from pathlib import Path
 import pikepdf
 
 from app.config import settings
-from app.core.gs_availability import (
+from app.core.engine_support import (
     InternalEngineUnsupported,
     unsupported_message,
 )
 
 logger = logging.getLogger(__name__)
+
+_CANCEL_EVENT_PARAM = "_prynx_cancel_event"
+
+
+def _remove_file_quietly(path: str) -> None:
+    """Dọn file riêng của tác vụ; lỗi dọn không được che lỗi nghiệp vụ gốc."""
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def _validate_staged_pdf(
+    input_path: str,
+    staged_path: str,
+    cancel_event: threading.Event,
+) -> None:
+    """Chỉ cho publish PDF đọc được, đủ trang và chưa bị yêu cầu hủy."""
+    if cancel_event.is_set():
+        raise InterruptedError("Tác vụ PDF đã bị hủy trước bước hậu kiểm.")
+    if not os.path.isfile(staged_path) or os.path.getsize(staged_path) == 0:
+        raise ValueError("Handler không tạo được file PDF kết quả hợp lệ.")
+    with pikepdf.open(input_path) as source_pdf, pikepdf.open(staged_path) as staged_pdf:
+        if len(staged_pdf.pages) != len(source_pdf.pages):
+            raise ValueError(
+                "Số trang của file kết quả không khớp file nguồn "
+                f"({len(staged_pdf.pages)} != {len(source_pdf.pages)})."
+            )
+    if cancel_event.is_set():
+        raise InterruptedError("Tác vụ PDF đã bị hủy sau bước hậu kiểm.")
 
 
 @dataclass
@@ -39,9 +71,8 @@ class ActionLogEntry:
     status: str           # "success" | "failed" | "skipped"
     message: str
     duration_ms: int = 0
-    # Engine đã THỰC SỰ chạy: "ppe" | "pikepdf" | "gs" | "channel_remover".
-    # Cần cho gate Phase 2 (§5) và để người dùng biết file vừa qua tay
-    # Ghostscript (dựng lại toàn bộ) hay chỉ bị sửa đúng object cần sửa.
+    # Engine đã THỰC SỰ chạy: "ppe" | "pikepdf" | "channel_remover".
+    # Cần để API báo đúng đường xử lý đã được dùng cho file kết quả.
     engine: str | None = None
     # Dữ liệu báo cáo bổ sung (vd report gỡ kênh: max/avg ΔE, OOG, warnings).
     # Để None với các action không sinh report. Task 11.2 sẽ surface lên FixResponse.
@@ -62,30 +93,29 @@ AVAILABLE_ACTIONS = {
     "CONVERT_TO_CMYK": {
         "title": "Chuyển đổi sang CMYK",
         "description": "Chuyển toàn bộ Object RGB sang hệ màu CMYK với ICC Profile chuẩn in offset.",
-        "engine": "pikepdf+ghostscript",
+        "engine": "pikepdf",
     },
     "FLATTEN_TRANSPARENCY": {
         "title": "Flatten Transparency",
         "description": "Xóa bỏ mọi hiệu ứng trong suốt (bóng đổ, blend mode) để máy CTP không bị lỗi.",
-        "engine": "ppe+ghostscript",
+        "engine": "ppe",
     },
     "OUTLINE_FONTS": {
         "title": "Khóa Font (Outline Text)",
         "description": "Chuyển toàn bộ chữ thành vector, hậu kiểm từng trang và dừng nếu không thể bảo toàn bản in.",
-        "engine": "pikepdf+ghostscript",
+        "engine": "pikepdf",
     },
-    # Hai action dưới chạy pikepdf khi làm được và chỉ rơi về Ghostscript khi
-    # cần; `engine` ở đây là engine DỰ KIẾN, còn engine thật của mỗi lần chạy
-    # nằm trong `ActionLogEntry.engine`.
+    # `engine` ở registry là đường dự kiến; engine thật của mỗi lần chạy nằm
+    # trong `ActionLogEntry.engine`.
     "EMBED_FONTS": {
         "title": "Nhúng Font (Embed)",
-        "description": "Thử nhúng các font chưa được embedded vào file PDF (kém an toàn hơn).",
-        "engine": "pikepdf+ghostscript",
+        "description": "Kiểm tra font đã nhúng; dừng an toàn nếu file còn font thiếu.",
+        "engine": "pikepdf",
     },
     "DOWNSCALE_IMAGES": {
         "title": "Giảm độ phân giải ảnh",
         "description": "Downscale ảnh > 600 DPI xuống 300 DPI để giảm dung lượng file.",
-        "engine": "pikepdf+ghostscript",
+        "engine": "pikepdf",
     },
     "FIX_METADATA": {
         "title": "Sửa Metadata",
@@ -97,10 +127,8 @@ AVAILABLE_ACTIONS = {
         "description": "Tăng độ dày các nét < 0.25pt để không bị mất khi in offset.",
         "engine": "pikepdf",
     },
-    # Đã rời Ghostscript từ lúc chuyển sang `app.core.overprint_black`: pdfwrite
-    # chỉ ghi `/OPM` chứ không ghi cờ `/OP`/`/op` nên object đen vẫn knockout —
-    # đường pikepdf chèn ExtGState vào đúng object mới thật sự bật overprint.
-    # Nhãn cũ còn sót lại làm gate Phase 2 đếm thiếu một action.
+    # Đường pikepdf chèn ExtGState vào đúng object đen để bật overprint thật sự;
+    # chỉ ghi `/OPM` mà thiếu `/OP`/`/op` vẫn khiến object đen knockout.
     "SET_BLACK_OVERPRINT": {
         "title": "Overprint Text Đen",
         "description": "Đặt overprint cho text và nét đen (K>95%), tránh lỗi knockout khi in offset.",
@@ -171,7 +199,6 @@ class ActionEngine:
     """
 
     def __init__(self):
-        self.gs_path = settings.GHOSTSCRIPT_PATH
         self.icc_dir = settings.ICC_PROFILE_DIR
         self.default_profile = settings.DEFAULT_CMYK_PROFILE
         self.output_dir = Path(settings.RESULTS_DIR) / "preflight_output"
@@ -179,8 +206,7 @@ class ActionEngine:
         # Buffer chứa report bổ sung của handler gần nhất (vd REMOVE_CHANNELS).
         self._last_report: dict | None = None
         # Engine THỰC TẾ đã chạy của handler gần nhất. Khác `AVAILABLE_ACTIONS
-        # [id]["engine"]` — đó chỉ là engine dự kiến; action có đường non-GS kèm
-        # fallback sẽ khai ở đây cái nào đã thật sự chạy.
+        # [id]["engine"]` — đó chỉ là engine dự kiến.
         self._last_engine: str | None = None
 
     async def execute(
@@ -196,10 +222,16 @@ class ActionEngine:
         stem = Path(original_name).stem if original_name else Path(pdf_path).stem
         output_name = f"{stem}_{action_id}_{uuid.uuid4().hex[:6]}.pdf"
         output_path = str(self.output_dir / output_name)
+        staged_path = str(
+            self.output_dir
+            / f".{Path(output_name).stem}.{uuid.uuid4().hex}.pending.pdf"
+        )
+        cancel_event = threading.Event()
         params = dict(params or {})
-        # GS-SUNSET (audit 2026-07-28 §3.7): input API cũ không được phép
-        # đổi engine; bỏ khóa trước khi bất kỳ handler nào đọc nó.
-        params.pop("force_gs", None)
+        # PERF/CORRECTNESS (audit 2026-08-10 §PPE.REAUDIT.3): cầu nối từ
+        # cancellation của coroutine xuống worker sync. Tên reserved luôn ghi
+        # đè input ngoài để caller không thể tráo token của tác vụ.
+        params[_CANCEL_EVENT_PARAM] = cancel_event
 
         start = datetime.now()
         try:
@@ -213,16 +245,39 @@ class ActionEngine:
             self._last_report = None
             self._last_engine = None
 
-            logger.debug(f"Calling handler for {action_id}...")
-            success = await handler(pdf_path, output_path, params)
-            logger.debug(f"Handler returned: {success}")
+            async def run_handler_and_publish() -> bool:
+                logger.debug("Calling handler for %s...", action_id)
+                handler_success = await handler(pdf_path, staged_path, params)
+                if not handler_success:
+                    return False
+                await asyncio.to_thread(
+                    _validate_staged_pdf,
+                    pdf_path,
+                    staged_path,
+                    cancel_event,
+                )
+                if cancel_event.is_set():
+                    raise InterruptedError("Tác vụ PDF đã bị hủy trước khi publish.")
+                # Staging nằm cùng thư mục nên os.replace là atomic trên cùng
+                # volume: API không bao giờ nhìn thấy PDF mới ghi được một phần.
+                os.replace(staged_path, output_path)
+                return True
 
-            # GS có thể trả returncode 0 mà KHÔNG ghi output (input hỏng, filter
-            # lỗi im lặng). Nếu handler báo success nhưng file không tồn tại / rỗng
-            # → coi là thất bại, tránh trả success rồi /download 404.
-            if success and (not os.path.exists(output_path) or os.path.getsize(output_path) == 0):
-                success = False
-                logger.error("Action %s: handler báo success nhưng output không hợp lệ: %s", action_id, output_path)
+            worker_task = asyncio.create_task(run_handler_and_publish())
+            try:
+                # shield giữ worker sống đủ lâu để nó nhận token và tự đóng tài
+                # nguyên; hủy Future của to_thread không dừng được thread thật.
+                success = await asyncio.shield(worker_task)
+            except asyncio.CancelledError:
+                cancel_event.set()
+                try:
+                    await asyncio.shield(worker_task)
+                except BaseException:  # worker có thể kết thúc bằng InterruptedError
+                    pass
+                _remove_file_quietly(staged_path)
+                _remove_file_quietly(output_path)
+                raise
+            logger.debug(f"Handler returned: {success}")
 
             duration = int((datetime.now() - start).total_seconds() * 1000)
 
@@ -258,14 +313,10 @@ class ActionEngine:
             )
 
         except InternalEngineUnsupported as exc:
-            # GS-SUNSET (audit 2026-07-28 §3.2): đây là REFUSED có chủ đích,
+            # GS-SUNSET (audit 2026-08-08 §GS.2): đây là REFUSED có chủ đích,
             # không phải lỗi hệ thống. Xoá mọi output dở để API không bao giờ
             # giao nhầm file của lần thử native vừa thất bại.
-            try:
-                if os.path.isfile(output_path):
-                    os.remove(output_path)
-            except OSError:
-                pass
+            _remove_file_quietly(output_path)
             duration = int((datetime.now() - start).total_seconds() * 1000)
             message = str(exc)
             logger.info("Action %s dừng an toàn: %s", action_id, message)
@@ -279,6 +330,7 @@ class ActionEngine:
             )
 
         except Exception as e:
+            _remove_file_quietly(output_path)
             import traceback
             tb = traceback.format_exc()
             duration = int((datetime.now() - start).total_seconds() * 1000)
@@ -291,6 +343,8 @@ class ActionEngine:
                     message=repr(e), duration_ms=duration,
                 )],
             )
+        finally:
+            _remove_file_quietly(staged_path)
 
     async def execute_batch(
         self, pdf_path: str, actions: list[dict], original_name: str | None = None
@@ -303,30 +357,41 @@ class ActionEngine:
         current_input = pdf_path
         final_output = None
 
-        for action_spec in actions:
-            action_id = action_spec.get("id", "")
-            params = action_spec.get("params", {})
+        try:
+            for action_spec in actions:
+                action_id = action_spec.get("id", "")
+                params = action_spec.get("params", {})
 
-            result = await self.execute(current_input, action_id, params, original_name=original_name if current_input == pdf_path else None)
-            all_logs.extend(result.log)
-
-            if not result.success:
-                return ActionResult(
-                    success=False,
-                    output_path=None,
-                    log=all_logs,
-                    error=f"Pipeline dừng tại '{action_id}': {result.error}",
+                result = await self.execute(
+                    current_input,
+                    action_id,
+                    params,
+                    original_name=original_name if current_input == pdf_path else None,
                 )
+                all_logs.extend(result.log)
 
-            # Clean up intermediate files (keep only final output)
-            if final_output and os.path.exists(final_output) and final_output != pdf_path:
-                try:
-                    os.remove(final_output)
-                except OSError:
-                    pass
+                if not result.success:
+                    # Pipeline không trả file từng chặng; giữ nó lại khi bước
+                    # sau fail/cancel chỉ tạo orphan trong results.
+                    if final_output and final_output != pdf_path:
+                        _remove_file_quietly(final_output)
+                    return ActionResult(
+                        success=False,
+                        output_path=None,
+                        log=all_logs,
+                        error=f"Pipeline dừng tại '{action_id}': {result.error}",
+                    )
 
-            final_output = result.output_path
-            current_input = result.output_path
+                # Clean up intermediate files (keep only final output)
+                if final_output and final_output != pdf_path:
+                    _remove_file_quietly(final_output)
+
+                final_output = result.output_path
+                current_input = result.output_path
+        except asyncio.CancelledError:
+            if final_output and final_output != pdf_path:
+                _remove_file_quietly(final_output)
+            raise
 
         return ActionResult(
             success=True,
@@ -334,200 +399,86 @@ class ActionEngine:
             log=all_logs,
         )
 
+    def _refuse_unsupported(self, action_id: str, details: str = "") -> None:
+        """Dừng tác vụ khi engine nội bộ không bảo toàn chắc chắn được file."""
+        # GS-SUNSET (audit 2026-08-08 §GS.2): từ chối ngay tại điểm quyết định,
+        # không dựng lệnh hoặc làm tiền xử lý cho đường engine đã bị loại bỏ.
+        self._last_engine = "none"
+        if details:
+            logger.info("%s: engine nội bộ từ chối (%s)", action_id, details)
+        raise InternalEngineUnsupported(
+            unsupported_message(AVAILABLE_ACTIONS[action_id]["title"])
+        )
+
     # ────────────────────────────────────────────────────────
     #  ACTION HANDLERS
     # ────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _detect_spot_names(pdf_path: str) -> list[str]:
-        """Liệt kê tên màu Spot/Separation/DeviceN trong file (best-effort).
-
-        Dùng để cảnh báo trước khi CONVERT_TO_CMYK: GS ``ColorConversionStrategy=
-        CMYK`` có thể chuyển các kênh này thành process → mất kênh bế/khắc (Dieline,
-        CutContour) và màu pha (Pantone). Chỉ đọc, không sửa file.
-        """
-        names: set[str] = set()
-        try:
-            with pikepdf.open(pdf_path) as pdf:
-                for page in pdf.pages:
-                    res = page.get("/Resources")
-                    if not res:
-                        continue
-                    cs_dict = res.get("/ColorSpace")
-                    if not cs_dict:
-                        continue
-                    try:
-                        items = list(cs_dict.items())
-                    except Exception:
-                        continue
-                    for _n, ref in items:
-                        try:
-                            cs = ref.resolve() if hasattr(ref, "resolve") and callable(getattr(ref, "resolve", None)) else ref
-                            if not isinstance(cs, pikepdf.Array) or len(cs) < 2:
-                                continue
-                            head = str(cs[0])
-                            if head == "/Separation":
-                                names.add(str(cs[1]).lstrip("/"))
-                            elif head == "/DeviceN":
-                                comp = cs[1]
-                                comp = comp.resolve() if hasattr(comp, "resolve") and callable(getattr(comp, "resolve", None)) else comp
-                                if isinstance(comp, pikepdf.Array):
-                                    for c in comp:
-                                        names.add(str(c).lstrip("/"))
-                        except Exception:
-                            continue
-        except Exception:
-            pass
-        return sorted(names)
-
     async def _action_convert_to_cmyk(
         self, input_path: str, output_path: str, params: dict
     ) -> bool:
-        """Convert all RGB objects to CMYK using Ghostscript + ICC profile.
+        """Chuyển object RGB sang CMYK bằng pikepdf + LittleCMS.
 
-        An toàn màu (khác GS thô):
-          - Pre-pass GIỮ ĐEN 100%K: GS biến RGB(0,0,0) thành rich-black 4 màu (lệch
-            chồng màu chữ đen). Đổi RGB-đen-thuần → DeviceGray trước để GS map K-only.
-          - ``-dConvertCMYKImagesToProcess=false``: giữ ảnh vốn đã CMYK, không re-sep.
-          - Cảnh báo spot/dieline: GS có thể chuyển Separation/DeviceN → process, mất
-            kênh bế (CutContour/Dieline) và màu pha (Pantone). ``skip_black_prepass``
-            để bỏ pre-pass giữ đen.
+        Đường object-level giữ nguyên Separation/DeviceN, vì vậy kênh bế và màu
+        pha không bị đổi thành process. Nếu gặp cấu trúc chưa hỗ trợ, tác vụ dừng
+        an toàn thay vì dựng lại cả tài liệu bằng một engine khác.
         """
-        import os
-        import tempfile
-
         profile_name = params.get("icc_profile", self.default_profile)
         icc_path = os.path.join(self.icc_dir, profile_name)
+        cancel_event = params.get(_CANCEL_EVENT_PARAM)
 
         if not os.path.exists(icc_path):
             raise FileNotFoundError(f"ICC Profile không tìm thấy: {icc_path}")
 
-        warnings: list[str] = []
-
-        # ── Đường object-level (pikepdf + lcms) ──
-        # Ưu điểm quyết định so với GS ở đây KHÔNG phải tốc độ mà là **spot sống**:
-        # pdfwrite thường nuốt Separation/DeviceN thành process, tức mất kênh bế và
-        # màu pha — chính thứ cảnh báo bên dưới đang phải dặn người dùng tự kiểm.
-        # Đường này không đụng tới spot nên cảnh báo đó cũng không còn cần thiết.
-        if not params.get("force_gs"):
-            try:
-                from app.core import icc_profiles, pdf_actions_native
-
-                srgb = icc_profiles.resolve_srgb_profile_path()
-                native = None
-                if srgb:
-                    native = await asyncio.to_thread(
-                        pdf_actions_native.convert_to_cmyk,
-                        input_path,
-                        output_path,
-                        icc_path,
-                        srgb,
-                    )
-            except Exception as e:  # noqa: BLE001
-                logger.warning("CONVERT_TO_CMYK object-level lỗi, fallback GS: %s", e)
-                native = None
-
-            if native is not None and native.get("supported"):
-                self._last_engine = "pikepdf"
-                report_warnings = list(native.get("warnings", []))
-                report_warnings.append(
-                    "Chuyển ở mức object: màu Spot/Separation được GIỮ NGUYÊN "
-                    "(kênh bế, Pantone không bị nuốt thành process)."
-                )
-                self._last_report = {
-                    "color_ops_converted": native.get("ops", 0),
-                    "images_converted": native.get("images", 0),
-                    "warnings": report_warnings,
-                }
-                return True
-            if native is not None:
-                logger.info(
-                    "CONVERT_TO_CMYK: object-level không xử lý được (%s) → Ghostscript",
-                    "; ".join(native.get("blockers", [])),
-                )
-                warnings.append(
-                    "Dùng Ghostscript vì "
-                    + "; ".join(native.get("blockers", []))
-                    + " — đường này CÓ THỂ chuyển Spot thành process."
-                )
-
-        self._last_engine = "gs"
-
-        # ── Cảnh báo spot/dieline trước khi chuyển ──
         try:
-            spots = await asyncio.to_thread(self._detect_spot_names, input_path)
-            if spots:
-                shown = ", ".join(spots[:6])
-                more = f" (+{len(spots) - 6})" if len(spots) > 6 else ""
-                warnings.append(
-                    f"File có màu Spot/Separation: {shown}{more}. Convert CMYK có thể "
-                    "chuyển các kênh này thành process → MẤT kênh bế (CutContour/"
-                    "Dieline) hoặc màu pha (Pantone). Kiểm tra kỹ trước khi in."
+            from app.core import icc_profiles, pdf_actions_native
+
+            srgb = icc_profiles.resolve_srgb_profile_path()
+            native = None
+            if srgb:
+                native = await asyncio.to_thread(
+                    pdf_actions_native.convert_to_cmyk,
+                    input_path,
+                    output_path,
+                    icc_path,
+                    srgb,
+                    cancel_check=cancel_event.is_set if cancel_event else None,
                 )
-        except Exception as e:
-            logger.debug("detect spot names failed: %s", e)
+        except Exception as exc:  # noqa: BLE001
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("Tác vụ chuyển CMYK đã bị hủy.") from exc
+            logger.warning("CONVERT_TO_CMYK: engine nội bộ lỗi: %s", exc)
+            native = None
 
-        # ── Pre-pass giữ đen 100%K ──
-        gs_input = input_path
-        tmp_pb: str | None = None
-        if not params.get("skip_black_prepass"):
-            from app.core.preserve_black import force_pure_black_to_gray
-            fd, tmp_pb = tempfile.mkstemp(suffix="_pb.pdf", dir=str(self.output_dir))
-            os.close(fd)
-            try:
-                await asyncio.to_thread(force_pure_black_to_gray, input_path, tmp_pb)
-                gs_input = tmp_pb
-            except Exception as pe:
-                logger.warning("Pre-pass giữ đen thất bại (%s) — tiếp tục không pre-pass.", pe)
-                if os.path.exists(tmp_pb):
-                    os.remove(tmp_pb)
-                tmp_pb = None
-                gs_input = input_path
+        if native is not None and native.get("supported"):
+            self._last_engine = "pikepdf"
+            report_warnings = list(native.get("warnings", []))
+            report_warnings.append(
+                "Chuyển ở mức object: màu Spot/Separation được GIỮ NGUYÊN "
+                "(kênh bế, Pantone không bị đổi thành process)."
+            )
+            self._last_report = {
+                "color_ops_converted": native.get("ops", 0),
+                "images_converted": native.get("images", 0),
+                "warnings": report_warnings,
+            }
+            return True
 
-        cmd = [
-            self.gs_path,
-            # NOSAFER: CONVERT_TO_CMYK phải đọc file ICC bundle ngoài (GS 10 mặc
-            # định SAFER chặn). Các action GS khác dùng SAFER (không đọc file ngoài).
-            "-dNOSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
-            "-sDEVICE=pdfwrite",
-            "-dPDFSETTINGS=/prepress",
-            "-dAutoRotatePages=/None",
-            "-sColorConversionStrategy=CMYK",
-            "-sProcessColorModel=DeviceCMYK",
-            "-dConvertCMYKImagesToProcess=false",
-            f"-sOutputICCProfile={icc_path}",
-            "-dOverrideICC=true",
-            f"-sOutputFile={output_path}",
-            gs_input,
-        ]
-        try:
-            ok = await self._run_gs(cmd, "CONVERT_TO_CMYK")
-        finally:
-            if tmp_pb and os.path.exists(tmp_pb):
-                try:
-                    os.remove(tmp_pb)
-                except OSError:
-                    pass
-
-        if ok and warnings:
-            self._last_report = {"warnings": warnings}
-        return ok
+        blockers = "; ".join((native or {}).get("blockers", []))
+        self._refuse_unsupported("CONVERT_TO_CMYK", blockers)
 
     async def _action_flatten_transparency(
         self, input_path: str, output_path: str, params: dict
     ) -> bool:
-        """Flatten all transparency in the PDF using Ghostscript.
-
-        Ép ``-dCompatibilityLevel=1.3`` (PDF 1.3 không hỗ trợ trong suốt nên GS
-        buộc phải flatten thật). Nhưng hạ xuống 1.3 cũng ĐÁNH MẤT OCG (layer) và
-        có thể chuyển spot→process ở vùng chồng lấp. Đây là đánh đổi cố hữu, không
-        sửa được bằng cờ khác → dò trước và CẢNH BÁO để người dùng biết.
-        """
+        """Flatten transparency bằng PPE, có cảnh báo về layer và màu pha."""
         warnings: list[str] = []
+        cancel_event = params.get(_CANCEL_EVENT_PARAM)
         try:
             has_ocg, has_spot = await asyncio.to_thread(
                 self._detect_ocg_and_spot, input_path
             )
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("Tác vụ flatten đã bị hủy.")
             if has_ocg:
                 warnings.append(
                     "File có Layer (OCG). Flatten hạ PDF về 1.3 sẽ GỘP/MẤT layer — "
@@ -542,53 +493,34 @@ class ActionEngine:
         except Exception as e:
             logger.debug("detect OCG/spot trước flatten thất bại: %s", e)
 
-        # Đường object-level: file KHÔNG có trong suốt thì không đụng gì (ca phổ
-        # biến nhất — người dùng bấm nút phòng xa). File có trong suốt thì raster
-        # hoá qua PPE và **nói rõ mất gì**; Ghostscript cũng phá y vậy (gộp/mất
-        # OCG, spot→process) nhưng phá âm thầm.
-        if not params.get("force_gs"):
-            try:
-                from app.core import pdf_actions_native
+        # File không có trong suốt thì PPE chỉ sao chép cấu trúc. File có trong
+        # suốt được raster hoá và báo rõ phần layer/màu pha có thể bị hợp nhất.
+        try:
+            from app.core import pdf_actions_native
 
-                native = await asyncio.to_thread(
-                    pdf_actions_native.flatten_transparency,
-                    input_path,
-                    output_path,
-                    float(params.get("dpi", 300)),
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning("FLATTEN_TRANSPARENCY object-level lỗi, fallback GS: %s", e)
-                native = None
+            native = await asyncio.to_thread(
+                pdf_actions_native.flatten_transparency,
+                input_path,
+                output_path,
+                float(params.get("dpi", 300)),
+                cancel_check=cancel_event.is_set if cancel_event else None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("Tác vụ flatten đã bị hủy.") from exc
+            logger.warning("FLATTEN_TRANSPARENCY: PPE lỗi: %s", exc)
+            native = None
 
-            if native is not None and native.get("supported"):
-                self._last_engine = "ppe"
-                self._last_report = {
-                    "pages_rasterized": native.get("flattened", 0),
-                    "warnings": warnings + list(native.get("warnings", [])),
-                }
-                return True
-            if native is not None:
-                logger.info(
-                    "FLATTEN_TRANSPARENCY: PPE không xử lý được (%s) → Ghostscript",
-                    "; ".join(native.get("warnings", [])),
-                )
+        if native is not None and native.get("supported"):
+            self._last_engine = "ppe"
+            self._last_report = {
+                "pages_rasterized": native.get("flattened", 0),
+                "warnings": warnings + list(native.get("warnings", [])),
+            }
+            return True
 
-        self._last_engine = "gs"
-        cmd = [
-            self.gs_path,
-            "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
-            "-sDEVICE=pdfwrite",
-            "-dPDFSETTINGS=/prepress",
-            "-dAutoRotatePages=/None",
-            "-dCompatibilityLevel=1.3",  # Force PDF 1.3 (physically flattens transparency)
-            "-dBackgroundColor=16#ffffff", # Fallback for alpha channels
-            f"-sOutputFile={output_path}",
-            input_path,
-        ]
-        ok = await self._run_gs(cmd, "FLATTEN_TRANSPARENCY")
-        if ok and warnings:
-            self._last_report = {"warnings": warnings}
-        return ok
+        details = "; ".join((native or {}).get("warnings", []))
+        self._refuse_unsupported("FLATTEN_TRANSPARENCY", details)
 
     @staticmethod
     def _detect_ocg_and_spot(pdf_path: str) -> tuple[bool, bool]:
@@ -639,395 +571,149 @@ class ActionEngine:
     async def _action_embed_fonts(
         self, input_path: str, output_path: str, params: dict
     ) -> bool:
-        """Nhúng font còn thiếu — bỏ qua Ghostscript khi file vốn đã đủ font.
+        """Xác nhận font đã đủ và giữ nguyên file ở mức object.
 
         Phần lớn file thực tế đã nhúng hết font (hoặc chỉ dùng base-14, thứ theo
-        §9.6.2.2 không cần nhúng). Với những file đó, chạy Ghostscript là dựng
-        lại toàn bộ tài liệu để thu về đúng thứ đang có — đổi lại là subset lại
-        font, quy đổi colorspace và mất optional content. Ở đây ta kiểm tra
-        trước bằng pikepdf và chỉ sao chép file.
+        §9.6.2.2 không cần nhúng). Với những file đó, chỉ cần kiểm tra bằng
+        pikepdf rồi sao chép nguyên vẹn.
 
         Khi có font **thiếu thật**, đường native cố tình KHÔNG tự nhúng thay:
         muốn nhúng một font không nằm trong file thì phải mượn font hệ thống
         rồi dựng lại ``/Widths``/``/Encoding``; sai một bảng width là chữ chạy
-        — tràn khung, lệch ngắt dòng — và lỗi đó chỉ lộ ra lúc in. Việc đó giao
-        cho Ghostscript, nơi đã có sẵn bộ font thay thế và logic dựng lại.
-
-        ``params``: ``force_gs`` — bỏ qua kiểm tra, dùng thẳng Ghostscript.
+        — tràn khung, lệch ngắt dòng — và lỗi đó chỉ lộ ra lúc in. Vì vậy file
+        thiếu font phải dừng an toàn để người dùng cung cấp bản đã nhúng font.
         """
-        if not params.get("force_gs"):
-            try:
-                from app.core import pdf_actions_native
+        _ = params
+        try:
+            from app.core import pdf_actions_native
 
-                info = await asyncio.to_thread(
-                    pdf_actions_native.analyze_font_embedding, input_path
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning("EMBED_FONTS phân tích font lỗi, fallback GS: %s", e)
-                info = None
+            info = await asyncio.to_thread(
+                pdf_actions_native.analyze_font_embedding, input_path
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("EMBED_FONTS: không phân tích được font: %s", exc)
+            info = None
 
-            # `readable=False` nghĩa là KHÔNG ĐỌC ĐƯỢC file, không phải
-            # "không thiếu font" — coi hai thứ đó như nhau là bỏ qua bước
-            # nhúng trên đúng file đang hỏng.
-            if info is not None and info.get("readable", True) and not info.get("missing"):
-                shutil.copyfile(input_path, output_path)
-                self._last_engine = "pikepdf"
-                warnings = list(info.get("warnings", []))
-                n_emb = len(info.get("embedded", []))
-                n_b14 = len(info.get("base14", []))
-                self._last_report = {
-                    "fonts_embedded": n_emb,
-                    "fonts_base14": n_b14,
-                    "warnings": warnings,
-                }
-                logger.info(
-                    "EMBED_FONTS: %d font đã nhúng, %d base-14 — không cần dựng lại file.",
-                    n_emb, n_b14,
-                )
-                return True
-            if info is not None:
-                logger.info(
-                    "EMBED_FONTS: %d font chưa nhúng (%s) → Ghostscript",
-                    len(info["missing"]), ", ".join(info["missing"][:5]),
-                )
+        # `readable=False` nghĩa là KHÔNG ĐỌC ĐƯỢC file, không phải
+        # "không thiếu font" — coi hai thứ đó như nhau là bỏ qua bước nhúng trên
+        # đúng file đang hỏng.
+        if info is not None and info.get("readable", True) and not info.get("missing"):
+            shutil.copyfile(input_path, output_path)
+            self._last_engine = "pikepdf"
+            warnings = list(info.get("warnings", []))
+            n_emb = len(info.get("embedded", []))
+            n_b14 = len(info.get("base14", []))
+            self._last_report = {
+                "fonts_embedded": n_emb,
+                "fonts_base14": n_b14,
+                "warnings": warnings,
+            }
+            logger.info(
+                "EMBED_FONTS: %d font đã nhúng, %d base-14 — giữ nguyên file.",
+                n_emb, n_b14,
+            )
+            return True
 
-        self._last_engine = "gs"
-        cmd = [
-            self.gs_path,
-            "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
-            "-sDEVICE=pdfwrite",
-            "-dPDFSETTINGS=/prepress",
-            "-dAutoRotatePages=/None",
-            "-dEmbedAllFonts=true",
-            "-dSubsetFonts=true",
-            f"-sOutputFile={output_path}",
-            input_path,
-        ]
-        return await self._run_gs(cmd, "EMBED_FONTS")
+        missing = ", ".join((info or {}).get("missing", [])[:5])
+        self._refuse_unsupported("EMBED_FONTS", missing)
 
     async def _action_outline_fonts(
         self, input_path: str, output_path: str, params: dict
     ) -> bool:
-        """Convert all text to outlines (curves) — triệt để hơn GS đơn thuần.
+        """Chuyển chữ thành path bằng fontTools và hậu kiểm hình in.
 
-        GS ``-dNoOutputFonts`` chỉ outline text trong content stream trang; nó BỎ
-        SÓT text trong annotation / AcroForm field, và với font CHƯA nhúng thì mượn
-        font hệ thống → dễ rơi ký tự (tiếng Việt có dấu). Pipeline:
-
-          1. Embed font chưa nhúng (GS ``-dEmbedAllFonts``) để outline dùng đúng
-             glyph gốc; dò lại để cảnh báo font GS KHÔNG nhúng được (thật sự thiếu).
-          2. Flatten annotation + form field vào content stream (bake text ẩn).
-          3. GS ``-dNoOutputFonts`` outline toàn bộ content stream.
-          4. Verify: đếm text còn sót, cảnh báo nếu chưa triệt để.
-
-        Params:
-          - ``skip_embed=True``   bỏ bước embed (khi caller đã tự embed).
-          - ``skip_flatten=True`` bỏ bước flatten (khi caller đã tự flatten).
-          - ``force_gs=True``     bỏ qua đường object-level.
+        Engine chỉ nhận font có dữ liệu glyph nhúng và cấu trúc chữ đã hỗ trợ.
+        Annotation/AcroForm được PPE bake vào content stream bên trong pipeline;
+        mọi ca không chứng minh được tính tương đương đều dừng an toàn.
         """
-        import os
-
-        # Đường object-level: dựng lại chữ thành path bằng fontTools, chỉ đụng
-        # content stream. Kết quả LUÔN được verify bằng cách so kẽm với bản gốc
-        # — một ma trận chữ sai cho ra file trông vẫn "có chữ" và lỗi chỉ lộ khi
-        # bản in đã chạy, nên không verify thì không được dùng.
-        if not params.get("force_gs"):
-            try:
-                from app.core import outline_text
-
-                native = await asyncio.to_thread(
-                    outline_text.outline_fonts, input_path, output_path
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning("OUTLINE_FONTS object-level lỗi, fallback GS: %s", e)
-                native = None
-
-            if native is not None and native.get("supported"):
-                self._last_engine = "pikepdf"
-                self._last_report = {
-                    "glyphs_outlined": native.get("glyphs", 0),
-                    "warnings": list(native.get("warnings", [])),
-                }
-                return True
-            if native is not None:
-                logger.info(
-                    "OUTLINE_FONTS: object-level không dùng được (%s) → Ghostscript",
-                    "; ".join(native.get("warnings", [])),
-                )
-
-        self._last_engine = "gs"
-        import tempfile
-
-        from app.core.outline_fonts import (
-            count_live_text,
-            detect_unembedded_fonts,
-            flatten_annotations_and_forms,
-        )
-
-        warnings: list[str] = []
-        # File tạm trung gian cần dọn ở cuối (embed / flatten output).
-        temps: list[str] = []
-
-        def _mk_temp(suffix: str) -> str:
-            fd, path = tempfile.mkstemp(suffix=suffix, dir=str(self.output_dir))
-            os.close(fd)
-            temps.append(path)
-            return path
-
-        def _cleanup_temps() -> None:
-            for path in temps:
-                if os.path.exists(path):
-                    try:
-                        os.remove(path)
-                    except OSError:
-                        pass
-
-
-        current_input = input_path
-
-        # ── (1) Embed font chưa nhúng TRƯỚC khi outline ──
-        # Outline (GS -dNoOutputFonts) vẽ glyph theo font mà GS phân giải được. Nếu
-        # font chưa nhúng, GS mượn font hệ thống → sai mặt chữ / rơi ký tự có dấu.
-        # Embed trước (GS tự tìm & nhúng nếu có) giúp outline dùng đúng glyph gốc.
+        cancel_event = params.get(_CANCEL_EVENT_PARAM)
         try:
-            unembedded_before = await asyncio.to_thread(
-                detect_unembedded_fonts, current_input
+            from app.core import outline_text
+
+            native = await asyncio.to_thread(
+                outline_text.outline_fonts,
+                input_path,
+                output_path,
+                cancel_check=cancel_event.is_set if cancel_event else None,
             )
-        except Exception as e:
-            warnings.append(f"Không kiểm tra được trạng thái nhúng font: {e}")
-            self._last_report = {"warnings": warnings}
-            # OUT-FONT (audit 2026-07-27 §4.3): không được fail-open ở bước
-            # quyết định có phải mượn font thay thế hay không.
-            _cleanup_temps()
-            return False
+        except Exception as exc:  # noqa: BLE001
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("Tác vụ outline chữ đã bị hủy.") from exc
+            logger.warning("OUTLINE_FONTS: engine nội bộ lỗi: %s", exc)
+            native = None
 
-        if unembedded_before and not params.get("skip_embed"):
-            tmp_embed = _mk_temp("_embed.pdf")
-            embed_cmd = [
-                self.gs_path,
-                "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
-                "-sDEVICE=pdfwrite",
-                "-dPDFSETTINGS=/prepress",
-                "-dAutoRotatePages=/None",
-                "-dEmbedAllFonts=true",
-                "-dSubsetFonts=true",
-                f"-sOutputFile={tmp_embed}",
-                current_input,
-            ]
-            try:
-                if await self._run_gs(embed_cmd, "OUTLINE_FONTS(embed)"):
-                    current_input = tmp_embed
-                    logger.info("OUTLINE_FONTS: embed font trước outline")
-            except Exception as e:
-                logger.warning("OUTLINE_FONTS embed skipped: %s", e)
-
-            # Dò lại: font còn chưa nhúng SAU embed = GS không tìm được (thật sự
-            # thiếu) → outline sẽ dùng font thay thế cho chính các font này.
-            try:
-                still = await asyncio.to_thread(detect_unembedded_fonts, current_input)
-            except Exception:
-                still = unembedded_before
-            if still:
-                shown = ", ".join(still[:5])
-                more = f" (+{len(still) - 5})" if len(still) > 5 else ""
-                warnings.append(
-                    f"Không nhúng được font: {shown}{more} (không có sẵn trong hệ "
-                    "thống). Tác vụ đã dừng để tránh dùng font thay thế làm SAI mặt "
-                    "chữ hoặc RƠI ký tự có dấu; cần bản có nhúng font gốc."
-                )
-                self._last_report = {"warnings": warnings}
-                # Thiếu font gốc thì dừng; tạo path từ font thay thế vẫn là
-                # một file hợp lệ về kỹ thuật nhưng có thể sai mặt chữ khi in.
-                _cleanup_temps()
-                return False
-        elif unembedded_before:
-            # skip_embed: chỉ cảnh báo, không tự embed.
-            shown = ", ".join(unembedded_before[:5])
-            more = f" (+{len(unembedded_before) - 5})" if len(unembedded_before) > 5 else ""
-            warnings.append(
-                f"Font chưa nhúng: {shown}{more}. Khi outline, GS phải mượn font "
-                "thay thế → có thể SAI mặt chữ hoặc RƠI ký tự (đặc biệt chữ có dấu)."
-            )
-
-            self._last_report = {"warnings": warnings}
-            _cleanup_temps()
-            return False
-        if unembedded_before and current_input != input_path:
-            # GS có thể nhúng một font thay thế rồi làm danh sách `still` rỗng;
-            # so kẽm ngay sau bước embed để không coi đó là thành công an toàn.
-            from app.core.outline_text import verify_outline
-
-            embed_ok, reason = await asyncio.to_thread(
-                verify_outline, input_path, current_input
-            )
-            if not embed_ok:
-                warnings.append(f"So kẽm sau khi nhúng font thất bại: {reason}")
-                self._last_report = {"warnings": warnings}
-                _cleanup_temps()
-                return False
-
-
-        # ── (2) Flatten annotation / form field ──
-        if not params.get("skip_flatten"):
-            tmp_flat = _mk_temp("_flat.pdf")
-            try:
-                flattened = await asyncio.to_thread(
-                    flatten_annotations_and_forms, current_input, tmp_flat
-                )
-                if flattened > 0:
-                    current_input = tmp_flat
-                    logger.info("OUTLINE_FONTS: flatten %d trang trước outline", flattened)
-            except Exception as e:
-                logger.warning("OUTLINE_FONTS flatten skipped: %s", e)
-
-        # ── (3) GS outline ──
-        outline_source = current_input
-        cmd = [
-            self.gs_path,
-            "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
-            "-sDEVICE=pdfwrite",
-            "-dPDFSETTINGS=/prepress",
-            "-dAutoRotatePages=/None",
-            "-dNoOutputFonts",
-            f"-sOutputFile={output_path}",
-            outline_source,
-        ]
-        accepted = False
-        try:
-            ok = await self._run_gs(cmd, "OUTLINE_FONTS")
-            if not ok:
-                return False
-
-            # ── (4) Verify không còn text sống ──
-            try:
-                live = await asyncio.to_thread(count_live_text, output_path)
-            except Exception as e:
-                warnings.append(f"Không hậu kiểm được text sống: {e}")
-                self._last_report = {"warnings": warnings}
-                return False
-
-            if live.get("content_chars", 0) > 0:
-                warnings.append(
-                    f"Còn {live['content_chars']} ký tự text sống sau outline. "
-                    "Tác vụ đã dừng để tránh giao bản in còn phụ thuộc font."
-                )
-            if live.get("annot_text_pages"):
-                pages = ", ".join(str(p) for p in live["annot_text_pages"][:10])
-                warnings.append(
-                    f"Còn annotation mang text ở trang: {pages}. "
-                    "Tác vụ đã dừng vì phần này chưa được outline."
-                )
-            if warnings:
-                self._last_report = {"warnings": warnings}
-                return False
-
-            # OUT-FONT (audit 2026-07-27 §4.2): GS cũng phải qua cùng chốt
-            # so-kẽm mọi trang; text đã biến mất chưa đủ chứng minh hình in giữ nguyên.
-            from app.core.outline_text import verify_outline
-
-            visual_ok, reason = await asyncio.to_thread(
-                verify_outline, outline_source, output_path
-            )
-            if not visual_ok:
-                warnings.append(f"So kẽm sau outline thất bại: {reason}")
-                self._last_report = {"warnings": warnings}
-                return False
-            accepted = True
+        if native is not None and native.get("supported"):
+            self._last_engine = "pikepdf"
+            self._last_report = {
+                "glyphs_outlined": native.get("glyphs", 0),
+                "warnings": list(native.get("warnings", [])),
+            }
             return True
-        finally:
-            _cleanup_temps()
-            # Output đã bị hậu kiểm từ chối không được nằm lại trong thư mục
-            # tải kết quả như một file tưởng là dùng được.
-            if not accepted and os.path.exists(output_path):
-                try:
-                    os.remove(output_path)
-                except OSError:
-                    pass
+
+        details = "; ".join((native or {}).get("warnings", []))
+        self._refuse_unsupported("OUTLINE_FONTS", details)
 
     async def _action_downscale_images(
         self, input_path: str, output_path: str, params: dict
     ) -> bool:
-        """Hạ ảnh vượt ngưỡng DPI — ưu tiên object-level (pikepdf), fallback GS.
+        """Hạ ảnh vượt ngưỡng DPI ở mức image object bằng pikepdf.
 
         Đường pikepdf chỉ sửa đúng những image XObject vượt ngưỡng và giữ nguyên
-        phần còn lại của file; Ghostscript thì dựng lại toàn bộ tài liệu, kéo
-        theo subset lại font và quy đổi colorspace mà người dùng không yêu cầu.
-
-        Fallback sang GS khi đường native **không đụng được ảnh nào** dù file có
-        ảnh vượt ngưỡng (codec lạ, colorspace spot, ảnh Indexed): thà để GS làm
-        còn hơn báo thành công mà không sửa gì.
+        phần còn lại của file. Nếu file chỉ có ảnh vượt ngưỡng thuộc codec hoặc
+        colorspace chưa hỗ trợ, tác vụ dừng an toàn thay vì báo thành công giả.
 
         ``params``:
           * ``target_dpi`` (mặc định 300) — DPI đích sau khi hạ.
           * ``max_dpi``    (mặc định 600) — chỉ hạ ảnh vượt mức này. Trùng
             ``ImageRules.MAX_IMAGE_DPI`` để action và rule phát hiện dùng chung
             một thước đo.
-          * ``force_gs``   — bỏ qua đường native, dùng thẳng Ghostscript.
         """
         target_dpi = params.get("target_dpi", 300)
         max_dpi = params.get("max_dpi", 600)
 
-        if not params.get("force_gs"):
-            try:
-                from app.core import pdf_actions_native
+        try:
+            from app.core import pdf_actions_native
 
-                result = await asyncio.to_thread(
-                    pdf_actions_native.downscale_images,
-                    input_path,
-                    output_path,
-                    float(target_dpi),
-                    float(max_dpi),
-                )
-            except Exception as e:  # noqa: BLE001 — hỏng đường native thì còn GS
-                logger.warning("DOWNSCALE_IMAGES pikepdf lỗi, fallback GS: %s", e)
-                result = None
+            result = await asyncio.to_thread(
+                pdf_actions_native.downscale_images,
+                input_path,
+                output_path,
+                float(target_dpi),
+                float(max_dpi),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("DOWNSCALE_IMAGES: engine nội bộ lỗi: %s", exc)
+            result = None
 
-            if result is not None:
-                skipped = result.get("skipped", {})
-                blocked = sum(
-                    n for reason, n in skipped.items() if reason != "đã dưới ngưỡng"
+        skipped = (result or {}).get("skipped", {})
+        blocked = sum(
+            n for reason, n in skipped.items() if reason != "đã dưới ngưỡng"
+        )
+        if result is not None and (result.get("changed", 0) > 0 or blocked == 0):
+            # Có sửa được, hoặc mọi ảnh vốn đã dưới ngưỡng — cả hai đều là kết
+            # quả đúng. Ảnh không hỗ trợ còn lại được ghi rõ trong cảnh báo.
+            self._last_engine = "pikepdf"
+            warnings = list(result.get("warnings", []))
+            if blocked:
+                warnings.append(
+                    "Bỏ qua "
+                    + ", ".join(
+                        f"{n} ảnh ({reason})"
+                        for reason, n in skipped.items()
+                        if reason != "đã dưới ngưỡng"
+                    )
+                    + "."
                 )
-                if result.get("changed", 0) > 0 or blocked == 0:
-                    # Có sửa được, HOẶC không có gì để sửa (mọi ảnh đã dưới
-                    # ngưỡng) — cả hai đều là kết quả đúng, không cần GS.
-                    self._last_engine = "pikepdf"
-                    warnings = list(result.get("warnings", []))
-                    if blocked:
-                        warnings.append(
-                            "Bỏ qua "
-                            + ", ".join(f"{n} ảnh ({r})" for r, n in skipped.items()
-                                        if r != "đã dưới ngưỡng")
-                            + "."
-                        )
-                    self._last_report = {
-                        "images_downscaled": result.get("changed", 0),
-                        "images_skipped": skipped,
-                        "details": result.get("details", []),
-                        "warnings": warnings,
-                    }
-                    return True
-                logger.info(
-                    "DOWNSCALE_IMAGES: pikepdf không hạ được ảnh nào (%s) → fallback GS",
-                    skipped,
-                )
+            self._last_report = {
+                "images_downscaled": result.get("changed", 0),
+                "images_skipped": skipped,
+                "details": result.get("details", []),
+                "warnings": warnings,
+            }
+            return True
 
-        self._last_engine = "gs"
-        cmd = [
-            self.gs_path,
-            "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
-            "-sDEVICE=pdfwrite",
-            "-dPDFSETTINGS=/prepress",
-            "-dAutoRotatePages=/None",
-            f"-dDownsampleColorImages=true",
-            f"-dColorImageResolution={target_dpi}",
-            f"-dDownsampleGrayImages=true",
-            f"-dGrayImageResolution={target_dpi}",
-            f"-dDownsampleMonoImages=true",
-            f"-dMonoImageResolution={target_dpi}",
-            f"-sOutputFile={output_path}",
-            input_path,
-        ]
-        return await self._run_gs(cmd, "DOWNSCALE_IMAGES")
+        details = ", ".join(f"{n} ảnh ({reason})" for reason, n in skipped.items())
+        self._refuse_unsupported("DOWNSCALE_IMAGES", details)
 
     async def _action_fix_metadata(
         self, input_path: str, output_path: str, params: dict
@@ -1146,16 +832,15 @@ class ActionEngine:
             raise
 
     # ────────────────────────────────────────────────────────
-    #  SET BLACK OVERPRINT (Ghostscript)
+    #  SET BLACK OVERPRINT (pikepdf)
     # ────────────────────────────────────────────────────────
 
     async def _action_set_black_overprint(self, pdf_path: str, output_path: str, params: dict) -> bool:
         """Bật overprint THỰC SỰ cho text/nét đen (K>95%) bằng pikepdf.
 
-        Trước đây dùng Ghostscript ``-dOverprint=/enable -dOPM=1`` — nhưng pdfwrite
-        chỉ ghi ``/OPM`` (mode) chứ KHÔNG ghi cờ ``/OP``/``/op`` true, nên object đen
-        vẫn knockout (lỗi viền trắng không được khắc phục). Nay chèn ExtGState
-        overprint vào đúng object đen (xem app.core.overprint_black).
+        Chỉ ghi ``/OPM`` (mode) mà không ghi cờ ``/OP``/``/op`` true thì object
+        đen vẫn knockout. Engine chèn ExtGState overprint vào đúng object đen
+        (xem app.core.overprint_black).
 
         Tôn trọng tham số: ``overprint_black`` (công tắc), ``preserve_overprint``.
         (``trap_width``/``black_trap_width`` là trapping spread/choke ở mức RIP —
@@ -1214,20 +899,6 @@ class ActionEngine:
             len(report.warnings), output_path,
         )
         return True
-
-    # ────────────────────────────────────────────────────────
-    #  GHOSTSCRIPT SUBPROCESS RUNNER
-    # ────────────────────────────────────────────────────────
-
-    async def _run_gs(self, cmd: list[str], action_name: str) -> bool:
-        """Từ chối cố định mọi nhánh Ghostscript còn sót trong action legacy."""
-        # GS-SUNSET (audit 2026-07-28 §3.7): không đọc cấu hình và không gọi
-        # subprocess; dev, test và release có cùng một hành vi fail-closed.
-        raise InternalEngineUnsupported(
-            unsupported_message(
-                AVAILABLE_ACTIONS.get(action_name, {}).get("title") or action_name
-            )
-        )
 
     @staticmethod
     def get_available_actions() -> dict:

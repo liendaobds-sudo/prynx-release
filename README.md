@@ -35,9 +35,9 @@ Từ một công cụ so sánh PDF đơn thuần, dự án đã tiến hóa thà
 |-------|-----------|
 | **Core** | Python 3.11 + FastAPI + SQLite (dev) |
 | **Computer Vision** | OpenCV + scikit-image |
-| **PDF Engine** | pypdfium2 (Apache 2.0), PikePDF, pdfplumber |
+| **PDF Engine** | PDFium (`pypdfium2`, `pdfcompare_native`), PikePDF, pdfplumber |
 | **OCR** | Tesseract (tùy chọn) |
-| **Color Management** | Ghostscript (CMYK separations) |
+| **Color Management** | PrynX Print Engine (PPE) + PDFium/ICC |
 
 ### Native Rust Modules
 | Module | Vai trò |
@@ -67,7 +67,6 @@ Script sẽ tự động: kiểm tra → tải → cài đặt tất cả tools 
 | **Rust** | `>=1.88` | https://rustup.rs |
 | **Node.js** | `^20.19.0 \|\| >=22.12.0` | https://nodejs.org |
 | **Python** | 3.11 | https://python.org |
-| **Ghostscript** | 10+ | https://ghostscript.com |
 | **VS Build Tools** | 2022 | https://visualstudio.microsoft.com/visual-cpp-build-tools/ |
 
 #### Bước 1: Setup Backend

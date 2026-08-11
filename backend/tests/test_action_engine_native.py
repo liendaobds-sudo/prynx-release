@@ -1,9 +1,8 @@
-"""Đường non-Ghostscript của Action Engine (gate Phase 2 — plan §5).
+"""Đường engine nội bộ của Action Engine (gate Phase 2 — plan §5).
 
 Điểm mấu chốt các test này khoá lại: action phải sửa ĐÚNG thứ được yêu cầu và
-KHÔNG đụng vào thứ khác. Ghostscript dựng lại cả file nên mọi thay đổi phụ đều
-"bình thường"; đường pikepdf thì không có cớ đó, và chính vì vậy nó mới đáng
-dùng. Mỗi test dựng PDF trong bộ nhớ để không phụ thuộc fixture nhị phân.
+KHÔNG đụng vào thứ khác. Đường pikepdf sửa đúng object cần thiết, giữ nguyên
+phần còn lại. Mỗi test dựng PDF trong bộ nhớ để không phụ thuộc fixture nhị phân.
 """
 
 import asyncio
@@ -180,8 +179,8 @@ def test_smask_is_not_counted_as_an_unhandled_image(tmp_path):
     """`/SMask` không bao giờ theo sau một `Do`, nên nó không có kích thước đặt.
 
     Nếu đếm nó là "ảnh không xử lý được" thì mọi file có ảnh mờ đều bị coi là
-    đường pikepdf bất lực và bị đẩy sang Ghostscript — dựng lại cả tài liệu chỉ
-    vì một mặt nạ. Đo trên corpus thật: 6/16/3 mặt nạ bị đếm oan mỗi file trước
+    đường pikepdf bất lực và từ chối cả tài liệu chỉ vì một mặt nạ. Đo trên
+    corpus thật: 6/16/3 mặt nạ bị đếm oan mỗi file trước
     khi lọc.
     """
     src = tmp_path / "masked.pdf"
@@ -267,7 +266,7 @@ def test_downscale_preserves_page_text_and_structure(tmp_path):
 # ── analyze_font_embedding ──────────────────────────────────────────────────
 
 def test_base14_font_is_not_reported_missing(tmp_path):
-    """Base-14 không cần nhúng (§9.6.2.2) — báo thiếu sẽ đẩy file qua GS vô ích."""
+    """Base-14 không cần nhúng (§9.6.2.2) — không được báo thiếu oan."""
     p = tmp_path / "b14.pdf"
     pdf = pikepdf.Pdf.new()
     font = pikepdf.Dictionary(
@@ -341,12 +340,12 @@ def test_action_log_records_engine_pikepdf_for_downscale(tmp_path):
     engine = ActionEngine()
     result = asyncio.run(engine.execute(str(src), "DOWNSCALE_IMAGES"))
     assert result.success
-    assert result.log[0].engine == "pikepdf", "không được gọi Ghostscript cho ca này"
+    assert result.log[0].engine == "pikepdf", "phải dùng đường object-level"
     assert result.log[0].report["images_downscaled"] == 1
 
 
 def test_action_log_records_engine_pikepdf_for_embed_fonts(tmp_path):
-    """File đã đủ font: không có lý do gì để Ghostscript dựng lại cả tài liệu."""
+    """File đã đủ font phải được giữ nguyên bằng đường object-level."""
     p = tmp_path / "fonts_ok.pdf"
     pdf = pikepdf.Pdf.new()
     font = pikepdf.Dictionary(
@@ -421,8 +420,8 @@ def test_convert_keeps_devicegray_as_k_only(tmp_path):
 def test_convert_leaves_spot_separation_untouched(tmp_path):
     """Bất biến quan trọng nhất: kênh bế / Pantone phải sống sót.
 
-    Đây chính là lý do đường object-level tồn tại — Ghostscript pdfwrite hay
-    nuốt Separation thành process, làm mất kênh CutContour.
+    Đường object-level phải giữ Separation thay vì đổi thành process và làm mất
+    kênh CutContour.
     """
     cmyk, srgb = _profiles()
     pdf = pikepdf.Pdf.new()
@@ -462,8 +461,7 @@ def test_convert_indexed_palette_keeps_pixel_indices(tmp_path):
     """Ảnh Indexed chỉ đổi BẢNG MÀU — chỉ số pixel phải nguyên vẹn từng byte.
 
     Đây là lý do ca này an toàn hơn hẳn ảnh RGB thường: không giải nén, không
-    nội suy, không mất chi tiết. Bỏ nó sang Ghostscript là phí (đo trên corpus:
-    2/13 file có RGB rơi vào đây).
+    nội suy, không mất chi tiết (đo trên corpus: 2/13 file có RGB rơi vào đây).
     """
     cmyk, srgb = _profiles()
     pdf = pikepdf.Pdf.new()
@@ -509,7 +507,7 @@ def test_convert_indexed_palette_keeps_pixel_indices(tmp_path):
 
 
 def test_convert_declines_shading_rgb_instead_of_guessing(tmp_path):
-    """Shading RGB đòi viết lại hàm nội suy — trả về không-hỗ-trợ để fallback GS."""
+    """Shading RGB đòi viết lại hàm nội suy — phải trả về không-hỗ-trợ."""
     cmyk, srgb = _profiles()
     pdf = pikepdf.Pdf.new()
     fn = pikepdf.Dictionary(
@@ -626,8 +624,8 @@ def test_spot_to_cmyk_uses_the_files_own_tint_transform(tmp_path):
 def test_spot_to_cmyk_named_leaves_other_channels_alive(tmp_path):
     """Chỉ định một spot thì kênh bế phải SỐNG.
 
-    Đây là điểm hơn hẳn `pdfwrite -sColorConversionStrategy=CMYK`: nó nuốt sạch
-    mọi Separation cùng lúc, kể cả kênh người dùng đang muốn giữ.
+    Đường chuyển object-level chỉ đổi spot được chỉ định, không nuốt các
+    Separation khác mà người dùng đang muốn giữ.
     """
     src = _spot_pdf(tmp_path, name="spot_named.pdf")
     out = tmp_path / "spot_one.pdf"
@@ -644,13 +642,12 @@ def test_spot_to_cmyk_named_leaves_other_channels_alive(tmp_path):
     assert b"0 0.91 0.76 0 k" in data, "spot được chỉ định phải chuyển"
 
 
-def test_spot_with_lab_alternate_matches_ghostscript_exactly(tmp_path):
-    """Pantone hiện đại khai alternate Lab. Giá trị CMYK phải khớp GHOSTSCRIPT.
+def test_spot_with_lab_alternate_matches_certified_reference(tmp_path):
+    """Pantone hiện đại khai alternate Lab. Giá trị CMYK phải khớp mẫu chuẩn.
 
-    Con số dưới đây không phải "trông hợp lý" mà là đo: render fixture bằng
-    `gs -sDEVICE=tiffsep -dMaxSpots=0` (ép GS tự map spot qua alternate) rồi so
-    từng kênh — khớp 0/255 sau khi cờ Little CMS trùng cấu hình của GS
-    (BLACKPOINTCOMPENSATION + NOOPTIMIZE). Không có hai cờ đó thì lệch 13–14/255
+    Con số dưới đây không phải "trông hợp lý" mà là mẫu separation đã được đo
+    và chốt. Little CMS cần BLACKPOINTCOMPENSATION + NOOPTIMIZE; thiếu hai cờ
+    đó thì lệch 13–14/255
     ở Cyan/Magenta, đủ để một khách hàng khó tính từ chối lô hàng.
     """
     from app.core import icc_profiles
@@ -691,14 +688,14 @@ def test_spot_with_lab_alternate_matches_ghostscript_exactly(tmp_path):
     with pikepdf.open(str(out)) as opened:
         data = bytes(opened.pages[0].Contents.read_bytes()).decode("latin-1")
     values = [float(v) for v in data.split(" k")[0].split()[-4:]]
-    # Ghostscript đo được: (226, 200, 69, 34)/255.
+    # Mẫu separation đã chốt: (226, 200, 69, 34)/255.
     expected = [226 / 255, 200 / 255, 69 / 255, 34 / 255]
     for got, want, name in zip(values, expected, "CMYK"):
-        assert abs(got - want) <= 1.5 / 255, f"kênh {name}: {got:.4f} vs GS {want:.4f}"
+        assert abs(got - want) <= 1.5 / 255, f"kênh {name}: {got:.4f} vs mẫu {want:.4f}"
 
 
-def test_spot_lab_without_profile_falls_back_instead_of_guessing(tmp_path):
-    """Không có profile CMYK thì KHÔNG đoán — trả về fallback."""
+def test_spot_lab_without_profile_refuses_instead_of_guessing(tmp_path):
+    """Không có profile CMYK thì KHÔNG đoán — trả về không hỗ trợ."""
     pdf = pikepdf.Pdf.new()
     lab = pikepdf.Array([
         pikepdf.Name("/Lab"),
@@ -728,7 +725,7 @@ def test_spot_lab_without_profile_falls_back_instead_of_guessing(tmp_path):
 
 
 def test_spot_to_cmyk_declines_postscript_tint_transform(tmp_path):
-    """FunctionType 4 là chương trình PostScript — không đoán, trả về fallback."""
+    """FunctionType 4 là chương trình PostScript — không đoán, từ chối an toàn."""
     pdf = pikepdf.Pdf.new()
     fn = pikepdf.Stream(pdf, b"{ dup 0.5 mul exch 0.2 mul 0 0 }")
     fn["/FunctionType"] = 4
@@ -781,19 +778,10 @@ def test_spot_to_cmyk_never_touches_none_colorant(tmp_path):
         assert b"/CS0 cs" in bytes(opened.pages[0].Contents.read_bytes())
 
 
-# ── Bảo vệ thành quả: chạy được khi KHÔNG có Ghostscript ────────────────────
+# ── Bảo vệ thành quả: action chỉ dùng engine nội bộ ─────────────────────────
 
-def test_four_actions_still_work_without_ghostscript(tmp_path, monkeypatch):
-    """Gate Phase 2 chỉ có nghĩa nếu action thật sự chạy khi GS vắng mặt.
-
-    Không có test này, một thay đổi vô ý (bỏ nhánh native, đổi thứ tự fallback)
-    sẽ đưa cả bốn action về Ghostscript mà mọi test khác vẫn xanh — vì máy dev
-    nào cũng có sẵn GS. Chỉ trỏ `GHOSTSCRIPT_PATH` vào chỗ không tồn tại mới
-    phơi ra được.
-    """
-    from app.config import settings
-
-    monkeypatch.setattr(settings, "GHOSTSCRIPT_PATH", str(tmp_path / "khong-co-gs.exe"))
+def test_four_actions_use_internal_engines(tmp_path):
+    """Bốn action phổ biến phải chạy bằng pikepdf trên đầu vào được hỗ trợ."""
 
     # Ảnh 1200 DPI + màu RGB + font base-14 + nét đen: đủ đầu vào cho cả 4.
     pdf = pikepdf.Pdf.new()
@@ -817,12 +805,11 @@ def test_four_actions_still_work_without_ghostscript(tmp_path, monkeypatch):
         Contents=pdf.make_indirect(pikepdf.Stream(pdf, content)),
     )
     pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
-    src = tmp_path / "no_gs.pdf"
+    src = tmp_path / "internal_engine.pdf"
     pdf.save(str(src))
     pdf.close()
 
     engine = ActionEngine()
-    engine.gs_path = str(tmp_path / "khong-co-gs.exe")
     for action in (
         "DOWNSCALE_IMAGES",
         "EMBED_FONTS",
@@ -830,18 +817,45 @@ def test_four_actions_still_work_without_ghostscript(tmp_path, monkeypatch):
         "SET_BLACK_OVERPRINT",
     ):
         result = asyncio.run(engine.execute(str(src), action))
-        assert result.success, f"{action} thất bại khi không có Ghostscript"
+        assert result.success, f"{action} thất bại trên đường engine nội bộ"
         assert result.log[0].engine == "pikepdf", (
-            f"{action} đã rơi về engine {result.log[0].engine!r}"
+            f"{action} dùng sai engine {result.log[0].engine!r}"
         )
 
 
-def test_resize_downsample_does_not_need_ghostscript(tmp_path, monkeypatch):
-    """Đường resize dùng chung `downscale_images` nên cũng phải sống thiếu GS."""
-    from app.config import settings
-    from app.workers import pdf_tools_engine
+def test_downscale_refuses_when_no_image_can_be_processed(tmp_path, monkeypatch):
+    """Không sửa được ảnh nào thì từ chối, không tạo file kết quả giả."""
+    src = tmp_path / "blocked.pdf"
+    _one_page_pdf(src)
 
-    monkeypatch.setattr(settings, "GHOSTSCRIPT_PATH", str(tmp_path / "khong-co-gs.exe"))
+    monkeypatch.setattr(
+        pdf_actions_native,
+        "downscale_images",
+        lambda *_args, **_kwargs: {
+            "changed": 0,
+            "skipped": {"codec chưa hỗ trợ": 1},
+            "details": [],
+            "warnings": [],
+        },
+    )
+
+    engine = ActionEngine()
+    engine.output_dir = tmp_path
+    result = asyncio.run(engine.execute(str(src), "DOWNSCALE_IMAGES"))
+
+    # GS-SUNSET (audit 2026-08-08 §GS.2): ca không hỗ trợ phải dừng ngay bằng
+    # contract InternalEngineUnsupported đã được execute chuyển thành refused.
+    assert result.success is False
+    assert result.output_path is None
+    assert result.log[0].status == "refused"
+    assert result.log[0].engine == "none"
+    assert "dừng an toàn" in (result.error or "")
+    assert not list(tmp_path.glob("blocked_DOWNSCALE_IMAGES_*.pdf"))
+
+
+def test_resize_downsample_uses_internal_engine(tmp_path):
+    """Đường resize dùng chung `downscale_images` phải chạy object-level."""
+    from app.workers import pdf_tools_engine
 
     src = tmp_path / "big.pdf"
     out = tmp_path / "small.pdf"

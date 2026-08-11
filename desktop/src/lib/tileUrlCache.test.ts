@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   TileUrlLruCache,
   tileUrlCacheBudgetForTotalRam,
+  tileUrlCacheNamespaceForFileKey,
 } from './tileUrlCache';
 
 const MIB = 1024 * 1024;
@@ -77,5 +78,74 @@ describe('frontend tile URL cache', () => {
     expect(cache.get('a')).toBeUndefined();
     expect(cache.currentBytes).toBe(8);
     expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:a');
+  });
+
+  it('mở tab B không dọn tile của tab A còn owner', () => {
+    const revoke = vi.fn();
+    const cache = new TileUrlLruCache(null, revoke);
+    cache.claimOwner('owner-a', 'file-a');
+    cache.set('a-display', 'blob:a', 4, 'file-a');
+    cache.set('orphan', 'blob:orphan', 3, 'file-old');
+
+    cache.claimOwner('owner-b', 'file-b');
+    cache.clearUnowned();
+
+    expect(cache.get('a-display')).toBe('blob:a');
+    expect(cache.get('orphan')).toBeUndefined();
+    expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:orphan');
+  });
+
+  it('hai tab cùng tài liệu chỉ dọn cache khi owner cuối cùng rời đi', () => {
+    const revoke = vi.fn();
+    const cache = new TileUrlLruCache(null, revoke);
+    cache.claimOwner('owner-a', 'shared-file');
+    cache.claimOwner('owner-b', 'shared-file');
+    cache.set('shared-display', 'blob:shared', 5, 'shared-file');
+
+    cache.releaseOwner('owner-a');
+    expect(cache.get('shared-display')).toBe('blob:shared');
+    expect(revoke).not.toHaveBeenCalled();
+
+    cache.releaseOwner('owner-b');
+    expect(cache.get('shared-display')).toBeUndefined();
+    expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:shared');
+  });
+
+  it('display/accurate dùng chung namespace và clear đúng file có marker màu', () => {
+    expect(tileUrlCacheNamespaceForFileKey('localfile://job|color:display')).toBe('localfile://job');
+    expect(tileUrlCacheNamespaceForFileKey('localfile://job|color:accurate')).toBe('localfile://job');
+    expect(tileUrlCacheNamespaceForFileKey(
+      'localfile://job|revision:100:200:300|color:accurate',
+    )).toBe('localfile://job');
+
+    const revoke = vi.fn();
+    const cache = new TileUrlLruCache(null, revoke);
+    cache.set('display-key', 'blob:display', 4, 'localfile://job');
+    cache.set('accurate-key', 'blob:accurate', 4, 'localfile://job');
+    cache.set('other-key', 'blob:other', 4, 'localfile://other');
+    cache.clearNamespace('localfile://job');
+
+    expect(cache.get('display-key')).toBeUndefined();
+    expect(cache.get('accurate-key')).toBeUndefined();
+    expect(cache.get('other-key')).toBe('blob:other');
+  });
+
+  it('owner claim source giữ cache revision qua clearUnowned và dọn khi release', () => {
+    const revoke = vi.fn();
+    const cache = new TileUrlLruCache(null, revoke);
+    const source = 'localfile://revision-owner';
+    const revisionFileKey = `${source}|revision:100:200:300|color:display`;
+    const namespace = tileUrlCacheNamespaceForFileKey(revisionFileKey);
+
+    cache.claimOwner('owner-a', source);
+    cache.set('revision-display', 'blob:revision', 5, namespace);
+    cache.clearUnowned();
+
+    expect(cache.get('revision-display')).toBe('blob:revision');
+    expect(revoke).not.toHaveBeenCalled();
+
+    cache.releaseOwner('owner-a');
+    expect(cache.get('revision-display')).toBeUndefined();
+    expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:revision');
   });
 });

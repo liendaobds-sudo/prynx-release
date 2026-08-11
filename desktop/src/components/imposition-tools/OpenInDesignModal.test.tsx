@@ -157,6 +157,34 @@ describe('OpenInDesignModal', () => {
         expect(screen.getByText('chon_thu_cong')).toBeTruthy();
     });
 
+    it('đánh dấu thumbnail khuôn là render nền', async () => {
+        const source = await PDFDocument.create();
+        source.addPage([100, 110]);
+        source.addPage([200, 210]);
+        source.addPage([300, 310]);
+        source.addPage([400, 410]);
+        attachPontLayerTree(source, 1);
+        attachPontLayerTree(source, 3);
+        const sourceBytes = await source.save();
+        const resultBlob = {
+            arrayBuffer: async () => sourceBytes.buffer.slice(
+                sourceBytes.byteOffset,
+                sourceBytes.byteOffset + sourceBytes.byteLength,
+            ),
+        } as Blob;
+        mocks.invoke.mockImplementation((command: string) => {
+            if (command === 'detect_design_apps') {
+                return Promise.resolve({ illustrator: ILLUSTRATOR, corel: null });
+            }
+            return Promise.resolve();
+        });
+
+        renderModal({ resultBlob });
+
+        const thumbnail = await screen.findByAltText('Tờ 1') as HTMLImageElement;
+        expect(thumbnail.src).toContain('purpose=background');
+    });
+
     it('mở nguyên file kết quả bằng Illustrator khi chọn cả khuôn và in', async () => {
         mocks.invoke.mockImplementation((command: string) => {
             if (command === 'detect_design_apps') {

@@ -12,7 +12,7 @@ import { SPREAD_FOLD_REGISTRY, getExactPatternForPageCount, getSpreadPatternById
 import { computeSpreadGrid } from '../../lib/imposerEngine/InstructionSerializer';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
-import { buildTileUrl } from './tileUrl';
+import { buildTileUrl, type TileRenderPurpose } from './tileUrl';
 
 const MM_TO_PT = 2.83465;
 
@@ -66,7 +66,11 @@ interface SheetViewerDialogProps {
 const PageSlotView: React.FC<{
     slot: PageSlot; pageOrder: number[]; pageRotations?: number[]; pdfFile?: any;
     pageWpt?: number; pageHpt?: number; bleed?: number;
-}> = ({ slot, pageOrder, pageRotations = [], pdfFile, pageWpt, pageHpt, bleed }) => {
+    purpose?: TileRenderPurpose;
+}> = ({
+    slot, pageOrder, pageRotations = [], pdfFile, pageWpt, pageHpt, bleed,
+    purpose = 'interactive',
+}) => {
   const { t } = useTranslation();
     const [loaded, setLoaded] = useState(false);
     const isBlank = slot.srcIndex === null || slot.srcIndex >= pageOrder.length;
@@ -87,9 +91,9 @@ const PageSlotView: React.FC<{
         if (isBlankPage || !pdfFile?.path) return '';
         return buildTileUrl({
             path: pdfFile.path, page: pdfPageNum, scale: 1.0, rot: userRotation,
-            pageWpt, pageHpt, bleedMm: bleed,
+            pageWpt, pageHpt, bleedMm: bleed, purpose,
         });
-    }, [isBlankPage, pdfPageNum, pdfFile, userRotation, pageWpt, pageHpt, bleed]);
+    }, [isBlankPage, pdfPageNum, pdfFile, userRotation, pageWpt, pageHpt, bleed, purpose]);
 
     return (
         <div className="relative flex flex-col items-center justify-center w-full h-full min-w-0 min-h-0">
@@ -183,7 +187,15 @@ const BlueprintCell: React.FC<{
 
     const imageUrl = useMemo(() => {
         if (isBlank || !pdfFile?.path || !pageNum || pageNum === -1) return '';
-        return buildTileUrl({ path: pdfFile.path, page: pageNum, scale: 1.0, rot: userRotation });
+        // PERF (audit 2026-08-08 §RENDER.2): sơ đồ toàn tờ chỉ là lớp tham chiếu mờ;
+        // tải ở lane nền để trang thành phẩm đang xem luôn phản hồi trước.
+        return buildTileUrl({
+            path: pdfFile.path,
+            page: pageNum,
+            scale: 1.0,
+            rot: userRotation,
+            purpose: 'background',
+        });
     }, [isBlank, pageNum, pdfFile, userRotation]);
 
     return (
@@ -418,11 +430,11 @@ const DigitalPressSheetGrid: React.FC<{
         return (
             <div className="flex w-full h-full border border-slate-200 dark:border-zinc-600 bg-white dark:bg-zinc-800 overflow-hidden">
                 <div className="flex-1 min-w-0 h-full flex items-center justify-center p-1">
-                    <PageSlotView slot={side.left} pageOrder={pageOrder} pageRotations={pageRotations} pdfFile={pdfFile} />
+                    <PageSlotView slot={side.left} pageOrder={pageOrder} pageRotations={pageRotations} pdfFile={pdfFile} purpose="background" />
                 </div>
                 <div className="shrink-0 w-px bg-red-400/70 z-10" />
                 <div className="flex-1 min-w-0 h-full flex items-center justify-center p-1">
-                    <PageSlotView slot={side.right} pageOrder={pageOrder} pageRotations={pageRotations} pdfFile={pdfFile} />
+                    <PageSlotView slot={side.right} pageOrder={pageOrder} pageRotations={pageRotations} pdfFile={pdfFile} purpose="background" />
                 </div>
             </div>
         );

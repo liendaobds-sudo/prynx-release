@@ -540,7 +540,6 @@ def test_smart_resize_dispatches_dynamic_background_before_downsample(
         lambda *args, **kwargs: pytest.fail("dynamic mode không được raster hóa artwork"),
     )
     monkeypatch.setattr(pdf_tools_engine, "_native_downsample", lambda *args: False)
-    monkeypatch.setattr(pdf_tools_engine, "_gs_downsample", lambda *args: False)
 
     pdf_tools_engine.resize_pages_smart(
         src,
@@ -891,7 +890,6 @@ def test_smart_resize_locked_axis_forces_content_aware_vector_path(tmp_path, mon
         lambda *args, **kwargs: pytest.fail("khóa một chiều không được dùng raster canvas cố định"),
     )
     monkeypatch.setattr(pdf_tools_engine, "_native_downsample", lambda *args: False)
-    monkeypatch.setattr(pdf_tools_engine, "_gs_downsample", lambda *args: False)
 
     pdf_tools_engine.resize_pages_smart(
         src,
@@ -914,7 +912,7 @@ def test_smart_resize_locked_axis_forces_content_aware_vector_path(tmp_path, mon
     assert calls[0]["background_color"] == "#123456"
 
 
-def test_smart_resize_never_uses_rgb_or_ghostscript_for_transparent_page(
+def test_smart_resize_never_uses_rgb_raster_for_transparent_page(
     tmp_path,
     monkeypatch,
 ):
@@ -933,11 +931,6 @@ def test_smart_resize_never_uses_rgb_or_ghostscript_for_transparent_page(
         lambda *args, **kwargs: pytest.fail("trang alpha không được raster hóa RGB"),
     )
     monkeypatch.setattr(pdf_tools_engine, "_native_downsample", lambda *args: False)
-    monkeypatch.setattr(
-        pdf_tools_engine,
-        "_gs_downsample",
-        lambda *args: pytest.fail("trang alpha không được fallback Ghostscript"),
-    )
 
     pdf_tools_engine.resize_pages_smart(
         src,

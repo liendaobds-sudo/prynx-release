@@ -73,8 +73,12 @@ pub fn solve_grid(
     }
 
     // An toàn: chặn lưới khổng lồ (item quá nhỏ) gây OOM khi Vec::with_capacity.
-    if cols > 2000 { cols = 2000; }
-    if rows > 2000 { rows = 2000; }
+    if cols > 2000 {
+        cols = 2000;
+    }
+    if rows > 2000 {
+        rows = 2000;
+    }
 
     let mut block_w = cols as f64 * item_w + (cols.saturating_sub(1) as f64 * gap_x);
     while cols > 0 && block_w > usable_w + EPS {
@@ -104,7 +108,14 @@ pub fn solve_grid(
         }
     }
 
-    GridResult { cols, rows, width: block_w, height: block_h, cells, is_rotated }
+    GridResult {
+        cols,
+        rows,
+        width: block_w,
+        height: block_h,
+        cells,
+        is_rotated,
+    }
 }
 
 /// Layout tối ưu với L-shape fill. Tương đương `solve_optimal_layout`.
@@ -121,7 +132,11 @@ pub fn solve_optimal_layout(
     if strategy == "simple_auto" {
         let p1 = solve_grid(usable_w, usable_h, orig_w, orig_h, gap_x, gap_y, false);
         let p2 = solve_grid(usable_w, usable_h, orig_h, orig_w, gap_x, gap_y, true);
-        let best = if p1.cells.len() >= p2.cells.len() { p1 } else { p2 };
+        let best = if p1.cells.len() >= p2.cells.len() {
+            p1
+        } else {
+            p2
+        };
         return OptimalResult {
             total_items: best.cells.len(),
             overall_width: best.width,
@@ -135,19 +150,44 @@ pub fn solve_optimal_layout(
 
     // optimal_auto: L-shape fill
     let (y1, c1, w1, h1) = try_config(
-        usable_w, usable_h, orig_w, orig_h, orig_h, orig_w, gap_x, gap_y, false, secondary_gap,
+        usable_w,
+        usable_h,
+        orig_w,
+        orig_h,
+        orig_h,
+        orig_w,
+        gap_x,
+        gap_y,
+        false,
+        secondary_gap,
     );
     let (y2, c2, w2, h2) = try_config(
-        usable_w, usable_h, orig_h, orig_w, orig_w, orig_h, gap_x, gap_y, true, secondary_gap,
+        usable_w,
+        usable_h,
+        orig_h,
+        orig_w,
+        orig_w,
+        orig_h,
+        gap_x,
+        gap_y,
+        true,
+        secondary_gap,
     );
-    let (l_yield, l_cells, l_w, l_h, l_rot) =
-        if y1 >= y2 { (y1, c1, w1, h1, false) } else { (y2, c2, w2, h2, true) };
+    let (l_yield, l_cells, l_w, l_h, l_rot) = if y1 >= y2 {
+        (y1, c1, w1, h1, false)
+    } else {
+        (y2, c2, w2, h2, true)
+    };
 
     // Ưu tiên LƯỚI ĐƠN GIẢN khi hòa số lượng (sạch, dễ cắt) — yêu cầu người dùng.
     // L-shape chỉ thắng khi cho NHIỀU tem hơn hẳn lưới thường.
     let g1 = solve_grid(usable_w, usable_h, orig_w, orig_h, gap_x, gap_y, false);
     let g2 = solve_grid(usable_w, usable_h, orig_h, orig_w, gap_x, gap_y, true);
-    let grid_best = if g1.cells.len() >= g2.cells.len() { g1 } else { g2 };
+    let grid_best = if g1.cells.len() >= g2.cells.len() {
+        g1
+    } else {
+        g2
+    };
 
     if grid_best.cells.len() >= l_yield {
         return OptimalResult {
@@ -186,7 +226,15 @@ fn try_config(
     secondary_gap: Option<f64>,
 ) -> (usize, Vec<GridCell>, f64, f64) {
     let split_gap = secondary_gap.unwrap_or(gap_x.max(gap_y));
-    let max_grid = solve_grid(usable_w, usable_h, main_w, main_h, gap_x, gap_y, primary_rotated);
+    let max_grid = solve_grid(
+        usable_w,
+        usable_h,
+        main_w,
+        main_h,
+        gap_x,
+        gap_y,
+        primary_rotated,
+    );
 
     let mut best_yield = 0usize;
     let mut best_cells: Vec<GridCell> = Vec::new();
@@ -222,7 +270,15 @@ fn try_config(
             // và TRIỆT TIÊU cụm fill đáy → "Xếp tối ưu" kém hơn (bug parity).
             let mut fill_r_actual_h = tbh;
             if right_w > 0.01 {
-                let fill_r = solve_grid(right_w, usable_h, fill_w, fill_h, gap_x, gap_y, !primary_rotated);
+                let fill_r = solve_grid(
+                    right_w,
+                    usable_h,
+                    fill_w,
+                    fill_h,
+                    gap_x,
+                    gap_y,
+                    !primary_rotated,
+                );
                 if !fill_r.cells.is_empty() {
                     fill_r_actual_h = fill_r.height;
                     for mut cc in fill_r.cells {
@@ -238,7 +294,15 @@ fn try_config(
             let bottom_y = overall_h + split_gap;
             let bottom_h = usable_h - bottom_y;
             if bottom_h > 0.01 {
-                let fill_b = solve_grid(usable_w, bottom_h, fill_w, fill_h, gap_x, gap_y, !primary_rotated);
+                let fill_b = solve_grid(
+                    usable_w,
+                    bottom_h,
+                    fill_w,
+                    fill_h,
+                    gap_x,
+                    gap_y,
+                    !primary_rotated,
+                );
                 for mut cc in fill_b.cells {
                     cc.y += bottom_y;
                     cc.block_id = 2; // cụm fill đáy — bộ dấu xén riêng
@@ -248,8 +312,14 @@ fn try_config(
 
             if all_cells.len() > best_yield {
                 best_yield = all_cells.len();
-                best_w = all_cells.iter().map(|c| c.x + c.width).fold(0.0f64, f64::max);
-                best_h = all_cells.iter().map(|c| c.y + c.height).fold(0.0f64, f64::max);
+                best_w = all_cells
+                    .iter()
+                    .map(|c| c.x + c.width)
+                    .fold(0.0f64, f64::max);
+                best_h = all_cells
+                    .iter()
+                    .map(|c| c.y + c.height)
+                    .fold(0.0f64, f64::max);
                 best_cells = all_cells;
             }
         }
@@ -259,7 +329,14 @@ fn try_config(
 }
 
 /// Lưới thủ công: dựng đúng `cols`×`rows` ô (Req 4.3). Không tự co.
-pub fn solve_manual(item_w: f64, item_h: f64, gap_x: f64, gap_y: f64, cols: usize, rows: usize) -> OptimalResult {
+pub fn solve_manual(
+    item_w: f64,
+    item_h: f64,
+    gap_x: f64,
+    gap_y: f64,
+    cols: usize,
+    rows: usize,
+) -> OptimalResult {
     let cols = cols.min(2000);
     let rows = rows.min(2000);
     let step_x = item_w + gap_x;
@@ -279,8 +356,16 @@ pub fn solve_manual(item_w: f64, item_h: f64, gap_x: f64, gap_y: f64, cols: usiz
             });
         }
     }
-    let overall_width = if cols > 0 { cols as f64 * item_w + (cols - 1) as f64 * gap_x } else { 0.0 };
-    let overall_height = if rows > 0 { rows as f64 * item_h + (rows - 1) as f64 * gap_y } else { 0.0 };
+    let overall_width = if cols > 0 {
+        cols as f64 * item_w + (cols - 1) as f64 * gap_x
+    } else {
+        0.0
+    };
+    let overall_height = if rows > 0 {
+        rows as f64 * item_h + (rows - 1) as f64 * gap_y
+    } else {
+        0.0
+    };
     OptimalResult {
         total_items: cells.len(),
         overall_width,
@@ -326,27 +411,77 @@ mod tests {
     fn golden_nup_capacities() {
         // nup_lshape_card16 = 16
         assert_eq!(
-            solve_optimal_layout(779.52875, 1128.190699, 260.7919, 158.7417, 5.6693, 5.6693, "optimal_auto", Some(34.0158)).total_items,
+            solve_optimal_layout(
+                779.52875,
+                1128.190699,
+                260.7919,
+                158.7417,
+                5.6693,
+                5.6693,
+                "optimal_auto",
+                Some(34.0158)
+            )
+            .total_items,
             16
         );
         // nup_grid_no_secondary = 13
         assert_eq!(
-            solve_optimal_layout(1000.0, 1000.0, 200.0, 300.0, 10.0, 10.0, "optimal_auto", None).total_items,
+            solve_optimal_layout(
+                1000.0,
+                1000.0,
+                200.0,
+                300.0,
+                10.0,
+                10.0,
+                "optimal_auto",
+                None
+            )
+            .total_items,
             13
         );
         // nup_lshape_extreme_gap = 21
         assert_eq!(
-            solve_optimal_layout(800.0, 800.0, 250.0, 100.0, 5.0, 5.0, "optimal_auto", Some(150.0)).total_items,
+            solve_optimal_layout(
+                800.0,
+                800.0,
+                250.0,
+                100.0,
+                5.0,
+                5.0,
+                "optimal_auto",
+                Some(150.0)
+            )
+            .total_items,
             21
         );
         // nup_simple_auto = 21
         assert_eq!(
-            solve_optimal_layout(800.0, 800.0, 250.0, 100.0, 5.0, 5.0, "simple_auto", Some(10.0)).total_items,
+            solve_optimal_layout(
+                800.0,
+                800.0,
+                250.0,
+                100.0,
+                5.0,
+                5.0,
+                "simple_auto",
+                Some(10.0)
+            )
+            .total_items,
             21
         );
         // nup_sra3_business_card = 24
         assert_eq!(
-            solve_optimal_layout(907.09, 1275.59, 255.12, 153.07, 0.0, 0.0, "optimal_auto", None).total_items,
+            solve_optimal_layout(
+                907.09,
+                1275.59,
+                255.12,
+                153.07,
+                0.0,
+                0.0,
+                "optimal_auto",
+                None
+            )
+            .total_items,
             24
         );
     }
@@ -392,8 +527,10 @@ mod tests {
         let r = solve_optimal_layout(400.0, 400.0, 100.0, 100.0, 0.0, 0.0, "optimal_auto", None);
         assert_eq!(r.total_items, 16);
         let first_rot = r.cells[0].is_rotated;
-        assert!(r.cells.iter().all(|c| c.is_rotated == first_rot),
-            "hòa với lưới đơn giản → phải là lưới đồng nhất, không trộn xoay (L-shape)");
+        assert!(
+            r.cells.iter().all(|c| c.is_rotated == first_rot),
+            "hòa với lưới đơn giản → phải là lưới đồng nhất, không trộn xoay (L-shape)"
+        );
     }
 
     #[test]

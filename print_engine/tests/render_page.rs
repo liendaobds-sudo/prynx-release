@@ -5,8 +5,11 @@
 //! rasterize → trộn mực cho ra đúng kẽm mà xưởng nhận được.
 
 use lopdf::{dictionary, Dictionary, Document, Object, Stream};
+use print_engine::color::space::OutputPreviewFilter;
 use print_engine::content::RenderOptions;
-use print_engine::page::{render_page, PageBox, PageRender};
+use print_engine::page::{
+    render_page, render_page_managed_region, PageBox, PageRender, RasterClip,
+};
 
 /// Dựng PDF một trang từ content stream + resources.
 fn build_pdf(
@@ -73,6 +76,423 @@ fn center(r: &PageRender) -> usize {
     let w = r.buffer.width() as usize;
     let h = r.buffer.height() as usize;
     (h / 2) * w + w / 2
+}
+
+fn pixel_total_ink(r: &PageRender, x: usize, y: usize) -> usize {
+    let index = y * r.buffer.width() as usize + x;
+    (0..r.buffer.space().len())
+        .map(|channel| r.buffer.plate_u8(channel)[index] as usize)
+        .sum()
+}
+
+fn render_output_preview_filter(
+    content: &str,
+    resources: Dictionary,
+    filter: OutputPreviewFilter,
+) -> PageRender {
+    let doc = build_pdf(content, resources, [0.0, 0.0, 10.0, 10.0], None);
+    render_page(
+        &doc,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::softproof().with_output_preview_filter(filter),
+    )
+    .expect("Output Preview synthetic phải render được")
+}
+
+fn assert_clip_matches_full_page(full: &PageRender, tile: &PageRender, clip: RasterClip) {
+    assert_eq!(tile.buffer.width(), clip.width);
+    assert_eq!(tile.buffer.height(), clip.height);
+    assert_eq!(
+        tile.buffer.space().colorants(),
+        full.buffer.space().colorants()
+    );
+    for channel in 0..full.buffer.space().len() {
+        let full_plate = full.buffer.plate_u8(channel);
+        let tile_plate = tile.buffer.plate_u8(channel);
+        for tile_y in 0..clip.height as usize {
+            let full_start =
+                (clip.y as usize + tile_y) * full.buffer.width() as usize + clip.x as usize;
+            let full_end = full_start + clip.width as usize;
+            let tile_start = tile_y * clip.width as usize;
+            let tile_end = tile_start + clip.width as usize;
+            assert_eq!(
+                &tile_plate[tile_start..tile_end],
+                &full_plate[full_start..full_end],
+                "xoay {}, clip {clip:?}, kênh {channel}, hàng tile {tile_y} phải bằng crop full-page",
+                full.rotate,
+            );
+        }
+    }
+}
+
+fn assert_clip_stroke_aa_close(full: &PageRender, tile: &PageRender, clip: RasterClip) {
+    assert_eq!(tile.buffer.width(), clip.width);
+    assert_eq!(tile.buffer.height(), clip.height);
+    let mut max_delta = 0u8;
+    let mut total_delta = 0usize;
+    let mut sample_count = 0usize;
+    for channel in 0..full.buffer.space().len() {
+        let full_plate = full.buffer.plate_u8(channel);
+        let tile_plate = tile.buffer.plate_u8(channel);
+        for tile_y in 0..clip.height as usize {
+            for tile_x in 0..clip.width as usize {
+                let full_index = (clip.y as usize + tile_y) * full.buffer.width() as usize
+                    + clip.x as usize
+                    + tile_x;
+                let tile_index = tile_y * clip.width as usize + tile_x;
+                let delta = tile_plate[tile_index].abs_diff(full_plate[full_index]);
+                max_delta = max_delta.max(delta);
+                total_delta += delta as usize;
+                sample_count += 1;
+            }
+        }
+    }
+    let mean_delta = total_delta as f64 / sample_count as f64;
+    assert!(
+        max_delta <= 16 && mean_delta <= 0.25,
+        "xoay {}, clip {clip:?}: sai số stroke AA max={max_delta}, mean={mean_delta:.4}",
+        full.rotate,
+    );
+}
+
+fn assert_tile_overlap_stroke_aa_close(
+    first: &PageRender,
+    first_clip: RasterClip,
+    second: &PageRender,
+    second_clip: RasterClip,
+) {
+    let x0 = first_clip.x.max(second_clip.x);
+    let y0 = first_clip.y.max(second_clip.y);
+    let x1 = (first_clip.x + first_clip.width).min(second_clip.x + second_clip.width);
+    let y1 = (first_clip.y + first_clip.height).min(second_clip.y + second_clip.height);
+    assert!(x0 < x1 && y0 < y1, "hai tile phải có vùng chồng lấn");
+
+    let mut max_delta = 0u8;
+    let mut total_delta = 0usize;
+    let mut sample_count = 0usize;
+    let mut differing_samples = 0usize;
+    for channel in 0..first.buffer.space().len() {
+        let first_plate = first.buffer.plate_u8(channel);
+        let second_plate = second.buffer.plate_u8(channel);
+        for global_y in y0..y1 {
+            for global_x in x0..x1 {
+                let first_index = (global_y - first_clip.y) as usize * first_clip.width as usize
+                    + (global_x - first_clip.x) as usize;
+                let second_index = (global_y - second_clip.y) as usize * second_clip.width as usize
+                    + (global_x - second_clip.x) as usize;
+                let delta = first_plate[first_index].abs_diff(second_plate[second_index]);
+                max_delta = max_delta.max(delta);
+                total_delta += delta as usize;
+                sample_count += 1;
+                differing_samples += usize::from(delta > 0);
+            }
+        }
+    }
+    let mean_delta = total_delta as f64 / sample_count as f64;
+    // PERF (audit 2026-08-08 §RENDER.3): CTM cuối vẫn lưu f32 nên hai origin
+    // tile có thể đổi quyết định scan-convert ở rất ít pixel biên của stroke.
+    // Số đo bốn góc xoay: max 12/255, mean 0,011389, tối đa 24 mẫu khác.
+    assert!(
+        max_delta <= 12 && mean_delta <= 0.012 && differing_samples <= 24,
+        "overlap xoay {}: sai số max={max_delta}, mean={mean_delta:.6}, khác={differing_samples}",
+        first.rotate,
+    );
+}
+
+#[test]
+fn output_preview_source_filters_keep_only_the_declared_color_space() {
+    // Bốn ô tách biệt: trên-trái Gray, trên-phải Spot, dưới-trái CMYK,
+    // dưới-phải RGB. Lấy mẫu giữa ô để loại ảnh hưởng antialias ở biên.
+    let content = concat!(
+        "0 g 0 5 5 5 re f ",
+        "/CS0 cs 1 scn 5 5 5 5 re f ",
+        "1 0 0 0 k 0 0 5 5 re f ",
+        "1 0 0 rg 5 0 5 5 re f",
+    );
+    let cases = [
+        (OutputPreviewFilter::DeviceGray, (2usize, 2usize)),
+        (OutputPreviewFilter::Spot, (7usize, 2usize)),
+        (OutputPreviewFilter::DeviceCmyk, (2usize, 7usize)),
+        (OutputPreviewFilter::DeviceRgb, (7usize, 7usize)),
+    ];
+    let samples = [(2usize, 2usize), (7, 2), (2, 7), (7, 7)];
+
+    for (filter, expected) in cases {
+        let rendered = render_output_preview_filter(
+            content,
+            spot_resources("PANTONE 485 C"),
+            filter,
+        );
+        for sample in samples {
+            let ink = pixel_total_ink(&rendered, sample.0, sample.1);
+            if sample == expected {
+                assert!(ink > 100, "{filter:?} phải giữ ô {sample:?}, ink={ink}");
+            } else {
+                assert_eq!(ink, 0, "{filter:?} không được giữ ô {sample:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn output_preview_filter_all_giu_nguyen_tung_byte_plate_mac_dinh() {
+    let content = concat!(
+        "0.1 0.2 0.3 0.4 k 0 0 5 10 re f ",
+        "0.8 0.1 0.2 rg 5 0 5 10 re f",
+    );
+    let doc = build_pdf(content, dictionary! {}, [0.0, 0.0, 10.0, 10.0], None);
+    let default = render_page(
+        &doc,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::softproof(),
+    )
+    .expect("render mặc định phải thành công");
+    let explicit_all = render_page(
+        &doc,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::softproof().with_output_preview_filter(OutputPreviewFilter::All),
+    )
+    .expect("Show=All phải thành công");
+
+    assert_eq!(default.buffer.width(), explicit_all.buffer.width());
+    assert_eq!(default.buffer.height(), explicit_all.buffer.height());
+    assert_eq!(
+        default.buffer.space().colorants(),
+        explicit_all.buffer.space().colorants()
+    );
+    for channel in 0..default.buffer.space().len() {
+        assert_eq!(
+            default.buffer.plate_u8(channel),
+            explicit_all.buffer.plate_u8(channel),
+            "Show=All không được đổi byte kẽm {channel}",
+        );
+    }
+}
+
+#[test]
+fn output_preview_line_art_filter_is_exclusive_on_a_path_only_page() {
+    let content = "0 0 0 1 k 0 0 10 10 re f";
+    let line_art = render_output_preview_filter(
+        content,
+        dictionary! {},
+        OutputPreviewFilter::LineArt,
+    );
+    assert!(line_art.buffer.max_tac_percent() > 90.0);
+
+    for filter in [
+        OutputPreviewFilter::Text,
+        OutputPreviewFilter::Images,
+        OutputPreviewFilter::SmoothShades,
+    ] {
+        let hidden = render_output_preview_filter(content, dictionary! {}, filter);
+        assert_eq!(hidden.buffer.max_tac_percent(), 0.0, "{filter:?} phải ẩn path");
+    }
+}
+
+#[test]
+fn viewport_clip_bang_crop_full_page_cho_moi_goc_xoay() {
+    let content = concat!(
+        "0.1 0.7 0.2 0.3 k 0 0 12 10 re f ",
+        "0.8 0.1 0.6 0.2 k 2.25 1.75 7.5 5.5 re f",
+    );
+    for rotation in [0, 90, 180, 270] {
+        let doc = build_pdf(
+            content,
+            dictionary! {},
+            [0.0, 0.0, 12.0, 10.0],
+            Some(rotation),
+        );
+        let full = render_page(&doc, 1, 144.0, PageBox::Crop, RenderOptions::softproof())
+            .expect("full-page phải render được");
+        let clips = [
+            RasterClip {
+                x: 3,
+                y: 4,
+                width: 13,
+                height: 11,
+            },
+            RasterClip {
+                x: 0,
+                y: 0,
+                width: 7,
+                height: 6,
+            },
+            RasterClip {
+                x: full.buffer.width() - 7,
+                y: full.buffer.height() - 6,
+                width: 7,
+                height: 6,
+            },
+        ];
+
+        for clip in clips {
+            let tile = render_page_managed_region(
+                &doc,
+                1,
+                144.0,
+                PageBox::Crop,
+                RenderOptions::softproof(),
+                None,
+                Some(clip),
+            )
+            .expect("viewport tile phải render được");
+
+            assert_clip_matches_full_page(&full, &tile, clip);
+        }
+    }
+}
+
+#[test]
+fn viewport_clip_giu_sai_so_stroke_aa_o_muc_khong_tao_seam() {
+    let content = concat!(
+        "0.1 0.7 0.2 0.3 k 0 0 12 10 re f ",
+        "0 0 0 1 K 0.65 w 0.5 0.5 m 11.5 9.5 l S",
+    );
+    for rotation in [0, 90, 180, 270] {
+        let doc = build_pdf(
+            content,
+            dictionary! {},
+            [0.0, 0.0, 12.0, 10.0],
+            Some(rotation),
+        );
+        let full = render_page(&doc, 1, 144.0, PageBox::Crop, RenderOptions::softproof())
+            .expect("full-page phải render được");
+        let clip = RasterClip {
+            x: full.buffer.width() - 7,
+            y: full.buffer.height() - 6,
+            width: 7,
+            height: 6,
+        };
+        let tile = render_page_managed_region(
+            &doc,
+            1,
+            144.0,
+            PageBox::Crop,
+            RenderOptions::softproof(),
+            None,
+            Some(clip),
+        )
+        .expect("viewport tile có stroke phải render được");
+
+        assert_clip_stroke_aa_close(&full, &tile, clip);
+    }
+}
+
+#[test]
+fn viewport_tiles_chong_lan_gioi_han_sai_so_stroke_aa() {
+    let content = concat!(
+        "0.1 0.7 0.2 0.3 k 0 0 100 80 re f ",
+        "0 0 0 1 K 0.65 w ",
+        "0.5 0.5 m 99.5 79.5 l S ",
+        "0.5 79.5 m 99.5 0.5 l S",
+    );
+    let first_clip = RasterClip {
+        x: 30,
+        y: 30,
+        width: 90,
+        height: 80,
+    };
+    let second_clip = RasterClip {
+        x: 60,
+        y: 50,
+        width: 80,
+        height: 80,
+    };
+
+    for rotation in [0, 90, 180, 270] {
+        let doc = build_pdf(
+            content,
+            dictionary! {},
+            [0.0, 0.0, 100.0, 80.0],
+            Some(rotation),
+        );
+        let first = render_page_managed_region(
+            &doc,
+            1,
+            144.0,
+            PageBox::Crop,
+            RenderOptions::softproof(),
+            None,
+            Some(first_clip),
+        )
+        .expect("tile thứ nhất phải render được");
+        let second = render_page_managed_region(
+            &doc,
+            1,
+            144.0,
+            PageBox::Crop,
+            RenderOptions::softproof(),
+            None,
+            Some(second_clip),
+        )
+        .expect("tile thứ hai phải render được");
+
+        assert_tile_overlap_stroke_aa_close(&first, first_clip, &second, second_clip);
+    }
+}
+
+#[test]
+fn viewport_clip_ngoai_trang_bi_tu_choi_truoc_cap_phat() {
+    let doc = build_pdf(
+        "0 0 0 1 k 0 0 10 10 re f",
+        dictionary! {},
+        [0.0, 0.0, 10.0, 10.0],
+        None,
+    );
+    let result = render_page_managed_region(
+        &doc,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::softproof(),
+        None,
+        Some(RasterClip {
+            x: 9,
+            y: 9,
+            width: 2,
+            height: 2,
+        }),
+    );
+
+    assert!(matches!(
+        result,
+        Err(print_engine::PpeError::BadRasterClip { .. })
+    ));
+}
+
+#[test]
+fn viewport_clip_dpi_cao_khong_bi_chan_boi_dien_tich_full_page() {
+    let doc = build_pdf(
+        "0.2 0.4 0.6 0.1 k 0 0 595 842 re f",
+        dictionary! {},
+        [0.0, 0.0, 595.0, 842.0],
+        None,
+    );
+    // A4 @960 DPI ≈ 89 MP: full-page vượt trần 80 MP nhưng tile 512² vẫn an toàn.
+    assert!(render_page(&doc, 1, 960.0, PageBox::Crop, RenderOptions::softproof(),).is_err());
+
+    let tile = render_page_managed_region(
+        &doc,
+        1,
+        960.0,
+        PageBox::Crop,
+        RenderOptions::softproof(),
+        None,
+        Some(RasterClip {
+            x: 7000,
+            y: 9000,
+            width: 512,
+            height: 512,
+        }),
+    )
+    .expect("viewport nhỏ phải render được dù full-page vượt 80 MP");
+    assert_eq!((tile.buffer.width(), tile.buffer.height()), (512, 512));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -162,17 +582,10 @@ fn overprint_preserves_background_ink() {
 
 #[test]
 fn overprint_preview_can_force_knockout_without_changing_pdf() {
-    let content =
-        "1 0 0 0 k 0 0 10 10 re f  /GSop gs 0 0 0 1 k 0 0 10 10 re f";
+    let content = "1 0 0 0 k 0 0 10 10 re f  /GSop gs 0 0 0 1 k 0 0 10 10 re f";
     let doc = build_pdf(content, overprint_resources(), [0.0, 0.0, 10.0, 10.0], None);
-    let simulated = render_page(
-        &doc,
-        1,
-        72.0,
-        PageBox::Crop,
-        RenderOptions::ink_accurate(),
-    )
-    .expect("render overprint phải thành công");
+    let simulated = render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate())
+        .expect("render overprint phải thành công");
     let knockout = render_page(
         &doc,
         1,

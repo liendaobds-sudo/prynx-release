@@ -49,7 +49,6 @@ OS_ICC_SEARCH_PATHS = [
     "/Library/ColorSync/Profiles",
     "/System/Library/ColorSync/Profiles",
     "/usr/share/color/icc",
-    "/usr/share/ghostscript",
     "/usr/local/share/color/icc",
 ]
 
@@ -154,7 +153,7 @@ def _search_dirs() -> list[Path]:
 
 
 def _profile_matches_registry_id(profile_id: str, path: Path) -> bool:
-    """Chặn profile bị đặt sai tên trước khi nó đi vào Ghostscript/PPE."""
+    """Chặn profile bị đặt sai tên trước khi PPE sử dụng."""
     if profile_id != "srgb":
         return True
     try:
@@ -274,30 +273,3 @@ def list_output_profiles() -> list[dict[str, Any]]:
             "path": path,
         })
     return out
-
-
-def ghostscript_color_args(
-    *,
-    cmyk_profile_id: str = "fogra39",
-    for_display_rgb: bool = False,
-) -> list[str]:
-    """Extra Ghostscript flags for color-managed render / separation.
-
-    ``for_display_rgb``: map CMYK through the print profile into sRGB for
-    soft-proof style PNG (Acrobat-like screen proof).
-    """
-    args: list[str] = []
-    cmyk = resolve_cmyk_profile_path(cmyk_profile_id)
-    srgb = resolve_srgb_profile_path()
-    if cmyk:
-        args.append(f"-sDefaultCMYKProfile={cmyk}")
-        # Also set as process profile when converting
-        args.append(f"-sOutputICCProfile={cmyk if not for_display_rgb else (srgb or cmyk)}")
-    if for_display_rgb and srgb:
-        args.append(f"-sOutputICCProfile={srgb}")
-        if cmyk:
-            args.append(f"-sDefaultCMYKProfile={cmyk}")
-    if cmyk or srgb:
-        args.append("-dOverrideICC=true")
-        args.append("-dUseFastColor=false")
-    return args

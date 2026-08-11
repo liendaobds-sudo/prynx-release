@@ -18,10 +18,10 @@ class _ConnectedRequest:
 
 
 
-def _make_pdf(tmp_path, pages=3):
+def _make_pdf(tmp_path, pages=3, *, width=200, height=300):
     doc = pdf_lib.open()
     for _ in range(pages):
-        pg = doc.new_page(width=200, height=300)
+        pg = doc.new_page(width=width, height=height)
         sh = pg.new_shape()
         sh.draw_rect(pdf_lib.Rect(20, 20, 120, 120))
         sh.finish(color=(0, 0, 0), fill=(0, 0, 0))
@@ -371,6 +371,47 @@ def test_cmyk_jpeg_is_four_channel(tmp_path):
     with Image.open(files[0]) as im:
         assert im.mode == "CMYK", f"kỳ vọng 4 kênh CMYK, nhận {im.mode}"
         assert im.info.get("icc_profile") is not None, "JPEG CMYK thiếu ICC profile"
+
+
+@_requires_cmyk_native
+def test_cmyk_300dpi_trang_khach_chay_duoc_tren_low_tier_sach(
+    tmp_path,
+    monkeypatch,
+):
+    """§PPE.SCOPE.8: low-tier còn 3 GiB trống không được chặn TIFF 300 DPI.
+
+    Khổ 748×561 pt trùng trang 1 PDF khách. Baseline budget 384/512 MiB đều
+    fail-loud; benchmark xác nhận 640 MiB là mức đầu tiên chạy qua.
+    """
+    from app.config import settings
+    from app.core.print_engine import facade
+    from PIL import Image
+
+    src = _make_pdf(tmp_path, 1, width=748, height=561)
+    monkeypatch.setattr(settings, "PRYNX_PPE_MEMORY_BUDGET_MB", None)
+    monkeypatch.setattr(
+        "app.core.system_memory.read_memory_status_mb",
+        lambda: (6 * 1024.0, 3 * 1024.0),
+    )
+    monkeypatch.setattr(
+        "app.core.heavy_job_scheduler.max_active_heavy_jobs",
+        lambda: 1,
+    )
+    assert facade._memory_budget_mb() == 640
+
+    files = render_pdf_to_images(
+        src,
+        str(tmp_path / "out-300"),
+        fmt="tiff",
+        dpi=300,
+        color_mode="cmyk",
+    )
+
+    assert len(files) == 1
+    with Image.open(files[0]) as image:
+        assert image.mode == "CMYK"
+        assert image.size == (3117, 2338)
+        assert image.info.get("icc_profile") is not None
 
 
 @_requires_cmyk_native

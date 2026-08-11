@@ -39,6 +39,7 @@ import { tv } from './i18n';
 import { canUse, isProFeature } from './lib/license/features';
 import { getShortcutLabel, matchesShortcut } from './lib/keyboardShortcuts';
 import { buildResultTabPayload } from './lib/tabNavigation';
+import { hasDirtySessions, isDirtySession } from './lib/dirtySession';
 import { useIncomingFileDispatcher } from './hooks/useIncomingFileDispatcher';
 import { useToolActivationGuard } from './hooks/useToolActivationGuard';
 import FeatureAccessOverlay from './components/license/FeatureAccessOverlay';
@@ -67,7 +68,7 @@ const VIEWER_COMMAND_TOOL_TYPES = new Set<AppToolId>([
   'imposition', 'nup', 'diecut', 'cnc', 'preflight',
 ]);
 
-/** Tab có listener `app-trigger-save` (Lưu / Lưu thành…) — hiện chỉ ImpositionTab. */
+/** Họ tab có listener `app-trigger-save`; workspace Logo lồng trong ImpositionTab tự lưu SVG. */
 const SAVE_TOOL_TYPES = new Set<AppToolId>([
   'imposition', 'nup', 'diecut', 'cnc', 'preflight',
 ]);
@@ -636,6 +637,12 @@ function AppInner() {
   const commitCloseTab = useCallback((id: string, preserveActiveTab = false) => {
     // Release all blob URLs associated with this tab
     fileCtx.releaseTab(id);
+    // UIUX (audit 2026-08-11 §UP.X.02): owner đóng tab phải dọn store/controller
+    // của Upscale kể cả khi người dùng đã chuyển sang công cụ khác. Import động giữ
+    // Upscale trong chunk lazy của họ Imposition thay vì kéo engine vào shell chính.
+    void import('./components/preprocess-tools/UpscaleTool')
+      .then(({ disposeUpscaleTab }) => disposeUpscaleTab(id))
+      .catch(() => {});
     // Đóng tab CHỦ ĐỘNG (có xác nhận nếu dirty) = thoát sạch tab này → xóa snapshot
     // recovery để lần mở sau không hỏi khôi phục nhầm.
     void deleteSnapshot(id);
@@ -664,7 +671,7 @@ function AppInner() {
     // Chỉ dựa vào trạng thái dirty THẬT của tab (ImpositionTab đã tôn trọng việc đã lưu).
     // Không ép dirty theo tên file output nữa — nếu không, file đã lưu mà tên còn "VDP_"
     // vẫn bị báo "chưa lưu".
-    const effectivelyDirty = tabToClose.isDirty;
+    const effectivelyDirty = isDirtySession(tabToClose);
     void isSpawnedOrOutput;
 
     if (effectivelyDirty) {
@@ -709,11 +716,9 @@ function AppInner() {
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       // Check if any tab has unsaved changes
-      const hasDirtyTabs = tabsRef.current.some(t => {
-        return t.isDirty;
-      });
+      const hasUnsavedTabs = hasDirtySessions(tabsRef.current);
 
-      if (hasDirtyTabs) {
+      if (hasUnsavedTabs) {
         e.preventDefault();
         e.returnValue = ''; // Shows generic warning preventing data loss
       }
@@ -742,7 +747,7 @@ function AppInner() {
 
   /** Bắt đầu / chạy tiếp hàng đợi file dirty khi thoát app (mỗi file 1 dialog). */
   const beginQuitWithDirtyPrompt = useCallback(() => {
-    const dirtyIds = tabsRef.current.filter(t => t.isDirty).map(t => t.id);
+    const dirtyIds = tabsRef.current.filter(isDirtySession).map(t => t.id);
     if (dirtyIds.length === 0) {
       destroyAppWindow();
       return;
@@ -832,7 +837,7 @@ function AppInner() {
     getCurrentWindow()
       .onCloseRequested((event) => {
         if (forceCloseRef.current) return;            // đã xác nhận thoát → cho đóng
-        if (tabsRef.current.some(t => t.isDirty)) {
+        if (hasDirtySessions(tabsRef.current)) {
           event.preventDefault();          // giữ cửa sổ lại
           beginQuitWithDirtyPrompt();      // hỏi từng file dirty
         }
@@ -851,7 +856,7 @@ function AppInner() {
   useEffect(() => {
     const onQuit = () => {
       if (!(window as any).__TAURI_INTERNALS__) return;
-      if (!forceCloseRef.current && tabsRef.current.some(t => t.isDirty)) {
+      if (!forceCloseRef.current && hasDirtySessions(tabsRef.current)) {
         beginQuitWithDirtyPrompt();
         return;
       }
@@ -1025,8 +1030,8 @@ function AppInner() {
    */
   const closeAllTabs = useCallback(() => {
     const closable = tabsRef.current.filter(tab => tab.id !== 'home' && tab.isClosable);
-    closable.filter(tab => !tab.isDirty).forEach(tab => commitCloseTab(tab.id));
-    const dirtyIds = closable.filter(tab => tab.isDirty).map(tab => tab.id);
+    closable.filter(tab => !isDirtySession(tab)).forEach(tab => commitCloseTab(tab.id));
+    const dirtyIds = closable.filter(isDirtySession).map(tab => tab.id);
     if (dirtyIds.length > 0) beginDirtyQueue(dirtyIds, 'close-all');
   }, [commitCloseTab, beginDirtyQueue]);
   const isToolActive = activeTabId !== 'home';

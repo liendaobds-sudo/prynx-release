@@ -2,13 +2,66 @@
 // tách khỏi component để giữ Fast Refresh ổn định.
 export const RENDER_BUDGET_PX = { high: 6000, fast: 3000 } as const;
 
-// PERF (audit 2026-08-07 §ZOOM.1): đủ ngắn để vùng nhìn nét lên gần như ngay
-// sau khi dừng tay, nhưng vẫn gom chuỗi Ctrl+Wheel thay đổi mỗi khung hình.
-export const VIEWPORT_TILE_SETTLE_MS = 90;
+// PERF (audit 2026-08-09 §ZOOM.7): core PPE đã hủy thật theo scanline. Giữ một khoảng
+// trailing ngắn để gom chuỗi wheel trong cùng nhịp tay, nhưng không bắt người dùng chờ 90ms
+// trước khi request nét cuối bắt đầu.
+export const VIEWPORT_TILE_SETTLE_MS = 48;
 
-// PERF (audit 2026-08-07 §ZOOM.2): nền chỉ chống trắng trong khi tile viewport
+// PERF (audit 2026-08-07 §ZOOM.2): nền display chống trắng trong khi tile viewport
 // đảm nhiệm độ nét cuối. Hệ số theo DPR giữ chất lượng đồng đều trên màn HiDPI.
 export const VIEWER_BACKGROUND_ZOOM_CAP = 2;
+export const ACCURATE_VIEWER_BASE_ZOOM_MIN = 1;
+// COLOR/PERF (feedback 2026-08-09 §RENDER.F9): nền PPE phải đủ nét để đọc ngay từ
+// cold-open. Giữ 96–144 DPI cho full-page; cao hơn chuyển sang viewport PPE để
+// không raster cả trang khổng lồ.
+export const ACCURATE_VIEWER_BASE_ZOOM_CAP = 1.5;
+
+export function computeAccurateViewerBaseZoom(
+    renderZoom: number,
+    _zoom: number,
+    _dpr: number,
+): number {
+    const safeRenderZoom = Number.isFinite(renderZoom) && renderZoom > 0
+        ? renderZoom
+        : ACCURATE_VIEWER_BASE_ZOOM_MIN;
+    // renderZoom chỉ đổi sau nhịp debounce, vì vậy bitmap PPE nét cũ vẫn được scale
+    // tạm trong lúc lăn; khi dừng mới dựng target 96–144 DPI rồi thay thế.
+    return Math.max(
+        ACCURATE_VIEWER_BASE_ZOOM_MIN,
+        Math.min(safeRenderZoom, ACCURATE_VIEWER_BASE_ZOOM_CAP),
+    );
+}
+
+export function shouldPrefetchViewerPage(
+    pageDistance: number,
+    accurateColorPage: boolean,
+    accuratePrefetchReady: boolean,
+): boolean {
+    if (!Number.isFinite(pageDistance) || pageDistance > 1) return false;
+    return !accurateColorPage || accuratePrefetchReady;
+}
+
+export function shouldUseViewerViewportTiles(
+    viewerIsActive: boolean,
+    isActiveFrame: boolean,
+    isImage: boolean,
+    renderZoom: number,
+    zoom: number,
+    dpr: number,
+    accurateColorPage: boolean,
+): boolean {
+    // PERF (feedback 2026-08-09 §RENDER.F5): fit/100% dùng accurate full-page gần
+    // mật độ màn hình; viewport chỉ gánh zoom cao để tránh full-page raster lớn.
+    const accurateNeedsViewport = accurateColorPage
+        && zoom * dpr > ACCURATE_VIEWER_BASE_ZOOM_CAP;
+    return viewerIsActive
+        && isActiveFrame
+        && !isImage
+        && Number.isFinite(renderZoom)
+        && Number.isFinite(zoom)
+        && Number.isFinite(dpr)
+        && (accurateNeedsViewport || renderZoom < zoom * dpr * 0.95);
+}
 
 export function computeViewerBackgroundZoom(
     renderZoom: number,

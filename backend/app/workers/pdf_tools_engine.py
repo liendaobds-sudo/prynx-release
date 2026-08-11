@@ -331,9 +331,8 @@ def resize_pages(source_path: str, output_path: str,
 # đổi A1→A5 mà dung lượng không giảm (vẫn ~300MB) → mọi tác vụ sau (trim/bình)
 # đều chậm. resize_pages_smart bổ sung bước GIẢM DỮ LIỆU theo khổ mới:
 #
-#   - mode='vector' (mặc định, AN TOÀN IN ẤN): resize hình học rồi Ghostscript
-#     downsample ẢNH theo effective-DPI (giống PDF Optimizer của Acrobat). Giữ
-#     nguyên vector/text/CMYK.
+#   - mode='vector' (mặc định, AN TOÀN IN ẤN): resize hình học rồi hạ ẢNH theo
+#     effective-DPI ở cấp XObject. Giữ nguyên vector/text và không dựng lại toàn bộ PDF.
 #   - mode='raster' (nhanh nhất, cho trang THUẦN ẢNH): pypdfium2 render mỗi trang
 #     ở đúng DPI đích rồi dựng lại. Nhỏ & nhanh nhất NHƯNG raster hoá (mất vector/
 #     text sắc nét) và ra RGB (mất CMYK/spot) → chỉ dùng khi hợp.
@@ -393,16 +392,14 @@ def _doc_has_non_rgb_images(path: str) -> bool:
 
 
 def _native_downsample(input_path: str, output_path: str, target_dpi: int) -> bool:
-    """Hạ độ phân giải ảnh bằng pikepdf/Pillow. `False` ⇒ caller thử Ghostscript.
+    """Hạ độ phân giải ảnh bằng pikepdf/Pillow. `False` ⇒ caller giữ bản hình học.
 
     Dùng chung `pdf_actions_native.downscale_images` với action DOWNSCALE_IMAGES
     — cùng cách tính DPI hiệu dụng (CTM, đệ quy Form XObject) và cùng danh sách
     ảnh bỏ qua vì không an toàn.
 
-    Ngưỡng giữ **1.5×** cho khớp mặc định của pdfwrite: đây là đường thay thế
-    cho GS ở giữa một tính năng đang chạy, nên hành vi người dùng thấy không
-    được đổi. Hạ mọi ảnh chỉ hơn ngưỡng một chút chỉ làm mờ mà gần như không
-    giảm dung lượng.
+    Ngưỡng giữ **1.5×** để chỉ hạ ảnh vượt DPI hiệu dụng đủ xa. Hạ mọi ảnh chỉ
+    hơn ngưỡng một chút sẽ làm mờ mà gần như không giảm dung lượng.
     """
     try:
         from app.core import pdf_actions_native
@@ -414,70 +411,15 @@ def _native_downsample(input_path: str, output_path: str, target_dpi: int) -> bo
             input_path, output_path, float(target_dpi), float(target_dpi) * 1.5
         )
     except Exception as exc:  # noqa: BLE001
-        _pt_logger.warning("resize downsample object-level lỗi (%s) → thử Ghostscript.", exc)
+        _pt_logger.warning("Hạ ảnh ở cấp XObject lỗi (%s) → giữ bản chỉ đổi hình học.", exc)
         return False
     if result.get("changed", 0) > 0:
         _pt_logger.info(
-            "resize downsample: hạ %d ảnh bằng pikepdf (không cần Ghostscript).",
+            "resize downsample: hạ %d ảnh bằng pikepdf/Pillow.",
             result["changed"],
         )
         return True
     return False
-
-
-def _gs_downsample(input_path: str, output_path: str, target_dpi: int) -> bool:
-    """Ghostscript downsample ảnh về target_dpi, GIỮ vector/text/CMYK. Trả True
-    nếu thành công. Mọi lỗi (thiếu GS, GS fail) → False (caller fallback).
-
-    Downsample của pdfwrite tính theo ĐỘ PHÂN GIẢI HIỆU DỤNG (pixel thực đặt trên
-    trang) — sau khi resize A1→A5, ảnh có effective-DPI rất cao nên bị hạ mạnh."""
-    from app.config import settings
-    from app.utils.subprocess_utils import run_hidden
-    import subprocess
-
-    gs_path = getattr(settings, "GHOSTSCRIPT_PATH", None)
-    if not gs_path or not os.path.isfile(gs_path):
-        _pt_logger.warning("resize downsample: không tìm thấy Ghostscript (%r) → bỏ qua downsample.", gs_path)
-        return False
-
-    mono_dpi = min(int(target_dpi) * 2, 1200)
-    cmd = [
-        gs_path,
-        "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
-        "-sDEVICE=pdfwrite",
-        "-dAutoRotatePages=/None",
-        "-dColorConversionStrategy=/LeaveColorUnchanged",  # KHÔNG đổi màu → giữ CMYK/spot
-        "-dDownsampleColorImages=true",
-        "-dColorImageDownsampleType=/Bicubic",
-        f"-dColorImageResolution={int(target_dpi)}",
-        "-dDownsampleGrayImages=true",
-        "-dGrayImageDownsampleType=/Bicubic",
-        f"-dGrayImageResolution={int(target_dpi)}",
-        "-dDownsampleMonoImages=true",
-        f"-dMonoImageResolution={mono_dpi}",
-        "-dDetectDuplicateImages=true",  # ảnh lặp (poster) → gom 1 lần
-        "-dCompatibilityLevel=1.6",
-        f"-sOutputFile={output_path}",
-        input_path,
-    ]
-    try:
-        result = run_hidden(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1800)
-        if result.returncode != 0 or not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-            _pt_logger.warning("resize downsample: Ghostscript trả mã %s → fallback.", getattr(result, "returncode", "?"))
-            return False
-        # Chuẩn hoá cấu trúc GS-output về xref cổ điển cho pdf-lib đọc được (chỉ
-        # đổi CẤU TRÚC, KHÔNG đổi render). Lỗi chuẩn hoá → giữ nguyên GS-output.
-        try:
-            tmp = output_path + ".compat.pdf"
-            with pikepdf.open(output_path) as _p:
-                save_pdf_compat(_p, tmp)
-            os.replace(tmp, output_path)
-        except Exception as _e:  # noqa: BLE001
-            _pt_logger.debug("Không chuẩn hoá được GS-output (giữ nguyên): %s", _e)
-        return True
-    except Exception as e:  # noqa: BLE001
-        _pt_logger.warning("resize downsample: lỗi chạy Ghostscript (%s) → fallback.", e)
-        return False
 
 
 def _raster_resize(source_path: str, output_path: str,
@@ -639,7 +581,7 @@ def resize_pages_smart(source_path: str, output_path: str,
     # nền raster; không được rơi vào _raster_resize dù UI chọn "raster".
     # RESIZE (audit 2026-08-01 §R.4): khóa một chiều luôn dựng geometry vector
     # trước rồi mới giảm mẫu ảnh; §TR.1 quyết định contentBox hay page box theo alpha.
-    # RESIZE (audit 2026-08-03 §TR.3): raster RGB và pdfwrite có thể flatten
+    # RESIZE (audit 2026-08-03 §TR.3): raster RGB có thể flatten
     # alpha. Kể cả user còn preset "raster" cũ, trang có transparency phải đi
     # Form/XObject; downsample object-level bên dưới hạ ảnh và SMask cùng tỷ lệ.
     chosen = "vector" if content_aware_resize or has_transparency else mode
@@ -664,26 +606,16 @@ def resize_pages_smart(source_path: str, output_path: str,
     tmp_geom = output_path + ".geom.pdf"
     _resize_geometry(tmp_geom)
     try:
-        # Ưu tiên đường object-level: nó chỉ ghi đè đúng ảnh vượt ngưỡng, còn
-        # pdfwrite dựng lại cả tài liệu (subset lại font, quy đổi colorspace,
-        # có khi nuốt cả spot). Chỉ rơi về GS khi native không hạ được gì.
+        # GS-SUNSET (audit 2026-08-08 §GS.3): chỉ dùng đường object-level vì nó
+        # ghi đè đúng ảnh vượt ngưỡng, giữ nguyên vector, page box, transparency
+        # và các colorspace mà engine đánh giá là an toàn. Không hạ được thì giữ
+        # nguyên bản chỉ đổi hình học — đúng fallback thực tế trước khi dọn GS.
         if _native_downsample(tmp_geom, output_path, int(target_dpi)):
             try:
                 if os.path.getsize(output_path) < os.path.getsize(tmp_geom):
                     return output_path
             except OSError:
                 return output_path
-        if not has_transparency and _gs_downsample(tmp_geom, output_path, int(target_dpi)):
-            # Chỉ giữ kết quả downsample nếu THỰC SỰ nhỏ hơn; GS đôi khi phình file.
-            try:
-                if os.path.getsize(output_path) < os.path.getsize(tmp_geom):
-                    return output_path
-            except OSError:
-                return output_path
-        if has_transparency:
-            _pt_logger.info(
-                "resize downsample: bỏ qua Ghostscript để giữ transparency/SMask."
-            )
         # Fallback: dùng bản chỉ-đổi-hình-học.
         os.replace(tmp_geom, output_path)
         tmp_geom = None

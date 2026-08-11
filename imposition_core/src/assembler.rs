@@ -113,7 +113,13 @@ pub fn compute_placements(
                         sheet_idx
                     }
                 } else {
-                    get_src_page_idx(sheet_idx, cell_on_sheet_idx, layout_type, total_capacity, page_count)
+                    get_src_page_idx(
+                        sheet_idx,
+                        cell_on_sheet_idx,
+                        layout_type,
+                        total_capacity,
+                        page_count,
+                    )
                 };
 
                 if src_page_idx >= page_count {
@@ -167,10 +173,12 @@ pub fn compute_mark_coords(
         let trim_y1 = p.original_cell_y + p.height;
 
         let cluster_map = block_cuts.entry(p.cluster_idx).or_default();
-        let cuts = cluster_map.entry(p.cell.block_id).or_insert_with(|| BlockCuts {
-            v: BTreeSet::new(),
-            h: BTreeSet::new(),
-        });
+        let cuts = cluster_map
+            .entry(p.cell.block_id)
+            .or_insert_with(|| BlockCuts {
+                v: BTreeSet::new(),
+                h: BTreeSet::new(),
+            });
         cuts.v.insert((trim_x0 * 100.0).round() as i64);
         cuts.v.insert((trim_x1 * 100.0).round() as i64);
         cuts.h.insert((trim_y0 * 100.0).round() as i64);
@@ -183,24 +191,59 @@ pub fn compute_mark_coords(
     macro_rules! push_mark {
         (v, $x:expr, $y0:expr, $y1:expr) => {
             if is_japanese {
-                marks.push(MarkSegment { x1: $x - bleed_offset, y1: $y0, x2: $x - bleed_offset, y2: $y1 });
-                marks.push(MarkSegment { x1: $x + bleed_offset, y1: $y0, x2: $x + bleed_offset, y2: $y1 });
+                marks.push(MarkSegment {
+                    x1: $x - bleed_offset,
+                    y1: $y0,
+                    x2: $x - bleed_offset,
+                    y2: $y1,
+                });
+                marks.push(MarkSegment {
+                    x1: $x + bleed_offset,
+                    y1: $y0,
+                    x2: $x + bleed_offset,
+                    y2: $y1,
+                });
             } else {
-                marks.push(MarkSegment { x1: $x, y1: $y0, x2: $x, y2: $y1 });
+                marks.push(MarkSegment {
+                    x1: $x,
+                    y1: $y0,
+                    x2: $x,
+                    y2: $y1,
+                });
             }
         };
         (h, $y:expr, $x0:expr, $x1:expr) => {
             if is_japanese {
-                marks.push(MarkSegment { x1: $x0, y1: $y - bleed_offset, x2: $x1, y2: $y - bleed_offset });
-                marks.push(MarkSegment { x1: $x0, y1: $y + bleed_offset, x2: $x1, y2: $y + bleed_offset });
+                marks.push(MarkSegment {
+                    x1: $x0,
+                    y1: $y - bleed_offset,
+                    x2: $x1,
+                    y2: $y - bleed_offset,
+                });
+                marks.push(MarkSegment {
+                    x1: $x0,
+                    y1: $y + bleed_offset,
+                    x2: $x1,
+                    y2: $y + bleed_offset,
+                });
             } else {
-                marks.push(MarkSegment { x1: $x0, y1: $y, x2: $x1, y2: $y });
+                marks.push(MarkSegment {
+                    x1: $x0,
+                    y1: $y,
+                    x2: $x1,
+                    y2: $y,
+                });
             }
         };
     }
 
     #[derive(Clone)]
-    struct BBox { min_x: f64, max_x: f64, min_y: f64, max_y: f64 }
+    struct BBox {
+        min_x: f64,
+        max_x: f64,
+        min_y: f64,
+        max_y: f64,
+    }
     const GAP_EPS: f64 = 0.5;
 
     for cluster_blocks in block_cuts.values() {
@@ -212,10 +255,15 @@ pub fn compute_mark_coords(
             if v_vals.is_empty() || h_vals.is_empty() {
                 continue;
             }
-            bboxes.insert(block_id, BBox {
-                min_x: v_vals[0], max_x: *v_vals.last().unwrap(),
-                min_y: h_vals[0], max_y: *h_vals.last().unwrap(),
-            });
+            bboxes.insert(
+                block_id,
+                BBox {
+                    min_x: v_vals[0],
+                    max_x: *v_vals.last().unwrap(),
+                    min_y: h_vals[0],
+                    max_y: *h_vals.last().unwrap(),
+                },
+            );
             per_block.push((block_id, v_vals, h_vals));
         }
 
@@ -235,8 +283,16 @@ pub fn compute_mark_coords(
             let min_y = h_vals[0];
             let max_y = *h_vals.last().unwrap();
 
-            let v_draw: Vec<f64> = if mark_type == "corners" { vec![min_x, max_x] } else { v_vals.clone() };
-            let h_draw: Vec<f64> = if mark_type == "corners" { vec![min_y, max_y] } else { h_vals.clone() };
+            let v_draw: Vec<f64> = if mark_type == "corners" {
+                vec![min_x, max_x]
+            } else {
+                v_vals.clone()
+            };
+            let h_draw: Vec<f64> = if mark_type == "corners" {
+                vec![min_y, max_y]
+            } else {
+                h_vals.clone()
+            };
 
             for &vx in &v_draw {
                 push_mark!(v, vx, min_y - mark_off, min_y - mark_off - mark_len);
@@ -248,10 +304,22 @@ pub fn compute_mark_coords(
             }
         }
 
-        let g_min_x = bboxes.values().map(|b| b.min_x).fold(f64::INFINITY, f64::min);
-        let g_max_x = bboxes.values().map(|b| b.max_x).fold(f64::NEG_INFINITY, f64::max);
-        let g_min_y = bboxes.values().map(|b| b.min_y).fold(f64::INFINITY, f64::min);
-        let g_max_y = bboxes.values().map(|b| b.max_y).fold(f64::NEG_INFINITY, f64::max);
+        let g_min_x = bboxes
+            .values()
+            .map(|b| b.min_x)
+            .fold(f64::INFINITY, f64::min);
+        let g_max_x = bboxes
+            .values()
+            .map(|b| b.max_x)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let g_min_y = bboxes
+            .values()
+            .map(|b| b.min_y)
+            .fold(f64::INFINITY, f64::min);
+        let g_max_y = bboxes
+            .values()
+            .map(|b| b.max_y)
+            .fold(f64::NEG_INFINITY, f64::max);
         if let Some(vc) = vx_c {
             push_mark!(v, vc, g_min_y - mark_off, g_min_y - mark_off - mark_len);
             push_mark!(v, vc, g_max_y + mark_off, g_max_y + mark_off + mark_len);
@@ -272,21 +340,54 @@ mod tests {
     #[test]
     fn alignment_center_and_corners() {
         // center: super_base_x = mL + (usableW - gridW)/2
-        let (bx, by) = compute_alignment(320.0, 450.0, 320.0, 440.0, 0.0, 5.0, 200.0, 400.0, "center");
+        let (bx, by) =
+            compute_alignment(320.0, 450.0, 320.0, 440.0, 0.0, 5.0, 200.0, 400.0, "center");
         assert!((bx - (0.0 + (320.0 - 200.0) / 2.0)).abs() < 1e-9);
         assert!((by - (5.0 + (440.0 - 400.0) / 2.0)).abs() < 1e-9);
 
         // bottom-left mặc định
-        let (bx2, by2) = compute_alignment(320.0, 450.0, 320.0, 440.0, 7.0, 5.0, 200.0, 400.0, "bottom-left");
+        let (bx2, by2) = compute_alignment(
+            320.0,
+            450.0,
+            320.0,
+            440.0,
+            7.0,
+            5.0,
+            200.0,
+            400.0,
+            "bottom-left",
+        );
         assert!((bx2 - 7.0).abs() < 1e-9);
         assert!((by2 - 5.0).abs() < 1e-9);
     }
 
     #[test]
     fn placements_basic_flip() {
-        let cells = [AssemblyCell { x: 0.0, y: 0.0, width: 100.0, height: 60.0, is_rotated: false, is_rotated_180: false, block_id: 0 }];
+        let cells = [AssemblyCell {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 60.0,
+            is_rotated: false,
+            is_rotated_180: false,
+            block_id: 0,
+        }];
         let pls = compute_placements(
-            0, &cells, 1, 1, 1, 0.0, 100.0, 60.0, 0.0, 0.0, 450.0, "sequential", 1, 1, None,
+            0,
+            &cells,
+            1,
+            1,
+            1,
+            0.0,
+            100.0,
+            60.0,
+            0.0,
+            0.0,
+            450.0,
+            "sequential",
+            1,
+            1,
+            None,
         );
         assert_eq!(pls.len(), 1);
         let p = pls[0];
@@ -302,10 +403,42 @@ mod tests {
     fn marks_corners_only_outer() {
         // 2 ô cạnh nhau cùng block → "corners" chỉ lấy mép ngoài (min/max).
         let cells = [
-            AssemblyCell { x: 0.0, y: 0.0, width: 100.0, height: 60.0, is_rotated: false, is_rotated_180: false, block_id: 0 },
-            AssemblyCell { x: 100.0, y: 0.0, width: 100.0, height: 60.0, is_rotated: false, is_rotated_180: false, block_id: 0 },
+            AssemblyCell {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 60.0,
+                is_rotated: false,
+                is_rotated_180: false,
+                block_id: 0,
+            },
+            AssemblyCell {
+                x: 100.0,
+                y: 0.0,
+                width: 100.0,
+                height: 60.0,
+                is_rotated: false,
+                is_rotated_180: false,
+                block_id: 0,
+            },
         ];
-        let pls = compute_placements(0, &cells, 2, 1, 1, 0.0, 200.0, 60.0, 0.0, 0.0, 450.0, "sequential", 2, 2, None);
+        let pls = compute_placements(
+            0,
+            &cells,
+            2,
+            1,
+            1,
+            0.0,
+            200.0,
+            60.0,
+            0.0,
+            0.0,
+            450.0,
+            "sequential",
+            2,
+            2,
+            None,
+        );
         let corners = compute_mark_coords(&pls, "corners", 3.0, 5.0, 0.0);
         let guillotine = compute_mark_coords(&pls, "guillotine", 3.0, 5.0, 0.0);
         // guillotine có nhiều đường cắt hơn corners (3 đường dọc vs 2).

@@ -115,7 +115,6 @@
       "nsis"
     ],
     "resources": [
-      "binaries/gs/**/*",
       "binaries/tesseract/**/*",
       "bin/pdfium.dll",
       "icons/file-pdf.ico",

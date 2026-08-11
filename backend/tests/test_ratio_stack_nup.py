@@ -317,15 +317,13 @@ def test_sequential_lan_luot_theo_sl(monkeypatch):
     assert sheet1 == [1] * 8, f"tờ 1 phải toàn mẫu 1, được {sheet1}"
 
 
-def test_sequential_trong_lap_day_1_to(monkeypatch):
-    """SL trống → lấp ĐẦY 1 tờ (capacity ô), GOM THEO LOẠI A-A-A-A B-B-B-B (không
-    xen kẽ 0,1,0,1). capacity=8, 2 loại → chia đều 4/4 khối liền."""
+def test_sequential_trong_bao_toan_moi_trang_mot_lan(monkeypatch):
+    """SL trống + file nhiều trang → giữ mỗi trang đúng một lần, không cắt ở tờ đầu."""
     settings = _base_settings(layoutType="sequential", targetQuantitiesByPage={})
     precalc = _run_capture(monkeypatch, 2, settings)
     assert precalc is not None and list(precalc.keys()) == [0], "đúng 1 tờ"
     pages = [p["src_page_idx"] for p in precalc[0]]
-    assert len(pages) == 8, f"phải lấp đủ capacity 8, được {len(pages)}"
-    assert pages == [0, 0, 0, 0, 1, 1, 1, 1], f"gom theo loại, được {pages}"
+    assert pages == [0, 1]
 
 
 def test_duplex_trang_le_bi_chan(monkeypatch):
@@ -416,10 +414,9 @@ def test_ratio_stack_duplex_le_bi_chan(monkeypatch):
 def test_sequential_duplex_cap_truoc_sau(monkeypatch):
     """2 mặt: cùng ô trên tờ chẵn = trang trước (2k), tờ lẻ = trang sau (2k+1).
 
-    4 trang → 2 SP. capacity=8, SL trống lấp 1 mặt trước, GOM THEO LOẠI → 8 SP
-    [0,0,0,0,1,1,1,1].
-    Tờ 0 (trước): 0,0,0,0,2,2,2,2
-    Tờ 1 (sau):   1,1,1,1,3,3,3,3
+    4 trang → 2 SP. SL trống giữ mỗi cặp sản phẩm một lần.
+    Tờ 0 (trước): 0,2
+    Tờ 1 (sau):   1,3
     """
     settings = _base_settings(
         layoutType="sequential",
@@ -431,8 +428,8 @@ def test_sequential_duplex_cap_truoc_sau(monkeypatch):
     assert sorted(precalc.keys()) == [0, 1], f"cần đúng 2 tờ F/B, keys={list(precalc.keys())}"
     front = [p["src_page_idx"] for p in precalc[0]]
     back = [p["src_page_idx"] for p in precalc[1]]
-    assert front == [0, 0, 0, 0, 2, 2, 2, 2], f"mặt trước sai: {front}"
-    assert back == [1, 1, 1, 1, 3, 3, 3, 3], f"mặt sau sai: {back}"
+    assert front == [0, 2], f"mặt trước sai: {front}"
+    assert back == [1, 3], f"mặt sau sai: {back}"
     # Cùng hình học ô (abs) giữa F/B — mirror do process_chunk, precalc giữ toạ độ giống.
     for a, b in zip(precalc[0], precalc[1]):
         assert abs(a["abs_x"] - b["abs_x"]) < 1e-6

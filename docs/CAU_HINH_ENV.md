@@ -30,6 +30,7 @@ tiến trình**; việc nặng chạy process con riêng nên trần job không 
 | `PRYNX_CLOCK_GUARD_FILE` | theo APPDATA | Đổi chỗ lưu mốc chống lùi đồng hồ |
 | `PRYNX_SECURITY_DIAG` | tắt | Bật log chẩn đoán posture bảo mật. Log có thể lộ thông tin môi trường → không bật lâu trên máy khách |
 | `PRYNX_FEATURE_GATING_ENABLED` | dev: tắt; binary đóng gói: bật cưỡng bức | Với source dev, đặt `true` để test Free/Pro. Binary Nuitka luôn bật và bỏ qua yêu cầu tắt. Dùng `run_dev.bat --gated` để đặt đồng thời biến này và `VITE_FEATURE_GATING_ENABLED=true` cho frontend |
+| `PRYNX_LOGO_REBUILD_ENABLED` | `false` | Cờ release backend cho Phục hồi & Vector hóa Logo. Dev thông dịch vẫn mở bằng `DEV_MODE=true`; bản đóng gói lấy giá trị đã nung trong Tauri host và ghi đè env kế thừa khi spawn sidecar. Pipeline phải đặt đồng thời với `VITE_LOGO_REBUILD_ENABLED`; hiện cả hai giữ `false` (HOLD) cho tới khi nghiệm thu production |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | *(không)* | Chỉ dùng cho đường kích hoạt/kiểm tra license phía server |
 | `PRYNX_SUPABASE_URL`, `PRYNX_SUPABASE_SECRET_KEY` | *(không)* | Tương thích CI/CLI để lấy khóa resource khuôn bế; build lấy và xóa hai biến ngay đầu process, trước mọi tool con. Launcher chuẩn không dùng env: `build_production.ps1` tự giải mã kho DPAPI `%LOCALAPPDATA%\PrynX\ReleaseSecrets\secrets.clixml` đúng tại bước REST. Public release chỉ nhận khóa mới `sb_secret_` |
 
@@ -53,6 +54,10 @@ hơn thì tăng **worker trong job**, không tăng **số job** — mỗi job n�
 | `STICKER_STICKY_SEQ_SEC` | auto theo tier | Thời gian "dính" chế độ tuần tự sau khi gặp job nặng |
 | `STICKER_PARALLEL_MIN_PAGES` | theo `sticker_engine` | Dưới ngưỡng trang này thì chạy tuần tự (song song không đáng) |
 | `STICKER_FORCE_SEQUENTIAL` | tắt | Ép tuần tự khi nghi lỗi do song song |
+| `PRYNX_RENDER_WORKER_MODE` | `auto` | Viewer mặc định render PDFium trong process riêng. `off` dùng đường in-process cũ để chẩn đoán/fallback; `required` cấm fallback và dùng cho smoke test cách ly PDFium khỏi UI |
+| `PRYNX_RENDER_BACKGROUND_WORKERS` | auto: `<8GB`→0, `8–15GB`→1, `≥16GB`→`min(CPU−1, RAM/4GB)` | Escape hatch QA cho số display worker nền; `0` mô phỏng máy ít RAM. Worker được spawn lazy, không tạo đủ process chỉ vì policy cho phép nhiều lane |
+| `PRYNX_VIEWER_ENGINE_MODE` | `current` | Rollout Viewer: `current` giữ policy hiện hành; `hybrid` thử PPE cho mọi trang và chỉ lùi PDFium khi protocol trả `unsupported`; `ppe-only` cấm compatibility fallback |
+| `PRYNX_VIEWER_SHADOW_RENDER` | tắt | `1` cho PPE dựng full-page 96 DPI ở lane nền nhưng không hiển thị. Chỉ ghi hash/timing/soundness vào `PrynX_RenderPerf.log`, không ghi path hoặc nội dung PDF |
 
 ## 3. Bộ nhớ & chất lượng render
 
@@ -66,17 +71,19 @@ hơn thì tăng **worker trong job**, không tăng **số job** — mỗi job n�
 | `PRYNX_UPSCALE_FORCE_CPU` | tắt | Ép upscale chạy CPU khi GPU/DirectML treo |
 | `PRYNX_BG_FORCE_CPU` | tắt | Ép tách nền (BiRefNet/ISNet) chạy CPU |
 
-## 4. Ghostscript, PDFium, đường dẫn
+## 4. PPE, PDFium, ICC và đường dẫn
 
 | Biến | Mặc định | Đụng tới khi nào |
 |---|---|---|
-| `GHOSTSCRIPT_PATH` | tự dò | Trỏ tới `gswin64c.exe` khi bản cài đặt ở chỗ lạ |
-| `PRYNX_NO_GS_BUILD` | tắt | Đánh dấu bản build **không kèm** Ghostscript → engine tự chọn đường thay thế |
 | `PDFIUM_DLL_PATH` | tự dò `native/pdfium_lib/bin` | Trỏ thư mục chứa `pdfium.dll` cho module Rust |
 | `VIRTUAL_ENV` | theo venv | `rust_bridge` dùng để dò `pypdfium2_raw/pdfium.dll` khi không có `PDFIUM_DLL_PATH` |
 | `IMPOSITION_RESTRICT_PATHS` | bật | Giới hạn đường dẫn file mà endpoint `*-by-path` được đọc |
 | `IMPOSITION_ALLOWED_DIRS` | *(không)* | Danh sách thư mục được phép, đi cùng biến trên |
 | `DATABASE_URL` | SQLite cục bộ | Chỉ đổi cho deployment web/docker cũ |
+
+PPE-only là bất biến của sản phẩm, không phải một chế độ cấu hình. PrynX không hỗ
+trợ biến môi trường để dò/bật Ghostscript hoặc chuyển sang executable xử lý PDF
+bên ngoài; tác vụ sửa file vượt khả năng engine nội bộ sẽ dừng an toàn và báo không hỗ trợ.
 
 ## 5. Parity & fallback engine
 
@@ -84,7 +91,7 @@ hơn thì tăng **worker trong job**, không tăng **số job** — mỗi job n�
 |---|---|---|
 | `IMPOSITION_ALLOW_PY_FALLBACK` | `0` (Rust **bắt buộc**) | Đặt `1` để chạy solver Python khi thiếu module Rust. **KHÔNG đảm bảo parity** — xem `backend/tests/parity/KNOWN_DIVERGENCES.md`. Không dùng cho production |
 | `PRYNX_OUTLINE_TRUST_PPE` | theo `outline_text.py` | Tin kết quả outline của print engine thay vì hậu kiểm lại |
-| `PRYNX_SHAPE_CLIP` | theo `nup_clip_shape.py` | Bật/tắt clip theo hình khi bình tem |
+| `PRYNX_SHAPE_CLIP` | theo `backend/app/workers/nup_clip_shape.py` | Bật/tắt clip theo hình khi bình tem |
 
 ## 6. Log & chẩn đoán (mặc định TẮT — chỉ bật khi đang điều tra)
 

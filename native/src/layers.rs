@@ -50,7 +50,9 @@ pub fn render_with_visibility(
         use std::io::Cursor;
         let mut cursor = Cursor::new(&mut jpeg_buf);
         img.write_to(&mut cursor, image::ImageFormat::Jpeg)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("JPEG encode failed: {}", e)))?;
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("JPEG encode failed: {}", e))
+            })?;
     }
 
     Ok(PyBytes::new(py, &jpeg_buf).into())

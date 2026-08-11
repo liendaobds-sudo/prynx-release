@@ -12,13 +12,11 @@ import os
 from app.core.pdfx_export import PdfxExportEngine
 
 
-def test_output_intent_uses_app_cmyk_profile_not_ghostscript_default():
-    """Phải là profile CMYK của app, không phải ICC generic cạnh binary GS.
+def test_output_intent_uses_app_cmyk_profile():
+    """OutputIntent phải dùng đúng profile CMYK mà app dùng để đo.
 
-    Lỗi đã xảy ra: nhánh tìm profile gọi `softproof.KNOWN_PROFILES`, biểu tượng
-    đó bị bỏ trong một lần refactor, và `except Exception: pass` nuốt trọn
-    ImportError — PDF/X lặng lẽ khai "Generic CMYK (Ghostscript default)" trong
-    khi FOGRA39 vẫn nằm sẵn trong app/assets/icc/.
+    Một profile generic khác với profile đo sẽ khiến lời khai PDF/X không còn
+    khớp với số liệu separations, soft-proof và TAC.
     """
     path, cond_id, cond_name = PdfxExportEngine()._resolve_output_intent_icc()
 
@@ -29,7 +27,7 @@ def test_output_intent_uses_app_cmyk_profile_not_ghostscript_default():
         f"OutputIntent phải dùng ICC bundled của app, đang dùng: {path}"
     )
     assert "iccprofiles" not in normalized, (
-        f"ICC đang lấy từ thư mục Ghostscript: {path}"
+        f"ICC đang lấy từ thư mục profile ngoài app: {path}"
     )
     assert cond_id and cond_name
 
@@ -68,10 +66,8 @@ def _pdfx4_ready_pdf(path):
 def test_pdfx4_identification_needs_xmp_and_version_16(tmp_path):
     """X-4 (ISO 15930-7) đòi PDF ≥1.6 và định danh trong XMP, không phải Info.
 
-    Ghostscript `-dPDFX=true` chỉ nhắm X-1a/X-3: nó ép version về 1.3 và ghi
-    `/GTS_PDFXVersion` vào Info. File xuất ra vì thế KHAI "PDF/X-4" trong khi
-    cấu trúc là X-3 — validator từ chối, mà một file khai sai chuẩn còn tệ hơn
-    file không khai vì nhà in tin lời khai.
+    Chỉ ghi `/GTS_PDFXVersion` vào Info là chưa đủ cho X-4. File khai sai chuẩn
+    còn tệ hơn file không khai vì nhà in có thể tin nhầm lời khai đó.
     """
     src = tmp_path / "plain.pdf"
     _pdfx4_ready_pdf(src)
@@ -92,11 +88,8 @@ def test_pdfx4_export_produces_valid_identification(tmp_path):
     _pdfx4_ready_pdf(src)
 
     engine = PdfxExportEngine()
-    if not engine.gs_path or not os.path.isfile(engine.gs_path):
-        import pytest
-
-        pytest.skip("cần Ghostscript cho bước xuất")
-
+    # GS-SUNSET (audit 2026-08-08 §GS.2): chạy thật đường pikepdf; không skip
+    # theo một binary ngoài sản phẩm.
     out = asyncio.run(engine.export_pdfx(str(src), "x4"))
     try:
         with pikepdf.open(out) as pdf:

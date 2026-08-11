@@ -6,6 +6,7 @@ import {
 } from './api';
 
 export type LogoRebuildMode = 'monochrome' | 'fixed_palette';
+export type LogoRebuildEngine = 'prynx_core' | 'vtracer';
 
 export interface NormalizedPoint {
   x: number;
@@ -14,6 +15,7 @@ export interface NormalizedPoint {
 
 export interface LogoRebuildSettings {
   mode: LogoRebuildMode;
+  engine: LogoRebuildEngine;
   palette: string[];
   background_color?: string;
   crop?: { x: number; y: number; width: number; height: number };
@@ -21,6 +23,8 @@ export interface LogoRebuildSettings {
   smoothing: number;
   despeckle_size_px: number;
   illumination_correction: boolean;
+  physical_width_mm?: number;
+  physical_height_mm?: number;
 }
 
 export interface LogoRebuildCapabilities {
@@ -29,7 +33,16 @@ export interface LogoRebuildCapabilities {
   supported_formats: string[];
   auto_color_enabled: false;
   preview_engine_enabled: boolean;
-  engine: { engine: string; version: string; cancellable: boolean } | null;
+  engine: {
+    engine: string;
+    version: string;
+    cancellable: boolean;
+    structured_result: boolean;
+    result_schema_version: number | null;
+    legacy_engine: string | null;
+    legacy_version: string | null;
+  } | null;
+  legacy_vtracer_enabled: boolean;
   limitations: string[];
 }
 
@@ -62,9 +75,26 @@ export interface LogoRebuildPreview {
   svg: string;
   width_px: number;
   height_px: number;
+  physical_width_mm: number | null;
+  physical_height_mm: number | null;
   warnings: string[];
   engine: string;
   engine_version: string;
+  result_schema_version: number | null;
+  artifact_sha256: string | null;
+  preprocess_hash: string | null;
+  native_metrics: {
+    layer_count: number;
+    component_count: number;
+    outer_count: number;
+    hole_count: number;
+    source_nodes: number;
+    output_nodes: number;
+    max_error_px: number;
+    raster_scale: number;
+    iou: number;
+    mae: number;
+  } | null;
   complexity: {
     path_count: number;
     drawable_path_count: number;

@@ -4,7 +4,11 @@ use pdfium_render::prelude::*;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-pub fn enumerate_objects(py: Python<'_>, pdf_path: &str, page_num: usize) -> PyResult<Vec<Py<PyAny>>> {
+pub fn enumerate_objects(
+    py: Python<'_>,
+    pdf_path: &str,
+    page_num: usize,
+) -> PyResult<Vec<Py<PyAny>>> {
     let pdfium = crate::pdfium_init::load_pdfium();
     let doc = pdfium
         .load_pdf_from_file(pdf_path, None)
@@ -58,13 +62,29 @@ pub fn enumerate_objects(py: Python<'_>, pdf_path: &str, page_num: usize) -> PyR
                     dict.set_item("segment_count", segs.len())?;
                     if let Ok(color) = path_obj.fill_color() {
                         let c: PdfColor = color;
-                        dict.set_item("fill_color", format!("#{:02x}{:02x}{:02x}{:02x}",
-                            c.red(), c.green(), c.blue(), c.alpha()))?;
+                        dict.set_item(
+                            "fill_color",
+                            format!(
+                                "#{:02x}{:02x}{:02x}{:02x}",
+                                c.red(),
+                                c.green(),
+                                c.blue(),
+                                c.alpha()
+                            ),
+                        )?;
                     }
                     if let Ok(color) = path_obj.stroke_color() {
                         let c: PdfColor = color;
-                        dict.set_item("stroke_color", format!("#{:02x}{:02x}{:02x}{:02x}",
-                            c.red(), c.green(), c.blue(), c.alpha()))?;
+                        dict.set_item(
+                            "stroke_color",
+                            format!(
+                                "#{:02x}{:02x}{:02x}{:02x}",
+                                c.red(),
+                                c.green(),
+                                c.blue(),
+                                c.alpha()
+                            ),
+                        )?;
                     }
                     if let Ok(w) = path_obj.stroke_width() {
                         dict.set_item("stroke_width", w.value)?;

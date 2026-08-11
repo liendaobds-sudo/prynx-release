@@ -6,28 +6,53 @@ Chức năng tương đương Acrobat Pro → Print Production → Save as PDF/X
 import os
 import asyncio
 import logging
-import tempfile
+import threading
 import uuid
 from pathlib import Path
 
 import pikepdf
 
 from app.config import settings
-from app.core.gs_availability import (
+from app.core.engine_support import (
     InternalEngineUnsupported,
     unsupported_message,
 )
-from app.utils.subprocess_utils import run_hidden
 
 logger = logging.getLogger(__name__)
 
-
-class GhostscriptNotFoundError(RuntimeError):
-    """Ghostscript không tồn tại ở đường dẫn đã cấu hình."""
-
-
 # Namespace định danh PDF/X trong XMP (ISO 15930-7 §6.2).
 _PDFX_ID_NS = "http://www.npes.org/pdfx/ns/id/"
+
+
+def _remove_file_quietly(path: str) -> None:
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def _raise_if_cancelled(cancel_check) -> None:
+    if cancel_check is not None and cancel_check():
+        raise InterruptedError("Tác vụ xuất PDF/X đã bị hủy.")
+
+
+def _validate_staged_pdfx(
+    input_path: str,
+    staged_path: str,
+    cancel_event: threading.Event,
+) -> None:
+    """Hậu kiểm tối thiểu trước khi công bố file PDF/X bằng rename atomic."""
+    _raise_if_cancelled(cancel_event.is_set)
+    if not os.path.isfile(staged_path) or os.path.getsize(staged_path) == 0:
+        raise ValueError("Engine không tạo được file PDF/X hợp lệ.")
+    with pikepdf.open(input_path) as source, pikepdf.open(staged_path) as staged:
+        if len(source.pages) != len(staged.pages):
+            raise ValueError(
+                "Số trang PDF/X không khớp file nguồn "
+                f"({len(staged.pages)} != {len(source.pages)})."
+            )
+    _raise_if_cancelled(cancel_event.is_set)
 
 
 def _ensure_trimbox(pdf_path: str) -> int:
@@ -54,7 +79,7 @@ def _ensure_trimbox(pdf_path: str) -> int:
 def _attach_output_intent(
     pdf_path: str, icc_path: str, cond_id: str, cond_name: str
 ) -> None:
-    """Gắn `/OutputIntents` với ICC nhúng — bản pikepdf của pdfmark GS dùng.
+    """Gắn `/OutputIntents` với ICC nhúng bằng pikepdf.
 
     OutputIntent phải mang **profile nhúng thật** (`/DestOutputProfile`), không
     chỉ tên điều kiện: nhà in cần chính bảng màu đó để soft-proof lại, và một
@@ -89,13 +114,10 @@ def _attach_output_intent(
 
 
 def _finalize_pdfx4_identification(pdf_path: str) -> None:
-    """Bổ sung phần định danh PDF/X-4 mà Ghostscript không ghi được.
+    """Bổ sung định danh XMP và phiên bản bắt buộc của PDF/X-4.
 
-    `-dPDFX=true` của Ghostscript chỉ nhắm PDF/X-1a/X-3 — nó **ép
-    CompatibilityLevel về 1.3** bất kể ta truyền 1.6, và ghi
-    `/GTS_PDFXVersion` vào *Info dict* theo lối X-1a. Nhưng PDF/X-4
-    (ISO 15930-7) đòi PDF **1.6** và định danh nằm trong **XMP**
-    (`pdfxid:GTS_PDFXVersion`).
+    PDF/X-4 (ISO 15930-7) đòi PDF **1.6** và định danh nằm trong **XMP**
+    (`pdfxid:GTS_PDFXVersion`), không chỉ trong Info dict.
 
     Hệ quả nếu bỏ qua: file khai "PDF/X-4" mà cấu trúc là X-3 và thiếu XMP —
     validator sẽ từ chối, và một file khai sai chuẩn còn tệ hơn file không
@@ -113,21 +135,9 @@ def _finalize_pdfx4_identification(pdf_path: str) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("PDF/X-4: không ghi được định danh XMP/version: %s", exc)
 
-
-def _ensure_gs(gs_path: str) -> None:
-    """Kiểm Ghostscript tồn tại TRƯỚC khi gọi → báo lỗi tiếng Việt rõ ràng thay vì
-    FileNotFoundError khó hiểu (hoặc treo). Path resolve ở config._find_ghostscript()."""
-    if not gs_path or not os.path.isfile(gs_path):
-        raise GhostscriptNotFoundError(
-            f"Không tìm thấy Ghostscript tại '{gs_path}'. "
-            "Cần cài Ghostscript hoặc kiểm tra lại bản cài PrynX (thiếu binaries/gs)."
-        )
-
-
 class PdfxExportEngine:
 
     def __init__(self):
-        self.gs_path = settings.GHOSTSCRIPT_PATH
         self.output_dir = Path(settings.RESULTS_DIR) / "preflight_output"
         self.output_dir.mkdir(parents=True, exist_ok=True)
         # Cảnh báo + engine của lần xuất gần nhất, để route trả kèm file.
@@ -303,20 +313,13 @@ class PdfxExportEngine:
 
     def _resolve_output_intent_icc(self):
         """Tìm ICC profile CMYK cho OutputIntent.
-        Ưu tiên FOGRA39 (couché offset châu Âu) trên hệ thống; fallback về
-        default_cmyk.icc đi kèm Ghostscript (luôn có cạnh binary gs).
+        Dùng cùng profile CMYK của app với separations, soft-proof và TAC.
         Trả (path, condition_id, condition_name) hoặc (None, None, None).
         """
-        # 1) Profile CMYK CỦA APP. OutputIntent khai điều kiện in của file, nên
-        # nó phải đúng profile mà separations / soft-proof / TAC đã dùng để
+        # OutputIntent khai điều kiện in của file, nên nó phải đúng profile mà
+        # separations / soft-proof / TAC đã dùng để
         # kiểm — khai điều kiện khác là nói với nhà in một chuyện chưa được
         # kiểm chứng.
-        #
-        # Trước đây chỗ này gọi `softproof.KNOWN_PROFILES`; biểu tượng đó đã bị
-        # bỏ trong một lần refactor nên `except Exception: pass` nuốt trọn
-        # ImportError và PDF/X LUÔN rơi xuống nhánh 2 — file xuất ra mang
-        # OutputIntent "Generic CMYK (Ghostscript default)" thay vì FOGRA39,
-        # trong khi FOGRA39 vẫn nằm sẵn trong `app/assets/icc/`.
         try:
             from app.core import icc_profiles
 
@@ -332,113 +335,92 @@ class PdfxExportEngine:
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("PDF/X: không lấy được ICC CMYK của app: %s", exc)
-        # 2) Ghostscript bundled default_cmyk.icc (cạnh binary gs)
-        try:
-            gs_dir = Path(self.gs_path).resolve().parent
-            for cand in (
-                gs_dir / "iccprofiles" / "default_cmyk.icc",
-                gs_dir.parent / "iccprofiles" / "default_cmyk.icc",
-                gs_dir / "iccprofiles" / "ps_cmyk.icc",
-            ):
-                if cand.is_file():
-                    return str(cand), "CGATS21_CRPC1", "Generic CMYK (Ghostscript default)"
-        except Exception:
-            pass
         return None, None, None
-
-    def _build_pdfx_def_file(self, icc_path: str, cond_id: str, cond_name: str, standard: str) -> str:
-        """Sinh file PDFX_def.ps (pdfmark) nhúng OutputIntent + ICC. Trả đường dẫn temp."""
-        # PostScript dùng forward-slash cho đường dẫn (kể cả Windows); escape ( ) \.
-        def _ps_str(s: str) -> str:
-            return s.replace("\\", "/").replace("(", r"\(").replace(")", r"\)")
-
-        icc_ps = _ps_str(icc_path)
-        cond_id_ps = _ps_str(cond_id)
-        cond_name_ps = _ps_str(cond_name)
-
-        if standard == "x1a":
-            version_lines = (
-                "[ /GTS_PDFXVersion (PDF/X-1:2001)\n"
-                "  /GTS_PDFXConformance (PDF/X-1a:2001)\n"
-                "  /Title (PrynX PDF/X-1a)\n"
-                "  /Trapped /False\n"
-                "  /DOCINFO pdfmark\n"
-            )
-        else:
-            version_lines = (
-                "[ /GTS_PDFXVersion (PDF/X-4)\n"
-                "  /Title (PrynX PDF/X-4)\n"
-                "  /Trapped /False\n"
-                "  /DOCINFO pdfmark\n"
-            )
-
-        content = (
-            "%!\n"
-            "% PrynX auto-generated PDF/X definition (OutputIntent + ICC)\n"
-            + version_lines +
-            "\n"
-            "[ /_objdef {icc_PDFX} /type /stream /OBJ pdfmark\n"
-            "[ {icc_PDFX} <</N 4>> /PUT pdfmark\n"
-            f"[ {{icc_PDFX}} ({icc_ps}) (r) file /PUT pdfmark\n"
-            "\n"
-            "[ /_objdef {OutputIntent_PDFX} /type /dict /OBJ pdfmark\n"
-            "[ {OutputIntent_PDFX} <<\n"
-            "  /Type /OutputIntent\n"
-            "  /S /GTS_PDFX\n"
-            f"  /OutputCondition ({cond_name_ps})\n"
-            f"  /OutputConditionIdentifier ({cond_id_ps})\n"
-            "  /RegistryName (http://www.color.org)\n"
-            f"  /Info ({cond_name_ps})\n"
-            "  /DestOutputProfile {icc_PDFX}\n"
-            ">> /PUT pdfmark\n"
-            "[ {Catalog} <</OutputIntents [ {OutputIntent_PDFX} ]>> /PUT pdfmark\n"
-        )
-
-        fd, path = tempfile.mkstemp(suffix="_PDFX_def.ps", dir=str(self.output_dir))
-        with os.fdopen(fd, "w", encoding="latin-1") as f:
-            f.write(content)
-        return path
 
     async def export_pdfx(self, file_path: str, standard: str = "x4") -> str:
         """
         Xuất file PDF chuẩn PDF/X.
         standard: 'x1a' | 'x4'
 
-        PDF/X-4 đi đường **object-level** (pikepdf) khi làm được: X-4 cho phép
+        PDF/X-4 đi đường **object-level** (pikepdf): X-4 cho phép
         giữ nguyên trong suốt và ICC, nên việc cần làm chỉ là quy đổi màu về
         CMYK, bảo đảm font nhúng, rồi gắn OutputIntent + định danh — cả ba đã có
-        sẵn. Đổi lại, file giữ nguyên vector/layer/spot thay vì bị `pdfwrite`
-        dựng lại.
+        sẵn. File giữ nguyên vector/layer/spot ngoài các object cần quy đổi.
 
-        PDF/X-1a vẫn cần Ghostscript: chuẩn này đòi **flatten trong suốt** và hạ
-        về PDF 1.3, mà flatten đúng nghĩa thì chưa có đường non-GS.
+        PDF/X-1a flatten trong suốt qua PPE rồi hạ về PDF 1.3. Nếu engine nội bộ
+        không chứng minh được compliance, tác vụ dừng và không giao file dở.
         """
         output_name = f"{Path(file_path).stem}_PDF-X_{standard}_{uuid.uuid4().hex[:6]}.pdf"
         output_path = str(self.output_dir / output_name)
+        staged_path = str(
+            self.output_dir
+            / f".{Path(output_name).stem}.{uuid.uuid4().hex}.pending.pdf"
+        )
+        cancel_event = threading.Event()
         self.last_warnings = []
         self.last_engine = None
 
         try:
-            native_ok = await asyncio.to_thread(
-                self._export_x1a_native if standard == "x1a" else self._export_x4_native,
-                file_path,
-                output_path,
-            )
+            async def run_worker_and_publish() -> bool:
+                native_ok = await asyncio.to_thread(
+                    self._export_x1a_native
+                    if standard == "x1a"
+                    else self._export_x4_native,
+                    file_path,
+                    staged_path,
+                    cancel_check=cancel_event.is_set,
+                )
+                if not native_ok:
+                    return False
+                await asyncio.to_thread(
+                    _validate_staged_pdfx,
+                    file_path,
+                    staged_path,
+                    cancel_event,
+                )
+                _raise_if_cancelled(cancel_event.is_set)
+                os.replace(staged_path, output_path)
+                return True
+
+            # PERF/CORRECTNESS (audit 2026-08-10 §PPE.REAUDIT.3): shield chỉ
+            # ngăn asyncio đánh dấu Future thread là xong giả. Khi caller hủy,
+            # token vẫn được gửi xuống worker và ta chờ nó đóng file thật.
+            worker_task = asyncio.create_task(run_worker_and_publish())
+            try:
+                native_ok = await asyncio.shield(worker_task)
+            except asyncio.CancelledError:
+                cancel_event.set()
+                try:
+                    await asyncio.shield(worker_task)
+                except BaseException:
+                    pass
+                _remove_file_quietly(staged_path)
+                _remove_file_quietly(output_path)
+                raise
             if native_ok:
                 self.last_engine = "pikepdf"
                 logger.info(f"Exported PDF/X-{standard} (pikepdf) → {output_path}")
                 return output_path
-        except Exception as e:  # noqa: BLE001
-            logger.warning("PDF/X object-level lỗi, fallback Ghostscript: %s", e)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("PDF/X object-level lỗi: %s", exc)
+        finally:
+            _remove_file_quietly(staged_path)
 
-        # GS-SUNSET (audit 2026-07-28 §3.7): native không chứng minh được
-        # compliance thì dừng có chủ đích; không tồn tại cấu hình bật GS lại.
+        # GS-SUNSET (audit 2026-08-08 §GS.2): native/PPE không chứng minh được
+        # compliance thì dừng có chủ đích và xoá mọi output trung gian.
+        _remove_file_quietly(output_path)
         self.last_engine = "none"
         raise InternalEngineUnsupported(
             unsupported_message(f"Xuất PDF/X-{standard.upper()}")
         )
 
-    def _export_x1a_native(self, input_path: str, output_path: str) -> bool:
+    def _export_x1a_native(
+        self,
+        input_path: str,
+        output_path: str,
+        *,
+        cancel_check=None,
+    ) -> bool:
         """PDF/X-1a bằng pikepdf: flatten trong suốt rồi đi tiếp đường X-4.
 
         X-1a khác X-4 ở hai điểm: **không cho phép trong suốt** và **không cho
@@ -446,26 +428,40 @@ class PdfxExportEngine:
         (raster hoá qua PPE, có cảnh báo mất vector). Điểm thứ hai được thoả gián
         tiếp: `convert_to_cmyk` đã đưa mọi thứ về DeviceCMYK.
 
-        Trả `False` để fallback Ghostscript khi flatten không xử lý nổi.
+        Trả `False` khi PPE không xử lý chắc chắn được transparency.
         """
         import tempfile as _tempfile
 
         from app.core import pdf_actions_native
 
-        signs = pdf_actions_native.detect_transparency(input_path)
+        _raise_if_cancelled(cancel_check)
+        signs = pdf_actions_native.detect_transparency(
+            input_path, cancel_check=cancel_check
+        )
         source = input_path
         tmp_flat = None
         try:
             if signs:
                 fd, tmp_flat = _tempfile.mkstemp(suffix="_flat.pdf", dir=str(self.output_dir))
                 os.close(fd)
-                flat = pdf_actions_native.flatten_transparency(input_path, tmp_flat, 300.0)
+                flat = pdf_actions_native.flatten_transparency(
+                    input_path,
+                    tmp_flat,
+                    300.0,
+                    cancel_check=cancel_check,
+                )
                 if not flat.get("supported"):
                     return False
                 self.last_warnings.extend(flat.get("warnings", []))
                 source = tmp_flat
 
-            if not self._export_x4_native(source, output_path, version="1.3"):
+            _raise_if_cancelled(cancel_check)
+            if not self._export_x4_native(
+                source,
+                output_path,
+                version="1.3",
+                cancel_check=cancel_check,
+            ):
                 return False
         finally:
             if tmp_flat and os.path.exists(tmp_flat):
@@ -479,16 +475,23 @@ class PdfxExportEngine:
         # không còn trong suốt, vì PDF 1.3 không có khái niệm đó. Ghi 1.6 rồi
         # khai X-1a là mâu thuẫn tự thân — `force_version` mới hạ được (
         # `min_version` chỉ nâng lên).
+        _raise_if_cancelled(cancel_check)
         with pikepdf.open(output_path, allow_overwriting_input=True) as pdf:
             pdf.docinfo["/GTS_PDFXVersion"] = pikepdf.String("PDF/X-1:2001")
             pdf.docinfo["/GTS_PDFXConformance"] = pikepdf.String("PDF/X-1a:2001")
             pdf.save(output_path, force_version="1.3")
+        _raise_if_cancelled(cancel_check)
         return True
 
     def _export_x4_native(
-        self, input_path: str, output_path: str, version: str = "1.6"
+        self,
+        input_path: str,
+        output_path: str,
+        version: str = "1.6",
+        *,
+        cancel_check=None,
     ) -> bool:
-        """PDF/X-4 bằng pikepdf. `False` ⇒ caller fallback Ghostscript.
+        """PDF/X-4 bằng pikepdf. `False` nghĩa là phải dừng an toàn.
 
         Từ chối (chứ không cố sửa) khi file thiếu điều kiện mà bước này không
         đảm bảo nổi: font chưa nhúng, hoặc trang thiếu TrimBox/ArtBox. PDF/X đòi
@@ -496,31 +499,32 @@ class PdfxExportEngine:
         """
         from app.core import pdf_actions_native
 
+        _raise_if_cancelled(cancel_check)
         icc_path, cond_id, cond_name = self._resolve_output_intent_icc()
         if not icc_path:
             logger.info("PDF/X-4 native: không có ICC cho OutputIntent")
             return False
 
         fonts = pdf_actions_native.analyze_font_embedding(input_path)
+        _raise_if_cancelled(cancel_check)
         if not fonts.get("readable", True):
-            logger.info("PDF/X native: không đọc được font của file → Ghostscript")
+            logger.info("PDF/X native: không đọc được font của file")
             return False
         if fonts.get("missing"):
             logger.info(
-                "PDF/X-4 native: còn font chưa nhúng (%s) → Ghostscript",
+                "PDF/X-4 native: còn font chưa nhúng (%s)",
                 ", ".join(fonts["missing"][:4]),
             )
             return False
 
-        # TrimBox/ArtBox: PDF/X bắt buộc phải có ít nhất một trong hai. Ghostscript
-        # KHÔNG tự thêm — nó vẫn báo xuất thành công rồi trả về file không đạt
-        # chuẩn, nên đẩy sang GS ở đây chỉ đổi "gãy" lấy "sai âm thầm".
+        # TrimBox/ArtBox: PDF/X bắt buộc phải có ít nhất một trong hai.
         # Đặt TrimBox = MediaBox là cách mọi công cụ prepress làm khi file không
         # khai, nhưng nó ngầm tuyên bố "trang này KHÔNG có bleed" — sai với file
         # thật sự có bleed. Vì vậy luôn kèm cảnh báo.
         pages_without_trim = 0
         with pikepdf.open(input_path) as probe:
             for page in probe.pages:
+                _raise_if_cancelled(cancel_check)
                 if page.get("/TrimBox") is None and page.get("/ArtBox") is None:
                     pages_without_trim += 1
         if pages_without_trim:
@@ -530,8 +534,8 @@ class PdfxExportEngine:
                 "phần bleed); hãy đặt TrimBox đúng rồi xuất lại."
             )
 
-        # Quy đổi màu về CMYK. `supported=False` nghĩa là có shading RGB —
-        # object-level không xử lý được, để Ghostscript làm.
+        # Quy đổi màu về CMYK. `supported=False` nghĩa là object-level chưa xử
+        # lý chắc chắn được cấu trúc màu của file.
         srgb = None
         try:
             from app.core import icc_profiles
@@ -543,111 +547,26 @@ class PdfxExportEngine:
             return False
 
         conv = pdf_actions_native.convert_to_cmyk(
-            input_path, output_path, icc_path, srgb
+            input_path,
+            output_path,
+            icc_path,
+            srgb,
+            cancel_check=cancel_check,
         )
         if not conv.get("supported"):
             logger.info(
-                "PDF/X-4 native: không quy đổi được màu (%s) → Ghostscript",
+                "PDF/X-4 native: không quy đổi được màu (%s)",
                 "; ".join(conv.get("blockers", [])),
             )
             return False
 
+        _raise_if_cancelled(cancel_check)
         if pages_without_trim:
             _ensure_trimbox(output_path)
+            _raise_if_cancelled(cancel_check)
         _attach_output_intent(output_path, icc_path, cond_id, cond_name)
+        _raise_if_cancelled(cancel_check)
         if version == "1.6":
             _finalize_pdfx4_identification(output_path)
+        _raise_if_cancelled(cancel_check)
         return True
-
-    async def _export_x1a(self, input_path: str, output_path: str) -> str:
-        """PDF/X-1a: CMYK only + flatten + embed fonts + output intent."""
-        icc_path, cond_id, cond_name = self._resolve_output_intent_icc()
-        def_file = None
-        cmd = [
-            self.gs_path,
-            "-dSAFER", "-dBATCH", "-dNOPAUSE",
-            "-sDEVICE=pdfwrite",
-            "-sProcessColorModel=DeviceCMYK",
-            "-sColorConversionStrategy=CMYK",
-            "-dPDFSETTINGS=/prepress",
-            "-dCompatibilityLevel=1.3",
-            "-dEmbedAllFonts=true",
-            "-dSubsetFonts=true",
-            "-dAutoRotatePages=/None",
-            "-dHaveTransparency=false",
-        ]
-        if icc_path:
-            def_file = self._build_pdfx_def_file(icc_path, cond_id, cond_name, "x1a")
-            # -dSAFER chặn đọc file tùy ý → phải cấp quyền đọc đúng file ICC.
-            cmd += [f"--permit-file-read={icc_path}", "-dPDFX=true",
-                    f"-sOutputFile={output_path}", def_file, input_path]
-            logger.info(f"PDF/X-1a OutputIntent ICC: {icc_path} ({cond_id})")
-        else:
-            cmd += [f"-sOutputFile={output_path}", input_path]
-            logger.warning("PDF/X-1a: không tìm thấy ICC CMYK — xuất KHÔNG có OutputIntent")
-
-        try:
-            proc = await asyncio.to_thread(
-                run_hidden,
-                cmd,
-                capture_output=True,
-                timeout=300
-            )
-        except Exception as e:
-            raise RuntimeError(f"PDF/X-1a export error: {e}")
-        finally:
-            if def_file:
-                try: os.remove(def_file)
-                except Exception: pass
-
-        if proc.returncode != 0:
-            err = (proc.stderr.decode(errors='replace') + "\n" + proc.stdout.decode(errors='replace'))[:800]
-            raise RuntimeError(f"PDF/X-1a export failed: {err}")
-
-        logger.info(f"Exported PDF/X-1a → {output_path}")
-        return output_path
-
-    async def _export_x4(self, input_path: str, output_path: str) -> str:
-        """PDF/X-4: Modern, supports transparency + ICC profiles."""
-        icc_path, cond_id, cond_name = self._resolve_output_intent_icc()
-        def_file = None
-        cmd = [
-            self.gs_path,
-            "-dSAFER", "-dBATCH", "-dNOPAUSE",
-            "-sDEVICE=pdfwrite",
-            "-dPDFSETTINGS=/prepress",
-            "-dCompatibilityLevel=1.6",
-            "-dEmbedAllFonts=true",
-            "-dSubsetFonts=true",
-            "-dAutoRotatePages=/None",
-        ]
-        if icc_path:
-            def_file = self._build_pdfx_def_file(icc_path, cond_id, cond_name, "x4")
-            cmd += [f"--permit-file-read={icc_path}", "-dPDFX=true",
-                    f"-sOutputFile={output_path}", def_file, input_path]
-            logger.info(f"PDF/X-4 OutputIntent ICC: {icc_path} ({cond_id})")
-        else:
-            cmd += [f"-sOutputFile={output_path}", input_path]
-            logger.warning("PDF/X-4: không tìm thấy ICC CMYK — xuất KHÔNG có OutputIntent")
-
-        try:
-            proc = await asyncio.to_thread(
-                run_hidden,
-                cmd,
-                capture_output=True,
-                timeout=300
-            )
-        except Exception as e:
-            raise RuntimeError(f"PDF/X-4 export error: {e}")
-        finally:
-            if def_file:
-                try: os.remove(def_file)
-                except Exception: pass
-
-        if proc.returncode != 0:
-            err = (proc.stderr.decode(errors='replace') + "\n" + proc.stdout.decode(errors='replace'))[:800]
-            raise RuntimeError(f"PDF/X-4 export failed: {err}")
-
-        _finalize_pdfx4_identification(output_path)
-        logger.info(f"Exported PDF/X-4 → {output_path}")
-        return output_path

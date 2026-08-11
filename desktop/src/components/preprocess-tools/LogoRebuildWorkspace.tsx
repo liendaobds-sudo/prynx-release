@@ -1,26 +1,52 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { Download, ImagePlus, Loader2, OctagonX, Plus, Redo2, Trash2, Undo2, WandSparkles } from 'lucide-react';
 
-import { tv } from '../../i18n';
+import { tv as translateVi } from '../../i18n';
 import {
   cancelLogoRebuildPreview,
   createLogoRebuildPreview,
   getLogoRebuildCapabilities,
   preflightLogoRebuild,
   type LogoRebuildCapabilities,
+  type LogoRebuildEngine,
   type LogoRebuildMode,
   type LogoPaletteSuggestion,
+  type LogoRebuildPreflight,
   type LogoRebuildPreview,
   type LogoRebuildSettings,
   type NormalizedPoint,
 } from '../../lib/logoRebuildApi';
 import { saveBlob } from '../../lib/saveBlob';
+import { IMAGE_BATCH_DROP_EVENTS } from '../../lib/tabNavigation';
+import LogoCompareViewport from './LogoCompareViewport';
 
 type SelectionMode = 'full' | 'crop' | 'perspective';
+const LOGO_REBUILD_I18N_NS = 'preprocess.logoRebuild';
+const DEFAULT_LOGO_ENGINE: LogoRebuildEngine = 'prynx_core';
+
+function tv(value: string | undefined | null): string {
+  return translateVi(value, LOGO_REBUILD_I18N_NS);
+}
 
 interface LogoRebuildWorkspaceProps {
+  hasOtherDirtyChanges?: boolean;
   isActive?: boolean;
+  onDirtyChange?: (isDirty: boolean) => void;
+  tabId?: string;
 }
+
+interface LogoIncomingFilesDetail {
+  tabId?: string;
+  files?: File[];
+}
+
+interface LogoSaveCommandDetail {
+  requestId?: string;
+  tabId?: string;
+}
+
+type LogoSaveResult = 'saved' | 'cancelled' | 'failed';
+type CapabilitiesStatus = 'loading' | 'ready' | 'error';
 
 interface EditorState {
   mode: LogoRebuildMode;
@@ -34,6 +60,8 @@ interface EditorState {
   smoothing: number;
   despeckle: number;
   illumination: boolean;
+  physicalWidthMm: number | null;
+  physicalHeightMm: number | null;
 }
 
 const DEFAULT_PALETTE = ['#000000', '#ffffff'];
@@ -57,6 +85,8 @@ const INITIAL_EDITOR_STATE: EditorState = {
   smoothing: 0,
   despeckle: 4,
   illumination: false,
+  physicalWidthMm: null,
+  physicalHeightMm: null,
 };
 
 function cloneEditorState(state: EditorState): EditorState {
@@ -87,8 +117,45 @@ function clampPercent(value: number, minimum = 0, maximum = 100): number {
   return Math.min(maximum, Math.max(minimum, Number.isFinite(value) ? value : minimum));
 }
 
-export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWorkspaceProps) {
+function roundMillimeters(value: number): number {
+  return Math.round(value * 10_000) / 10_000;
+}
+
+function selectionValidationCode(state: EditorState): 'crop' | 'perspective' | null {
+  if (state.selectionMode === 'crop') {
+    const { x, y, width, height } = state.crop;
+    if (width < 1 || height < 1 || x < 0 || y < 0 || x + width > 100 || y + height > 100) {
+      return 'crop';
+    }
+  }
+  if (state.selectionMode === 'perspective') {
+    const points = state.perspective;
+    const crossProducts = points.map((point, index) => {
+      const next = points[(index + 1) % points.length];
+      const after = points[(index + 2) % points.length];
+      return (next.x - point.x) * (after.y - next.y)
+        - (next.y - point.y) * (after.x - next.x);
+    });
+    const area = Math.abs(points.reduce((sum, point, index) => {
+      const next = points[(index + 1) % points.length];
+      return sum + point.x * next.y - next.x * point.y;
+    }, 0) / 2);
+    const hasPositive = crossProducts.some(value => value > 0.0001);
+    const hasNegative = crossProducts.some(value => value < -0.0001);
+    if (area < 0.0001 || hasPositive === hasNegative) return 'perspective';
+  }
+  return null;
+}
+
+export default function LogoRebuildWorkspace({
+  hasOtherDirtyChanges = false,
+  isActive = true,
+  onDirtyChange,
+  tabId = '',
+}: LogoRebuildWorkspaceProps) {
   const [capabilities, setCapabilities] = useState<LogoRebuildCapabilities | null>(null);
+  const [capabilitiesStatus, setCapabilitiesStatus] = useState<CapabilitiesStatus>('loading');
+  const [capabilitiesError, setCapabilitiesError] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [sourceUrl, setSourceUrl] = useState('');
   const [editor, setEditor] = useState<EditorState>(() => cloneEditorState(INITIAL_EDITOR_STATE));
@@ -96,12 +163,14 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
   const [previewUrl, setPreviewUrl] = useState('');
   const [paletteSuggestions, setPaletteSuggestions] = useState<LogoPaletteSuggestion[]>([]);
   const [preflightWarnings, setPreflightWarnings] = useState<string[]>([]);
+  const [sourceInfo, setSourceInfo] = useState<LogoRebuildPreflight['source'] | null>(null);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
   const [isRunning, setIsRunning] = useState(false);
   const [isPreflighting, setIsPreflighting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [reviewAccepted, setReviewAccepted] = useState(false);
+  const [sessionDirty, setSessionDirty] = useState(false);
   const [, setHistoryVersion] = useState(0);
   const activeJobRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -113,6 +182,12 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
   const pastRef = useRef<EditorState[]>([]);
   const futureRef = useRef<EditorState[]>([]);
   const lastCommitRef = useRef<{ key: string; at: number } | null>(null);
+  const selectIncomingFileRef = useRef<(selected?: File | null) => void>(() => undefined);
+  const exportSvgRef = useRef<() => Promise<LogoSaveResult>>(async () => 'failed');
+  const capabilitiesRequestRef = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const errorRef = useRef<HTMLParagraphElement | null>(null);
+  const markDirty = useCallback(() => setSessionDirty(true), []);
 
   const {
     mode,
@@ -126,6 +201,8 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
     smoothing,
     despeckle,
     illumination,
+    physicalWidthMm,
+    physicalHeightMm,
   } = editor;
 
   const clearPreview = useCallback(() => {
@@ -171,7 +248,15 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
     update: EditorState | ((current: EditorState) => EditorState),
   ) => {
     const current = editorRef.current;
-    const next = typeof update === 'function' ? update(current) : update;
+    let next = typeof update === 'function' ? update(current) : update;
+    const changesSelection = historyKey === 'selection-mode'
+      || historyKey.startsWith('crop-')
+      || historyKey.startsWith('perspective-');
+    if (changesSelection && (next.physicalWidthMm !== null || next.physicalHeightMm !== null)) {
+      // LOGO-REBUILD (audit 2026-08-09 §LR3.03/§LR3.07): kích thước mm xác
+      // nhận thuộc đúng vùng output; đổi crop/quad phải yêu cầu xác nhận lại.
+      next = { ...next, physicalWidthMm: null, physicalHeightMm: null };
+    }
     if (editorStatesEqual(current, next)) return;
 
     const now = Date.now();
@@ -184,17 +269,16 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
     lastCommitRef.current = { key: historyKey, at: now };
     editorRef.current = next;
     setEditor(next);
+    markDirty();
     refreshHistoryButtons();
     invalidatePreview();
     if (
-      historyKey === 'selection-mode'
-      || historyKey.startsWith('crop-')
-      || historyKey.startsWith('perspective-')
+      changesSelection
     ) {
       setPaletteSuggestions([]);
       setPreflightWarnings([]);
     }
-  }, [invalidatePreview, refreshHistoryButtons]);
+  }, [invalidatePreview, markDirty, refreshHistoryButtons]);
 
   const undo = useCallback(() => {
     const previous = pastRef.current.pop();
@@ -202,12 +286,13 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
     futureRef.current.unshift(cloneEditorState(editorRef.current));
     editorRef.current = previous;
     setEditor(previous);
+    markDirty();
     lastCommitRef.current = null;
     refreshHistoryButtons();
     invalidatePreview();
     setPaletteSuggestions([]);
     setPreflightWarnings([]);
-  }, [invalidatePreview, refreshHistoryButtons]);
+  }, [invalidatePreview, markDirty, refreshHistoryButtons]);
 
   const redo = useCallback(() => {
     const next = futureRef.current.shift();
@@ -215,20 +300,46 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
     pastRef.current.push(cloneEditorState(editorRef.current));
     editorRef.current = next;
     setEditor(next);
+    markDirty();
     lastCommitRef.current = null;
     refreshHistoryButtons();
     invalidatePreview();
     setPaletteSuggestions([]);
     setPreflightWarnings([]);
-  }, [invalidatePreview, refreshHistoryButtons]);
+  }, [invalidatePreview, markDirty, refreshHistoryButtons]);
 
   useEffect(() => {
-    let disposed = false;
-    void getLogoRebuildCapabilities()
-      .then(result => { if (!disposed) setCapabilities(result); })
-      .catch(reason => { if (!disposed) setError(reason instanceof Error ? reason.message : String(reason)); });
-    return () => { disposed = true; };
+    // UIUX (audit 2026-08-09 §LR3.04): không reset false trong cleanup;
+    // parent chỉ gỡ workspace sau khi tab đã qua cổng xác nhận đóng.
+    onDirtyChange?.(sessionDirty);
+  }, [onDirtyChange, sessionDirty]);
+
+  const refreshCapabilities = useCallback(async () => {
+    const requestId = capabilitiesRequestRef.current + 1;
+    capabilitiesRequestRef.current = requestId;
+    setCapabilitiesStatus('loading');
+    setCapabilitiesError('');
+    try {
+      const result = await getLogoRebuildCapabilities();
+      if (capabilitiesRequestRef.current !== requestId) return;
+      setCapabilities(result);
+      setCapabilitiesStatus('ready');
+    } catch (reason) {
+      if (capabilitiesRequestRef.current !== requestId) return;
+      setCapabilities(null);
+      setCapabilitiesError(reason instanceof Error ? reason.message : String(reason));
+      setCapabilitiesStatus('error');
+    }
   }, []);
+
+  useEffect(() => {
+    void refreshCapabilities();
+    return () => { capabilitiesRequestRef.current += 1; };
+  }, [refreshCapabilities]);
+
+  useEffect(() => {
+    if (error) errorRef.current?.focus();
+  }, [error]);
 
   useEffect(() => {
     if (!file) {
@@ -283,6 +394,7 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
   }, [isActive, redo, undo]);
 
   const engineReady = capabilities?.preview_engine_enabled === true;
+  const selectionError = selectionValidationCode(editor);
   const uniquePalette = useMemo(
     () => [...new Set(palette.map(color => color.toLowerCase()))],
     [palette],
@@ -300,12 +412,14 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
     }
     setPreview(result);
     setReviewAccepted(result.status === 'ready');
+    markDirty();
   };
 
   const buildSettings = (source: EditorState = editorRef.current): LogoRebuildSettings => {
     const normalizedPalette = [...new Set(source.palette.map(color => color.toLowerCase()))];
     const settings: LogoRebuildSettings = {
       mode: source.mode,
+      engine: DEFAULT_LOGO_ENGINE,
       palette: source.mode === 'fixed_palette' ? normalizedPalette : [],
       ...(source.mode === 'fixed_palette' && source.removeBackground
         ? { background_color: source.backgroundColor.toLowerCase() }
@@ -313,6 +427,12 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
       smoothing: source.smoothing,
       despeckle_size_px: source.despeckle,
       illumination_correction: source.illumination,
+      ...(source.physicalWidthMm !== null && source.physicalHeightMm !== null
+        ? {
+          physical_width_mm: source.physicalWidthMm,
+          physical_height_mm: source.physicalHeightMm,
+        }
+        : {}),
     };
     if (source.selectionMode === 'crop') {
       settings.crop = {
@@ -332,6 +452,13 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
     source: EditorState = editorRef.current,
     requestRevision: number = revisionRef.current,
   ) => {
+    const selectionError = selectionValidationCode(source);
+    if (selectionError) {
+      setError(selectionError === 'crop'
+        ? tv('Vùng crop phải nằm trọn trong ảnh và có kích thước lớn hơn 0.')
+        : tv('Bốn điểm phối cảnh phải tạo thành một tứ giác lồi, không suy biến.'));
+      return;
+    }
     preflightAbortRef.current?.abort();
     const controller = new AbortController();
     preflightAbortRef.current = controller;
@@ -348,6 +475,7 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
         && revisionRef.current === requestRevision
         && !controller.signal.aborted
       ) {
+        setSourceInfo(result.source);
         setPaletteSuggestions(result.palette_suggestions);
         setPreflightWarnings(result.warnings);
       }
@@ -378,16 +506,118 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
       paletteConfirmed: false,
       smoothing: jpegSource ? 1 : 0,
       despeckle: 4,
+      physicalWidthMm: null,
+      physicalHeightMm: null,
     };
     editorRef.current = nextEditor;
     setEditor(nextEditor);
     resetHistory();
     setPaletteSuggestions([]);
     setPreflightWarnings([]);
+    setSourceInfo(null);
     setFile(selected);
+    markDirty();
     setError('');
     setStatus('');
     void analyzePalette(selected, nextEditor, revisionRef.current);
+  };
+
+  const applyPaletteSuggestions = () => {
+    const suggestedColors = paletteSuggestions.map(item => item.color.toLowerCase());
+    const nextPalette = removeBackground
+      ? suggestedColors.filter(color => color !== backgroundColor.toLowerCase())
+      : suggestedColors;
+    if (nextPalette.length === 0) {
+      setError(tv('Cần giữ ít nhất một màu logo khác màu nền.'));
+      return;
+    }
+    commitEditor('palette-suggestion', current => ({
+      ...current,
+      palette: nextPalette,
+      paletteConfirmed: true,
+    }));
+    setError('');
+    setStatus(tv('Đã áp dụng bảng màu gợi ý.'));
+  };
+
+  const applySuggestedBackground = (color: string) => {
+    const normalizedBackground = color.toLowerCase();
+    const nextPalette = paletteSuggestions
+      .map(item => item.color.toLowerCase())
+      .filter(item => item !== normalizedBackground);
+    if (nextPalette.length === 0) {
+      setError(tv('Cần giữ ít nhất một màu logo khác màu nền.'));
+      return;
+    }
+    // LOGO-REBUILD (audit 2026-08-09 §LR3.11): một history step đồng thời
+    // đặt nền và loại chính màu đó khỏi palette, không tạo cấu hình tự xung đột.
+    commitEditor('background-suggestion', current => ({
+      ...current,
+      palette: nextPalette,
+      paletteConfirmed: true,
+      removeBackground: true,
+      backgroundColor: normalizedBackground,
+    }));
+    setError('');
+    setStatus(tv('Đã đặt màu gợi ý làm nền và loại khỏi bảng màu logo.'));
+  };
+
+  const toggleBackgroundRemoval = (enabled: boolean) => {
+    if (!enabled) {
+      commitEditor('remove-background', current => ({ ...current, removeBackground: false }));
+      return;
+    }
+    const nextPalette = palette.filter(color => color.toLowerCase() !== backgroundColor.toLowerCase());
+    if (nextPalette.length === 0) {
+      setError(tv('Cần giữ ít nhất một màu logo khác màu nền.'));
+      return;
+    }
+    commitEditor('remove-background', current => ({
+      ...current,
+      removeBackground: true,
+      palette: nextPalette,
+      paletteConfirmed: true,
+    }));
+    setError('');
+  };
+
+  useEffect(() => {
+    selectIncomingFileRef.current = selectFile;
+  });
+
+  useEffect(() => {
+    if (!isActive || !tabId) return;
+    const handleIncomingFiles = (event: Event) => {
+      const detail = (event as CustomEvent<LogoIncomingFilesDetail>).detail;
+      if (detail?.tabId !== tabId || !detail.files?.length) return;
+      const selected = detail.files.find(candidate => /\.(png|jpe?g|webp)$/i.test(candidate.name))
+        ?? detail.files[0];
+      selectIncomingFileRef.current(selected);
+    };
+
+    // UIUX (audit 2026-08-09 §LR3.05): file native mang tabId đích;
+    // workspace nền/đã đóng không được nhận intent của tab đang hoạt động.
+    window.addEventListener(IMAGE_BATCH_DROP_EVENTS.logo_rebuild, handleIncomingFiles);
+    return () => {
+      window.removeEventListener(IMAGE_BATCH_DROP_EVENTS.logo_rebuild, handleIncomingFiles);
+    };
+  }, [isActive, tabId]);
+
+  const handleWorkspaceDragOver = (event: DragEvent<HTMLDivElement>) => {
+    const hasFiles = event.dataTransfer.files?.length > 0
+      || Array.from(event.dataTransfer.types ?? []).includes('Files');
+    if (!isActive || !hasFiles) return;
+    event.preventDefault();
+  };
+
+  const handleWorkspaceDrop = (event: DragEvent<HTMLDivElement>) => {
+    if (!isActive) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const files = Array.from(event.dataTransfer.files);
+    const selected = files.find(candidate => /\.(png|jpe?g|webp)$/i.test(candidate.name))
+      ?? files[0];
+    selectFile(selected);
   };
 
   const runPreview = async () => {
@@ -421,6 +651,14 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
         return;
       }
     }
+    const geometryError = selectionValidationCode(editorRef.current);
+    if (geometryError) {
+      setError(geometryError === 'crop'
+        ? tv('Vùng crop phải nằm trọn trong ảnh và có kích thước lớn hơn 0.')
+        : tv('Bốn điểm phối cảnh phải tạo thành một tứ giác lồi, không suy biến.'));
+      return;
+    }
+    markDirty();
     lastCommitRef.current = null;
     const requestRevision = revisionRef.current;
     const jobId = newJobId();
@@ -431,7 +669,7 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
     cancelledJobRef.current = null;
     setIsRunning(true);
     setError('');
-    setStatus(tv('Đang tiền xử lý và dựng đường vector…'));
+    setStatus(tv('Đang xử lý logo trên thiết bị…'));
     try {
       const result = await createLogoRebuildPreview(file, buildSettings(), jobId, controller.signal);
       if (
@@ -502,13 +740,16 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
     }
   };
 
-  const exportSvg = async () => {
+  const exportSvg = async (): Promise<LogoSaveResult> => {
     if (
       !preview
       || !file
       || preview.status === 'rejected'
       || (preview.status === 'review' && !reviewAccepted)
-    ) return;
+    ) {
+      setError(tv('Hãy tạo và kiểm tra preview SVG trước khi lưu.'));
+      return 'failed';
+    }
     setIsSaving(true);
     setError('');
     try {
@@ -517,13 +758,46 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
         `${file.name.replace(/\.[^.]+$/, '')}_vector.svg`,
         { title: tv('Lưu file SVG'), filterName: 'SVG', extensions: ['svg'] },
       );
-      if (result.kind === 'saved') setStatus(tv('Đã lưu file SVG.'));
+      if (result.kind === 'saved') {
+        setStatus(tv('Đã lưu file SVG.'));
+        setSessionDirty(false);
+        return 'saved';
+      }
+      return 'cancelled';
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : tv('Không thể lưu file SVG.'));
+      return 'failed';
     } finally {
       setIsSaving(false);
     }
   };
+
+  useEffect(() => {
+    exportSvgRef.current = exportSvg;
+  });
+
+  useEffect(() => {
+    if (!isActive || !tabId) return;
+    const handleSaveCommand = async (event: Event) => {
+      const detail = (event as CustomEvent<LogoSaveCommandDetail>).detail;
+      if (detail?.tabId !== tabId) return;
+      // Khi Logo đã sạch nhưng PDF cùng tab còn dirty, nhường event cho parent.
+      if (!sessionDirty && hasOtherDirtyChanges) return;
+      const result = await exportSvgRef.current();
+      if (!detail.requestId) return;
+      const queueResult = result === 'saved' && hasOtherDirtyChanges
+        ? 'cancelled'
+        : result;
+      if (result === 'saved' && hasOtherDirtyChanges) {
+        setStatus(tv('Đã lưu SVG; tab vẫn còn thay đổi tài liệu cần lưu.'));
+      }
+      window.dispatchEvent(new CustomEvent('app-save-result', {
+        detail: { requestId: detail.requestId, result: queueResult, tabId },
+      }));
+    };
+    window.addEventListener('app-trigger-save', handleSaveCommand);
+    return () => window.removeEventListener('app-trigger-save', handleSaveCommand);
+  }, [hasOtherDirtyChanges, isActive, sessionDirty, tabId]);
 
   const updatePerspective = (index: number, axis: 'x' | 'y', percent: number) => {
     commitEditor(`perspective-${index}-${axis}`, current => ({
@@ -531,6 +805,67 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
       perspective: current.perspective.map((point, pointIndex) => (
         pointIndex === index ? { ...point, [axis]: clampPercent(percent) / 100 } : point
       )),
+    }));
+  };
+
+  const sourceAspectRatio = (() => {
+    if (!sourceInfo || sourceInfo.width_px <= 0 || sourceInfo.height_px <= 0) return null;
+    if (selectionMode === 'crop') {
+      return (sourceInfo.width_px * crop.width) / (sourceInfo.height_px * crop.height);
+    }
+    if (selectionMode === 'perspective') {
+      const points = perspective.map(point => ({
+        x: point.x * (sourceInfo.width_px - 1),
+        y: point.y * (sourceInfo.height_px - 1),
+      }));
+      const distance = (left: NormalizedPoint, right: NormalizedPoint) => Math.hypot(
+        right.x - left.x,
+        right.y - left.y,
+      );
+      const targetWidth = Math.max(distance(points[0], points[1]), distance(points[2], points[3]));
+      const targetHeight = Math.max(distance(points[1], points[2]), distance(points[3], points[0]));
+      return targetWidth > 0 && targetHeight > 0 ? targetWidth / targetHeight : null;
+    }
+    return sourceInfo.width_px / sourceInfo.height_px;
+  })();
+  const dpiSuggestedSize = selectionMode === 'full' && sourceInfo?.dpi
+    ? {
+      width: roundMillimeters((sourceInfo.width_px / sourceInfo.dpi[0]) * 25.4),
+      height: roundMillimeters((sourceInfo.height_px / sourceInfo.dpi[1]) * 25.4),
+    }
+    : null;
+
+  const updatePhysicalWidth = (rawValue: string) => {
+    const width = Number(rawValue);
+    if (!rawValue || !sourceAspectRatio || !Number.isFinite(width) || width <= 0) {
+      commitEditor('physical-size', current => ({
+        ...current,
+        physicalWidthMm: null,
+        physicalHeightMm: null,
+      }));
+      return;
+    }
+    commitEditor('physical-size', current => ({
+      ...current,
+      physicalWidthMm: width,
+      physicalHeightMm: roundMillimeters(width / sourceAspectRatio),
+    }));
+  };
+
+  const updatePhysicalHeight = (rawValue: string) => {
+    const height = Number(rawValue);
+    if (!rawValue || !sourceAspectRatio || !Number.isFinite(height) || height <= 0) {
+      commitEditor('physical-size', current => ({
+        ...current,
+        physicalWidthMm: null,
+        physicalHeightMm: null,
+      }));
+      return;
+    }
+    commitEditor('physical-size', current => ({
+      ...current,
+      physicalWidthMm: roundMillimeters(height * sourceAspectRatio),
+      physicalHeightMm: height,
     }));
   };
 
@@ -543,7 +878,13 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
   );
 
   return (
-    <div tabIndex={-1} className="h-full w-full overflow-auto bg-slate-100 p-4 text-slate-800 outline-none dark:bg-zinc-950 dark:text-zinc-100">
+    <div
+      data-testid="logo-rebuild-workspace"
+      tabIndex={-1}
+      onDragOver={handleWorkspaceDragOver}
+      onDrop={handleWorkspaceDrop}
+      className="h-full w-full overflow-auto bg-slate-100 p-4 text-slate-800 outline-none dark:bg-zinc-950 dark:text-zinc-100"
+    >
       <div className="mx-auto flex min-h-full max-w-[1500px] flex-col gap-4">
         <header className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <div>
@@ -564,29 +905,64 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
                 <Redo2 className="h-4 w-4" />
               </button>
             </div>
-            <div className="text-right text-xs text-slate-500 dark:text-zinc-400">
-              {capabilities === null
-                ? tv('Đang kiểm tra engine…')
-                : engineReady
-                  ? `${capabilities.engine?.engine ?? 'VTracer'} ${capabilities.engine?.version ?? ''}`
-                  : tv('Engine preview chưa sẵn sàng')}
+            <div role="status" className="text-right text-xs text-slate-500 dark:text-zinc-400">
+              {capabilitiesStatus === 'loading' && tv('Đang kiểm tra engine…')}
+              {capabilitiesStatus === 'ready' && (
+                engineReady
+                  ? `${capabilities?.engine?.engine ?? 'PrynX core'} ${capabilities?.engine?.version ?? ''}${
+                    capabilities?.engine?.structured_result && capabilities.engine.result_schema_version !== null
+                      ? ` · ${tv('Schema kết quả')} ${capabilities.engine.result_schema_version}`
+                      : ''
+                  }`
+                  : tv('Engine preview chưa sẵn sàng')
+              )}
+              {capabilitiesStatus === 'error' && (
+                <div className="flex items-center gap-2">
+                  <span title={capabilitiesError}>{tv('Không kiểm tra được engine')}</span>
+                  <button
+                    type="button"
+                    onClick={() => void refreshCapabilities()}
+                    className="rounded border border-red-300 px-2 py-1 font-semibold text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950/30"
+                  >
+                    {tv('Thử lại')}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </header>
 
         <div className="grid flex-1 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
           <aside className="space-y-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-            <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border-2 border-dashed border-violet-300 px-4 py-3 text-sm font-semibold text-violet-700 hover:bg-violet-50 dark:border-violet-800 dark:text-violet-300 dark:hover:bg-violet-950/30">
+            {capabilitiesStatus === 'ready' && capabilities && capabilities.limitations.length > 0 && (
+              <section aria-label={tv('Giới hạn hiện tại')} className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                <strong>{tv('Phạm vi hiện tại: artwork/logo phẳng')}</strong>
+                <ul className="mt-1 list-disc space-y-1 pl-4">
+                  {capabilities.limitations.map(limitation => <li key={limitation}>{limitation}</li>)}
+                </ul>
+              </section>
+            )}
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-violet-300 px-4 py-3 text-sm font-semibold text-violet-700 hover:bg-violet-50 dark:border-violet-800 dark:text-violet-300 dark:hover:bg-violet-950/30"
+            >
               <ImagePlus className="h-4 w-4" />
               {file ? tv('Chọn ảnh khác') : tv('Chọn ảnh có logo')}
-              <input
-                aria-label={tv('Chọn ảnh có logo')}
-                className="hidden"
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                onChange={event => selectFile(event.target.files?.[0])}
-              />
-            </label>
+            </button>
+            <label htmlFor="logo-rebuild-file-input" className="hidden">{tv('Chọn ảnh có logo')}</label>
+            {file && <label htmlFor="logo-rebuild-file-input" className="hidden">{tv('Chọn ảnh khác')}</label>}
+            <input
+              id="logo-rebuild-file-input"
+              ref={fileInputRef}
+              className="hidden"
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              onChange={event => {
+                selectFile(event.target.files?.[0]);
+                event.currentTarget.value = '';
+              }}
+            />
             {file && <p className="truncate text-xs text-slate-500" title={file.name}>{file.name}</p>}
 
             <section>
@@ -647,20 +1023,20 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
                           <span className="text-slate-500">
                             {Math.round(suggestion.coverage_ratio * 100)}%
                           </span>
+                          <button
+                            type="button"
+                            aria-label={`${tv('Đặt làm nền')} ${suggestion.color}`}
+                            onClick={() => applySuggestedBackground(suggestion.color)}
+                            className="rounded border border-slate-200 px-1.5 py-1 font-semibold text-slate-600 hover:border-violet-300 hover:text-violet-700 dark:border-zinc-700 dark:text-zinc-300"
+                          >
+                            {tv('Đặt làm nền')}
+                          </button>
                         </div>
                       ))}
                     </div>
                     <button
                       type="button"
-                      onClick={() => {
-                        commitEditor('palette-suggestion', current => ({
-                          ...current,
-                          palette: paletteSuggestions.map(item => item.color),
-                          paletteConfirmed: true,
-                        }));
-                        setError('');
-                        setStatus(tv('Đã áp dụng bảng màu gợi ý.'));
-                      }}
+                      onClick={applyPaletteSuggestions}
                       className="mt-2 w-full rounded-md bg-violet-600 px-3 py-2 text-xs font-bold text-white hover:bg-violet-700"
                     >
                       {tv('Áp dụng gợi ý')}
@@ -720,7 +1096,7 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
                 </div>
                 <div className="mt-3 border-t border-slate-200 pt-3 dark:border-zinc-700">
                   <label className="flex items-center gap-2 text-xs font-semibold">
-                    <input type="checkbox" checked={removeBackground} onChange={event => commitEditor('remove-background', current => ({ ...current, removeBackground: event.target.checked }))} />
+                    <input type="checkbox" checked={removeBackground} onChange={event => toggleBackgroundRemoval(event.target.checked)} />
                     {tv('Loại màu nền khỏi SVG')}
                   </label>
                   {removeBackground && (
@@ -788,6 +1164,76 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
                   ))}
                 </div>
               )}
+              {selectionError && (
+                <p role="alert" className="mt-2 rounded bg-red-50 px-2 py-1.5 text-[11px] text-red-700 dark:bg-red-950/30 dark:text-red-300">
+                  {selectionError === 'crop'
+                    ? tv('Vùng crop phải nằm trọn trong ảnh và có kích thước lớn hơn 0.')
+                    : tv('Bốn điểm phối cảnh phải tạo thành một tứ giác lồi, không suy biến.')}
+                </p>
+              )}
+            </section>
+
+            <section className="rounded-lg border border-slate-200 p-3 dark:border-zinc-700">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-xs font-bold uppercase tracking-wide text-slate-500">{tv('Kích thước in')}</h2>
+                {(physicalWidthMm !== null || physicalHeightMm !== null) && (
+                  <button
+                    type="button"
+                    onClick={() => commitEditor('physical-size-clear', current => ({ ...current, physicalWidthMm: null, physicalHeightMm: null }))}
+                    className="text-[11px] font-semibold text-red-600 hover:underline"
+                  >
+                    {tv('Xóa kích thước')}
+                  </button>
+                )}
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500 dark:text-zinc-400">🔒 {tv('Khóa tỷ lệ theo ảnh nguồn')}</p>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <label className="text-[11px] font-semibold">
+                  {tv('Rộng (mm)')}
+                  <input
+                    aria-label={tv('Rộng (mm)')}
+                    type="number"
+                    min={0.1}
+                    step={0.1}
+                    disabled={!sourceAspectRatio}
+                    value={physicalWidthMm ?? ''}
+                    onChange={event => updatePhysicalWidth(event.target.value)}
+                    className="mt-1 w-full rounded border border-slate-200 bg-transparent px-2 py-1.5 text-xs disabled:opacity-40 dark:border-zinc-700"
+                  />
+                </label>
+                <label className="text-[11px] font-semibold">
+                  {tv('Cao (mm)')}
+                  <input
+                    aria-label={tv('Cao (mm)')}
+                    type="number"
+                    min={0.1}
+                    step={0.1}
+                    disabled={!sourceAspectRatio}
+                    value={physicalHeightMm ?? ''}
+                    onChange={event => updatePhysicalHeight(event.target.value)}
+                    className="mt-1 w-full rounded border border-slate-200 bg-transparent px-2 py-1.5 text-xs disabled:opacity-40 dark:border-zinc-700"
+                  />
+                </label>
+              </div>
+              {dpiSuggestedSize && (
+                <button
+                  type="button"
+                  onClick={() => commitEditor('physical-size-dpi', current => ({
+                    ...current,
+                    physicalWidthMm: dpiSuggestedSize.width,
+                    physicalHeightMm: dpiSuggestedSize.height,
+                  }))}
+                  className="mt-2 w-full rounded border border-violet-200 px-2 py-1.5 text-[11px] font-semibold text-violet-700 hover:bg-violet-50 dark:border-violet-900 dark:text-violet-300"
+                >
+                  {tv('Dùng gợi ý DPI')} · {dpiSuggestedSize.width} × {dpiSuggestedSize.height} mm
+                </button>
+              )}
+              <p className="mt-2 text-[11px] text-slate-500 dark:text-zinc-400">
+                {physicalWidthMm !== null && physicalHeightMm !== null
+                  ? `${tv('Kích thước đã xác nhận')}: ${physicalWidthMm} × ${physicalHeightMm} mm`
+                  : tv('Chưa xác nhận mm; SVG sẽ ở trạng thái cần kiểm tra.')}
+              </p>
+              {dpiSuggestedSize && <p className="mt-1 text-[10px] text-amber-700 dark:text-amber-300">{tv('DPI nguồn chỉ là gợi ý; hãy đối chiếu kích thước in thực tế.')}</p>}
             </section>
 
             <section className="space-y-3">
@@ -801,10 +1247,15 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
               <label className="block text-xs font-semibold">
                 {tv('Khử hạt nhỏ (px)')}
                 <input aria-label={tv('Khử hạt nhỏ')} type="number" min={0} max={128} value={despeckle} onChange={event => commitEditor('despeckle', current => ({ ...current, despeckle: clampPercent(Number(event.target.value), 0, 128) }))} className="mt-1 w-full rounded border border-slate-200 bg-transparent px-2 py-1.5 dark:border-zinc-700" />
+                {despeckle > 0 && capabilities?.engine?.engine === 'prynx-logo-core' && (
+                  <span className="mt-1 block text-[11px] font-normal text-amber-700 dark:text-amber-300">
+                    {tv('Khử hạt chưa được PrynX core áp dụng; giá trị lớn hơn 0 sẽ đưa kết quả vào trạng thái cần kiểm tra.')}
+                  </span>
+                )}
               </label>
               <label className="flex items-center gap-2 text-xs font-semibold">
                 <input type="checkbox" checked={illumination} onChange={event => commitEditor('illumination', current => ({ ...current, illumination: event.target.checked }))} />
-                {tv('Cân bằng ánh sáng trên vải/ảnh chụp')}
+                {tv('Cân bằng độ sáng cho artwork phẳng không đều màu')}
               </label>
             </section>
 
@@ -812,7 +1263,7 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
               <button
                 type="button"
                 onClick={() => void runPreview()}
-                disabled={isRunning || !file || !engineReady}
+                disabled={isRunning || !file || !engineReady || Boolean(selectionError)}
                 className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-45"
               >
                 {isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <WandSparkles className="h-4 w-4" />}
@@ -824,36 +1275,89 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
                 </button>
               )}
             </div>
-            {error && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">{error}</p>}
-            {status && <p className="text-xs text-slate-500 dark:text-zinc-400">{status}</p>}
+            {error && <p ref={errorRef} role="alert" tabIndex={-1} className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 outline-none dark:bg-red-950/30 dark:text-red-300">{error}</p>}
+            <p role="status" aria-live="polite" aria-atomic="true" className="min-h-4 text-xs text-slate-500 dark:text-zinc-400">{status}</p>
+            {isRunning && (
+              <p className="text-[11px] text-slate-500 dark:text-zinc-400">
+                {tv('Tiến độ theo phase chưa được backend cung cấp; trạng thái chỉ phản ánh yêu cầu hiện tại.')}
+              </p>
+            )}
           </aside>
 
-          <main className="grid min-h-[620px] gap-4 lg:grid-cols-2">
-            <figure className="flex min-h-[420px] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-              <figcaption className="border-b border-slate-200 px-4 py-3 text-xs font-bold uppercase tracking-wide text-slate-500 dark:border-zinc-800">{tv('Ảnh nguồn')}</figcaption>
-              <div className="flex flex-1 items-center justify-center overflow-hidden bg-[linear-gradient(45deg,#eee_25%,transparent_25%),linear-gradient(-45deg,#eee_25%,transparent_25%),linear-gradient(45deg,transparent_75%,#eee_75%),linear-gradient(-45deg,transparent_75%,#eee_75%)] bg-[length:20px_20px] bg-[position:0_0,0_10px,10px_-10px,-10px_0px] p-4 dark:bg-zinc-950">
-                {sourceUrl ? <img src={sourceUrl} alt={tv('Ảnh logo nguồn')} className="max-h-full max-w-full object-contain" /> : <p className="text-sm text-slate-400">{tv('Chưa chọn ảnh')}</p>}
-              </div>
-            </figure>
+          <main className="grid min-h-[620px] grid-rows-[minmax(520px,1fr)_auto] gap-4">
+            <LogoCompareViewport
+              key={`${sourceUrl}:${previewUrl}`}
+              selectionMode={selectionMode}
+              crop={crop}
+              perspective={perspective}
+              onCropChange={nextCrop => commitEditor('crop-overlay', current => ({ ...current, crop: nextCrop }))}
+              onPerspectiveChange={nextPoints => commitEditor('perspective-overlay', current => ({ ...current, perspective: nextPoints }))}
+              sourceUrl={sourceUrl}
+              previewUrl={previewUrl}
+              labels={{
+                viewport: tv('Vùng so sánh logo'),
+                source: tv('Gốc'),
+                vector: tv('Vector'),
+                split: tv('Chia đôi'),
+                overlay: tv('Chồng lớp'),
+                zoomOut: tv('Thu nhỏ'),
+                zoomIn: tv('Phóng to'),
+                zoomLevel: tv('Mức phóng đại'),
+                resetZoom: tv('Về 100%'),
+                overlayOpacity: tv('Độ mờ vector'),
+                noImage: tv('Chưa chọn ảnh'),
+                noPreview: tv('Chưa có preview'),
+                panHint: tv('Kéo để di chuyển · Ctrl + cuộn để thu phóng'),
+                sourceAlt: tv('Ảnh logo nguồn'),
+                previewAlt: tv('SVG vector đã dựng'),
+                selection: selectionMode === 'crop' ? tv('Crop chữ nhật') : tv('Nắn phối cảnh 4 điểm'),
+                point: tv('Điểm'),
+              }}
+            />
 
-            <figure className="flex min-h-[420px] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-              <figcaption className="flex items-center justify-between border-b border-slate-200 px-4 py-3 text-xs font-bold uppercase tracking-wide text-slate-500 dark:border-zinc-800">
+            <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+              <header className="flex items-center justify-between border-b border-slate-200 px-4 py-3 text-xs font-bold uppercase tracking-wide text-slate-500 dark:border-zinc-800">
                 <span>{tv('Kết quả vector')}</span>
                 <button type="button" disabled={!canExport || isSaving} onClick={() => void exportSvg()} className="flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1.5 text-[11px] font-bold normal-case text-white disabled:opacity-40">
                   {isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} {tv('Tải SVG')}
                 </button>
-              </figcaption>
-              <div className="flex flex-1 items-center justify-center overflow-hidden bg-[linear-gradient(45deg,#eee_25%,transparent_25%),linear-gradient(-45deg,#eee_25%,transparent_25%),linear-gradient(45deg,transparent_75%,#eee_75%),linear-gradient(-45deg,transparent_75%,#eee_75%)] bg-[length:20px_20px] bg-[position:0_0,0_10px,10px_-10px,-10px_0px] p-4 dark:bg-zinc-950">
-                {previewUrl
-                  ? <img src={previewUrl} alt={tv('SVG vector đã dựng')} className="max-h-full max-w-full object-contain" />
-                  : <p className="text-sm text-slate-400">{tv('Chưa có preview')}</p>}
-              </div>
+              </header>
               {preview && (
                 <div className="border-t border-slate-200 px-4 py-3 text-xs text-slate-500 dark:border-zinc-800 dark:text-zinc-400">
                   <p>{preview.width_px}×{preview.height_px} px · {preview.engine} {preview.engine_version}</p>
+                  {preview.result_schema_version !== null && (
+                    <p className="mt-1 font-semibold text-violet-700 dark:text-violet-300">
+                      {tv('Schema kết quả')}: {preview.result_schema_version}
+                    </p>
+                  )}
+                  {typeof preview.physical_width_mm === 'number' && typeof preview.physical_height_mm === 'number' && (
+                    <p className="mt-1 font-semibold text-emerald-700 dark:text-emerald-300">
+                      {tv('Kích thước in')}: {preview.physical_width_mm} × {preview.physical_height_mm} mm
+                    </p>
+                  )}
                   <p className="mt-1">
                     {tv('Độ phức tạp SVG')}: {preview.complexity.path_count} path · {preview.complexity.node_count} node · {preview.complexity.removed_redundant_paths} {tv('mảng dư đã dọn')}
                   </p>
+                  {preview.native_metrics && (
+                    <section aria-label={tv('Chất lượng artifact')} className="mt-2 grid gap-1 rounded-lg bg-slate-50 px-3 py-2 dark:bg-zinc-950/50 sm:grid-cols-2">
+                      <p><strong>IoU</strong>: {preview.native_metrics.iou.toFixed(4)} · <strong>MAE</strong>: {preview.native_metrics.mae.toFixed(4)}</p>
+                      <p>{tv('Lớp / thành phần')}: {preview.native_metrics.layer_count} / {preview.native_metrics.component_count}</p>
+                      <p>{tv('Biên ngoài / lỗ')}: {preview.native_metrics.outer_count} / {preview.native_metrics.hole_count}</p>
+                      <p>{tv('Node nguồn / đầu ra')}: {preview.native_metrics.source_nodes} / {preview.native_metrics.output_nodes}</p>
+                      <p>{tv('Sai số lớn nhất')}: {preview.native_metrics.max_error_px.toFixed(4)} px</p>
+                      <p>{tv('Tỷ lệ raster')}: {preview.native_metrics.raster_scale}×</p>
+                    </section>
+                  )}
+                  {preview.artifact_sha256 && (
+                    <p className="mt-2 font-mono text-[11px]">
+                      {tv('Hash artifact')}: <span title={preview.artifact_sha256}>{preview.artifact_sha256.slice(0, 12)}…</span>
+                    </p>
+                  )}
+                  {preview.preprocess_hash && (
+                    <p className="mt-1 font-mono text-[11px]">
+                      {tv('Hash tiền xử lý')}: <span title={preview.preprocess_hash}>{preview.preprocess_hash.slice(0, 12)}…</span>
+                    </p>
+                  )}
                   {preview.status !== 'ready' && (
                     <div className={`mt-2 rounded-lg px-3 py-2 ${preview.status === 'rejected' ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300' : 'bg-amber-50 text-amber-800 dark:bg-amber-950/30 dark:text-amber-200'}`}>
                       <strong>{preview.status === 'rejected' ? tv('Không thể xuất SVG') : tv('Cần kiểm tra SVG')}</strong>
@@ -869,7 +1373,7 @@ export default function LogoRebuildWorkspace({ isActive = true }: LogoRebuildWor
                   {preview.warnings.map((warning, index) => <p key={index} className="mt-1 text-amber-700 dark:text-amber-300">⚠ {warning}</p>)}
                 </div>
               )}
-            </figure>
+            </section>
           </main>
         </div>
       </div>

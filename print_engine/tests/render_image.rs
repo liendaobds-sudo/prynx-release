@@ -5,8 +5,11 @@
 //! "render thành công" nên chỉ test mới bắt được.
 
 use lopdf::{dictionary, Dictionary, Document, Object, Stream};
+use print_engine::color::space::OutputPreviewFilter;
 use print_engine::content::RenderOptions;
-use print_engine::page::{render_page, PageBox, PageRender};
+use print_engine::page::{
+    render_page, render_page_managed_region, PageBox, PageRender, RasterClip,
+};
 
 /// Dựng PDF một trang 10x10 point với content + resources cho trước.
 fn build(content: &str, resources: Dictionary) -> Document {
@@ -34,6 +37,14 @@ fn build(content: &str, resources: Dictionary) -> Document {
 
 /// Dựng PDF vẽ một ảnh phủ kín trang.
 fn render_image(image_dict: Dictionary, data: Vec<u8>) -> PageRender {
+    render_image_with_options(image_dict, data, RenderOptions::ink_accurate())
+}
+
+fn render_image_with_options(
+    image_dict: Dictionary,
+    data: Vec<u8>,
+    options: RenderOptions,
+) -> PageRender {
     let mut doc = Document::with_version("1.7");
     let img_id = doc.add_object(Stream::new(image_dict, data));
     let resources = dictionary! {
@@ -61,7 +72,7 @@ fn render_image(image_dict: Dictionary, data: Vec<u8>) -> PageRender {
     });
     doc.trailer.set("Root", Object::Reference(catalog_id));
 
-    render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate())
+    render_page(&doc, 1, 72.0, PageBox::Crop, options)
         .expect("render phải thành công")
 }
 
@@ -85,6 +96,29 @@ fn center(r: &PageRender) -> (usize, usize) {
         r.buffer.width() as usize / 2,
         r.buffer.height() as usize / 2,
     )
+}
+
+#[test]
+fn output_preview_images_filter_keeps_image_and_rejects_other_object_filters() {
+    let images = render_image_with_options(
+        base_image(1, 1, 8, "DeviceGray"),
+        vec![0],
+        RenderOptions::softproof().with_output_preview_filter(OutputPreviewFilter::Images),
+    );
+    assert!(images.buffer.max_tac_percent() > 90.0, "Show=Images phải giữ ảnh");
+
+    for filter in [
+        OutputPreviewFilter::Text,
+        OutputPreviewFilter::LineArt,
+        OutputPreviewFilter::SmoothShades,
+    ] {
+        let hidden = render_image_with_options(
+            base_image(1, 1, 8, "DeviceGray"),
+            vec![0],
+            RenderOptions::softproof().with_output_preview_filter(filter),
+        );
+        assert_eq!(hidden.buffer.max_tac_percent(), 0.0, "{filter:?} không được giữ ảnh");
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -592,19 +626,24 @@ fn image_honours_overprint() {
 
 #[test]
 fn unsupported_codec_is_reported_not_silently_skipped() {
-    let mut dict = base_image(1, 1, 8, "DeviceGray");
-    dict.set("Filter", "JPXDecode");
-    let r = render_image(dict, vec![0, 0, 0]);
-    assert!(r.warnings.dropped_objects > 0);
-    assert!(r.warnings.degrades_accuracy());
-    assert!(
-        r.warnings
-            .skipped_ops
-            .iter()
-            .any(|(op, _)| op.contains("JPX")),
-        "{:?}",
-        r.warnings.skipped_ops
-    );
+    // CORRECTNESS (audit 2026-08-10 §L6.3): cả hai codec chưa có decoder phải
+    // hạ soundness. Bỏ ảnh rồi trả trang trắng là lỗi capability, không phải
+    // một lần render thành công để Viewer gắn nhãn color-verified.
+    for codec in ["JPXDecode", "JBIG2Decode"] {
+        let mut dict = base_image(1, 1, 8, "DeviceGray");
+        dict.set("Filter", codec);
+        let r = render_image(dict, vec![0, 0, 0]);
+        assert!(r.warnings.dropped_objects > 0, "{codec}: {:?}", r.warnings);
+        assert!(r.warnings.degrades_accuracy(), "{codec}: {:?}", r.warnings);
+        assert!(
+            r.warnings
+                .skipped_ops
+                .iter()
+                .any(|(op, _)| op.contains(codec.trim_end_matches("Decode"))),
+            "{codec}: {:?}",
+            r.warnings.skipped_ops
+        );
+    }
 }
 
 #[test]
@@ -632,12 +671,220 @@ fn absurd_image_dimensions_are_rejected_before_allocating() {
     );
 }
 
+fn render_absurd_image_in_viewport(cm: &str) -> PageRender {
+    let mut doc = Document::with_version("1.7");
+    let mut image = base_image(1, 1, 8, "DeviceGray");
+    image.set("Width", Object::Integer(1_000_000));
+    image.set("Height", Object::Integer(1_000_000));
+    let image_id = doc.add_object(Stream::new(image, vec![0]));
+    let resources_id = doc.add_object(dictionary! {
+        "XObject" => dictionary! { "Im0" => Object::Reference(image_id) },
+    });
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        format!("q {cm} cm /Im0 Do Q").into_bytes(),
+    ));
+    let pages_id = (doc.new_object_id().0, 0);
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => Object::Reference(pages_id),
+        "Contents" => Object::Reference(content_id),
+        "Resources" => Object::Reference(resources_id),
+        "MediaBox" => vec![0.into(), 0.into(), 100.into(), 100.into()],
+    });
+    doc.set_object(
+        pages_id,
+        dictionary! { "Type" => "Pages", "Kids" => vec![Object::Reference(page_id)], "Count" => 1 },
+    );
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog", "Pages" => Object::Reference(pages_id),
+    });
+    doc.trailer.set("Root", Object::Reference(catalog_id));
+
+    render_page_managed_region(
+        &doc,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::ink_accurate(),
+        None,
+        Some(RasterClip {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        }),
+    )
+    .expect("viewport phải render được")
+}
+
+#[test]
+fn viewport_skips_absurd_image_outside_buffer_before_decode() {
+    // PERF (audit 2026-08-08 §RENDER.3): ảnh nằm ở góc dưới-phải; viewport và
+    // guard-band chỉ phủ góc trên-trái nên không được chạm vào stream hỏng.
+    let result = render_absurd_image_in_viewport("10 0 0 10 80 0");
+    assert_eq!(result.warnings.dropped_objects, 0, "{:?}", result.warnings);
+    assert!(!result.warnings.ink_unsound(), "{:?}", result.warnings);
+}
+
+#[test]
+fn viewport_visible_absurd_image_still_fails_loud() {
+    // Cùng ảnh hỏng nhưng đặt ở góc trên-trái, giao viewport nên cổng tin cậy
+    // vẫn phải nhìn thấy lỗi giải mã như đường full-page.
+    let result = render_absurd_image_in_viewport("10 0 0 10 0 90");
+    assert!(result.warnings.dropped_objects > 0, "{:?}", result.warnings);
+    assert!(result.warnings.ink_unsound(), "{:?}", result.warnings);
+}
+
 #[test]
 fn content_without_images_still_renders() {
     // Bảo đảm phần dựng test không tự làm hỏng đường vector.
     let doc = build("0 0 0 1 k 0 0 10 10 re f", dictionary! {});
     let r = render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate()).unwrap();
     assert!((r.buffer.max_tac_percent() - 100.0).abs() < 0.5);
+}
+
+#[test]
+fn repeated_indirect_image_reapplies_each_form_ctm() {
+    // PERF (audit 2026-08-09 §PERF.9): cùng một ObjectId được gọi qua hai Form;
+    // cache chỉ giữ mẫu nguồn, không được giữ bitmap đã biến đổi theo CTM.
+    let mut doc = Document::with_version("1.7");
+    let image_id = doc.add_object(Stream::new(base_image(2, 1, 8, "DeviceGray"), vec![0, 255]));
+    let form_resources = |doc: &mut Document| {
+        Object::Reference(doc.add_object(dictionary! {
+            "XObject" => dictionary! { "Im0" => Object::Reference(image_id) },
+        }))
+    };
+    let form1_resources = form_resources(&mut doc);
+    let form1 = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+            "Resources" => form1_resources,
+        },
+        b"10 0 0 10 0 0 cm /Im0 Do".to_vec(),
+    ));
+    let form2_resources = form_resources(&mut doc);
+    let form2 = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+            "Matrix" => vec![1.into(), 0.into(), 0.into(), 1.into(), 10.into(), 0.into()],
+            "Resources" => form2_resources,
+        },
+        b"10 0 0 10 0 0 cm /Im0 Do".to_vec(),
+    ));
+    let page_resources = doc.add_object(dictionary! {
+        "XObject" => dictionary! {
+            "F1" => Object::Reference(form1),
+            "F2" => Object::Reference(form2),
+        }
+    });
+    let content = doc.add_object(Stream::new(dictionary! {}, b"/F1 Do /F2 Do".to_vec()));
+    let pages_id = (doc.new_object_id().0, 0);
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => Object::Reference(pages_id),
+        "Contents" => Object::Reference(content),
+        "Resources" => Object::Reference(page_resources),
+        "MediaBox" => vec![0.into(), 0.into(), 20.into(), 10.into()],
+    });
+    doc.set_object(
+        pages_id,
+        dictionary! { "Type" => "Pages", "Kids" => vec![Object::Reference(page_id)], "Count" => 1 },
+    );
+    let catalog = doc.add_object(dictionary! {
+        "Type" => "Catalog", "Pages" => Object::Reference(pages_id),
+    });
+    doc.trailer.set("Root", Object::Reference(catalog));
+
+    let rendered = render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate())
+        .expect("form ảnh lặp phải render được");
+    let y = rendered.buffer.height() as usize / 2;
+    assert_eq!(px(&rendered, 3, 2, y), 255);
+    assert_eq!(px(&rendered, 3, 7, y), 0);
+    assert_eq!(px(&rendered, 3, 12, y), 255);
+    assert_eq!(px(&rendered, 3, 17, y), 0);
+}
+
+#[test]
+fn named_colorspace_image_is_not_cached_across_form_resource_scopes() {
+    // Một ObjectId nhưng `/CS0` trỏ DeviceGray ở Form trái và DeviceCMYK ở Form
+    // phải. Cache sai theo ObjectId sẽ làm nửa phải bị coi nhầm là ảnh Gray.
+    let mut doc = Document::with_version("1.7");
+    let image_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => 1,
+            "Height" => 1,
+            "BitsPerComponent" => 8,
+            "ColorSpace" => "CS0",
+        },
+        vec![0, 255, 0, 0],
+    ));
+    let gray_resources = doc.add_object(dictionary! {
+        "ColorSpace" => dictionary! { "CS0" => "DeviceGray" },
+        "XObject" => dictionary! { "Im0" => Object::Reference(image_id) },
+    });
+    let cmyk_resources = doc.add_object(dictionary! {
+        "ColorSpace" => dictionary! { "CS0" => "DeviceCMYK" },
+        "XObject" => dictionary! { "Im0" => Object::Reference(image_id) },
+    });
+    let form1 = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+            "Resources" => Object::Reference(gray_resources),
+        },
+        b"10 0 0 10 0 0 cm /Im0 Do".to_vec(),
+    ));
+    let form2 = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+            "Matrix" => vec![1.into(), 0.into(), 0.into(), 1.into(), 10.into(), 0.into()],
+            "Resources" => Object::Reference(cmyk_resources),
+        },
+        b"10 0 0 10 0 0 cm /Im0 Do".to_vec(),
+    ));
+    let page_resources = doc.add_object(dictionary! {
+        "XObject" => dictionary! {
+            "F1" => Object::Reference(form1),
+            "F2" => Object::Reference(form2),
+        }
+    });
+    let content = doc.add_object(Stream::new(dictionary! {}, b"/F1 Do /F2 Do".to_vec()));
+    let pages_id = (doc.new_object_id().0, 0);
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => Object::Reference(pages_id),
+        "Contents" => Object::Reference(content),
+        "Resources" => Object::Reference(page_resources),
+        "MediaBox" => vec![0.into(), 0.into(), 20.into(), 10.into()],
+    });
+    doc.set_object(
+        pages_id,
+        dictionary! { "Type" => "Pages", "Kids" => vec![Object::Reference(page_id)], "Count" => 1 },
+    );
+    let catalog = doc.add_object(dictionary! {
+        "Type" => "Catalog", "Pages" => Object::Reference(pages_id),
+    });
+    doc.trailer.set("Root", Object::Reference(catalog));
+
+    let rendered = render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate())
+        .expect("named colorspace fixture phải render được");
+    let y = rendered.buffer.height() as usize / 2;
+    assert_eq!(px(&rendered, 3, 5, y), 255, "Gray form phải có K");
+    assert_eq!(
+        px(&rendered, 3, 15, y),
+        0,
+        "CMYK form không được mượn cache Gray"
+    );
 }
 
 /// Dựng PDF đặt một ảnh (tuỳ chọn kèm `/SMask`) bằng `cm` tuỳ ý rồi render @72.
@@ -710,7 +957,12 @@ fn texel_boundary_tie_picks_left_texel_like_gs() {
             &[0u8, 0, 0, 0]
         });
     }
-    let r = render_placed_image("4 0 0 4 0 3", base_image(8, 1, 8, "DeviceCMYK"), samples, None);
+    let r = render_placed_image(
+        "4 0 0 4 0 3",
+        base_image(8, 1, 8, "DeviceCMYK"),
+        samples,
+        None,
+    );
     for x in 0..4 {
         assert_eq!(
             px(&r, 3, x, 5),

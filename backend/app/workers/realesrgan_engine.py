@@ -23,6 +23,7 @@ import threading
 import hashlib
 import functools
 import time
+from collections.abc import Callable
 from contextlib import nullcontext
 
 import onnxruntime as ort
@@ -73,6 +74,15 @@ class UpscaleUnavailable(RuntimeError):
 
     Route dịch thành HTTP 422 kèm nguyên văn `str(exc)`, khác với lỗi kỹ thuật (500).
     """
+
+
+class UpscaleCancelled(RuntimeError):
+    """Client đã rời tác vụ; dừng ở ranh giới tile/encode an toàn."""
+
+
+def _raise_if_cancelled(cancelled: Callable[[], bool] | None) -> None:
+    if cancelled is not None and cancelled():
+        raise UpscaleCancelled("Tác vụ Upscale đã bị hủy.")
 
 
 # UPSCALE (audit treo 2026-07-28 §1.1): ngưỡng phân biệt "có tăng tốc GPU thật" —
@@ -389,14 +399,21 @@ def _amplify_ai_detail(sr: np.ndarray, patch: np.ndarray, strength: float) -> np
     return np.clip(sr + strength * (sr - baseline), 0.0, 1.0)
 
 
-def _upscale_rgb(rgb: np.ndarray, variant: str, tile: int, tile_pad: int,
-                 detail: float = 0.0) -> np.ndarray:
+def _upscale_rgb(
+    rgb: np.ndarray,
+    variant: str,
+    tile: int,
+    tile_pad: int,
+    detail: float = 0.0,
+    cancelled: Callable[[], bool] | None = None,
+) -> np.ndarray:
     """Phóng to mảng RGB HxWx3 float32 [0,1] lên 4x bằng tiling.
 
     Chia ảnh thành ô `tile`×`tile` với biên đệm `tile_pad` (chồng mép để tránh vệt
     nối), chạy từng ô qua model, ghép lại theo toạ độ ×4. tile<=0 → chạy nguyên ảnh.
     `detail` > 0 thì khuếch đại chi tiết AI ngay trên từng ô (xem `_amplify_ai_detail`).
     """
+    _raise_if_cancelled(cancelled)
     h, w, _ = rgb.shape
     out_h, out_w = h * SCALE, w * SCALE
     output = np.zeros((out_h, out_w, 3), dtype=np.float32)
@@ -410,6 +427,9 @@ def _upscale_rgb(rgb: np.ndarray, variant: str, tile: int, tile_pad: int,
 
     for ty in range(tiles_y):
         for tx in range(tiles_x):
+            # LIFECYCLE (audit 2026-08-11 §UP.X.07): không cố ngắt giữa một
+            # session.run DirectML; chỉ dừng trước/sau mỗi tile để giữ provider ổn định.
+            _raise_if_cancelled(cancelled)
             # Vùng ô (chưa đệm) trong ảnh gốc.
             x0, y0 = tx * tile, ty * tile
             x1, y1 = min(x0 + tile, w), min(y0 + tile, h)
@@ -420,6 +440,7 @@ def _upscale_rgb(rgb: np.ndarray, variant: str, tile: int, tile_pad: int,
             patch = rgb[py0:py1, px0:px1, :]
             inp = np.transpose(patch, (2, 0, 1))[None, ...].astype(np.float32)
             sr = _run_session(variant, inp)  # [1,3,ph*4,pw*4]
+            _raise_if_cancelled(cancelled)
             sr = np.clip(np.squeeze(sr, 0).transpose(1, 2, 0), 0.0, 1.0)
             if detail > 0.0:
                 sr = _amplify_ai_detail(sr, patch, detail)
@@ -473,8 +494,13 @@ def _detail_strength(mode: str) -> float:
     return max(0.0, min(2.0, default))
 
 
-def upscale(image: Image.Image, variant: str = "general", tile: int | None = None,
-            tile_pad: int | None = None) -> Image.Image:
+def upscale(
+    image: Image.Image,
+    variant: str = "general",
+    tile: int | None = None,
+    tile_pad: int | None = None,
+    cancelled: Callable[[], bool] | None = None,
+) -> Image.Image:
     """Phóng to ảnh 4x bằng Real-ESRGAN. Giữ alpha (nếu có) bằng resize chất lượng cao.
 
     Alpha KHÔNG chạy qua model SR (model huấn luyện cho RGB): alpha thường là mask
@@ -483,6 +509,7 @@ def upscale(image: Image.Image, variant: str = "general", tile: int | None = Non
     Chốt thời gian/GPU (`guard_runtime`) do TẦNG ROUTE gọi, không gọi ở đây: warmup
     và smoke test lúc build cố tình chạy ảnh 16×16 để nạp session và không được bị chặn.
     """
+    _raise_if_cancelled(cancelled)
     # `mode` = lựa chọn UI (quyết định cường độ chi tiết), `variant` = model .onnx.
     # Cân bằng dùng chung model với Nhanh nhưng khác cường độ khuếch đại chi tiết.
     mode = variant if variant in _DETAIL_BY_MODE else "general"
@@ -503,11 +530,13 @@ def upscale(image: Image.Image, variant: str = "general", tile: int | None = Non
     rgb = np.asarray(src.convert("RGB"), dtype=np.float32) / 255.0
     # UPSCALE (audit 2026-07-29 §NET.03): khuếch đại chi tiết chạy TRONG vòng lặp ô
     # để đỉnh RAM không tăng theo kích thước ảnh (bước cũ dựng thêm một ảnh full ×4).
-    out_rgb = _upscale_rgb(rgb, variant, tile, tile_pad, detail)
+    out_rgb = _upscale_rgb(rgb, variant, tile, tile_pad, detail, cancelled)
+    _raise_if_cancelled(cancelled)
     out_u8 = (out_rgb * 255.0 + 0.5).astype(np.uint8)
     result = Image.fromarray(out_u8, "RGB")
 
     if has_alpha:
+        _raise_if_cancelled(cancelled)
         alpha = src.split()[-1]
         alpha_up = alpha.resize((result.width, result.height), Image.LANCZOS)
         result = result.convert("RGBA")

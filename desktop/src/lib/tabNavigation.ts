@@ -21,6 +21,7 @@ export function resolveActiveDedicatedReceiver(
 
 export const IMAGE_BATCH_DROP_EVENTS = {
     bgremover: 'prynx-bgremover-add-files',
+    logo_rebuild: 'prynx-logo-rebuild-add-files',
     upscale: 'prynx-upscale-add-files',
 } as const;
 

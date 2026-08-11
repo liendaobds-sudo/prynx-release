@@ -11,7 +11,7 @@
 //!
 //! CCITT là cách file khách cũ (và mọi máy scan) lưu bản vẽ đen trắng: đường bế, sơ
 //! đồ khuôn, bản can. Trước đây PPE báo `codec ảnh CCITTFaxDecode` chưa hỗ trợ và
-//! nhường cả trang cho Ghostscript — mà đó thường là **toàn bộ** nội dung của trang.
+//! loại cả trang khỏi kết quả tin cậy — mà đó thường là **toàn bộ** nội dung của trang.
 //!
 //! # Đầu ra
 //!

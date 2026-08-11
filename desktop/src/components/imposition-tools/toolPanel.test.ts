@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { WORKSPACE_TOOL_PANEL, isWorkspaceTool, resolveRightPanel, type WorkspacePanelKind } from './types';
 import { canToolRunWithoutPdf, isLogoRebuildEnabled, LOGO_REBUILD_ENABLED, PREPROCESS_ROUTER_TOOLS, resolveDedicatedInitialTool } from './sections/preprocessRouterTools';
+import { findToolByUniqueKey } from '../../lib/toolRegistry';
 
 /**
  * Chốt routing workspace bình bài (Bước C — refactor).
@@ -63,7 +64,7 @@ describe('resolveRightPanel — routing panel-phải ImpositionTab (lưới an t
     it('mọi tool còn lại (bình bài + tiền xử lý + none) → "dashboard"', () => {
         for (const t of ['none', 'booklet', 'nup', 'sticker_imposer', 'cnc_imposer',
             'merge', 'shuffle', 'resize', 'split', 'pages', 'sticker', 'preflight', 'font_tools',
-            'hairlines', 'convertcolors', 'trapping', 'pdfx', 'ocr', 'optimize',
+            'hairlines', 'inkmanager', 'convertcolors', 'trapping', 'pdfx', 'ocr', 'optimize',
             'bgremover', 'watermark', 'upscale', 'logo_rebuild', 'encrypt', 'metadata', 'office_convert']) {
             expect(resolveRightPanel(t, false)).toBe('dashboard');
         }
@@ -100,7 +101,11 @@ describe('điều hướng tab công cụ độc lập', () => {
         expect(resolveDedicatedInitialTool('bgremover')).toBe('bgremover');
         expect(isLogoRebuildEnabled(true)).toBe(true);
         expect(isLogoRebuildEnabled(false)).toBe(false);
-        expect(LOGO_REBUILD_ENABLED).toBe(import.meta.env.DEV);
+        expect(isLogoRebuildEnabled(false, true)).toBe(true);
+        expect(isLogoRebuildEnabled(true, false)).toBe(true);
+        expect(LOGO_REBUILD_ENABLED).toBe(
+            import.meta.env.DEV || import.meta.env.VITE_LOGO_REBUILD_ENABLED === 'true',
+        );
         expect(resolveDedicatedInitialTool('logo_rebuild')).toBe(
             LOGO_REBUILD_ENABLED ? 'logo_rebuild' : null,
         );
@@ -122,6 +127,8 @@ describe('capability điều hướng workspace', () => {
 
     it('nhận diện tool từ đúng map routing duy nhất', () => {
         expect(isWorkspaceTool('crop')).toBe(true);
+        expect(isWorkspaceTool('inkmanager')).toBe(true);
+        expect(findToolByUniqueKey('inkmanager')?.featureId).toBe('prepress.convert_colors');
         expect(isWorkspaceTool('cover_numbering')).toBe(true);
         expect(isWorkspaceTool('khong-ton-tai')).toBe(false);
     });

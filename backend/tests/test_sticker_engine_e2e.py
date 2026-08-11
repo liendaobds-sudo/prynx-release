@@ -118,6 +118,31 @@ def _make_radial_halo_pdf(path: str) -> None:
     pdf.save()
 
 
+def _make_low_dpi_jpeg_pink_halo_pdf(path: str) -> None:
+    """Ảnh 72 DPI có hai lớp đỏ pha trắng trước viền đỏ thật."""
+    import io
+    from PIL import Image, ImageDraw
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+
+    size = 180
+    image = Image.new("RGB", (size, size), "white")
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((24, 24, 156, 156), fill=(255, 232, 232))
+    draw.ellipse((29, 29, 151, 151), fill=(170, 120, 120))
+    draw.ellipse((32, 32, 148, 148), fill=(83, 32, 31))
+
+    jpeg = io.BytesIO()
+    image.save(jpeg, format="JPEG", quality=92, subsampling=0, optimize=True)
+    jpeg.seek(0)
+
+    # Không khai báo DPI: giống luồng ảnh người dùng, frontend quy 1 px = 1 pt.
+    pdf = canvas.Canvas(path, pagesize=(size, size), pageCompression=0)
+    pdf.drawImage(ImageReader(jpeg), 0, 0, width=size, height=size)
+    pdf.showPage()
+    pdf.save()
+
+
 def _make_large_jpeg_shape_pdf(path: str, shape: str, long_side_mm: float) -> None:
     """§NOODLE.8–11: một ảnh JPEG phủ trang, không DPI, ở scale sản xuất lớn."""
     import io
@@ -268,7 +293,12 @@ def _make_rounded_rectangle_sticker_pdf(path: str) -> None:
     pdf.save()
 
 
-def _make_white_outline_pdf(path: str, *, transparent: bool) -> None:
+def _make_white_outline_pdf(
+    path: str,
+    *,
+    transparent: bool,
+    source_dpi: float = 150.0,
+) -> None:
     """Fixture tem tròn có viền trắng; ngoài viền trong suốt hoặc nền tối phẳng."""
     import io
     import numpy as np
@@ -277,7 +307,6 @@ def _make_white_outline_pdf(path: str, *, transparent: bool) -> None:
     from reportlab.pdfgen import canvas
 
     size = 300
-    source_dpi = 150.0
     yy, xx = np.ogrid[:size, :size]
     radius = np.sqrt((xx - 150) ** 2 + (yy - 150) ** 2)
     outer = radius <= 110
@@ -309,15 +338,14 @@ def _make_white_outline_pdf(path: str, *, transparent: bool) -> None:
     pdf.save()
 
 
-def _make_wavy_shell_alpha_pdf(path: str) -> None:
-    """Fixture viền trắng hữu cơ nhiều lượn, có Alpha thật ở đúng 300 DPI."""
+def _make_wavy_shell_alpha_pdf(path: str, source_dpi: float = 300.0) -> None:
+    """Fixture viền trắng hữu cơ nhiều lượn, có Alpha thật ở DPI chỉ định."""
     import io
     from PIL import Image
     from reportlab.lib.utils import ImageReader
     from reportlab.pdfgen import canvas
 
     width, height = 900, 700
-    source_dpi = 300.0
     yy, xx = np.mgrid[:height, :width]
     center_x = (width - 1) / 2.0
     center_y = (height - 1) / 2.0
@@ -332,7 +360,11 @@ def _make_wavy_shell_alpha_pdf(path: str) -> None:
     rgba = np.dstack((rgb, np.where(shell, 255, 0).astype(np.uint8)))
 
     png = io.BytesIO()
-    Image.fromarray(rgba, mode="RGBA").save(png, format="PNG", dpi=(300, 300))
+    Image.fromarray(rgba, mode="RGBA").save(
+        png,
+        format="PNG",
+        dpi=(source_dpi, source_dpi),
+    )
     png.seek(0)
     page_width = width * 72.0 / source_dpi
     page_height = height * 72.0 / source_dpi
@@ -2150,6 +2182,124 @@ def test_alpha_wavy_shell_pdf_has_no_artificial_joins_or_short_commands(tmp_path
     assert machine["sharp_joins"] == 0
 
 
+def test_original_cut_uses_reviewed_alpha_without_page_rectangle_or_inset(tmp_path):
+    """Mask đã chốt là nguồn biên; ``original`` không được composite thành mép trang."""
+    import pypdfium2 as pdfium
+
+    src = str(tmp_path / "reviewed_alpha_wavy.pdf")
+    out = str(tmp_path / "reviewed_alpha_wavy_cut.pdf")
+    _make_wavy_shell_alpha_pdf(src)
+
+    source = pdfium.PdfDocument(src)
+    page = source[0]
+    bitmap = page.render(
+        scale=300.0 / 72.0,
+        fill_color=(0, 0, 0, 0),
+        rev_byteorder=True,
+    )
+    try:
+        alpha = np.array(bitmap.to_numpy(), copy=True)[:, :, 3]
+    finally:
+        bitmap.close()
+        page.close()
+        source.close()
+    ys, xs = np.where(alpha >= ALPHA_CONTOUR_THRESHOLD)
+    expected_width_mm = (int(xs.max()) - int(xs.min()) + 1) * 25.4 / 300.0
+    expected_height_mm = (int(ys.max()) - int(ys.min()) + 1) * 25.4 / 300.0
+    page_width_mm = alpha.shape[1] * 25.4 / 300.0
+    page_height_mm = alpha.shape[0] * 25.4 / 300.0
+
+    success, meta = StickerEngine(dpi=300).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="original",
+        offset_mm=0.0,
+        corner_style="preserve",
+        bleed_mm=0.0,
+        fill_holes=True,
+        remove_white_bg=False,
+        draw_cut_contour=True,
+        shape_mode="contour",
+        alpha_corner_policy="adaptive",
+        alpha_source_pixel_mm=25.4 / 300.0,
+        alpha_source_mode=True,
+    )
+
+    assert success is True
+    assert meta["contour_source"] == "alpha"
+    assert meta["alpha_fallback"] is False
+    box = meta["boxes"][0]
+    # Sai khác này là ngân sách fairing hai phía, nhỏ hơn rõ rệt mức lùi dao
+    # legacy 0,15 mm mỗi phía (tổng 0,30 mm), không phải một inset ngầm mới.
+    assert box["w_mm"] == pytest.approx(expected_width_mm, abs=0.16)
+    assert box["h_mm"] == pytest.approx(expected_height_mm, abs=0.16)
+    assert page_width_mm - box["w_mm"] > 2.0
+    assert page_height_mm - box["h_mm"] > 2.0
+
+    with pikepdf.Pdf.open(out) as result:
+        machine_paths = _parse_cut_machine_paths(result.pages[0])
+    assert len(machine_paths) == 1
+    assert all(segment.kind == "cubic" for segment in machine_paths[0])
+    machine = _summarize_machine_paths(machine_paths)
+    assert machine["short"] == 0
+    assert machine["sharp_joins"] == 0
+
+
+@pytest.mark.parametrize("source_dpi", [72.0, 150.0, 300.0])
+def test_reviewed_alpha_respects_signed_offset_without_hidden_inset(
+    tmp_path,
+    source_dpi,
+):
+    """Offset ± phải dịch đúng một lần ở mọi DPI, không cộng inset của Alpha legacy."""
+    src = str(tmp_path / f"reviewed_alpha_{int(source_dpi)}dpi.pdf")
+    _make_white_outline_pdf(src, transparent=True, source_dpi=source_dpi)
+
+    boxes: dict[float, dict] = {}
+    for offset_mm in (-0.5, 0.0, 0.5):
+        out = str(
+            tmp_path
+            / f"reviewed_alpha_{int(source_dpi)}dpi_{offset_mm:+.1f}.pdf"
+        )
+        success, meta = StickerEngine(dpi=300).process_pdf(
+            input_path=src,
+            output_path=out,
+            cut_mode="original",
+            offset_mm=offset_mm,
+            corner_style="preserve",
+            bleed_mm=0.0,
+            fill_holes=True,
+            remove_white_bg=False,
+            draw_cut_contour=True,
+            shape_mode="contour",
+            alpha_corner_policy="adaptive",
+            alpha_source_pixel_mm=25.4 / source_dpi,
+            alpha_source_mode=True,
+        )
+        assert success is True
+        assert meta["contour_source"] == "alpha"
+        boxes[offset_mm] = meta["boxes"][0]
+        with pikepdf.Pdf.open(out) as result:
+            machine_paths = _parse_cut_machine_paths(result.pages[0])
+        machine = _summarize_machine_paths(machine_paths)
+        assert machine["short"] == 0
+        assert machine["sharp_joins"] == 0
+
+    # Bbox đổi hai phía, nên Offset 0,5 mm phải đổi đúng 1,0 mm theo mỗi trục.
+    # Fairing có thể chọn candidate khác giữa hai offset; sai số chênh lệch phải
+    # nằm trong khoảng lượng tử 1,25 pixel nguồn. Ở 150/300 DPI ngưỡng này vẫn bắt rõ inset
+    # legacy 0,15 mm mỗi phía (tổng 0,30 mm) nếu bị cộng lặp.
+    tolerance_mm = max(0.08, (25.4 / source_dpi) * 1.25)
+    for dimension in ("w_mm", "h_mm"):
+        assert boxes[0.0][dimension] - boxes[-0.5][dimension] == pytest.approx(
+            1.0,
+            abs=tolerance_mm,
+        )
+        assert boxes[0.5][dimension] - boxes[0.0][dimension] == pytest.approx(
+            1.0,
+            abs=tolerance_mm,
+        )
+
+
 def test_alpha_72dpi_notched_pdf_stays_cubic_without_short_commands(tmp_path):
     """§AI-MOTION.4–10: 72 DPI phải là C2 thật, kể cả khi mask có râu cổ hẹp."""
     src = str(tmp_path / "alpha_72dpi_notched.pdf")
@@ -2579,6 +2729,131 @@ def test_process_pdf_image_bleed_removes_radial_halo(tmp_path):
         assert len(soft_masks) == 1
         alpha = np.frombuffer(soft_masks[0].read_bytes(), dtype=np.uint8)
         assert np.count_nonzero((alpha > 0) & (alpha < 255)) > 0
+
+
+def test_process_pdf_72dpi_jpeg_bleed_reaches_inner_red_and_is_continuous(
+    tmp_path,
+):
+    """Regression: ảnh khổ lớn không được kéo lớp hồng JPEG ra vùng bù xén."""
+    import cv2
+
+    source = str(tmp_path / "low_dpi_pink_halo.pdf")
+    output = str(tmp_path / "low_dpi_pink_halo_bleed.pdf")
+    _make_low_dpi_jpeg_pink_halo_pdf(source)
+
+    success, _meta = StickerEngine(dpi=300).process_pdf(
+        input_path=source,
+        output_path=output,
+        cut_mode="original",
+        offset_mm=0.0,
+        corner_style="round",
+        bleed_mm=3.0,
+        fill_holes=True,
+        remove_white_bg=True,
+        bleed_color_type="image",
+        draw_cut_contour=False,
+        rectangle_mode=False,
+    )
+    assert success is True
+
+    with pikepdf.Pdf.open(output) as pdf:
+        xobjects = pdf.pages[0].Resources.get("/XObject", {})
+        bleed_images = [
+            xobjects[name]
+            for name in xobjects.keys()
+            if str(xobjects[name].get("/Subtype")) == "/Image"
+            and xobjects[name].get("/SMask") is not None
+        ]
+        assert len(bleed_images) == 1
+        bleed = bleed_images[0]
+        width = int(bleed.get("/Width"))
+        height = int(bleed.get("/Height"))
+        rgb = np.frombuffer(bleed.read_bytes(), dtype=np.uint8).reshape(
+            height, width, 3
+        )
+        alpha = np.frombuffer(
+            bleed.get("/SMask").read_bytes(), dtype=np.uint8
+        ).reshape(height, width)
+
+    opaque_colors = rgb[alpha >= 250]
+    assert opaque_colors.shape[0] > 1000
+    median = np.median(opaque_colors, axis=0)
+    assert median[0] > median[1] + 35, median.tolist()
+    assert median[1] < 60, median.tolist()
+    assert float(np.mean(opaque_colors[:, 1] > 80)) < 0.01
+
+    component_count, _ = cv2.connectedComponents((alpha > 0).astype(np.uint8))
+    assert component_count - 1 == 1
+
+
+def test_round_custom_path_keeps_smooth_organic_contour_inside_guard():
+    """Spline C2 được nén node nhưng không được đổi quỹ đạo quá 0,12 mm."""
+    from app.workers.sticker_engine import (
+        _ROUND_PATH_MAX_HAUSDORFF_MM,
+        _ROUND_PATH_SPLINE_RMS_PROFILES_MM,
+        _fit_round_contour_paths,
+    )
+
+    angles = np.linspace(0.0, 2.0 * math.pi, 2400, endpoint=False)
+    radius_mm = 90.0 + 10.0 * np.cos(3.0 * angles) + 3.0 * np.cos(11.0 * angles)
+    points = np.column_stack((
+        120.0 + radius_mm * np.cos(angles),
+        120.0 + radius_mm * np.sin(angles),
+    )) * _PT_PER_MM
+    reference = Polygon(points)
+
+    fitted = _fit_round_contour_paths(reference, mm_to_pts=_PT_PER_MM)
+    assert fitted is not None
+    geometry, paths, profile = fitted
+    assert profile in _ROUND_PATH_SPLINE_RMS_PROFILES_MM
+    assert sum(len(path) for path in paths) < len(points) // 4
+    assert (
+        reference.hausdorff_distance(geometry) / _PT_PER_MM
+        <= _ROUND_PATH_MAX_HAUSDORFF_MM + 0.002
+    )
+
+
+def test_round_custom_path_locks_real_corners_instead_of_overshooting():
+    """Contour có góc thật rơi về fitter khóa góc, không dùng Catmull vọt biên."""
+    from shapely.affinity import scale
+    from app.workers.cutline_geometry import (
+        _catmull_rom_bezier_segments,
+        sample_bezier_segments,
+    )
+    from app.workers.sticker_engine import (
+        _ROUND_PATH_MAX_HAUSDORFF_MM,
+        _ROUND_PATH_SPLINE_RMS_PROFILES_MM,
+        _fit_round_contour_paths,
+    )
+
+    reference_mm = Polygon([
+        (0, 25), (35, 25), (35, 5), (110, 50),
+        (35, 95), (35, 75), (0, 75),
+    ]).buffer(4, quad_segs=64, join_style=1)
+    reference = scale(
+        reference_mm,
+        xfact=_PT_PER_MM,
+        yfact=_PT_PER_MM,
+        origin=(0, 0),
+    )
+
+    legacy_anchor = reference.simplify(1.0, preserve_topology=False)
+    legacy_segments = _catmull_rom_bezier_segments(
+        legacy_anchor.exterior.coords,
+        tension=0.33,
+    )
+    legacy_geometry = Polygon(sample_bezier_segments(legacy_segments, 24))
+    assert reference.hausdorff_distance(legacy_geometry) / _PT_PER_MM > 1.0
+
+    fitted = _fit_round_contour_paths(reference, mm_to_pts=_PT_PER_MM)
+    assert fitted is not None
+    geometry, paths, profile = fitted
+    assert profile not in _ROUND_PATH_SPLINE_RMS_PROFILES_MM
+    assert sum(len(path) for path in paths) < 64
+    assert (
+        reference.hausdorff_distance(geometry) / _PT_PER_MM
+        <= _ROUND_PATH_MAX_HAUSDORFF_MM + 0.002
+    )
 
 
 def test_feathered_bleed_join_mask_is_opaque_then_smooth():
@@ -3628,72 +3903,13 @@ def test_rectangle_inpaint_uses_true_srgb_and_keeps_white_edge(tmp_path):
     assert int(center[1]) > 120 and int(center[0]) < 20 and int(center[2]) < 20
 
 
-def test_rectangle_inpaint_uses_color_managed_page_renderer(monkeypatch, tmp_path):
-    """The smart rectangle path must sample the composited page, not PDFium RGB."""
-    import numpy as np
-    import app.workers.sticker_engine as sticker_module
-
-    src = str(tmp_path / "rect_renderer.pdf")
-    out = str(tmp_path / "rect_renderer_bleed.pdf")
-    _make_rectangle_white_edge_pdf(src)
-    sampled_rgb = np.array([23, 101, 207], dtype=np.uint8)
-    calls = []
-
-    def fake_renderer(input_path, page_index, scale, expected_width, expected_height):
-        calls.append((input_path, page_index, scale, expected_width, expected_height))
-        return np.full(
-            (expected_height, expected_width, 3), sampled_rgb, dtype=np.uint8
-        )
-
-    monkeypatch.setattr(
-        sticker_module, "_render_page_rgb_ghostscript", fake_renderer
-    )
-    success, _meta = sticker_module.StickerEngine(dpi=150).process_pdf(
-        input_path=src,
-        output_path=out,
-        cut_mode="none",
-        bleed_mm=2.0,
-        bleed_color_type="inpaint",
-        draw_cut_contour=False,
-        rectangle_mode=True,
-        edge_bite_mm=0.0,
-    )
-    assert success is True
-    assert calls and calls[0][1] == 0
-    assert calls[0][3] > 0 and calls[0][4] > 0
-
-    with pikepdf.Pdf.open(out) as result:
-        xobjects = result.pages[0].Resources.get("/XObject", {})
-        color_images = [
-            xobjects[name]
-            for name in xobjects
-            if str(xobjects[name].get("/Subtype")) == "/Image"
-            and str(xobjects[name].get("/ColorSpace")) != "/DeviceGray"
-        ]
-        assert color_images
-        image = color_images[0]
-        pixels = np.frombuffer(image.read_bytes(), dtype=np.uint8).reshape(
-            int(image.get("/Height")), int(image.get("/Width")), 3
-        )
-        assert np.all(pixels[0, 0] == sampled_rgb)
-        assert np.all(pixels[-1, -1] == sampled_rgb)
-
-
-def test_rectangle_inpaint_falls_back_when_ghostscript_is_unavailable(
-    monkeypatch, tmp_path
-):
-    """Missing Ghostscript must degrade to PDFium instead of failing the job."""
+def test_rectangle_inpaint_uses_pdfium_page_raster(tmp_path):
+    """Bù xén thông minh dùng raster PDFium và vẫn tạo ảnh màu hợp lệ."""
     import app.workers.sticker_engine as sticker_module
 
     src = str(tmp_path / "rect_fallback.pdf")
     out = str(tmp_path / "rect_fallback_bleed.pdf")
     _make_rectangle_white_edge_pdf(src)
-    monkeypatch.setattr(
-        sticker_module,
-        "_render_page_rgb_ghostscript",
-        lambda *_args, **_kwargs: None,
-    )
-
     success, _meta = sticker_module.StickerEngine(dpi=150).process_pdf(
         input_path=src,
         output_path=out,

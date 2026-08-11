@@ -7,15 +7,23 @@ tem được xử lý xác định bằng OpenCV để kết quả có thể ki�
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import logging
+from pathlib import Path
+import threading
 import time
 from typing import Callable, Literal
+import uuid
 
 import cv2
 import numpy as np
 from PIL import Image
 
+from app.config import settings
+
 
 StickerSheetModel = Literal["birefnet-lite", "birefnet-full", "isnet"]
+StickerShadowCleanup = Literal["off", "auto"]
 
 DEFAULT_MODEL: StickerSheetModel = "birefnet-lite"
 DEFAULT_ALPHA_THRESHOLD = 128
@@ -24,6 +32,16 @@ MIN_COMPONENT_AREA_PX = 64
 SOFT_EDGE_RADIUS_PX = 2
 MAX_UNCERTAIN_ALPHA = 207
 MIN_UNCERTAIN_ALPHA = 48
+
+logger = logging.getLogger(__name__)
+
+# PERF (audit 2026-08-10 §AI-SPEED.1): cache đúng Alpha model, không cache
+# CutContour hay mask đã chỉnh. Key gồm pixel RGB, model/weights và mọi tham số
+# ảnh hưởng vùng bóng; cleanup chung của RESULTS_DIR tự xóa file sau 26 giờ.
+_AI_ALPHA_CACHE_VERSION = "2026-08-10-v1"
+_AI_ALPHA_CACHE_ROOT = Path(settings.RESULTS_DIR) / "sticker_ai_alpha_cache"
+_AI_ALPHA_CACHE_LOCKS: dict[str, threading.Lock] = {}
+_AI_ALPHA_CACHE_LOCKS_GUARD = threading.Lock()
 
 # QUALITY (audit 2026-08-08 §AI-SHADOW.1): bóng đổ do ảnh mockup thường là
 # một dải xám trung tính nối trực tiếp với biên ngoài của mask AI. Chỉ bóc dải
@@ -41,6 +59,7 @@ _SHADOW_MIN_RETAINED_AREA_RATIO = 0.65
 _SHADOW_CLEAN_BOUNDARY_WHITE_RATIO = 0.88
 _SHADOW_BOUNDARY_WHITE_GAIN = 0.08
 _SHADOW_MAX_FRAGMENT_AREA_RATIO = 0.0005
+_SHADOW_ROI_MARGIN_PX = 2
 
 
 class StickerSheetError(RuntimeError):
@@ -76,6 +95,12 @@ class StickerSheetAnalysis:
     model_seconds: float
     postprocess_seconds: float
     warnings: list[str]
+    # UIUX (audit 2026-08-09 §AI-PREVIEW.1): giữ Alpha gốc và vùng bóng đã được
+    # guard chấp nhận để tinh chỉnh preview mà không phải chạy lại mô hình AI.
+    raw_alpha: np.ndarray | None = None
+    shadow_exclusion: np.ndarray | None = None
+    alpha_threshold: int = DEFAULT_ALPHA_THRESHOLD
+    shadow_cleanup: StickerShadowCleanup = "auto"
 
 
 BackgroundRunner = Callable[[Image.Image, StickerSheetModel], Image.Image]
@@ -84,14 +109,112 @@ BackgroundRunner = Callable[[Image.Image, StickerSheetModel], Image.Image]
 def _run_background_model(image: Image.Image, model: StickerSheetModel) -> Image.Image:
     """Gọi lazy để import engine không nạp ONNX Runtime khi chỉ chạy test hình học."""
     if model == "isnet":
-        from app.workers.isnet_engine import remove_background
+        from app.workers.isnet_engine import predict_alpha
 
-        return remove_background(image)
+        alpha = predict_alpha(image)
+    else:
+        from app.workers.birefnet_engine import predict_alpha
 
-    from app.workers.birefnet_engine import remove_background
+        variant = "full" if model == "birefnet-full" else "lite"
+        alpha = predict_alpha(image, variant=variant)
+
+    # PERF (audit 2026-08-10 §AI-SPEED.2): engine tem chỉ đọc Alpha rồi trả RGB
+    # nguồn ở bước cuối. Không chạy refine_foreground_rgba ~0,4 s để tạo RGB model
+    # rồi vứt bỏ ngay sau đó.
+    result = image.convert("RGBA")
+    result.putalpha(alpha)
+    return result
+
+
+# PERF (audit 2026-08-10 §AI-SPEED.1): nhận diện runner chuẩn để cache bền qua
+# restart nhưng không nuốt model giả khi test hoặc khi caller thay engine lúc chạy.
+_DEFAULT_BACKGROUND_RUNNER = _run_background_model
+
+
+def _model_cache_revision(model: StickerSheetModel) -> str:
+    if model == "isnet":
+        from app.workers.isnet_engine import MODEL_SHA256
+
+        return MODEL_SHA256
+    from app.workers.birefnet_engine import MODEL_SHA256
 
     variant = "full" if model == "birefnet-full" else "lite"
-    return remove_background(image, variant=variant)
+    return MODEL_SHA256[variant]
+
+
+def _ai_alpha_cache_key(
+    source_rgb: np.ndarray,
+    *,
+    model: StickerSheetModel,
+    alpha_threshold: int,
+    min_component_area_ratio: float,
+) -> str:
+    digest = hashlib.sha256()
+    digest.update(_AI_ALPHA_CACHE_VERSION.encode("ascii"))
+    digest.update(model.encode("ascii"))
+    digest.update(_model_cache_revision(model).encode("ascii"))
+    digest.update(str(int(alpha_threshold)).encode("ascii"))
+    digest.update(f"{float(min_component_area_ratio):.12g}".encode("ascii"))
+    digest.update(str(source_rgb.shape).encode("ascii"))
+    digest.update(np.ascontiguousarray(source_rgb).data)
+    return digest.hexdigest()
+
+
+def _ai_alpha_cache_lock(cache_key: str) -> threading.Lock:
+    with _AI_ALPHA_CACHE_LOCKS_GUARD:
+        return _AI_ALPHA_CACHE_LOCKS.setdefault(cache_key, threading.Lock())
+
+
+def _load_ai_alpha_cache(
+    cache_key: str,
+    expected_shape: tuple[int, int],
+) -> tuple[np.ndarray, np.ndarray] | None:
+    cache_path = _AI_ALPHA_CACHE_ROOT / f"{cache_key}.npz"
+    if not cache_path.is_file():
+        return None
+    try:
+        with np.load(cache_path, allow_pickle=False) as cached:
+            raw_alpha = np.asarray(cached["raw_alpha"], dtype=np.uint8).copy()
+            shadow_exclusion = np.asarray(
+                cached["shadow_exclusion"],
+                dtype=np.uint8,
+            ).copy()
+        if raw_alpha.shape != expected_shape or shadow_exclusion.shape != expected_shape:
+            raise ValueError("Cache Alpha khác kích thước ảnh nguồn")
+        cache_path.touch()
+        return raw_alpha, shadow_exclusion
+    except (OSError, KeyError, ValueError):
+        logger.warning("Bỏ cache Alpha tem không hợp lệ: %s", cache_path, exc_info=True)
+        try:
+            cache_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+
+def _store_ai_alpha_cache(
+    cache_key: str,
+    raw_alpha: np.ndarray,
+    shadow_exclusion: np.ndarray,
+) -> None:
+    cache_path = _AI_ALPHA_CACHE_ROOT / f"{cache_key}.npz"
+    temporary = _AI_ALPHA_CACHE_ROOT / f".{cache_key}.{uuid.uuid4().hex}.tmp"
+    try:
+        _AI_ALPHA_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+        with temporary.open("wb") as stream:
+            np.savez_compressed(
+                stream,
+                raw_alpha=np.asarray(raw_alpha, dtype=np.uint8),
+                shadow_exclusion=np.asarray(shadow_exclusion, dtype=np.uint8),
+            )
+        temporary.replace(cache_path)
+    except OSError:
+        logger.warning("Không ghi được cache Alpha tem: %s", cache_path, exc_info=True)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _component_records(
@@ -212,6 +335,9 @@ def _boundary_white_ratio(source_rgb: np.ndarray, component: np.ndarray) -> floa
 def _remove_attached_neutral_shadow(
     source_rgb: np.ndarray,
     component: np.ndarray,
+    *,
+    luma: np.ndarray | None = None,
+    chroma: np.ndarray | None = None,
 ) -> np.ndarray:
     """Bóc bóng xám nối biên nhưng chỉ nhận kết quả còn nguyên một vỏ tem trắng.
 
@@ -225,9 +351,11 @@ def _remove_attached_neutral_shadow(
         return component_bool
 
     rgb = source_rgb[:, :, :3]
-    luma = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-    rgb_i16 = rgb.astype(np.int16, copy=False)
-    chroma = rgb_i16.max(axis=2) - rgb_i16.min(axis=2)
+    if luma is None:
+        luma = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    if chroma is None:
+        rgb_i16 = rgb.astype(np.int16, copy=False)
+        chroma = rgb_i16.max(axis=2) - rgb_i16.min(axis=2)
     component_u8 = component_bool.astype(np.uint8)
     boundary = component_bool & (
         cv2.erode(component_u8, np.ones((3, 3), dtype=np.uint8)) == 0
@@ -323,12 +451,34 @@ def _refine_attached_shadows(
     """Lọc bóng độc lập từng instance; không cho một tem đổi số tem của cả tờ."""
     refined_binary = np.zeros(raw_labels.shape, dtype=np.uint8)
     refined_count = 0
+    rgb = source_rgb[:, :, :3]
+    luma = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    rgb_i16 = rgb.astype(np.int16, copy=False)
+    chroma = rgb_i16.max(axis=2) - rgb_i16.min(axis=2)
     for record in records:
-        component = raw_labels == record["raw_id"]
-        refined = _remove_attached_neutral_shadow(source_rgb, component)
+        # PERF (audit 2026-08-10 §AI-SPEED.3): trước đây mỗi tem tạo mask toàn
+        # canvas rồi tính lại luma/chroma trên cả tờ. BBox connected-component đã
+        # bao trọn cả tem lẫn bóng, nên xử lý ROI cho kết quả pixel tương đương.
+        x = int(record["x"])
+        y = int(record["y"])
+        width = int(record["width"])
+        height = int(record["height"])
+        left = max(0, x - _SHADOW_ROI_MARGIN_PX)
+        top = max(0, y - _SHADOW_ROI_MARGIN_PX)
+        right = min(raw_labels.shape[1], x + width + _SHADOW_ROI_MARGIN_PX)
+        bottom = min(raw_labels.shape[0], y + height + _SHADOW_ROI_MARGIN_PX)
+        roi = np.s_[top:bottom, left:right]
+        component = raw_labels[roi] == record["raw_id"]
+        refined = _remove_attached_neutral_shadow(
+            rgb[roi],
+            component,
+            luma=luma[roi],
+            chroma=chroma[roi],
+        )
         if not np.array_equal(refined, component):
             refined_count += 1
-        refined_binary[refined] = 255
+        output_roi = refined_binary[roi]
+        output_roi[refined] = 255
     return refined_binary, refined_count
 
 
@@ -336,7 +486,13 @@ def _instance_quality(
     raw_alpha: np.ndarray,
     labels: np.ndarray,
     sticker_id: int,
+    *,
+    bounds: tuple[int, int, int, int] | None = None,
 ) -> tuple[float, float]:
+    if bounds is not None:
+        x, y, width, height = bounds
+        raw_alpha = raw_alpha[y:y + height, x:x + width]
+        labels = labels[y:y + height, x:x + width]
     component = labels == sticker_id
     if not np.any(component):
         return 0.0, 1.0
@@ -357,78 +513,161 @@ def _instance_quality(
     return confidence, uncertain_ratio
 
 
-def analyze_sticker_sheet(
-    image: Image.Image,
+def _align_labels_to_reference(
+    labels: np.ndarray,
+    reference_labels: np.ndarray,
+) -> tuple[np.ndarray, dict[int, int]]:
+    """Giữ ổn định ID tem và từ chối mức tinh chỉnh làm đổi topology instance."""
+    if labels.shape != reference_labels.shape:
+        raise StickerSheetError("Mask xem trước không khớp kích thước kết quả hiện tại.")
+
+    new_ids = [int(value) for value in np.unique(labels) if int(value) > 0]
+    reference_ids = [
+        int(value) for value in np.unique(reference_labels) if int(value) > 0
+    ]
+    if len(new_ids) != len(reference_ids):
+        raise StickerSheetError(
+            "Mức bám biên này làm thay đổi số lượng tem. Hãy chọn mức gần hơn."
+        )
+
+    mapping: dict[int, int] = {}
+    claimed_reference_ids: set[int] = set()
+    for new_id in new_ids:
+        overlap = reference_labels[labels == new_id]
+        overlap = overlap[overlap > 0]
+        if overlap.size == 0:
+            raise StickerSheetError(
+                "Mức bám biên này làm thay đổi vùng tem. Hãy chọn mức gần hơn."
+            )
+        values = np.unique(overlap)
+        if values.size != 1:
+            raise StickerSheetError(
+                "Mức bám biên này làm nhập các vùng tem. Hãy chọn mức gần hơn."
+            )
+        reference_id = int(values[0])
+        if reference_id in claimed_reference_ids:
+            raise StickerSheetError(
+                "Mức bám biên này làm nhập hoặc tách vùng tem. Hãy chọn mức gần hơn."
+            )
+        mapping[new_id] = reference_id
+        claimed_reference_ids.add(reference_id)
+
+        new_component = np.where(labels == new_id, 255, 0).astype(np.uint8)
+        reference_component = np.where(
+            reference_labels == reference_id,
+            255,
+            0,
+        ).astype(np.uint8)
+        _new_contours, new_hierarchy = cv2.findContours(
+            new_component,
+            cv2.RETR_CCOMP,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        _reference_contours, reference_hierarchy = cv2.findContours(
+            reference_component,
+            cv2.RETR_CCOMP,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        # Alpha JPEG có thể tạo lỗ nhiễu vài pixel rồi tự khép khi threshold đổi.
+        # Chỉ xem lỗ đủ lớn như một thay đổi topology có ý nghĩa; ngưỡng này cùng
+        # baseline lọc component rời của engine và vẫn chặn lỗ artwork thật.
+        new_holes = sum(
+            1
+            for index, contour in enumerate(_new_contours)
+            if new_hierarchy is not None
+            and new_hierarchy[0, index, 3] >= 0
+            and abs(cv2.contourArea(contour)) >= MIN_COMPONENT_AREA_PX
+        )
+        reference_holes = sum(
+            1
+            for index, contour in enumerate(_reference_contours)
+            if reference_hierarchy is not None
+            and reference_hierarchy[0, index, 3] >= 0
+            and abs(cv2.contourArea(contour)) >= MIN_COMPONENT_AREA_PX
+        )
+        if new_holes != reference_holes:
+            raise StickerSheetError(
+                "Mức bám biên này làm thay đổi lỗ trong vùng tem. Hãy chọn mức gần hơn."
+            )
+
+    if claimed_reference_ids != set(reference_ids):
+        raise StickerSheetError(
+            "Mức bám biên này làm thay đổi vùng tem. Hãy chọn mức gần hơn."
+        )
+
+    aligned = np.zeros(labels.shape, dtype=labels.dtype)
+    for new_id, reference_id in mapping.items():
+        aligned[labels == new_id] = reference_id
+    return aligned, mapping
+
+
+def _build_analysis_from_raw_alpha(
+    source: Image.Image,
+    raw_alpha: np.ndarray,
     *,
-    model: StickerSheetModel = DEFAULT_MODEL,
-    alpha_threshold: int = DEFAULT_ALPHA_THRESHOLD,
-    min_component_area_ratio: float = MIN_COMPONENT_AREA_RATIO,
-    model_runner: BackgroundRunner | None = None,
+    model: StickerSheetModel,
+    alpha_threshold: int,
+    min_component_area_ratio: float,
+    shadow_exclusion: np.ndarray,
+    shadow_cleanup: StickerShadowCleanup,
+    model_seconds: float,
+    post_started: float,
+    reference_labels: np.ndarray | None = None,
 ) -> StickerSheetAnalysis:
-    """Phân tích ảnh nhiều tem, trả mask instance ở đúng độ phân giải nguồn."""
-    if image.width <= 0 or image.height <= 0:
-        raise StickerSheetError("Ảnh không có kích thước hợp lệ.")
-    if model not in ("birefnet-lite", "birefnet-full", "isnet"):
-        raise StickerSheetError("Mô hình tách tem không được hỗ trợ.")
-    if not 1 <= int(alpha_threshold) <= 254:
-        raise StickerSheetError("Ngưỡng Alpha phải nằm trong khoảng 1–254.")
-    if not 0.0 < float(min_component_area_ratio) < 1.0:
-        raise StickerSheetError("Tỷ lệ diện tích tem tối thiểu không hợp lệ.")
+    """Dựng mask xác định từ Alpha đã cache; đây là đường chung cho detect và refine."""
+    source_rgb = np.asarray(source.convert("RGB"), dtype=np.uint8)
+    expected_shape = (source.height, source.width)
+    alpha = np.asarray(raw_alpha, dtype=np.uint8)
+    exclusion = np.asarray(shadow_exclusion, dtype=np.uint8)
+    if alpha.shape != expected_shape or exclusion.shape != expected_shape:
+        raise StickerSheetError("Dữ liệu Alpha xem trước không khớp ảnh nguồn.")
+    if shadow_cleanup not in ("off", "auto"):
+        raise StickerSheetError("Chế độ khử bóng không được hỗ trợ.")
 
-    source = image.convert("RGB")
-    runner = model_runner or _run_background_model
-    model_started = time.perf_counter()
-    model_result = runner(source, model).convert("RGBA")
-    model_seconds = time.perf_counter() - model_started
-    if model_result.size != source.size:
-        raise StickerSheetError("Mask AI không khớp kích thước ảnh nguồn.")
-
-    post_started = time.perf_counter()
-    model_array = np.asarray(model_result, dtype=np.uint8)
-    source_rgb = np.asarray(source, dtype=np.uint8)
-    raw_alpha = model_array[:, :, 3]
-    binary = np.where(raw_alpha >= int(alpha_threshold), 255, 0).astype(np.uint8)
+    binary = np.where(alpha >= int(alpha_threshold), 255, 0).astype(np.uint8)
+    if shadow_cleanup == "auto":
+        # Vùng loại bóng được cố định từ lần AI đầu tiên. Áp nó sau threshold giúp
+        # các mức bám biên luôn lồng nhau, không lặp lại guard theo từng vị trí slider.
+        binary[exclusion > 0] = 0
     min_area = max(
         MIN_COMPONENT_AREA_PX,
         int(binary.size * float(min_component_area_ratio)),
     )
     records, raw_labels = _component_records(binary, min_area)
-    if records:
-        refined_binary, _refined_shadow_count = _refine_attached_shadows(
-            source_rgb,
-            records,
-            raw_labels,
-        )
-        if _refined_shadow_count > 0:
-            refined_records, refined_raw_labels = _component_records(
-                refined_binary,
-                min_area,
-            )
-            # §AI-SHADOW.1: số instance là hợp đồng cứng. Nếu hậu xử lý làm đổi
-            # số tem thì bỏ toàn bộ lượt bóc bóng và giữ nguyên kết quả model.
-            if len(refined_records) == len(records):
-                records, raw_labels = refined_records, refined_raw_labels
     labels, ordered = _build_labels(records, raw_labels, binary.shape)
     if not ordered:
         raise StickerSheetError(
-            "Không nhận diện được tem. Hãy chọn ảnh rõ hơn hoặc dùng công cụ Giữ lại."
+            "Không nhận diện được tem ở mức bám biên này. Hãy chọn mức gần hơn."
         )
 
-    clean_alpha = _clean_alpha(raw_alpha, labels)
-    # COLOR (audit 2026-08-05 §AI2.COLOR1): model chỉ quyết định Alpha. RGB do
-    # model hậu xử lý có thể khử nhiễm/đổi màu mép và không được thay artwork gốc.
+    id_mapping = {sticker_id: sticker_id for sticker_id in range(1, len(ordered) + 1)}
+    if reference_labels is not None:
+        labels, id_mapping = _align_labels_to_reference(labels, reference_labels)
+
+    clean_alpha = _clean_alpha(alpha, labels)
     result_array = np.dstack((source_rgb, clean_alpha)).astype(np.uint8, copy=False)
     uncertainty = np.where(
         (labels > 0)
-        & (raw_alpha >= MIN_UNCERTAIN_ALPHA)
-        & (raw_alpha <= MAX_UNCERTAIN_ALPHA),
+        & (alpha >= MIN_UNCERTAIN_ALPHA)
+        & (alpha <= MAX_UNCERTAIN_ALPHA),
         255,
         0,
     ).astype(np.uint8)
 
     instances: list[StickerInstance] = []
-    for sticker_id, record in enumerate(ordered, start=1):
-        confidence, uncertain_ratio = _instance_quality(raw_alpha, labels, sticker_id)
+    for new_id, record in enumerate(ordered, start=1):
+        sticker_id = id_mapping[new_id]
+        confidence, uncertain_ratio = _instance_quality(
+            alpha,
+            labels,
+            sticker_id,
+            bounds=(
+                record["x"],
+                record["y"],
+                record["width"],
+                record["height"],
+            ),
+        )
         instances.append(
             StickerInstance(
                 id=sticker_id,
@@ -441,6 +680,7 @@ def analyze_sticker_sheet(
                 uncertain_ratio=round(uncertain_ratio, 6),
             )
         )
+    instances.sort(key=lambda instance: instance.id)
 
     warnings: list[str] = []
     if model == "isnet":
@@ -462,4 +702,151 @@ def analyze_sticker_sheet(
         model_seconds=model_seconds,
         postprocess_seconds=time.perf_counter() - post_started,
         warnings=warnings,
+        raw_alpha=alpha.copy(),
+        shadow_exclusion=exclusion.copy(),
+        alpha_threshold=int(alpha_threshold),
+        shadow_cleanup=shadow_cleanup,
     )
+
+
+def reprocess_sticker_sheet(
+    image: Image.Image,
+    *,
+    raw_alpha: np.ndarray,
+    shadow_exclusion: np.ndarray,
+    model: StickerSheetModel = DEFAULT_MODEL,
+    alpha_threshold: int = DEFAULT_ALPHA_THRESHOLD,
+    shadow_cleanup: StickerShadowCleanup = "auto",
+    min_component_area_ratio: float = MIN_COMPONENT_AREA_RATIO,
+    reference_labels: np.ndarray | None = None,
+) -> StickerSheetAnalysis:
+    """Tinh chỉnh mask đã nhận diện mà không gọi lại mô hình AI."""
+    if image.width <= 0 or image.height <= 0:
+        raise StickerSheetError("Ảnh không có kích thước hợp lệ.")
+    if model not in ("birefnet-lite", "birefnet-full", "isnet"):
+        raise StickerSheetError("Mô hình tách tem không được hỗ trợ.")
+    if not 1 <= int(alpha_threshold) <= 254:
+        raise StickerSheetError("Ngưỡng Alpha phải nằm trong khoảng 1–254.")
+    if not 0.0 < float(min_component_area_ratio) < 1.0:
+        raise StickerSheetError("Tỷ lệ diện tích tem tối thiểu không hợp lệ.")
+    return _build_analysis_from_raw_alpha(
+        image.convert("RGB"),
+        raw_alpha,
+        model=model,
+        alpha_threshold=alpha_threshold,
+        min_component_area_ratio=min_component_area_ratio,
+        shadow_exclusion=shadow_exclusion,
+        shadow_cleanup=shadow_cleanup,
+        model_seconds=0.0,
+        post_started=time.perf_counter(),
+        reference_labels=reference_labels,
+    )
+
+
+def analyze_sticker_sheet(
+    image: Image.Image,
+    *,
+    model: StickerSheetModel = DEFAULT_MODEL,
+    alpha_threshold: int = DEFAULT_ALPHA_THRESHOLD,
+    min_component_area_ratio: float = MIN_COMPONENT_AREA_RATIO,
+    model_runner: BackgroundRunner | None = None,
+) -> StickerSheetAnalysis:
+    """Phân tích ảnh nhiều tem, trả mask instance ở đúng độ phân giải nguồn."""
+    if image.width <= 0 or image.height <= 0:
+        raise StickerSheetError("Ảnh không có kích thước hợp lệ.")
+    if model not in ("birefnet-lite", "birefnet-full", "isnet"):
+        raise StickerSheetError("Mô hình tách tem không được hỗ trợ.")
+    if not 1 <= int(alpha_threshold) <= 254:
+        raise StickerSheetError("Ngưỡng Alpha phải nằm trong khoảng 1–254.")
+    if not 0.0 < float(min_component_area_ratio) < 1.0:
+        raise StickerSheetError("Tỷ lệ diện tích tem tối thiểu không hợp lệ.")
+
+    source = image.convert("RGB")
+    source_rgb = np.asarray(source, dtype=np.uint8)
+
+    def run_uncached(runner: BackgroundRunner) -> StickerSheetAnalysis:
+        model_started = time.perf_counter()
+        model_result = runner(source, model).convert("RGBA")
+        model_seconds = time.perf_counter() - model_started
+        if model_result.size != source.size:
+            raise StickerSheetError("Mask AI không khớp kích thước ảnh nguồn.")
+
+        post_started = time.perf_counter()
+        model_array = np.asarray(model_result, dtype=np.uint8)
+        raw_alpha = model_array[:, :, 3].copy()
+        binary = np.where(raw_alpha >= int(alpha_threshold), 255, 0).astype(np.uint8)
+        min_area = max(
+            MIN_COMPONENT_AREA_PX,
+            int(binary.size * float(min_component_area_ratio)),
+        )
+        records, raw_labels = _component_records(binary, min_area)
+        shadow_exclusion = np.zeros(binary.shape, dtype=np.uint8)
+        if records:
+            refined_binary, refined_shadow_count = _refine_attached_shadows(
+                source_rgb,
+                records,
+                raw_labels,
+            )
+            if refined_shadow_count > 0:
+                refined_records, _refined_raw_labels = _component_records(
+                    refined_binary,
+                    min_area,
+                )
+                # §AI-SHADOW.1: số instance là hợp đồng cứng. Nếu hậu xử lý làm
+                # đổi số tem thì bỏ lượt bóc bóng và giữ nguyên kết quả model.
+                if len(refined_records) == len(records):
+                    shadow_exclusion[(binary > 0) & (refined_binary == 0)] = 255
+
+        # COLOR (audit 2026-08-05 §AI2.COLOR1): model chỉ quyết định Alpha.
+        return _build_analysis_from_raw_alpha(
+            source,
+            raw_alpha,
+            model=model,
+            alpha_threshold=alpha_threshold,
+            min_component_area_ratio=min_component_area_ratio,
+            shadow_exclusion=shadow_exclusion,
+            shadow_cleanup="auto",
+            model_seconds=model_seconds,
+            post_started=post_started,
+        )
+
+    # Runner test/custom phải luôn chạy để caller kiểm được đúng một invocation.
+    if model_runner is not None:
+        return run_uncached(model_runner)
+
+    # Runner bị thay lúc runtime (chủ yếu trong test) không có cùng hợp đồng version
+    # với model thật, nên phải chạy trực tiếp thay vì đọc cache persistent của app.
+    if _run_background_model is not _DEFAULT_BACKGROUND_RUNNER:
+        return run_uncached(_run_background_model)
+
+    cache_key = _ai_alpha_cache_key(
+        source_rgb,
+        model=model,
+        alpha_threshold=alpha_threshold,
+        min_component_area_ratio=min_component_area_ratio,
+    )
+    with _ai_alpha_cache_lock(cache_key):
+        cache_started = time.perf_counter()
+        cached = _load_ai_alpha_cache(cache_key, (source.height, source.width))
+        if cached is not None:
+            raw_alpha, shadow_exclusion = cached
+            return _build_analysis_from_raw_alpha(
+                source,
+                raw_alpha,
+                model=model,
+                alpha_threshold=alpha_threshold,
+                min_component_area_ratio=min_component_area_ratio,
+                shadow_exclusion=shadow_exclusion,
+                shadow_cleanup="auto",
+                model_seconds=0.0,
+                post_started=cache_started,
+            )
+
+        result = run_uncached(_run_background_model)
+        if result.raw_alpha is not None and result.shadow_exclusion is not None:
+            _store_ai_alpha_cache(
+                cache_key,
+                result.raw_alpha,
+                result.shadow_exclusion,
+            )
+        return result

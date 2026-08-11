@@ -2,18 +2,32 @@
 
 from __future__ import annotations
 
+import hashlib
 from io import BytesIO
 import random
+import threading
 from uuid import UUID
 
+import anyio
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image, ImageCms
 
 from app.api.routes import logo_rebuild as logo_route
+from app.core import heavy_job_scheduler as scheduler
 from app.main import app
 from app.schemas.logo_rebuild import LogoRebuildSettings
 from app.workers import logo_rebuild as logo_worker
+
+
+@pytest.fixture(autouse=True)
+def _enable_logo_rebuild_dev_runtime(monkeypatch):
+    """Các test hợp đồng API chạy trong chế độ nghiệm thu nội bộ."""
+
+    monkeypatch.setattr(logo_route.settings, "DEV_MODE", True)
+    monkeypatch.setattr(logo_route.sys, "frozen", False, raising=False)
+    monkeypatch.delenv("PRYNX_LOGO_REBUILD_ENABLED", raising=False)
+    monkeypatch.delenv("PRYNX_LOGO_LEGACY_VTRACER_ENABLED", raising=False)
 
 
 def _encoded_image(
@@ -37,6 +51,86 @@ def _image_bytes(image: Image.Image, image_format: str = "PNG") -> bytes:
     buffer = BytesIO()
     image.save(buffer, format=image_format)
     return buffer.getvalue()
+
+
+def _monochrome_logo_bytes(
+    size: tuple[int, int], *, dpi: tuple[float, float] | None = None
+) -> bytes:
+    image = Image.new("RGB", size, (255, 255, 255))
+    width, height = size
+    image.paste((0, 0, 0), (width // 4, height // 4, width * 3 // 4, height * 3 // 4))
+    buffer = BytesIO()
+    image.save(buffer, format="PNG", **({"dpi": dpi} if dpi is not None else {}))
+    return buffer.getvalue()
+
+
+def _fake_native_info() -> dict[str, object]:
+    return {
+        "engine": "fake-vtracer",
+        "version": "test-legacy",
+        "cancellable": True,
+        "structured_result": True,
+        "structured_result_version": 1,
+        "core_engine": "prynx-logo-core",
+        "core_engine_version": "test-core",
+    }
+
+
+def _fake_structured_result(
+    svg: str,
+    width: int,
+    height: int,
+    mode: str,
+    *,
+    physical_width_mm: float | None = None,
+    physical_height_mm: float | None = None,
+    warnings: list[str] | None = None,
+) -> dict[str, object]:
+    root = logo_worker.ElementTree.fromstring(svg)
+    logo_worker.ElementTree.register_namespace("", "http://www.w3.org/2000/svg")
+    root.set("viewBox", f"0 0 {width} {height}")
+    if physical_width_mm is not None and physical_height_mm is not None:
+        root.set("width", f"{physical_width_mm:g}mm")
+        root.set("height", f"{physical_height_mm:g}mm")
+    else:
+        root.set("width", str(width))
+        root.set("height", str(height))
+    artifact_svg = logo_worker.ElementTree.tostring(root, encoding="unicode")
+    artifact_hash = hashlib.sha256(artifact_svg.encode("utf-8")).hexdigest()
+    return {
+        "schema_version": 1,
+        "scene_version": 1,
+        "coordinate_system": "pixel_top_left",
+        "svg": artifact_svg,
+        "artifact": {
+            "sha256": artifact_hash,
+            "byte_len": len(artifact_svg.encode("utf-8")),
+            "width_px": width,
+            "height_px": height,
+            "physical_width_mm": physical_width_mm,
+            "physical_height_mm": physical_height_mm,
+        },
+        "provenance": {
+            "engine": "prynx-logo-core",
+            "engine_version": "test-core",
+            "profile": "silhouette" if mode == "monochrome" else "flat_color",
+            "settings_hash": "a" * 64,
+        },
+        "preprocess_hash": "b" * 64,
+        "metrics": {
+            "layer_count": 1,
+            "component_count": 1,
+            "outer_count": 1,
+            "hole_count": 0,
+            "source_nodes": 4,
+            "output_nodes": 4,
+            "max_error_px": 0.0,
+            "raster_scale": 4,
+            "iou": 1.0,
+            "mae": 0.0,
+        },
+        "warnings": list(warnings or []),
+    }
 
 
 def _preflight(
@@ -80,6 +174,7 @@ def test_fixed_palette_preflight_normalizes_palette_and_reports_source():
     assert payload["status"] == "ready"
     assert payload["settings"]["palette"] == ["#ff0000", "#00ff00"]
     assert payload["settings"]["smoothing"] == 0.0
+    assert payload["settings"]["engine"] == "prynx_core"
     assert payload["settings"]["despeckle_size_px"] == 4
     assert payload["settings"]["illumination_correction"] is False
     assert payload["source"]["width_px"] == 320
@@ -92,6 +187,7 @@ def test_fixed_palette_preflight_normalizes_palette_and_reports_source():
     ]
     assert any("Độ phân giải" in warning for warning in payload["warnings"])
     assert any("ICC profile" in warning for warning in payload["warnings"])
+    assert any("kích thước in" in warning.lower() for warning in payload["warnings"])
 
 
 def test_monochrome_rejects_palette():
@@ -110,6 +206,50 @@ def test_explicit_smoothing_from_existing_project_is_preserved():
         {"mode": "fixed_palette", "palette": ["#123456"], "smoothing": 1.0}
     )
     assert settings.smoothing == 1.0
+
+
+def test_vtracer_legacy_requires_explicit_dev_flag(monkeypatch):
+    settings_json = '{"mode":"monochrome","engine":"vtracer"}'
+    with TestClient(app) as client:
+        blocked = _preflight(client, settings_json=settings_json)
+        monkeypatch.setenv("PRYNX_LOGO_LEGACY_VTRACER_ENABLED", "true")
+        allowed = _preflight(client, settings_json=settings_json)
+
+    assert blocked.status_code == 422
+    assert "VTracer legacy" in blocked.json()["detail"]
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["settings"]["engine"] == "vtracer"
+    assert (
+        logo_route._legacy_vtracer_runtime_enabled(
+            is_development=True,
+            is_compiled=True,
+            legacy_flag="true",
+        )
+        is False
+    )
+
+
+def test_capabilities_require_structured_core_and_report_legacy(monkeypatch):
+    class FakeNative:
+        logo_vectorize_structured_rgba = staticmethod(lambda *_args, **_kwargs: None)
+
+        @staticmethod
+        def logo_vectorizer_info():
+            return _fake_native_info()
+
+    monkeypatch.setattr(logo_worker, "_load_native_module", lambda: FakeNative)
+
+    capabilities = logo_worker.logo_vectorizer_capabilities()
+
+    assert capabilities == {
+        "engine": "prynx-logo-core",
+        "version": "test-core",
+        "cancellable": True,
+        "structured_result": True,
+        "result_schema_version": 1,
+        "legacy_engine": "fake-vtracer",
+        "legacy_version": "test-legacy",
+    }
 
 
 def test_invalid_image_bytes_are_rejected():
@@ -142,6 +282,65 @@ def test_preflight_suggests_all_four_flat_colors_without_known_k():
         "#f9a825",
     }
     assert all(item["coverage_ratio"] == pytest.approx(0.25) for item in suggestions)
+
+
+def test_palette_keeps_connected_small_brand_accent_with_warning():
+    """§LR3.02: dấu màu liên kết dưới 1% không được biến mất im lặng."""
+
+    source = Image.new("RGB", (200, 200), "#ffffff")
+    source.paste("#1565c0", (0, 0, 100, 100))
+    source.paste("#d71920", (150, 150, 160, 160))
+
+    suggestions, warnings = logo_worker.suggest_logo_palette(
+        _image_bytes(source),
+        LogoRebuildSettings(mode="monochrome"),
+    )
+
+    assert any(item.color == "#d71920" for item in suggestions)
+    accent = next(item for item in suggestions if item.color == "#d71920")
+    assert accent.coverage_ratio == pytest.approx(0.0025)
+    assert any("màu nhấn nhỏ" in warning and "1%" in warning for warning in warnings)
+
+
+def test_palette_drops_disconnected_small_speckles_without_accent_warning():
+    """§LR3.02: cùng coverage nhưng nhiễu rời không được nâng thành màu logo."""
+
+    source = Image.new("RGB", (200, 200), "#ffffff")
+    for y in range(0, 200, 20):
+        for x in range(0, 200, 20):
+            source.putpixel((x, y), (215, 25, 32))
+
+    suggestions, warnings = logo_worker.suggest_logo_palette(
+        _image_bytes(source),
+        LogoRebuildSettings(mode="monochrome"),
+    )
+
+    assert [item.color for item in suggestions] == ["#ffffff"]
+    assert not any("màu nhấn nhỏ" in warning for warning in warnings)
+
+
+def test_jpeg_holdout_keeps_connected_small_brand_accent():
+    """§LR2.03/§LR3.02: giữ màu nhấn qua nhiễu nén JPEG, không chỉ PNG phẳng."""
+
+    source = Image.new("RGB", (240, 160), "#f8f8f8")
+    source.paste("#1565c0", (0, 0, 120, 160))
+    source.paste("#d71920", (204, 132, 216, 140))
+    encoded = BytesIO()
+    source.save(encoded, format="JPEG", quality=88, subsampling=2)
+
+    suggestions, warnings = logo_worker.suggest_logo_palette(
+        encoded.getvalue(),
+        LogoRebuildSettings(mode="monochrome"),
+    )
+
+    def distance_from_red(color: str) -> float:
+        channels = tuple(int(color[index : index + 2], 16) for index in (1, 3, 5))
+        return sum((actual - expected) ** 2 for actual, expected in zip(channels, (215, 25, 32))) ** 0.5
+
+    accents = [item for item in suggestions if distance_from_red(item.color) < 70]
+    assert accents, ([item.model_dump() for item in suggestions], warnings)
+    assert any(item.coverage_ratio < 0.01 for item in accents)
+    assert any("màu nhấn nhỏ" in warning for warning in warnings)
 
 
 def test_palette_suggestion_ignores_hidden_rgb_of_transparent_pixels():
@@ -230,12 +429,14 @@ def test_fully_transparent_preview_is_rejected_before_native(monkeypatch):
 
         @staticmethod
         def logo_vectorizer_info():
-            return {"engine": "fake-vtracer", "version": "test"}
+            return _fake_native_info()
 
         @staticmethod
-        def logo_vectorize_rgba(*_args, **_kwargs):
+        def logo_vectorize_structured_rgba(*_args, **_kwargs):
             calls["trace"] += 1
-            return '<svg xmlns="http://www.w3.org/2000/svg"/>'
+            return _fake_structured_result(
+                '<svg xmlns="http://www.w3.org/2000/svg"/>', 32, 32, "fixed_palette"
+            )
 
     source = Image.new("RGBA", (32, 32), (12, 34, 56, 0))
     monkeypatch.setattr(logo_worker, "_load_native_module", lambda: FakeNative)
@@ -296,7 +497,11 @@ def test_degenerate_perspective_points_are_rejected():
 def test_preview_returns_svg_from_scheduled_adapter(monkeypatch):
     job_id = UUID("5da3bfe6-013d-4fb3-9fd7-bf18a3790f45")
 
-    token = object()
+    class FakeToken:
+        def is_cancelled(self):
+            return False
+
+    token = FakeToken()
 
     def fake_preview(source_bytes, settings, received_job_id, received_token):
         assert source_bytes.startswith(b"\x89PNG")
@@ -309,8 +514,8 @@ def test_preview_returns_svg_from_scheduled_adapter(monkeypatch):
             width_px=20,
             height_px=10,
             warnings=["preview-test"],
-            engine="vtracer",
-            engine_version="1.0.0-alpha.2",
+            engine="prynx-logo-core",
+            engine_version="test-core",
             status="review",
             complexity={
                 "path_count": 1200,
@@ -323,6 +528,23 @@ def test_preview_returns_svg_from_scheduled_adapter(monkeypatch):
             },
             review_reasons=["SVG còn nhiều mảng nhỏ, khó chỉnh sửa."],
             review_actions=["Tăng mức khử hạt rồi tạo lại preview."],
+            physical_width_mm=20.0,
+            physical_height_mm=10.0,
+            result_schema_version=1,
+            artifact_sha256="c" * 64,
+            preprocess_hash="d" * 64,
+            native_metrics={
+                "layer_count": 2,
+                "component_count": 2,
+                "outer_count": 2,
+                "hole_count": 1,
+                "source_nodes": 40,
+                "output_nodes": 16,
+                "max_error_px": 0.25,
+                "raster_scale": 4,
+                "iou": 0.99,
+                "mae": 0.01,
+            },
         )
 
     monkeypatch.setattr(logo_route, "process_logo_preview", fake_preview)
@@ -344,7 +566,14 @@ def test_preview_returns_svg_from_scheduled_adapter(monkeypatch):
     assert payload["complexity"]["removed_redundant_paths"] == 42
     assert payload["review_reasons"] == ["SVG còn nhiều mảng nhỏ, khó chỉnh sửa."]
     assert payload["review_actions"] == ["Tăng mức khử hạt rồi tạo lại preview."]
-    assert payload["engine_version"] == "1.0.0-alpha.2"
+    assert payload["physical_width_mm"] == pytest.approx(20.0)
+    assert payload["physical_height_mm"] == pytest.approx(10.0)
+    assert payload["engine"] == "prynx-logo-core"
+    assert payload["engine_version"] == "test-core"
+    assert payload["result_schema_version"] == 1
+    assert payload["artifact_sha256"] == "c" * 64
+    assert payload["preprocess_hash"] == "d" * 64
+    assert payload["native_metrics"]["iou"] == pytest.approx(0.99)
     assert "preview-test" in payload["warnings"]
 
 
@@ -373,6 +602,32 @@ def test_memory_plan_only_reduces_preview_below_16_gb(monkeypatch):
     monkeypatch.setattr(logo_worker, "read_memory_status_mb", lambda: (32 * 1024.0, 1500.0))
     with pytest.raises(logo_worker.LogoInputError, match="không còn đủ bộ nhớ"):
         logo_worker._plan_work_size(5000, 5000)
+
+
+def test_memory_reservation_blocks_concurrent_overcommit_and_releases(monkeypatch):
+    """Hai job không được cùng cam kết một ảnh chụp RAM khả dụng."""
+
+    monkeypatch.setattr(
+        logo_worker,
+        "read_memory_status_mb",
+        lambda: (32 * 1024.0, 12 * 1024.0),
+    )
+    monkeypatch.setattr(logo_worker, "_RESERVED_LOGO_MEMORY_MB", 0.0)
+
+    with logo_worker._reserve_logo_work_size(8000, 8000) as (planned, warnings):
+        assert planned == (8000, 8000)
+        assert warnings == []
+        assert logo_worker._RESERVED_LOGO_MEMORY_MB > 6800
+        with pytest.raises(logo_worker.LogoInputError, match="không còn đủ bộ nhớ"):
+            with logo_worker._reserve_logo_work_size(8000, 8000):
+                pytest.fail("job cạnh tranh không được admission")
+
+    assert logo_worker._RESERVED_LOGO_MEMORY_MB == pytest.approx(0.0)
+
+    with pytest.raises(RuntimeError, match="lỗi mô phỏng"):
+        with logo_worker._reserve_logo_work_size(2000, 2000):
+            raise RuntimeError("lỗi mô phỏng")
+    assert logo_worker._RESERVED_LOGO_MEMORY_MB == pytest.approx(0.0)
 
 
 @pytest.mark.parametrize(
@@ -409,8 +664,8 @@ def test_small_logo_uses_nearest_upscale_before_trace(monkeypatch):
     resized = Image.frombytes(
         "RGBA", (prepared.width_px, prepared.height_px), prepared.rgba
     )
-    assert resized.getpixel((399, 600))[:3] == (255, 255, 255)
-    assert resized.getpixel((400, 600))[:3] == (0, 0, 0)
+    assert resized.getpixel((399, 600)) == (0, 0, 0, 0)
+    assert resized.getpixel((400, 600)) == (0, 0, 0, 255)
     assert any("nội suy giữ biên" in warning for warning in prepared.warnings)
 
 
@@ -429,19 +684,24 @@ def test_worker_scales_despeckle_area_with_upscale(monkeypatch):
 
         @staticmethod
         def logo_vectorizer_info():
-            return {"engine": "fake-vtracer", "version": "test"}
+            return _fake_native_info()
 
         @staticmethod
-        def logo_vectorize_rgba(width, height, _rgba, _mode, **kwargs):
+        def logo_vectorize_structured_rgba(width, height, _rgba, mode, **kwargs):
             calls.update(
                 width=width,
                 height=height,
                 despeckle_size_px=kwargs["despeckle_size_px"],
             )
-            return (
+            return _fake_structured_result(
                 '<svg xmlns="http://www.w3.org/2000/svg">'
                 '<path d="M0 0H200V100H0Z" fill="#000000"/>'
-                "</svg>"
+                "</svg>",
+                width,
+                height,
+                mode,
+                physical_width_mm=kwargs["physical_width_mm"],
+                physical_height_mm=kwargs["physical_height_mm"],
             )
 
     monkeypatch.setattr(logo_worker, "_load_native_module", lambda: FakeNative)
@@ -451,14 +711,82 @@ def test_worker_scales_despeckle_area_with_upscale(monkeypatch):
     )
 
     result = logo_worker.process_logo_preview(
-        _encoded_image("PNG", size=(100, 50)),
-        LogoRebuildSettings(mode="monochrome", despeckle_size_px=4),
+        _monochrome_logo_bytes((100, 50)),
+        LogoRebuildSettings(
+            mode="monochrome",
+            despeckle_size_px=4,
+            physical_width_mm=50.0,
+            physical_height_mm=25.0,
+        ),
         "scaled-despeckle-test",
     )
 
     assert calls == {"width": 200, "height": 100, "despeckle_size_px": 8}
-    assert result.status == "ready"
+    assert result.engine == "prynx-logo-core"
+    assert result.engine_version == "test-core"
+    assert result.result_schema_version == 1
+    assert result.artifact_sha256 is not None
+    assert result.preprocess_hash == "b" * 64
+    assert result.native_metrics is not None
+    assert result.native_metrics["iou"] == 1.0
+    assert result.status == "review"
     assert any("4 px" in warning and "8 px" in warning for warning in result.warnings)
+    assert any("chưa áp dụng khử hạt" in reason for reason in result.review_reasons)
+
+
+def test_structured_contract_error_never_falls_back_to_vtracer(monkeypatch):
+    calls = {"legacy": 0}
+
+    class FakeCancel:
+        def cancel(self):
+            return None
+
+        def is_cancelled(self):
+            return False
+
+    class FakeNative:
+        LogoVectorizerCancel = FakeCancel
+
+        @staticmethod
+        def logo_vectorizer_info():
+            return _fake_native_info()
+
+        @staticmethod
+        def logo_vectorize_structured_rgba(width, height, _rgba, mode, **kwargs):
+            result = _fake_structured_result(
+                '<svg xmlns="http://www.w3.org/2000/svg">'
+                '<path d="M8 8H24V24H8Z" fill="#000000"/>'
+                "</svg>",
+                width,
+                height,
+                mode,
+                physical_width_mm=kwargs["physical_width_mm"],
+                physical_height_mm=kwargs["physical_height_mm"],
+            )
+            result["artifact"]["sha256"] = "0" * 64
+            return result
+
+        @staticmethod
+        def logo_vectorize_rgba(*_args, **_kwargs):
+            calls["legacy"] += 1
+            return '<svg xmlns="http://www.w3.org/2000/svg"/>'
+
+    source = Image.new("RGB", (32, 32), (255, 255, 255))
+    source.paste((0, 0, 0), (8, 8, 24, 24))
+    monkeypatch.setattr(logo_worker, "_load_native_module", lambda: FakeNative)
+    monkeypatch.setattr(logo_worker, "read_memory_status_mb", lambda: (None, None))
+    monkeypatch.setattr(
+        logo_worker, "_upscale_target_dimensions", lambda width, height: (width, height)
+    )
+
+    with pytest.raises(RuntimeError, match="hash artifact"):
+        logo_worker.process_logo_preview(
+            _image_bytes(source),
+            LogoRebuildSettings(mode="monochrome", despeckle_size_px=0),
+            "structured-no-fallback",
+        )
+
+    assert calls["legacy"] == 0
 
 
 def test_cmyk_icc_transform_runs_before_rgb_conversion(monkeypatch):
@@ -505,10 +833,10 @@ def test_worker_crops_rgba_and_passes_confirmed_palette(monkeypatch):
 
         @staticmethod
         def logo_vectorizer_info():
-            return {"engine": "fake-vtracer", "version": "test"}
+            return _fake_native_info()
 
         @staticmethod
-        def logo_vectorize_rgba(width, height, rgba, mode, **kwargs):
+        def logo_vectorize_structured_rgba(width, height, rgba, mode, **kwargs):
             calls.update(
                 width=width,
                 height=height,
@@ -517,10 +845,15 @@ def test_worker_crops_rgba_and_passes_confirmed_palette(monkeypatch):
                 palette=kwargs["palette"],
                 smoothing=kwargs["smoothing"],
             )
-            return (
+            return _fake_structured_result(
                 '<svg xmlns="http://www.w3.org/2000/svg">'
                 '<path d="M0 0H50V40H0Z" fill="#ff0000"/>'
-                "</svg>"
+                "</svg>",
+                width,
+                height,
+                mode,
+                physical_width_mm=kwargs["physical_width_mm"],
+                physical_height_mm=kwargs["physical_height_mm"],
             )
 
     monkeypatch.setattr(logo_worker, "_load_native_module", lambda: FakeNative)
@@ -570,17 +903,22 @@ def test_transparent_monochrome_preserves_solid_fill_and_ignores_illumination(mo
 
         @staticmethod
         def logo_vectorizer_info():
-            return {"engine": "fake-vtracer", "version": "test"}
+            return _fake_native_info()
 
         @staticmethod
-        def logo_vectorize_rgba(width, height, rgba, _mode, **_kwargs):
+        def logo_vectorize_structured_rgba(width, height, rgba, mode, **kwargs):
             center_offset = ((height // 2) * width + width // 2) * 4
             calls["center"] = tuple(rgba[center_offset : center_offset + 4])
             calls["outside"] = tuple(rgba[0:4])
-            return (
+            return _fake_structured_result(
                 '<svg xmlns="http://www.w3.org/2000/svg">'
                 '<path d="M16 16H48V48H16Z" fill="#000000"/>'
-                "</svg>"
+                "</svg>",
+                width,
+                height,
+                mode,
+                physical_width_mm=kwargs["physical_width_mm"],
+                physical_height_mm=kwargs["physical_height_mm"],
             )
 
     source = Image.new("RGBA", (64, 64), (255, 255, 255, 0))
@@ -602,7 +940,7 @@ def test_transparent_monochrome_preserves_solid_fill_and_ignores_illumination(mo
     )
 
     assert calls["center"] == (0, 0, 0, 255)
-    assert calls["outside"] == (255, 255, 255, 255)
+    assert calls["outside"] == (0, 0, 0, 0)
     assert any("bỏ qua cân bằng ánh sáng" in warning for warning in result.warnings)
     assert "transparent-monochrome-test" not in logo_worker._ACTIVE_JOBS
 
@@ -630,8 +968,8 @@ def test_monochrome_detects_background_polarity_and_light_ink(
     )
     bitmap = Image.frombytes("RGBA", (prepared.width_px, prepared.height_px), prepared.rgba)
 
-    assert bitmap.getpixel((0, 0))[:3] == (255, 255, 255)
-    assert bitmap.getpixel((32, 32))[:3] == (0, 0, 0)
+    assert bitmap.getpixel((0, 0)) == (0, 0, 0, 0)
+    assert bitmap.getpixel((32, 32)) == (0, 0, 0, 255)
     assert any("nền sáng/tối" in warning for warning in prepared.warnings)
 
 
@@ -648,11 +986,18 @@ def test_monochrome_empty_svg_is_returned_as_rejected(monkeypatch):
 
         @staticmethod
         def logo_vectorizer_info():
-            return {"engine": "fake-vtracer", "version": "test"}
+            return _fake_native_info()
 
         @staticmethod
-        def logo_vectorize_rgba(*_args, **_kwargs):
-            return '<svg xmlns="http://www.w3.org/2000/svg"/>'
+        def logo_vectorize_structured_rgba(width, height, _rgba, mode, **kwargs):
+            return _fake_structured_result(
+                '<svg xmlns="http://www.w3.org/2000/svg"/>',
+                width,
+                height,
+                mode,
+                physical_width_mm=kwargs["physical_width_mm"],
+                physical_height_mm=kwargs["physical_height_mm"],
+            )
 
     monkeypatch.setattr(logo_worker, "_load_native_module", lambda: FakeNative)
     monkeypatch.setattr(logo_worker, "read_memory_status_mb", lambda: (None, None))
@@ -660,8 +1005,10 @@ def test_monochrome_empty_svg_is_returned_as_rejected(monkeypatch):
         logo_worker, "_upscale_target_dimensions", lambda width, height: (width, height)
     )
 
+    source = Image.new("RGB", (64, 64), (255, 255, 255))
+    source.paste((0, 0, 0), (16, 16, 48, 48))
     result = logo_worker.process_logo_preview(
-        _encoded_image("PNG", size=(64, 64)),
+        _image_bytes(source),
         LogoRebuildSettings(mode="monochrome"),
         "empty-monochrome-test",
     )
@@ -687,7 +1034,7 @@ def test_reserved_job_can_be_cancelled_before_worker_starts(monkeypatch):
 
         @staticmethod
         def logo_vectorizer_info():
-            return {"engine": "fake-vtracer", "version": "test"}
+            return _fake_native_info()
 
     monkeypatch.setattr(logo_worker, "_load_native_module", lambda: FakeNative)
     settings = LogoRebuildSettings(mode="monochrome", illumination_correction=False)
@@ -698,7 +1045,209 @@ def test_reserved_job_can_be_cancelled_before_worker_starts(monkeypatch):
         logo_worker.process_logo_preview(b"unused", settings, "queued-job", token)
     assert "queued-job" not in logo_worker._ACTIVE_JOBS
 
-def test_worker_removes_confirmed_background_color_from_svg(monkeypatch):
+
+def test_metadata_failure_cleans_reserved_job(monkeypatch):
+    """§LR3.08: logo_vectorizer_info lỗi vẫn phải giải phóng UUID."""
+
+    class FakeCancel:
+        def cancel(self):
+            return None
+
+        def is_cancelled(self):
+            return False
+
+    class FakeNative:
+        LogoVectorizerCancel = FakeCancel
+
+        @staticmethod
+        def logo_vectorizer_info():
+            raise RuntimeError("ABI metadata failure")
+
+    monkeypatch.setattr(logo_worker, "_load_native_module", lambda: FakeNative)
+    token = logo_worker.reserve_logo_job("metadata-failure")
+
+    with pytest.raises(RuntimeError, match="ABI metadata failure"):
+        logo_worker.process_logo_preview(
+            b"unused",
+            LogoRebuildSettings(mode="monochrome"),
+            "metadata-failure",
+            token,
+        )
+
+    assert "metadata-failure" not in logo_worker._ACTIVE_JOBS
+
+
+def test_route_releases_reservation_when_queue_cancelled(monkeypatch):
+    class FakeCancel:
+        def is_cancelled(self):
+            return True
+
+    token = FakeCancel()
+    released: list[tuple[str, object]] = []
+
+    async def fake_scheduled(*_args, **_kwargs):
+        raise logo_route.HeavyJobQueueCancelled("đã hủy khi chờ")
+
+    monkeypatch.setattr(logo_route, "reserve_logo_job", lambda _job_id: token)
+    monkeypatch.setattr(logo_route, "run_scheduled_in_threadpool", fake_scheduled)
+    monkeypatch.setattr(
+        logo_route,
+        "release_logo_job",
+        lambda job_id, received: released.append((job_id, received)),
+    )
+    job_id = UUID("c5dc1432-0293-4ca5-a18d-8ac2df17e889")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/logo-rebuild/preview",
+            files={"file": ("logo.png", _encoded_image("PNG"), "image/png")},
+            data={
+                "settings_json": '{"mode":"monochrome"}',
+                "job_id": str(job_id),
+            },
+        )
+
+    assert response.status_code == 409
+    assert released == [(str(job_id), token)]
+
+
+def test_logo_queue_waiter_does_not_hold_thread_token_and_can_cancel(monkeypatch):
+    """§LR3.01: waiter Logo không được làm nghẹt endpoint DELETE đồng bộ."""
+
+    monkeypatch.setattr(
+        scheduler,
+        "_HEAVY_JOB_SLOTS",
+        threading.BoundedSemaphore(1),
+    )
+
+    async def scenario():
+        release_first = threading.Event()
+        first_started = threading.Event()
+        cancel_second = threading.Event()
+        second_ran = threading.Event()
+        second_errors: list[BaseException] = []
+        probe_ran = threading.Event()
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        previous_total = limiter.total_tokens
+        limiter.total_tokens = 2
+
+        def first_job():
+            first_started.set()
+            release_first.wait(5)
+
+        async def run_first():
+            await scheduler.run_scheduled_in_threadpool("logo-rebuild", first_job)
+
+        async def run_second():
+            try:
+                await scheduler.run_scheduled_in_threadpool(
+                    "logo-rebuild",
+                    second_ran.set,
+                    queue_cancelled=cancel_second.is_set,
+                )
+            except BaseException as exc:  # noqa: BLE001 - kiểm đúng kiểu ở dưới
+                second_errors.append(exc)
+
+        try:
+            async with anyio.create_task_group() as task_group:
+                task_group.start_soon(run_first)
+                for _ in range(100):
+                    if first_started.is_set():
+                        break
+                    await anyio.sleep(0.01)
+                assert first_started.is_set()
+
+                task_group.start_soon(run_second)
+                for _ in range(100):
+                    if scheduler._WAITING_BY_KIND.get("logo-rebuild", 0) >= 1:
+                        break
+                    await anyio.sleep(0.01)
+
+                with anyio.fail_after(1):
+                    await anyio.to_thread.run_sync(probe_ran.set)
+                assert probe_ran.is_set()
+
+                cancel_second.set()
+                for _ in range(100):
+                    if second_errors:
+                        break
+                    await anyio.sleep(0.01)
+                release_first.set()
+        finally:
+            release_first.set()
+            limiter.total_tokens = previous_total
+
+        assert not second_ran.is_set()
+        assert len(second_errors) == 1
+        assert isinstance(second_errors[0], scheduler.HeavyJobQueueCancelled)
+
+    anyio.run(scenario)
+
+
+def test_core_background_uses_label_and_skips_legacy_cleanup(monkeypatch):
+    from app.workers import logo_svg_cleanup
+
+    calls: dict[str, object] = {}
+
+    class FakeCancel:
+        def cancel(self):
+            return None
+
+        def is_cancelled(self):
+            return False
+
+    class FakeNative:
+        LogoVectorizerCancel = FakeCancel
+
+        @staticmethod
+        def logo_vectorizer_info():
+            return _fake_native_info()
+
+        @staticmethod
+        def logo_vectorize_structured_rgba(width, height, _rgba, mode, **kwargs):
+            calls["palette"] = kwargs["palette"]
+            calls["background_label"] = kwargs["background_label"]
+            return _fake_structured_result(
+                '<svg xmlns="http://www.w3.org/2000/svg">'
+                '<path d="M2 2H8V8H2Z" fill="#ef4444"/>'
+                "</svg>",
+                width,
+                height,
+                mode,
+                physical_width_mm=kwargs["physical_width_mm"],
+                physical_height_mm=kwargs["physical_height_mm"],
+            )
+
+    monkeypatch.setattr(logo_worker, "_load_native_module", lambda: FakeNative)
+    monkeypatch.setattr(logo_worker, "read_memory_status_mb", lambda: (None, None))
+    monkeypatch.setattr(
+        logo_worker, "_upscale_target_dimensions", lambda width, height: (width, height)
+    )
+    monkeypatch.setattr(
+        logo_svg_cleanup,
+        "cleanup_redundant_logo_paths",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Core artifact không được đi qua legacy cleanup")
+        ),
+    )
+    result = logo_worker.process_logo_preview(
+        _encoded_image("PNG", size=(10, 10)),
+        LogoRebuildSettings(
+            mode="fixed_palette",
+            palette=["#ef4444"],
+            background_color="#233d69",
+            despeckle_size_px=0,
+        ),
+        "core-background-label",
+    )
+
+    assert calls == {"palette": ["#ef4444", "#233d69"], "background_label": 1}
+    assert "#233d69" not in result.svg.lower()
+    assert "prynx-background-cutout" not in result.svg
+    assert result.artifact_sha256 == hashlib.sha256(result.svg.encode("utf-8")).hexdigest()
+
+
+def test_worker_removes_confirmed_background_color_from_legacy_svg(monkeypatch):
     calls = {}
 
     class FakeCancel:
@@ -713,7 +1262,7 @@ def test_worker_removes_confirmed_background_color_from_svg(monkeypatch):
 
         @staticmethod
         def logo_vectorizer_info():
-            return {"engine": "fake-vtracer", "version": "test"}
+            return _fake_native_info()
 
         @staticmethod
         def logo_vectorize_rgba(_width, _height, _rgba, _mode, **kwargs):
@@ -734,6 +1283,7 @@ def test_worker_removes_confirmed_background_color_from_svg(monkeypatch):
     settings = LogoRebuildSettings.model_validate(
         {
             "mode": "fixed_palette",
+            "engine": "vtracer",
             "palette": ["#ef4444"],
             "background_color": "#233d69",
             "illumination_correction": False,
@@ -870,7 +1420,7 @@ def test_svg_quality_marks_excessive_object_count_for_review():
     assert quality.actions
 
 
-def test_svg_has_viewbox_and_physical_size_from_dpi(monkeypatch):
+def test_svg_uses_only_confirmed_physical_size_and_not_dpi_metadata(monkeypatch):
     class FakeCancel:
         def cancel(self):
             return None
@@ -883,27 +1433,117 @@ def test_svg_has_viewbox_and_physical_size_from_dpi(monkeypatch):
 
         @staticmethod
         def logo_vectorizer_info():
-            return {"engine": "fake-vtracer", "version": "test"}
+            return _fake_native_info()
 
         @staticmethod
-        def logo_vectorize_rgba(width, height, _rgba, _mode, **_kwargs):
-            return (
-                f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">'
+        def logo_vectorize_structured_rgba(width, height, _rgba, mode, **kwargs):
+            return _fake_structured_result(
+                '<svg xmlns="http://www.w3.org/2000/svg">'
                 '<path d="M0 0H10V10H0Z" fill="#000000"/>'
-                "</svg>"
+                "</svg>",
+                width,
+                height,
+                mode,
+                physical_width_mm=kwargs["physical_width_mm"],
+                physical_height_mm=kwargs["physical_height_mm"],
             )
 
     monkeypatch.setattr(logo_worker, "_load_native_module", lambda: FakeNative)
     monkeypatch.setattr(logo_worker, "read_memory_status_mb", lambda: (None, None))
-    source = _encoded_image("PNG", size=(600, 600), dpi=(300, 300))
+    roots = []
+    for dpi, job_id in ((72, "svg-dpi-72"), (300, "svg-dpi-300")):
+        result = logo_worker.process_logo_preview(
+            _monochrome_logo_bytes((600, 600), dpi=(dpi, dpi)),
+            LogoRebuildSettings(mode="monochrome"),
+            job_id,
+        )
+        roots.append(logo_worker.ElementTree.fromstring(result.svg))
+        assert result.physical_width_mm is None
+        assert result.physical_height_mm is None
+        assert result.status == "review"
+        assert any("kích thước in" in reason.lower() for reason in result.review_reasons)
 
-    result = logo_worker.process_logo_preview(
-        source,
-        LogoRebuildSettings(mode="monochrome"),
-        "svg-geometry-test",
+    assert roots[0].attrib["viewBox"] == "0 0 600 600"
+    assert roots[0].attrib["width"] == roots[1].attrib["width"] == "600"
+    assert roots[0].attrib["height"] == roots[1].attrib["height"] == "600"
+
+    confirmed = logo_worker.process_logo_preview(
+        _monochrome_logo_bytes((600, 600), dpi=(72, 72)),
+        LogoRebuildSettings(
+            mode="monochrome",
+            despeckle_size_px=0,
+            physical_width_mm=50.8,
+            physical_height_mm=50.8,
+        ),
+        "svg-confirmed-mm",
     )
-    root = logo_worker.ElementTree.fromstring(result.svg)
+    confirmed_root = logo_worker.ElementTree.fromstring(confirmed.svg)
 
-    assert root.attrib["viewBox"] == "0 0 600 600"
-    assert float(root.attrib["width"].removesuffix("mm")) == pytest.approx(50.8, abs=0.01)
-    assert float(root.attrib["height"].removesuffix("mm")) == pytest.approx(50.8, abs=0.01)
+    assert confirmed.status == "ready"
+    assert confirmed.physical_width_mm == pytest.approx(50.8)
+    assert confirmed.physical_height_mm == pytest.approx(50.8)
+    assert confirmed_root.attrib["width"] == "50.8mm"
+    assert confirmed_root.attrib["height"] == "50.8mm"
+
+
+def test_physical_size_contract_requires_pair_and_preserves_aspect_ratio(monkeypatch):
+    with pytest.raises(ValueError, match="đồng thời"):
+        LogoRebuildSettings(mode="monochrome", physical_width_mm=50.0)
+
+    monkeypatch.setattr(logo_worker, "read_memory_status_mb", lambda: (None, None))
+    monkeypatch.setattr(
+        logo_worker, "_upscale_target_dimensions", lambda width, height: (width, height)
+    )
+    with pytest.raises(logo_worker.LogoInputError, match="tỷ lệ"):
+        logo_worker.prepare_logo_image(
+            _encoded_image("PNG", size=(200, 100)),
+            LogoRebuildSettings(
+                mode="monochrome",
+                physical_width_mm=50.0,
+                physical_height_mm=50.0,
+            ),
+        )
+    with pytest.raises(logo_worker.LogoInputError, match="tỷ lệ"):
+        logo_worker.prepare_logo_image(
+            _encoded_image("PNG", size=(200, 100)),
+            LogoRebuildSettings(
+                mode="monochrome",
+                physical_width_mm=50.0,
+                physical_height_mm=25.1,
+            ),
+        )
+
+
+def test_output_artifact_qc_rejects_wrong_confirmed_mm():
+    from app.workers.logo_svg_cleanup import analyze_logo_svg
+
+    quality = analyze_logo_svg(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50" '
+        'width="49mm" height="25mm">'
+        '<path d="M0 0H100V50H0Z" fill="#1565c0"/>'
+        "</svg>",
+        100,
+        50,
+        expected_physical_size_mm=(50.0, 25.0),
+        require_physical_size=True,
+    )
+
+    assert quality.status == "rejected"
+    assert any("kích thước vật lý" in reason.lower() for reason in quality.reasons)
+
+
+def test_independent_qc_rejects_structured_artifact_hash_drift():
+    from app.workers.logo_svg_cleanup import analyze_logo_svg
+
+    quality = analyze_logo_svg(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" '
+        'width="10" height="10">'
+        '<path d="M0 0H10V10H0Z" fill="#1565c0"/>'
+        "</svg>",
+        10,
+        10,
+        expected_artifact_sha256="0" * 64,
+    )
+
+    assert quality.status == "rejected"
+    assert any("hash svg" in reason.lower() for reason in quality.reasons)

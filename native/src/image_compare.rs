@@ -15,19 +15,24 @@ pub fn fast_diff_mask_gray<'py>(
 ) -> PyResult<Bound<'py, PyArray2<u8>>> {
     let arr1 = img1.as_array();
     let arr2 = img2.as_array();
-    
+
     if arr1.shape() != arr2.shape() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            format!("Images must have the same shape, got {:?} and {:?}", arr1.shape(), arr2.shape())
-        ));
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Images must have the same shape, got {:?} and {:?}",
+            arr1.shape(),
+            arr2.shape()
+        )));
     }
-    
+
     let dim = (arr1.shape()[0], arr1.shape()[1]);
     let mut result = Array2::<u8>::zeros(dim);
-    
+
     // Try to get flat slices for max performance with rayon
-    if let (Some(s1), Some(s2), Some(s_out)) = (arr1.as_slice(), arr2.as_slice(), result.as_slice_mut()) {
-        s_out.par_iter_mut()
+    if let (Some(s1), Some(s2), Some(s_out)) =
+        (arr1.as_slice(), arr2.as_slice(), result.as_slice_mut())
+    {
+        s_out
+            .par_iter_mut()
             .zip(s1.par_iter())
             .zip(s2.par_iter())
             .for_each(|((out, &v1), &v2)| {
@@ -48,7 +53,7 @@ pub fn fast_diff_mask_gray<'py>(
                 });
         });
     }
-    
+
     Ok(result.into_pyarray(py))
 }
 

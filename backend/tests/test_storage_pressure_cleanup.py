@@ -168,7 +168,8 @@ def test_delete_error_is_best_effort(tmp_path, monkeypatch):
 def test_orphan_cleanup_invokes_storage_pressure(tmp_path, monkeypatch):
     _configure_roots(tmp_path, monkeypatch)
     called = []
-    monkeypatch.setattr(cleanup, "_cleanup_directory", lambda *_args: (0, 0))
+    monkeypatch.setattr(cleanup, "_registered_file_path_keys", lambda: set())
+    monkeypatch.setattr(cleanup, "_cleanup_directory", lambda *_args, **_kwargs: (0, 0))
     monkeypatch.setattr(cleanup, "_cleanup_os_temp_by_prefix", lambda *_args: (0, 0))
     monkeypatch.setattr(
         cleanup,
@@ -179,3 +180,75 @@ def test_orphan_cleanup_invokes_storage_pressure(tmp_path, monkeypatch):
     cleanup.cleanup_orphan_files()
 
     assert len(called) == 1
+
+
+def test_orphan_cleanup_keeps_registered_local_pdf_with_old_source_mtime(
+    tmp_path, monkeypatch,
+):
+    uploads, _results = _configure_roots(tmp_path, monkeypatch)
+    registered = _write(uploads / "registered-old.pdf", size=17, age_hours=30)
+    orphan = _write(uploads / "orphan-old.pdf", size=19, age_hours=30)
+    monkeypatch.setattr(
+        cleanup,
+        "_registered_file_path_keys",
+        lambda: {cleanup._path_key(registered)},
+    )
+    monkeypatch.setattr(cleanup, "_cleanup_os_temp_by_prefix", lambda *_args: (0, 0))
+    monkeypatch.setattr(cleanup, "_cleanup_storage_pressure", lambda *_args: (0, 0))
+
+    cleanup.cleanup_orphan_files()
+
+    assert registered.exists()
+    assert not orphan.exists()
+
+
+def test_upscale_lease_marker_protects_artifact_and_release_removes_it(
+    tmp_path, monkeypatch,
+):
+    _uploads, results = _configure_roots(tmp_path, monkeypatch)
+    artifact = _write(results / "upscaled_0123abcd.pdf", size=31, age_hours=30)
+
+    token = cleanup.create_upscale_artifact_lease(str(artifact))
+    marker = cleanup._upscale_lease_marker(token)
+    assert marker is not None and marker.is_file()
+    assert cleanup.claim_upscale_artifact_lease(token) is True
+
+    protected, deleted, freed = cleanup._cleanup_upscale_artifact_leases(time.time())
+    assert (deleted, freed) == (0, 0)
+    assert cleanup._path_key(artifact) in protected
+    assert cleanup._path_key(marker) in protected
+    cleanup._cleanup_directory(
+        results,
+        time.time(),
+        cleanup.FS_CLEANUP_MAX_AGE_HOURS * 3600,
+        protected_path_keys=protected,
+    )
+    assert artifact.exists()
+    assert marker.exists()
+
+    assert cleanup.release_upscale_artifact_lease(token) is True
+    assert not artifact.exists()
+    assert not marker.exists()
+
+
+def test_upscale_unclaimed_lease_is_cleaned_after_restart_window(
+    tmp_path, monkeypatch,
+):
+    _uploads, results = _configure_roots(tmp_path, monkeypatch)
+    artifact = _write(results / "upscaled_deadbeef.pdf", size=37, age_hours=0)
+    token = cleanup.create_upscale_artifact_lease(str(artifact))
+    marker = cleanup._upscale_lease_marker(token)
+    assert marker is not None
+    payload = cleanup._read_upscale_lease_marker(marker)
+    assert payload is not None and payload["claimed"] is False
+
+    # Không dựa vào registry RAM: sweep chỉ đọc marker trên đĩa như sau restart.
+    protected, deleted, freed = cleanup._cleanup_upscale_artifact_leases(
+        float(payload["expires_at"]) + 1,
+    )
+
+    assert protected == set()
+    assert deleted == 2
+    assert freed >= 37
+    assert not artifact.exists()
+    assert not marker.exists()

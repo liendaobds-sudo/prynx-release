@@ -202,7 +202,9 @@ export default function OpenInDesignModal({
     const thumbSrc = (pageIndex: number): string | null => {
         if (!isTauri || !resultFilePath) return null;
         const enc = encodeURIComponent(resultFilePath);
-        return `http://tile.localhost/${enc}/${pageIndex + 1}/0.3/0/0/0/0/0`;
+        // PERF (audit 2026-08-08 §RENDER.2): dải thumbnail khuôn là preview nền,
+        // nhường lane tương tác cho trang chính và thao tác zoom/pan.
+        return `http://tile.localhost/${enc}/${pageIndex + 1}/0.3/0/0/0/0/0?purpose=background`;
     };
 
     // Click tờ: thường = chọn riêng tờ này; Ctrl/Cmd = bật/tắt; Shift = chọn cả dải từ neo.

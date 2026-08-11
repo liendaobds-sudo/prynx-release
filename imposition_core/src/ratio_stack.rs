@@ -37,7 +37,11 @@ pub fn solve_ratio_stack(capacity: usize, qtys: &[i64]) -> RatioStackAlloc {
     let mut cells = vec![0usize; n];
 
     if capacity == 0 || n == 0 {
-        return RatioStackAlloc { cells_per_page: cells, n_sheets: 1, unplaced: vec![] };
+        return RatioStackAlloc {
+            cells_per_page: cells,
+            n_sheets: 1,
+            unplaced: vec![],
+        };
     }
 
     // Tổng SL dương.
@@ -50,7 +54,11 @@ pub fn solve_ratio_stack(capacity: usize, qtys: &[i64]) -> RatioStackAlloc {
         for i in 0..n {
             cells[i] = base + if i < rem { 1 } else { 0 };
         }
-        return RatioStackAlloc { cells_per_page: cells, n_sheets: 1, unplaced: vec![] };
+        return RatioStackAlloc {
+            cells_per_page: cells,
+            n_sheets: 1,
+            unplaced: vec![],
+        };
     }
 
     // ── Largest-remainder: floor(ideal) trước, phần dư chia theo remainder giảm dần ──
@@ -90,9 +98,7 @@ pub fn solve_ratio_stack(capacity: usize, qtys: &[i64]) -> RatioStackAlloc {
         let need = (0..n).find(|&i| qtys[i] > 0 && cells[i] == 0);
         let Some(need_i) = need else { break };
         // Mẫu cho: nhiều ô nhất và > 1.
-        let donor = (0..n)
-            .filter(|&j| cells[j] > 1)
-            .max_by_key(|&j| cells[j]);
+        let donor = (0..n).filter(|&j| cells[j] > 1).max_by_key(|&j| cells[j]);
         match donor {
             Some(d) => {
                 cells[d] -= 1;
@@ -116,7 +122,11 @@ pub fn solve_ratio_stack(capacity: usize, qtys: &[i64]) -> RatioStackAlloc {
         }
     }
 
-    RatioStackAlloc { cells_per_page: cells, n_sheets, unplaced }
+    RatioStackAlloc {
+        cells_per_page: cells,
+        n_sheets,
+        unplaced,
+    }
 }
 
 #[cfg(test)]
@@ -127,7 +137,11 @@ mod tests {
     fn ty_le_co_ban_720_30_480() {
         // capacity=32, SL 720/30/480 (tổng 1230). Ideal: 18.7 / 0.78 / 12.5.
         let r = solve_ratio_stack(32, &[720, 30, 480]);
-        assert_eq!(r.cells_per_page.iter().sum::<usize>(), 32, "tổng ô = capacity");
+        assert_eq!(
+            r.cells_per_page.iter().sum::<usize>(),
+            32,
+            "tổng ô = capacity"
+        );
         // Mẫu 30 (nhỏ nhất) vẫn phải có tối thiểu 1 ô.
         assert!(r.cells_per_page[1] >= 1, "mẫu SL nhỏ không được mất");
         // Thứ tự tỷ lệ: mẫu 720 nhiều ô nhất, 30 ít nhất.

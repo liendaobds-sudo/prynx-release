@@ -53,7 +53,10 @@ pub struct OrchestratorParams {
 }
 
 fn dx_outer_positive(p: &Option<ClusterParams>) -> bool {
-    p.as_ref().and_then(|c| c.dx_outer).map(|v| v > 0.0).unwrap_or(false)
+    p.as_ref()
+        .and_then(|c| c.dx_outer)
+        .map(|v| v > 0.0)
+        .unwrap_or(false)
 }
 
 /// Sinh ứng viên layout. Tương đương `generate_layout_candidates`.
@@ -75,84 +78,275 @@ pub fn generate_layout_candidates(
     let push_cluster_alt = |out: &mut Vec<LayoutCandidate>| {
         if let Some(p5) = params.p5 {
             out.push(LayoutCandidate::from_sticker(
-                sticker::cluster_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y, Some(p5), false), false, "head_to_tail"));
+                sticker::cluster_grid(
+                    usable_w,
+                    usable_h,
+                    item_w,
+                    item_h,
+                    gap_x,
+                    gap_y,
+                    Some(p5),
+                    false,
+                ),
+                false,
+                "head_to_tail",
+            ));
         }
         if let Some(p6) = params.p6 {
             out.push(LayoutCandidate::from_sticker(
-                sticker::cluster_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y, Some(p6), true), true, "head_to_tail"));
+                sticker::cluster_grid(
+                    usable_w,
+                    usable_h,
+                    item_w,
+                    item_h,
+                    gap_x,
+                    gap_y,
+                    Some(p6),
+                    true,
+                ),
+                true,
+                "head_to_tail",
+            ));
         }
         if let Some(p5r) = params.p5_row {
             out.push(LayoutCandidate::from_sticker(
-                sticker::row_alternating(usable_w, usable_h, item_w, item_h, gap_x, gap_y, Some(p5r), false), false, "row_alt"));
+                sticker::row_alternating(
+                    usable_w,
+                    usable_h,
+                    item_w,
+                    item_h,
+                    gap_x,
+                    gap_y,
+                    Some(p5r),
+                    false,
+                ),
+                false,
+                "row_alt",
+            ));
         }
         if let Some(p6r) = params.p6_row {
             out.push(LayoutCandidate::from_sticker(
-                sticker::row_alternating(usable_w, usable_h, item_w, item_h, gap_x, gap_y, Some(p6r), true), true, "row_alt"));
+                sticker::row_alternating(
+                    usable_w,
+                    usable_h,
+                    item_w,
+                    item_h,
+                    gap_x,
+                    gap_y,
+                    Some(p6r),
+                    true,
+                ),
+                true,
+                "row_alt",
+            ));
         }
         if let Some(p5c) = params.p5_col {
             out.push(LayoutCandidate::from_sticker(
-                sticker::col_alternating(usable_w, usable_h, item_w, item_h, gap_x, gap_y, Some(p5c), false), false, "col_alt"));
+                sticker::col_alternating(
+                    usable_w,
+                    usable_h,
+                    item_w,
+                    item_h,
+                    gap_x,
+                    gap_y,
+                    Some(p5c),
+                    false,
+                ),
+                false,
+                "col_alt",
+            ));
         }
         if let Some(p6c) = params.p6_col {
             out.push(LayoutCandidate::from_sticker(
-                sticker::col_alternating(usable_w, usable_h, item_w, item_h, gap_x, gap_y, Some(p6c), true), true, "col_alt"));
+                sticker::col_alternating(
+                    usable_w,
+                    usable_h,
+                    item_w,
+                    item_h,
+                    gap_x,
+                    gap_y,
+                    Some(p6c),
+                    true,
+                ),
+                true,
+                "col_alt",
+            ));
         }
     };
 
     let is_pointy = |sp: &ShapeProps| -> bool {
-        sp.hex_orientation.as_deref().map(|s| s == "pointy-top").unwrap_or(true)
+        sp.hex_orientation
+            .as_deref()
+            .map(|s| s == "pointy-top")
+            .unwrap_or(true)
     };
 
     if strategy == "optimal_auto" {
         match shape_type {
             "HAMMER" | "DUMBBELL" => {
-                let p_hammer = shape::hammer(usable_w, usable_h, item_w, item_h, gap_x, gap_y, sp, false);
+                let p_hammer =
+                    shape::hammer(usable_w, usable_h, item_w, item_h, gap_x, gap_y, sp, false);
                 let rot = p_hammer.main_rotated.unwrap_or(false);
-                out.push(LayoutCandidate::from_shape(p_hammer, rot, "hammer_illustrator"));
+                out.push(LayoutCandidate::from_shape(
+                    p_hammer,
+                    rot,
+                    "hammer_illustrator",
+                ));
 
-                out.push(LayoutCandidate::from_sticker(sticker::solve_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y), false, "grid"));
-                out.push(LayoutCandidate::from_sticker(sticker::solve_grid(usable_w, usable_h, item_h, item_w, gap_x, gap_y), true, "grid"));
+                out.push(LayoutCandidate::from_sticker(
+                    sticker::solve_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y),
+                    false,
+                    "grid",
+                ));
+                out.push(LayoutCandidate::from_sticker(
+                    sticker::solve_grid(usable_w, usable_h, item_h, item_w, gap_x, gap_y),
+                    true,
+                    "grid",
+                ));
 
                 if dx_outer_positive(&params.p5) {
                     out.push(LayoutCandidate::from_sticker(
-                        sticker::cluster_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y, params.p5, false), false, "head_to_tail"));
+                        sticker::cluster_grid(
+                            usable_w, usable_h, item_w, item_h, gap_x, gap_y, params.p5, false,
+                        ),
+                        false,
+                        "head_to_tail",
+                    ));
                 }
                 if dx_outer_positive(&params.p6) {
                     out.push(LayoutCandidate::from_sticker(
-                        sticker::cluster_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y, params.p6, true), true, "head_to_tail"));
+                        sticker::cluster_grid(
+                            usable_w, usable_h, item_w, item_h, gap_x, gap_y, params.p6, true,
+                        ),
+                        true,
+                        "head_to_tail",
+                    ));
                 }
                 if let Some(p5r) = params.p5_row {
-                    out.push(LayoutCandidate::from_sticker(sticker::row_alternating(usable_w, usable_h, item_w, item_h, gap_x, gap_y, Some(p5r), false), false, "row_alt"));
+                    out.push(LayoutCandidate::from_sticker(
+                        sticker::row_alternating(
+                            usable_w,
+                            usable_h,
+                            item_w,
+                            item_h,
+                            gap_x,
+                            gap_y,
+                            Some(p5r),
+                            false,
+                        ),
+                        false,
+                        "row_alt",
+                    ));
                 }
                 if let Some(p6r) = params.p6_row {
-                    out.push(LayoutCandidate::from_sticker(sticker::row_alternating(usable_w, usable_h, item_w, item_h, gap_x, gap_y, Some(p6r), true), true, "row_alt"));
+                    out.push(LayoutCandidate::from_sticker(
+                        sticker::row_alternating(
+                            usable_w,
+                            usable_h,
+                            item_w,
+                            item_h,
+                            gap_x,
+                            gap_y,
+                            Some(p6r),
+                            true,
+                        ),
+                        true,
+                        "row_alt",
+                    ));
                 }
                 if let Some(p5c) = params.p5_col {
-                    out.push(LayoutCandidate::from_sticker(sticker::col_alternating(usable_w, usable_h, item_w, item_h, gap_x, gap_y, Some(p5c), false), false, "col_alt"));
+                    out.push(LayoutCandidate::from_sticker(
+                        sticker::col_alternating(
+                            usable_w,
+                            usable_h,
+                            item_w,
+                            item_h,
+                            gap_x,
+                            gap_y,
+                            Some(p5c),
+                            false,
+                        ),
+                        false,
+                        "col_alt",
+                    ));
                 }
                 if let Some(p6c) = params.p6_col {
-                    out.push(LayoutCandidate::from_sticker(sticker::col_alternating(usable_w, usable_h, item_w, item_h, gap_x, gap_y, Some(p6c), true), true, "col_alt"));
+                    out.push(LayoutCandidate::from_sticker(
+                        sticker::col_alternating(
+                            usable_w,
+                            usable_h,
+                            item_w,
+                            item_h,
+                            gap_x,
+                            gap_y,
+                            Some(p6c),
+                            true,
+                        ),
+                        true,
+                        "col_alt",
+                    ));
                 }
             }
             "TRIANGLE" => {
-                out.push(LayoutCandidate::from_shape(shape::triangle(usable_w, usable_h, item_w, item_h, gap_x, gap_y, sp, false), false, "triangle_advanced"));
-                out.push(LayoutCandidate::from_shape(shape::triangle(usable_w, usable_h, item_w, item_h, gap_x, gap_y, sp, true), true, "triangle_advanced"));
+                out.push(LayoutCandidate::from_shape(
+                    shape::triangle(usable_w, usable_h, item_w, item_h, gap_x, gap_y, sp, false),
+                    false,
+                    "triangle_advanced",
+                ));
+                out.push(LayoutCandidate::from_shape(
+                    shape::triangle(usable_w, usable_h, item_w, item_h, gap_x, gap_y, sp, true),
+                    true,
+                    "triangle_advanced",
+                ));
             }
             "TRAPEZOID" => {
-                let tr = shape::trapezoid(usable_w, usable_h, item_w, item_h, gap_x, gap_y, sp, false);
+                let tr =
+                    shape::trapezoid(usable_w, usable_h, item_w, item_h, gap_x, gap_y, sp, false);
                 let rot = tr.main_rotated.unwrap_or(false);
-                out.push(LayoutCandidate::from_shape(tr, rot, "trapezoid_illustrator"));
+                out.push(LayoutCandidate::from_shape(
+                    tr,
+                    rot,
+                    "trapezoid_illustrator",
+                ));
             }
             "PARALLELOGRAM" => {
                 let pr = shape::parallelogram(usable_w, usable_h, item_w, item_h, gap_x, gap_y, sp);
                 let rot = pr.main_rotated.unwrap_or(false);
-                out.push(LayoutCandidate::from_shape(pr, rot, "parallelogram_illustrator"));
+                out.push(LayoutCandidate::from_shape(
+                    pr,
+                    rot,
+                    "parallelogram_illustrator",
+                ));
             }
             "PENTAGON" | "ARROW" => {
-                out.push(LayoutCandidate::from_shape(shape::pentagon(usable_w, usable_h, item_w, item_h, gap_x, gap_y, sp, false, false), false, "pentagon_advanced"));
-                out.push(LayoutCandidate::from_shape(shape::pentagon(usable_w, usable_h, item_w, item_h, gap_x, gap_y, sp, false, true), false, "pentagon_advanced"));
-                out.push(LayoutCandidate::from_shape(shape::pentagon(usable_w, usable_h, item_w, item_h, gap_x, gap_y, sp, true, false), true, "pentagon_advanced"));
-                out.push(LayoutCandidate::from_shape(shape::pentagon(usable_w, usable_h, item_w, item_h, gap_x, gap_y, sp, true, true), true, "pentagon_advanced"));
+                out.push(LayoutCandidate::from_shape(
+                    shape::pentagon(
+                        usable_w, usable_h, item_w, item_h, gap_x, gap_y, sp, false, false,
+                    ),
+                    false,
+                    "pentagon_advanced",
+                ));
+                out.push(LayoutCandidate::from_shape(
+                    shape::pentagon(
+                        usable_w, usable_h, item_w, item_h, gap_x, gap_y, sp, false, true,
+                    ),
+                    false,
+                    "pentagon_advanced",
+                ));
+                out.push(LayoutCandidate::from_shape(
+                    shape::pentagon(
+                        usable_w, usable_h, item_w, item_h, gap_x, gap_y, sp, true, false,
+                    ),
+                    true,
+                    "pentagon_advanced",
+                ));
+                out.push(LayoutCandidate::from_shape(
+                    shape::pentagon(
+                        usable_w, usable_h, item_w, item_h, gap_x, gap_y, sp, true, true,
+                    ),
+                    true,
+                    "pentagon_advanced",
+                ));
             }
             "HEXAGON" => {
                 let h1 = sticker::hex_tiling_row(usable_w, usable_h, item_w, item_h, gap_x, gap_y);
@@ -168,15 +362,43 @@ pub fn generate_layout_candidates(
                 }
             }
             "CIRCLE_ELLIPSE" => {
-                out.push(LayoutCandidate::from_sticker(sticker::solve_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y), false, "grid"));
-                out.push(LayoutCandidate::from_sticker(sticker::solve_grid(usable_w, usable_h, item_h, item_w, gap_x, gap_y), true, "grid"));
-                out.push(LayoutCandidate::from_sticker(sticker::staggered_hex(usable_w, usable_h, item_w, item_h, gap_x, gap_y), false, "staggered"));
-                out.push(LayoutCandidate::from_sticker(sticker::staggered_hex(usable_w, usable_h, item_h, item_w, gap_y, gap_x), true, "staggered"));
+                out.push(LayoutCandidate::from_sticker(
+                    sticker::solve_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y),
+                    false,
+                    "grid",
+                ));
+                out.push(LayoutCandidate::from_sticker(
+                    sticker::solve_grid(usable_w, usable_h, item_h, item_w, gap_x, gap_y),
+                    true,
+                    "grid",
+                ));
+                out.push(LayoutCandidate::from_sticker(
+                    sticker::staggered_hex(usable_w, usable_h, item_w, item_h, gap_x, gap_y),
+                    false,
+                    "staggered",
+                ));
+                out.push(LayoutCandidate::from_sticker(
+                    sticker::staggered_hex(usable_w, usable_h, item_h, item_w, gap_y, gap_x),
+                    true,
+                    "staggered",
+                ));
             }
             _ => {
-                out.push(LayoutCandidate::from_sticker(sticker::solve_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y), false, "grid"));
-                out.push(LayoutCandidate::from_sticker(sticker::solve_grid(usable_w, usable_h, item_h, item_w, gap_x, gap_y), true, "grid"));
-                out.push(LayoutCandidate::from_shape(shape::l_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y), false, "l_shape"));
+                out.push(LayoutCandidate::from_sticker(
+                    sticker::solve_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y),
+                    false,
+                    "grid",
+                ));
+                out.push(LayoutCandidate::from_sticker(
+                    sticker::solve_grid(usable_w, usable_h, item_h, item_w, gap_x, gap_y),
+                    true,
+                    "grid",
+                ));
+                out.push(LayoutCandidate::from_shape(
+                    shape::l_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y),
+                    false,
+                    "l_shape",
+                ));
                 if shape_type != "CUSTOM" {
                     push_cluster_alt(&mut out);
                 }
@@ -184,10 +406,36 @@ pub fn generate_layout_candidates(
         }
     } else if strategy == "head_to_tail" {
         if let Some(p5) = params.p5 {
-            out.push(LayoutCandidate::from_sticker(sticker::cluster_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y, Some(p5), false), false, "head_to_tail"));
+            out.push(LayoutCandidate::from_sticker(
+                sticker::cluster_grid(
+                    usable_w,
+                    usable_h,
+                    item_w,
+                    item_h,
+                    gap_x,
+                    gap_y,
+                    Some(p5),
+                    false,
+                ),
+                false,
+                "head_to_tail",
+            ));
         }
         if let Some(p6) = params.p6 {
-            out.push(LayoutCandidate::from_sticker(sticker::cluster_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y, Some(p6), true), true, "head_to_tail"));
+            out.push(LayoutCandidate::from_sticker(
+                sticker::cluster_grid(
+                    usable_w,
+                    usable_h,
+                    item_w,
+                    item_h,
+                    gap_x,
+                    gap_y,
+                    Some(p6),
+                    true,
+                ),
+                true,
+                "head_to_tail",
+            ));
         }
     } else if strategy == "staggered" {
         if shape_type == "HEXAGON" {
@@ -196,22 +444,62 @@ pub fn generate_layout_candidates(
             let h3 = sticker::hex_tiling_col(usable_w, usable_h, item_w, item_h, gap_x, gap_y);
             let h4 = sticker::hex_tiling_col(usable_w, usable_h, item_h, item_w, gap_y, gap_x);
             if is_pointy(sp) {
-                out.push(LayoutCandidate::from_sticker(h1, false, "staggered_hex_tiling"));
-                out.push(LayoutCandidate::from_sticker(h4, true, "staggered_hex_tiling"));
+                out.push(LayoutCandidate::from_sticker(
+                    h1,
+                    false,
+                    "staggered_hex_tiling",
+                ));
+                out.push(LayoutCandidate::from_sticker(
+                    h4,
+                    true,
+                    "staggered_hex_tiling",
+                ));
             } else {
-                out.push(LayoutCandidate::from_sticker(h3, false, "staggered_hex_tiling"));
-                out.push(LayoutCandidate::from_sticker(h2, true, "staggered_hex_tiling"));
+                out.push(LayoutCandidate::from_sticker(
+                    h3,
+                    false,
+                    "staggered_hex_tiling",
+                ));
+                out.push(LayoutCandidate::from_sticker(
+                    h2,
+                    true,
+                    "staggered_hex_tiling",
+                ));
             }
         } else {
-            out.push(LayoutCandidate::from_sticker(sticker::staggered_hex(usable_w, usable_h, item_w, item_h, gap_x, gap_y), false, "staggered"));
-            out.push(LayoutCandidate::from_sticker(sticker::staggered_hex(usable_w, usable_h, item_h, item_w, gap_y, gap_x), true, "staggered"));
-            out.push(LayoutCandidate::from_sticker(sticker::staggered_vertical(usable_w, usable_h, item_w, item_h, gap_x, gap_y), false, "staggered"));
-            out.push(LayoutCandidate::from_sticker(sticker::staggered_vertical(usable_w, usable_h, item_h, item_w, gap_y, gap_x), true, "staggered"));
+            out.push(LayoutCandidate::from_sticker(
+                sticker::staggered_hex(usable_w, usable_h, item_w, item_h, gap_x, gap_y),
+                false,
+                "staggered",
+            ));
+            out.push(LayoutCandidate::from_sticker(
+                sticker::staggered_hex(usable_w, usable_h, item_h, item_w, gap_y, gap_x),
+                true,
+                "staggered",
+            ));
+            out.push(LayoutCandidate::from_sticker(
+                sticker::staggered_vertical(usable_w, usable_h, item_w, item_h, gap_x, gap_y),
+                false,
+                "staggered",
+            ));
+            out.push(LayoutCandidate::from_sticker(
+                sticker::staggered_vertical(usable_w, usable_h, item_h, item_w, gap_y, gap_x),
+                true,
+                "staggered",
+            ));
         }
     } else {
         // grid
-        out.push(LayoutCandidate::from_sticker(sticker::solve_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y), false, "grid"));
-        out.push(LayoutCandidate::from_sticker(sticker::solve_grid(usable_w, usable_h, item_h, item_w, gap_x, gap_y), true, "grid"));
+        out.push(LayoutCandidate::from_sticker(
+            sticker::solve_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y),
+            false,
+            "grid",
+        ));
+        out.push(LayoutCandidate::from_sticker(
+            sticker::solve_grid(usable_w, usable_h, item_h, item_w, gap_x, gap_y),
+            true,
+            "grid",
+        ));
     }
 
     out
@@ -225,7 +513,18 @@ mod tests {
     fn grid_strategy_two_candidates() {
         let sp = ShapeProps::default();
         let p = OrchestratorParams::default();
-        let c = generate_layout_candidates(320.0, 450.0, 50.0, 50.0, 2.0, 2.0, "grid", &p, "RECTANGLE", &sp);
+        let c = generate_layout_candidates(
+            320.0,
+            450.0,
+            50.0,
+            50.0,
+            2.0,
+            2.0,
+            "grid",
+            &p,
+            "RECTANGLE",
+            &sp,
+        );
         assert_eq!(c.len(), 2);
         assert!(c[0].total_items > 0);
     }
@@ -234,7 +533,18 @@ mod tests {
     fn optimal_circle_has_grid_and_staggered() {
         let sp = ShapeProps::default();
         let p = OrchestratorParams::default();
-        let c = generate_layout_candidates(320.0, 450.0, 40.0, 40.0, 2.0, 2.0, "optimal_auto", &p, "CIRCLE_ELLIPSE", &sp);
+        let c = generate_layout_candidates(
+            320.0,
+            450.0,
+            40.0,
+            40.0,
+            2.0,
+            2.0,
+            "optimal_auto",
+            &p,
+            "CIRCLE_ELLIPSE",
+            &sp,
+        );
         assert_eq!(c.len(), 4);
         assert!(c.iter().any(|x| x.strategy == "grid"));
         assert!(c.iter().any(|x| x.strategy == "staggered"));
@@ -246,7 +556,18 @@ mod tests {
     fn optimal_hexagon_pointy_default() {
         let sp = ShapeProps::default(); // hex_orientation None → pointy mặc định
         let p = OrchestratorParams::default();
-        let c = generate_layout_candidates(320.0, 450.0, 50.0, 50.0, 2.0, 2.0, "optimal_auto", &p, "HEXAGON", &sp);
+        let c = generate_layout_candidates(
+            320.0,
+            450.0,
+            50.0,
+            50.0,
+            2.0,
+            2.0,
+            "optimal_auto",
+            &p,
+            "HEXAGON",
+            &sp,
+        );
         assert_eq!(c.len(), 2);
         assert!(c.iter().all(|x| x.strategy == "hex_tiling"));
     }
@@ -255,7 +576,18 @@ mod tests {
     fn optimal_generic_has_l_shape() {
         let sp = ShapeProps::default();
         let p = OrchestratorParams::default();
-        let c = generate_layout_candidates(320.0, 450.0, 80.0, 50.0, 2.0, 2.0, "optimal_auto", &p, "CUSTOM", &sp);
+        let c = generate_layout_candidates(
+            320.0,
+            450.0,
+            80.0,
+            50.0,
+            2.0,
+            2.0,
+            "optimal_auto",
+            &p,
+            "CUSTOM",
+            &sp,
+        );
         // CUSTOM: grid x2 + l_shape (không thêm cluster/alt vì == CUSTOM)
         assert_eq!(c.len(), 3);
         assert!(c.iter().any(|x| x.strategy == "l_shape"));

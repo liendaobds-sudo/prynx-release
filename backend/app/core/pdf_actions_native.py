@@ -10,7 +10,7 @@ còn lại nguyên vẹn.
 Nguyên tắc chung của module:
 
 * **Không đoán.** Việc gì chưa chắc đúng thì BỎ QUA object đó và ghi cảnh báo,
-  để caller fallback Ghostscript. Sửa sai một ảnh in offset đắt hơn nhiều so
+  để caller từ chối an toàn. Sửa sai một ảnh in offset đắt hơn nhiều so
   với việc bỏ qua nó.
 * **Báo cáo được.** Mỗi hàm trả `dict` có `changed`, `skipped`, `warnings` để
   action log nói được chính xác đã đụng vào cái gì.
@@ -26,6 +26,12 @@ from dataclasses import dataclass, field
 import pikepdf
 
 logger = logging.getLogger(__name__)
+
+
+def _raise_if_cancelled(cancel_check) -> None:
+    """Checkpoint nhẹ cho các action sync đang chạy trong threadpool."""
+    if cancel_check is not None and cancel_check():
+        raise InterruptedError("Tác vụ PDF đã bị hủy.")
 
 # Chỉ hạ những codec mà việc giải-nén-rồi-nén-lại là **không mất thêm chất
 # lượng ngoài dự tính**. JPX (JPEG2000) và JBIG2 bị loại: Pillow không ghi lại
@@ -280,7 +286,7 @@ def downscale_images(
         # một `Do` nên không có kích thước đặt riêng. Chúng được hạ kèm ảnh cha
         # trong `_resample_image_stream`; ở vòng lặp này phải loại hẳn ra, nếu
         # không mỗi mặt nạ lại thành một "ảnh không xử lý được" và đẩy cả file
-        # sang Ghostscript một cách vô cớ.
+        # làm cả file bị từ chối một cách vô cớ.
         mask_keys = _collect_mask_keys(pdf)
 
         for obj in pdf.objects:
@@ -577,7 +583,7 @@ def analyze_font_embedding(pdf_path: str) -> dict:
     và (với Type0) cả `/CIDToGIDMap`. Thay bằng một font khác mặt chữ sẽ làm
     **chạy chữ** — sai vị trí ngắt dòng, tràn khung, lệch khoảng — mà người dùng
     không thấy cho tới lúc in. Trung thực hơn là chỉ ra file thiếu font gì để
-    caller quyết định (fallback Ghostscript, hoặc outline, hoặc sửa file nguồn).
+    caller quyết định (outline bằng engine nội bộ hoặc yêu cầu sửa file nguồn).
     """
     result = {
         "embedded": [],
@@ -679,7 +685,7 @@ def _CMS_FLAGS():
     return ImageCms.Flags.BLACKPOINTCOMPENSATION | ImageCms.Flags.NOOPTIMIZE
 
 # Colorspace mà việc chuyển sang CMYK là **mất mát không phục hồi được** hoặc
-# vượt tầm object-level. Gặp là trả `supported=False` để caller fallback GS.
+# vượt tầm object-level. Gặp là trả `supported=False` để caller dừng an toàn.
 _UNCONVERTIBLE_HINTS = ("/Lab", "/CalRGB")
 
 
@@ -767,7 +773,7 @@ def _scan_convertibility(pdf: pikepdf.Pdf) -> list[str]:
                     # `FunctionType 2` chỉ cần đổi `/C0`,`/C1` — nhưng nội suy
                     # tuyến tính TRONG CMYK không cho cùng dải màu với nội suy
                     # trong RGB rồi mới quy đổi, nên khúc giữa gradient lệch đi
-                    # một cách nhìn thấy được. Giao cho Ghostscript.
+                    # một cách nhìn thấy được. Đánh dấu blocker để từ chối an toàn.
                     note("shading dùng colorspace RGB")
             if d is not None:
                 for hint in _UNCONVERTIBLE_HINTS:
@@ -870,8 +876,8 @@ def _convert_indexed_palette_to_cmyk(pdf: pikepdf.Pdf, obj: pikepdf.Stream, tf) 
 
     Rẻ và an toàn hơn hẳn chuyển ảnh thường: **chỉ số pixel không đổi**, chỉ
     bảng tra được viết lại (mỗi ô 3 byte RGB → 4 byte CMYK). Không giải nén
-    ảnh, không nội suy, không mất chi tiết — nên ca này đáng làm chứ không nên
-    đẩy sang Ghostscript.
+    ảnh, không nội suy, không mất chi tiết — nên ca này đáng xử lý trực tiếp thay
+    vì từ chối cả file.
     """
     cs = _deref(obj.get("/ColorSpace"))
     if not isinstance(cs, pikepdf.Array) or len(cs) < 4:
@@ -1228,6 +1234,8 @@ def convert_to_cmyk(
     output_path: str,
     cmyk_profile: str,
     rgb_profile: str,
+    *,
+    cancel_check=None,
 ) -> dict:
     """Chuyển nội dung RGB sang CMYK ở mức **object**, giữ nguyên phần còn lại.
 
@@ -1239,7 +1247,7 @@ def convert_to_cmyk(
     * **Gray vẫn là gray.** `g`/`G` không đổi: xám in bằng K thuần; đẩy nó thành
       4 kênh chỉ làm tăng TAC và bẩn bản mà không được gì.
 
-    Trả dict: `supported` (False ⇒ caller fallback GS), `blockers`, `ops` (số
+    Trả dict: `supported` (False ⇒ caller dừng an toàn), `blockers`, `ops` (số
     toán tử màu đã đổi), `images`, `warnings`.
     """
     result: dict = {
@@ -1249,6 +1257,7 @@ def convert_to_cmyk(
         "images": 0,
         "warnings": [],
     }
+    _raise_if_cancelled(cancel_check)
 
     try:
         tf = _CmykTransform(rgb_profile, cmyk_profile)
@@ -1258,7 +1267,9 @@ def convert_to_cmyk(
         return result
 
     with pikepdf.open(input_path) as pdf:
+        _raise_if_cancelled(cancel_check)
         blockers = _scan_convertibility(pdf)
+        _raise_if_cancelled(cancel_check)
         if blockers:
             result["supported"] = False
             result["blockers"] = blockers
@@ -1267,6 +1278,7 @@ def convert_to_cmyk(
         stats: dict = {}
 
         for obj in pdf.objects:
+            _raise_if_cancelled(cancel_check)
             try:
                 if not isinstance(obj, pikepdf.Stream):
                     continue
@@ -1282,6 +1294,7 @@ def convert_to_cmyk(
         seen: set[tuple[int, int]] = set()
 
         def convert_stream(stream, resources) -> None:
+            _raise_if_cancelled(cancel_check)
             if not isinstance(stream, pikepdf.Stream):
                 return
             key = _objkey(stream)
@@ -1306,6 +1319,7 @@ def convert_to_cmyk(
                 pass
 
         def walk_forms(resources, depth: int) -> None:
+            _raise_if_cancelled(cancel_check)
             if depth > _MAX_FORM_DEPTH or resources is None:
                 return
             try:
@@ -1313,6 +1327,7 @@ def convert_to_cmyk(
                 if xobjects is None:
                     return
                 for _name, target in dict(xobjects).items():
+                    _raise_if_cancelled(cancel_check)
                     target = _deref(target)
                     if str(target.get("/Subtype", "")) != "/Form":
                         continue
@@ -1323,6 +1338,7 @@ def convert_to_cmyk(
                 return
 
         for page in pdf.pages:
+            _raise_if_cancelled(cancel_check)
             try:
                 resources = page.get("/Resources")
                 contents = page.get("/Contents")
@@ -1369,7 +1385,9 @@ def convert_to_cmyk(
         result["ops"] = stats.get("ops", 0)
         # Không đổi được gì nghĩa là file vốn không có nội dung RGB — vẫn là
         # thành công, chỉ là không có việc để làm.
+        _raise_if_cancelled(cancel_check)
         pdf.save(output_path)
+        _raise_if_cancelled(cancel_check)
 
     return result
 
@@ -1379,8 +1397,8 @@ def _eval_tint_transform(fn, tint: float) -> list[float] | None:
 
     Chỉ nhận `FunctionType 2` (mũ) và `FunctionType 3` (ghép các hàm con kiểu
     2). Đó là dạng mà mọi trình dàn trang sinh ra cho màu pha. Type 0 (bảng
-    mẫu) và Type 4 (chương trình PostScript) trả `None` để caller fallback
-    Ghostscript thay vì đoán.
+    mẫu) và Type 4 (chương trình PostScript) trả `None` để caller từ chối
+    thay vì đoán.
     """
     fn = _deref(fn)
     if fn is None:
@@ -1536,9 +1554,9 @@ def convert_spot_to_cmyk(
     (so sánh không phân biệt hoa/thường, có giải mã `#20` trong tên PDF).
 
     `cmyk_profile` cần cho spot có alternate **Lab** (dạng Adobe dùng cho
-    Pantone hiện đại). Không truyền thì nhóm đó rơi về Ghostscript.
+    Pantone hiện đại). Không truyền thì nhóm đó được báo là chưa hỗ trợ.
 
-    Trả dict: `supported` (False ⇒ fallback GS), `converted` (tên spot đã
+    Trả dict: `supported` (False ⇒ caller dừng an toàn), `converted` (tên spot đã
     chuyển), `blockers`, `ops`.
     """
     result: dict = {"supported": True, "converted": [], "blockers": [], "ops": 0}
@@ -1587,7 +1605,7 @@ def convert_spot_to_cmyk(
                         # chính xác hơn CMYK. Chuyển được, nhưng phải qua ICC
                         # với đúng thang Lab (L 0..100, a/b −128..127) — sai
                         # thang là sai màu pha, thứ khách hàng đặt tên riêng để
-                        # đòi cho đúng. Giao Ghostscript cho tới khi đo được.
+                        # đòi cho đúng. Đánh dấu blocker cho tới khi đo được.
                         blockers.append(f"alternate space Lab: {colorant}")
                     else:
                         blockers.append(
@@ -1730,15 +1748,19 @@ def _replace_spot_ops(
         return None
 
 
-def _detect_transparency_by_page(pdf_path: str) -> dict[int, list[str]]:
+def _detect_transparency_by_page(
+    pdf_path: str, cancel_check=None
+) -> dict[int, list[str]]:
     """Trả dấu hiệu transparency theo số trang 1-based trong cây nội dung thật."""
     found_by_page: dict[int, list[str]] = {}
 
     # RESIZE (audit 2026-08-03 §TR.5): duyệt từ CÂY TRANG, không quét
     # `pdf.objects`; object mồ côi không được phép làm UI báo nhầm trang còn alpha.
     try:
+        _raise_if_cancelled(cancel_check)
         with pikepdf.open(pdf_path) as pdf:
             for page_number, page in enumerate(pdf.pages, start=1):
+                _raise_if_cancelled(cancel_check)
                 found: list[str] = []
                 seen: set[tuple[int, int]] = set()
 
@@ -1841,27 +1863,36 @@ def _detect_transparency_by_page(pdf_path: str) -> dict[int, list[str]]:
 
                 if found:
                     found_by_page[page_number] = found
+    except InterruptedError:
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.debug("detect_transparency lỗi: %s", exc)
     return found_by_page
 
 
-def detect_transparent_pages(pdf_path: str) -> list[int]:
+def detect_transparent_pages(pdf_path: str, *, cancel_check=None) -> list[int]:
     """Liệt kê trang 1-based còn transparency trong object graph đang được dùng."""
-    return list(_detect_transparency_by_page(pdf_path))
+    return list(_detect_transparency_by_page(pdf_path, cancel_check))
 
 
-def detect_transparency(pdf_path: str) -> list[str]:
+def detect_transparency(pdf_path: str, *, cancel_check=None) -> list[str]:
     """Liệt kê dấu hiệu trong suốt toàn file (rỗng = không có gì để flatten)."""
     found: list[str] = []
-    for page_signs in _detect_transparency_by_page(pdf_path).values():
+    for page_signs in _detect_transparency_by_page(pdf_path, cancel_check).values():
+        _raise_if_cancelled(cancel_check)
         for sign in page_signs:
             if sign not in found:
                 found.append(sign)
     return found
 
 
-def flatten_transparency(input_path: str, output_path: str, dpi: float = 300.0) -> dict:
+def flatten_transparency(
+    input_path: str,
+    output_path: str,
+    dpi: float = 300.0,
+    *,
+    cancel_check=None,
+) -> dict:
     """Xoá trong suốt. Không có gì trong suốt thì chỉ sao chép.
 
     Trang CÓ trong suốt được **rasterize qua PPE** rồi thay bằng một ảnh CMYK.
@@ -1876,14 +1907,27 @@ def flatten_transparency(input_path: str, output_path: str, dpi: float = 300.0) 
     Trả dict: `flattened` (số trang đã raster), `warnings`, `supported`.
     """
     result: dict = {"supported": True, "flattened": 0, "warnings": []}
+    _raise_if_cancelled(cancel_check)
 
-    signs = detect_transparency(input_path)
-    if not signs:
+    # CORRECTNESS (audit 2026-08-10 §PPE.REAUDIT.2): detector trả dấu hiệu theo
+    # trang; dùng đúng tập này làm kế hoạch raster. Chỉ cần một trang có alpha
+    # không có nghĩa mọi trang còn lại được phép mất chữ/path vector.
+    signs_by_page = _detect_transparency_by_page(input_path, cancel_check)
+    if not signs_by_page:
         # Không có gì trong suốt: dựng lại file là phá hoại vô cớ.
         import shutil
 
+        _raise_if_cancelled(cancel_check)
         shutil.copyfile(input_path, output_path)
+        _raise_if_cancelled(cancel_check)
         return result
+
+    signs: list[str] = []
+    for page_signs in signs_by_page.values():
+        for sign in page_signs:
+            if sign not in signs:
+                signs.append(sign)
+    transparent_pages = set(signs_by_page)
 
     try:
         import base64
@@ -1908,28 +1952,35 @@ def flatten_transparency(input_path: str, output_path: str, dpi: float = 300.0) 
     with pikepdf.open(input_path) as pdf:
         n_pages = len(pdf.pages)
         for index in range(n_pages):
+            _raise_if_cancelled(cancel_check)
+            page_number = index + 1
+            if page_number not in transparent_pages:
+                continue
             sep = None
             last_error = ""
             for candidate in dpi_ladder:
+                _raise_if_cancelled(cancel_check)
                 try:
                     sep = facade.separations(
-                        input_path, index + 1, int(candidate), ink_accurate=False
+                        input_path, page_number, int(candidate), ink_accurate=False
                     )
                     used_dpi = min(used_dpi, candidate)
                     break
                 except Exception as exc:  # noqa: BLE001
                     last_error = str(exc)
                     continue
+            _raise_if_cancelled(cancel_check)
             if sep is None:
                 result["supported"] = False
                 result["warnings"].append(
-                    f"PPE không render được trang {index + 1}: {last_error}"
+                    f"PPE không render được trang {page_number}: {last_error}"
                 )
                 return result
 
             width, height = int(sep["width"]), int(sep["height"])
             planes: dict[str, "np.ndarray"] = {}
             for plate in sep["plates"]:
+                _raise_if_cancelled(cancel_check)
                 raw = zlib.decompress(base64.b64decode(plate["alpha_data"]))
                 arr = np.frombuffer(raw, dtype=np.uint8)
                 if arr.size != width * height:
@@ -1946,6 +1997,7 @@ def flatten_transparency(input_path: str, output_path: str, dpi: float = 300.0) 
                 for name in ("Cyan", "Magenta", "Yellow", "Black")
             ]
             for plate in sep["plates"]:
+                _raise_if_cancelled(cancel_check)
                 if not plate.get("is_spot"):
                     continue
                 spot = planes[plate["name"]].astype(np.uint16)
@@ -1983,8 +2035,10 @@ def flatten_transparency(input_path: str, output_path: str, dpi: float = 300.0) 
                 del page["/Group"]
             result["flattened"] += 1
 
+        _raise_if_cancelled(cancel_check)
         pdf.remove_unreferenced_resources()
         pdf.save(output_path)
+        _raise_if_cancelled(cancel_check)
 
     result["dpi_used"] = used_dpi
     result["warnings"].append(

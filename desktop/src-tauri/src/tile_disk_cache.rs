@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 const MIB: u64 = 1024 * 1024;
@@ -11,9 +11,65 @@ const MID_DISK_CACHE_BYTES: u64 = 512 * MIB;
 const HIGH_DISK_CACHE_BYTES: u64 = 2 * GIB;
 const DEFAULT_MIN_FREE_BYTES: u64 = 2 * GIB;
 const MAX_MIN_FREE_BYTES: u64 = 20 * GIB;
+const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+const PNG_IEND_TRAILER: &[u8; 12] = b"\x00\x00\x00\x00IEND\xaeB\x60\x82";
 
 static PRUNE_RUNNING: AtomicBool = AtomicBool::new(false);
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static CONFIG_OVERRIDES: OnceLock<TileDiskOverrides> = OnceLock::new();
+
+pub(crate) fn is_valid_tile_png(data: &[u8]) -> bool {
+    data.starts_with(PNG_SIGNATURE) && data.ends_with(PNG_IEND_TRAILER)
+}
+
+pub(crate) fn read_valid_tile_png(path: &Path) -> Option<Vec<u8>> {
+    let data = std::fs::read(path).ok()?;
+    if is_valid_tile_png(&data) {
+        return Some(data);
+    }
+    // Cache hỏng không phải dữ liệu người dùng; xóa để lần kế tiếp render lại sạch.
+    let _ = std::fs::remove_file(path);
+    None
+}
+
+pub(crate) fn write_tile_png_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    if !is_valid_tile_png(data) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Dữ liệu cache tile không phải PNG hoàn chỉnh.",
+        ));
+    }
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("tile.png");
+    let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temporary = directory.join(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        sequence
+    ));
+
+    let result = (|| {
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        output.write_all(data)?;
+        output.flush()?;
+        drop(output);
+        // Cùng thư mục/volume: rename thay target theo một bước, request đua nhau chỉ
+        // thay một PNG hoàn chỉnh bằng PNG hoàn chỉnh khác cùng cache key.
+        std::fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct DiskSpaceStatus {
@@ -504,6 +560,60 @@ mod tests {
         assert!(entries.iter().any(|entry| {
             entry.path.file_name().and_then(|value| value.to_str()) == Some("fedcba9876543210.png")
         }));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn png_cache_chi_nhan_file_du_header_va_iend() {
+        let valid = [
+            b"\x89PNG\r\n\x1a\n".as_slice(),
+            b"payload".as_slice(),
+            b"\x00\x00\x00\x00IEND\xaeB\x60\x82".as_slice(),
+        ]
+        .concat();
+        assert!(is_valid_tile_png(&valid));
+        assert!(!is_valid_tile_png(b"not-empty-but-not-png"));
+        assert!(!is_valid_tile_png(&valid[..valid.len() - 4]));
+    }
+
+    #[test]
+    fn ghi_atomic_va_doc_cache_hong_tu_don_file() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "prynx_tile_atomic_test_{}_{}",
+            std::process::id(),
+            stamp
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("0123456789abcdef.png");
+        let valid = [
+            b"\x89PNG\r\n\x1a\n".as_slice(),
+            b"payload".as_slice(),
+            b"\x00\x00\x00\x00IEND\xaeB\x60\x82".as_slice(),
+        ]
+        .concat();
+
+        write_tile_png_atomic(&target, &valid).unwrap();
+        assert_eq!(read_valid_tile_png(&target), Some(valid));
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+
+        let replacement = [
+            b"\x89PNG\r\n\x1a\n".as_slice(),
+            b"replacement".as_slice(),
+            b"\x00\x00\x00\x00IEND\xaeB\x60\x82".as_slice(),
+        ]
+        .concat();
+        write_tile_png_atomic(&target, &replacement).unwrap();
+        assert_eq!(read_valid_tile_png(&target), Some(replacement));
+
+        std::fs::write(&target, b"truncated").unwrap();
+        assert_eq!(read_valid_tile_png(&target), None);
+        assert!(!target.exists());
+        assert!(write_tile_png_atomic(&target, b"invalid").is_err());
+        assert!(!target.exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -15,16 +15,26 @@
 
 use lopdf::{Dictionary, Document, Object};
 
+use crate::cancel::CancelToken;
 use crate::color::icc::ColorManager;
 use crate::color::space::resolve_colorspace;
 use crate::color::ColorSpace;
 use crate::error::{PpeError, PpeResult, RenderWarnings};
-use crate::image::filters::{decode_chain, ImageCodec, PredictorParams};
+use crate::image::filters::{decode_chain_with_cancel, ImageCodec, PredictorParams};
 use crate::ink::{ChannelMask, InkSpace};
 use crate::pdf;
 
 /// Trần số pixel một ảnh: 200 MP. Chống PDF khai `/Width 1e9`.
 const MAX_IMAGE_PIXELS: u64 = 200_000_000;
+const CANCEL_SAMPLE_BLOCK: usize = 64 * 1024;
+
+#[inline]
+fn check_cancelled(cancel_token: Option<&CancelToken>) -> PpeResult<()> {
+    match cancel_token {
+        Some(token) => token.check(),
+        None => Ok(()),
+    }
+}
 
 /// Ảnh đã giải mã, sẵn sàng lấy mẫu.
 pub struct SampledImage {
@@ -54,14 +64,53 @@ pub struct SampledImage {
 impl SampledImage {
     /// Giá trị thành phần đã áp `/Decode`, trong khoảng của colorspace.
     pub fn components_at(&self, x: u32, y: u32) -> Vec<f32> {
-        let idx = (y as usize * self.width as usize + x as usize) * self.n_comps;
         let mut out = Vec::with_capacity(self.n_comps);
-        let indexed = matches!(self.colorspace, Some(ColorSpace::Indexed { .. }));
         for c in 0..self.n_comps {
-            let raw = self.samples.get(idx + c).copied().unwrap_or(0);
-            out.push(self.decode_component(c, raw, indexed));
+            out.push(self.component_at(x, y, c));
         }
         out
+    }
+
+    /// Một thành phần không cấp phát — dùng cho đường dựng image SMask nóng.
+    #[inline]
+    pub(crate) fn component_at(&self, x: u32, y: u32, component: usize) -> f32 {
+        if component >= self.n_comps {
+            return 0.0;
+        }
+        let idx = (y as usize * self.width as usize + x as usize) * self.n_comps;
+        let raw = self
+            .samples
+            .get(idx.saturating_add(component))
+            .copied()
+            .unwrap_or(0);
+        let indexed = matches!(self.colorspace, Some(ColorSpace::Indexed { .. }));
+        self.decode_component(component, raw, indexed)
+    }
+
+    #[inline]
+    fn device_cmyk_at(&self, x: u32, y: u32) -> [f32; 4] {
+        let base = (y as usize * self.width as usize + x as usize) * self.n_comps;
+        std::array::from_fn(|component| {
+            let raw = self
+                .samples
+                .get(base.saturating_add(component))
+                .copied()
+                .unwrap_or(0);
+            self.decode_component(component, raw, false).clamp(0.0, 1.0)
+        })
+    }
+
+    /// Dung lượng mẫu chính để cache tính vào MemoryBudget.
+    pub(crate) fn memory_bytes(&self) -> usize {
+        self.samples
+            .capacity()
+            .saturating_add(self.decode.capacity() * std::mem::size_of::<f32>())
+            .saturating_add(
+                self.alpha
+                    .as_ref()
+                    .map_or(0, |v| v.capacity() * std::mem::size_of::<f32>()),
+            )
+            .saturating_add(self.stencil.as_ref().map_or(0, Vec::capacity))
     }
 
     /// Ảnh có thể cung cấp mẫu RGB gốc để alpha/blend trước ICC.
@@ -143,6 +192,11 @@ impl<'a> ImageSampler<'a> {
         cm: Option<&ColorManager>,
     ) -> PpeResult<Self> {
         let mut lut = None;
+        if matches!(image.colorspace, Some(ColorSpace::DeviceCMYK)) {
+            // Ghi nhận một lần khi dựng sampler; làm lại phép tìm chuỗi này cho
+            // từng pixel của ảnh lớn chiếm đáng kể hot path Viewer.
+            warn.note_colorspace_used("DeviceCMYK");
+        }
         if image.n_comps == 1 {
             if let Some(cs) = &image.colorspace {
                 let indexed = matches!(cs, ColorSpace::Indexed { .. });
@@ -211,6 +265,17 @@ impl<'a> ImageSampler<'a> {
         let Some(cs) = &self.image.colorspace else {
             return Ok(None);
         };
+        if matches!(cs, ColorSpace::DeviceCMYK) {
+            // PERF (audit 2026-08-09 §ZOOM.4): ảnh CMYK phủ trang là đường nóng của
+            // Viewer. `components_at` + `to_ink` cũ cấp phát hai Vec cho MỖI pixel dù
+            // phép đổi chỉ là chép bốn mẫu vào bốn kênh process. Ghi thẳng vào scratch
+            // của caller, vẫn áp /Decode và clamp y hệt `spread_cmyk`.
+            let cmyk = self.image.device_cmyk_at(x, y);
+            out.clear();
+            out.resize(space.len(), 0.0);
+            out[..4].copy_from_slice(&cmyk);
+            return Ok(Some(ChannelMask::PROCESS));
+        }
         let comps = self.image.components_at(x, y);
         match cs.to_ink(&comps, space, warn, cm)? {
             Some((ink, mask)) => {
@@ -230,6 +295,20 @@ pub fn decode_image(
     resources: Option<&Dictionary>,
     warn: &mut RenderWarnings,
 ) -> PpeResult<SampledImage> {
+    decode_image_with_cancel(doc, stream_obj, resources, warn, None)
+}
+
+/// CORRECTNESS (audit 2026-08-10 §L5B.2): đường giải mã dùng bởi renderer
+/// truyền token xuyên Flate/predictor, SMask và bước trải mẫu. API công khai cũ
+/// vẫn giữ nguyên để không làm vỡ caller ngoài engine.
+pub(crate) fn decode_image_with_cancel(
+    doc: &Document,
+    stream_obj: &Object,
+    resources: Option<&Dictionary>,
+    warn: &mut RenderWarnings,
+    cancel_token: Option<&CancelToken>,
+) -> PpeResult<SampledImage> {
+    check_cancelled(cancel_token)?;
     let stream = match pdf::deref(doc, stream_obj) {
         Object::Stream(s) => s,
         _ => return Err(PpeError::MalformedPdf("ảnh không phải stream".into())),
@@ -246,6 +325,7 @@ pub fn decode_image(
             "ảnh {width}x{height} vượt trần {MAX_IMAGE_PIXELS} pixel"
         )));
     }
+    check_cancelled(cancel_token)?;
 
     let is_mask = bool_key(doc, dict, &["ImageMask", "IM"]).unwrap_or(false);
     let mut bpc = int_key(doc, dict, &["BitsPerComponent", "BPC"]).unwrap_or(8) as usize;
@@ -274,20 +354,32 @@ pub fn decode_image(
     // ── Giải chuỗi filter ────────────────────────────────────────────────────
     let filters = filter_names(doc, dict);
     let parms = decode_parms(doc, dict, filters.len(), n_comps, bpc, width as usize);
-    let decoded = decode_chain(&stream.content, &filters, &parms)?;
+    let decoded = decode_chain_with_cancel(&stream.content, &filters, &parms, cancel_token)?;
 
     // Indexed: mẫu là chỉ số bảng màu, tuyệt đối không trải thang.
     let is_indexed = matches!(colorspace, Some(ColorSpace::Indexed { .. }));
 
     let (samples, n_comps, bpc, colorspace) = match decoded.remaining_codec {
         None => (
-            unpack_samples(&decoded.data, width, height, n_comps, bpc, !is_indexed),
+            unpack_samples_with_cancel(
+                &decoded.data,
+                width,
+                height,
+                n_comps,
+                bpc,
+                !is_indexed,
+                cancel_token,
+            )?,
             n_comps,
             bpc,
             colorspace,
         ),
         Some(ImageCodec::Dct) => {
+            // jpeg-decoder không có callback polling; checkpoint hai biên giữ
+            // đúng semantics và ghi rõ giới hạn thay vì giả vờ dừng giữa C call.
+            check_cancelled(cancel_token)?;
             let (data, jpeg_comps) = decode_jpeg(&decoded.data)?;
+            check_cancelled(cancel_token)?;
             // JPEG tự khai số thành phần. Nếu lệch với /ColorSpace thì tin JPEG:
             // dữ liệu pixel là sự thật, dictionary có thể sai.
             let cs = if jpeg_comps == n_comps {
@@ -307,9 +399,19 @@ pub fn decode_image(
         Some(ImageCodec::CcittFax) => {
             // Fax nhóm 3/4 luôn là **một kênh một bit**, bất kể `/ColorSpace` khai gì.
             let params = ccitt_params(doc, dict, width, height);
+            check_cancelled(cancel_token)?;
             let packed = crate::image::ccitt::decode(&decoded.data, &params)?;
+            check_cancelled(cancel_token)?;
             (
-                unpack_samples(&packed, width, height, 1, 1, !is_indexed),
+                unpack_samples_with_cancel(
+                    &packed,
+                    width,
+                    height,
+                    1,
+                    1,
+                    !is_indexed,
+                    cancel_token,
+                )?,
                 1,
                 1,
                 colorspace,
@@ -334,8 +436,9 @@ pub fn decode_image(
         None
     };
 
-    let alpha = decode_soft_mask(doc, dict, width, height, warn);
+    let alpha = decode_soft_mask(doc, dict, width, height, warn, cancel_token)?;
 
+    check_cancelled(cancel_token)?;
     Ok(SampledImage {
         width,
         height,
@@ -356,21 +459,29 @@ fn decode_soft_mask(
     width: u32,
     height: u32,
     warn: &mut RenderWarnings,
-) -> Option<Vec<f32>> {
-    let smask_obj = dict.get(b"SMask").ok()?;
-    let mask = match decode_image(doc, smask_obj, None, warn) {
+    cancel_token: Option<&CancelToken>,
+) -> PpeResult<Option<Vec<f32>>> {
+    let smask_obj = match dict.get(b"SMask") {
+        Ok(object) => object,
+        Err(_) => return Ok(None),
+    };
+    check_cancelled(cancel_token)?;
+    let mask = match decode_image_with_cancel(doc, smask_obj, None, warn, cancel_token) {
         Ok(m) => m,
+        Err(error @ PpeError::Cancelled) => return Err(error),
         Err(_) => {
             // Không đọc được mặt nạ: coi như đục nhưng PHẢI báo, vì vẽ đục chỗ
             // đáng ra trong suốt sẽ thêm mực không có thật.
             warn.unsupported_transparency = true;
             warn.note_skipped_op("SMask ảnh (không giải mã được)");
-            return None;
+            return Ok(None);
         }
     };
 
+    check_cancelled(cancel_token)?;
     let mut out = vec![1.0f32; (width as usize) * (height as usize)];
     for y in 0..height {
+        check_cancelled(cancel_token)?;
         for x in 0..width {
             // Mặt nạ có thể khác kích thước ảnh — lấy mẫu gần nhất.
             let mx = if width > 1 {
@@ -383,15 +494,11 @@ fn decode_soft_mask(
             } else {
                 0
             };
-            let v = mask
-                .components_at(mx.min(mask.width - 1), my.min(mask.height - 1))
-                .first()
-                .copied()
-                .unwrap_or(1.0);
+            let v = mask.component_at(mx.min(mask.width - 1), my.min(mask.height - 1), 0);
             out[y as usize * width as usize + x as usize] = v.clamp(0.0, 1.0);
         }
     }
-    Some(out)
+    Ok(Some(out))
 }
 
 /// Giải mã JPEG. Trả (mẫu interleaved u8, số thành phần).
@@ -490,6 +597,7 @@ fn adobe_app14_transform(data: &[u8]) -> Option<u8> {
 /// chỉ số 1 thành 17 và trỏ sai ô, chỉ có chỉ số 0 và chỉ số lớn nhất còn đúng.
 /// Đây là lỗi chỉ hiện ra ở vài pixel nên MAE trung bình vẫn đẹp; chỉ đỉnh TAC
 /// mới lộ.
+#[cfg(test)]
 fn unpack_samples(
     data: &[u8],
     w: u32,
@@ -498,6 +606,20 @@ fn unpack_samples(
     bpc: usize,
     scale_to_full_range: bool,
 ) -> Vec<u8> {
+    unpack_samples_with_cancel(data, w, h, n, bpc, scale_to_full_range, None)
+        .expect("trải mẫu không token không thể bị hủy")
+}
+
+fn unpack_samples_with_cancel(
+    data: &[u8],
+    w: u32,
+    h: u32,
+    n: usize,
+    bpc: usize,
+    scale_to_full_range: bool,
+    cancel_token: Option<&CancelToken>,
+) -> PpeResult<Vec<u8>> {
+    check_cancelled(cancel_token)?;
     let w = w as usize;
     let h = h as usize;
     let total = w * h * n;
@@ -505,20 +627,34 @@ fn unpack_samples(
 
     if bpc == 8 {
         let copy = total.min(data.len());
-        out[..copy].copy_from_slice(&data[..copy]);
-        return out;
+        if cancel_token.is_none() {
+            out[..copy].copy_from_slice(&data[..copy]);
+        } else {
+            for start in (0..copy).step_by(CANCEL_SAMPLE_BLOCK) {
+                check_cancelled(cancel_token)?;
+                let end = (start + CANCEL_SAMPLE_BLOCK).min(copy);
+                out[start..end].copy_from_slice(&data[start..end]);
+            }
+        }
+        check_cancelled(cancel_token)?;
+        return Ok(out);
     }
     if bpc == 16 {
         for i in 0..total {
+            if i % CANCEL_SAMPLE_BLOCK == 0 {
+                check_cancelled(cancel_token)?;
+            }
             out[i] = data.get(i * 2).copied().unwrap_or(0);
         }
-        return out;
+        check_cancelled(cancel_token)?;
+        return Ok(out);
     }
 
     let row_bits = w * n * bpc;
     let row_bytes = (row_bits + 7) / 8;
     let max = ((1u32 << bpc) - 1) as f32;
     for y in 0..h {
+        check_cancelled(cancel_token)?;
         let row_start_bit = y * row_bytes * 8;
         for i in 0..(w * n) {
             let bit = row_start_bit + i * bpc;
@@ -536,7 +672,8 @@ fn unpack_samples(
             };
         }
     }
-    out
+    check_cancelled(cancel_token)?;
+    Ok(out)
 }
 
 /// Tham số `/DecodeParms` của `CCITTFaxDecode`.
@@ -922,6 +1059,33 @@ mod tests {
         assert_eq!(mask, ChannelMask::PROCESS);
         // Ảnh CMYK là mực thật ⇒ không được hạ độ tin cậy.
         assert!(!warn.degrades_accuracy());
+    }
+
+    #[test]
+    fn cmyk_fast_path_honours_per_component_decode_arrays() {
+        let img = SampledImage {
+            width: 1,
+            height: 1,
+            n_comps: 4,
+            samples: vec![255, 0, 64, 255],
+            colorspace: Some(ColorSpace::DeviceCMYK),
+            decode: vec![1.0, 0.0, 0.0, 1.0, 0.25, 0.75, 1.0, 0.0],
+            bpc: 8,
+            stencil: None,
+            alpha: None,
+        };
+        let mut space = InkSpace::new();
+        let mut warn = RenderWarnings::default();
+        let sampler = ImageSampler::new(&img, &mut space, &mut warn, None).unwrap();
+        let (ink, mask) = sampler
+            .ink_at(0, 0, &mut space, &mut warn, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(mask, ChannelMask::PROCESS);
+        assert!(ink[0].abs() < 1e-6);
+        assert!(ink[1].abs() < 1e-6);
+        assert!((ink[2] - (0.25 + 64.0 / 255.0 * 0.5)).abs() < 1e-6);
+        assert!(ink[3].abs() < 1e-6);
     }
 
     #[test]

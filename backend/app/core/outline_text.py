@@ -8,7 +8,7 @@ stream, phần còn lại của trang không bị đụng.
 # Phạm vi có chủ ý
 
 Chỉ nhận những gì chắc chắn dựng lại đúng; mọi thứ khác trả `supported=False`
-để caller fallback Ghostscript:
+để caller dừng an toàn và giữ nguyên file nguồn:
 
 * Font **đã nhúng** (`/FontFile2` TrueType hoặc `/FontFile3` CFF/OpenType).
   Font chưa nhúng phải mượn glyph của font khác — mặt chữ sẽ khác bản gốc.
@@ -31,6 +31,12 @@ import os
 import pikepdf
 
 logger = logging.getLogger(__name__)
+
+
+def _raise_if_cancelled(cancel_check) -> None:
+    """Dừng cooperative giữa các trang/pha hậu kiểm của tác vụ outline."""
+    if cancel_check is not None and cancel_check():
+        raise InterruptedError("Tác vụ outline chữ đã bị hủy.")
 
 # Toán tử đặt/chỉnh chữ mà bộ chuyển này hiểu. Gặp toán tử chữ NGOÀI danh sách
 # nghĩa là có tính năng chưa mô hình hoá → dừng, không đoán.
@@ -701,7 +707,7 @@ def outline_content_stream(
     `glyph_source` (kế hoạch §19.7) là nguồn hình học chữ từ PPE — xem
     `app.core.ppe_outlines`. Nó **cộng thêm**, không thay thế: glyph nào PPE có thì
     dùng path của PPE (font/encoding/ma trận của nó đã được đo song song với
-    Ghostscript), glyph nào không có thì vẫn đi đường fontTools như trước. Nhờ vậy
+    renderer tham chiếu), glyph nào không có thì vẫn đi đường fontTools như trước. Nhờ vậy
     bật nguồn này không thể làm mất chữ so với bản cũ, và chốt so-kẽm ở cuối vẫn là
     lưới chặn cuối cùng.
     """
@@ -1326,7 +1332,12 @@ def _local_ink_mismatch(before, after) -> tuple[int, int, float, str] | None:
 
 
 def verify_outline(
-    original: str, outlined: str, dpi: int = 150, *, native_object_level: bool = False
+    original: str,
+    outlined: str,
+    dpi: int = 150,
+    *,
+    native_object_level: bool = False,
+    cancel_check=None,
 ) -> tuple[bool, str]:
     """So kẽm từng trang; nhánh native cho phép riêng sai số viền 1 px.
 
@@ -1334,6 +1345,7 @@ def verify_outline(
     nguyên theo chữ ký content stream và hình mực phải qua lưới cục bộ. Nhánh GS
     vẫn giữ ngưỡng mean/coverage chặt vì nó dựng lại toàn bộ PDF.
     """
+    _raise_if_cancelled(cancel_check)
     try:
         import numpy as np
 
@@ -1348,7 +1360,9 @@ def verify_outline(
         return (False, f"số trang đổi: {before_pages} → {after_pages}")
 
     if native_object_level:
+        _raise_if_cancelled(cancel_check)
         before_color = _color_state_signature(original)
+        _raise_if_cancelled(cancel_check)
         after_color = _color_state_signature(outlined)
         if before_color is None or after_color is None:
             return (False, "không chứng minh được trạng thái màu trước/sau outline")
@@ -1356,8 +1370,10 @@ def verify_outline(
             return (False, "toán tử hoặc trạng thái màu đã thay đổi sau outline")
 
     for page_number in range(1, before_pages + 1):
+        _raise_if_cancelled(cancel_check)
         try:
             before = _plate_stats(original, page_number, dpi)
+            _raise_if_cancelled(cancel_check)
             after = _plate_stats(outlined, page_number, dpi)
         except Exception as exc:  # noqa: BLE001
             return (False, f"không render được trang {page_number} để verify: {exc}")
@@ -1403,18 +1419,19 @@ def verify_outline(
     return (True, "")
 
 
-def outline_fonts(input_path: str, output_path: str) -> dict:
-    """Chuyển toàn bộ chữ thành vector. `supported=False` ⇒ caller fallback GS.
+def outline_fonts(input_path: str, output_path: str, *, cancel_check=None) -> dict:
+    """Chuyển toàn bộ chữ thành vector. `supported=False` ⇒ caller dừng an toàn.
 
     Kết quả **luôn được verify** bằng cách so kẽm với bản gốc trước khi trả về;
     verify hỏng thì coi như không làm được, vì một file chữ lệch còn tệ hơn
     file chưa outline.
     """
     result: dict = {"supported": True, "glyphs": 0, "warnings": []}
+    _raise_if_cancelled(cancel_check)
 
     # Text nằm trong annotation / AcroForm field cũng lên bản in, và outline chỉ
     # content stream sẽ bỏ sót đúng phần đó — lỗi này đã được sửa một lần cho
-    # đường Ghostscript (§16.7), đường native không được để nó quay lại.
+    # pipeline cũ (§16.7), đường native không được để nó quay lại.
     # `flatten_annotations_and_forms` chạy bằng pypdfium2, không cần GS.
     import os
     import tempfile as _tempfile
@@ -1428,6 +1445,7 @@ def outline_fonts(input_path: str, output_path: str) -> dict:
         os.close(fd)
         try:
             flatten_annotations_and_forms(input_path, tmp_flat)
+            _raise_if_cancelled(cancel_check)
             source = tmp_flat
         except Exception as exc:  # noqa: BLE001
             result["supported"] = False
@@ -1435,7 +1453,13 @@ def outline_fonts(input_path: str, output_path: str) -> dict:
             os.path.exists(tmp_flat) and os.remove(tmp_flat)
             return result
     try:
-        return _outline_document(source, output_path, input_path, result)
+        return _outline_document(
+            source,
+            output_path,
+            input_path,
+            result,
+            cancel_check=cancel_check,
+        )
     finally:
         if tmp_flat and os.path.exists(tmp_flat):
             try:
@@ -1596,14 +1620,21 @@ def _outline_forms(
 
 
 def _outline_document(
-    input_path: str, output_path: str, verify_against: str, result: dict
+    input_path: str,
+    output_path: str,
+    verify_against: str,
+    result: dict,
+    *,
+    cancel_check=None,
 ) -> dict:
     # Form dùng lại ở nhiều trang chỉ được outline MỘT lần; chạy hai lần trên
     # cùng stream sẽ nhân đôi path và làm chữ dày lên.
     outlined_forms: set = set()
+    _raise_if_cancelled(cancel_check)
     with pikepdf.open(input_path) as pdf:
         total = 0
         for page_number, page in enumerate(pdf.pages, start=1):
+            _raise_if_cancelled(cancel_check)
             # Đọc hình học chữ từ file GỐC (input_path): PPE phải thấy đúng trang
             # chưa bị sửa, còn pikepdf đang giữ bản đang sửa trong bộ nhớ.
             glyph_source = _ppe_source_for_page(input_path, page_number, result)
@@ -1657,14 +1688,17 @@ def _outline_document(
                 del resources["/Font"]
 
         result["glyphs"] = total
+        _raise_if_cancelled(cancel_check)
         pdf.remove_unreferenced_resources()
         pdf.save(output_path)
+        _raise_if_cancelled(cancel_check)
 
     # OUT-FONT (audit 2026-07-27 §4.1): visual parity không chứng minh text đã
     # thành path — output giống bản gốc vẫn có thể còn nguyên toán tử Tj.
     try:
         from app.core.outline_fonts import count_live_text
 
+        _raise_if_cancelled(cancel_check)
         live = count_live_text(output_path)
     except Exception as exc:  # noqa: BLE001
         result["supported"] = False
@@ -1678,7 +1712,10 @@ def _outline_document(
         return result
 
     ok, reason = verify_outline(
-        verify_against, output_path, native_object_level=True
+        verify_against,
+        output_path,
+        native_object_level=True,
+        cancel_check=cancel_check,
     )
     if not ok:
         result["supported"] = False

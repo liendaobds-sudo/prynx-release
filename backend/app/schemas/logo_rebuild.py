@@ -13,6 +13,7 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator, model_vali
 
 
 LogoRebuildMode = Literal["monochrome", "fixed_palette"]
+LogoRebuildEngine = Literal["prynx_core", "vtracer"]
 
 
 class NormalizedPoint(BaseModel):
@@ -43,6 +44,7 @@ class LogoRebuildSettings(BaseModel):
     """Cấu hình đầu vào đã giới hạn theo phạm vi MVP được duyệt."""
 
     mode: LogoRebuildMode
+    engine: LogoRebuildEngine = "prynx_core"
     palette: list[str] = Field(default_factory=list, max_length=12)
     background_color: str | None = None
     crop: NormalizedCrop | None = None
@@ -55,6 +57,8 @@ class LogoRebuildSettings(BaseModel):
         validation_alias=AliasChoices("despeckle_size_px", "despeckle_area_px"),
     )
     illumination_correction: bool = False
+    physical_width_mm: float | None = Field(default=None, gt=0.0, le=5000.0)
+    physical_height_mm: float | None = Field(default=None, gt=0.0, le=5000.0)
 
     @model_validator(mode="before")
     @classmethod
@@ -99,6 +103,10 @@ class LogoRebuildSettings(BaseModel):
 
     @model_validator(mode="after")
     def validate_mode_contract(self) -> "LogoRebuildSettings":
+        # LOGO-REBUILD (audit 2026-08-09 §LR3.03): kích thước in là một
+        # quyết định có đủ hai chiều, không suy ra nửa chừng từ metadata DPI.
+        if (self.physical_width_mm is None) != (self.physical_height_mm is None):
+            raise ValueError("Chiều rộng và chiều cao in mm phải được xác nhận đồng thời")
         if self.mode == "monochrome" and self.palette:
             raise ValueError("Chế độ đen trắng không nhận palette màu")
         if self.mode == "fixed_palette" and not 1 <= len(self.palette) <= 12:
@@ -169,6 +177,10 @@ class LogoRebuildEngineInfo(BaseModel):
     engine: str
     version: str
     cancellable: bool
+    structured_result: bool = False
+    result_schema_version: int | None = Field(default=None, ge=1)
+    legacy_engine: str | None = None
+    legacy_version: str | None = None
 
 
 class LogoRebuildCapabilitiesResponse(BaseModel):
@@ -177,6 +189,7 @@ class LogoRebuildCapabilitiesResponse(BaseModel):
     supported_formats: list[str]
     auto_color_enabled: Literal[False] = False
     preview_engine_enabled: bool = False
+    legacy_vtracer_enabled: bool = False
     engine: LogoRebuildEngineInfo | None = None
     limitations: list[str]
 
@@ -191,15 +204,34 @@ class LogoSvgComplexity(BaseModel):
     removed_redundant_paths: int = Field(ge=0)
 
 
+class LogoNativeMetrics(BaseModel):
+    layer_count: int = Field(ge=0)
+    component_count: int = Field(ge=0)
+    outer_count: int = Field(ge=0)
+    hole_count: int = Field(ge=0)
+    source_nodes: int = Field(ge=0)
+    output_nodes: int = Field(ge=0)
+    max_error_px: float = Field(ge=0.0)
+    raster_scale: int = Field(gt=0)
+    iou: float = Field(ge=0.0, le=1.0)
+    mae: float = Field(ge=0.0, le=1.0)
+
+
 class LogoRebuildPreviewResponse(BaseModel):
     status: Literal["ready", "review", "rejected"] = "ready"
     job_id: UUID
     svg: str
     width_px: int = Field(gt=0)
     height_px: int = Field(gt=0)
+    physical_width_mm: float | None = Field(default=None, gt=0.0)
+    physical_height_mm: float | None = Field(default=None, gt=0.0)
     warnings: list[str] = Field(default_factory=list)
     engine: str
     engine_version: str
+    result_schema_version: int | None = Field(default=None, ge=1)
+    artifact_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    preprocess_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    native_metrics: LogoNativeMetrics | None = None
     complexity: LogoSvgComplexity
     review_reasons: list[str] = Field(default_factory=list)
     review_actions: list[str] = Field(default_factory=list)

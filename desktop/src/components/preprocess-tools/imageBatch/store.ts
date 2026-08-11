@@ -11,11 +11,16 @@ export interface BatchItem {
     fileName: string;
     originalUrl: string;
     resultBlob?: Blob;
+    resultIdentity?: string;
     resultUrl?: string;
     resultInfo?: string;
     status: 'pending' | 'processing' | 'success' | 'error';
     error?: string;
     fileObj?: File;
+    // UIUX (audit 2026-08-10 §UP.X.01): danh tính nội dung bất biến — Tauri dùng
+    // canonical path từ picker, browser dùng ingest token. Tránh collision khi hai
+    // file trùng tên + size nhưng khác nội dung.
+    sourceIdentity?: string;
 }
 
 export interface BatchTabState<O> {
@@ -42,6 +47,9 @@ export interface ImageBatchStore<O> {
     removeItem: (tabId: string, id: string) => void;
     undoItem: (tabId: string, id: string) => void;
     reset: (tabId: string) => void;
+    // UIUX (audit 2026-08-10 §UP.X.02): giải phóng hoàn toàn tab khi đóng —
+    // revoke mọi objectURL, xóa key khỏi state, tránh leak RAM.
+    destroyTab: (tabId: string) => void;
 }
 
 export function invalidateBatchResults(items: BatchItem[]): BatchItem[] {
@@ -49,6 +57,7 @@ export function invalidateBatchResults(items: BatchItem[]): BatchItem[] {
         ...item,
         status: 'pending' as const,
         resultBlob: undefined,
+        resultIdentity: undefined,
         resultUrl: undefined,
         resultInfo: undefined,
         error: undefined,
@@ -147,7 +156,7 @@ export function createImageBatchStore<O>(defaultOptions: O) {
             const tab = state.tabs[tabId] || makeDefaultTab();
             revokeUrl(tab.batchItems.find(i => i.id === id)?.resultUrl);
             const updated = tab.batchItems.map(i =>
-                i.id === id ? { ...i, status: 'pending' as const, resultUrl: undefined, resultBlob: undefined, resultInfo: undefined, error: undefined } : i
+                i.id === id ? { ...i, status: 'pending' as const, resultUrl: undefined, resultBlob: undefined, resultIdentity: undefined, resultInfo: undefined, error: undefined } : i
             );
             return { tabs: { ...state.tabs, [tabId]: { ...tab, batchItems: updated } } };
         }),
@@ -155,6 +164,19 @@ export function createImageBatchStore<O>(defaultOptions: O) {
             const tab = state.tabs[tabId];
             if (tab) revokeReplacedUrls(tab.batchItems, []);
             return { tabs: { ...state.tabs, [tabId]: makeDefaultTab() } };
+        }),
+        // UIUX (audit 2026-08-10 §UP.X.02): giải phóng hoàn toàn tab khi đóng.
+        destroyTab: (tabId) => set(state => {
+            const tab = state.tabs[tabId];
+            if (tab) {
+                for (const item of tab.batchItems) {
+                    revokeUrl(item.originalUrl);
+                    revokeUrl(item.resultUrl);
+                }
+            }
+            const rest = { ...state.tabs };
+            delete rest[tabId];
+            return { tabs: rest };
         }),
     }));
 }

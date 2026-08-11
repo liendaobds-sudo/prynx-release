@@ -26,16 +26,6 @@ param(
     [switch]$AllowPlaintextDieline,
     [switch]$SkipPreflightQA,
     [switch]$NoOpenExplorer,
-    # GS-SUNSET (audit 2026-07-27 lan 3, muc 3.1): KHONG dong goi Ghostscript la
-    # MAC DINH. Co nay giu lai de moi lenh/script cu van chay, khong con tac dung
-    # doi hanh vi (mac dinh da la no-GS).
-    #
-    # Vi sao dao mac dinh: Ghostscript la AGPL-3.0, dong goi vao san pham
-    # closed-source la rui ro ban quyen. Khi no-GS chi la MOT CO PHAI NHO, moi
-    # duong phat hanh bo sot co do se sinh installer chua AGPL - va do la dung
-    # thu da xay ra: release_update.ps1 / PHAT_HANH.bat / quanly_phathanh.ps1
-    # deu goi build ma khong truyen co nay.
-    [switch]$NoGhostscript,
     [ValidateRange(1, 8)]
     [int]$NuitkaJobs = 4,
     [string]$Version = ""
@@ -64,6 +54,8 @@ $script:BuildOwnedEnvironmentSnapshot = @{}
 foreach ($environmentName in @(
     "VITE_FEATURE_GATING_ENABLED",
     "PRYNX_FEATURE_GATING_ENABLED",
+    "VITE_LOGO_REBUILD_ENABLED",
+    "PRYNX_LOGO_REBUILD_ENABLED",
     "PRYNX_FRONTEND_HASH",
     "PRYNX_SIDECAR_HASH",
     "DEV_MODE",
@@ -74,6 +66,10 @@ foreach ($environmentName in @(
     "PYTHONPATH",
     "PRYNX_RELEASE_NATIVE_SITE",
     "PRYNX_NO_GS_AUDIT_OUT",
+    "PRYNX_BUILD_SOURCE_REVISION",
+    "PRYNX_BUILD_SOURCE_DIRTY",
+    "PRYNX_BUILD_TIMESTAMP_UTC",
+    "PRYNX_BUILD_REQUIRE_CLEAN",
     "_CL_",
     "RUSTFLAGS",
     "CARGO_PROFILE_RELEASE_LTO",
@@ -358,6 +354,12 @@ if ($PYTHON_MM -eq '3.11') {
 $env:VITE_FEATURE_GATING_ENABLED = "true"
 $env:PRYNX_FEATURE_GATING_ENABLED = "true"
 Write-Host "  Free/Pro feature gating: ENABLED (frontend + backend)" -ForegroundColor Green
+
+# LOGO-REBUILD (audit 2026-08-09 §LR3.10): tính năng vẫn đang HOLD. Hai cờ
+# được nung vào frontend/Tauri host cùng một giá trị để sidecar không thể mở lệch UI.
+$env:VITE_LOGO_REBUILD_ENABLED = "false"
+$env:PRYNX_LOGO_REBUILD_ENABLED = "false"
+Write-Host "  Logo Rebuild release gate: HOLD (frontend + backend)" -ForegroundColor Yellow
 
 
 # ---- Step 0: Full release QA gate -----------------------------------------
@@ -648,6 +650,33 @@ if (-not $SkipNuitka) {
     $previousLto = $env:CARGO_PROFILE_RELEASE_LTO
     $previousCgu = $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS
     $previousStripSym = $env:CARGO_PROFILE_RELEASE_STRIP
+    # BUILD (audit 2026-08-10 PPE.REAUDIT.7): pin identity for exactly this
+    # native build. The staged module must echo these values via capabilities;
+    # a stale wheel with the same crate version is rejected below.
+    $nativeCommitOutput = @(& git -C $ROOT rev-parse HEAD 2>$null)
+    $nativeCommitExit = $LASTEXITCODE
+    if ($nativeCommitExit -ne 0 -or $nativeCommitOutput.Count -ne 1) {
+        throw "Cannot resolve native source revision."
+    }
+    $script:PpeNativeSourceRevision = ([string]$nativeCommitOutput[0]).Trim().ToLowerInvariant()
+    if ($script:PpeNativeSourceRevision -notmatch '^[0-9a-f]{40}$') {
+        throw "Native source revision is invalid: $($script:PpeNativeSourceRevision)"
+    }
+    if ($Release -and $script:PpeNativeSourceRevision -ne $script:ReleaseSourceCommit) {
+        throw "Native source revision no longer matches the captured release commit."
+    }
+    $nativeDirtyOutput = @(& git -C $ROOT status --porcelain=v1 --untracked-files=all 2>$null)
+    $nativeDirtyExit = $LASTEXITCODE
+    if ($nativeDirtyExit -ne 0) { throw "Cannot resolve native source dirty state." }
+    $script:PpeNativeSourceDirty = $nativeDirtyOutput.Count -gt 0
+    if ($Release -and $script:PpeNativeSourceDirty) {
+        throw "Release native build refuses a dirty source tree."
+    }
+    $script:PpeNativeBuildTimestampUtc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+    $env:PRYNX_BUILD_SOURCE_REVISION = $script:PpeNativeSourceRevision
+    $env:PRYNX_BUILD_SOURCE_DIRTY = if ($script:PpeNativeSourceDirty) { "true" } else { "false" }
+    $env:PRYNX_BUILD_TIMESTAMP_UTC = $script:PpeNativeBuildTimestampUtc
+    $env:PRYNX_BUILD_REQUIRE_CLEAN = if ($Release) { "true" } else { "false" }
     $env:CARGO_PROFILE_RELEASE_LTO = "thin"
     $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1"
     $env:CARGO_PROFILE_RELEASE_STRIP = "symbols"
@@ -668,8 +697,67 @@ if (-not $SkipNuitka) {
         $env:PYTHONPATH = if ($previousPythonPath) {
             "$nativeSiteDir;$previousPythonPath"
         } else { $nativeSiteDir }
-        & $VENV_PYTHON -c "import pdfcompare_native as n; assert n.ppe_capabilities().get('overprint_preview_toggle') is True"
+        # BUILD (audit 2026-08-10 §PPE.SCOPE.3): một cờ overprint không đại diện
+        # cho toàn bộ ABI PPE. Artifact cũ từng có cờ đó nhưng thiếu Export CMYK,
+        # subset composite và các điều khiển Output Preview. Chốt cả symbol lẫn
+        # capability trước khi full QA để fail sớm trên đúng wheel staging.
+        $ppeCapabilityGate = @(
+            'import json, os, re',
+            'import pdfcompare_native as n',
+            'caps = dict(n.ppe_capabilities())',
+            'required_symbols = {''PpeRenderSession'', ''ppe_separations'', ''ppe_compose_separation_subset'', ''ppe_softproof'', ''ppe_export_cmyk'', ''ppe_text_outlines'', ''ppe_capabilities'', ''combine_image_manifest_native''}',
+            'required_flags = {''process_separations'', ''spot_separations'', ''separation_subset_composite'', ''overprint_preview_toggle'', ''text_outlines'', ''icc_color_management'', ''render_session'', ''softproof'', ''softproof_paper_color'', ''softproof_black_ink'', ''softproof_page_background'', ''softproof_viewport_clip''}',
+            'expected_filters = {''all'', ''device-cmyk'', ''device-rgb'', ''device-gray'', ''spot'', ''text'', ''images'', ''line-art'', ''smooth-shades''}',
+            'expected_oc_configs = {''print'', ''view''}',
+            'expected_revision = os.environ.get(''PRYNX_BUILD_SOURCE_REVISION'', '''').lower()',
+            'expected_dirty = os.environ.get(''PRYNX_BUILD_SOURCE_DIRTY'', '''').lower() == ''true''',
+            'expected_timestamp = os.environ.get(''PRYNX_BUILD_TIMESTAMP_UTC'', '''')',
+            'require_clean = os.environ.get(''PRYNX_BUILD_REQUIRE_CLEAN'', '''').lower() == ''true''',
+            'missing_symbols = sorted(name for name in required_symbols if not hasattr(n, name))',
+            'missing_flags = sorted(name for name in required_flags if caps.get(name) is not True)',
+            'missing_filters = sorted(expected_filters - set(caps.get(''output_preview_filters'') or ()))',
+            'missing_oc_configs = sorted(expected_oc_configs - set(caps.get(''optional_content_configs'') or ()))',
+            'identity = {key: caps.get(key) for key in (''source_revision'', ''source_dirty'', ''build_timestamp_utc'', ''build_profile'', ''build_provenance'', ''build_identity'')}',
+            'identity_problems = []',
+            'if not re.fullmatch(r''[0-9a-f]{40}'', str(identity[''source_revision''] or '''').lower()): identity_problems.append(''unknown-source-revision'')',
+            'if str(identity[''source_revision''] or '''').lower() != expected_revision: identity_problems.append(''source-revision-mismatch'')',
+            'if identity[''source_dirty''] is not expected_dirty: identity_problems.append(''source-dirty-mismatch'')',
+            'if require_clean and identity[''source_dirty''] is not False: identity_problems.append(''dirty-release-source'')',
+            'if identity[''build_timestamp_utc''] != expected_timestamp: identity_problems.append(''build-timestamp-mismatch'')',
+            'if identity[''build_profile''] != ''release'': identity_problems.append(''build-profile-not-release'')',
+            'if identity[''build_provenance''] != ''build_production.ps1'': identity_problems.append(''untrusted-build-provenance'')',
+            'if not re.fullmatch(r''[0-9a-f]{64}'', str(identity[''build_identity''] or '''').lower()): identity_problems.append(''invalid-build-identity'')',
+            'problems = {''symbols'': missing_symbols, ''flags'': missing_flags, ''filters'': missing_filters, ''oc_configs'': missing_oc_configs, ''identity'': identity_problems}',
+            'if any(problems.values()):',
+            '    raise RuntimeError(f''Staged pdfcompare_native is missing the required PPE contract: {problems}'')',
+            'print(json.dumps(identity, sort_keys=True))'
+        ) -join "`n"
+        $ppeCapabilityOutput = @(& $VENV_PYTHON -c $ppeCapabilityGate)
         $nativeExit = $LASTEXITCODE
+        if ($nativeExit -eq 0) {
+            if ($ppeCapabilityOutput.Count -ne 1) {
+                $nativeExit = 1
+            } else {
+                try {
+                    $ppeNativeIdentity = ([string]$ppeCapabilityOutput[0]) | ConvertFrom-Json
+                    $script:PpeNativeBuildIdentity = [string]$ppeNativeIdentity.build_identity
+                    $script:PpeNativeBuildProfile = [string]$ppeNativeIdentity.build_profile
+                    $script:PpeNativeBuildProvenance = [string]$ppeNativeIdentity.build_provenance
+                } catch {
+                    $nativeExit = 1
+                }
+            }
+        }
+        if ($nativeExit -eq 0) {
+            $nativePydCandidates = @(Get-ChildItem -LiteralPath "$nativeSiteDir\pdfcompare_native" `
+                -Filter "*.pyd" -File -ErrorAction SilentlyContinue)
+            if ($nativePydCandidates.Count -ne 1) {
+                $nativeExit = 1
+            } else {
+                $script:PpeNativeSha256 = (Get-FileHash -LiteralPath $nativePydCandidates[0].FullName `
+                    -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+        }
     }
     if ($null -eq $previousRustFlags) { Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue }
     else { $env:RUSTFLAGS = $previousRustFlags }
@@ -1036,81 +1124,21 @@ if (Test-Path $SIDECAR_SRC) {
     exit 1
 }
 
-# Copy Ghostscript
-# Auto-detect: quet C:\Program Files\gs\gs* va chon ban CAO NHAT thay vi hardcode
-# mot version. Doi may build / nang cap GS khong con lam build fail oan.
-$GS_SRC = ""
-$gsRoot = "C:\Program Files\gs"
-if (Test-Path $gsRoot) {
-    $gsDir = Get-ChildItem -Path $gsRoot -Directory -Filter "gs*" -ErrorAction SilentlyContinue |
-        Where-Object { Test-Path (Join-Path $_.FullName "bin") } |
-        Sort-Object {
-            # Sort theo so version thuc (10.04.0) chu khong theo chuoi (tranh gs9 > gs10)
-            if ($_.Name -match 'gs(\d+)\.(\d+)\.?(\d+)?') {
-                $micro = if ($Matches[3]) { $Matches[3] } else { "0" }
-                [version]("{0}.{1}.{2}" -f $Matches[1], $Matches[2], $micro)
-            } else { [version]"0.0.0" }
-        } -Descending | Select-Object -First 1
-    if ($gsDir) { $GS_SRC = $gsDir.FullName }
-}
-$GS_DEST = "$SIDECAR_DIR\gs"
-
-# Quyet dinh co dong goi Ghostscript hay khong.
-#
-# GS-SUNSET (audit 2026-07-27 lan 3, muc 3.1): MAC DINH la KHONG dong goi.
-# Dev, test va release dung cung mot artifact no-GS; khong co co/env bat lai.
-$BUNDLE_GS = $false
-
-if (-not $BUNDLE_GS) {
-    # Ban KHONG chua AGPL. Phai xoa sach ban copy cu: neu de lai, installer van
-    # gom Ghostscript tu lan build truoc va ta tuong la da go -- day la kieu loi
-    # nguy hiem nhat vi khong ai thay.
-    if (Test-Path $GS_DEST) {
-        Write-Host "  Removing previously bundled Ghostscript..." -ForegroundColor DarkGray
-        Remove-Item -Recurse -Force $GS_DEST
-    }
-    # tauri.conf.json khai resource "binaries/gs/**/*". Glob khong khop gi se lam
-    # Tauri bao loi, nen de lai dung mot file giai thich -- vua thoa glob, vua tu
-    # ghi lai quyet dinh ngay trong ban da cai.
-    New-Item -ItemType Directory -Force -Path $GS_DEST | Out-Null
-    @(
-        "Ghostscript is NOT bundled in this build.",
-        "",
-        "Reason: Ghostscript is licensed AGPL-3.0-or-later. Bundling it inside a",
-        "closed-source installer creates licensing obligations, so this build was",
-        "produced with -NoGhostscript.",
-        "",
-        "Prepress routes use PrynX PPE, pikepdf and fontTools. Unsupported input",
-        "must fail loudly; the application does not silently fall back to a bundled",
-        "Ghostscript executable. Independent PDF/X conformance remains a release",
-        "validation gate. See",
-        "docs/PRYNX_GS_REPLACEMENT_ENGINE_PLAN.md for the replacement engine (PPE)."
-    ) | Set-Content -Path (Join-Path $GS_DEST "NO_GHOSTSCRIPT.txt") -Encoding UTF8
-
-    Write-Host "  Ghostscript NOT bundled (mac dinh tu 2026-07-27)." -ForegroundColor Green
-    Write-Host "  Prepress engine: PPE + pikepdf + fontTools (khong fallback GS bundle)." -ForegroundColor Green
-    Write-Host "  No-GS regression gate da chay trong release QA." -ForegroundColor Green
-    Write-Host "  Luu y: PDF/X van can doi chieu bang validator doc lap truoc khi public release." -ForegroundColor Yellow
-} elseif ($GS_SRC -and (Test-Path $GS_SRC)) {
-    Write-Host "  Ghostscript detected: $GS_SRC" -ForegroundColor DarkGray
-    Write-Host "  Copying Ghostscript..." -ForegroundColor DarkGray
-    New-Item -ItemType Directory -Force -Path $GS_DEST | Out-Null
-    Copy-DirectoryWithRetry -SourcePattern "$GS_SRC\*" -Destination $GS_DEST
-    # Loai doc/examples (~25MB) -- chi la tai lieu, runtime GS khong dung.
-    foreach ($sub in @("doc", "examples")) {
-        $p = Join-Path $GS_DEST $sub
-        if (Test-Path $p) { Remove-Item -Recurse -Force $p }
-    }
-    Write-Host "  Ghostscript bundled (doc/examples pruned)." -ForegroundColor Green
-    Write-Host "  LUU Y BAN QUYEN: Ghostscript la AGPL-3.0-or-later." -ForegroundColor Yellow
-    Write-Host "    Dong goi vao installer closed-source la rui ro ban quyen chua giai quyet." -ForegroundColor Yellow
-    Write-Host "    Xem THIRD_PARTY_NOTICES.md muc 1 va docs/PRYNX_GS_REPLACEMENT_ENGINE_PLAN.md." -ForegroundColor DarkYellow
-} else {
-    Write-Host "ERROR: no-GS invariant was violated in build_production.ps1." -ForegroundColor Red
-    Write-Host "  Build cannot continue because Ghostscript bundling is disabled." -ForegroundColor Yellow
-    Write-Host "  Build aborted." -ForegroundColor Red
+# GS-SUNSET (audit 2026-08-08 GS-C1): Ghostscript khong con la dependency hay
+# resource cua san pham. Tripwire nay chi KIEM TRA staging va fail-closed; build
+# khong tu dong xoa dau vet de tranh che lap payload ban tu lan build cu.
+$legacyGhostscriptDir = Join-Path $SIDECAR_DIR "gs"
+$forbiddenGhostscriptPayload = @(Get-ChildItem -LiteralPath $SIDECAR_DIR -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.Name -match '^(?:gs(?:win(?:32|64)c?)?\.exe|gsdll\d*\.dll)$'
+    })
+if ((Test-Path -LiteralPath $legacyGhostscriptDir) -or $forbiddenGhostscriptPayload.Count -gt 0) {
+    Write-Host "ERROR: Ghostscript payload detected in Tauri staging." -ForegroundColor Red
+    Write-Host "  Remove the stale binaries\gs directory/files, then rebuild from clean staging." -ForegroundColor Yellow
+    Write-Host "  Build aborted to preserve the PPE-only release contract." -ForegroundColor Red
     exit 1
 }
+Write-Host "  Ghostscript payload absent (PPE-only release contract)." -ForegroundColor Green
 
 # Copy Tesseract
 $TESS_SRC = "C:\Program Files\Tesseract-OCR"
@@ -1135,15 +1163,14 @@ if (Test-Path $TESS_SRC) {
 # Sinh lai NOTICE tu lockfile THAT o moi lan build. Ly do: NOTICE viet tay se lac
 # hau ngay sau lan `pip install` / `npm i` ke tiep, va mot NOTICE sai con te hon
 # khong co -- no la tuyen bo bang van ban rang ta da kiem ma thuc ra chua.
-# Danh sach thanh phan phai khop dung ban DANG dong goi, nen co -NoGhostscript
-# duoc truyen xuong de ban khong-AGPL khong liet ke Ghostscript.
+# Danh sach thanh phan phai khop dung payload dang dong goi; component khai
+# `bundled=false` duoc generator loai tu dong.
 Write-Host "  Generating THIRD_PARTY_NOTICES.md..." -ForegroundColor DarkGray
 if (-not (Test-Path -LiteralPath $VENV_PYTHON -PathType Leaf)) {
     Write-Host "ERROR: Khong tim thay $VENV_PYTHON de sinh NOTICE." -ForegroundColor Red
     exit 1
 }
 $noticeArgs = @("$ROOT\scripts\gen_third_party_notices.py")
-if (-not $BUNDLE_GS) { $noticeArgs += "--no-ghostscript" }
 $env:PYTHONIOENCODING = "utf-8"
 & $VENV_PYTHON @noticeArgs
 if ($LASTEXITCODE -ne 0) {
@@ -1181,8 +1208,10 @@ if (-not $SkipTauri) {
     # BUILD (audit 2026-08-04 BLD.02): manifest khong duoc tu khai gate=enabled
     # neu process thuc te da bi mot script/agent khac doi co truoc luc Vite bundle.
     if ([string]$env:VITE_FEATURE_GATING_ENABLED -ne "true" -or
-        [string]$env:PRYNX_FEATURE_GATING_ENABLED -ne "true") {
-        throw "Production frontend/backend feature gates must both be enabled before bundling."
+        [string]$env:PRYNX_FEATURE_GATING_ENABLED -ne "true" -or
+        [string]$env:VITE_LOGO_REBUILD_ENABLED -ne "false" -or
+        [string]$env:PRYNX_LOGO_REBUILD_ENABLED -ne "false") {
+        throw "Production frontend/backend feature gates must stay synchronized before bundling."
     }
 
     Push-Location "$ROOT\desktop"
@@ -1393,7 +1422,9 @@ if (-not $SkipTauri) {
         $installerHash = (Get-FileHash $finalInstallerPath -Algorithm SHA256).Hash.ToLower()
         $manifestPath = "$publishDir\release-manifest.txt"
         if ([string]$env:VITE_FEATURE_GATING_ENABLED -ne "true" -or
-            [string]$env:PRYNX_FEATURE_GATING_ENABLED -ne "true") {
+            [string]$env:PRYNX_FEATURE_GATING_ENABLED -ne "true" -or
+            [string]$env:VITE_LOGO_REBUILD_ENABLED -ne "false" -or
+            [string]$env:PRYNX_LOGO_REBUILD_ENABLED -ne "false") {
             throw "Feature gate state changed before manifest creation."
         }
         $manifestGitOutput = if ($Release) {
@@ -1425,6 +1456,22 @@ if (-not $SkipTauri) {
         } else {
             "no"
         }
+        $nativeDirtyManifestValue = if ($script:PpeNativeSourceDirty) { "yes" } else { "no" }
+        if ($manifestGitCommit.ToLowerInvariant() -ne $script:PpeNativeSourceRevision -or
+            $manifestGitDirty -ne $nativeDirtyManifestValue) {
+            throw "Native provenance no longer matches the source state recorded by the installer manifest."
+        }
+        foreach ($requiredNativeIdentity in @(
+            [string]$script:PpeNativeBuildIdentity,
+            [string]$script:PpeNativeBuildProfile,
+            [string]$script:PpeNativeBuildProvenance,
+            [string]$script:PpeNativeBuildTimestampUtc,
+            [string]$script:PpeNativeSha256
+        )) {
+            if ([string]::IsNullOrWhiteSpace($requiredNativeIdentity)) {
+                throw "Native provenance is incomplete; refusing to write release manifest."
+            }
+        }
         $manifestBuildMode = if ($Release) { "public-release" } else { "internal-full" }
         $manifestBuildProvenance = if ($Release) { "git-clean-commit" } else { "local-working-tree" }
         $manifestLines = @(
@@ -1434,10 +1481,18 @@ if (-not $SkipTauri) {
             "GIT_DIRTY      = $manifestGitDirty",
             "BUILD_MODE     = $manifestBuildMode",
             "BUILD_PROVENANCE = $manifestBuildProvenance",
+            "PPE_NATIVE_SOURCE_REVISION = $($script:PpeNativeSourceRevision)",
+            "PPE_NATIVE_SOURCE_DIRTY = $nativeDirtyManifestValue",
+            "PPE_NATIVE_BUILD_TIMESTAMP_UTC = $($script:PpeNativeBuildTimestampUtc)",
+            "PPE_NATIVE_BUILD_PROFILE = $($script:PpeNativeBuildProfile)",
+            "PPE_NATIVE_BUILD_PROVENANCE = $($script:PpeNativeBuildProvenance)",
+            "PPE_NATIVE_BUILD_IDENTITY = $($script:PpeNativeBuildIdentity)",
+            "PPE_NATIVE_SHA256 = $($script:PpeNativeSha256)",
             "SIDECAR_PROVENANCE = compiled-this-run",
             "PYTHON_ABI     = $PYTHON_MM",
             "FRONTEND_FEATURE_GATE = enabled",
             "BACKEND_FEATURE_GATE = enabled",
+            "LOGO_REBUILD   = hold",
             "APP_VERSION    = $APP_VERSION",
             "INSTALLER      = $($installer.Name)",
             "INSTALLER_SHA256 = $installerHash",
@@ -1452,9 +1507,8 @@ if (-not $SkipTauri) {
         Set-Content -Path $manifestPath -Value $manifestLines -Encoding ASCII
         Write-Host "  Manifest:  $manifestPath" -ForegroundColor Cyan
         Write-Host "  Build EXE SHA-256: $buildExeHash (installed payload requires smoke verification)" -ForegroundColor DarkGray
-        $verifyArgs = if (-not $BUNDLE_GS) { " -ExpectNoGhostscript" } else { "" }
         Write-Host "  Buoc ke tiep de dien EXE_SHA256 (neo doi chieu runtime):" -ForegroundColor Yellow
-        Write-Host "    powershell -ExecutionPolicy Bypass -File scripts\verify_installed_artifact.ps1$verifyArgs" -ForegroundColor Yellow
+        Write-Host "    powershell -ExecutionPolicy Bypass -File scripts\verify_installed_artifact.ps1" -ForegroundColor Yellow
         if (-not $Release -and -not $NoOpenExplorer) {
             Write-Host ""
             Write-Host "  >> Da copy file cai dat ra ngoai thu muc de de lay hon..." -ForegroundColor Cyan

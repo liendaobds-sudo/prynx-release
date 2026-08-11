@@ -104,6 +104,16 @@ def mask_tach_duoc_nen(mask: Optional[np.ndarray]) -> bool:
     return BG_FOREGROUND_RATIO_MIN <= foreground_ratio(mask) <= BG_FOREGROUND_RATIO_MAX
 
 
+def has_meaningful_alpha(alpha: Optional[np.ndarray], alpha_threshold: int = 128) -> bool:
+    """Kênh Alpha phải có cả nền/hình với diện tích đủ lớn, không chỉ một pixel lạc."""
+    if alpha is None or alpha.size == 0:
+        return False
+    values = np.asarray(alpha, dtype=np.uint8)
+    if not np.any(values <= 16) or not np.any(values >= 239):
+        return False
+    return mask_tach_duoc_nen(values >= int(alpha_threshold))
+
+
 def _corner_samples(img_rgb: np.ndarray) -> np.ndarray:
     """Gộp điểm ảnh ở bốn góc thành một mảng (N, 3)."""
     height, width = img_rgb.shape[:2]

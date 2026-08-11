@@ -11,6 +11,7 @@ import types
 from pathlib import Path
 
 import numpy as np
+import pikepdf
 import pytest
 
 from app.core import artifact_runtime_self_test as runtime_self_test
@@ -44,11 +45,49 @@ class _FakeSession:
         return [np.ones((1, 1, 2, 2), dtype=np.float32)]
 
 
-def _install_fake_runtime(monkeypatch, providers):
+def _fake_native_merger(request_json, output_path, *_args):
+    request = json.loads(request_json)
+    source = request["sources"][0]
+    document = pikepdf.Pdf.new()
+    page = document.add_blank_page()
+    page.MediaBox = pikepdf.Array(
+        [0, 0, float(source["width_pt"]), float(source["height_pt"])]
+    )
+    icc = document.make_stream(b"fake-rgb-icc")
+    icc["/N"] = 3
+    icc["/Alternate"] = pikepdf.Name("/DeviceRGB")
+    smask = document.make_stream(bytes([160] * 6))
+    smask["/Type"] = pikepdf.Name("/XObject")
+    smask["/Subtype"] = pikepdf.Name("/Image")
+    smask["/Width"] = 2
+    smask["/Height"] = 3
+    smask["/BitsPerComponent"] = 8
+    smask["/ColorSpace"] = pikepdf.Name("/DeviceGray")
+    image = document.make_stream(bytes([20, 40, 60] * 6))
+    image["/Type"] = pikepdf.Name("/XObject")
+    image["/Subtype"] = pikepdf.Name("/Image")
+    image["/Width"] = 2
+    image["/Height"] = 3
+    image["/BitsPerComponent"] = 8
+    image["/ColorSpace"] = pikepdf.Array([pikepdf.Name("/ICCBased"), icc])
+    image["/SMask"] = smask
+    page.Resources = pikepdf.Dictionary(
+        {"/XObject": pikepdf.Dictionary({"/Im0": image})}
+    )
+    page.Contents = document.make_stream(b"q 0.48 0 0 0.72 0 0 cm /Im0 Do Q")
+    document.save(output_path)
+    return str(output_path)
+
+
+def _install_fake_runtime(monkeypatch, providers, native_merger=_fake_native_merger):
     fake_ort = types.ModuleType("onnxruntime")
     fake_ort.get_available_providers = lambda: list(providers)
     fake_ort.InferenceSession = _FakeSession
     monkeypatch.setitem(sys.modules, "onnxruntime", fake_ort)
+    fake_native = types.ModuleType("pdfcompare_native")
+    if native_merger is not None:
+        fake_native.combine_image_manifest_native = native_merger
+    monkeypatch.setitem(sys.modules, "pdfcompare_native", fake_native)
 
 
 def _prepare_models(monkeypatch, tmp_path: Path):
@@ -98,6 +137,15 @@ def test_frozen_runtime_self_test_runs_all_three_bundled_models(monkeypatch, tmp
         "free_allowed": "pdf.merge",
         "free_denied": "prepress.preflight",
     }
+    assert report["native_merger"] is True
+    behavior = report["native_merger_behavior"]
+    assert {key: behavior[key] for key in ("pages", "alpha", "icc_components")} == {
+        "pages": 1,
+        "alpha": True,
+        "icc_components": 3,
+    }
+    assert behavior["width_pt"] == pytest.approx(0.48, abs=0.01)
+    assert behavior["height_pt"] == pytest.approx(0.72, abs=0.01)
     assert len(_FakeSession.created) == 3
     assert all(providers == ("CPUExecutionProvider",) for _path, providers in _FakeSession.created)
 
@@ -123,6 +171,55 @@ def test_frozen_runtime_self_test_rejects_disabled_feature_gate(monkeypatch):
     monkeypatch.setattr(feature_entitlements, "FEATURE_GATING_ENABLED", False)
 
     with pytest.raises(RuntimeError, match="Feature gate"):
+        runtime_self_test.run_artifact_runtime_self_test()
+
+
+def test_frozen_runtime_self_test_rejects_missing_native_merger(monkeypatch, tmp_path):
+    _install_fake_runtime(
+        monkeypatch,
+        ["DmlExecutionProvider", "CPUExecutionProvider"],
+        native_merger=None,
+    )
+    _prepare_models(monkeypatch, tmp_path)
+
+    with pytest.raises(RuntimeError, match="thieu symbol"):
+        runtime_self_test.run_artifact_runtime_self_test()
+
+
+def test_frozen_runtime_self_test_rejects_broken_native_merger(monkeypatch, tmp_path):
+    def _broken(*_args, **_kwargs):
+        raise OSError("broken ABI")
+
+    _install_fake_runtime(
+        monkeypatch,
+        ["DmlExecutionProvider", "CPUExecutionProvider"],
+        native_merger=_broken,
+    )
+    _prepare_models(monkeypatch, tmp_path)
+
+    with pytest.raises(RuntimeError, match="behavior smoke"):
+        runtime_self_test.run_artifact_runtime_self_test()
+
+
+def test_frozen_runtime_self_test_rejects_pdf_without_alpha_or_icc(monkeypatch, tmp_path):
+    def _wrong_artifact(request_json, output_path, *_args):
+        request = json.loads(request_json)
+        source = request["sources"][0]
+        document = pikepdf.Pdf.new()
+        page = document.add_blank_page()
+        page.MediaBox = pikepdf.Array(
+            [0, 0, float(source["width_pt"]), float(source["height_pt"])]
+        )
+        document.save(output_path)
+
+    _install_fake_runtime(
+        monkeypatch,
+        ["DmlExecutionProvider", "CPUExecutionProvider"],
+        native_merger=_wrong_artifact,
+    )
+    _prepare_models(monkeypatch, tmp_path)
+
+    with pytest.raises(RuntimeError, match="behavior smoke"):
         runtime_self_test.run_artifact_runtime_self_test()
 
 
@@ -157,6 +254,76 @@ def test_release_qa_uses_staged_native_and_models_without_dirtying_source():
     assert "$script:ReleaseSourceCommit" in source
 
 
+def test_release_native_gate_phu_du_moi_consumer_ppe():
+    """Wheel staging phải bị chặn nếu chỉ có một phần ABI PPE mới."""
+    source = (Path(__file__).parents[2] / "build_production.ps1").read_text(
+        encoding="utf-8"
+    )
+    gate_start = source.index("$ppeCapabilityGate = @(")
+    gate_end = source.index("$nativeExit = $LASTEXITCODE", gate_start)
+    gate = source[gate_start:gate_end]
+
+    for symbol in (
+        "PpeRenderSession",
+        "ppe_separations",
+        "ppe_compose_separation_subset",
+        "ppe_softproof",
+        "ppe_export_cmyk",
+        "ppe_text_outlines",
+        "ppe_capabilities",
+        "combine_image_manifest_native",
+    ):
+        assert symbol in gate
+
+    for capability in (
+        "separation_subset_composite",
+        "softproof_paper_color",
+        "softproof_black_ink",
+        "softproof_page_background",
+        "softproof_viewport_clip",
+        "optional_content_configs",
+        "output_preview_filters",
+    ):
+        assert capability in gate
+
+    for output_filter in (
+        "all",
+        "device-cmyk",
+        "device-rgb",
+        "device-gray",
+        "spot",
+        "text",
+        "images",
+        "line-art",
+        "smooth-shades",
+    ):
+        assert f"''{output_filter}''" in gate
+
+    assert "hasattr(n, name)" in gate
+    assert "caps.get(name) is not True" in gate
+    assert "if any(problems.values()):" in gate
+
+
+def test_installed_verifier_requires_native_merger_behavior_marker():
+    source = (
+        Path(__file__).parents[2] / "scripts" / "verify_installed_artifact.ps1"
+    ).read_text(encoding="utf-8")
+    start = source.index("function Assert-SidecarAiRuntimeOutput")
+    end = source.index("function Invoke-SidecarAiRuntimeSmoke", start)
+    gate = source[start:end]
+
+    for field in (
+        "native_merger",
+        "native_merger_behavior.pages",
+        "native_merger_behavior.alpha",
+        "native_merger_behavior.icc_components",
+        "native_merger_behavior.width_pt",
+        "native_merger_behavior.height_pt",
+    ):
+        assert field in gate
+    assert "native merger behavior smoke khong dat" in gate
+
+
 def test_build_manifest_attests_gate_abi_mode_and_fresh_sidecar():
     source = (Path(__file__).parents[2] / "build_production.ps1").read_text(
         encoding="utf-8"
@@ -169,6 +336,7 @@ def test_build_manifest_attests_gate_abi_mode_and_fresh_sidecar():
         "PYTHON_ABI": "$PYTHON_MM",
         "FRONTEND_FEATURE_GATE": "enabled",
         "BACKEND_FEATURE_GATE": "enabled",
+        "LOGO_REBUILD": "hold",
     }
     for name, value in required_fields.items():
         assert f'"{name}' in source
@@ -180,6 +348,8 @@ def test_build_manifest_attests_gate_abi_mode_and_fresh_sidecar():
     assert "every installer must compile the sidecar from current sources" in source
 
     gate_set = source.index('$env:VITE_FEATURE_GATING_ENABLED = "true"')
+    logo_frontend_hold = source.index('$env:VITE_LOGO_REBUILD_ENABLED = "false"', gate_set)
+    logo_backend_hold = source.index('$env:PRYNX_LOGO_REBUILD_ENABLED = "false"', gate_set)
     frontend_section = source.index("[4/5] Building frontend", gate_set)
     frontend_build = source.index("npm.cmd run build\n", frontend_section)
     gate_assertion = source.rfind("Production frontend/backend feature gates", 0, frontend_build)
@@ -187,7 +357,18 @@ def test_build_manifest_attests_gate_abi_mode_and_fresh_sidecar():
         "Feature gate state changed before manifest creation.", frontend_build
     )
     manifest_write = source.index("$manifestLines = @(", manifest_gate_assertion)
+    assert gate_set < logo_frontend_hold < frontend_section
+    assert gate_set < logo_backend_hold < frontend_section
     assert gate_set < gate_assertion < frontend_build < manifest_gate_assertion < manifest_write
+
+    rust_host = (
+        Path(__file__).parents[2] / "desktop" / "src-tauri" / "src" / "lib.rs"
+    ).read_text(encoding="utf-8")
+    rust_build = (
+        Path(__file__).parents[2] / "desktop" / "src-tauri" / "build.rs"
+    ).read_text(encoding="utf-8")
+    assert 'option_env!("PRYNX_LOGO_REBUILD_ENABLED").unwrap_or("false")' in rust_host
+    assert 'cargo:rerun-if-env-changed=PRYNX_LOGO_REBUILD_ENABLED' in rust_build
 
 
 def test_build_manifest_trims_single_git_output_as_string_not_char():
@@ -213,6 +394,8 @@ def test_build_restores_owned_environment_even_after_failure():
     for name in (
         "VITE_FEATURE_GATING_ENABLED",
         "PRYNX_FEATURE_GATING_ENABLED",
+        "VITE_LOGO_REBUILD_ENABLED",
+        "PRYNX_LOGO_REBUILD_ENABLED",
         "PRYNX_FRONTEND_HASH",
         "PRYNX_SIDECAR_HASH",
         "DEV_MODE",
@@ -230,6 +413,8 @@ def test_build_environment_restore_runs_on_early_failure():
     names = (
         "VITE_FEATURE_GATING_ENABLED",
         "PRYNX_FEATURE_GATING_ENABLED",
+        "VITE_LOGO_REBUILD_ENABLED",
+        "PRYNX_LOGO_REBUILD_ENABLED",
         "PRYNX_FRONTEND_HASH",
         "PRYNX_SIDECAR_HASH",
         "DEV_MODE",
@@ -354,10 +539,15 @@ def test_dev_gated_mode_sets_both_layers_before_process_launch():
     mode = source.index('if /I "%~1"=="--gated"')
     frontend_flag = source.index('set "VITE_FEATURE_GATING_ENABLED=true"', mode)
     backend_flag = source.index('set "PRYNX_FEATURE_GATING_ENABLED=true"', mode)
+    token_setup = source.index('set "PRYNX_SIDECAR_TOKEN=%%T"', backend_flag)
     backend_launch = source.index('start "PDF Inspector - Backend"', backend_flag)
     frontend_launch = source.index('start "PDF Inspector - Frontend"', backend_flag)
-    assert mode < frontend_flag < backend_launch
-    assert mode < backend_flag < frontend_launch
+    assert mode < frontend_flag < token_setup < backend_launch
+    assert mode < backend_flag < token_setup < frontend_launch
+    rust_host = (
+        Path(__file__).parents[2] / "desktop" / "src-tauri" / "src" / "lib.rs"
+    ).read_text(encoding="utf-8")
+    assert 'std::env::var("PRYNX_SIDECAR_TOKEN")' in rust_host
 
 
 def test_tauri_handler_does_not_expose_ungated_dead_business_commands():

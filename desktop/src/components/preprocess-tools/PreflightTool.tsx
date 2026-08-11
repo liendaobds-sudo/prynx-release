@@ -215,7 +215,8 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
               </button>
               
               {onOpenOutputPreview && (
-                  <button 
+                  <button
+                    type="button"
                     onClick={onOpenOutputPreview}
                     title={t('preprocess.preflight:mo_output_preview_phan_tach_kem_mau')}
                     className="flex-1 px-2.5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors flex items-center justify-center gap-2 border border-teal-700"

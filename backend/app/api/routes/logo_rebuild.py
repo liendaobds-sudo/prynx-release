@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 import warnings
 from io import BytesIO
 from pathlib import Path
@@ -14,7 +16,10 @@ from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
-from app.core.heavy_job_scheduler import run_scheduled_in_threadpool
+from app.core.heavy_job_scheduler import (
+    HeavyJobQueueCancelled,
+    run_scheduled_in_threadpool,
+)
 from app.core.license_guard import require_feature
 from app.schemas.logo_rebuild import (
     LogoRebuildCancelResponse,
@@ -32,12 +37,75 @@ from app.workers.logo_rebuild import (
     cancel_logo_job,
     logo_vectorizer_capabilities,
     process_logo_preview,
+    release_logo_job,
     reserve_logo_job,
     suggest_logo_palette,
 )
 
 
-router = APIRouter(dependencies=[Depends(require_feature("util.logo_rebuild"))])
+_RELEASE_FLAG_NAME = "PRYNX_LOGO_REBUILD_ENABLED"
+_LEGACY_VTRACER_FLAG_NAME = "PRYNX_LOGO_LEGACY_VTRACER_ENABLED"
+
+
+def _logo_rebuild_runtime_enabled(
+    *,
+    is_development: bool | None = None,
+    is_compiled: bool | None = None,
+    release_flag: str | None = None,
+) -> bool:
+    """Chỉ mở ở dev thông dịch hoặc khi release bật cờ có chủ ý."""
+
+    compiled = (
+        "__compiled__" in globals() or getattr(sys, "frozen", False)
+        if is_compiled is None
+        else is_compiled
+    )
+    development = settings.DEV_MODE if is_development is None else is_development
+    if development and not compiled:
+        return True
+
+    raw_flag = os.getenv(_RELEASE_FLAG_NAME, "false") if release_flag is None else release_flag
+    return raw_flag.strip().lower() == "true"
+
+
+def require_logo_rebuild_runtime() -> None:
+    # LOGO-REBUILD (audit 2026-08-09 §LR3.10): frontend không phải enforcement
+    # boundary; API đang HOLD phải fail-closed trước cả bước dò capability native.
+    if not _logo_rebuild_runtime_enabled():
+        raise HTTPException(
+            status_code=404,
+            detail="Tính năng Phục hồi & Vector hóa Logo chưa được mở trong bản phát hành này.",
+        )
+
+
+def _legacy_vtracer_runtime_enabled(
+    *,
+    is_development: bool | None = None,
+    is_compiled: bool | None = None,
+    legacy_flag: str | None = None,
+) -> bool:
+    """VTracer chỉ là đường so sánh/fallback khi dev bật cờ tường minh."""
+
+    compiled = (
+        "__compiled__" in globals() or getattr(sys, "frozen", False)
+        if is_compiled is None
+        else is_compiled
+    )
+    development = settings.DEV_MODE if is_development is None else is_development
+    raw_flag = (
+        os.getenv(_LEGACY_VTRACER_FLAG_NAME, "false")
+        if legacy_flag is None
+        else legacy_flag
+    )
+    return development and not compiled and raw_flag.strip().lower() == "true"
+
+
+router = APIRouter(
+    dependencies=[
+        Depends(require_logo_rebuild_runtime),
+        Depends(require_feature("util.logo_rebuild")),
+    ]
+)
 
 _ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 _ALLOWED_FORMATS = {"PNG", "JPEG", "WEBP"}
@@ -105,7 +173,12 @@ def _inspect_image(stream: BinaryIO, file_size: int) -> LogoSourceInfo:
             )
 
 
-def _preflight_warnings(source: LogoSourceInfo) -> list[str]:
+def _preflight_warnings(
+    source: LogoSourceInfo,
+    logo_settings: LogoRebuildSettings,
+    *,
+    include_physical_contract: bool = True,
+) -> list[str]:
     result: list[str] = []
     if min(source.width_px, source.height_px) < 512:
         result.append("Độ phân giải vùng logo thấp; nét nhỏ có thể cần dựng lại thủ công.")
@@ -113,18 +186,35 @@ def _preflight_warnings(source: LogoSourceInfo) -> list[str]:
         result.append("Ảnh không có ICC profile; màu in cần được người dùng xác nhận.")
     if source.mode == "CMYK":
         result.append("Ảnh CMYK sẽ được chuyển về sRGB ở bước tiền xử lý.")
+    if include_physical_contract and logo_settings.physical_width_mm is None:
+        # LOGO-REBUILD (audit 2026-08-09 §LR3.03): metadata DPI chỉ được
+        # trình bày như gợi ý; SVG không được âm thầm mang kích thước in đó.
+        result.append(
+            "Chưa xác nhận kích thước in rộng/cao mm; DPI nguồn chỉ được dùng làm gợi ý."
+        )
     return result
 
 
 def _parse_settings(settings_json: str) -> LogoRebuildSettings:
     try:
-        return LogoRebuildSettings.model_validate_json(settings_json)
+        parsed = LogoRebuildSettings.model_validate_json(settings_json)
     except ValidationError as exc:
         first_error = exc.errors(include_url=False)[0].get("msg", "cấu hình không hợp lệ")
         raise HTTPException(
             status_code=422,
             detail=f"Cấu hình logo không hợp lệ: {first_error}",
         ) from exc
+    # LOGO-ENGINE-V2 (audit 2026-08-11 Lô G2): không tự fallback khi core lỗi.
+    # VTracer chỉ được chọn trực tiếp trong dev và phải có cờ riêng.
+    if parsed.engine == "vtracer" and not _legacy_vtracer_runtime_enabled():
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "VTracer legacy chỉ dùng để đối chiếu trong dev khi bật "
+                f"{_LEGACY_VTRACER_FLAG_NAME}=true."
+            ),
+        )
+    return parsed
 
 
 async def _read_and_inspect_upload(file: UploadFile) -> tuple[bytes, LogoSourceInfo]:
@@ -164,6 +254,7 @@ def logo_rebuild_capabilities() -> LogoRebuildCapabilitiesResponse:
         modes=["monochrome", "fixed_palette"],
         supported_formats=["png", "jpeg", "webp"],
         preview_engine_enabled=engine is not None,
+        legacy_vtracer_enabled=_legacy_vtracer_runtime_enabled(),
         engine=engine,
         limitations=_limitations(engine is not None),
     )
@@ -192,7 +283,11 @@ async def logo_rebuild_preflight(
         source=source,
         settings=logo_settings,
         palette_suggestions=palette_suggestions,
-        warnings=list(dict.fromkeys([*_preflight_warnings(source), *palette_warnings])),
+        warnings=list(
+            dict.fromkeys(
+                [*_preflight_warnings(source, logo_settings), *palette_warnings]
+            )
+        ),
         limitations=_limitations(engine_enabled),
     )
 
@@ -208,6 +303,7 @@ async def logo_rebuild_preview(
 ) -> LogoRebuildPreviewResponse:
     logo_settings = _parse_settings(settings_json)
     payload, source = await _read_and_inspect_upload(file)
+    token = None
     try:
         token = reserve_logo_job(str(job_id))
         result = await run_scheduled_in_threadpool(
@@ -217,7 +313,10 @@ async def logo_rebuild_preview(
             logo_settings,
             str(job_id),
             token,
+            queue_cancelled=token.is_cancelled,
         )
+    except HeavyJobQueueCancelled as exc:
+        raise HTTPException(status_code=409, detail="Đã hủy preview logo.") from exc
     except LogoEngineUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except LogoJobConflict as exc:
@@ -228,17 +327,39 @@ async def logo_rebuild_preview(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=f"Không thể tạo SVG preview: {exc}") from exc
+    finally:
+        # LOGO-REBUILD (audit 2026-08-09 §LR3.08): worker tự dọn khi đã chạy;
+        # route dọn idempotent cho lỗi/cancel xảy ra trước khi worker được gọi.
+        if token is not None:
+            release_logo_job(str(job_id), token)
 
-    warnings_result = list(dict.fromkeys([*_preflight_warnings(source), *result.warnings]))
+    warnings_result = list(
+        dict.fromkeys(
+            [
+                *_preflight_warnings(
+                    source,
+                    logo_settings,
+                    include_physical_contract=False,
+                ),
+                *result.warnings,
+            ]
+        )
+    )
     return LogoRebuildPreviewResponse(
         status=result.status,
         job_id=job_id,
         svg=result.svg,
         width_px=result.width_px,
         height_px=result.height_px,
+        physical_width_mm=result.physical_width_mm,
+        physical_height_mm=result.physical_height_mm,
         warnings=warnings_result,
         engine=result.engine,
         engine_version=result.engine_version,
+        result_schema_version=result.result_schema_version,
+        artifact_sha256=result.artifact_sha256,
+        preprocess_hash=result.preprocess_hash,
+        native_metrics=result.native_metrics,
         complexity=result.complexity,
         review_reasons=result.review_reasons,
         review_actions=result.review_actions,

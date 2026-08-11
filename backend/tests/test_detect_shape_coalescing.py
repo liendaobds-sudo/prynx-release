@@ -1,5 +1,9 @@
 import asyncio
+import logging
 import time
+
+import pikepdf
+import pytest
 
 from app.api.routes import imposition
 from app.core import detect_shape_service
@@ -111,6 +115,74 @@ def test_vector_and_raster_cpu_phases_keep_event_loop_responsive(monkeypatch):
         assert raster_ticks >= 3
 
     asyncio.run(scenario())
+
+
+def test_raster_fallback_di_tron_luong_ppe_that(tmp_path):
+    """Khóa detect-shape → tách kẽm PPE → OpenCV classifier trên artifact thật.
+
+    Đây là consumer PPE nằm ngoài Output Preview. Chỉ test budget/classifier rời
+    không bắt được hồi quy tên spot, byte mặt phẳng mực hoặc kích thước raster.
+    """
+    # PPE-SCOPE (audit 2026-08-10 §PPE.SCOPE.3): không skip cả module vì các test
+    # coalescing thuần vẫn phải chạy trên môi trường chưa build native.
+    try:
+        import pdfcompare_native
+    except ImportError:
+        pytest.skip("cần native PPE để kiểm trọn raster fallback")
+    if not hasattr(pdfcompare_native, "ppe_separations"):
+        pytest.skip("native hiện tại chưa có ppe_separations")
+
+    from app.core.separations import SeparationEngine
+
+    pdf = pikepdf.Pdf.new()
+    tint = pikepdf.Dictionary(
+        FunctionType=2,
+        Domain=[0, 1],
+        C0=[0, 0, 0, 0],
+        C1=[0, 1, 0, 0],
+        N=1,
+        Range=[0, 1, 0, 1, 0, 1, 0, 1],
+    )
+    separation = pikepdf.Array(
+        [
+            pikepdf.Name("/Separation"),
+            pikepdf.Name("/CutContour"),
+            pikepdf.Name("/DeviceCMYK"),
+            pdf.make_indirect(tint),
+        ]
+    )
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"),
+        MediaBox=[0, 0, 200, 120],
+        Resources=pikepdf.Dictionary(
+            ColorSpace=pikepdf.Dictionary(CS0=pdf.make_indirect(separation))
+        ),
+        Contents=pdf.make_indirect(
+            pikepdf.Stream(pdf, b"/CS0 cs 1 scn 20 30 120 60 re f\n")
+        ),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    source = tmp_path / "spot-rectangle.pdf"
+    pdf.save(str(source))
+    pdf.close()
+
+    shape = asyncio.run(
+        imposition._raster_fallback_shape(
+            SeparationEngine(),
+            str(source),
+            0,
+            DetectionConfig(),
+            logging.getLogger("test_ppe_raster_fallback"),
+        )
+    )
+
+    assert shape is not None
+    assert shape.source == "raster_fallback"
+    assert shape.type.name == "RECTANGLE"
+    # Classifier đo bbox theo chênh lệch chỉ số pixel nên nhỏ hơn hình 120×60 pt
+    # đúng nửa pixel ở 144 DPI; dung sai 0,6 pt khóa cả DPI lẫn quy đổi px→pt.
+    assert shape.trim.w == pytest.approx(119.5, abs=0.6)
+    assert shape.trim.h == pytest.approx(59.5, abs=0.6)
 
 
 def test_detect_cache_key_changes_with_detection_config(tmp_path):

@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 2,
+  "engineModeGate": "current",
+  "promotionStatus": "blocked-pending-shadow-and-installed-evidence",
+  "rolloutGate": {
+    "requiredDpi": 96.0,
+    "minReadyPairsPerPage": 5,
+    "maxRgbMae": 5.0,
+    "maxP95TotalMs": 650,
+    "maxUnsupportedAttempts": 0,
+    "maxErrorAttempts": 0,
+    "requireStableArtifactPair": true
+  },
+  "description": "Corpus xác định cho PPE Viewer shadow; không chứa đường dẫn hoặc nội dung PDF khách.",
+  "entries": [
+    {
+      "id": "fixture-rgb",
+      "category": "simple_rgb_vector_text",
+      "path": "backend/tests/preflight_fixtures/pdfs/02_rgb_colorspace.pdf",
+      "sha256": "d2d9aed254446c174f1a014c1c3ed91fa8e7100c1abd98f5099a8b38d0df8b1e",
+      "pages": [1]
+    },
+    {
+      "id": "fixture-live-text",
+      "category": "simple_rgb_vector_text",
+      "path": "backend/tests/preflight_fixtures/pdfs/03_live_text.pdf",
+      "sha256": "7eac94107b79f57622c2b540ed3901437bc6f0432bc813b7ab0bc14b16e324cc",
+      "pages": [1]
+    },
+    {
+      "id": "fixture-low-res-image",
+      "category": "image_scan",
+      "path": "backend/tests/preflight_fixtures/pdfs/08_low_res_image.pdf",
+      "sha256": "a63768bfd1902dc6dd36de89487e73537d21baaf9f9140cb80ff7b82b4fee196",
+      "pages": [1]
+    },
+    {
+      "id": "fixture-progressive-jpeg",
+      "category": "image_scan",
+      "path": "backend/tests/preflight_fixtures/pdfs/14_progressive_jpeg.pdf",
+      "sha256": "dcd734bfc19f224411b5f4707a59e3c1e2cd11e0d970b178c1514b65cf7d5804",
+      "pages": [1]
+    },
+    {
+      "id": "fixture-overprint",
+      "category": "cmyk_spot",
+      "path": "backend/tests/preflight_fixtures/pdfs/10_overprint.pdf",
+      "sha256": "8f6a4ff7277d52e4de4f78573aec83f3bc9cbd72bd838d4b3465b8e4e10c2650",
+      "pages": [1]
+    },
+    {
+      "id": "fixture-spot",
+      "category": "cmyk_spot",
+      "path": "backend/tests/preflight_fixtures/pdfs/12_spot_color.pdf",
+      "sha256": "d2d188beb70e9c957ff9c00d27d905167dd2574008e9022f2e7db351bed87d2a",
+      "pages": [1]
+    },
+    {
+      "id": "fixture-tac-heavy",
+      "category": "cmyk_spot",
+      "path": "backend/tests/preflight_fixtures/pdfs/17_tac_heavy_cmyk.pdf",
+      "sha256": "cd3ed15448ef7dcabe77a85ffc1a1b60119c7dafa5eb65fcd56719364a902b8e",
+      "pages": [1]
+    },
+    {
+      "id": "customer-cmyk-primary",
+      "category": "cmyk_spot",
+      "env": "PRYNX_VIEWER_CORPUS_CMYK",
+      "required": true,
+      "sha256": "95f38cf429fe7dd7c6500043ce308fd2e87e80a2290217d428fe0c68c6098184",
+      "pages": [1, 2, 3, 4]
+    },
+    {
+      "id": "fixture-transparency",
+      "category": "transparency_ocg",
+      "path": "backend/tests/preflight_fixtures/pdfs/11_transparency.pdf",
+      "sha256": "91cc1f7abd93e61856a52e85cad2a8c68f2c4c8fc235287ccaed9ef3fc6b38ff",
+      "pages": [1]
+    },
+    {
+      "id": "fixture-ocg-view",
+      "category": "transparency_ocg",
+      "path": "${GENERATED}/ocg_view.pdf",
+      "sha256": "e272056655ca518bee86370570d205908b46d57902198bec88a704c86310f12d",
+      "pages": [1]
+    },
+    {
+      "id": "fixture-annotation-ap",
+      "category": "annotation_form",
+      "path": "${GENERATED}/annotation_ap.pdf",
+      "sha256": "335ff725b6ef33434587d5f547c71c4c82cd53281797ab383457903a65fd9745",
+      "pages": [1]
+    }
+  ]
+}

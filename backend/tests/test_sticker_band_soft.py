@@ -99,6 +99,31 @@ def test_giu_nguyen_ruot_mau_nhat():
     assert moi[px // 2, px // 2] == 255, "ruột pastel bị đục thủng"
 
 
+def test_giu_mang_pastel_noi_voi_muc_dam_o_bien_ngoai():
+    """Mảng pastel lớn là artwork, không phải ringing chỉ vì trang có mực đậm.
+
+    Ca hồi quy thật là cánh hoa hồng/nền kem nối với phần chữ hoặc tâm đậm. Profile
+    mực mạnh trước đây cho flood-fill nền đi xuyên toàn mảng pastel chạm biên ngoài,
+    khiến cả CutContour lẫn artwork bị xóa dù mask trắng ban đầu đã nhận đúng.
+    """
+    px = 720
+    img = np.full((px, px, 3), 255, np.uint8)
+    mask = np.zeros((px, px), np.uint8)
+
+    # Cánh pastel nối thật với tâm vàng; mảng đen đủ lớn để kích hoạt profile mực mạnh.
+    cv2.ellipse(img, (250, 360), (180, 105), 0, 0, 360, (238, 130, 155), -1)
+    cv2.ellipse(mask, (250, 360), (180, 105), 0, 0, 360, 255, -1)
+    cv2.circle(img, (430, 360), 115, (250, 220, 0), -1)
+    cv2.circle(mask, (430, 360), 115, 255, -1)
+    cv2.rectangle(img, (420, 90), (650, 210), (25, 25, 25), -1)
+    cv2.rectangle(mask, (420, 90), (650, 210), 255, -1)
+
+    moi = _lam_mem_dai_bien(mask, img, px_per_mm=12.0)
+
+    assert mask[360, 170] == 255
+    assert moi[360, 170] >= 127, "mảng pastel ngoài bị flood-fill thành nền"
+
+
 def test_bo_qua_khi_kich_thuoc_lech():
     """Đầu vào không khớp thì trả nguyên mask, không nổ."""
     mask = np.zeros((10, 10), np.uint8)

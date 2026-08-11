@@ -465,28 +465,24 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
                 margin_left=margin_left, margin_bottom=margin_bottom, margin_top=margin_top,
                 exclude_zones=gang_exclude or None,
             )
-            # Tính số đếm theo placements thực (đã tránh boong lúc xếp).
-            res['items_per_sheet'] = len(res['placements'])
-            _pbp = {}
-            for _p in res['placements']:
-                _pbp[_p['src_page_idx']] = _pbp.get(_p['src_page_idx'], 0) + 1
-            res['placed_by_page'] = _pbp
-            _sn = 1
-            for fi in sub_front_idxs:
-                _cnt = _pbp.get(fi, 0)
-                _q = _qty_for(fi)
-                if _q > 0 and _cnt > 0:
-                    _sn = max(_sn, -(-_q // _cnt))
-            res['sheets_needed'] = _sn
             return res
 
     # ── Dựng danh sách "đơn vị bình" ──
     #  - Bình trang (S&R): MỖI mẫu → 1 đơn vị (1 tờ riêng, lấp đầy bằng chính mẫu đó).
-    #  - Dàn nhiều mẫu:    TẤT CẢ mẫu → 1 đơn vị (gang chung 1 tờ).
+    #  - Dàn nhiều mẫu:    mỗi TỜ MẪU khác nhau → 1 đơn vị; không bỏ overflow.
     if is_sr:
         units = [([fi], _layout_for([fi])) for fi in front_idxs]
     else:
-        units = [(list(front_idxs), _layout_for(front_idxs))]
+        gang_layout = _layout_for(front_idxs)
+        gang_sheets = gang_layout.get('sheets') or [gang_layout]
+        units = []
+        for gang_sheet in gang_sheets:
+            pages_on_sheet = {
+                placement['src_page_idx']
+                for placement in gang_sheet.get('placements', [])
+            }
+            sheet_front_idxs = [fi for fi in front_idxs if fi in pages_on_sheet]
+            units.append((sheet_front_idxs, gang_sheet))
 
     # ── Guard "mẫu lớn hơn tờ" (Yêu cầu audit #3): nếu KHÔNG xếp được con nào trên
     # bất kỳ đơn vị bình nào → báo lỗi RÕ thay vì xuất tờ trắng âm thầm. Kèm kích
@@ -510,6 +506,29 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
         raise ValueError(
             f"Không xếp được mẫu nào lên vùng in ({_mm(usable_w)}×{_mm(usable_h)}mm). "
             f"Hãy kiểm tra khổ tờ và lề."
+        )
+
+    # CNC MULTI-SHEET FIX 2026-08-10 §MSHEET.1: nếu chỉ MỘT PHẦN mẫu được đặt,
+    # phải dừng rõ ràng thay vì giao PDF thiếu mẫu cho xưởng.
+    has_requested_quantity = any(_qty_for(fi) > 0 for fi in front_idxs)
+    required_fronts = {
+        fi for fi in front_idxs
+        if is_sr or not has_requested_quantity or _qty_for(fi) > 0
+    }
+    placed_fronts = {
+        placement['src_page_idx']
+        for _fronts, layout in units
+        for placement in layout.get('placements', [])
+    }
+    missing_fronts = sorted(required_fronts - placed_fronts)
+    if missing_fronts:
+        src_doc.close()
+        out_doc.close()
+        missing_text = ", ".join(str(fi + 1) for fi in missing_fronts[:20])
+        suffix = "…" if len(missing_fronts) > 20 else ""
+        raise ValueError(
+            f"Không xếp đủ mẫu CNC lên các tờ. Trang chưa được đặt: {missing_text}{suffix}. "
+            f"Hãy tăng khổ tờ, giảm lề/khoảng hở hoặc kiểm tra kích thước mẫu."
         )
 
     # ── Render từng đơn vị: Mặt trước → [Mặt sau lật gương] → Khuôn ──

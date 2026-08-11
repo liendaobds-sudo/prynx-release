@@ -6,7 +6,7 @@
     "ra được. Khi build_production.ps1 thêm/bớt một binary, PHẢI sửa file này.",
     "",
     "Trường `bundled` = false nghĩa là thành phần KHÔNG còn trong installer;",
-    "generator sẽ bỏ khỏi NOTICE. Dùng cho Ghostscript sau khi PPE thay xong."
+    "generator sẽ bỏ khỏi NOTICE. Dùng làm mốc pháp lý cho thành phần từng được đóng gói."
   ],
   "native_components": [
     {
@@ -20,7 +20,7 @@
       "linkage": "Tiến trình riêng, gọi qua dòng lệnh (không liên kết thư viện)",
       "used_for": "Không còn dùng. Trước đây: tách kẽm CMYK/spot, soft-proof ICC, chuyển màu, PDF/X, flatten, outline font, downsample ảnh, nén PDF",
       "bundled": false,
-      "notes": "GS-SUNSET 2026-07-28: KHÔNG còn đóng gói và KHÔNG còn chạy được. build_production.ps1 gõ cứng $BUNDLE_GS=$false; config.py ép GHOSTSCRIPT_PATH=''; subprocess_utils._guard_ghostscript ném GhostscriptUnavailable vô điều kiện. Giữ entry lại (bundled=false) làm mốc lịch sử — generator tự bỏ khỏi NOTICE, nên sinh lại NOTICE mà quên cờ --no-ghostscript cũng KHÔNG khai lại AGPL. Đừng đặt lại true nếu chưa thực sự đóng gói GS."
+      "notes": "Từ 2026-08-08: KHÔNG còn đóng gói hoặc dùng ở runtime. Build/Tauri không tạo payload; cấu hình và discovery đã bị xóa; verifier cùng tripwire subprocess chặn việc đưa executable trở lại. Giữ entry bundled=false làm mốc pháp lý, generator tự loại khỏi NOTICE. Chỉ đổi thành true sau một quyết định giấy phép và thay đổi pipeline phát hành có chủ đích."
     },
     {
       "id": "tesseract",

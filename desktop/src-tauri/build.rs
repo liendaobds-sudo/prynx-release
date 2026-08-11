@@ -5,5 +5,6 @@ fn main() {
     println!("cargo:rerun-if-env-changed=PRYNX_SIDECAR_HASH");
     println!("cargo:rerun-if-env-changed=PRYNX_FRONTEND_HASH");
     println!("cargo:rerun-if-env-changed=PRYNX_FEATURE_GATING_ENABLED");
+    println!("cargo:rerun-if-env-changed=PRYNX_LOGO_REBUILD_ENABLED");
     tauri_build::build()
 }

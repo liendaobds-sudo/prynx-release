@@ -16,6 +16,7 @@ use lopdf::{dictionary, Dictionary, Document, Object, Stream};
 use print_engine::color::{ColorManager, RenderIntent};
 use print_engine::content::RenderOptions;
 use print_engine::page::{render_page, render_page_managed, PageBox, PageRender};
+use print_engine::{BlendMode, PpeError};
 
 const PAGE: i64 = 40;
 
@@ -162,7 +163,7 @@ fn multiply_and_screen_are_not_swapped_end_to_end() {
 #[test]
 fn supported_blend_mode_does_not_degrade_confidence() {
     // Trước Milestone G, mọi `/BM` khác Normal đều hạ tin cậy ⇒ gần như mọi file
-    // xưởng rơi về Ghostscript. Mode đã dựng thì không được bật cờ nữa.
+    // xưởng bị loại khỏi kết quả tin cậy. Mode đã dựng thì không được bật cờ nữa.
     let r = magenta_then_black("Multiply");
     assert!(
         !r.warnings.unsupported_transparency,
@@ -476,6 +477,113 @@ fn soft_mask_doc(
 }
 
 #[test]
+fn nonseparable_blend_modes_on_cmyk_page_require_compatibility_lane() {
+    // CORRECTNESS (audit 2026-08-10 §L6.5): bốn mode không tách kênh không có
+    // surface RGB exact trên trang CMYK. Pixel xấp xỉ vẫn hữu ích cho đường đo,
+    // nhưng Viewer hybrid phải nhận `ink_unsound` để lùi compatibility lane.
+    for name in ["Hue", "Saturation", "Color", "Luminosity"] {
+        let rendered = magenta_then_black(name);
+        assert!(
+            rendered.warnings.ink_unsound(),
+            "/{name} trên DeviceCMYK phải hạ soundness: {:?}",
+            rendered.warnings
+        );
+    }
+}
+
+/// Soft mask có BBox sentinel rất lớn nhưng clip hiện hành chỉ là ô 4×4.
+fn sentinel_soft_mask_doc() -> Document {
+    let content = format!("q 17 17 4 4 re W n /GS0 gs 0 0 0 1 k 0 0 {PAGE} {PAGE} re f Q");
+    build_with(&content, |doc| {
+        let group = dictionary! { "S" => "Transparency", "CS" => "DeviceGray" };
+        let form = add_form(
+            doc,
+            "1 g -32768 -32768 65536 65536 re f",
+            [-32768, -32768, 32768, 32768],
+            Some(group),
+        );
+        dictionary! {
+            "ExtGState" => dictionary! {
+                "GS0" => dictionary! {
+                    "SMask" => Object::Dictionary(dictionary! {
+                        "S" => "Luminosity",
+                        "G" => form,
+                    })
+                }
+            }
+        }
+    })
+}
+
+/// Hai tầng soft-mask ảnh: đỉnh inner ở x=27 lan tới outer x=24, rồi outer lan
+/// tiếp tới pixel trang x=21. `mask_before_clip=true` dựng oracle full-frame.
+fn nested_image_soft_mask_doc(mask_before_clip: bool) -> Document {
+    let content = if mask_before_clip {
+        format!(
+            "q /GSOuter gs 20 0 2 {PAGE} re W n \
+             {PAGE} 0 0 {PAGE} 0 0 cm /Im0 Do Q"
+        )
+    } else {
+        format!(
+            "q 20 0 2 {PAGE} re W n /GSOuter gs \
+             {PAGE} 0 0 {PAGE} 0 0 cm /Im0 Do Q"
+        )
+    };
+    build_with(&content, |doc| {
+        let group = dictionary! { "S" => "Transparency", "CS" => "DeviceGray" };
+        let inner_mask = add_form(
+            doc,
+            &format!("0 g 27 0 1 {PAGE} re f"),
+            [0, 0, PAGE, PAGE],
+            Some(group.clone()),
+        );
+        let image = Object::Reference(doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 1,
+                "Height" => 1,
+                "ColorSpace" => "DeviceCMYK",
+                "BitsPerComponent" => 8,
+            },
+            vec![0, 0, 0, 255],
+        )));
+        let outer_resources = Object::Reference(doc.add_object(dictionary! {
+            "ExtGState" => dictionary! {
+                "GSInner" => dictionary! {
+                    "SMask" => Object::Dictionary(dictionary! {
+                        "S" => "Alpha",
+                        "G" => inner_mask,
+                    })
+                }
+            },
+            "XObject" => dictionary! { "Im0" => image.clone() },
+        }));
+        let outer_mask = Object::Reference(doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Form",
+                "BBox" => vec![0.into(), 0.into(), PAGE.into(), PAGE.into()],
+                "Group" => Object::Dictionary(group),
+                "Resources" => outer_resources,
+            },
+            format!("/GSInner gs {PAGE} 0 0 {PAGE} 0 0 cm /Im0 Do").into_bytes(),
+        )));
+        dictionary! {
+            "ExtGState" => dictionary! {
+                "GSOuter" => dictionary! {
+                    "SMask" => Object::Dictionary(dictionary! {
+                        "S" => "Alpha",
+                        "G" => outer_mask,
+                    })
+                }
+            },
+            "XObject" => dictionary! { "Im0" => image },
+        }
+    })
+}
+
+#[test]
 fn luminosity_soft_mask_scales_ink_by_lightness() {
     // Form tô xám 50% trên toàn BBox ⇒ độ sáng 0.5 ⇒ mực còn một nửa.
     let mask = format!("0.5 g 0 0 {PAGE} {PAGE} re f");
@@ -528,6 +636,49 @@ fn managed_rgb_luminosity_soft_mask_uses_rgb_lightness_before_icc() {
 }
 
 #[test]
+fn unmanaged_rgb_luminosity_mask_does_not_require_rgb_sidecar_budget() {
+    // MEMORY (audit 2026-08-09 §PRE.0B): không có ColorManager thì các paint
+    // không duy trì được RGB sidecar hoàn chỉnh. Cấp sidecar ở đây chỉ tốn
+    // 13 byte/pixel rồi vẫn rơi về luminosity CMYK xấp xỉ.
+    let content = format!("/GS0 gs 0 0 0 1 k 0 0 {PAGE} {PAGE} re f");
+    let doc = build_with(&content, |doc| {
+        let group = dictionary! { "S" => "Transparency", "CS" => "DeviceRGB" };
+        let form = add_form(
+            doc,
+            &format!("1 0 0 rg 0 0 {PAGE} {PAGE} re f"),
+            [0, 0, PAGE, PAGE],
+            Some(group),
+        );
+        dictionary! {
+            "ExtGState" => dictionary! {
+                "GS0" => dictionary! {
+                    "SMask" => Object::Dictionary(dictionary! {
+                        "S" => "Luminosity",
+                        "G" => form,
+                    })
+                }
+            }
+        }
+    });
+    let reference = render_doc(&doc);
+    let bounded = render_page(
+        &doc,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::ink_accurate().with_memory_budget_bytes(82_000),
+    )
+    .expect("đường unmanaged không được xin RGB sidecar vô dụng");
+    for channel in 0..4 {
+        assert_eq!(
+            bounded.buffer.plate_u8(channel),
+            reference.buffer.plate_u8(channel),
+            "bỏ sidecar không được đổi kênh {channel}"
+        );
+    }
+}
+
+#[test]
 fn white_luminosity_mask_lets_all_ink_through() {
     let mask = format!("1 g 0 0 {PAGE} {PAGE} re f");
     let doc = soft_mask_doc("Luminosity", &mask, [0, 0, PAGE, PAGE], None);
@@ -569,6 +720,291 @@ fn alpha_soft_mask_uses_group_coverage() {
     let w = r.buffer.width() as usize;
     assert_eq!(px(&r, 3, 2, h), 255, "vùng group đã vẽ ⇒ alpha 1");
     assert_eq!(px(&r, 3, w - 3, h), 0, "vùng group chưa vẽ ⇒ alpha 0");
+}
+
+#[test]
+fn alpha_soft_mask_outside_bbox_uses_transfer_of_zero() {
+    // ISO 32000-1 §7.5.4: ngoài BBox của subtype Alpha, giá trị mask là
+    // kết quả áp `/TR` lên đầu vào 0. Hàm này cố ý ánh xạ 0 → 0,25.
+    let half = PAGE / 2;
+    let content = format!("/GS0 gs 0 0 0 1 k 0 0 {PAGE} {PAGE} re f");
+    let doc = build_with(&content, |doc| {
+        let group = dictionary! { "S" => "Transparency", "CS" => "DeviceGray" };
+        let form = add_form(
+            doc,
+            &format!("0 g 0 0 {PAGE} {PAGE} re f"),
+            [0, 0, half, PAGE],
+            Some(group),
+        );
+        let tr = dictionary! {
+            "FunctionType" => 2,
+            "Domain" => vec![0.into(), 1.into()],
+            "C0" => vec![0.25.into()],
+            "C1" => vec![1.into()],
+            "N" => 1,
+            "Range" => vec![0.into(), 1.into()],
+        };
+        dictionary! {
+            "ExtGState" => dictionary! {
+                "GS0" => dictionary! {
+                    "SMask" => Object::Dictionary(dictionary! {
+                        "S" => "Alpha",
+                        "G" => form,
+                        "TR" => Object::Dictionary(tr),
+                    })
+                }
+            }
+        }
+    });
+    let rendered = render_doc(&doc);
+    let y = rendered.buffer.height() as usize / 2;
+    let width = rendered.buffer.width() as usize;
+    assert_eq!(px(&rendered, 3, 2, y), 255, "mẫu alpha 1 phải cho qua");
+    let outside = px(&rendered, 3, width - 3, y) as i16;
+    assert!(
+        (outside - 64).abs() <= 2,
+        "ngoài BBox của Alpha phải dùng TR(0)=0,25: {outside}"
+    );
+}
+
+#[test]
+fn alpha_soft_mask_guard_pixels_outside_every_bbox_edge_use_transfer_of_zero() {
+    // CORRECTNESS (audit 2026-08-09 §PRE.0A): `Region::from_bounds` giữ một
+    // pixel khử răng cưa ngoài BBox. Bốn pixel đó vẫn là "ngoài BBox" theo PDF
+    // và phải nhận TR(0), không được ghi cứng 0 rồi tạo viền tối quanh mặt nạ.
+    let content = format!("/GS0 gs 0 0 0 1 k 0 0 {PAGE} {PAGE} re f");
+    let doc = build_with(&content, |doc| {
+        let group = dictionary! { "S" => "Transparency", "CS" => "DeviceGray" };
+        let form = add_form(
+            doc,
+            &format!("0 g 0 0 {PAGE} {PAGE} re f"),
+            [10, 10, 30, 30],
+            Some(group),
+        );
+        let tr = dictionary! {
+            "FunctionType" => 2,
+            "Domain" => vec![0.into(), 1.into()],
+            "C0" => vec![0.25.into()],
+            "C1" => vec![1.into()],
+            "N" => 1,
+            "Range" => vec![0.into(), 1.into()],
+        };
+        dictionary! {
+            "ExtGState" => dictionary! {
+                "GS0" => dictionary! {
+                    "SMask" => Object::Dictionary(dictionary! {
+                        "S" => "Alpha",
+                        "G" => form,
+                        "TR" => Object::Dictionary(tr),
+                    })
+                }
+            }
+        }
+    });
+    let rendered = render_doc(&doc);
+    let expected = 64_i16;
+    for (edge, x, y) in [
+        ("trái", 9, 20),
+        ("phải", 30, 20),
+        ("trên", 20, 9),
+        ("dưới", 20, 30),
+    ] {
+        let actual = px(&rendered, 3, x, y) as i16;
+        assert!(
+            (actual - expected).abs() <= 2,
+            "pixel sát cạnh {edge} phải dùng TR(0)=0,25: {actual}"
+        );
+    }
+}
+
+#[test]
+fn luminosity_bc_and_samples_both_pass_through_transfer() {
+    // Trong BBox: xám 0,8 → `/TR` nghịch đảo còn 0,2. Ngoài BBox: `/BC` 0,2
+    // cũng phải qua `/TR` thành 0,8.
+    let half = PAGE / 2;
+    let content = format!("/GS0 gs 0 0 0 1 k 0 0 {PAGE} {PAGE} re f");
+    let doc = build_with(&content, |doc| {
+        let group = dictionary! { "S" => "Transparency", "CS" => "DeviceGray" };
+        let form = add_form(
+            doc,
+            &format!("0.8 g 0 0 {half} {PAGE} re f"),
+            [0, 0, half, PAGE],
+            Some(group),
+        );
+        let tr = dictionary! {
+            "FunctionType" => 2,
+            "Domain" => vec![0.into(), 1.into()],
+            "C0" => vec![1.into()],
+            "C1" => vec![0.into()],
+            "N" => 1,
+            "Range" => vec![0.into(), 1.into()],
+        };
+        dictionary! {
+            "ExtGState" => dictionary! {
+                "GS0" => dictionary! {
+                    "SMask" => Object::Dictionary(dictionary! {
+                        "S" => "Luminosity",
+                        "G" => form,
+                        "BC" => vec![0.2.into()],
+                        "TR" => Object::Dictionary(tr),
+                    })
+                }
+            }
+        }
+    });
+    let rendered = render_doc(&doc);
+    let y = rendered.buffer.height() as usize / 2;
+    let width = rendered.buffer.width() as usize;
+    let inside = px(&rendered, 3, 2, y) as i16;
+    let outside = px(&rendered, 3, width - 3, y) as i16;
+    assert!((inside - 51).abs() <= 2, "mẫu sau TR phải ~20%: {inside}");
+    assert!(
+        (outside - 204).abs() <= 2,
+        "nền /BC sau TR phải ~80%: {outside}"
+    );
+}
+
+#[test]
+fn sentinel_bbox_is_bounded_by_clip_and_matches_direct_render() {
+    let masked = sentinel_soft_mask_doc();
+    // 40×40 CMYK+alpha = 32.000 byte. Ngân sách này đủ cho cửa sổ clip nhỏ
+    // cùng guard-band lồng tối đa 12 px, nhưng không đủ cho child full-frame.
+    let options = RenderOptions::ink_accurate().with_memory_budget_bytes(70_000);
+    let rendered = render_page(&masked, 1, 72.0, PageBox::Crop, options)
+        .expect("soft mask phải chỉ cấp phát theo clip nhỏ");
+
+    let reference = build_with(
+        &format!("q 17 17 4 4 re W n 0 0 0 1 k 0 0 {PAGE} {PAGE} re f Q"),
+        |_doc| Dictionary::new(),
+    );
+    let reference = render_doc(&reference);
+    for channel in 0..4 {
+        assert_eq!(
+            rendered.buffer.plate_u8(channel),
+            reference.buffer.plate_u8(channel),
+            "kênh {channel} phải parity với clip trực tiếp"
+        );
+    }
+}
+
+#[test]
+fn bounded_soft_mask_still_fails_loudly_when_budget_is_too_small() {
+    let document = sentinel_soft_mask_doc();
+    let result = render_page(
+        &document,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::ink_accurate().with_memory_budget_bytes(32_100),
+    );
+    assert!(matches!(result, Err(PpeError::MemoryBudgetExceeded { .. })));
+}
+
+#[test]
+fn root_rasterizer_storage_is_part_of_the_render_budget() {
+    // MEMORY (audit 2026-08-09 §PRE.0B): buffer mực 40×40 cần đúng 32.000
+    // byte; scratch mask + coverage f32 của Rasterizer cũng phải được tính.
+    let document = build_with("", |_doc| Dictionary::new());
+    let too_small = render_page(
+        &document,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::ink_accurate().with_memory_budget_bytes(32_000),
+    );
+    assert!(matches!(
+        too_small,
+        Err(PpeError::MemoryBudgetExceeded { .. })
+    ));
+    render_page(
+        &document,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::ink_accurate().with_memory_budget_bytes(42_000),
+    )
+    .expect("ngân sách đủ buffer và rasterizer phải render được");
+}
+
+#[test]
+fn local_soft_mask_rasterizer_uses_the_shared_budget() {
+    // Cửa sổ sentinel bounded cần ít hơn full-frame, nhưng vẫn phải tính
+    // Rasterizer cục bộ đang sống đồng thời với rasterizer trang.
+    let result = render_page(
+        &sentinel_soft_mask_doc(),
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::ink_accurate().with_memory_budget_bytes(62_000),
+    );
+    assert!(matches!(result, Err(PpeError::MemoryBudgetExceeded { .. })));
+}
+
+#[test]
+fn bounded_soft_mask_keeps_image_peak_just_outside_clip_window() {
+    // CORRECTNESS (audit 2026-08-09 §PRE.0A): đường ảnh lấy cực đại soft-mask
+    // trong bán kính 3 px để tránh báo thiếu mực. Clip hình học chỉ nới 1 px;
+    // đỉnh ở x=24 vì thế nằm ngoài cửa sổ cũ [19,23), nhưng vẫn phải ảnh hưởng
+    // pixel x=21 đang nằm trong clip và cách đỉnh đúng 3 px.
+    let content = format!("q 20 0 2 {PAGE} re W n /GS0 gs {PAGE} 0 0 {PAGE} 0 0 cm /Im0 Do Q");
+    let doc = build_with(&content, |doc| {
+        let group = dictionary! { "S" => "Transparency", "CS" => "DeviceGray" };
+        let form = add_form(
+            doc,
+            &format!("0 g 24 0 1 {PAGE} re f"),
+            [0, 0, PAGE, PAGE],
+            Some(group),
+        );
+        let image = Object::Reference(doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 1,
+                "Height" => 1,
+                "ColorSpace" => "DeviceCMYK",
+                "BitsPerComponent" => 8,
+            },
+            vec![0, 0, 0, 255],
+        )));
+        dictionary! {
+            "ExtGState" => dictionary! {
+                "GS0" => dictionary! {
+                    "SMask" => Object::Dictionary(dictionary! {
+                        "S" => "Alpha",
+                        "G" => form,
+                    })
+                }
+            },
+            "XObject" => dictionary! { "Im0" => image },
+        }
+    });
+    let rendered = render_doc(&doc);
+    let y = rendered.buffer.height() as usize / 2;
+    assert!(
+        px(&rendered, 3, 21, y) >= 250,
+        "đỉnh soft-mask cách 3 px phải được giữ cho đường ảnh"
+    );
+}
+
+#[test]
+fn bounded_nested_image_soft_masks_match_full_frame_with_nonzero_origin() {
+    // CORRECTNESS (audit 2026-08-09 §PRE.0A): mỗi tầng ảnh có thể lan đỉnh
+    // soft-mask thêm 3 px. Hai tầng cần giữ chuỗi x=27 → 24 → 21 ngay cả khi
+    // cửa sổ bounded bắt đầu ở một origin khác 0.
+    let bounded = render_doc(&nested_image_soft_mask_doc(false));
+    let full_frame = render_doc(&nested_image_soft_mask_doc(true));
+    let y = bounded.buffer.height() as usize / 2;
+    assert!(
+        px(&full_frame, 3, 21, y) >= 250,
+        "oracle full-frame phải giữ được chuỗi đỉnh hai tầng"
+    );
+    for channel in 0..4 {
+        assert_eq!(
+            bounded.buffer.plate_u8(channel),
+            full_frame.buffer.plate_u8(channel),
+            "kênh {channel} của bounded phải parity với full-frame"
+        );
+    }
 }
 
 #[test]
@@ -645,6 +1081,46 @@ fn soft_mask_survives_q_restore() {
 }
 
 #[test]
+fn soft_mask_stays_anchored_to_ctm_at_gs() {
+    // Sau `gs`, CTM dịch 10 pt chỉ được dịch đối tượng tô; mặt nạ đã dựng phải
+    // đứng yên ở nửa trái. Giao hai vùng vì thế chỉ còn dải x=10..20.
+    let half = PAGE / 2;
+    let content = format!("/GS0 gs 1 0 0 1 10 0 cm 0 0 0 1 k 0 0 {PAGE} {PAGE} re f");
+    let doc = build_with(&content, |doc| {
+        let group = dictionary! { "S" => "Transparency", "CS" => "DeviceGray" };
+        let form = add_form(
+            doc,
+            &format!("1 g 0 0 {half} {PAGE} re f"),
+            [0, 0, PAGE, PAGE],
+            Some(group),
+        );
+        dictionary! {
+            "ExtGState" => dictionary! {
+                "GS0" => dictionary! {
+                    "SMask" => Object::Dictionary(dictionary! {
+                        "S" => "Luminosity",
+                        "G" => form,
+                    })
+                }
+            }
+        }
+    });
+    let rendered = render_doc(&doc);
+    let y = rendered.buffer.height() as usize / 2;
+    assert_eq!(px(&rendered, 3, 5, y), 0, "đối tượng đã dịch khỏi x=5");
+    assert_eq!(
+        px(&rendered, 3, 15, y),
+        255,
+        "giao mask và đối tượng phải in"
+    );
+    assert_eq!(
+        px(&rendered, 3, 25, y),
+        0,
+        "mask không được chạy theo CTM sau gs"
+    );
+}
+
+#[test]
 fn unsupported_soft_mask_subtype_is_flagged() {
     let mask = format!("1 g 0 0 {PAGE} {PAGE} re f");
     let doc = soft_mask_doc("KhongBiet", &mask, [0, 0, PAGE, PAGE], None);
@@ -685,6 +1161,59 @@ fn opaque_managed_rgb_does_not_trigger_blending_space_guard() {
     };
     assert!(!r.warnings.unsupported_transparency, "{:?}", r.warnings);
     assert!(!r.warnings.ink_unsound(), "{:?}", r.warnings);
+}
+
+#[test]
+fn nonseparable_blend_modes_are_exact_on_managed_rgb_surface() {
+    // CORRECTNESS (audit 2026-08-10 §L6.5): oracle phẳng dùng chính công thức
+    // ISO của `BlendMode`; cả hai tài liệu đi chung ICC nên parity khóa luôn việc
+    // blend phải xảy ra trên RGB trước khi quy sang CMYK.
+    let backdrop = [0.15_f32, 0.65, 0.35];
+    let source = [0.80_f32, 0.25, 0.55];
+    for name in ["Hue", "Saturation", "Color", "Luminosity"] {
+        let mode = BlendMode::from_name(name).expect("tên blend fixture phải hợp lệ");
+        let expected = mode.blend_rgb(backdrop, source);
+        let layered_content = format!(
+            "{} {} {} rg 0 0 {PAGE} {PAGE} re f\n\
+             /GS0 gs {} {} {} rg 0 0 {PAGE} {PAGE} re f",
+            backdrop[0], backdrop[1], backdrop[2], source[0], source[1], source[2]
+        );
+        let mut layered_doc = build_with(&layered_content, |_doc| {
+            dictionary! {
+                "ExtGState" => dictionary! {
+                    "GS0" => dictionary! { "BM" => Object::Name(name.as_bytes().to_vec()) }
+                }
+            }
+        });
+        set_page_blend_space(&mut layered_doc, "DeviceRGB");
+
+        let flat_content = format!(
+            "{} {} {} rg 0 0 {PAGE} {PAGE} re f",
+            expected[0], expected[1], expected[2]
+        );
+        let mut flat_doc = build_with(&flat_content, |_doc| Dictionary::new());
+        set_page_blend_space(&mut flat_doc, "DeviceRGB");
+
+        let (Some(layered), Some(flat)) = (managed_render(&layered_doc), managed_render(&flat_doc))
+        else {
+            eprintln!("bỏ qua: không có profile ICC kiểm thử");
+            return;
+        };
+        let (x, y) = mid(&layered);
+        for channel in 0..4 {
+            let actual = px(&layered, channel, x, y);
+            let expected = px(&flat, channel, x, y);
+            assert!(
+                (actual as i16 - expected as i16).abs() <= 1,
+                "/{name} channel {channel}: layered={actual}, flat={expected}"
+            );
+        }
+        assert!(
+            !layered.warnings.ink_unsound(),
+            "/{name} trên DeviceRGB managed không được hạ soundness: {:?}",
+            layered.warnings
+        );
+    }
 }
 
 #[test]

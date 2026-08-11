@@ -134,6 +134,67 @@ function renderMixedPreview(cutBorder?: CutBorderConfig, bleed = 0, targetQuanti
   );
 }
 
+function cncMultiSheetResponse() {
+  const firstCell = mixedCell(10, 0);
+  const secondCell = mixedCell(10, 1);
+  const sheet = (cell: ReturnType<typeof mixedCell>, physicalSheetIndex: number) => ({
+    cells: [cell],
+    overallWidth: pt(30),
+    overallHeight: pt(70),
+    totalItems: 1,
+    runCount: 1,
+    physicalSheetIndex,
+    placedByPage: { [String(cell.pageIdx)]: 1 },
+  });
+  return {
+    success: true,
+    cells: [firstCell],
+    overallWidth: pt(30),
+    overallHeight: pt(70),
+    totalItems: 1,
+    sheetsNeeded: 2,
+    strategyUsed: "cnc_mixed",
+    isMixedPreview: true,
+    isCncPreview: true,
+    cncTwoSided: false,
+    cncFlipEdge: "long",
+    absPlacement: true,
+    placedByPage: { "0": 1 },
+    sheets: [sheet(firstCell, 0), sheet(secondCell, 1)],
+  };
+}
+
+function CncMultiSheetPreview() {
+  return (
+    <GridPreview
+      taskMode="nup"
+      isDieCut
+      layoutType="sequential"
+      duplexFlow="normal"
+      gridStrategy="optimal_auto"
+      columns={0}
+      rows={0}
+      gapX={0}
+      gapY={0}
+      sheetWidth={100}
+      sheetHeight={80}
+      marginTop={0}
+      marginBottom={0}
+      marginLeft={0}
+      marginRight={0}
+      align="center"
+      shapeType="CUSTOM"
+      itemW={20}
+      itemH={20}
+      sourceTotalPages={2}
+      filePath="C:\\cnc-two-sheets.pdf"
+      imposerMode="cnc"
+      cncTwoSided={false}
+      cncFlipEdge="long"
+    />
+  );
+}
+
 function StrictWorkingSourcePreview({
   previewSourceKey,
   getWorkingFile,
@@ -254,6 +315,32 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     expect(Number(renderedProductRect(container).getAttribute("x"))).toBeCloseTo(134, 5);
     expect(container.querySelectorAll("svg")).toHaveLength(1);
     expect(container.querySelector('g[transform*="scale(-1, 1)"]')).toBeNull();
+    expect(authenticatedFetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("CNC chuyển được qua mọi tờ mẫu backend trả về", async () => {
+    authenticatedFetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => cncMultiSheetResponse(),
+    });
+
+    const { container } = render(<CncMultiSheetPreview />);
+    await waitFor(() => {
+      expect(container.querySelector("svg text")?.textContent).toBe("1");
+      expect(screen.getByText(/1 \/ 2/)).toBeTruthy();
+    });
+
+    const requestBody = JSON.parse(
+      String(authenticatedFetchMock.mock.calls[0]?.[1]?.body),
+    );
+    expect(requestBody.imposer_mode).toBe("cnc");
+
+    fireEvent.click(screen.getByRole("button", { name: "►" }));
+    await waitFor(() => {
+      expect(container.querySelector("svg text")?.textContent).toBe("2");
+      expect(screen.getByText(/2 \/ 2/)).toBeTruthy();
+    });
     expect(authenticatedFetchMock).toHaveBeenCalledTimes(1);
   });
 

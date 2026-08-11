@@ -10,7 +10,7 @@ Lý do có lớp này thay vì gọi trực tiếp:
    plate đã nén zlib + base64 kèm màu hiển thị. Facade quy đổi một chỗ.
 2. **Chính sách độ tin cậy nằm một chỗ.** Việc map hai trục cảnh báo của
    engine sang `accuracy` là quyết định prepress, không phải chi tiết render.
-3. **PPE-first, GS-fallback.** Caller không cần biết engine nào đã chạy.
+3. **PPE-first, compatibility lane có nhãn.** Caller không gọi native trực tiếp.
 
 # Hai trục hỏng — vì sao không gộp thành một cờ
 
@@ -35,10 +35,13 @@ from __future__ import annotations
 from .facade import (
     ACCURACY_RIP,
     ACCURACY_RIP_APPROX_GEOMETRY,
+    PpeRequestSuperseded,
     PpeResultUntrusted,
+    PpeSoftproofSession,
     PpeUnavailable,
     capabilities,
     is_available,
+    open_softproof_session,
     separations,
     softproof,
 )
@@ -46,10 +49,13 @@ from .facade import (
 __all__ = [
     "ACCURACY_RIP",
     "ACCURACY_RIP_APPROX_GEOMETRY",
+    "PpeRequestSuperseded",
     "PpeResultUntrusted",
+    "PpeSoftproofSession",
     "PpeUnavailable",
     "capabilities",
     "is_available",
+    "open_softproof_session",
     "separations",
     "softproof",
 ]

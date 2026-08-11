@@ -214,17 +214,27 @@ mod tests {
         if key_b64.is_empty() || !super::engine_is_locked() {
             return; // build plaintext (dev/CI) — không có gì để kiểm ở đây
         }
-        let key: [u8; 32] = STANDARD.decode(key_b64).expect("khoá base64").try_into().unwrap();
+        let key: [u8; 32] = STANDARD
+            .decode(key_b64)
+            .expect("khoá base64")
+            .try_into()
+            .unwrap();
 
         let src = super::engine_source(Some(key)).expect("khoá đúng phải mở được engine");
         assert!(
             src.contains("__prynxGenerateDieline"),
             "giải mã ra phải là mã engine thật"
         );
-        assert!(super::engine_source(None).is_err(), "thiếu khoá PHẢI bị từ chối");
+        assert!(
+            super::engine_source(None).is_err(),
+            "thiếu khoá PHẢI bị từ chối"
+        );
         let mut wrong = key;
         wrong[0] ^= 0xFF;
-        assert!(super::engine_source(Some(wrong)).is_err(), "khoá sai PHẢI bị từ chối");
+        assert!(
+            super::engine_source(Some(wrong)).is_err(),
+            "khoá sai PHẢI bị từ chối"
+        );
     }
 
     /// Bản ĐÃ KHOÁ: khoá sai/thiếu KHÔNG bao giờ ra được mã nguồn engine.
@@ -240,23 +250,35 @@ mod tests {
         let ct = cipher
             .encrypt(
                 Nonce::from_slice(&nonce),
-                Payload { msg: b"globalThis.__prynxGenerateDieline = () => '{}';", aad: b"1.2.3" },
+                Payload {
+                    msg: b"globalThis.__prynxGenerateDieline = () => '{}';",
+                    aad: b"1.2.3",
+                },
             )
             .unwrap();
 
         let open = |k: &[u8; 32]| {
             Aes256Gcm::new_from_slice(k).unwrap().decrypt(
                 Nonce::from_slice(&nonce),
-                Payload { msg: &ct, aad: b"1.2.3" },
+                Payload {
+                    msg: &ct,
+                    aad: b"1.2.3",
+                },
             )
         };
         assert!(open(&key).is_ok(), "khoá đúng phải mở được");
-        assert!(open(&[8u8; 32]).is_err(), "khoá sai PHẢI thất bại, không ra JS rác");
+        assert!(
+            open(&[8u8; 32]).is_err(),
+            "khoá sai PHẢI thất bại, không ra JS rác"
+        );
 
         // AAD = version: tráo payload của bản khác vào binary này cũng thất bại.
         let wrong_aad = Aes256Gcm::new_from_slice(&key).unwrap().decrypt(
             Nonce::from_slice(&nonce),
-            Payload { msg: &ct, aad: b"9.9.9" },
+            Payload {
+                msg: &ct,
+                aad: b"9.9.9",
+            },
         );
         assert!(wrong_aad.is_err(), "sai version (AAD) PHẢI thất bại");
     }
@@ -319,7 +341,10 @@ mod tests {
             .filter_map(|panel| panel["name"].as_str())
             .collect();
         for expected in ["hang_tab_1", "hang_tab_2", "hang_tab_lip", "front", "back"] {
-            assert!(names.contains(&expected), "thiếu panel {expected}: {names:?}");
+            assert!(
+                names.contains(&expected),
+                "thiếu panel {expected}: {names:?}"
+            );
         }
 
         // Cửa sổ mặt trước phải là LỖ thật trên panel (3D khoét được), không chỉ là nét vẽ.

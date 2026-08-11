@@ -17,6 +17,10 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 import { dispatchSupportedSystemFiles } from '../lib/nativeFileAccess';
+import {
+  registerActiveTabFeature,
+  type NavigationTabLike,
+} from '../lib/tabNavigation';
 import SystemIntegrations from '../components/SystemIntegrations';
 import {
   EXPLICIT_INTENT_FALLBACK_MS,
@@ -43,6 +47,8 @@ function emitFiles(files: File[], action = ''): void {
 }
 
 describe('useIncomingFileDispatcher', () => {
+  const disposers: Array<() => void> = [];
+
   beforeEach(() => {
     vi.useFakeTimers();
     systemMocks.invoke.mockReset();
@@ -51,19 +57,21 @@ describe('useIncomingFileDispatcher', () => {
   });
 
   afterEach(() => {
+    while (disposers.length > 0) disposers.pop()?.();
     cleanup();
     vi.useRealTimers();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
-  function renderDispatcher(activeTabId = 'home') {
+  function renderDispatcher(
+    activeTabId = 'home',
+    tabs: NavigationTabLike[] = [
+      { id: 'home', type: 'home' },
+      { id: 'pdf', type: 'imposition', payload: { file: 'working.pdf' } },
+    ],
+  ) {
     const onOpenApp = vi.fn();
-    const tabsRef = {
-      current: [
-        { id: 'home', type: 'home' },
-        { id: 'pdf', type: 'imposition', payload: { file: 'working.pdf' } },
-      ],
-    };
+    const tabsRef = { current: tabs };
     const activeTabIdRef = { current: activeTabId };
     const hook = renderHook(() => useIncomingFileDispatcher({
       onOpenApp,
@@ -72,6 +80,77 @@ describe('useIncomingFileDispatcher', () => {
     }));
     return { ...hook, onOpenApp, tabsRef, activeTabIdRef };
   }
+
+  function listenForLegacyStickerSources() {
+    const listener = vi.fn();
+    const handle = () => listener();
+    window.addEventListener('prynx-sticker-source-files', handle);
+    disposers.push(() => window.removeEventListener('prynx-sticker-source-files', handle));
+    return listener;
+  }
+
+  function registerFeature(tabId: string, feature: string): void {
+    disposers.push(registerActiveTabFeature(tabId, feature));
+  }
+
+  const stickerTabs: NavigationTabLike[] = [
+    { id: 'home', type: 'home' },
+    { id: 'pdf', type: 'imposition', payload: { file: 'working.pdf' } },
+    { id: 'tem', type: 'imposition', payload: { focusFeature: 'sticker' } },
+  ];
+
+  it.each([
+    ['PDF', 'mau.pdf'],
+    ['ảnh', 'mau.png'],
+  ])('vẫn mở một %s theo luồng tài liệu khi tab tem đang active', (_label, name) => {
+    registerFeature('tem', 'sticker');
+    const legacyEvent = listenForLegacyStickerSources();
+    const { onOpenApp } = renderDispatcher('tem', stickerTabs);
+    const source = file(name);
+
+    act(() => emitFiles([source]));
+    act(() => vi.advanceTimersByTime(INCOMING_FILES_DEBOUNCE_MS));
+
+    expect(legacyEvent).not.toHaveBeenCalled();
+    expect(onOpenApp).toHaveBeenCalledWith('imposition', { file: source });
+  });
+
+  it('giữ hành vi batch nhiều file khi tab tem đang active', () => {
+    registerFeature('tem', 'sticker');
+    const { onOpenApp } = renderDispatcher('tem', stickerTabs);
+    const first = file('01.png');
+    const second = file('02.jpg');
+
+    act(() => emitFiles([first, second]));
+    act(() => vi.advanceTimersByTime(INCOMING_FILES_DEBOUNCE_MS));
+
+    expect(onOpenApp).toHaveBeenCalledWith('combine_pdf', { files: [first, second] });
+  });
+
+  it.each([
+    ['combine', 'mau.pdf'],
+    ['convert', 'mau.png'],
+  ])('giữ nguyên intent %s thay vì chuyển vào nguồn tem', (intent, name) => {
+    registerFeature('tem', 'sticker');
+    const { onOpenApp } = renderDispatcher('tem', stickerTabs);
+    const source = file(name);
+
+    act(() => emitFiles([source], intent));
+    act(() => window.dispatchEvent(new Event(SYSTEM_FILES_POLL_SETTLED_EVENT)));
+
+    expect(onOpenApp).toHaveBeenCalledWith('combine_pdf', { files: [source] });
+  });
+
+  it('giữ nguyên hành vi Convert đối với một PDF', () => {
+    registerFeature('tem', 'sticker');
+    const { onOpenApp } = renderDispatcher('tem', stickerTabs);
+    const source = file('mau.pdf');
+
+    act(() => emitFiles([source], 'convert'));
+    act(() => window.dispatchEvent(new Event(SYSTEM_FILES_POLL_SETTLED_EVENT)));
+
+    expect(onOpenApp).toHaveBeenCalledWith('imposition', { file: source });
+  });
 
   it('đường picker/Recent dùng event chung và vẫn debounce batch mặc định', () => {
     const { onOpenApp } = renderDispatcher();

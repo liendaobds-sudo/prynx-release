@@ -22,9 +22,6 @@
     SemVer bat buoc phai khop manifest, ten installer va binary da cai. Neu bo
     trong, doc APP_VERSION tu manifest.
 
-.PARAMETER ExpectNoGhostscript
-    Bat buoc payload da cai KHONG chua Ghostscript.
-
 .PARAMETER StartupTimeoutSeconds
     Thoi gian toi da doi app/sidecar san sang. Mac dinh 75 giay.
 
@@ -32,14 +29,13 @@
     Giu lai thu muc da cai de kiem tay tiep. Process smoke van duoc dung.
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File scripts\verify_installed_artifact.ps1 -ExpectNoGhostscript
+    powershell -ExecutionPolicy Bypass -File scripts\verify_installed_artifact.ps1
 #>
 [CmdletBinding()]
 param(
     [string]$Installer,
     [string]$Manifest,
     [string]$ExpectedVersion,
-    [switch]$ExpectNoGhostscript,
     [ValidateRange(10, 180)][int]$StartupTimeoutSeconds = 75,
     [switch]$KeepInstall
 )
@@ -612,6 +608,16 @@ function Assert-SidecarAiRuntimeOutput {
             throw "Frozen sidecar AI self-test thieu model bat buoc."
         }
     }
+    # RELEASE (audit 2026-08-11 §UP.X.09): symbol callable chưa chứng minh ABI/
+    # artifact contract. Marker phải đến từ merger thật trên pHYs + alpha + RGB ICC.
+    if ($payload.native_merger -ne $true -or
+        [int]$payload.native_merger_behavior.pages -ne 1 -or
+        $payload.native_merger_behavior.alpha -ne $true -or
+        [int]$payload.native_merger_behavior.icc_components -ne 3 -or
+        [math]::Abs([double]$payload.native_merger_behavior.width_pt - 0.48) -gt 0.01 -or
+        [math]::Abs([double]$payload.native_merger_behavior.height_pt - 0.72) -gt 0.01) {
+        throw "Frozen sidecar native merger behavior smoke khong dat."
+    }
 }
 
 function Invoke-SidecarAiRuntimeSmoke {
@@ -879,20 +885,17 @@ try {
     Invoke-TesseractSmoke -Executable $tesseractPath -Tessdata $tessdataPath -ScratchDir $installDir
     Write-OK "Tesseract OCR anh mau bang eng+vie"
 
-    if ($ExpectNoGhostscript) {
-        $gsBinaries = @(Get-ChildItem -LiteralPath $installDir -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match '^gswin(32|64)c?\.exe$' -or $_.Name -match '^gsdll\d*\.dll$' })
-        if ($gsBinaries.Count -gt 0) {
-            throw "Payload van co Ghostscript: $((($gsBinaries | Select-Object -First 5).Name) -join ', ')"
-        }
-        $noticeHits = @(Get-ChildItem -LiteralPath $installDir -Recurse -File -Filter "*NOTICE*" -ErrorAction SilentlyContinue |
-            Select-String -Pattern "Ghostscript|Artifex|AGPL" -List)
-        if ($noticeHits.Count -gt 0) { throw "NOTICE van nhac Ghostscript/Artifex/AGPL." }
-        $marker = Get-ChildItem -LiteralPath $installDir -Recurse -File -Filter "NO_GHOSTSCRIPT.txt" -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-        if (-not $marker) { throw "Thieu marker binaries\gs\NO_GHOSTSCRIPT.txt." }
-        Write-OK "Payload dat hop dong no-Ghostscript"
+    # GS-SUNSET (audit 2026-08-08 GS-C1): day la bat bien cua moi artifact,
+    # khong phu thuoc caller nho truyen co hay marker tu khai trong payload.
+    $gsBinaries = @(Get-ChildItem -LiteralPath $installDir -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^(?:gs(?:win(?:32|64)c?)?\.exe|gsdll\d*\.dll)$' })
+    if ($gsBinaries.Count -gt 0) {
+        throw "Payload van co Ghostscript: $((($gsBinaries | Select-Object -First 5).Name) -join ', ')"
     }
+    $noticeHits = @(Get-ChildItem -LiteralPath $installDir -Recurse -File -Filter "*NOTICE*" -ErrorAction SilentlyContinue |
+        Select-String -Pattern "Ghostscript|Artifex|AGPL" -List)
+    if ($noticeHits.Count -gt 0) { throw "NOTICE van nhac Ghostscript/Artifex/AGPL." }
+    Write-OK "Payload dat hop dong no-Ghostscript"
 
     # -- 4. Runtime smoke -----------------------------------------------------
     Write-Step "4/5 Runtime smoke"

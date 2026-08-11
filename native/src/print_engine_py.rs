@@ -9,16 +9,670 @@
 //! `ink_density` mà lớp Python nén zlib + base64. Nhờ vậy đổi engine không phải
 //! đổi contract API hay code frontend.
 
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
+use rayon::prelude::*;
 
+use print_engine::color::icc::SoftProofSettings;
+use print_engine::color::space::OutputPreviewFilter;
 use print_engine::color::{ColorManager, RenderIntent};
 use print_engine::content::RenderOptions;
-use print_engine::page::{open as ppe_open, render_page_managed, PageBox};
+use print_engine::ink::SpotAlternate;
+use print_engine::page::{
+    open as ppe_open, render_page_managed, render_page_managed_region, PageBox, RasterClip,
+};
+use print_engine::session::{
+    RenderSession, ResourceCacheStats, SessionOpenTimings, SessionRenderTimings,
+    SESSION_ENGINE_VERSION,
+};
 use print_engine::text::outlines::StreamKey;
+use print_engine::{CancelToken, PpeError};
+
+const STALE_REQUEST_PREFIX: &str = "PPE_STALE_REQUEST";
+
+fn output_preview_filter_from_str(value: &str) -> PyResult<OutputPreviewFilter> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "all" => Ok(OutputPreviewFilter::All),
+        "device-cmyk" => Ok(OutputPreviewFilter::DeviceCmyk),
+        "device-rgb" => Ok(OutputPreviewFilter::DeviceRgb),
+        "device-gray" => Ok(OutputPreviewFilter::DeviceGray),
+        "spot" => Ok(OutputPreviewFilter::Spot),
+        "text" => Ok(OutputPreviewFilter::Text),
+        "images" => Ok(OutputPreviewFilter::Images),
+        "line-art" => Ok(OutputPreviewFilter::LineArt),
+        "smooth-shades" => Ok(OutputPreviewFilter::SmoothShades),
+        other => Err(PyValueError::new_err(format!(
+            "output_preview_filter không hợp lệ: {other}"
+        ))),
+    }
+}
+
+fn softproof_settings(
+    simulate_paper_color: bool,
+    simulate_black_ink: bool,
+    page_background_rgb: Option<(u8, u8, u8)>,
+) -> SoftProofSettings {
+    SoftProofSettings {
+        simulate_paper_color,
+        simulate_black_ink,
+        page_background_rgb: page_background_rgb.map(|(r, g, b)| [r, g, b]),
+    }
+}
+
+fn page_box_from_str(page_box: &str) -> PyResult<PageBox> {
+    match page_box {
+        "media" => Ok(PageBox::Media),
+        "crop" => Ok(PageBox::Crop),
+        "trim" => Ok(PageBox::Trim),
+        "bleed" => Ok(PageBox::Bleed),
+        "art" => Ok(PageBox::Art),
+        other => Err(PyValueError::new_err(format!(
+            "page_box không hợp lệ: {other} (media|crop|trim|bleed|art)"
+        ))),
+    }
+}
+
+fn raster_clip_from_parts(
+    clip_x: Option<u32>,
+    clip_y: Option<u32>,
+    clip_width: Option<u32>,
+    clip_height: Option<u32>,
+) -> PyResult<Option<RasterClip>> {
+    match (clip_x, clip_y, clip_width, clip_height) {
+        (None, None, None, None) => Ok(None),
+        (Some(x), Some(y), Some(width), Some(height)) if width > 0 && height > 0 => {
+            Ok(Some(RasterClip {
+                x,
+                y,
+                width,
+                height,
+            }))
+        }
+        (Some(_), Some(_), Some(_), Some(_)) => Err(PyValueError::new_err(
+            "clip PPE phải có width/height lớn hơn 0",
+        )),
+        _ => Err(PyValueError::new_err(
+            "clip PPE phải truyền đủ x/y/width/height",
+        )),
+    }
+}
+
+fn megabytes_to_bytes(value: usize, name: &str, allow_zero: bool) -> PyResult<usize> {
+    value
+        .checked_mul(1024 * 1024)
+        .filter(|bytes| allow_zero || *bytes > 0)
+        .ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "{name} must be {}",
+                if allow_zero {
+                    "a valid non-negative integer"
+                } else {
+                    "greater than zero"
+                }
+            ))
+        })
+}
+
+fn duration_ms(value: Duration) -> f64 {
+    value.as_secs_f64() * 1_000.0
+}
+
+fn identity_hash(session: &RenderSession) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    session.identity().hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+#[derive(Clone)]
+struct SessionInfoSnapshot {
+    identity: String,
+    generation: u64,
+    page_count: usize,
+    valid: bool,
+    stats: ResourceCacheStats,
+}
+
+struct SessionRenderOutput {
+    width: u32,
+    height: u32,
+    rgb: Vec<u8>,
+    rotate: i32,
+    degraded: bool,
+    ink_unsound: bool,
+    timings: SessionRenderTimings,
+    stats_before: ResourceCacheStats,
+    stats_after: ResourceCacheStats,
+    identity: String,
+    session_generation: u64,
+}
+
+type ActiveCancelSlot = Arc<Mutex<Option<(u64, CancelToken)>>>;
+
+fn install_cancel_token_in_slot(
+    active: &Mutex<Option<(u64, CancelToken)>>,
+    generation: u64,
+    token: CancelToken,
+) -> Result<(), ()> {
+    let mut active = active.lock().map_err(|_| ())?;
+    if active
+        .as_ref()
+        .is_some_and(|(active_generation, _)| *active_generation >= generation)
+    {
+        token.cancel();
+        return Ok(());
+    }
+    if let Some((_, previous)) = active.replace((generation, token)) {
+        previous.cancel();
+    }
+    Ok(())
+}
+
+fn cancel_active_through_in_slot(
+    active: &Mutex<Option<(u64, CancelToken)>>,
+    generation: u64,
+) -> Result<bool, ()> {
+    let active = active.lock().map_err(|_| ())?;
+    Ok(active.as_ref().is_some_and(|(active_generation, token)| {
+        *active_generation <= generation && token.cancel()
+    }))
+}
+
+fn clear_active_generation_in_slot(active: &Mutex<Option<(u64, CancelToken)>>, generation: u64) {
+    if let Ok(mut active) = active.lock() {
+        if active
+            .as_ref()
+            .is_some_and(|(active_generation, _)| *active_generation == generation)
+        {
+            active.take();
+        }
+    }
+}
+
+/// Chỉ xóa token nếu slot vẫn thuộc đúng generation này; request mới hơn có thể đã thay slot.
+struct ActiveCancelGuard {
+    active: ActiveCancelSlot,
+    generation: u64,
+}
+
+impl Drop for ActiveCancelGuard {
+    fn drop(&mut self) {
+        clear_active_generation_in_slot(&self.active, self.generation);
+    }
+}
+
+/// Owner native của một PPE document session.
+///
+/// Mỗi instance có Mutex riêng: render cùng tài liệu được serialize, còn session
+/// của tài liệu khác không đi qua một khóa toàn cục. `owner_id` chặn tab khác đóng
+/// hoặc hủy nhầm session trước khi lớp lease/ref-count đầy đủ được nối ở Lô 2C.
+#[pyclass(name = "PpeRenderSession")]
+pub struct PpeRenderSession {
+    inner: Arc<Mutex<RenderSession>>,
+    owner_id: String,
+    last_accepted_generation: Arc<AtomicU64>,
+    latest_request_generation: Arc<AtomicU64>,
+    active_cancel: ActiveCancelSlot,
+    closed: Arc<AtomicBool>,
+    open_timings: SessionOpenTimings,
+}
+
+#[pymethods]
+impl PpeRenderSession {
+    #[new]
+    #[pyo3(signature = (
+        pdf_path,
+        owner_id,
+        cmyk_profile,
+        rgb_profile = None,
+        render_intent = 1,
+        resource_cache_budget_mb = 128,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        py: Python<'_>,
+        pdf_path: &str,
+        owner_id: &str,
+        cmyk_profile: &str,
+        rgb_profile: Option<&str>,
+        render_intent: i32,
+        resource_cache_budget_mb: usize,
+    ) -> PyResult<Self> {
+        let owner_id = owner_id.trim();
+        if owner_id.is_empty() {
+            return Err(PyValueError::new_err("owner_id PPE không được rỗng"));
+        }
+        if cmyk_profile.is_empty() {
+            return Err(PyValueError::new_err("soft-proof session cần cmyk_profile"));
+        }
+        let cache_budget_bytes =
+            megabytes_to_bytes(resource_cache_budget_mb, "resource_cache_budget_mb", true)?;
+        let pdf_path = pdf_path.to_owned();
+        let cmyk_profile = cmyk_profile.to_owned();
+        let rgb_profile = rgb_profile.map(str::to_owned);
+        let intent = RenderIntent::from_pdf(render_intent);
+        let (session, open_timings) = py
+            .detach(move || {
+                let (session, timings) = RenderSession::open_with_profile_paths_timed(
+                    Path::new(&pdf_path),
+                    Some(Path::new(&cmyk_profile)),
+                    rgb_profile.as_deref().map(Path::new),
+                    intent,
+                )?;
+                Ok::<_, print_engine::error::PpeError>((
+                    session.with_resource_cache_budget(cache_budget_bytes),
+                    timings,
+                ))
+            })
+            .map_err(|error| PyRuntimeError::new_err(format!("PPE: {error}")))?;
+
+        Ok(Self {
+            inner: Arc::new(Mutex::new(session)),
+            owner_id: owner_id.to_owned(),
+            last_accepted_generation: Arc::new(AtomicU64::new(0)),
+            latest_request_generation: Arc::new(AtomicU64::new(0)),
+            active_cancel: Arc::new(Mutex::new(None)),
+            closed: Arc::new(AtomicBool::new(false)),
+            open_timings,
+        })
+    }
+
+    /// Metadata/timing mở session; không giữ GIL trong lúc chờ một render đang chạy.
+    pub fn info(&self, py: Python<'_>, owner_id: &str) -> PyResult<Py<PyDict>> {
+        self.check_owner(owner_id)?;
+        let inner = Arc::clone(&self.inner);
+        let snapshot = py
+            .detach(move || {
+                let session = inner
+                    .lock()
+                    .map_err(|_| "PPE RenderSession lock bị poison".to_string())?;
+                Ok::<_, String>(SessionInfoSnapshot {
+                    identity: identity_hash(&session),
+                    generation: session.generation(),
+                    page_count: session.page_count(),
+                    valid: session.is_valid(),
+                    stats: session.resource_cache_stats(),
+                })
+            })
+            .map_err(PyRuntimeError::new_err)?;
+        self.info_dict(py, snapshot)
+    }
+
+    #[pyo3(signature = (
+        owner_id,
+        request_generation,
+        page = 1,
+        dpi = 150.0,
+        page_box = "crop",
+        fallback_font = None,
+        simulate_overprint = true,
+        output_preview_filter = "all",
+        simulate_paper_color = false,
+        simulate_black_ink = false,
+        page_background_rgb = None,
+        memory_budget_mb = 512,
+        clip_x = None,
+        clip_y = None,
+        clip_width = None,
+        clip_height = None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_softproof(
+        &self,
+        py: Python<'_>,
+        owner_id: &str,
+        request_generation: u64,
+        page: usize,
+        dpi: f32,
+        page_box: &str,
+        fallback_font: Option<&str>,
+        simulate_overprint: bool,
+        output_preview_filter: &str,
+        simulate_paper_color: bool,
+        simulate_black_ink: bool,
+        page_background_rgb: Option<(u8, u8, u8)>,
+        memory_budget_mb: usize,
+        clip_x: Option<u32>,
+        clip_y: Option<u32>,
+        clip_width: Option<u32>,
+        clip_height: Option<u32>,
+    ) -> PyResult<Py<PyDict>> {
+        self.check_owner(owner_id)?;
+        if page == 0 {
+            return Err(PyValueError::new_err(
+                "page là chỉ số 1-based, không nhận 0",
+            ));
+        }
+        if request_generation == 0 {
+            return Err(PyValueError::new_err(
+                "request_generation PPE phải lớn hơn 0",
+            ));
+        }
+        if self.closed.load(Ordering::Acquire) {
+            return Err(PyRuntimeError::new_err(format!(
+                "{STALE_REQUEST_PREFIX}: PPE RenderSession đã đóng"
+            )));
+        }
+        let which_box = page_box_from_str(page_box)?;
+        let clip = raster_clip_from_parts(clip_x, clip_y, clip_width, clip_height)?;
+        let output_preview_filter = output_preview_filter_from_str(output_preview_filter)?;
+        let proof_settings = softproof_settings(
+            simulate_paper_color,
+            simulate_black_ink,
+            page_background_rgb,
+        );
+        let memory_budget_bytes = megabytes_to_bytes(memory_budget_mb, "memory_budget_mb", false)?;
+        let fallback_font = fallback_font.map(str::to_owned);
+
+        let previous = self
+            .last_accepted_generation
+            .fetch_max(request_generation, Ordering::AcqRel);
+        if previous > 0 && request_generation <= previous {
+            return Err(PyRuntimeError::new_err(format!(
+                "{STALE_REQUEST_PREFIX}: generation {request_generation} không mới hơn {previous}"
+            )));
+        }
+        self.latest_request_generation
+            .fetch_max(request_generation, Ordering::AcqRel);
+
+        let cancel_token = CancelToken::new();
+        self.install_cancel_token(request_generation, cancel_token.clone())?;
+
+        let inner = Arc::clone(&self.inner);
+        let latest = Arc::clone(&self.latest_request_generation);
+        let active_cancel = Arc::clone(&self.active_cancel);
+        let closed = Arc::clone(&self.closed);
+        let output = py
+            .detach(move || -> Result<SessionRenderOutput, String> {
+                let _active_cancel_guard = ActiveCancelGuard {
+                    active: active_cancel,
+                    generation: request_generation,
+                };
+                if closed.load(Ordering::Acquire)
+                    || latest.load(Ordering::Acquire) != request_generation
+                {
+                    return Err(format!(
+                        "{STALE_REQUEST_PREFIX}: request đã bị thay thế trước raster"
+                    ));
+                }
+                let fallback_font = fallback_font
+                    .as_deref()
+                    .map(std::fs::read)
+                    .transpose()
+                    .map_err(|error| format!("không đọc được fallback_font: {error}"))?;
+                let mut opts = RenderOptions::softproof()
+                    .with_overprint_simulation(simulate_overprint)
+                    .with_output_preview_filter(output_preview_filter)
+                    .with_softproof_settings(proof_settings)
+                    .with_memory_budget_bytes(memory_budget_bytes)
+                    .with_cancel_token(cancel_token);
+                if let Some(data) = fallback_font {
+                    opts = opts.with_fallback_font(Arc::new(data));
+                }
+
+                // PERF (audit 2026-08-09 §L2B): khóa sau khi nhả GIL. Session khác
+                // có Mutex khác nên vẫn chạy song song; request cùng session xếp hàng.
+                let mut session = inner
+                    .lock()
+                    .map_err(|_| "PPE RenderSession lock bị poison".to_string())?;
+                if closed.load(Ordering::Acquire)
+                    || latest.load(Ordering::Acquire) != request_generation
+                {
+                    return Err(format!(
+                        "{STALE_REQUEST_PREFIX}: request đã bị thay thế khi chờ session"
+                    ));
+                }
+                let stats_before = session.resource_cache_stats();
+                let (rendered, timings) = session
+                    .render_page_srgb_region_timed(page, dpi, which_box, opts, clip)
+                    .map_err(|error| match error {
+                        PpeError::Cancelled => {
+                            format!("{STALE_REQUEST_PREFIX}: core đã dừng request lỗi thời")
+                        }
+                        other => format!("PPE: {other}"),
+                    })?;
+                if closed.load(Ordering::Acquire)
+                    || latest.load(Ordering::Acquire) != request_generation
+                {
+                    return Err(format!(
+                        "{STALE_REQUEST_PREFIX}: bỏ bitmap của request đã bị thay thế"
+                    ));
+                }
+                let stats_after = session.resource_cache_stats();
+                Ok(SessionRenderOutput {
+                    width: rendered.width,
+                    height: rendered.height,
+                    rgb: rendered.rgb,
+                    rotate: rendered.rotate,
+                    degraded: rendered.warnings.degrades_accuracy(),
+                    ink_unsound: rendered.warnings.ink_unsound(),
+                    timings,
+                    stats_before,
+                    stats_after,
+                    identity: identity_hash(&session),
+                    session_generation: session.generation(),
+                })
+            })
+            .map_err(|message| {
+                if message.starts_with(STALE_REQUEST_PREFIX) {
+                    PyRuntimeError::new_err(message)
+                } else {
+                    PyRuntimeError::new_err(message)
+                }
+            })?;
+        // Checkpoint cuối nằm ngoài `detach`: cancel/close có thể đến sau lần kiểm tra cuối
+        // của worker nhưng trước khi Python nhận bytes. Khi đó tuyệt đối không phát bitmap cũ.
+        if self.closed.load(Ordering::Acquire)
+            || self.latest_request_generation.load(Ordering::Acquire) != request_generation
+        {
+            return Err(PyRuntimeError::new_err(format!(
+                "{STALE_REQUEST_PREFIX}: request đã bị thay thế trước khi trả bitmap"
+            )));
+        }
+        self.render_dict(py, request_generation, output)
+    }
+
+    /// Đánh dấu generation đang chạy là lỗi thời; raster có thể còn chạy tới
+    /// checkpoint của core, nhưng bitmap chắc chắn bị bỏ trước khi trả về Python.
+    pub fn cancel(&self, owner_id: &str, request_generation: u64) -> PyResult<bool> {
+        self.check_owner(owner_id)?;
+        let cancelled_through = request_generation.saturating_add(1);
+        let previous = self
+            .latest_request_generation
+            .fetch_max(cancelled_through, Ordering::AcqRel);
+        let cancelled_active = self.cancel_active_through(request_generation)?;
+        Ok(cancelled_through > previous || cancelled_active)
+    }
+
+    pub fn close(&self, py: Python<'_>, owner_id: &str) -> PyResult<bool> {
+        self.check_owner(owner_id)?;
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return Ok(false);
+        }
+        self.latest_request_generation
+            .store(u64::MAX, Ordering::Release);
+        self.cancel_active_through(u64::MAX)?;
+        let inner = Arc::clone(&self.inner);
+        py.detach(move || {
+            let mut session = inner
+                .lock()
+                .map_err(|_| "PPE RenderSession lock bị poison".to_string())?;
+            session.close();
+            Ok::<_, String>(())
+        })
+        .map_err(PyRuntimeError::new_err)?;
+        Ok(true)
+    }
+}
+
+impl PpeRenderSession {
+    fn install_cancel_token(&self, generation: u64, token: CancelToken) -> PyResult<()> {
+        install_cancel_token_in_slot(&self.active_cancel, generation, token)
+            .map_err(|_| PyRuntimeError::new_err("PPE cancel lock bị poison"))
+    }
+
+    fn cancel_active_through(&self, generation: u64) -> PyResult<bool> {
+        cancel_active_through_in_slot(&self.active_cancel, generation)
+            .map_err(|_| PyRuntimeError::new_err("PPE cancel lock bị poison"))
+    }
+
+    fn check_owner(&self, owner_id: &str) -> PyResult<()> {
+        if owner_id != self.owner_id {
+            return Err(PyValueError::new_err(
+                "owner_id không sở hữu PPE RenderSession này",
+            ));
+        }
+        Ok(())
+    }
+
+    fn info_dict(&self, py: Python<'_>, snapshot: SessionInfoSnapshot) -> PyResult<Py<PyDict>> {
+        let timings = PyDict::new(py);
+        timings.set_item("total", duration_ms(self.open_timings.total))?;
+        timings.set_item("open", duration_ms(self.open_timings.open))?;
+        timings.set_item("parse", duration_ms(self.open_timings.parse))?;
+        timings.set_item("resource", duration_ms(self.open_timings.resource))?;
+        timings.set_item("color", duration_ms(self.open_timings.color))?;
+        timings.set_item("encode", 0.0)?;
+
+        let out = PyDict::new(py);
+        out.set_item("engine", "ppe")?;
+        out.set_item("session_version", SESSION_ENGINE_VERSION)?;
+        out.set_item("document_identity", snapshot.identity)?;
+        out.set_item("session_generation", snapshot.generation)?;
+        out.set_item("page_count", snapshot.page_count)?;
+        out.set_item(
+            "valid",
+            snapshot.valid && !self.closed.load(Ordering::Acquire),
+        )?;
+        out.set_item("cache", cache_stats_dict(py, snapshot.stats)?)?;
+        out.set_item("open_timings_ms", timings)?;
+        Ok(out.into())
+    }
+
+    fn render_dict(
+        &self,
+        py: Python<'_>,
+        request_generation: u64,
+        output: SessionRenderOutput,
+    ) -> PyResult<Py<PyDict>> {
+        let timings = PyDict::new(py);
+        // Warm path là 0; save-over được core đo đúng vào hai pha này.
+        timings.set_item("open", duration_ms(output.timings.open))?;
+        timings.set_item("parse", duration_ms(output.timings.parse))?;
+        timings.set_item("resource", duration_ms(output.timings.resource))?;
+        timings.set_item("raster", duration_ms(output.timings.raster))?;
+        timings.set_item("color", duration_ms(output.timings.color))?;
+        timings.set_item("encode", 0.0)?;
+
+        let out = PyDict::new(py);
+        out.set_item("width", output.width)?;
+        out.set_item("height", output.height)?;
+        out.set_item("rgb", PyBytes::new(py, &output.rgb))?;
+        out.set_item("rotate", output.rotate)?;
+        out.set_item("degraded", output.degraded)?;
+        out.set_item("ink_unsound", output.ink_unsound)?;
+        out.set_item("document_identity", output.identity)?;
+        out.set_item("session_generation", output.session_generation)?;
+        out.set_item("request_generation", request_generation)?;
+        out.set_item(
+            "resource_cache_hit",
+            output.stats_after.image_hits > output.stats_before.image_hits,
+        )?;
+        out.set_item("cache", cache_stats_dict(py, output.stats_after)?)?;
+        out.set_item("timings_ms", timings)?;
+        Ok(out.into())
+    }
+}
+
+impl Drop for PpeRenderSession {
+    fn drop(&mut self) {
+        self.closed.store(true, Ordering::Release);
+        self.latest_request_generation
+            .store(u64::MAX, Ordering::Release);
+        if let Ok(active) = self.active_cancel.lock() {
+            if let Some((_, token)) = active.as_ref() {
+                token.cancel();
+            }
+        }
+        if let Ok(mut session) = self.inner.try_lock() {
+            session.close();
+        }
+    }
+}
+
+fn cache_stats_dict(py: Python<'_>, stats: ResourceCacheStats) -> PyResult<Py<PyDict>> {
+    let out = PyDict::new(py);
+    out.set_item("image_hits", stats.image_hits)?;
+    out.set_item("image_misses", stats.image_misses)?;
+    out.set_item("image_evictions", stats.image_evictions)?;
+    out.set_item("page_hits", stats.page_hits)?;
+    out.set_item("page_misses", stats.page_misses)?;
+    out.set_item("bytes", stats.bytes)?;
+    out.set_item("budget_bytes", stats.budget_bytes)?;
+    Ok(out.into())
+}
+
+#[cfg(test)]
+mod active_cancel_tests {
+    use super::*;
+
+    #[test]
+    fn newer_generation_cancels_and_replaces_older_generation() {
+        let slot = Mutex::new(None);
+        let older = CancelToken::new();
+        let newer = CancelToken::new();
+        install_cancel_token_in_slot(&slot, 1, older.clone()).unwrap();
+        install_cancel_token_in_slot(&slot, 2, newer.clone()).unwrap();
+
+        assert!(older.is_cancelled());
+        assert!(!newer.is_cancelled());
+        assert_eq!(slot.lock().unwrap().as_ref().map(|item| item.0), Some(2));
+    }
+
+    #[test]
+    fn late_older_generation_cannot_replace_newer_generation() {
+        let slot = Mutex::new(None);
+        let newer = CancelToken::new();
+        let late_older = CancelToken::new();
+        install_cancel_token_in_slot(&slot, 2, newer.clone()).unwrap();
+        install_cancel_token_in_slot(&slot, 1, late_older.clone()).unwrap();
+
+        assert!(late_older.is_cancelled());
+        assert!(!newer.is_cancelled());
+        assert_eq!(slot.lock().unwrap().as_ref().map(|item| item.0), Some(2));
+    }
+
+    #[test]
+    fn cancel_through_is_bounded_and_idempotent() {
+        let slot = Mutex::new(None);
+        let token = CancelToken::new();
+        install_cancel_token_in_slot(&slot, 2, token.clone()).unwrap();
+
+        assert!(!cancel_active_through_in_slot(&slot, 1).unwrap());
+        assert!(!token.is_cancelled());
+        assert!(cancel_active_through_in_slot(&slot, 2).unwrap());
+        assert!(!cancel_active_through_in_slot(&slot, 2).unwrap());
+    }
+
+    #[test]
+    fn old_guard_cannot_clear_newer_generation() {
+        let slot = Mutex::new(None);
+        install_cancel_token_in_slot(&slot, 2, CancelToken::new()).unwrap();
+
+        clear_active_generation_in_slot(&slot, 1);
+
+        assert_eq!(slot.lock().unwrap().as_ref().map(|item| item.0), Some(2));
+        clear_active_generation_in_slot(&slot, 2);
+        assert!(slot.lock().unwrap().is_none());
+    }
+}
 
 /// Tách kẽm một trang bằng PPE.
 ///
@@ -51,6 +705,7 @@ use print_engine::text::outlines::StreamKey;
     render_intent = 1,
     fallback_font = None,
     memory_budget_mb = 512,
+    output_preview_filter = "all",
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn ppe_separations(
@@ -65,6 +720,7 @@ pub fn ppe_separations(
     render_intent: i32,
     fallback_font: Option<&str>,
     memory_budget_mb: usize,
+    output_preview_filter: &str,
 ) -> PyResult<Py<PyDict>> {
     if page == 0 {
         return Err(PyValueError::new_err(
@@ -83,11 +739,19 @@ pub fn ppe_separations(
             )))
         }
     };
+    let output_preview_filter = output_preview_filter_from_str(output_preview_filter)?;
     let base_opts = if ink_accurate {
         RenderOptions::ink_accurate()
     } else {
-        RenderOptions::default()
+        // COLOR (audit 2026-08-10 §OP.1): vẫn giữ từng kênh spot riêng, nhưng lấy
+        // thêm LUT tint → CMYK trong cùng lần raster để ghép subset kẽm qua ICC mà
+        // không phải parse/render lại PDF. `flatten_spots` chỉ có hiệu lực lúc xuất
+        // ảnh; byte từng plate ở dưới vẫn là lượng mực nguyên bản.
+        RenderOptions::softproof()
     };
+    // CORRECTNESS (audit 2026-08-10 §PPE.REAUDIT.4): lọc ngay lúc dựng
+    // InkBuffer, nên plate/TAC dùng đúng cùng tập object với bitmap soft-proof.
+    let base_opts = base_opts.with_output_preview_filter(output_preview_filter);
     let memory_budget_bytes = memory_budget_mb
         .checked_mul(1024 * 1024)
         .filter(|bytes| *bytes > 0)
@@ -147,6 +811,13 @@ pub fn ppe_separations(
         plate.set_item("is_spot", colorant.is_spot())?;
         plate.set_item("ink", PyBytes::new(py, &buffer.plate_u8(ch)))?;
         plate.set_item("coverage_pct", buffer.plate_coverage_pct(ch))?;
+        if let Some(alternate) = buffer.space().spot_alternate(ch) {
+            let lut = PyList::empty(py);
+            for sample in alternate.samples() {
+                lut.append(sample.to_vec())?;
+            }
+            plate.set_item("alternate_cmyk_lut", lut)?;
+        }
         plates.append(plate)?;
     }
 
@@ -198,6 +869,243 @@ pub fn ppe_separations(
     Ok(out.into())
 }
 
+struct SeparationCompositePlate {
+    name: String,
+    ink: Vec<u8>,
+    is_spot: bool,
+    alternate: Option<SpotAlternate>,
+}
+
+fn required_plate_item<'py>(
+    plate: &'py Bound<'py, PyDict>,
+    key: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    plate
+        .get_item(key)?
+        .ok_or_else(|| PyValueError::new_err(format!("plate thiếu trường bắt buộc '{key}'")))
+}
+
+fn parse_separation_composite_plates(
+    plates: &Bound<'_, PyList>,
+    pixel_count: usize,
+) -> PyResult<Vec<SeparationCompositePlate>> {
+    if plates.len() == 0 || plates.len() > 64 {
+        return Err(PyValueError::new_err("plates phải có từ 1 đến 64 bản kẽm"));
+    }
+    let mut names = HashSet::with_capacity(plates.len());
+    let mut parsed = Vec::with_capacity(plates.len());
+    for item in plates.iter() {
+        let plate = item.cast::<PyDict>()?;
+        let name: String = required_plate_item(plate, "name")?.extract()?;
+        if name.is_empty() || !names.insert(name.clone()) {
+            return Err(PyValueError::new_err(format!(
+                "tên bản kẽm rỗng hoặc bị trùng: '{name}'"
+            )));
+        }
+        let ink: Vec<u8> = required_plate_item(plate, "ink")?.extract()?;
+        if ink.len() != pixel_count {
+            return Err(PyValueError::new_err(format!(
+                "bản kẽm '{name}' có {} byte, cần đúng {pixel_count}",
+                ink.len()
+            )));
+        }
+        let is_spot = plate
+            .get_item("is_spot")?
+            .and_then(|value| value.extract::<bool>().ok())
+            .unwrap_or(false);
+        let alternate = match plate.get_item("alternate_cmyk_lut")? {
+            Some(value) if !value.is_none() => {
+                let samples: Vec<Vec<f32>> = value.extract()?;
+                let mut lut = Vec::with_capacity(samples.len());
+                for sample in samples {
+                    if sample.len() != 4 || sample.iter().any(|channel| !channel.is_finite()) {
+                        return Err(PyValueError::new_err(format!(
+                            "LUT CMYK của bản kẽm '{name}' không hợp lệ"
+                        )));
+                    }
+                    lut.push([sample[0], sample[1], sample[2], sample[3]]);
+                }
+                Some(SpotAlternate::from_lut(lut).ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "LUT CMYK của bản kẽm '{name}' phải có đúng {} mẫu",
+                        SpotAlternate::lut_steps()
+                    ))
+                })?)
+            }
+            _ => None,
+        };
+        parsed.push(SeparationCompositePlate {
+            name,
+            ink,
+            is_spot,
+            alternate,
+        });
+    }
+    Ok(parsed)
+}
+
+fn process_plate_channel(name: &str) -> Option<usize> {
+    match name {
+        "Cyan" => Some(0),
+        "Magenta" => Some(1),
+        "Yellow" => Some(2),
+        "Black" => Some(3),
+        _ => None,
+    }
+}
+
+/// Ghép lại tập bản kẽm đã chọn từ byte lượng mực có sẵn rồi đổi một lần qua ICC.
+///
+/// PERF/COLOR (audit 2026-08-10 §OP.1): thao tác này không mở PDF, không chạy
+/// content interpreter và không raster lại trang. Vì vậy click/solo kẽm chỉ còn
+/// chi phí giải nén ở facade + cộng mặt phẳng mực + CMM, thay cho một lần render
+/// PPE đầy đủ hoặc lớp `mix-blend-multiply` sai màu.
+#[pyfunction]
+#[pyo3(signature = (
+    width,
+    height,
+    plates,
+    enabled_names,
+    cmyk_profile,
+    rgb_profile = None,
+    render_intent = 1,
+    memory_budget_mb = 512,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn ppe_compose_separation_subset(
+    py: Python<'_>,
+    width: u32,
+    height: u32,
+    plates: &Bound<'_, PyList>,
+    enabled_names: Vec<String>,
+    cmyk_profile: &str,
+    rgb_profile: Option<&str>,
+    render_intent: i32,
+    memory_budget_mb: usize,
+) -> PyResult<Py<PyDict>> {
+    if width == 0 || height == 0 {
+        return Err(PyValueError::new_err("width/height phải lớn hơn 0"));
+    }
+    if cmyk_profile.is_empty() {
+        return Err(PyValueError::new_err(
+            "ghép bản kẽm cần cmyk_profile để quản lý màu",
+        ));
+    }
+    let pixel_count = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| PyValueError::new_err("kích thước ảnh bản kẽm bị tràn số"))?;
+    let budget_bytes = megabytes_to_bytes(memory_budget_mb, "memory_budget_mb", false)?;
+    let bytes_per_pixel = std::mem::size_of::<[f32; 4]>()
+        .checked_add(3)
+        .and_then(|base| base.checked_add(plates.len()))
+        .ok_or_else(|| PyValueError::new_err("bộ nhớ ghép bản kẽm bị tràn số"))?;
+    let working_bytes = pixel_count
+        .checked_mul(bytes_per_pixel)
+        .ok_or_else(|| PyValueError::new_err("bộ nhớ ghép bản kẽm bị tràn số"))?;
+    if working_bytes > budget_bytes {
+        return Err(PyValueError::new_err(format!(
+            "ghép bản kẽm cần khoảng {} MB, vượt ngân sách {memory_budget_mb} MB",
+            working_bytes.div_ceil(1024 * 1024)
+        )));
+    }
+
+    let parsed = parse_separation_composite_plates(plates, pixel_count)?;
+    let available: HashSet<&str> = parsed.iter().map(|plate| plate.name.as_str()).collect();
+    let enabled: HashSet<String> = enabled_names.into_iter().collect();
+    if let Some(unknown) = enabled
+        .iter()
+        .find(|name| !available.contains(name.as_str()))
+    {
+        return Err(PyValueError::new_err(format!(
+            "bản kẽm được chọn không tồn tại: '{unknown}'"
+        )));
+    }
+
+    let mut process: [Option<Vec<u8>>; 4] = [None, None, None, None];
+    let mut spots: Vec<(String, Vec<u8>, Option<SpotAlternate>)> = Vec::new();
+    for plate in parsed {
+        if !enabled.contains(&plate.name) {
+            continue;
+        }
+        if plate.is_spot {
+            spots.push((plate.name, plate.ink, plate.alternate));
+        } else if let Some(channel) = process_plate_channel(&plate.name) {
+            if process[channel].replace(plate.ink).is_some() {
+                return Err(PyValueError::new_err(format!(
+                    "bản kẽm process bị trùng kênh: '{}'",
+                    plate.name
+                )));
+            }
+        } else {
+            return Err(PyValueError::new_err(format!(
+                "bản kẽm process không được nhận diện: '{}'",
+                plate.name
+            )));
+        }
+    }
+    let missing_spot_alternates: Vec<String> = spots
+        .iter()
+        .filter(|(_, _, alternate)| alternate.is_none())
+        .map(|(name, _, _)| name.clone())
+        .collect();
+    let cmyk_profile = cmyk_profile.to_owned();
+    let rgb_profile = rgb_profile.map(str::to_owned);
+    let intent = RenderIntent::from_pdf(render_intent);
+
+    let rgb = py
+        .detach(move || -> print_engine::error::PpeResult<Vec<u8>> {
+            let cmyk: Vec<[f32; 4]> = (0..pixel_count)
+                .into_par_iter()
+                .map(|index| {
+                    let mut pixel = [0.0f32; 4];
+                    for channel in 0..4 {
+                        if let Some(plane) = &process[channel] {
+                            pixel[channel] = plane[index] as f32 / 255.0;
+                        }
+                    }
+                    for (_, plane, alternate) in &spots {
+                        let tint = plane[index] as f32 / 255.0;
+                        if tint <= 0.0 {
+                            continue;
+                        }
+                        match alternate {
+                            Some(alternate) => {
+                                let addition = alternate.cmyk_at(tint);
+                                for channel in 0..4 {
+                                    pixel[channel] = (pixel[channel] + addition[channel]).min(1.0);
+                                }
+                            }
+                            None => pixel[3] = (pixel[3] + tint).min(1.0),
+                        }
+                    }
+                    pixel
+                })
+                .collect();
+            let manager = ColorManager::from_profiles(
+                Path::new(&cmyk_profile),
+                rgb_profile.as_deref().map(Path::new),
+                intent,
+            )?;
+            let converted = manager.cmyk_to_srgb_batch(&cmyk).ok_or_else(|| {
+                PpeError::Unsupported("không quy được tập bản kẽm sang sRGB".into())
+            })?;
+            let mut flat = Vec::with_capacity(pixel_count * 3);
+            for pixel in converted {
+                flat.extend_from_slice(&pixel);
+            }
+            Ok(flat)
+        })
+        .map_err(|error| PyRuntimeError::new_err(format!("PPE: {error}")))?;
+
+    let out = PyDict::new(py);
+    out.set_item("width", width)?;
+    out.set_item("height", height)?;
+    out.set_item("rgb", PyBytes::new(py, &rgb))?;
+    out.set_item("color_managed", true)?;
+    out.set_item("missing_spot_alternates", missing_spot_alternates)?;
+    Ok(out.into())
+}
+
 /// Năng lực hiện tại của PPE — nguồn duy nhất cho capability matrix ở lớp Python.
 ///
 /// Soft-proof một trang: render trong không gian mực rồi quy sang sRGB qua ICC.
@@ -228,7 +1136,15 @@ pub fn ppe_separations(
     page_box = "crop",
     fallback_font = None,
     simulate_overprint = true,
+    output_preview_filter = "all",
+    simulate_paper_color = false,
+    simulate_black_ink = false,
+    page_background_rgb = None,
     memory_budget_mb = 512,
+    clip_x = None,
+    clip_y = None,
+    clip_width = None,
+    clip_height = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn ppe_softproof(
@@ -242,7 +1158,15 @@ pub fn ppe_softproof(
     page_box: &str,
     fallback_font: Option<&str>,
     simulate_overprint: bool,
+    output_preview_filter: &str,
+    simulate_paper_color: bool,
+    simulate_black_ink: bool,
+    page_background_rgb: Option<(u8, u8, u8)>,
     memory_budget_mb: usize,
+    clip_x: Option<u32>,
+    clip_y: Option<u32>,
+    clip_width: Option<u32>,
+    clip_height: Option<u32>,
 ) -> PyResult<Py<PyDict>> {
     if page == 0 {
         return Err(PyValueError::new_err(
@@ -270,8 +1194,16 @@ pub fn ppe_softproof(
         .checked_mul(1024 * 1024)
         .filter(|bytes| *bytes > 0)
         .ok_or_else(|| PyValueError::new_err("memory_budget_mb must be greater than zero"))?;
+    let output_preview_filter = output_preview_filter_from_str(output_preview_filter)?;
+    let proof_settings = softproof_settings(
+        simulate_paper_color,
+        simulate_black_ink,
+        page_background_rgb,
+    );
     let base_opts = RenderOptions::softproof()
         .with_overprint_simulation(simulate_overprint)
+        .with_output_preview_filter(output_preview_filter)
+        .with_softproof_settings(proof_settings)
         .with_memory_budget_bytes(memory_budget_bytes);
     let opts = match fallback_font {
         Some(path) => {
@@ -283,6 +1215,20 @@ pub fn ppe_softproof(
         None => base_opts,
     };
     let intent = RenderIntent::from_pdf(render_intent);
+    let clip = match (clip_x, clip_y, clip_width, clip_height) {
+        (None, None, None, None) => None,
+        (Some(x), Some(y), Some(width), Some(height)) => Some(RasterClip {
+            x,
+            y,
+            width,
+            height,
+        }),
+        _ => {
+            return Err(PyValueError::new_err(
+                "clip PPE phải truyền đủ x/y/width/height",
+            ))
+        }
+    };
 
     let (width, height, rgb, degraded, ink_unsound) = py
         .detach(|| -> print_engine::error::PpeResult<_> {
@@ -292,12 +1238,16 @@ pub fn ppe_softproof(
                 intent,
             )?;
             let doc = ppe_open(pdf_path)?;
-            let rendered = render_page_managed(&doc, page, dpi, which_box, opts, Some(&manager))?;
-            let rgb = rendered.buffer.to_srgb(&manager).ok_or_else(|| {
-                print_engine::error::PpeError::Unsupported(
-                    "không quy được mực sang sRGB".to_string(),
-                )
-            })?;
+            let rendered =
+                render_page_managed_region(&doc, page, dpi, which_box, opts, Some(&manager), clip)?;
+            let rgb = rendered
+                .buffer
+                .to_srgb_with_cancel_and_settings(&manager, None, proof_settings)?
+                .ok_or_else(|| {
+                    print_engine::error::PpeError::Unsupported(
+                        "không quy được mực sang sRGB".to_string(),
+                    )
+                })?;
             Ok((
                 rendered.buffer.width(),
                 rendered.buffer.height(),
@@ -402,7 +1352,7 @@ pub fn ppe_export_cmyk(
         .detach(|| -> print_engine::error::PpeResult<_> {
             let manager = ColorManager::from_profiles(
                 Path::new(cmyk_profile),
-                None::<&Path>,  // Không cần RGB profile — giữ CMYK
+                None::<&Path>, // Không cần RGB profile — giữ CMYK
                 intent,
             )?;
             let doc = ppe_open(pdf_path)?;
@@ -565,14 +1515,31 @@ pub fn ppe_text_outlines(
 pub fn ppe_capabilities(py: Python<'_>) -> PyResult<Py<PyDict>> {
     let caps = PyDict::new(py);
     caps.set_item("version", env!("CARGO_PKG_VERSION"))?;
+    // BUILD (audit 2026-08-10 §PPE.REAUDIT.7): version crate không đủ phân
+    // biệt hai `.pyd` dựng từ source khác nhau. Các trường này do build.rs
+    // nhúng và pipeline release đối chiếu lại trước khi đóng gói sidecar.
+    caps.set_item("source_revision", env!("PRYNX_EMBED_SOURCE_REVISION"))?;
+    caps.set_item("source_dirty", env!("PRYNX_EMBED_SOURCE_DIRTY") == "true")?;
+    caps.set_item(
+        "build_timestamp_utc",
+        env!("PRYNX_EMBED_BUILD_TIMESTAMP_UTC"),
+    )?;
+    caps.set_item("build_profile", env!("PRYNX_EMBED_BUILD_PROFILE"))?;
+    caps.set_item("build_provenance", env!("PRYNX_EMBED_BUILD_PROVENANCE"))?;
+    caps.set_item("build_identity", env!("PRYNX_EMBED_BUILD_IDENTITY"))?;
     // Đây là mặc định của *binding* khi caller không truyền gì — KHÔNG phải chính
     // sách của sản phẩm. Backend chọn ngân sách theo RAM máy và số slot việc nặng
     // (`app/core/print_engine/facade.py::_auto_memory_budget_mb`); đọc con số này
     // như "PrynX chạy với 512 MiB" là hiểu sai, nên nói rõ chính sách ở khoá dưới.
     caps.set_item("memory_budget_default_mb", 512)?;
-    caps.set_item("memory_budget_policy", "caller-provided; backend: host-ram-aware")?;
+    caps.set_item(
+        "memory_budget_policy",
+        "caller-provided; backend: host-ram-aware",
+    )?;
     caps.set_item("process_separations", true)?;
     caps.set_item("spot_separations", true)?;
+    caps.set_item("separations_output_preview_filter", true)?;
+    caps.set_item("separation_subset_composite", true)?;
     caps.set_item("overprint", true)?;
     caps.set_item("overprint_mode_1", true)?;
     caps.set_item("overprint_preview_toggle", true)?;
@@ -610,6 +1577,8 @@ pub fn ppe_capabilities(py: Python<'_>) -> PyResult<Py<PyDict>> {
         vec!["DeviceCMYK", "DeviceGray", "Separation", "DeviceN"],
     )?;
     caps.set_item("soft_proof_cmyk_to_srgb", true)?;
+    caps.set_item("render_session", true)?;
+    caps.set_item("render_session_version", SESSION_ENGINE_VERSION)?;
 
     // Chữ: Type1 / CFF / TrueType / Type0-CID / Type3 → outline, có clip theo chữ.
     caps.set_item("text", true)?;
@@ -641,11 +1610,35 @@ pub fn ppe_capabilities(py: Python<'_>) -> PyResult<Py<PyDict>> {
     // được tính mực.
     caps.set_item("optional_content", true)?;
     caps.set_item("optional_content_config", "print")?;
+    caps.set_item("optional_content_configs", vec!["print", "view"])?;
     caps.set_item("inline_images", true)?;
     // Soft-proof: đường **xem**, khử răng cưa và quy mực pha về CMYK ⇒ tuyệt đối
     // không dùng kết quả của nó để kết luận lượng mực.
     caps.set_item("softproof", true)?;
     caps.set_item("softproof_requires_icc", true)?;
+    caps.set_item("softproof_paper_color", true)?;
+    caps.set_item("softproof_black_ink", true)?;
+    caps.set_item("softproof_page_background", true)?;
+    caps.set_item(
+        "output_preview_filters",
+        vec![
+            "all",
+            "device-cmyk",
+            "device-rgb",
+            "device-gray",
+            "spot",
+            "text",
+            "images",
+            "line-art",
+            "smooth-shades",
+        ],
+    )?;
+    // PERF (audit 2026-08-08 §RENDER.3): caller chỉ được truyền clip khi binding
+    // công khai capability này; build cũ phải fail-fast thay vì fallback full-page.
+    caps.set_item("softproof_viewport_clip", true)?;
+    caps.set_item("annotation_appearance_stream", true)?;
+    caps.set_item("annotation_dynamic_appearance", false)?;
+    caps.set_item("annotation_xfa", false)?;
 
     // Trong suốt: blend mode và soft mask đã dựng; group đã dựng cả ba đường
     // (đục / không cách ly / cách ly). Riêng knockout group thì chưa — khai riêng
@@ -677,6 +1670,14 @@ pub fn ppe_capabilities(py: Python<'_>) -> PyResult<Py<PyDict>> {
     caps.set_item(
         "blend_modes_approximated",
         vec!["Hue", "Saturation", "Color", "Luminosity"],
+    )?;
+    caps.set_item(
+        "blend_modes_nonseparable_exact_in",
+        vec!["DeviceRGB with ICC-managed RGB surface"],
+    )?;
+    caps.set_item(
+        "blend_modes_nonseparable_compatibility_in",
+        vec!["DeviceCMYK", "Other", "DeviceRGB without ICC"],
     )?;
     Ok(caps.into())
 }

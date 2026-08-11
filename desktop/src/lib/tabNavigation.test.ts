@@ -13,6 +13,7 @@ describe('điều hướng đa tab', () => {
         { id: 'pdf', type: 'imposition', payload: { file: 'a.pdf' } },
         { id: 'tach-nen', type: 'imposition', payload: { focusFeature: 'bgremover' } },
         { id: 'phong-to', type: 'imposition', payload: { focusFeature: 'upscale' } },
+        { id: 'logo', type: 'imposition', payload: { focusFeature: 'logo_rebuild' } },
     ];
 
     it('không gửi file vào công cụ chuyên dụng đang nằm ở tab nền', () => {
@@ -43,6 +44,33 @@ describe('điều hướng đa tab', () => {
         });
     });
 
+    it('định tuyến ảnh native vào đúng tab Logo đang active', () => {
+        expect(resolveActiveImageBatchReceiver(tabs, 'logo')).toEqual({
+            tabId: 'logo',
+            feature: 'logo_rebuild',
+            eventName: 'prynx-logo-rebuild-add-files',
+        });
+    });
+
+    it('chỉ chọn tab Logo active khi có nhiều workspace Logo đang mounted', () => {
+        const multiLogoTabs = [
+            { id: 'logo-a', type: 'imposition', payload: { file: 'a.pdf' } },
+            { id: 'logo-b', type: 'imposition', payload: { file: 'b.pdf' } },
+        ];
+        const unregisterA = registerActiveTabFeature('logo-a', 'logo_rebuild');
+        const unregisterB = registerActiveTabFeature('logo-b', 'logo_rebuild');
+        try {
+            expect(resolveActiveImageBatchReceiver(multiLogoTabs, 'logo-b')).toEqual({
+                tabId: 'logo-b',
+                feature: 'logo_rebuild',
+                eventName: 'prynx-logo-rebuild-add-files',
+            });
+        } finally {
+            unregisterB();
+            unregisterA();
+        }
+    });
+
     it('dung cong cu dang hien thi thay vi intent cu luc mo tab', () => {
         const genericTabs = [
             { id: 'pdf-runtime', type: 'imposition', payload: { file: 'a.pdf' } },
@@ -68,6 +96,7 @@ describe('điều hướng đa tab', () => {
 
         }
     });
+
     it('tách tất cả PDF để shell mở mỗi file thành một tab mới', () => {
         const files = [
             { name: '01_bia.PDF' },

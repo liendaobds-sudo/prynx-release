@@ -1,16 +1,40 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { authenticatedFetch, getApiUrl } from '../lib/api';
 import { useWorkspaceStore } from '../stores/useWorkspaceStore';
+import type {
+    OutputPreviewRenderingIntent,
+    OutputPreviewRgb,
+    OutputPreviewShowFilter,
+} from '../stores/useWorkspaceStore';
 import { useTranslation } from 'react-i18next';
 
-interface IccProfile {
-    id: string;
-    name: string;
-    description: string;
-    available: boolean;
+interface SoftProofPanelProps {
+    fileId?: string;
+    pageNum?: number;
+    profileId: string;
+    intent: OutputPreviewRenderingIntent;
+    simulateOverprint: boolean;
+    outputPreviewFilter?: OutputPreviewShowFilter;
+    simulatePaperColor?: boolean;
+    simulateBlackInk?: boolean;
+    pageBackgroundRgb?: OutputPreviewRgb | null;
+    forceGamutWarning?: boolean;
+    autoRender?: boolean;
 }
 
-export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string }) {
+export default function SoftProofPanel({
+    fileId: fileIdProp,
+    pageNum,
+    profileId,
+    intent,
+    simulateOverprint,
+    outputPreviewFilter = 'all',
+    simulatePaperColor = false,
+    simulateBlackInk = false,
+    pageBackgroundRgb = null,
+    forceGamutWarning = false,
+    autoRender = false,
+}: SoftProofPanelProps) {
   const { t } = useTranslation();
     const {
         viewerActivePage: activePage, viewerNumPages: numPages,
@@ -22,51 +46,56 @@ export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string
     // Use prop first, then fallback to selectionFileId from store
     const fileId = fileIdProp || selectionFileId || '';
 
-    const [profiles, setProfiles] = useState<IccProfile[]>([]);
-    const [selectedProfile, setSelectedProfile] = useState('fogra39');
-    const [intent, setIntent] = useState('relative');
-    const [showGamut, setShowGamut] = useState(false);
+    const [manualShowGamut, setManualShowGamut] = useState(false);
     const [loading, setLoading] = useState(false);
     const [outOfGamutPct, setOutOfGamutPct] = useState(0);
     const [profileName, setProfileName] = useState('');
     const [warning, setWarning] = useState('');
     const [engineInfo, setEngineInfo] = useState('');
-
-    // Fetch available ICC profiles
-    useEffect(() => {
-        fetch(`${getApiUrl()}/preflight/icc-profiles`)
-            .then(res => res.json())
-            .then(data => setProfiles(data.profiles || []))
-            .catch(() => {});
-    }, []);
+    const requestGenerationRef = useRef(0);
+    const requestAbortRef = useRef<AbortController | null>(null);
+    const showGamut = forceGamutWarning || manualShowGamut;
+    const targetPage = pageNum ?? activePage;
 
     const doSoftProof = useCallback(async () => {
         if (!fileId) {
             setWarning(t('misc.softProof:chua_co_file_hay_mo_mot_file_pdf_truoc'));
             return;
         }
+        const generation = ++requestGenerationRef.current;
+        requestAbortRef.current?.abort();
+        const controller = new AbortController();
+        requestAbortRef.current = controller;
         setLoading(true);
         setWarning('');
         try {
             const res = await authenticatedFetch(`${getApiUrl()}/preflight/softproof`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                signal: controller.signal,
                 body: JSON.stringify({
                     file_id: fileId,
-                    page: activePage,
-                    profile_id: selectedProfile,
+                    page: targetPage,
+                    profile_id: profileId,
                     intent,
+                    simulate_overprint: simulateOverprint,
                     show_gamut_warning: showGamut,
+                    output_preview_filter: outputPreviewFilter,
+                    simulate_paper_color: simulatePaperColor,
+                    simulate_black_ink: simulateBlackInk,
+                    page_background_rgb: pageBackgroundRgb,
                     dpi: 150,
                 }),
             });
+            if (generation !== requestGenerationRef.current || controller.signal.aborted) return;
             if (!res.ok) {
                 const errData = await res.json().catch(() => ({}));
+                if (generation !== requestGenerationRef.current || controller.signal.aborted) return;
                 setWarning(`Lỗi server: ${errData.detail || res.statusText}`);
-                setLoading(false);
                 return;
             }
             const data = await res.json();
+            if (generation !== requestGenerationRef.current || controller.signal.aborted) return;
             if (data.softproof_b64) {
                 setSoftProofImageUrl(`data:image/jpeg;base64,${data.softproof_b64}`);
                 setSoftProofActive(true);
@@ -83,13 +112,21 @@ export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string
             if (data.warning) setWarning(data.warning);
             else if (data.accuracy === 'rip_softproof') setWarning('');
         } catch (err: any) {
+            if (controller.signal.aborted || generation !== requestGenerationRef.current) return;
             setWarning(err.message || t('misc.softProof:loi_khi_tao_soft_proof'));
         } finally {
-            setLoading(false);
+            if (generation === requestGenerationRef.current) {
+                requestAbortRef.current = null;
+                setLoading(false);
+            }
         }
-    }, [fileId, activePage, selectedProfile, intent, showGamut, setSoftProofImageUrl, setGamutWarningUrl, setSoftProofActive, t]);
+    }, [fileId, intent, outputPreviewFilter, pageBackgroundRgb, profileId, setGamutWarningUrl, setSoftProofActive, setSoftProofImageUrl, showGamut, simulateBlackInk, simulateOverprint, simulatePaperColor, t, targetPage]);
 
     const clearSoftProof = useCallback(() => {
+        requestGenerationRef.current += 1;
+        requestAbortRef.current?.abort();
+        requestAbortRef.current = null;
+        setLoading(false);
         setSoftProofActive(false);
         setSoftProofImageUrl(null);
         setGamutWarningUrl(null);
@@ -98,59 +135,32 @@ export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string
         setEngineInfo('');
     }, [setSoftProofActive, setSoftProofImageUrl, setGamutWarningUrl]);
 
-    const INTENTS: Record<string, string> = {
-        perceptual: 'Perceptual',
-        relative: 'Relative Colorimetric',
-        saturation: 'Saturation',
-        absolute: 'Absolute Colorimetric',
-    };
+    // PREFLIGHT (audit 2026-08-10 §OP.8): Color Warnings là Preview mode thật,
+    // nên đổi Show/Simulation phải tự dựng thế hệ mới; response cũ bị abort/latest-only.
+    useEffect(() => {
+        if (!autoRender) return;
+        void doSoftProof();
+        return () => {
+            requestGenerationRef.current += 1;
+            requestAbortRef.current?.abort();
+            requestAbortRef.current = null;
+        };
+    }, [autoRender, doSoftProof]);
+
+    useEffect(() => () => {
+        requestGenerationRef.current += 1;
+        requestAbortRef.current?.abort();
+    }, []);
 
     return (
         <div className="flex flex-col gap-3" style={{ padding: '12px 0' }}>
-            {/* Profile Selection */}
-            <div>
-                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest block mb-1">{t('misc.softProof:icc_profile_dau_ra')}</label>
-                <select
-                    value={selectedProfile}
-                    onChange={(e) => setSelectedProfile(e.target.value)}
-                    className="w-full h-8 text-[12px] rounded-lg border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-200 px-2 focus:ring-1 focus:ring-indigo-400 focus:outline-none"
-                >
-                    {profiles.map(p => (
-                        <option key={p.id} value={p.id} disabled={!p.available}>
-                            {p.name} {!p.available ? t('misc.softProof:chua_cai') : ''}
-                        </option>
-                    ))}
-                    {profiles.length === 0 && (
-                        <option value="fogra39">{t('misc.softProof:fogra39_dang_tai')}</option>
-                    )}
-                </select>
-                {profiles.find(p => p.id === selectedProfile) && (
-                    <span className="text-[10px] text-slate-400 mt-0.5 block">
-                        {profiles.find(p => p.id === selectedProfile)?.description}
-                    </span>
-                )}
-            </div>
-
-            {/* Rendering Intent */}
-            <div>
-                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Rendering Intent</label>
-                <select
-                    value={intent}
-                    onChange={(e) => setIntent(e.target.value)}
-                    className="w-full h-8 text-[12px] rounded-lg border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-200 px-2 focus:ring-1 focus:ring-indigo-400 focus:outline-none"
-                >
-                    {Object.entries(INTENTS).map(([k, v]) => (
-                        <option key={k} value={k}>{v}</option>
-                    ))}
-                </select>
-            </div>
-
             {/* Gamut Warning Toggle */}
             <label className="flex items-center gap-2 cursor-pointer">
                 <input
                     type="checkbox"
                     checked={showGamut}
-                    onChange={(e) => setShowGamut(e.target.checked)}
+                    disabled={forceGamutWarning}
+                    onChange={(e) => setManualShowGamut(e.target.checked)}
                     className="w-3.5 h-3.5 rounded border-slate-300 text-emerald-500 focus:ring-emerald-500 cursor-pointer"
                 />
                 <span className="text-[12px] text-slate-600 dark:text-zinc-300">{t('misc.softProof:hien_canh_bao_gamut')}</span>
@@ -199,7 +209,7 @@ export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string
                     )}
                     <div className="flex items-center justify-between">
                         <span className="text-[11px] text-slate-500">Trang:</span>
-                        <span className="text-[11px] font-semibold text-slate-600 dark:text-zinc-300">{activePage} / {numPages}</span>
+                        <span className="text-[11px] font-semibold text-slate-600 dark:text-zinc-300">{targetPage} / {numPages}</span>
                     </div>
                     {showGamut && (
                         <div className="flex items-center justify-between">

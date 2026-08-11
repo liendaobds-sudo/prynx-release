@@ -395,7 +395,7 @@ $verifier = "$ROOT\scripts\verify_installed_artifact.ps1"
 if (-not (Test-Path -LiteralPath $verifier -PathType Leaf)) { throw "Thieu installed-artifact verifier: $verifier" }
 Write-Host "  [..] Cai tam va chay runtime smoke truoc khi cho phep upload..." -ForegroundColor Yellow
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifier `
-    -Installer $stagedSetupPath -Manifest $manifestPath -ExpectedVersion $Version -ExpectNoGhostscript
+    -Installer $stagedSetupPath -Manifest $manifestPath -ExpectedVersion $Version
 if ($LASTEXITCODE -ne 0) { throw "Installed-artifact verifier that bai; KHONG upload GitHub." }
 
 $runtimeVerified = Get-ReleaseManifestField -Path $manifestPath -Name "RUNTIME_VERIFIED"

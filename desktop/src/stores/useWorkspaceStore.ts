@@ -2,7 +2,7 @@ import { createStore } from 'zustand/vanilla';
 import { useStore } from 'zustand';
 import { createContext, useContext } from 'react';
 import type { StoreApi } from 'zustand';
-import type { PlateOverlay } from '../components/OutputPreviewTab';
+import type { OutputPreviewPageBoxes, PlateOverlay } from '../lib/outputPreviewOverlay';
 import type { CropRegionFrac } from '../lib/cropGeometry';
 import type { ProcessingSettings } from '../lib/pdfImposer';
 
@@ -12,6 +12,48 @@ import type { ProcessingSettings } from '../lib/pdfImposer';
 // ═══════════════════════════════════════════════════════════
 
 type Phase = 'upload' | 'workspace';
+
+export function workspaceFileIdentity(file: File | null | undefined): string {
+    if (!file) return 'none';
+    const localPath = (file as File & { path?: string }).path || '';
+    return `${localPath}|${file.name}|${file.size}|${file.lastModified || 0}`;
+}
+
+export function workspaceDocumentIdentity(
+    file: File | null | undefined,
+    pageOrder: number[] | undefined,
+    pageRotations: number[] | undefined,
+): string {
+    const order = pageOrder?.length ? pageOrder.join(',') : 'source';
+    const rotations = pageRotations?.length
+        ? pageRotations.map(value => ((value % 360) + 360) % 360).join(',')
+        : 'source';
+    return `${workspaceFileIdentity(file)}|order:${order}|rot:${rotations}`;
+}
+
+export type OutputPreviewRenderingIntent = 'perceptual' | 'relative' | 'saturation' | 'absolute';
+export type OutputPreviewShowFilter =
+    | 'all'
+    | 'device-cmyk'
+    | 'device-rgb'
+    | 'device-gray'
+    | 'spot'
+    | 'text'
+    | 'images'
+    | 'line-art'
+    | 'smooth-shades';
+export type OutputPreviewMode = 'separations' | 'color-warnings';
+export type OutputPreviewRgb = [number, number, number];
+
+export function outputPreviewProofIdentity(
+    filter: OutputPreviewShowFilter,
+    simulatePaperColor: boolean,
+    simulateBlackInk: boolean,
+    pageBackgroundRgb: OutputPreviewRgb | null,
+): string {
+    const background = pageBackgroundRgb ? pageBackgroundRgb.join('-') : 'profile';
+    return `show:${filter}|paper:${simulatePaperColor ? 1 : 0}|black:${simulateBlackInk ? 1 : 0}|background:${background}`;
+}
 
 export interface CropSelectionState {
     /** Stable viewer instance id, so duplicated source pages do not share hotkeys. */
@@ -84,6 +126,20 @@ export interface WorkspaceState {
     showOutputPreview: boolean;
     separationPlates: PlateOverlay[];
     hoveredPdfPosition: { x: number; y: number; pageNum: number } | null;
+    /** Nguồn Simulation duy nhất của Viewer, Separations và Soft-Proof trong tab này. */
+    outputPreviewProfileId: string;
+    outputPreviewRenderingIntent: OutputPreviewRenderingIntent;
+    outputPreviewShowFilter: OutputPreviewShowFilter;
+    outputPreviewMode: OutputPreviewMode;
+    outputPreviewSimulatePaperColor: boolean;
+    outputPreviewSimulateBlackInk: boolean;
+    outputPreviewPageBackgroundRgb: OutputPreviewRgb | null;
+    /** Độ mờ chung cho Gamut/TAC/diff Overprint; composite chính luôn 100%. */
+    outputPreviewWarningOpacity: number;
+    outputPreviewOverprintDiagnosticActive: boolean;
+    outputPreviewActiveViewerPage: number | null;
+    outputPreviewPageBoxes: OutputPreviewPageBoxes | null;
+    outputPreviewShowPageBoxes: boolean;
 
     // ── Soft-Proof ──
     softProofImageUrl: string | null;
@@ -109,6 +165,8 @@ export interface WorkspaceState {
     hiddenObjectIds: string[];
     lockedObjectIds: string[];
     selectionFileId: string;
+    /** Identity file + page order/rotation mà `selectionFileId` đại diện. */
+    selectionDocumentIdentity: string;
     // Clipboard copy/paste cho edit PDF (lazy-reference: chỉ nhớ trang nguồn + id,
     // resolve lại lúc paste). pasteCount cộng dồn offset khi paste liên tiếp.
     editClipboard: { sourcePage: number; objectIds: string[]; pasteCount: number } | null;
@@ -183,8 +241,21 @@ export interface WorkspaceState {
     setIsDraggingSidebar: (val: boolean) => void;
 
     setShowOutputPreview: (val: boolean) => void;
+    closeOutputPreview: () => void;
     setSeparationPlates: (plates: PlateOverlay[]) => void;
     setHoveredPdfPosition: (pos: { x: number; y: number; pageNum: number } | null) => void;
+    setOutputPreviewProfileId: (profileId: string) => void;
+    setOutputPreviewRenderingIntent: (intent: OutputPreviewRenderingIntent) => void;
+    setOutputPreviewShowFilter: (filter: OutputPreviewShowFilter) => void;
+    setOutputPreviewMode: (mode: OutputPreviewMode) => void;
+    setOutputPreviewSimulatePaperColor: (enabled: boolean) => void;
+    setOutputPreviewSimulateBlackInk: (enabled: boolean) => void;
+    setOutputPreviewPageBackgroundRgb: (rgb: OutputPreviewRgb | null) => void;
+    setOutputPreviewWarningOpacity: (opacity: number) => void;
+    setOutputPreviewOverprintDiagnosticActive: (active: boolean) => void;
+    setOutputPreviewActiveViewerPage: (pageNum: number | null) => void;
+    setOutputPreviewPageBoxes: (boxes: OutputPreviewPageBoxes | null) => void;
+    setOutputPreviewShowPageBoxes: (show: boolean) => void;
 
     setSoftProofImageUrl: (url: string | null) => void;
     setGamutWarningUrl: (url: string | null) => void;
@@ -206,7 +277,7 @@ export interface WorkspaceState {
     setEditClipboard: (clip: { sourcePage: number; objectIds: string[]; pasteCount: number } | null) => void;
     setHiddenObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
     setLockedObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
-    setSelectionFileId: (id: string) => void;
+    setSelectionFileId: (id: string, documentIdentity?: string) => void;
     setObjectSelectionContext: (context: EditObjectSelectionContext | null) => void;
     setEditAddMode: (updater: ('text' | 'image' | null) | ((prev: 'text' | 'image' | null) => 'text' | 'image' | null)) => void;
 
@@ -279,6 +350,18 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     showOutputPreview: false,
     separationPlates: [],
     hoveredPdfPosition: null,
+    outputPreviewProfileId: 'fogra39',
+    outputPreviewRenderingIntent: 'relative',
+    outputPreviewShowFilter: 'all',
+    outputPreviewMode: 'separations',
+    outputPreviewSimulatePaperColor: false,
+    outputPreviewSimulateBlackInk: false,
+    outputPreviewPageBackgroundRgb: null,
+    outputPreviewWarningOpacity: 1,
+    outputPreviewOverprintDiagnosticActive: false,
+    outputPreviewActiveViewerPage: null,
+    outputPreviewPageBoxes: null,
+    outputPreviewShowPageBoxes: false,
 
     softProofImageUrl: null,
     gamutWarningUrl: null,
@@ -299,6 +382,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     hiddenObjectIds: [],
     lockedObjectIds: [],
     selectionFileId: '',
+    selectionDocumentIdentity: '',
     objectSelectionContext: null,
     editAddMode: null,
 
@@ -335,13 +419,18 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
 
     // ── Setters ──
     setPhase: (phase) => set({ phase }),
-    setFile: (file) => set({ 
-        file,
-        detectedShapeType: null,
-        detectedShapeParams: null,
-        detectedShapesByPage: {},
-        detectedDimensionsByPage: {},
-        detectedShapeParamsByPage: {}
+    setFile: (file) => set((state) => {
+        const sameFile = workspaceFileIdentity(state.file) === workspaceFileIdentity(file);
+        return {
+            file,
+            selectionFileId: sameFile ? state.selectionFileId : '',
+            selectionDocumentIdentity: sameFile ? state.selectionDocumentIdentity : '',
+            detectedShapeType: null,
+            detectedShapeParams: null,
+            detectedShapesByPage: {},
+            detectedDimensionsByPage: {},
+            detectedShapeParamsByPage: {},
+        };
     }),
     setImageBatchFiles: (imageBatchFiles) => set({ imageBatchFiles }),
     setOriginalFileName: (name) => set({ originalFileName: name }),
@@ -381,16 +470,123 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     setSidebarWidth: (w) => set({ sidebarWidth: w }),
     setIsDraggingSidebar: (v) => set({ isDraggingSidebar: v }),
 
-    setShowOutputPreview: (v) => set({ showOutputPreview: v }),
-    setSeparationPlates: (plates) => set({ separationPlates: plates }),
+    // PERF (audit 2026-08-10 §OP.6): reset cùng giá trị không được đánh thức toàn
+    // bộ LivePageFrame. OutputPreviewTab có nhiều nhánh cleanup cùng quy về [].
+    setShowOutputPreview: (v) => set((state) => (
+        state.showOutputPreview === v ? state : { showOutputPreview: v }
+    )),
+    closeOutputPreview: () => set((state) => {
+        if (
+            !state.showOutputPreview
+            && state.separationPlates.length === 0
+            && state.outputPreviewActiveViewerPage === null
+            && state.outputPreviewPageBoxes === null
+        ) return state;
+        return {
+            showOutputPreview: false,
+            separationPlates: state.separationPlates.length === 0 ? state.separationPlates : [],
+            outputPreviewActiveViewerPage: null,
+            outputPreviewPageBoxes: null,
+        };
+    }),
+    setSeparationPlates: (plates) => set((state) => {
+        if (state.separationPlates === plates) return state;
+        if (state.separationPlates.length === 0 && plates.length === 0) return state;
+        return { separationPlates: plates };
+    }),
     setHoveredPdfPosition: (pos) => set({ hoveredPdfPosition: pos }),
+    // PREFLIGHT (audit 2026-08-10 §OP.8): mỗi ImpositionTab sở hữu một
+    // WorkspaceContext riêng, vì vậy state này tự nhiên được scope theo tab.
+    setOutputPreviewProfileId: (profileId) => set((state) => (
+        state.outputPreviewProfileId === profileId ? state : { outputPreviewProfileId: profileId }
+    )),
+    setOutputPreviewRenderingIntent: (intent) => set((state) => (
+        state.outputPreviewRenderingIntent === intent
+            ? state
+            : { outputPreviewRenderingIntent: intent }
+    )),
+    setOutputPreviewShowFilter: (filter) => set((state) => (
+        state.outputPreviewShowFilter === filter ? state : { outputPreviewShowFilter: filter }
+    )),
+    setOutputPreviewMode: (mode) => set((state) => (
+        state.outputPreviewMode === mode ? state : { outputPreviewMode: mode }
+    )),
+    setOutputPreviewSimulatePaperColor: (enabled) => set((state) => (
+        state.outputPreviewSimulatePaperColor === enabled
+            ? state
+            : { outputPreviewSimulatePaperColor: enabled }
+    )),
+    setOutputPreviewSimulateBlackInk: (enabled) => set((state) => (
+        state.outputPreviewSimulateBlackInk === enabled
+            ? state
+            : { outputPreviewSimulateBlackInk: enabled }
+    )),
+    setOutputPreviewPageBackgroundRgb: (rgb) => set((state) => {
+        const normalized = rgb === null
+            ? null
+            : rgb.map(channel => Math.max(0, Math.min(255, Math.round(channel)))) as OutputPreviewRgb;
+        const previous = state.outputPreviewPageBackgroundRgb;
+        const unchanged = previous === normalized
+            || (previous !== null && normalized !== null
+                && previous.every((channel, index) => channel === normalized[index]));
+        return unchanged ? state : { outputPreviewPageBackgroundRgb: normalized };
+    }),
+    // UIUX (audit 2026-08-10 §OP.E2): một opacity theo workspace/tab; clamp tại
+    // biên store để mọi consumer warning nhận cùng giá trị an toàn.
+    setOutputPreviewWarningOpacity: (opacity) => set((state) => {
+        const normalized = Number.isFinite(opacity)
+            ? Math.max(0, Math.min(1, opacity))
+            : 1;
+        return state.outputPreviewWarningOpacity === normalized
+            ? state
+            : { outputPreviewWarningOpacity: normalized };
+    }),
+    setOutputPreviewOverprintDiagnosticActive: (active) => set((state) => (
+        state.outputPreviewOverprintDiagnosticActive === active
+            ? state
+            : { outputPreviewOverprintDiagnosticActive: active }
+    )),
+    // PREFLIGHT (audit 2026-08-10 §OP.12): bitmap Soft-Proof/warning cần danh
+    // tính trang riêng; danh sách plate có chủ ý rỗng khi all-on nên không thể làm owner.
+    setOutputPreviewActiveViewerPage: (pageNum) => set((state) => {
+        const normalized = typeof pageNum === 'number'
+            && Number.isInteger(pageNum)
+            && pageNum > 0
+            ? pageNum
+            : null;
+        return state.outputPreviewActiveViewerPage === normalized
+            ? state
+            : { outputPreviewActiveViewerPage: normalized };
+    }),
+    // PAGEBOX (audit 2026-08-10 §OP.E3): dữ liệu mang viewerPageNum để frame
+    // ảo khác trang không thể dùng nhầm PageBox của response vừa về.
+    setOutputPreviewPageBoxes: (boxes) => set((state) => (
+        state.outputPreviewPageBoxes === boxes
+            ? state
+            : { outputPreviewPageBoxes: boxes }
+    )),
+    setOutputPreviewShowPageBoxes: (show) => set((state) => (
+        state.outputPreviewShowPageBoxes === show
+            ? state
+            : { outputPreviewShowPageBoxes: show }
+    )),
 
-    setSoftProofImageUrl: (url) => set({ softProofImageUrl: url }),
-    setGamutWarningUrl: (url) => set({ gamutWarningUrl: url }),
-    setSoftProofActive: (val) => set({ softProofActive: val }),
+    setSoftProofImageUrl: (url) => set((state) => (
+        state.softProofImageUrl === url ? state : { softProofImageUrl: url }
+    )),
+    setGamutWarningUrl: (url) => set((state) => (
+        state.gamutWarningUrl === url ? state : { gamutWarningUrl: url }
+    )),
+    setSoftProofActive: (val) => set((state) => (
+        state.softProofActive === val ? state : { softProofActive: val }
+    )),
 
-    setTacHeatmapUrl: (url) => set({ tacHeatmapUrl: url }),
-    setOverprintPreviewUrl: (url) => set({ overprintPreviewUrl: url }),
+    setTacHeatmapUrl: (url) => set((state) => (
+        state.tacHeatmapUrl === url ? state : { tacHeatmapUrl: url }
+    )),
+    setOverprintPreviewUrl: (url) => set((state) => (
+        state.overprintPreviewUrl === url ? state : { overprintPreviewUrl: url }
+    )),
 
     setIsObjectEditMode: (v) => set((state) => {
         const next = typeof v === 'function' ? v(state.isObjectEditMode) : v;
@@ -490,10 +686,21 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
         return { lockedObjectIds: next };
     }),
     setEditClipboard: (clip) => set({ editClipboard: clip }),
-    setSelectionFileId: (id) => set((state) => {
-        if (state.selectionFileId === id) return state;
+    setSelectionFileId: (id, documentIdentity) => set((state) => {
+        const boundIdentity = id
+            ? documentIdentity || workspaceDocumentIdentity(
+                state.file,
+                state.viewerPageOrder,
+                state.viewerPageRotations,
+            )
+            : '';
+        if (
+            state.selectionFileId === id
+            && state.selectionDocumentIdentity === boundIdentity
+        ) return state;
         return {
             selectionFileId: id,
+            selectionDocumentIdentity: boundIdentity,
             selectedObjectIds: [],
             hiddenObjectIds: [],
             lockedObjectIds: [],
@@ -608,4 +815,3 @@ export function useWorkspaceStore<T = WorkspaceState>(selector?: (state: Workspa
     if (!store) throw new Error('Missing WorkspaceContext.Provider in the tree');
     return useStore(store, selector!) as T;
 }
-
