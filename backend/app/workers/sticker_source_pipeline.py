@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from io import BytesIO
 import math
+from pathlib import Path
 import time
 from typing import Literal
 
@@ -73,6 +74,18 @@ class StickerSourceDetection:
     source_page: int
     vector_geometry_ref: dict[str, object] | None
     warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LegacyApprovedContour:
+    """Alpha và Bézier đã duyệt để luồng cũ xuất mà không nhận diện lại."""
+
+    alpha: np.ndarray
+    dpi: tuple[float, float]
+    path_groups: list[dict[str, object]]
+    boundary_source: str
+    instance_count: int
+    source_pixel_mm: float
 
 
 def _convert_to_srgb(image: Image.Image) -> Image.Image:
@@ -349,6 +362,131 @@ def _analysis_from_alpha(
         model_seconds=0.0,
         postprocess_seconds=time.perf_counter() - post_started,
         warnings=warnings,
+    )
+
+
+def build_legacy_single_page_approved_contour(
+    source_path: str,
+    *,
+    cut_mode: str,
+    offset_mm: float,
+    bleed_mm: float,
+    corner_style: str,
+    fill_holes: bool,
+    model: StickerSheetModel = DEFAULT_MODEL,
+    alpha_threshold: int = DEFAULT_ALPHA_THRESHOLD,
+    cutline_smoothness: float = 50.0,
+    cutline_fidelity: float = 50.0,
+    curve_tension: float = 50.0,
+    min_detail_area_mm2: float = 1.0,
+) -> LegacyApprovedContour | None:
+    """Dùng cùng Alpha/path của chế độ AI cho đúng một tem raster trong PDF.
+
+    QUALITY (feedback 2026-08-11 §LEGACY-AI.1): luồng cũ từng tự dựng lại
+    silhouette từ ngưỡng nền trắng, trong khi workspace AI đã duyệt một Alpha
+    khác rồi fit Bézier đúng một lần. Hàm này chỉ nối hai hợp đồng đó cho PDF
+    một trang thuần raster; CutContour/vector thật vẫn đi nguyên luồng cũ.
+
+    ``None`` nghĩa là tài liệu không thuộc ca một-tem an toàn hoặc AI nhận ra
+    nhiều vùng. Caller phải giữ hành vi legacy, không được tách từng tem ngầm.
+    """
+    from app.workers.sticker_engine import (
+        UnsafeCutlineGeometryError,
+        _infer_full_page_image_pixel_mm,
+        build_alpha_cutline_geometry,
+    )
+    from app.workers.sticker_source_inspector import inspect_sticker_source
+
+    inspection = inspect_sticker_source(source_path, Path(source_path).name)
+    if (
+        inspection.source_kind != "pdf"
+        or inspection.page_count != 1
+        or inspection.has_existing_cut
+        or inspection.has_vector
+        or not inspection.has_raster
+        or len(inspection.pages) != 1
+    ):
+        return None
+
+    page = inspection.pages[0]
+    if page.width_mm is None or page.height_mm is None:
+        return None
+    source_image, dpi = _render_pdf_page(
+        source_path,
+        0,
+        (float(page.width_mm), float(page.height_mm)),
+    )
+    rendered_alpha = np.asarray(source_image.getchannel("A"), dtype=np.uint8)
+    if page.has_alpha and has_meaningful_alpha(rendered_alpha, alpha_threshold):
+        analysis = _analysis_from_alpha(
+            source_image,
+            rendered_alpha,
+            model=model,
+            alpha_threshold=alpha_threshold,
+        )
+        boundary_source = "alpha"
+    else:
+        try:
+            analysis = analyze_sticker_sheet(
+                source_image.convert("RGB"),
+                model=model,
+                alpha_threshold=alpha_threshold,
+            )
+        except StickerSheetError as exc:
+            raise StickerSourcePipelineError(str(exc)) from exc
+        boundary_source = "ai"
+
+    # Chế độ cũ là một tem trên một trang. Không biến cầu nối parity này thành
+    # bộ tách nhiều tem; ca đó vẫn thuộc workspace AI có bước review riêng.
+    if len(analysis.instances) != 1:
+        return None
+
+    try:
+        cutline = build_alpha_cutline_geometry(
+            analysis.alpha,
+            dpi=float(dpi[0]),
+            dpi_y=float(dpi[1]),
+            cut_mode=cut_mode,
+            offset_mm=offset_mm,
+            bleed_mm=bleed_mm,
+            corner_style=corner_style,
+            fill_holes=fill_holes,
+            cutline_smoothness=cutline_smoothness,
+            cutline_fidelity=cutline_fidelity,
+            curve_tension=curve_tension,
+            min_detail_area_mm2=min_detail_area_mm2,
+        )
+    except UnsafeCutlineGeometryError as exc:
+        raise StickerSourcePipelineError(str(exc)) from exc
+    if cutline is None or not cutline.get("path_groups"):
+        raise StickerSourcePipelineError(
+            "Không tạo được đường bế an toàn từ vùng tem AI đã nhận diện."
+        )
+
+    # QUALITY (feedback 2026-08-12 §SEAM.2): DPI render AI chỉ là lưới phân tích,
+    # không phải mật độ pixel artwork. PDF producer có thể thêm toán tử text rỗng
+    # khiến trang 72 DPI bị render phân tích ở 300 DPI; dùng số đó làm mm/pixel sẽ
+    # lấy màu ngay trong fringe trắng và tạo dải mờ giữa tem với bù xén.
+    source_pixel_mm = max(25.4 / float(dpi[0]), 25.4 / float(dpi[1]))
+    try:
+        with pikepdf.Pdf.open(source_path, attempt_recovery=False) as document:
+            inferred_pixel_mm = _infer_full_page_image_pixel_mm(document.pages[0])
+        if (
+            inferred_pixel_mm is not None
+            and math.isfinite(float(inferred_pixel_mm))
+            and float(inferred_pixel_mm) > 0.0
+        ):
+            source_pixel_mm = float(inferred_pixel_mm)
+    except (IndexError, OSError, TypeError, ValueError, pikepdf.PdfError):
+        pass
+
+    return LegacyApprovedContour(
+        alpha=np.asarray(analysis.alpha, dtype=np.uint8).copy(),
+        dpi=(float(dpi[0]), float(dpi[1])),
+        path_groups=list(cutline["path_groups"]),
+        boundary_source=boundary_source,
+        instance_count=1,
+        source_pixel_mm=source_pixel_mm,
     )
 
 

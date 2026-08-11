@@ -116,6 +116,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         vdpFields, selectedVdpFieldIds,
         setSelectedVdpFieldIds, setVdpFields, setIsSidebarOpen,
         setViewerPageOrder, setViewerPageInstanceIds, setViewerPageRotations, setViewerDirty,
+        setViewerSelectedPageIndices,
         error, setError,
         setIsProcessing, setProcessStatus,
         viewerZoom: zoom, setViewerZoom: setZoom,
@@ -151,6 +152,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         ocgPreviewUrl: state.ocgPreviewUrl,
         setVdpFields: state.setVdpFields, setIsSidebarOpen: state.setIsSidebarOpen,
         setViewerPageOrder: state.setViewerPageOrder, setViewerPageInstanceIds: state.setViewerPageInstanceIds, setViewerPageRotations: state.setViewerPageRotations, setViewerDirty: state.setViewerDirty,
+        setViewerSelectedPageIndices: state.setViewerSelectedPageIndices,
         error: state.error, setError: state.setError,
         setIsProcessing: state.setIsProcessing, setProcessStatus: state.setProcessStatus,
         viewerZoom: state.viewerZoom, setViewerZoom: state.setViewerZoom,
@@ -714,6 +716,11 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     useEffect(() => { setViewerPageOrder(pageOrder); setNumPages(pageOrder.length); }, [pageOrder, setViewerPageOrder, setNumPages]);
     useEffect(() => { if (pageOrder.length > 0 && activePage > pageOrder.length) setActivePage(pageOrder.length); }, [pageOrder.length, activePage]);
     useEffect(() => { setViewerPageInstanceIds(pageInstanceIds); }, [pageInstanceIds, setViewerPageInstanceIds]);
+    useEffect(() => {
+        // UIUX (audit 2026-08-11 §PRINTRANGE.2): snapshot theo store CỦA TAB để
+        // Ctrl+P đọc đúng selection mà không làm shell global render lại khi cuộn.
+        setViewerSelectedPageIndices(Array.from(selectedIndices).sort((a, b) => a - b));
+    }, [selectedIndices, setViewerSelectedPageIndices]);
     // Đẩy rotation ra store dạng number[] THEO VỊ TRÍ (out[i] = góc trang ở vị trí i).
     // Trong viewer rotation keyed theo instance-id (xoay độc lập bản nhân bản), nhưng ra
     // store/backend chỉ cần góc-theo-vị-trí (thứ tự mảng đã cố định). Backend impose + bake

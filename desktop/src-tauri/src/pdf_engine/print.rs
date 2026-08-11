@@ -11,7 +11,7 @@
 // FPDF_LoadDocument -> FPDF_LoadPage -> FPDF_RenderPage -> FPDF_ClosePage -> FPDF_CloseDocument.
 
 use crate::pdf_engine::print_layout::{
-    booklet_sheet_sides, chunk_pages, collect_page_numbers, multipage_grid, poster_tiles,
+    booklet_sheet_sides, chunk_pages, multipage_grid, poster_tiles, resolve_page_numbers,
     LayoutMode, PageSubset,
 };
 #[cfg(windows)]
@@ -479,6 +479,7 @@ pub async fn print_pdf(
     file_path: String,
     from_page: Option<i32>,
     to_page: Option<i32>,
+    pages: Option<Vec<i32>>,
     delete_after: Option<bool>,
     scale_mode: Option<String>,
     auto_rotate: Option<bool>,
@@ -498,6 +499,7 @@ pub async fn print_pdf(
             file_path: file_path.clone(),
             from_page,
             to_page,
+            pages: pages.clone(),
             scale_mode,
             auto_rotate,
             // UIUX (audit 2026-08-05 §PRINT.4): worker vẫn cách ly driver nhưng dialog
@@ -519,6 +521,7 @@ pub async fn print_pdf(
                         file_path.clone(),
                         from_page,
                         to_page,
+                        pages,
                         owner_hwnd,
                         mode_for_fallback,
                         auto_rotate,
@@ -540,6 +543,7 @@ pub(crate) fn print_pdf_blocking(
     file_path: String,
     from_page: Option<i32>,
     to_page: Option<i32>,
+    pages: Option<Vec<i32>>,
     owner_hwnd: isize,
     mode: ScaleMode,
     auto_rotate: bool,
@@ -617,8 +621,9 @@ pub(crate) fn print_pdf_blocking(
         return Err("Không nhận được HDC máy in".into());
     }
 
-    // ── 3) Xác định khoảng trang cần in ──
-    // Ưu tiên tham số caller; nếu không có thì theo lựa chọn hộp thoại; mặc định = tất cả.
+    // ── 3) Xác định khoảng trang dự phòng ──
+    // Danh sách `pages` (nếu có) được run_print_job ưu tiên; from/to chỉ còn làm
+    // fallback cho đường cũ hoặc lựa chọn trực tiếp trong hộp thoại Windows.
     let (start_pg, end_pg): (i32, i32) = if let (Some(f), Some(t)) = (from_page, to_page) {
         (f.max(1), t.min(page_count))
     } else if (pd.Flags.0 & PD_PAGENUMS_BIT) != 0 {
@@ -626,7 +631,7 @@ pub(crate) fn print_pdf_blocking(
     } else {
         (1, page_count)
     };
-    if start_pg > end_pg {
+    if pages.is_none() && start_pg > end_pg {
         unsafe {
             let _ = DeleteDC(hdc);
         }
@@ -647,6 +652,7 @@ pub(crate) fn print_pdf_blocking(
     let opts = PrintJobOptions {
         start_pg,
         end_pg,
+        pages,
         page_count,
         copies,
         collate,
@@ -671,6 +677,7 @@ pub(crate) fn print_pdf_blocking(
 struct PrintJobOptions {
     start_pg: i32,
     end_pg: i32,
+    pages: Option<Vec<i32>>,
     page_count: i32,
     copies: i32,
     collate: bool,
@@ -691,6 +698,7 @@ impl Default for PrintJobOptions {
         Self {
             start_pg: 1,
             end_pg: 1,
+            pages: None,
             page_count: 1,
             copies: 1,
             collate: true,
@@ -732,6 +740,17 @@ fn run_print_job(
         }
         return Err("Đã hủy lệnh in".into());
     }
+
+    // UIUX (audit 2026-08-11 §PRINTRANGE.1): validate danh sách explicit trước
+    // StartDocW để input lỗi không tạo một job rồi mới AbortDoc trong spooler.
+    let pages = resolve_page_numbers(
+        opts.pages.as_deref(),
+        opts.start_pg,
+        opts.end_pg,
+        opts.page_count,
+        opts.subset,
+        opts.reverse,
+    )?;
 
     const FPDF_ANNOT: i32 = 0x01;
     const FPDF_GRAYSCALE: i32 = 0x08;
@@ -780,20 +799,6 @@ fn run_print_job(
             .unwrap_or("legacy"),
         spooler_job_id
     ));
-
-    let pages = collect_page_numbers(
-        opts.start_pg,
-        opts.end_pg,
-        opts.page_count,
-        opts.subset,
-        opts.reverse,
-    );
-    if pages.is_empty() {
-        unsafe {
-            let _ = AbortDoc(hdc);
-        }
-        return Err("Không có trang nào để in (kiểm tra khoảng trang / lẻ-chẵn)".into());
-    }
 
     // Render one logical PDF page into a rectangle on the current sheet.
     let render_page_in_rect =
@@ -1158,6 +1163,7 @@ pub async fn print_pdf_direct(
     output_path: Option<String>,
     from_page: Option<i32>,
     to_page: Option<i32>,
+    pages: Option<Vec<i32>>,
     copies: Option<i32>,
     collate: Option<bool>,
     delete_after: Option<bool>,
@@ -1198,6 +1204,7 @@ pub async fn print_pdf_direct(
             output_path,
             from_page,
             to_page,
+            pages,
             copies: normalize_copies(copies),
             collate: collate.unwrap_or(true),
             scale_mode: scale_mode_s,
@@ -1248,6 +1255,7 @@ pub(crate) fn print_direct_blocking(
     printer_name: String,
     from_page: Option<i32>,
     to_page: Option<i32>,
+    pages: Option<Vec<i32>>,
     copies: i32,
     collate: bool,
     mode: ScaleMode,
@@ -1294,12 +1302,12 @@ pub(crate) fn print_direct_blocking(
         return Err("PDF không có trang nào".into());
     }
 
-    // Khoảng trang: JS luôn truyền from/to; thiếu thì mặc định tất cả.
+    // Khoảng trang dự phòng; danh sách explicit được validate riêng trước StartDocW.
     let (start_pg, end_pg): (i32, i32) = match (from_page, to_page) {
         (Some(f), Some(t)) => (f.max(1), t.min(page_count)),
         _ => (1, page_count),
     };
-    if start_pg > end_pg {
+    if pages.is_none() && start_pg > end_pg {
         b.FPDF_CloseDocument(doc);
         return Err("Khoảng trang không hợp lệ".into());
     }
@@ -1334,6 +1342,7 @@ pub(crate) fn print_direct_blocking(
     let opts = PrintJobOptions {
         start_pg,
         end_pg,
+        pages,
         page_count,
         copies,
         collate,
@@ -1683,6 +1692,7 @@ pub async fn print_pdf(
     _file_path: String,
     _from_page: Option<i32>,
     _to_page: Option<i32>,
+    _pages: Option<Vec<i32>>,
     _delete_after: Option<bool>,
     _scale_mode: Option<String>,
     _auto_rotate: Option<bool>,
@@ -1733,6 +1743,7 @@ pub async fn print_pdf_direct(
     _output_path: Option<String>,
     _from_page: Option<i32>,
     _to_page: Option<i32>,
+    _pages: Option<Vec<i32>>,
     _copies: Option<i32>,
     _collate: Option<bool>,
     _delete_after: Option<bool>,
@@ -1812,6 +1823,7 @@ mod tests {
             printer,
             Some(1),
             Some(1),
+            None,
             1,
             true,
             ScaleMode::Actual,

@@ -190,8 +190,10 @@ export default function OpenInDesignModal({
 
     if (!open) return null;
 
-    const illustratorPath = detected.illustrator || custom.illustrator;
-    const corelPath = detected.corel || custom.corel;
+    // UIUX (audit 2026-08-11 §OPENAPP.1): lựa chọn thủ công là ý định mới nhất;
+    // kết quả tự dò chỉ làm fallback để không mở nhầm phiên bản thiếu plugin máy bế.
+    const illustratorPath = custom.illustrator || detected.illustrator;
+    const corelPath = custom.corel || detected.corel;
     const multiSheet = cutPages.length > 1;
     const allSelected = cutPages.length > 0 && selected.size === cutPages.length;
     const isTauri = typeof window !== 'undefined'

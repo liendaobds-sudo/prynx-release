@@ -25,7 +25,13 @@ from app.workers.cut_export.cut_layer_extractor import CutContour, ExtractResult
 from app.workers.sticker_source_pipeline import (
     _cut_contour_alpha,
     _render_pdf_page,
+    build_legacy_single_page_approved_contour,
     detect_sticker_source,
+)
+from app.workers.sticker_engine import (
+    StickerEngine,
+    _alpha_override_geometry,
+    build_alpha_cutline_geometry,
 )
 
 
@@ -109,6 +115,7 @@ def _save_full_page_image_pdf(
     image_sizes: tuple[tuple[int, int], ...],
     *,
     vector_pages: frozenset[int] = frozenset(),
+    leading_noop_operators: bool = False,
 ) -> None:
     """Tạo PDF giống luồng Viewer: mỗi trang chỉ có một ảnh phủ kín trang."""
     document = pikepdf.Pdf.new()
@@ -125,6 +132,10 @@ def _save_full_page_image_pdf(
             XObject=pikepdf.Dictionary(Im0=document.make_indirect(image)),
         )
         content = f"q {width} 0 0 {height} 0 0 cm /Im0 Do Q".encode("ascii")
+        if leading_noop_operators:
+            # ReportLab/PDF producer thường ghi các toán tử text rỗng trước ảnh.
+            # Chúng không đổi nội dung nhưng làm nhánh render phân tích lên 300 DPI.
+            content = b"1 0 0 1 0 0 cm BT ET " + content
         if page_number in vector_pages:
             content += f" 0 0 m {width} {height} l S".encode("ascii")
         page.Contents = document.make_stream(content)
@@ -191,6 +202,205 @@ def test_auto_falls_back_to_ai_only_when_deterministic_background_fails(tmp_path
     assert calls == ["ai"]
     assert detected.boundary_source == "ai"
     assert len(detected.analysis.instances) == 1
+
+
+def test_legacy_mot_tem_dung_dung_alpha_va_duong_be_da_duyet_cua_ai(
+    tmp_path,
+    monkeypatch,
+):
+    """Cùng PDF raster phải dùng đúng artifact AI, nhưng vẫn là một trang/tem legacy."""
+    source = tmp_path / "legacy-ai-parity.pdf"
+    _save_full_page_image_pdf(source, ((180, 120),))
+    session = _create_session(source)
+
+    def fake_ai(image: Image.Image, _model: str) -> Image.Image:
+        rgba = image.convert("RGBA")
+        yy, xx = np.mgrid[:image.height, :image.width]
+        alpha = np.where(
+            ((xx - image.width / 2.0) / 62.0) ** 2
+            + ((yy - image.height / 2.0) / 42.0) ** 2
+            <= 1.0,
+            255,
+            0,
+        ).astype(np.uint8)
+        rgba.putalpha(Image.fromarray(alpha, "L"))
+        return rgba
+
+    monkeypatch.setattr(
+        "app.workers.sticker_sheet_engine._run_background_model",
+        fake_ai,
+    )
+
+    ai_mode = detect_sticker_source(session, strategy="ai")
+    approved = build_legacy_single_page_approved_contour(
+        str(source),
+        cut_mode="original",
+        offset_mm=0.0,
+        bleed_mm=3.0,
+        corner_style="round",
+        fill_holes=True,
+    )
+
+    assert approved is not None
+    assert approved.boundary_source == "ai"
+    assert approved.instance_count == 1
+    # PDF một ảnh 180×120 px trên trang 180×120 pt là nguồn 72 DPI. Không được
+    # nhầm pixel render AI 300 DPI thành pixel artwork rồi lấy màu fringe quá nông.
+    assert approved.source_pixel_mm == pytest.approx(25.4 / 72.0, rel=1e-4)
+    assert np.array_equal(approved.alpha, ai_mode.analysis.alpha)
+    expected = build_alpha_cutline_geometry(
+        ai_mode.analysis.alpha,
+        dpi=approved.dpi[0],
+        dpi_y=approved.dpi[1],
+        cut_mode="original",
+        offset_mm=0.0,
+        bleed_mm=3.0,
+        corner_style="round",
+        fill_holes=True,
+    )
+    assert expected is not None
+    assert approved.path_groups == expected["path_groups"]
+
+
+def test_legacy_bridge_giu_dung_pixel_anh_khi_luoi_ai_render_cao_hon(
+    tmp_path,
+    monkeypatch,
+):
+    """DPI phân tích 300 không được ghi đè kích thước pixel artwork 72 DPI."""
+    source = tmp_path / "legacy-render-grid-is-not-source-grid.pdf"
+    _save_full_page_image_pdf(
+        source,
+        ((180, 120),),
+        leading_noop_operators=True,
+    )
+
+    def fake_ai(image: Image.Image, _model: str) -> Image.Image:
+        rgba = image.convert("RGBA")
+        alpha = Image.new("L", image.size, 0)
+        alpha.paste(255, (30, 20, image.width - 30, image.height - 20))
+        rgba.putalpha(alpha)
+        return rgba
+
+    monkeypatch.setattr(
+        "app.workers.sticker_sheet_engine._run_background_model",
+        fake_ai,
+    )
+
+    approved = build_legacy_single_page_approved_contour(
+        str(source),
+        cut_mode="original",
+        offset_mm=0.0,
+        bleed_mm=3.0,
+        corner_style="round",
+        fill_holes=True,
+    )
+
+    assert approved is not None
+    assert approved.dpi[0] == pytest.approx(300.0, rel=1e-3)
+    assert approved.source_pixel_mm == pytest.approx(25.4 / 72.0, rel=1e-4)
+
+
+def test_sticker_engine_dung_ca_mask_va_path_da_duyet_thay_vi_mask_nen_cu(
+    tmp_path,
+    monkeypatch,
+):
+    """Đường bế và footprint phải cùng lấy từ artifact AI nguyên tử."""
+    source = tmp_path / "approved-source.pdf"
+    output = tmp_path / "approved-output.pdf"
+    _save_full_page_image_pdf(source, ((180, 120),))
+
+    def fake_ai(image: Image.Image, _model: str) -> Image.Image:
+        rgba = image.convert("RGBA")
+        yy, xx = np.mgrid[:image.height, :image.width]
+        alpha = np.where(
+            ((xx - 90.0) / 58.0) ** 2 + ((yy - 60.0) / 38.0) ** 2 <= 1.0,
+            255,
+            0,
+        ).astype(np.uint8)
+        rgba.putalpha(Image.fromarray(alpha, "L"))
+        return rgba
+
+    monkeypatch.setattr(
+        "app.workers.sticker_sheet_engine._run_background_model",
+        fake_ai,
+    )
+    approved = build_legacy_single_page_approved_contour(
+        str(source),
+        cut_mode="original",
+        offset_mm=0.0,
+        bleed_mm=0.0,
+        corner_style="round",
+        fill_holes=True,
+    )
+    assert approved is not None
+    payload = {
+        "alpha": approved.alpha,
+        "dpi": approved.dpi,
+        "source_pixel_mm": approved.source_pixel_mm,
+        "boundary_source": approved.boundary_source,
+        "path_groups": approved.path_groups,
+    }
+
+    success, meta = StickerEngine(dpi=72).process_pdf(
+        input_path=str(source),
+        output_path=str(output),
+        cut_mode="original",
+        offset_mm=0.0,
+        corner_style="round",
+        bleed_mm=0.0,
+        fill_holes=True,
+        remove_white_bg=True,
+        draw_cut_contour=True,
+        shape_mode="auto_safe",
+        approved_contour_overrides={0: payload},
+    )
+
+    assert success is True
+    assert meta["pages"][0]["contour_source"] == "ai"
+    restored = _alpha_override_geometry(payload)
+    assert restored is not None
+    expected_geometry, _paths = restored
+    expected_width = expected_geometry.bounds[2] - expected_geometry.bounds[0]
+    expected_height = expected_geometry.bounds[3] - expected_geometry.bounds[1]
+    with pikepdf.Pdf.open(output) as result:
+        trim = [float(value) for value in result.pages[0].TrimBox]
+    assert trim[2] - trim[0] == pytest.approx(expected_width, abs=0.02)
+    assert trim[3] - trim[1] == pytest.approx(expected_height, abs=0.02)
+
+
+@pytest.mark.parametrize("kind", ["existing-cut", "vector"])
+def test_cau_noi_legacy_khong_chay_ai_voi_bien_pdf_that(
+    tmp_path,
+    monkeypatch,
+    kind,
+):
+    """CutContour/vector thật phải giữ luồng PDF, không bị đưa qua AI raster."""
+    if kind == "existing-cut":
+        source = COREL_CUT_FIXTURE
+    else:
+        source = tmp_path / "vector-and-raster.pdf"
+        _save_full_page_image_pdf(
+            source,
+            ((120, 80),),
+            vector_pages=frozenset({1}),
+        )
+    monkeypatch.setattr(
+        "app.workers.sticker_sheet_engine._run_background_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("PDF đã có biên thật không được chạy AI")
+        ),
+    )
+
+    approved = build_legacy_single_page_approved_contour(
+        str(source),
+        cut_mode="original",
+        offset_mm=0.0,
+        bleed_mm=3.0,
+        corner_style="round",
+        fill_holes=True,
+    )
+
+    assert approved is None
 
 
 def test_auto_rejects_nested_simple_background_fragments_and_uses_ai(tmp_path, monkeypatch):

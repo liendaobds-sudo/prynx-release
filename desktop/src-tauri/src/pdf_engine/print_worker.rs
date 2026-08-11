@@ -54,6 +54,8 @@ pub enum PrintWorkerJob {
         output_path: Option<String>,
         from_page: Option<i32>,
         to_page: Option<i32>,
+        #[serde(default)]
+        pages: Option<Vec<i32>>,
         copies: i32,
         collate: bool,
         scale_mode: String,
@@ -74,6 +76,8 @@ pub enum PrintWorkerJob {
         file_path: String,
         from_page: Option<i32>,
         to_page: Option<i32>,
+        #[serde(default)]
+        pages: Option<Vec<i32>>,
         scale_mode: Option<String>,
         auto_rotate: bool,
         owner_hwnd: isize,
@@ -204,6 +208,7 @@ fn execute_job(job: PrintWorkerJob) -> PrintWorkerResult {
             output_path,
             from_page,
             to_page,
+            pages,
             copies,
             collate,
             scale_mode,
@@ -234,6 +239,7 @@ fn execute_job(job: PrintWorkerJob) -> PrintWorkerResult {
                 printer_name,
                 from_page,
                 to_page,
+                pages,
                 copies,
                 collate,
                 effective_mode,
@@ -270,12 +276,21 @@ fn execute_job(job: PrintWorkerJob) -> PrintWorkerResult {
             file_path,
             from_page,
             to_page,
+            pages,
             scale_mode,
             auto_rotate,
             owner_hwnd,
         } => {
             let mode = parse_scale_mode_pub(scale_mode.as_deref());
-            match print_pdf_blocking(file_path, from_page, to_page, owner_hwnd, mode, auto_rotate) {
+            match print_pdf_blocking(
+                file_path,
+                from_page,
+                to_page,
+                pages,
+                owner_hwnd,
+                mode,
+                auto_rotate,
+            ) {
                 Ok(printed) => PrintWorkerResult {
                     ok: true,
                     error: None,
@@ -656,6 +671,7 @@ mod tests {
             file_path: "C:\\Temp\\job.pdf".into(),
             from_page: Some(1),
             to_page: Some(1),
+            pages: Some(vec![1]),
             scale_mode: Some("shrink".into()),
             auto_rotate: false,
             owner_hwnd: 12345,
@@ -666,8 +682,9 @@ mod tests {
             decoded,
             PrintWorkerJob::PrintDlg {
                 owner_hwnd: 12345,
+                pages: Some(ref pages),
                 ..
-            }
+            } if pages == &[1]
         ));
     }
 

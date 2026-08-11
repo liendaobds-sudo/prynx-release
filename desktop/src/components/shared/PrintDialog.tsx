@@ -25,6 +25,11 @@ import {
     calculateSizePreview,
     collectPageNumbers,
 } from '../../lib/printPreviewLayout';
+import {
+    applyPageSubsetAndReverse,
+    parsePageSelection,
+    type PageSelectionError,
+} from '../../lib/printPageSelection';
 import { formatSizeMm } from '../../lib/measurementFormat';
 
 if (!pdfjs.GlobalWorkerOptions.workerSrc) {
@@ -38,6 +43,8 @@ export interface PrintSettings {
     collate: boolean;
     fromPage: number;
     toPage: number;
+    /** Danh sách trang 1-based rời rạc; null = dùng khoảng from/to tương thích cũ. */
+    pages: number[] | null;
     scaleMode: PrintScaleMode;
     scalePercent: number;
     orientation: PrintOrientation;
@@ -58,13 +65,15 @@ export interface PrintDialogProps {
     printers: PrinterInfo[];
     jobId: string;
     autoRotateDefault?: boolean;
+    initialPage?: number;
+    initialSelectedPages?: number[];
     onPrint: (settings: PrintSettings) => Promise<void>;
     onSystemPrint?: (settings: PrintSettings) => Promise<void>;
     onCancelPrint?: () => Promise<void>;
     onCancel: () => void;
 }
 
-type RangeMode = 'all' | 'current' | 'range';
+type RangeMode = 'all' | 'current' | 'selection' | 'range';
 
 // Khung giấy fallback (A4 dọc) khi chưa lấy được geometry từ máy in.
 const FALLBACK_GEO: PrinterGeometry = {
@@ -91,6 +100,13 @@ function fallbackGeometryFor(orientation: PrintOrientation): PrinterGeometry {
 const PREVIEW_MAX = 360; // px, cạnh dài nhất khung giấy trong preview
 
 const MAX_COPIES = 999;
+const EMPTY_PAGE_SELECTION: number[] = [];
+
+function clampPage(page: number, pageCount: number): number {
+    const value = Number.isFinite(page) ? Math.trunc(page) : 1;
+    return Math.max(1, Math.min(value, Math.max(1, pageCount)));
+}
+
 function RadioMark({ checked }: { checked: boolean }) {
     const className = `w-[18px] h-[18px] shrink-0 ${checked ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400'}`;
     return checked ? <CircleDot className={className} aria-hidden="true" /> : <Circle className={className} aria-hidden="true" />;
@@ -101,6 +117,8 @@ export default function PrintDialog({
     numPages,
     printers,
     jobId,
+    initialPage = 1,
+    initialSelectedPages = EMPTY_PAGE_SELECTION,
     onPrint,
     onSystemPrint,
     onCancelPrint,
@@ -113,12 +131,11 @@ export default function PrintDialog({
     const [copies, setCopies] = useState(1);
     const [collate, setCollate] = useState(true);
     const [rangeMode, setRangeMode] = useState<RangeMode>('all');
-    const [rangeFrom, setRangeFrom] = useState(1);
-    const [rangeTo, setRangeTo] = useState(numPages);
+    const [rangeText, setRangeText] = useState(() => numPages > 1 ? `1-${numPages}` : '1');
     const [scaleMode, setScaleMode] = useState<PrintScaleMode>('shrink');
     const [customPercent, setCustomPercent] = useState(100);
     const [orientation, setOrientation] = useState<PrintOrientation>('auto');
-    const [previewPage, setPreviewPage] = useState(1);
+    const [previewPage, setPreviewPage] = useState(() => clampPage(initialPage, numPages));
     const [actualNumPages, setActualNumPages] = useState(Math.max(1, numPages));
     const [grayscale, setGrayscale] = useState(false);
     const [printAnnotations, setPrintAnnotations] = useState(true);
@@ -184,21 +201,43 @@ export default function PrintDialog({
         setPageSetupOpen(true);
     };
 
-    // Khoảng trang + subset/reverse → list trang in (giống backend).
-    const rangeBounds = useMemo(() => {
-        if (rangeMode === 'current') return [previewPage, previewPage] as const;
-        if (rangeMode === 'range') {
-            const a = Math.max(1, Math.min(rangeFrom, actualNumPages));
-            const b = Math.max(1, Math.min(rangeTo, actualNumPages));
-            return [Math.min(a, b), Math.max(a, b)] as const;
-        }
-        return [1, actualNumPages] as const;
-    }, [rangeMode, previewPage, rangeFrom, rangeTo, actualNumPages]);
+    const selectedPages = useMemo(() => Array.from(new Set(initialSelectedPages))
+        .map(Math.trunc)
+        .filter(page => page >= 1 && page <= actualNumPages)
+        .sort((a, b) => a - b), [initialSelectedPages, actualNumPages]);
+    const parsedRange = useMemo(
+        () => parsePageSelection(rangeText, actualNumPages),
+        [rangeText, actualNumPages],
+    );
+
+    // UIUX (audit 2026-08-11 §PRINTRANGE.1–3): preview và payload cùng lấy từ
+    // một danh sách gốc; không nới danh sách rời rạc thành khoảng min/max.
+    const basePageList = useMemo(() => {
+        if (rangeMode === 'current') return [previewPage];
+        if (rangeMode === 'selection') return selectedPages;
+        if (rangeMode === 'range') return parsedRange.error ? [] : parsedRange.pages;
+        return collectPageNumbers(1, actualNumPages, actualNumPages, 'all', false);
+    }, [rangeMode, previewPage, selectedPages, parsedRange, actualNumPages]);
 
     const printPageList = useMemo(
-        () => collectPageNumbers(rangeBounds[0], rangeBounds[1], actualNumPages, pageSubset, reverse),
-        [rangeBounds, actualNumPages, pageSubset, reverse],
+        () => applyPageSubsetAndReverse(basePageList, pageSubset, reverse),
+        [basePageList, pageSubset, reverse],
     );
+
+    const formatSelectionError = (error: PageSelectionError): string => {
+        if (error.code === 'empty') return t('print:pages_error_empty');
+        if (error.code === 'invalid_token') {
+            return t('print:pages_error_invalid', { token: error.token || ',' });
+        }
+        return t('print:pages_error_out_of_range', { page: error.page, max: error.maxPage });
+    };
+    const pageSelectionError = rangeMode === 'range' && parsedRange.error
+        ? formatSelectionError(parsedRange.error)
+        : basePageList.length === 0
+            ? t('print:pages_error_empty')
+            : printPageList.length === 0
+                ? t('print:pages_error_no_pages')
+                : null;
 
     const previewSheets = useMemo(
         () => buildPreviewSheets({
@@ -423,8 +462,8 @@ export default function PrintDialog({
                 pdfDocRef.current = doc;
                 const loadedPageCount = Math.max(1, doc.numPages);
                 setActualNumPages(loadedPageCount);
-                setRangeTo(loadedPageCount);
-                setPreviewPage(1);
+                // §PRINTRANGE.2: giữ trang workspace đã truyền vào, không reset về trang 1.
+                setPreviewPage(clampPage(initialPage, loadedPageCount));
                 setSheetIndex(0);
                 setDocumentReady(true);
             } catch {
@@ -446,7 +485,7 @@ export default function PrintDialog({
             dimensionCache.clear();
             if (sheetUrlRef.current) { URL.revokeObjectURL(sheetUrlRef.current); sheetUrlRef.current = null; }
         };
-    }, [source]);
+    }, [source, initialPage]);
 
     // Đọc geometry khi đổi máy in hoặc hướng giấy.
     useEffect(() => {
@@ -557,16 +596,22 @@ export default function PrintDialog({
     }, [jobId]);
 
     const buildPrintSettings = (): PrintSettings => {
-        const [from, to] =
-            rangeMode === 'all' ? [1, actualNumPages]
-                : rangeMode === 'current' ? [previewPage, previewPage]
-                    : [Math.max(1, Math.min(rangeFrom, actualNumPages)), Math.max(1, Math.min(rangeTo, actualNumPages))];
+        let from = actualNumPages;
+        let to = 1;
+        for (const page of basePageList) {
+            from = Math.min(from, page);
+            to = Math.max(to, page);
+        }
+        const explicitPages = rangeMode === 'range' || rangeMode === 'selection'
+            ? [...basePageList]
+            : null;
         return {
             printerName,
             copies: Math.max(1, Math.min(MAX_COPIES, copies)),
             collate,
-            fromPage: Math.min(from, to),
-            toPage: Math.max(from, to),
+            fromPage: from,
+            toPage: to,
+            pages: explicitPages,
             scaleMode,
             scalePercent: customPercent,
             orientation,
@@ -583,7 +628,7 @@ export default function PrintDialog({
     };
 
     const runPrintAction = async (action: (settings: PrintSettings) => Promise<void>): Promise<void> => {
-        if (!printerName || printing) return;
+        if (!printerName || printing || pageSelectionError) return;
         setPrinting(true);
         setPrintProgress({ current: 0, total: 0 });
         setPrintError(null);
@@ -694,24 +739,45 @@ export default function PrintDialog({
                         {/* Pages */}
                         <div className="flex flex-col gap-1.5" role="radiogroup" aria-label={t('print:pages')}>
                             <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">{t('print:pages')}</span>
-                            {(['all', 'current', 'range'] as RangeMode[]).map(m => (
+                            {([
+                                'all',
+                                'current',
+                                ...(selectedPages.length > 0 ? ['selection' as const] : []),
+                                'range',
+                            ] as RangeMode[]).map(m => (
                                 <button type="button" key={m} onClick={() => setRangeMode(m)} className="flex items-center gap-2 text-left" role="radio" aria-checked={rangeMode === m}>
                                     <RadioMark checked={rangeMode === m} />
                                     <span className="text-sm text-slate-700 dark:text-slate-200">
-                                        {m === 'all' ? t('print:pages_all') : m === 'current' ? t('print:pages_current') : t('print:pages_range')}
+                                        {m === 'all'
+                                            ? t('print:pages_all')
+                                            : m === 'current'
+                                                ? t('print:pages_current')
+                                                : m === 'selection'
+                                                    ? t('print:pages_selected', { n: selectedPages.length })
+                                                    : t('print:pages_range')}
                                     </span>
                                 </button>
                             ))}
                             {rangeMode === 'range' && (
-                                <div className="flex items-center gap-2 pl-6 mt-1">
-                                    <span className="text-xs text-slate-500">{t('print:from')}</span>
-                                    <input type="number" min={1} max={actualNumPages} value={rangeFrom} aria-label={t('print:from')}
-                                        onChange={e => setRangeFrom(Math.max(1, Math.min(actualNumPages, parseInt(e.target.value) || 1)))}
-                                        className="w-16 px-2 py-1 rounded border border-slate-300 dark:border-zinc-600 bg-white dark:bg-zinc-900 text-sm" />
-                                    <span className="text-xs text-slate-500">{t('print:to')}</span>
-                                    <input type="number" min={1} max={actualNumPages} value={rangeTo} aria-label={t('print:to')}
-                                        onChange={e => setRangeTo(Math.max(1, Math.min(actualNumPages, parseInt(e.target.value) || 1)))}
-                                        className="w-16 px-2 py-1 rounded border border-slate-300 dark:border-zinc-600 bg-white dark:bg-zinc-900 text-sm" />
+                                <div className="flex flex-col gap-1 pl-6 mt-1">
+                                    <input
+                                        type="text"
+                                        inputMode="text"
+                                        value={rangeText}
+                                        aria-label={t('print:pages_list_label')}
+                                        aria-invalid={Boolean(pageSelectionError)}
+                                        onChange={event => setRangeText(event.target.value)}
+                                        placeholder={t('print:pages_list_hint')}
+                                        className={`w-full max-w-xs px-2 py-1 rounded border bg-white dark:bg-zinc-900 text-sm ${pageSelectionError
+                                            ? 'border-rose-500 text-rose-700 dark:text-rose-300'
+                                            : 'border-slate-300 dark:border-zinc-600'}`}
+                                    />
+                                    <span
+                                        role={pageSelectionError ? 'alert' : undefined}
+                                        className={`text-xs ${pageSelectionError ? 'text-rose-600 dark:text-rose-400' : 'text-slate-500'}`}
+                                    >
+                                        {pageSelectionError || t('print:pages_list_hint')}
+                                    </span>
                                 </div>
                             )}
                             <div className="flex flex-wrap items-center gap-3 pl-0 mt-2">
@@ -935,7 +1001,7 @@ export default function PrintDialog({
                     )}
                     <div className="flex gap-3 ml-auto">
                         {printError && onSystemPrint && (
-                            <button type="button" onClick={handleSystemPrint} disabled={printing}
+                            <button type="button" onClick={handleSystemPrint} disabled={printing || Boolean(pageSelectionError)}
                                 className="px-4 py-2 rounded-lg font-medium border border-amber-400/80 text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/30 disabled:opacity-40 transition-colors">
                                 {t('print:try_system_dialog')}
                             </button>
@@ -944,7 +1010,7 @@ export default function PrintDialog({
                             className="px-4 py-2 rounded-lg font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-zinc-700 transition-colors">
                             {printing ? t('print:cancel_job') : t('print:cancel')}
                         </button>
-                        <button type="button" onClick={handlePrint} disabled={!printerName || printing}
+                        <button type="button" onClick={handlePrint} disabled={!printerName || printing || Boolean(pageSelectionError)}
                             className="px-5 py-2 rounded-lg font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40 transition-colors">
                             {printing ? t('print:printing') : t('print:print')}
                         </button>

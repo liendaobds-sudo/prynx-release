@@ -459,7 +459,11 @@ def test_export_khong_am_tham_bo_override_roi_tu_fit_lai(
         )
 
 
-def test_pdf_xuat_dung_chinh_so_doan_bezier_da_preview(tmp_path) -> None:
+@pytest.mark.parametrize("corner_style", ["preserve", "round"])
+def test_pdf_xuat_dung_chinh_so_doan_bezier_da_preview(
+    tmp_path,
+    corner_style: str,
+) -> None:
     rgba = np.zeros((140, 180, 4), dtype=np.uint8)
     points = np.array([
         [12, 70], [42, 56], [57, 14], [88, 51], [126, 26],
@@ -478,6 +482,7 @@ def test_pdf_xuat_dung_chinh_so_doan_bezier_da_preview(tmp_path) -> None:
         cutline_smoothness=50,
         cutline_fidelity=50,
         curve_tension=50,
+        corner_style=corner_style,
     )
     assert preview_geometry is not None
 
@@ -489,7 +494,7 @@ def test_pdf_xuat_dung_chinh_so_doan_bezier_da_preview(tmp_path) -> None:
         offset_mm=0,
         bleed_mm=0,
         cut_mode="original",
-        corner_style="preserve",
+        corner_style=corner_style,
         fill_holes=True,
         crop_to_sticker=True,
         bleed_color_type="image",

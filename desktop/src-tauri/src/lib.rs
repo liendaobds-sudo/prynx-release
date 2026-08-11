@@ -1054,6 +1054,12 @@ fn reveal_main_window(app: &tauri::AppHandle) -> Result<(), String> {
     let main_window = app
         .get_webview_window("main")
         .ok_or_else(|| "Không tìm thấy cửa sổ chính của PrynX".to_string())?;
+    // UIUX (feedback 2026-08-11 §WINDOW.RESTORE): cửa sổ được tạo ẩn có thể còn
+    // mang trạng thái minimized từ Windows. Chuẩn hóa trước khi show để taskbar
+    // luôn có một cửa sổ khôi phục được, kể cả sau Alt+Tab.
+    main_window
+        .unminimize()
+        .map_err(|error| format!("Không khôi phục được cửa sổ chính: {error}"))?;
     main_window
         .show()
         .map_err(|error| format!("Không hiện được cửa sổ chính: {error}"))?;
@@ -4661,11 +4667,17 @@ pub fn run() {
 
             if APP_STARTUP_READY.load(Ordering::Acquire) {
                 if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.unminimize();
-                    let _ = window.show();
+                    if let Err(error) = window.unminimize() {
+                        log::warn!("[WINDOW] Không khôi phục được cửa sổ từ lần mở thứ hai: {}", error);
+                    }
+                    if let Err(error) = window.show() {
+                        log::warn!("[WINDOW] Không hiện được cửa sổ từ lần mở thứ hai: {}", error);
+                    }
                     let _ = window.set_always_on_top(true);
                     let _ = window.set_always_on_top(false);
-                    let _ = window.set_focus();
+                    if let Err(error) = window.set_focus() {
+                        log::warn!("[WINDOW] Không focus được cửa sổ từ lần mở thứ hai: {}", error);
+                    }
                 }
             }
         }))
@@ -4675,6 +4687,33 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .on_window_event(|window, event| {
+            if window.label() != "main" || !APP_STARTUP_READY.load(Ordering::Acquire) {
+                return;
+            }
+
+            // UIUX (feedback 2026-08-11 §WINDOW.RESTORE): trên cửa sổ frameless,
+            // Windows đôi khi phát focus từ taskbar trong khi HWND vẫn Iconic.
+            // Khôi phục ngay tại biên native; không auto-restore khi user chủ động
+            // minimize vì nhánh này chỉ chạy khi cửa sổ thực sự nhận focus lại.
+            if matches!(event, tauri::WindowEvent::Focused(true)) {
+                match window.is_minimized() {
+                    Ok(true) => {
+                        startup_breadcrumb("window: focused while minimized — restoring");
+                        if let Err(error) = window.unminimize() {
+                            log::warn!("[WINDOW] Không unminimize được khi nhận focus: {}", error);
+                        }
+                        if let Err(error) = window.show() {
+                            log::warn!("[WINDOW] Không show được khi nhận focus: {}", error);
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        log::warn!("[WINDOW] Không đọc được trạng thái minimized: {}", error);
+                    }
+                }
+            }
+        })
         .setup(|app| {
             if let Some(startup_window) = app.get_webview_window("startup") {
                 #[cfg(debug_assertions)]

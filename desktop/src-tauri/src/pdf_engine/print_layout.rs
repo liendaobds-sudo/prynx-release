@@ -64,6 +64,60 @@ pub fn collect_page_numbers(
     pages
 }
 
+/// Danh sách trang cuối cùng cho một job in.
+///
+/// Khi `explicit_pages` tồn tại, giữ nguyên thứ tự/danh sách caller đã chọn và chỉ
+/// áp dụng lọc lẻ-chẵn + đảo thứ tự. Mọi trang ngoài biên phải fail-closed trước
+/// khi tạo job GDI; tuyệt đối không kẹp về min/max vì sẽ in thêm trang ngoài ý muốn.
+pub fn resolve_page_numbers(
+    explicit_pages: Option<&[i32]>,
+    start: i32,
+    end: i32,
+    page_count: i32,
+    subset: PageSubset,
+    reverse: bool,
+) -> Result<Vec<i32>, String> {
+    if page_count <= 0 {
+        return Err("PDF không có trang nào".into());
+    }
+
+    let mut pages = if let Some(explicit) = explicit_pages {
+        if explicit.is_empty() {
+            return Err("Danh sách trang cần in đang trống".into());
+        }
+        for &page in explicit {
+            if page < 1 || page > page_count {
+                return Err(format!("Trang {page} nằm ngoài phạm vi 1-{page_count}"));
+            }
+        }
+        explicit
+            .iter()
+            .copied()
+            .filter(|&page| match subset {
+                PageSubset::All => true,
+                PageSubset::Odd => page % 2 == 1,
+                PageSubset::Even => page % 2 == 0,
+            })
+            .collect::<Vec<_>>()
+    } else {
+        // Đường tương thích cũ: khoảng liên tục vẫn giữ nguyên hành vi hiện tại.
+        return match collect_page_numbers(start, end, page_count, subset, reverse) {
+            pages if pages.is_empty() => {
+                Err("Không có trang nào để in (kiểm tra khoảng trang / lẻ-chẵn)".into())
+            }
+            pages => Ok(pages),
+        };
+    };
+
+    if reverse {
+        pages.reverse();
+    }
+    if pages.is_empty() {
+        return Err("Không có trang nào để in (kiểm tra danh sách trang / lẻ-chẵn)".into());
+    }
+    Ok(pages)
+}
+
 /// Pad length up to multiple of 4 for saddle-stitch booklet.
 pub fn booklet_padded_len(n: usize) -> usize {
     if n == 0 {
@@ -153,6 +207,28 @@ mod tests {
             collect_page_numbers(1, 5, 5, PageSubset::Even, true),
             vec![4, 2]
         );
+    }
+
+    #[test]
+    fn explicit_page_list_preserves_gaps_and_applies_subset_reverse() {
+        let pages = vec![27, 28, 30, 31, 32, 33];
+        assert_eq!(
+            resolve_page_numbers(Some(&pages), 1, 40, 40, PageSubset::All, false).unwrap(),
+            pages
+        );
+        assert_eq!(
+            resolve_page_numbers(Some(&pages), 1, 40, 40, PageSubset::Even, true).unwrap(),
+            vec![32, 30, 28]
+        );
+    }
+
+    #[test]
+    fn explicit_page_list_rejects_empty_and_out_of_bounds() {
+        assert!(resolve_page_numbers(Some(&[]), 1, 40, 40, PageSubset::All, false).is_err());
+        let error =
+            resolve_page_numbers(Some(&[27, 41]), 1, 40, 40, PageSubset::All, false).unwrap_err();
+        assert!(error.contains("Trang 41"));
+        assert!(error.contains("1-40"));
     }
 
     #[test]

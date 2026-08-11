@@ -27,6 +27,7 @@ import { recipeRecorder } from '../lib/recipe/RecipeRecorder';
 import { isOutputFile, isImposedOutputFile } from '../lib/constants';
 import { writeSnapshot, deleteSnapshot } from '../lib/recovery';
 import { getFileArrayBuffer, detectColorSpace, stripBytesIfOnDisk } from '../lib/utils';
+import { pageIndicesToPageNumbers } from '../lib/printPageSelection';
 import { beginOptionalContentTransfer, finishOptionalContentTransfer } from '../lib/pdfOptionalContent';
 import { saveVdpTemplate, loadVdpTemplate } from '../lib/vdpTemplate';
 import OutputPreviewHost from './OutputPreviewHost';
@@ -2490,13 +2491,30 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             // Ưu tiên bake (bản đang thấy); nếu không thì curFile — resolvePrintableFilePath
             // tự dùng curFile.path (file mở từ đĩa) hoặc ghi temp (blob in-memory).
             const source: Blob | File = bakedBlob || curFile;
-            await openPrintDialog({ source, numPages: viewerNumPages || 1 });
+            const viewerState = store?.getState();
+            const printPageCount = Math.max(1, viewerState?.viewerNumPages || viewerNumPages || 1);
+            const initialPage = Math.max(1, Math.min(
+                viewerState?.viewerActivePage || viewerActivePage || 1,
+                printPageCount,
+            ));
+            const selectedPages = pageIndicesToPageNumbers(
+                viewerState?.viewerSelectedPageIndices || [],
+                printPageCount,
+            );
+            // UIUX (audit 2026-08-11 §PRINTRANGE.2): current/selection là snapshot
+            // của đúng tab và trỏ vào vị trí trang của PDF sau bake (đều 1-based).
+            await openPrintDialog({
+                source,
+                numPages: printPageCount,
+                initialPage,
+                selectedPages,
+            });
         } catch (e: any) {
             setError(t('tabs.imposition:khong_the_in_file') + (e?.message || e));
         } finally {
             isPrintingRef.current = false;
         }
-    }, [file, viewerPageRotations, viewerPageOrder, viewerNumPages, editSession, store, openPrintDialog, t]);
+    }, [file, viewerPageRotations, viewerPageOrder, viewerNumPages, viewerActivePage, editSession, store, openPrintDialog, t]);
 
     useEffect(() => {
         const handleTriggerPrint = (e: any) => {

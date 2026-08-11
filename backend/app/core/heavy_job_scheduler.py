@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import math
 import os
 import threading
 import time
@@ -108,6 +109,115 @@ T = TypeVar("T")
 
 class HeavyJobQueueCancelled(RuntimeError):
     """Job bị hủy khi còn chờ admission, trước khi chiếm thread worker."""
+
+
+class HeavyJobMemoryUnavailable(RuntimeError):
+    """Một job không vừa ngân sách RAM an toàn ngay cả khi chạy một mình."""
+
+    def __init__(self, required_mb: float, available_mb: float) -> None:
+        self.required_mb = required_mb
+        self.available_mb = available_mb
+        super().__init__(
+            f"Tác vụ cần khoảng {required_mb / 1024:.1f} GB RAM nhưng ngân sách "
+            f"an toàn hiện chỉ còn {available_mb / 1024:.1f} GB."
+        )
+
+
+# PERF/STABILITY (audit 2026-08-11 §US.04): reservation theo byte, không chia cứng
+# ngân sách cho số worker. Một job lớn được dùng toàn RAM còn trống khi chạy một
+# mình; job đồng thời chỉ được admit nếu tổng reservation vẫn vừa ngân sách.
+_MEMORY_RESERVATION_LOCK = threading.Lock()
+_RESERVED_MEMORY_MB_BY_KIND: dict[str, float] = {}
+_MEMORY_CAPACITY_MB_BY_KIND: dict[str, float] = {}
+_MEMORY_EPSILON_MB = 1e-6
+
+
+async def _acquire_memory_reservation_async(
+    kind: str,
+    required_mb: float | None,
+    budget_provider: Callable[[], float | None] | None,
+    queue_cancelled: Callable[[], bool] | None,
+) -> bool:
+    """Đặt chỗ RAM mà không giữ token AnyIO trong lúc chờ."""
+
+    if required_mb is None or required_mb <= 0 or budget_provider is None:
+        return False
+    required = float(required_mb)
+    if not math.isfinite(required):
+        raise HeavyJobMemoryUnavailable(required, 0.0)
+
+    while True:
+        if queue_cancelled is not None and queue_cancelled():
+            raise HeavyJobQueueCancelled("Job đã bị hủy khi đang chờ bộ nhớ.")
+
+        raw_budget = budget_provider()
+        if raw_budget is None:
+            # Giữ hành vi fail-open có chủ đích khi Windows không đọc được RAM;
+            # chốt heavy slot hiện hữu vẫn còn hiệu lực.
+            return False
+        budget = float(raw_budget)
+        if not math.isfinite(budget):
+            budget = 0.0
+        budget = max(0.0, budget)
+
+        with _MEMORY_RESERVATION_LOCK:
+            reserved = _RESERVED_MEMORY_MB_BY_KIND.get(kind, 0.0)
+            if reserved <= _MEMORY_EPSILON_MB:
+                capacity = budget
+                _MEMORY_CAPACITY_MB_BY_KIND[kind] = capacity
+            else:
+                cycle_capacity = _MEMORY_CAPACITY_MB_BY_KIND.get(kind, budget)
+                # `budget` đọc từ RAM available hiện tại, có thể đã giảm vì job
+                # đang chạy đã materialize buffer. Cộng lại phần đã reservation
+                # rồi chỉ cho capacity giảm (khi app khác ăn RAM), không tăng quá
+                # snapshot đầu chu kỳ.
+                capacity = min(cycle_capacity, reserved + budget)
+                capacity = max(reserved, capacity)
+                _MEMORY_CAPACITY_MB_BY_KIND[kind] = capacity
+
+            if required <= max(0.0, capacity - reserved) + _MEMORY_EPSILON_MB:
+                _RESERVED_MEMORY_MB_BY_KIND[kind] = reserved + required
+                return True
+
+            if reserved <= _MEMORY_EPSILON_MB:
+                _RESERVED_MEMORY_MB_BY_KIND.pop(kind, None)
+                _MEMORY_CAPACITY_MB_BY_KIND.pop(kind, None)
+                raise HeavyJobMemoryUnavailable(required, capacity)
+
+        await asyncio.sleep(0.05)
+
+
+def _release_memory_reservation(kind: str, required_mb: float) -> None:
+    with _MEMORY_RESERVATION_LOCK:
+        remaining = max(
+            0.0,
+            _RESERVED_MEMORY_MB_BY_KIND.get(kind, 0.0) - float(required_mb),
+        )
+        if remaining <= _MEMORY_EPSILON_MB:
+            _RESERVED_MEMORY_MB_BY_KIND.pop(kind, None)
+            _MEMORY_CAPACITY_MB_BY_KIND.pop(kind, None)
+        else:
+            _RESERVED_MEMORY_MB_BY_KIND[kind] = remaining
+
+
+@asynccontextmanager
+async def async_memory_reservation(
+    kind: str,
+    required_mb: float | None,
+    budget_provider: Callable[[], float | None] | None,
+    queue_cancelled: Callable[[], bool] | None = None,
+) -> AsyncIterator[None]:
+    acquired = await _acquire_memory_reservation_async(
+        kind,
+        required_mb,
+        budget_provider,
+        queue_cancelled,
+    )
+    try:
+        yield
+    finally:
+        if acquired and required_mb is not None:
+            _release_memory_reservation(kind, required_mb)
 
 
 async def _acquire_semaphore_async(
@@ -240,8 +350,16 @@ async def run_scheduled_in_threadpool(
     function: Callable[..., T],
     *args: Any,
     queue_cancelled: Callable[[], bool] | None = None,
+    memory_required_mb: float | None = None,
+    memory_budget_provider: Callable[[], float | None] | None = None,
     **kwargs: Any,
 ) -> T:
     """Run synchronous heavy work off-loop under the shared scheduler."""
     async with async_heavy_job_slot(kind, queue_cancelled):
-        return await _run_in_threadpool(function, *args, **kwargs)
+        async with async_memory_reservation(
+            kind,
+            memory_required_mb,
+            memory_budget_provider,
+            queue_cancelled,
+        ):
+            return await _run_in_threadpool(function, *args, **kwargs)

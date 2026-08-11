@@ -18,6 +18,7 @@ Có TILING (chia ô + biên đệm) để ảnh in độ phân giải cao không
 fallback (DirectML có thể OOM/treo) + env PRYNX_UPSCALE_FORCE_CPU=1 ép CPU.
 """
 import os
+import gc
 import logging
 import threading
 import hashlib
@@ -158,21 +159,15 @@ def probe_tile_seconds(variant: str) -> float:
         cached = _probe_seconds.get(variant)
         if cached is not None:
             return cached
+        tile = np.zeros((1, 3, _PROBE_SIDE, _PROBE_SIDE), dtype=np.float32)
+        # STABILITY (audit 2026-08-11 §US.03): probe phải đi cùng đường fallback/
+        # teardown với job thật. Gọi session.run trực tiếp từng để lại session DML
+        # lỗi trong cache, khiến lượt bấm kế tiếp lặp lại đúng lỗi GPU cũ.
+        _run_session(variant, tile)  # làm nóng, KHÔNG tính
+        started = time.perf_counter()
+        _run_session(variant, tile)
+        elapsed = time.perf_counter() - started
         session = _get_session(variant)
-        run_guard = (
-            _session_run_locks[variant]
-            if 'DmlExecutionProvider' in session.get_providers()
-            else nullcontext()
-        )
-        with run_guard:
-            # Lấy lại session sau khi chờ khóa: lượt trước có thể vừa rớt GPU→CPU.
-            session = _get_session(variant)
-            input_name = session.get_inputs()[0].name
-            tile = np.zeros((1, 3, _PROBE_SIDE, _PROBE_SIDE), dtype=np.float32)
-            session.run(None, {input_name: tile})          # làm nóng, KHÔNG tính
-            started = time.perf_counter()
-            session.run(None, {input_name: tile})
-            elapsed = time.perf_counter() - started
         _probe_seconds[variant] = elapsed
         logger.info(
             "Real-ESRGAN[%s] probe ô %d×%d = %.2fs (providers=%s)",
@@ -265,6 +260,59 @@ def _build_providers(variant: str):
     return providers
 
 
+def _create_session(path: str, providers: list[str]):
+    """Tạo ONNX session với hợp đồng DirectML được khóa tường minh."""
+
+    options = ort.SessionOptions()
+    if 'DmlExecutionProvider' in providers:
+        # STABILITY (audit 2026-08-11 §US.03): ORT 1.24.4 đang tự áp hai giá
+        # trị này, nhưng ghi tường minh để upgrade runtime không làm trôi hợp đồng.
+        options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        options.enable_mem_pattern = False
+    return ort.InferenceSession(path, sess_options=options, providers=providers)
+
+
+def _release_session(session, variant: str) -> None:
+    """Tháo native handle rồi GC trước khi dựng provider thay thế."""
+
+    if session is None:
+        return
+    close = getattr(session, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            logger.debug(
+                "Real-ESRGAN[%s] không đóng được session lỗi.",
+                variant,
+                exc_info=True,
+            )
+
+    # InferenceSession Python không luôn công khai close(); `_sess` mới là native
+    # handle giữ DML device/allocator. Đây là cùng thứ tự đã khóa cho BiRefNet.
+    if getattr(session, "_sess", None) is not None:
+        try:
+            session._sess = None
+        except Exception:
+            logger.debug(
+                "Real-ESRGAN[%s] không tháo được native session lỗi.",
+                variant,
+                exc_info=True,
+            )
+    session = None
+    gc.collect()
+
+
+def _discard_failed_session(variant: str, failed_session) -> None:
+    """Bỏ đúng session vừa lỗi; không đụng session mới nếu cache đã đổi thế hệ."""
+
+    with _session_lock:
+        if _sessions.get(variant) is failed_session:
+            _sessions.pop(variant, None)
+        _probe_seconds.pop(variant, None)
+        _release_session(failed_session, variant)
+
+
 def _resolve_model_path(variant: str) -> str:
     fname = MODELS[variant]
     for base in (_U2NET_HOME, _BUNDLED_DIR):
@@ -301,18 +349,26 @@ def _get_session(variant: str = "general"):
                 variant,
                 _force_cpu_by_env or variant in _cpu_only_variants,
             )
-            _sessions[variant] = ort.InferenceSession(path, providers=_build_providers(variant))
+            _sessions[variant] = _create_session(path, _build_providers(variant))
             logger.info("Real-ESRGAN[%s] ready (providers=%s)", variant, _sessions[variant].get_providers())
     return _sessions[variant]
 
 
-def _switch_to_cpu(variant: str):
+def _switch_to_cpu(variant: str, failed_session=None):
     """Dựng lại session CPU sau khi GPU lỗi (OOM/device-hung). Sticky để tránh treo lặp."""
     with _session_lock:
         _cpu_only_variants.add(variant)
+        cached_session = _sessions.pop(variant, None)
+        released_ids: set[int] = set()
+        for candidate in (cached_session, failed_session):
+            if candidate is None or id(candidate) in released_ids:
+                continue
+            released_ids.add(id(candidate))
+            _release_session(candidate, variant)
+        _probe_seconds.pop(variant, None)
         path = _resolve_model_path(variant)
         logger.warning("Rebuilding Real-ESRGAN[%s] on CPU only (GPU không ổn định).", variant)
-        _sessions[variant] = ort.InferenceSession(path, providers=['CPUExecutionProvider'])
+        _sessions[variant] = _create_session(path, ['CPUExecutionProvider'])
     return _sessions[variant]
 
 
@@ -326,6 +382,9 @@ def _serialize_directml_run(function):
             if 'DmlExecutionProvider' in session.get_providers()
             else nullcontext()
         )
+        # Không giữ thêm một Python reference tới session GPU trong wrapper; nếu
+        # Run lỗi, _run_session phải tháo native handle trước khi dựng CPU session.
+        session = None
         with run_guard:
             return function(variant, *args, **kwargs)
 
@@ -356,15 +415,18 @@ def _run_session(variant: str, tile_nchw: np.ndarray) -> np.ndarray:
     except Exception as e:
         if variant == "quality" and not _force_cpu_by_env:
             # Xóa session lỗi để lần sau có thể thử lại GPU sau khi giải phóng VRAM.
-            with _session_lock:
-                _sessions.pop(variant, None)
+            failed_session = session
+            session = None
+            _discard_failed_session(variant, failed_session)
             raise UpscaleUnavailable(
                 "GPU không xử lý được chế độ Chất lượng. "
                 "Hãy đóng ứng dụng dùng GPU hoặc chọn chế độ Nhanh."
             ) from e
         if not (_force_cpu_by_env or variant in _cpu_only_variants):
             logger.warning("Real-ESRGAN[%s] GPU lỗi (%s) → rớt về CPU.", variant, e)
-            session = _switch_to_cpu(variant)
+            failed_session = session
+            session = None
+            session = _switch_to_cpu(variant, failed_session)
             input_name = session.get_inputs()[0].name
             out = session.run(None, {input_name: tile_nchw})[0]
         else:

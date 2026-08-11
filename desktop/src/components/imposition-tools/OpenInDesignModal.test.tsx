@@ -8,6 +8,7 @@ import OpenInDesignModal from './OpenInDesignModal';
 
 const mocks = vi.hoisted(() => ({
     invoke: vi.fn(),
+    openDialog: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
@@ -15,7 +16,7 @@ vi.mock('@tauri-apps/api/path', () => ({
     tempDir: vi.fn(async () => 'C:\\Temp'),
     join: vi.fn(async (...parts: string[]) => parts.join('\\')),
 }));
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: mocks.openDialog }));
 vi.mock('react-i18next', () => ({
     useTranslation: () => ({
         t: (key: string, options?: { n?: number }) => {
@@ -26,6 +27,10 @@ vi.mock('react-i18next', () => ({
 }));
 
 const ILLUSTRATOR = 'C:\\Program Files\\Adobe\\Adobe Illustrator 2025\\Illustrator.exe';
+const CUSTOM_ILLUSTRATOR = 'D:\\Design Apps\\Adobe Illustrator 2026\\Illustrator.exe';
+const COREL = 'C:\\Program Files\\Corel\\CorelDRAW Graphics Suite\\CorelDRW.exe';
+const CUSTOM_COREL = 'E:\\Design Apps\\CorelDRAW\\CorelDRW.exe';
+const DESIGN_APPS_LS_KEY = 'prynx.designApps.v1';
 const GRAPH_INFO_NAME = 'SA info AUDIT GRAPH';
 const LAYER_NAME = 'Marks_Model_AUDIT';
 const GROUP_NAME = 'MarkLine_AUDIT';
@@ -121,6 +126,7 @@ function renderModal(overrides: Partial<React.ComponentProps<typeof OpenInDesign
 describe('OpenInDesignModal', () => {
     beforeEach(() => {
         mocks.invoke.mockReset();
+        mocks.openDialog.mockReset();
         localStorage.clear();
         Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
     });
@@ -155,6 +161,126 @@ describe('OpenInDesignModal', () => {
         expect(screen.getByText('khong_tim_thay_tren_may')).toBeTruthy();
         expect(screen.getByText('chon_lai')).toBeTruthy();
         expect(screen.getByText('chon_thu_cong')).toBeTruthy();
+    });
+
+    it.each([
+        {
+            name: 'Illustrator',
+            which: 'illustrator' as const,
+            label: /Adobe Illustrator/,
+            detectedPath: ILLUSTRATOR,
+            selectedPath: CUSTOM_ILLUSTRATOR,
+            detectedApps: { illustrator: ILLUSTRATOR, corel: null },
+        },
+        {
+            name: 'CorelDRAW',
+            which: 'corel' as const,
+            label: /CorelDRAW/,
+            detectedPath: COREL,
+            selectedPath: CUSTOM_COREL,
+            detectedApps: { illustrator: null, corel: COREL },
+        },
+    ])('ưu tiên đường dẫn $name vừa chọn hơn kết quả tự dò', async ({
+        which, label, detectedPath, selectedPath, detectedApps,
+    }) => {
+        mocks.openDialog.mockResolvedValue(selectedPath);
+        mocks.invoke.mockImplementation((command: string) => {
+            if (command === 'detect_design_apps') return Promise.resolve(detectedApps);
+            return Promise.resolve();
+        });
+
+        renderModal();
+
+        await screen.findByText(detectedPath);
+        fireEvent.click(screen.getByText('chon_lai'));
+        await waitFor(() => {
+            const saved = JSON.parse(localStorage.getItem(DESIGN_APPS_LS_KEY) || '{}');
+            expect(saved[which]).toBe(selectedPath);
+        });
+        expect(await screen.findByText(selectedPath)).toBeTruthy();
+
+        fireEvent.click(screen.getByLabelText('ca_khuon_va_in'));
+        fireEvent.click(screen.getByRole('button', { name: label }));
+
+        await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('launch_external_app', {
+            appPath: selectedPath,
+            filePath: 'D:\\jobs\\Imposed_order.pdf',
+        }));
+    });
+
+    it('giữ đường dẫn thủ công đã lưu sau khi bộ dò chạy lại', async () => {
+        localStorage.setItem(DESIGN_APPS_LS_KEY, JSON.stringify({ illustrator: CUSTOM_ILLUSTRATOR }));
+        let resolveDetection!: (value: { illustrator: string | null; corel: string | null }) => void;
+        const pending = new Promise<{ illustrator: string | null; corel: string | null }>(resolve => {
+            resolveDetection = resolve;
+        });
+        mocks.invoke.mockImplementation((command: string) => {
+            if (command === 'detect_design_apps') return pending;
+            return Promise.resolve();
+        });
+
+        renderModal();
+        expect(await screen.findByText(CUSTOM_ILLUSTRATOR)).toBeTruthy();
+
+        await act(async () => {
+            resolveDetection({ illustrator: ILLUSTRATOR, corel: null });
+            await pending;
+        });
+
+        expect(screen.getByText(CUSTOM_ILLUSTRATOR)).toBeTruthy();
+        expect(screen.queryByText(ILLUSTRATOR)).toBeNull();
+        fireEvent.click(screen.getByLabelText('ca_khuon_va_in'));
+        fireEvent.click(screen.getByRole('button', { name: /Adobe Illustrator/ }));
+        await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('launch_external_app', {
+            appPath: CUSTOM_ILLUSTRATOR,
+            filePath: 'D:\\jobs\\Imposed_order.pdf',
+        }));
+    });
+
+    it('vẫn dùng được đường dẫn thủ công khi bộ dò không tìm thấy ứng dụng', async () => {
+        mocks.openDialog.mockResolvedValue(CUSTOM_ILLUSTRATOR);
+        mocks.invoke.mockImplementation((command: string) => {
+            if (command === 'detect_design_apps') {
+                return Promise.resolve({ illustrator: null, corel: null });
+            }
+            return Promise.resolve();
+        });
+
+        renderModal();
+        await screen.findAllByText('khong_tim_thay_tren_may');
+        fireEvent.click(screen.getAllByText('chon_thu_cong')[0]);
+        expect(await screen.findByText(CUSTOM_ILLUSTRATOR)).toBeTruthy();
+
+        fireEvent.click(screen.getByLabelText('ca_khuon_va_in'));
+        fireEvent.click(screen.getByRole('button', { name: /Adobe Illustrator/ }));
+        await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('launch_external_app', {
+            appPath: CUSTOM_ILLUSTRATOR,
+            filePath: 'D:\\jobs\\Imposed_order.pdf',
+        }));
+    });
+
+    it('giữ nguyên đường dẫn tự dò khi người dùng hủy hộp chọn lại', async () => {
+        mocks.openDialog.mockResolvedValue(null);
+        mocks.invoke.mockImplementation((command: string) => {
+            if (command === 'detect_design_apps') {
+                return Promise.resolve({ illustrator: ILLUSTRATOR, corel: null });
+            }
+            return Promise.resolve();
+        });
+
+        renderModal();
+        await screen.findByText(ILLUSTRATOR);
+        fireEvent.click(screen.getByText('chon_lai'));
+        await waitFor(() => expect(mocks.openDialog).toHaveBeenCalledOnce());
+
+        expect(screen.getByText(ILLUSTRATOR)).toBeTruthy();
+        expect(localStorage.getItem(DESIGN_APPS_LS_KEY)).toBeNull();
+        fireEvent.click(screen.getByLabelText('ca_khuon_va_in'));
+        fireEvent.click(screen.getByRole('button', { name: /Adobe Illustrator/ }));
+        await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('launch_external_app', {
+            appPath: ILLUSTRATOR,
+            filePath: 'D:\\jobs\\Imposed_order.pdf',
+        }));
     });
 
     it('đánh dấu thumbnail khuôn là render nền', async () => {

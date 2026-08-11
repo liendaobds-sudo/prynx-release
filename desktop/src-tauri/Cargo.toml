@@ -1,6 +1,6 @@
 [package]
 name = "pdf-inspector"
-version = "1.0.0-rc.4"
+version = "1.0.0-rc.5"
 description = "PDF comparison tool for print industry"
 authors = ["PrintSolutions"]
 license = "MIT"

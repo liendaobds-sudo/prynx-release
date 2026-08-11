@@ -20,6 +20,10 @@ import {
 export interface PrintRequest {
     source: Blob | File;
     numPages: number;
+    /** Trang workspace đang xem, 1-based. */
+    initialPage?: number;
+    /** Snapshot các trang thumbnail đang chọn, 1-based theo PDF được gửi đi in. */
+    selectedPages?: number[];
     /** Dieline: trang khuôn thường ngang → mặc định orientation Auto cho auto-rotate lọt khổ. */
     autoRotateDefault?: boolean;
 }
@@ -133,6 +137,7 @@ export function usePrintDialog() {
                 outputPath,
                 fromPage: settings.fromPage,
                 toPage: settings.toPage,
+                pages: settings.pages,
                 copies: settings.copies,
                 collate: settings.collate,
                 deleteAfter: false,
@@ -171,6 +176,7 @@ export function usePrintDialog() {
                 filePath: current.filePath,
                 fromPage: settings.fromPage,
                 toPage: settings.toPage,
+                pages: settings.pages,
                 scaleMode: settings.scaleMode,
                 autoRotate,
             });
@@ -210,6 +216,8 @@ export function usePrintDialog() {
             printers={state.printers}
             jobId={state.jobId}
             autoRotateDefault={state.req.autoRotateDefault}
+            initialPage={state.req.initialPage}
+            initialSelectedPages={state.req.selectedPages}
             onPrint={handlePrint}
             onSystemPrint={handleSystemPrint}
             onCancelPrint={handleCancelPrint}

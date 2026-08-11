@@ -58,6 +58,8 @@ export interface PrintDirectParams {
     outputPath?: string | null;
     fromPage?: number | null;
     toPage?: number | null;
+    /** Danh sách trang 1-based; khi có sẽ được ưu tiên thay cho khoảng from/to. */
+    pages?: number[] | null;
     copies?: number;
     collate?: boolean;
     deleteAfter?: boolean;
@@ -80,6 +82,8 @@ export interface PrintPathParams {
     filePath: string;
     fromPage?: number | null;
     toPage?: number | null;
+    /** Giữ nguyên danh sách rời rạc khi người dùng thử hộp thoại Windows. */
+    pages?: number[] | null;
     scaleMode: PrintScaleMode;
     autoRotate?: boolean;
 }
@@ -169,6 +173,7 @@ export async function printPdfDirect(params: PrintDirectParams): Promise<boolean
         outputPath: params.outputPath ?? null,
         fromPage: params.fromPage ?? null,
         toPage: params.toPage ?? null,
+        pages: params.pages ?? null,
         copies: params.copies ?? 1,
         collate: params.collate ?? true,
         deleteAfter: params.deleteAfter ?? false,
@@ -233,6 +238,7 @@ export async function printPdfPath(params: PrintPathParams): Promise<boolean> {
         filePath: params.filePath,
         fromPage: params.fromPage ?? null,
         toPage: params.toPage ?? null,
+        pages: params.pages ?? null,
         deleteAfter: false,
         scaleMode: params.scaleMode === 'custom' ? 'shrink' : params.scaleMode,
         autoRotate: params.autoRotate ?? false,

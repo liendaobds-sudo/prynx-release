@@ -3681,6 +3681,84 @@ def test_sticker_endpoint_uses_local_pdf_without_deleting_source(tmp_path, monke
     assert captured["edge_sample_inset_mm"] == pytest.approx(0.5)
 
 
+def test_sticker_endpoint_chuyen_artifact_ai_mot_tem_vao_engine(
+    tmp_path,
+    monkeypatch,
+):
+    """Route cũ phải chuyển cả Alpha lẫn path; không gọi logic tách nhiều tem."""
+    import asyncio
+    import shutil
+
+    from app.api.routes import pdf_tools
+    from app.workers import sticker_engine, sticker_source_pipeline
+
+    source = tmp_path / "legacy-ai-route.pdf"
+    pdf = pikepdf.Pdf.new()
+    pdf.add_blank_page(page_size=(120, 80))
+    pdf.save(source)
+    pdf.close()
+    alpha = np.zeros((80, 120), dtype=np.uint8)
+    alpha[10:70, 20:100] = 255
+    approved = sticker_source_pipeline.LegacyApprovedContour(
+        alpha=alpha,
+        dpi=(72.0, 72.0),
+        path_groups=[{
+            "exterior": [[(20.0, 10.0), (20.0, 10.0), (100.0, 10.0), (100.0, 10.0)]],
+            "interiors": [],
+        }],
+        boundary_source="ai",
+        instance_count=1,
+        source_pixel_mm=25.4 / 72.0,
+    )
+    captured = {}
+    helper_calls = []
+
+    def fake_approved(*args, **kwargs):
+        helper_calls.append((args, kwargs))
+        return approved
+
+    class StubEngine:
+        def __init__(self, dpi=300):
+            self.dpi = dpi
+
+        def process_pdf(self, input_path, output_path, **kwargs):
+            captured.update(kwargs)
+            shutil.copyfile(input_path, output_path)
+            return True, {"pages": [{"page": 1}]}
+
+    class FakeRequest:
+        async def form(self):
+            return {
+                "file_path": str(source),
+                "cut_mode": "original",
+                "corner_style": "round",
+                "remove_white_bg": "true",
+                "shape_mode": "auto_safe",
+                "crop_to_sticker": "true",
+            }
+
+    monkeypatch.setattr(sticker_engine, "StickerEngine", StubEngine)
+    monkeypatch.setattr(
+        sticker_source_pipeline,
+        "build_legacy_single_page_approved_contour",
+        fake_approved,
+    )
+    monkeypatch.setattr(pdf_tools, "RESULTS_DIR", str(tmp_path))
+    monkeypatch.setattr(pdf_tools, "_safe_watermark", lambda *args: None)
+
+    response = asyncio.run(
+        pdf_tools.sticker_dieline_endpoint(FakeRequest(), license_info={})
+    )
+
+    assert len(helper_calls) == 1
+    overrides = captured["approved_contour_overrides"]
+    assert list(overrides) == [0]
+    assert np.array_equal(overrides[0]["alpha"], alpha)
+    assert overrides[0]["path_groups"] == approved.path_groups
+    assert overrides[0]["boundary_source"] == "ai"
+    assert os.path.exists(response.path)
+
+
 @pytest.mark.parametrize(
     "extra_form,expected_policy",
     [

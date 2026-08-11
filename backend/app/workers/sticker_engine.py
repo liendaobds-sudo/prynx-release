@@ -31,6 +31,14 @@ from app.core.bleed_sides import (
     normalize_bleed_sides,
 )
 from app.workers.shape_analyzer import ShapeType
+from app.workers.sticker_bleed_masks import (
+    _SEAM_FEATHER_MM,
+    _axis_aligned_rectangle_bbox,
+    _bleed_roi_bbox,
+    _build_feathered_bleed_join_mask,
+    _edge_color_adaptive_max_mm,
+    _sampled_bleed_overlap_px,
+)
 import json
 
 logger = logging.getLogger(__name__)
@@ -151,24 +159,6 @@ def compute_cut_bleed_offsets(cut_mode: str, bleed_pts: float, offset_pts: float
     total = offset_pts
     outer = total + bleed_pts if bleed_pts > 0 else total
     return total, outer
-
-
-def _bleed_roi_bbox(mask, margin: int = 8):
-    """Bounding box (y0, y1, x0, x1) của vùng mask>0, nới thêm `margin` px và
-    kẹp trong biên ảnh. Trả None nếu mask rỗng.
-
-    Dùng để giới hạn tính toán bleed (distance_transform_edt / cv2.inpaint)
-    quanh mép hình thay vì chạy trên cả canvas (có nhiều vùng trống ở rìa).
-    """
-    ys, xs = np.where(mask > 0)
-    if ys.size == 0:
-        return None
-    h, w = mask.shape[:2]
-    y0 = max(0, int(ys.min()) - margin)
-    y1 = min(h, int(ys.max()) + 1 + margin)
-    x0 = max(0, int(xs.min()) - margin)
-    x1 = min(w, int(xs.max()) + 1 + margin)
-    return y0, y1, x0, x1
 
 
 def _downscale_factor(h: int, w: int, max_dim: int = 1000) -> int:
@@ -3805,6 +3795,55 @@ def _alpha_override_geometry(payload):
     return geometry, paths
 
 
+def _approved_contour_override(payload, target_shape):
+    """Khôi phục đồng thời Alpha và Bézier đã duyệt cho đúng một trang nguồn.
+
+    QUALITY (feedback 2026-08-11 §LEGACY-AI.2): mask và path là một artifact
+    nguyên tử. Không nhận riêng một nửa vì như vậy đường bế có thể đúng nhưng
+    footprint bù xén vẫn dùng mask nền trắng cũ và tiếp tục xóa sai artwork.
+    """
+    if not isinstance(payload, dict):
+        return None
+    fitted = _alpha_override_geometry(payload)
+    raw_alpha = payload.get("alpha")
+    if fitted is None or raw_alpha is None:
+        return None
+    alpha = np.asarray(raw_alpha, dtype=np.uint8)
+    if alpha.ndim != 2 or alpha.size == 0:
+        return None
+    target_height, target_width = (int(target_shape[0]), int(target_shape[1]))
+    if target_height <= 0 or target_width <= 0:
+        return None
+    if alpha.shape != (target_height, target_width):
+        interpolation = (
+            cv2.INTER_AREA
+            if alpha.shape[0] > target_height or alpha.shape[1] > target_width
+            else cv2.INTER_LINEAR
+        )
+        alpha = cv2.resize(
+            alpha,
+            (target_width, target_height),
+            interpolation=interpolation,
+        )
+    alpha = np.ascontiguousarray(alpha, dtype=np.uint8)
+    if not mask_tach_duoc_nen(alpha >= ALPHA_CONTOUR_THRESHOLD):
+        return None
+
+    try:
+        source_pixel_mm = float(payload.get("source_pixel_mm"))
+    except (TypeError, ValueError):
+        source_pixel_mm = 0.0
+    if not math.isfinite(source_pixel_mm) or source_pixel_mm <= 0.0:
+        raw_dpi = payload.get("dpi")
+        try:
+            dpi_x, dpi_y = float(raw_dpi[0]), float(raw_dpi[1])
+            source_pixel_mm = max(25.4 / dpi_x, 25.4 / dpi_y)
+        except (IndexError, TypeError, ValueError, ZeroDivisionError):
+            return None
+    boundary_source = str(payload.get("boundary_source") or "approved")
+    return alpha, source_pixel_mm, boundary_source, fitted
+
+
 def _alpha_live_machine_path_summary(path, *, mm_to_pts: float):
     """Đo ba rủi ro chạy dao theo lô NumPy và giữ vị trí từng khớp gãy."""
     points = np.asarray(path, dtype=np.float64)
@@ -5027,9 +5066,6 @@ _EDGE_COLOR_BRIGHT_TAIL_PERCENTILE = 99.0
 _EDGE_COLOR_BRIGHT_TAIL_DELTA = 20.0
 _EDGE_COLOR_BRIGHT_TAIL_MIN_RATIO = 0.005
 _EDGE_COLOR_BRIGHT_TAIL_MAX_RATIO = 0.08
-_EDGE_COLOR_ADAPTIVE_BASE_MM = 0.60
-_EDGE_COLOR_ADAPTIVE_MAX_MM = 2.50
-_EDGE_COLOR_ADAPTIVE_SOURCE_PIXELS = 7.0
 _EDGE_COLOR_ADAPTIVE_ACCEPT_RATIO = 0.75
 _EDGE_COLOR_DEPTH_PENALTY = 0.002
 _EDGE_COLOR_BACKGROUND_DISTANCE = 72
@@ -5043,107 +5079,6 @@ _EDGE_COLOR_BACKGROUND_FRINGE_RATIO = 0.70
 _EDGE_COLOR_BACKGROUND_RELEASE_RATIO = 0.25
 _EDGE_COLOR_BACKGROUND_COVERAGE_RATIO = 0.90
 _EDGE_COLOR_BACKGROUND_SCORE_WEIGHT = 0.50
-_SEAM_FEATHER_MM = 0.15
-# Lớp màu được vẽ lại trên artwork chỉ cần chồng mí đủ chống hở subpixel. Độ sâu
-# lấy mẫu có thể tới 2,5 mm trên ảnh 72 DPI nhưng không được biến thành độ lẹm màu.
-_SAMPLED_BLEED_OVERLAP_MM = 0.25
-_TRAJECTORY_RECT_MIN_FILL_RATIO = 0.82
-_TRAJECTORY_RECT_CORE_MIN_FILL_RATIO = 0.995
-_TRAJECTORY_RECT_MIN_CONVEXITY_RATIO = 0.99
-
-
-def _sampled_bleed_overlap_px(px_per_mm: float) -> int:
-    """Độ chồng mí hiển thị, độc lập hoàn toàn với độ sâu dò nguồn màu."""
-    try:
-        resolved = float(px_per_mm)
-    except (TypeError, ValueError):
-        resolved = 0.0
-    if not math.isfinite(resolved) or resolved <= 0.0:
-        return 1
-    return max(1, int(round(_SAMPLED_BLEED_OVERLAP_MM * resolved)))
-
-
-def _edge_color_adaptive_max_mm(source_pixel_mm: Optional[float]) -> float:
-    """Độ sâu dò màu theo pixel nguồn, nhưng có chặn theo mm vật lý.
-
-    QUALITY (feedback 2026-08-10 §EDGE-SAMPLE.2): ảnh không khai báo DPI được mở ở
-    72 DPI; một pixel nguồn khi đó rộng 0,353 mm. Halo JPEG 6–7 pixel đã sâu hơn
-    nhiều giới hạn cố định 0,60 mm, dù trên ảnh 300 DPI giới hạn cũ là hợp lý.
-    """
-    try:
-        pixel_mm = float(source_pixel_mm) if source_pixel_mm is not None else 0.0
-    except (TypeError, ValueError):
-        pixel_mm = 0.0
-    if not math.isfinite(pixel_mm) or pixel_mm <= 0.0:
-        return _EDGE_COLOR_ADAPTIVE_BASE_MM
-    return max(
-        _EDGE_COLOR_ADAPTIVE_BASE_MM,
-        min(
-            _EDGE_COLOR_ADAPTIVE_MAX_MM,
-            pixel_mm * _EDGE_COLOR_ADAPTIVE_SOURCE_PIXELS,
-        ),
-    )
-
-
-def _axis_aligned_rectangle_bbox(
-    footprint: np.ndarray,
-) -> tuple[int, int, int, int] | None:
-    """Trả bbox khi footprint là hình chữ nhật thẳng trục, có thể bo góc.
-
-    TRAJECTORY (audit 2026-08-01 §BT.1): engine quỹ đạo hiện tiếp tục màu theo
-    bốn cạnh. Một contour lồi, phủ đủ bbox và kín cả hai dải lõi ngang/dọc là
-    chữ nhật hoặc chữ nhật bo góc; hình tròn, hình xoay và contour tự do không
-    có hai dải lõi kín nên vẫn fallback sang lấy màu viền.
-    """
-    if footprint is None or footprint.ndim != 2 or footprint.size == 0:
-        return None
-    if footprint.dtype == np.uint8 and footprint.flags.c_contiguous:
-        binary = footprint
-    else:
-        binary = np.ascontiguousarray(footprint > 0, dtype=np.uint8)
-    contours, _ = cv2.findContours(
-        binary,
-        cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE,
-    )
-    if len(contours) != 1:
-        return None
-    contour_area = float(cv2.contourArea(contours[0]))
-    convex_area = float(cv2.contourArea(cv2.convexHull(contours[0])))
-    # Contour raster của cung tròn có lõm giả cỡ một pixel, nên
-    # ``isContourConvex`` quá nghiêm. Tỷ lệ này vẫn loại notch thật.
-    if convex_area <= 0.0 or (
-        contour_area / convex_area < _TRAJECTORY_RECT_MIN_CONVEXITY_RATIO
-    ):
-        return None
-    x, y, width, height = (int(value) for value in cv2.boundingRect(contours[0]))
-    if width < 3 or height < 3:
-        return None
-    # Chỉ dựng mask cục bộ trong bbox; tránh thêm một label-map int32 cỡ cả tờ PDF.
-    local = np.zeros((height, width), dtype=np.uint8)
-    shifted = contours[0].copy()
-    shifted[:, 0, 0] -= x
-    shifted[:, 0, 1] -= y
-    cv2.drawContours(local, [shifted], -1, 255, cv2.FILLED)
-    fill_ratio = float(cv2.countNonZero(local)) / float(width * height)
-    if fill_ratio < _TRAJECTORY_RECT_MIN_FILL_RATIO:
-        return None
-
-    # Góc bo chỉ làm thiếu bốn góc bbox; phần giữa của cả bốn cạnh vẫn tạo hai
-    # dải chữ thập kín. Gate này chặn ellipse, hình thoi và chữ nhật bị xoay dù
-    # chỉ số diện tích của chúng có thể gần ngưỡng.
-    inset = max(1, min(width, height) // 4)
-    horizontal_core = local[inset:height - inset, :]
-    vertical_core = local[:, inset:width - inset]
-    if horizontal_core.size == 0 or vertical_core.size == 0:
-        return None
-    horizontal_fill = float(np.count_nonzero(horizontal_core)) / horizontal_core.size
-    vertical_fill = float(np.count_nonzero(vertical_core)) / vertical_core.size
-    if min(horizontal_fill, vertical_fill) < _TRAJECTORY_RECT_CORE_MIN_FILL_RATIO:
-        return None
-    return x, y, x + width, y + height
-
-
 def _edge_color_instability_metrics(
     source_mask: np.ndarray,
     img: np.ndarray,
@@ -5509,58 +5444,6 @@ def _build_adaptive_edge_color_source_mask(
     ):
         return best_mask, best_peel
     return initial, initial_peel
-
-
-def _build_feathered_bleed_join_mask(
-    bleed_mask: np.ndarray,
-    sticker_footprint: np.ndarray,
-    *,
-    solid_overlap_px: int,
-    feather_px: int,
-) -> np.ndarray:
-    """Tạo alpha mềm ở mép trong của lớp bleed chồng lên artwork.
-
-    QUALITY (audit 2026-07-28 §BX.5): phía ngoài tem vẫn đục hoàn toàn; bleed
-    chồng kín qua vùng halo trong ``solid_overlap_px``, rồi giảm alpha bằng
-    smoothstep ở dải feather. Nhờ vậy đường cong không còn biên mask 0/255 dạng
-    bậc thang và phần chuyển màu nằm sâu trong vùng màu nguồn đã ổn định.
-    """
-    if (
-        bleed_mask is None
-        or sticker_footprint is None
-        or bleed_mask.shape != sticker_footprint.shape
-        or np.count_nonzero(bleed_mask) == 0
-        or np.count_nonzero(sticker_footprint) == 0
-    ):
-        return bleed_mask.copy() if bleed_mask is not None else bleed_mask
-
-    roi = _bleed_roi_bbox(bleed_mask)
-    if roi is None:
-        return bleed_mask.copy()
-    y0, y1, x0, x1 = roi
-    coverage = bleed_mask[y0:y1, x0:x1] > 0
-    footprint = sticker_footprint[y0:y1, x0:x1] > 0
-    sub_alpha = np.zeros(coverage.shape, dtype=np.uint8)
-    sub_alpha[coverage & ~footprint] = 255
-
-    solid = max(0, int(solid_overlap_px))
-    feather = max(1, int(feather_px))
-    # Chỉ EDT trên bbox bleed; không tạo thêm float32 cỡ cả tờ PDF.
-    distance_inside = cv2.distanceTransform(
-        footprint.astype(np.uint8), cv2.DIST_L2, 5
-    )
-    transition = np.clip(
-        (solid + feather - distance_inside) / float(feather),
-        0.0,
-        1.0,
-    )
-    transition = transition * transition * (3.0 - 2.0 * transition)
-    inside = coverage & footprint
-    sub_alpha[inside] = np.rint(transition[inside] * 255.0).astype(np.uint8)
-
-    alpha = np.zeros_like(bleed_mask, dtype=np.uint8)
-    alpha[y0:y1, x0:x1] = sub_alpha
-    return alpha
 
 
 def _edge_color_sampling_warning(
@@ -7228,6 +7111,7 @@ def _process_sticker_chunk(args: dict):
                 _MIN_CONTOUR_AREA_MM2,
             ),
             alpha_path_overrides=args.get("alpha_path_overrides"),
+            approved_contour_overrides=args.get("approved_contour_overrides"),
             _page_subset=args["page_indices"],
         )
         # result = (bytes, metas, pages_no_dieline, any_dieline)
@@ -7284,6 +7168,7 @@ class StickerEngine:
         curve_tension: float | int = _CUTLINE_TUNING_DEFAULT,
         min_detail_area_mm2: float = _MIN_CONTOUR_AREA_MM2,
         alpha_path_overrides: dict[int, dict] | None = None,
+        approved_contour_overrides: dict[int, dict] | None = None,
     ) -> tuple:
         # _page_subset: khi != None, CHỈ xử lý các trang có index trong list (theo
         # đúng thứ tự truyền vào) và lưu output ra output_path. Dùng cho worker song
@@ -7327,6 +7212,16 @@ class StickerEngine:
         alpha_path_overrides = {
             int(page_index): payload
             for page_index, payload in raw_alpha_path_overrides.items()
+            if isinstance(payload, dict)
+        }
+        raw_approved_contour_overrides = (
+            approved_contour_overrides
+            if isinstance(approved_contour_overrides, dict)
+            else {}
+        )
+        approved_contour_overrides = {
+            int(page_index): payload
+            for page_index, payload in raw_approved_contour_overrides.items()
             if isinstance(payload, dict)
         }
         # Chỉ dịch nguồn lấy màu; tuyệt đối không dùng giá trị này để co footprint/clip.
@@ -7494,6 +7389,7 @@ class StickerEngine:
                     curve_tension=curve_tension,
                     min_detail_area_mm2=min_detail_area_mm2,
                     alpha_path_overrides=alpha_path_overrides,
+                    approved_contour_overrides=approved_contour_overrides,
                 )
 
             debug_step = "Create Output PDF"
@@ -7550,6 +7446,10 @@ class StickerEngine:
                 color_bg_detected: BackgroundInfo | None = None
                 # §BG.6b: mask nền trắng do engine tự dựng từ ngưỡng cứng.
                 white_bg_mask_built = False
+                approved_contour_source = None
+                approved_alpha_mask = None
+                approved_override_result = None
+                approved_contour_page = False
                 debug_step = f"Rasterize Page {page_idx}"
                 with pdfium_guard():
                     if page_in is not None:
@@ -7664,6 +7564,23 @@ class StickerEngine:
                             and img[:, :, 3].min() < 255
                             and img[:, :, 3].max() > 10
                         )
+                approved_payload = approved_contour_overrides.get(page_idx)
+                if approved_payload is not None:
+                    approved = _approved_contour_override(
+                        approved_payload,
+                        img.shape[:2],
+                    )
+                    if approved is None:
+                        raise ValueError(
+                            f"Trang {page_idx + 1}: Alpha/đường bế đã duyệt không hợp lệ."
+                        )
+                    (
+                        approved_alpha_mask,
+                        source_pixel_mm_page,
+                        approved_contour_source,
+                        approved_override_result,
+                    ) = approved
+                    approved_contour_page = True
                 if page_idx == 0 and self.debug:
                     logger.warning(">>> PARAMS: cut_mode=%s offset_mm=%.2f bleed_mm=%.2f corner_style=%s remove_white_bg=%s bleed_color_type=%s fill_holes=%s", cut_mode, offset_mm, bleed_mm, corner_style, remove_white_bg, bleed_color_type, fill_holes)
                     logger.warning(">>> IMAGE: shape=%s has_alpha=%s", img.shape, has_alpha)
@@ -7680,7 +7597,11 @@ class StickerEngine:
                     base_mask = raw_mask = mask = aa_mask = _full
                     contours = []
                 else:
-                    if alpha_source_contour and has_alpha:
+                    if approved_contour_page:
+                        # §LEGACY-AI.2: giữ PDF gốc để không raster hóa/mất màu in;
+                        # chỉ thay đúng Alpha hình học bằng artifact AI đã duyệt.
+                        base_mask = approved_alpha_mask.copy()
+                    elif alpha_source_contour and has_alpha:
                         base_mask = img[:, :, 3].copy()
                     elif alpha_source_contour:
                         base_mask = _foreground_mask_from_corner_background(
@@ -7791,7 +7712,7 @@ class StickerEngine:
                         else:
                             base_mask = np.ones(img.shape[:2], dtype=np.uint8) * 255
 
-                    if alpha_source_contour:
+                    if alpha_source_contour or approved_contour_page:
                         # ALPHA (audit 2026-08-01 §A.3): lấy biên tại khoảng 25% độ đục.
                         # Ngưỡng >10 trước đây tính cả halo gần trong suốt, làm mất
                         # phần lớn khoảng lùi 0,15 mm so với mép nhìn thấy.
@@ -7836,14 +7757,20 @@ class StickerEngine:
                     # ghi đè làm lệch tới −5,4% diện tích trên tem nhỏ.
                     contour_mask = aa_mask
                     contour_pixel_to_pt = 1.0 / self.scale
-                    if white_bg_mask_built and not alpha_source_contour:
+                    if (
+                        white_bg_mask_built
+                        and not alpha_source_contour
+                        and not approved_contour_page
+                    ):
                         contour_mask = _lam_mem_dai_bien(
                             aa_mask,
                             img,
                             px_per_mm,
                             source_pixel_mm_page,
                         )
-                    elif alpha_source_contour and source_pixel_mm_page is not None:
+                    elif (
+                        alpha_source_contour or approved_contour_page
+                    ) and source_pixel_mm_page is not None:
                         # QUALITY (audit 2026-08-08 §AI-MOTION.4): PDF trung gian
                         # của Ảnh AI có thể chứa ảnh 72 DPI nhưng được raster lại ở
                         # 300 DPI. Fit trên mask đã phóng 4,17× sẽ khóa từng bậc nội
@@ -7953,7 +7880,11 @@ class StickerEngine:
                 dieline_polygons = []
                 total_offset = 0
                 bleed_outer_offset = 0
-                recon_meta = {"shape_mode": shape_mode, "reconstructed": False}
+                page_shape_mode = "contour" if approved_contour_page else shape_mode
+                recon_meta = {
+                    "shape_mode": page_shape_mode,
+                    "reconstructed": False,
+                }
                 cut_draw_style = corner_style
                 cut_draw_tension = 0.33
                 cut_fitted_paths = None
@@ -8109,13 +8040,16 @@ class StickerEngine:
                         # Reconstruct hình học chuẩn (auto_safe / force_*) theo
                         # TỪNG component; một mảnh xấu không được khóa hình tốt.
                         # Tem tròn khuyết / CUSTOM → reject → giữ contour riêng nó.
-                        recon_meta = {"shape_mode": shape_mode, "reconstructed": False}
+                        recon_meta = {
+                            "shape_mode": page_shape_mode,
+                            "reconstructed": False,
+                        }
                         cut_draw_style = corner_style
                         try:
                             if not base_dieline.is_empty:
                                 base_dieline, recon_meta = _reconstruct_cut_geometry_parts(
                                     base_dieline,
-                                    shape_mode,
+                                    page_shape_mode,
                                     px_per_mm,
                                     source_pixel_mm_page,
                                 )
@@ -8155,7 +8089,7 @@ class StickerEngine:
                                         base_dieline = unary_union(rebuilt_parts)
                                         if len(rebuilt_parts) == 1:
                                             recon_meta = {
-                                                "shape_mode": shape_mode,
+                                                "shape_mode": page_shape_mode,
                                                 "reconstructed": True,
                                                 "fully_reconstructed": True,
                                                 "kind": dominant_kind,
@@ -8181,7 +8115,7 @@ class StickerEngine:
                         except Exception as _recon_err:
                             logger.warning("shape reconstruct skip: %s", _recon_err)
                             recon_meta = {
-                                "shape_mode": shape_mode,
+                                "shape_mode": page_shape_mode,
                                 "reconstructed": False,
                                 "error": str(_recon_err),
                             }
@@ -8191,7 +8125,9 @@ class StickerEngine:
                             cut_mode, bleed_pts, offset_pts
                         )
 
-                        if alpha_source_contour and preserve_contour:
+                        if (
+                            alpha_source_contour or approved_contour_page
+                        ) and preserve_contour:
                             # ALPHA (audit 2026-08-01 §A.2): buffer tròn giữ phép lùi
                             # đều quanh biên raster, không tạo mũi nhọn tại bậc pixel.
                             join_style = 1
@@ -8226,20 +8162,26 @@ class StickerEngine:
                             elif bleed_outer_poly.geom_type == 'Polygon':
                                 bleed_outer_poly = Polygon(bleed_outer_poly.exterior)
 
-                        override_result = _alpha_override_geometry(
-                            alpha_path_overrides.get(page_idx)
+                        override_result = (
+                            approved_override_result
+                            if approved_contour_page
+                            else _alpha_override_geometry(
+                                alpha_path_overrides.get(page_idx)
+                            )
                         )
                         if (
-                            alpha_source_contour
-                            and preserve_contour
+                            (approved_contour_page or alpha_source_contour)
                             and override_result is not None
                         ):
-                            # UIUX/QUALITY (audit 2026-08-09 §PV.3): đây là chính
-                            # Bézier đã dựng từ PNG nguồn cho live preview. Dùng
-                            # thẳng khi ghi PDF để preview và artifact không lệch.
+                            # QUALITY (feedback 2026-08-11 §LEGACY-AI.3): đây là
+                            # chính Bézier đã dựng với kiểu góc hiện tại cho live
+                            # preview. Cả Giữ nguyên lẫn Góc tròn đều phải dùng
+                            # thẳng; fit lần hai từng làm preview đúng nhưng PDF sai.
                             cut_poly, cut_fitted_paths = override_result
                             dieline_poly = cut_poly
-                        elif alpha_source_contour and preserve_contour:
+                        elif (
+                            alpha_source_contour or approved_contour_page
+                        ) and preserve_contour:
                             # QUALITY (audit 2026-08-04 §ALPHA.1–2): ưu tiên fit
                             # nhiều điểm raster thành ít cubic. Candidate không qua
                             # topology/Hausdorff/khoảng lùi sẽ tự về Catmull có guard.
@@ -8675,7 +8617,12 @@ class StickerEngine:
                         # màu và độ chồng mí là hai đại lượng độc lập. Trước đây
                         # selected_peel_px=21 (≈2,47 mm) bị dùng làm choke trên
                         # artwork, nên mọi sai màu nguồn đều lộ thành một vành lớn.
-                        _tuck_px = _sampled_bleed_overlap_px(px_per_mm)
+                        _tuck_px = _sampled_bleed_overlap_px(
+                            px_per_mm,
+                            source_pixel_mm=source_pixel_mm_page,
+                            selected_peel_px=selected_peel_px,
+                            initial_peel_px=peel_px,
+                        )
                         _sampled_seam_overlay = (
                             bleed_color_type in ("image", "trajectory", "inpaint")
                             and not rectangle_mode
@@ -9278,7 +9225,11 @@ class StickerEngine:
                     else:
                         _conf = None
                     page_meta = {
-                        "contour_source": "alpha" if alpha_source_contour else "auto",
+                        "contour_source": (
+                            approved_contour_source
+                            if approved_contour_page
+                            else ("alpha" if alpha_source_contour else "auto")
+                        ),
                         "alpha_fallback": bool(alpha_fallback_used),
                         "width_mm": round(width_mm, 2),
                         "height_mm": round(height_mm, 2),
@@ -9596,6 +9547,9 @@ class StickerEngine:
                     _MIN_CONTOUR_AREA_MM2,
                 ),
                 "alpha_path_overrides": kw.get("alpha_path_overrides"),
+                "approved_contour_overrides": kw.get(
+                    "approved_contour_overrides"
+                ),
                 # Tuple 4 bool — picklable, worker không phải parse lại chuỗi.
                 "bleed_sides": kw.get("bleed_sides"),
             })

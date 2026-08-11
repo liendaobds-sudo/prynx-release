@@ -205,6 +205,8 @@ export interface WorkspaceState {
     viewerPageDisplayMode: 'single_fit' | 'single_scroll' | 'two_fit' | 'two_scroll';
     viewerActivePage: number;
     viewerNumPages: number;
+    /** Snapshot index thumbnail 0-based, chỉ đọc khi mở hộp In; không đưa lên shell global. */
+    viewerSelectedPageIndices: number[];
     viewerThumbMenuOpen: boolean;
     viewerThumbWidth: number;
     viewerPageDimMm: { w: number; h: number } | null;
@@ -307,6 +309,7 @@ export interface WorkspaceState {
     setViewerPageDisplayMode: (mode: 'single_fit' | 'single_scroll' | 'two_fit' | 'two_scroll') => void;
     setViewerActivePage: (page: number) => void;
     setViewerNumPages: (n: number) => void;
+    setViewerSelectedPageIndices: (indices: number[]) => void;
     setViewerThumbMenuOpen: (v: boolean) => void;
     setViewerThumbWidth: (width: number) => void;
     setViewerPageDimMm: (dim: { w: number; h: number } | null) => void;
@@ -413,6 +416,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     viewerPageDisplayMode: 'single_fit',
     viewerActivePage: 1,
     viewerNumPages: 0,
+    viewerSelectedPageIndices: [],
     viewerThumbMenuOpen: false,
     viewerThumbWidth: 256,
     viewerPageDimMm: null,
@@ -425,6 +429,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
             file,
             selectionFileId: sameFile ? state.selectionFileId : '',
             selectionDocumentIdentity: sameFile ? state.selectionDocumentIdentity : '',
+            viewerSelectedPageIndices: sameFile ? state.viewerSelectedPageIndices : [],
             detectedShapeType: null,
             detectedShapeParams: null,
             detectedShapesByPage: {},
@@ -803,6 +808,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     setViewerPageDisplayMode: (mode) => set({ viewerPageDisplayMode: mode }),
     setViewerActivePage: (page) => set({ viewerActivePage: page }),
     setViewerNumPages: (n) => set({ viewerNumPages: n }),
+    setViewerSelectedPageIndices: (indices) => set({ viewerSelectedPageIndices: [...indices] }),
     setViewerThumbMenuOpen: (v) => set({ viewerThumbMenuOpen: v }),
     setViewerThumbWidth: (w) => set({ viewerThumbWidth: w }),
     setViewerPageDimMm: (dim) => set({ viewerPageDimMm: dim }),

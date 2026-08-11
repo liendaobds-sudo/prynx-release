@@ -119,17 +119,9 @@ function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
       className="h-10 w-full bg-[#f0f0f0] dark:bg-[#121212] flex items-center justify-between select-none z-[900] shrink-0 transition-colors"
     >
       <div
-        onPointerDown={(e) => {
-          // UIUX (audit 2026-07-27 §A-10) fix-verify: nhấn thứ 2 của double-click không được mở
-          // move-loop startDragging (nuốt mouseup, race với toggle built-in của Tauri)
-          if (e.detail > 1) return;
-          if (e.buttons === 1 || e.button === 0) {
-            getCurrentWindow().startDragging();
-          }
-        }}
-        // UIUX (audit 2026-07-27 §A-10) fix-verify: BỎ onDoubleClick toggleMaximize — div này có
-        // data-tauri-drag-region nên drag.js built-in của Tauri v2 đã bắt mousedown detail===2
-        // và tự toggleMaximize; thêm handler JS nữa gây double-toggle race.
+        // UIUX (feedback 2026-08-11 §WINDOW.RESTORE): chỉ dùng MỘT đường kéo native.
+        // `data-tauri-drag-region` đã tự xử lý kéo/double-click; gọi thêm startDragging()
+        // trên pointerdown tạo hai move-loop cạnh tranh và có thể kẹt cửa sổ ở minimized.
         data-tauri-drag-region
         className="flex items-center gap-2 pl-6 flex-1 h-full"
       >

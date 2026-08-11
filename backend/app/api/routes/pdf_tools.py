@@ -39,6 +39,12 @@ from app.api.routes.combine_jobs import (
 )
 from app.core.license_guard import require_license, require_feature, enforce_feature
 from app.core.sticker_cutline_policy import resolve_sticker_corner_policy
+from app.core.upscale_policy import (
+    icc_data_colorspace as _icc_data_colorspace,
+    upscale_memory_budget_mb as _upscale_memory_budget_mb,
+    upscale_output_dpi as _upscale_output_dpi,
+    validate_upscale_memory as _validate_upscale_memory,
+)
 from app.config import settings
 from app.utils.errors import raise_http
 from app.utils.file_handler import ALLOWED_EXTENSIONS, save_upload_file
@@ -47,7 +53,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/pdf-tools", tags=["PDF Tools"], dependencies=[Depends(require_license)])
 router.include_router(combine_jobs_router)
-
 # Xếp hàng job tạo viền bế / bù xén khi in liên tục. Mỗi job peak RAM cao
 # (raster 300 DPI × workers); chạy chồng chéo dễ OOM. Mặc định 1 job/lúc
 # (desktop in ấn). Override: PRYNX_MAX_STICKER_JOBS.
@@ -58,84 +63,6 @@ _MAX_CONCURRENT_STICKER = max(
     1, int(os.environ.get("PRYNX_MAX_STICKER_JOBS", "1") or "1")
 )
 _STICKER_JOB_SEMAPHORE = threading.BoundedSemaphore(_MAX_CONCURRENT_STICKER)
-
-
-def _validate_upscale_memory(width: int, height: int) -> None:
-    """Từ chối sớm nếu pipeline x4 chắc chắn vượt RAM vật lý còn trống.
-
-    Model luôn suy luận x4, kể cả đầu ra người dùng chọn x2. Ước lượng gồm mảng
-    float32 đầu ra, ảnh uint8 và vùng làm việc khi ghép tile. Đây là chốt an toàn
-    theo RAM khả dụng, không phải hard-cap kích thước: máy mạnh vẫn được chạy hết.
-    """
-    from app.core.system_memory import read_memory_status_mb
-
-    if width <= 0 or height <= 0:
-        raise HTTPException(status_code=400, detail="Kích thước ảnh không hợp lệ")
-
-    model_output_pixels = width * height * 16
-    estimated_peak_mb = model_output_pixels * 20 / (1024 * 1024)
-    _total_mb, available_mb = read_memory_status_mb()
-    if available_mb is None:
-        return
-
-    # PERF (audit 2026-07-28 §UP-01/07): dùng RAM còn trống thực tế thay vì cap
-    # 2.000 px cho mọi máy. Chừa ít nhất 1 GiB cho hệ điều hành và WebView.
-    usable_mb = max(0.0, available_mb - 1024.0) * 0.70
-    if estimated_peak_mb > usable_mb:
-        output_w, output_h = width * 4, height * 4
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"Ảnh {width}×{height} px cần khoảng {estimated_peak_mb / 1024:.1f} GB RAM "
-                f"để xử lý AI (trung gian {output_w}×{output_h} px), nhưng máy hiện "
-                "không còn đủ bộ nhớ. Hãy đóng bớt ứng dụng hoặc dùng ảnh nhỏ hơn."
-            ),
-        )
-
-
-def _upscale_output_dpi(source_dpi: object, scale_factor: int) -> tuple[float, float]:
-    """Tăng mật độ điểm ảnh để kích thước vật lý không đổi sau Upscale.
-
-    Ảnh không khai DPI được workspace hiểu là 72 DPI (`imageNormalizer.ts`), nên
-    đầu ra x2/x4 phải là 144/288 DPI. Giữ DPI cũ sẽ biến 8000 px thành 8000 pt và
-    buộc viewer dựng raster 10667 px ở 96 DPI.
-    """
-    dpi_x = dpi_y = 72.0
-    try:
-        if isinstance(source_dpi, (tuple, list)) and len(source_dpi) >= 2:
-            candidate_x = float(source_dpi[0])
-            candidate_y = float(source_dpi[1])
-            if math.isfinite(candidate_x) and candidate_x > 0:
-                dpi_x = candidate_x
-            if math.isfinite(candidate_y) and candidate_y > 0:
-                dpi_y = candidate_y
-        elif source_dpi is not None:
-            candidate = float(source_dpi)
-            if math.isfinite(candidate) and candidate > 0:
-                dpi_x = dpi_y = candidate
-    except (TypeError, ValueError, OverflowError):
-        pass
-    return dpi_x * scale_factor, dpi_y * scale_factor
-
-
-def _icc_data_colorspace(icc_bytes: bytes | None) -> str | None:
-    """Đọc colorspace từ ICC profile header (4 byte tại offset 16).
-
-    SECURITY (audit 2026-08-10 §UP.X.05): model AI luôn trả RGB. Nếu source có ICC
-    Gray/LAB mà vẫn gắn nguyên lên output RGB thì native PDF từ chối và fallback
-    mất ICC im lặng. Phải phát hiện sớm để chuyển đổi hoặc bỏ ICC + cảnh báo.
-    """
-    if not icc_bytes or len(icc_bytes) < 20:
-        return None
-    sig = icc_bytes[16:20]
-    mapping = {
-        b'RGB ': 'RGB',
-        b'GRAY': 'GRAY',
-        b'Lab ': 'LAB',
-        b'CMYK': 'CMYK',
-        b'XYZ ': 'XYZ',
-    }
-    return mapping.get(sig)
 
 
 def _plan_background_work_size(width: int, height: int) -> tuple[tuple[int, int], list[str]]:
@@ -1574,6 +1501,52 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             engine = StickerEngine(dpi=300)
             engine_started = time.perf_counter()
             with _sticker_job_slot(job_id):
+                approved_contour_overrides = None
+                use_single_ai_contour = (
+                    do_remove_bg
+                    and not do_rectangle_mode
+                    and cut_mode != "none"
+                    and selected_objects_by_page is None
+                    and shape_mode in {"auto_safe", "contour"}
+                )
+                if use_single_ai_contour:
+                    from app.workers.sticker_source_inspector import (
+                        StickerSourceInspectionError,
+                    )
+                    from app.workers.sticker_source_pipeline import (
+                        StickerSourcePipelineError,
+                        build_legacy_single_page_approved_contour,
+                    )
+
+                    try:
+                        approved = build_legacy_single_page_approved_contour(
+                            source_path,
+                            cut_mode=cut_mode,
+                            offset_mm=offset_mm,
+                            bleed_mm=bleed_mm,
+                            corner_style=corner_style,
+                            fill_holes=do_fill_holes,
+                        )
+                    except (
+                        StickerSourceInspectionError,
+                        StickerSourcePipelineError,
+                    ) as exc:
+                        raise HTTPException(status_code=422, detail=str(exc)) from exc
+                    if approved is not None:
+                        approved_contour_overrides = {
+                            0: {
+                                "alpha": approved.alpha,
+                                "dpi": approved.dpi,
+                                "source_pixel_mm": approved.source_pixel_mm,
+                                "boundary_source": approved.boundary_source,
+                                "path_groups": approved.path_groups,
+                            }
+                        }
+                        logger.info(
+                            "[STICKER] page=1 dùng contour %s đã duyệt; "
+                            "giữ nguyên PDF gốc, không tách nhiều tem",
+                            approved.boundary_source,
+                        )
                 success, meta = engine.process_pdf(
                     input_path=source_path,
                     output_path=output_path,
@@ -1595,6 +1568,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                     selected_objects_by_page=selected_objects_by_page,
                     process_pages=process_pages,
                     alpha_corner_policy=adaptive_corner_policy,
+                    approved_contour_overrides=approved_contour_overrides,
                 )
             engine_seconds = time.perf_counter() - engine_started
             if not success or not os.path.exists(output_path):
@@ -1905,6 +1879,7 @@ async def upscale_endpoint(
     Hỗ trợ model general (nhanh) và quality (RRDBNet). Giữ alpha nếu ảnh có.
     """
     from app.core.heavy_job_scheduler import (
+        HeavyJobMemoryUnavailable,
         HeavyJobQueueCancelled,
         run_scheduled_in_threadpool,
     )
@@ -1948,6 +1923,7 @@ async def upscale_endpoint(
         "artifact_lease": "",
     }
     cancel_event = threading.Event()
+    input_dimensions: tuple[int, int] | None = None
 
     async def _watch_disconnect() -> None:
         while not cancel_event.is_set():
@@ -1981,9 +1957,13 @@ async def upscale_endpoint(
 
         _checkpoint()
         with Image.open(source_path) as img:
-            # PERF (audit 2026-07-28 §UP-01/07): đọc kích thước từ header và kiểm
-            # RAM trước img.load(), không giải nén ảnh cực lớn rồi mới giới hạn.
-            _validate_upscale_memory(img.width, img.height)
+            # STABILITY (audit 2026-08-11 §US.04): reservation đã lấy theo header
+            # trước khi vào worker. File path có thể bị phần mềm khác ghi đè giữa
+            # hai mốc; không decode nếu kích thước đã đổi và vượt reservation.
+            if input_dimensions != (img.width, img.height):
+                raise UpscaleUnavailable(
+                    "File ảnh đã thay đổi trong lúc chờ xử lý. Hãy thử lại với file hiện tại."
+                )
             # UPSCALE (audit 2026-07-29 §NET.04): chốt thời gian/GPU thuộc tầng
             # policy, cạnh chốt RAM. Trước đây hàm này là code chết nên máy thiếu
             # GPU vẫn nhận job Chất lượng và chạy hàng chục phút không lời giải thích.
@@ -2103,10 +2083,22 @@ async def upscale_endpoint(
     from app.workers.realesrgan_engine import UpscaleCancelled, UpscaleUnavailable
 
     try:
+        # Chỉ đọc header trong threadpool thường; không giữ heavy slot và không
+        # giải nén raster. Peak nhận được sẽ được reservation trước worker thật.
+        from starlette.concurrency import run_in_threadpool as run_standard_threadpool
+
+        def _read_upscale_dimensions() -> tuple[int, int]:
+            with Image.open(source_path) as source_image:
+                return source_image.width, source_image.height
+
+        input_dimensions = await run_standard_threadpool(_read_upscale_dimensions)
+        estimated_peak_mb = _validate_upscale_memory(*input_dimensions)
         await run_scheduled_in_threadpool(
             "upscale",
             _process_upscale,
             queue_cancelled=cancel_event.is_set,
+            memory_required_mb=estimated_peak_mb,
+            memory_budget_provider=_upscale_memory_budget_mb,
         )
         if cancel_event.is_set():
             raise UpscaleCancelled("Tác vụ Upscale đã bị hủy.")
@@ -2145,6 +2137,14 @@ async def upscale_endpoint(
         _cleanup_working_pdf_artifact()
         logger.info("upscale bị chặn trước khi chạy: %s", e)
         raise HTTPException(status_code=422, detail=str(e)) from e
+    except HeavyJobMemoryUnavailable as e:
+        _cleanup_file(output_path)
+        _cleanup_working_pdf_artifact()
+        logger.info("upscale chờ RAM nhưng ngân sách đã giảm: %s", e)
+        raise HTTPException(
+            status_code=422,
+            detail=f"{e} Hãy chờ tác vụ đang chạy xong hoặc đóng bớt ứng dụng rồi thử lại.",
+        ) from e
     except Exception as e:
         _cleanup_file(output_path)
         _cleanup_working_pdf_artifact()

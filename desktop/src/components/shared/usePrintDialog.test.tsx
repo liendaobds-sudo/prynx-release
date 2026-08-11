@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
     cancelPrintJob: vi.fn(),
     choosePrinterOutputPath: vi.fn(),
     getFileArrayBuffer: vi.fn(),
+    pdfGetDocument: vi.fn(),
 }));
 
 vi.mock('../../lib/nativePrint', () => ({
@@ -45,7 +46,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 vi.mock('react-pdf', () => ({
     pdfjs: {
         GlobalWorkerOptions: { workerSrc: '' },
-        getDocument: vi.fn(),
+        getDocument: mocks.pdfGetDocument,
     },
 }));
 
@@ -69,7 +70,13 @@ function deferred<T>() {
     return { promise, resolve, reject };
 }
 
-function Harness() {
+interface HarnessProps {
+    numPages?: number;
+    initialPage?: number;
+    selectedPages?: number[];
+}
+
+function Harness({ numPages = 1, initialPage, selectedPages }: HarnessProps) {
     const { openPrintDialog, printDialog } = usePrintDialog();
     const [result, setResult] = useState('pending');
     return (
@@ -79,7 +86,9 @@ function Harness() {
                 onClick={() => {
                     void openPrintDialog({
                         source: new Blob(['pdf'], { type: 'application/pdf' }),
-                        numPages: 1,
+                        numPages,
+                        initialPage,
+                        selectedPages,
                     }).then(value => setResult(String(value)));
                 }}
             >
@@ -112,6 +121,7 @@ describe('usePrintDialog lifecycle', () => {
 
     afterEach(() => {
         cleanup();
+        vi.restoreAllMocks();
         delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     });
 
@@ -232,6 +242,101 @@ describe('usePrintDialog lifecycle', () => {
             direct.resolve(true);
             await direct.promise;
         });
+    });
+
+    it('cho phép xóa rồi nhập danh sách 27-28,30-33 và gửi đúng sáu trang', async () => {
+        mocks.printPdfDirect.mockResolvedValue(true);
+
+        render(<Harness numPages={40} />);
+        fireEvent.click(screen.getByRole('button', { name: 'open' }));
+        fireEvent.click(await screen.findByRole('radio', { name: 'pages_range' }));
+
+        const input = screen.getByRole('textbox', { name: 'pages_list_label' }) as HTMLInputElement;
+        fireEvent.change(input, { target: { value: '' } });
+        expect(input.value).toBe('');
+        expect((screen.getByRole('button', { name: 'print' }) as HTMLButtonElement).disabled).toBe(true);
+
+        fireEvent.change(input, { target: { value: '27-28,30-33' } });
+        expect(input.value).toBe('27-28,30-33');
+        const printButton = screen.getByRole('button', { name: 'print' }) as HTMLButtonElement;
+        expect(printButton.disabled).toBe(false);
+        fireEvent.click(printButton);
+
+        await waitFor(() => expect(mocks.printPdfDirect).toHaveBeenCalledTimes(1));
+        expect(mocks.printPdfDirect).toHaveBeenCalledWith(expect.objectContaining({
+            fromPage: 27,
+            toPage: 33,
+            pages: [27, 28, 30, 31, 32, 33],
+        }));
+    });
+
+    it('dùng đúng trang workspace làm Trang hiện tại', async () => {
+        mocks.printPdfDirect.mockResolvedValue(true);
+        mocks.getFileArrayBuffer.mockResolvedValue(new ArrayBuffer(8));
+        vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+            scale: vi.fn(),
+            fillRect: vi.fn(),
+            strokeRect: vi.fn(),
+            setLineDash: vi.fn(),
+        } as never);
+        mocks.pdfGetDocument.mockReturnValue({
+            promise: Promise.resolve({
+                numPages: 40,
+                getPage: vi.fn().mockRejectedValue(new Error('raster failed')),
+                destroy: vi.fn().mockResolvedValue(undefined),
+            }),
+        });
+
+        render(<Harness numPages={40} initialPage={27} />);
+        fireEvent.click(screen.getByRole('button', { name: 'open' }));
+        await waitFor(() => expect(mocks.pdfGetDocument).toHaveBeenCalledTimes(1));
+        await screen.findByText('preview_failed');
+        fireEvent.click(await screen.findByRole('radio', { name: 'pages_current' }));
+        fireEvent.click(screen.getByRole('button', { name: 'print' }));
+
+        await waitFor(() => expect(mocks.printPdfDirect).toHaveBeenCalledTimes(1));
+        expect(mocks.printPdfDirect).toHaveBeenCalledWith(expect.objectContaining({
+            fromPage: 27,
+            toPage: 27,
+            pages: null,
+        }));
+    });
+
+    it('in đúng snapshot thumbnail đang chọn', async () => {
+        mocks.printPdfDirect.mockResolvedValue(true);
+        const selectedPages = [27, 28, 30, 31, 32, 33];
+
+        render(<Harness numPages={40} initialPage={27} selectedPages={selectedPages} />);
+        fireEvent.click(screen.getByRole('button', { name: 'open' }));
+        fireEvent.click(await screen.findByRole('radio', { name: 'pages_selected' }));
+        fireEvent.click(screen.getByRole('button', { name: 'print' }));
+
+        await waitFor(() => expect(mocks.printPdfDirect).toHaveBeenCalledTimes(1));
+        expect(mocks.printPdfDirect).toHaveBeenCalledWith(expect.objectContaining({
+            fromPage: 27,
+            toPage: 33,
+            pages: selectedPages,
+        }));
+    });
+
+    it('giữ danh sách rời rạc khi người dùng thử hộp thoại Windows', async () => {
+        mocks.printPdfDirect.mockRejectedValue(new Error('driver stopped'));
+        mocks.printPdfPath.mockResolvedValue(true);
+
+        render(<Harness numPages={40} />);
+        fireEvent.click(screen.getByRole('button', { name: 'open' }));
+        fireEvent.click(await screen.findByRole('radio', { name: 'pages_range' }));
+        fireEvent.change(screen.getByRole('textbox', { name: 'pages_list_label' }), {
+            target: { value: '27-28,30-33' },
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'print' }));
+
+        expect(await screen.findByText('job_failed:driver stopped')).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: 'try_system_dialog' }));
+        await waitFor(() => expect(mocks.printPdfPath).toHaveBeenCalledTimes(1));
+        expect(mocks.printPdfPath).toHaveBeenCalledWith(expect.objectContaining({
+            pages: [27, 28, 30, 31, 32, 33],
+        }));
     });
 });
 

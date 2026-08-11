@@ -141,6 +141,19 @@ def test_memory_guard_reports_instead_of_silently_resizing(monkeypatch):
         raise AssertionError("Ảnh vượt RAM phải bị từ chối minh bạch")
 
 
+def test_memory_guard_returns_peak_for_atomic_reservation(monkeypatch):
+    """§US.04: route phải nhận đúng peak để scheduler đặt chỗ trước khi decode."""
+
+    monkeypatch.setattr(
+        "app.core.system_memory.read_memory_status_mb",
+        lambda: (32 * 1024.0, 24 * 1024.0),
+    )
+    from app.api.routes.pdf_tools import _validate_upscale_memory
+
+    expected_mb = 2000 * 1500 * 16 * 20 / (1024 * 1024)
+    assert _validate_upscale_memory(2000, 1500) == pytest.approx(expected_mb)
+
+
 def test_route_calls_runtime_guard_before_inference(monkeypatch):
     """§NET.04: `guard_runtime` từng là code chết — chốt lại là route PHẢI gọi nó."""
     calls: list[tuple[int, int, str]] = []
@@ -162,6 +175,39 @@ def test_route_calls_runtime_guard_before_inference(monkeypatch):
 
     assert response.status_code == 200, response.text
     assert calls == [(7, 5, "quality")]
+
+
+def test_route_reserves_estimated_memory_before_inference(monkeypatch):
+    """§US.04: peak từ header phải đi vào scheduler trước khi worker decode."""
+
+    from app.core import heavy_job_scheduler as scheduler
+    from app.api.routes import pdf_tools
+
+    captured: dict[str, object] = {}
+
+    async def _scheduled(kind, function, *args, **kwargs):
+        captured.update(kind=kind, kwargs=kwargs)
+        return function(*args)
+
+    monkeypatch.setattr(scheduler, "run_scheduled_in_threadpool", _scheduled)
+    monkeypatch.setattr(pdf_tools, "_validate_upscale_memory", lambda _w, _h: 123.5)
+    monkeypatch.setattr("app.workers.realesrgan_engine.guard_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr("app.workers.realesrgan_engine.upscale", _fake_upscale)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/pdf-tools/upscale",
+            files={"file": ("anh.png", _png_bytes(), "image/png")},
+            data={"engine": "general", "scale_factor": "2"},
+        )
+
+    assert response.status_code == 200, response.text
+    assert captured["kind"] == "upscale"
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["memory_required_mb"] == 123.5
+    assert kwargs["memory_budget_provider"] is pdf_tools._upscale_memory_budget_mb
+    assert callable(kwargs["queue_cancelled"])
 
 
 def test_runtime_guard_message_reaches_client_as_422(monkeypatch):
@@ -379,6 +425,80 @@ def test_quality_model_does_not_fall_back_silently_to_cpu(monkeypatch):
         assert "chế độ Nhanh" in str(exc)
     else:
         raise AssertionError("GPU lỗi phải được báo ngay cho chế độ Chất lượng")
+
+
+def test_general_gpu_fallback_releases_native_session_before_cpu_create(monkeypatch):
+    """§US.03: không được giữ GPU session lỗi trong lúc dựng CPU session mới."""
+
+    from app.workers import realesrgan_engine as engine
+    import numpy as np
+
+    events: list[str] = []
+
+    class _FailingGpuSession:
+        def __init__(self):
+            self._native = object()
+
+        @property
+        def _sess(self):
+            return self._native
+
+        @_sess.setter
+        def _sess(self, value):
+            if value is None:
+                events.append("native-cleared")
+            self._native = value
+
+        def close(self):
+            events.append("gpu-closed")
+
+        def get_inputs(self):
+            return [type("Input", (), {"name": "input"})()]
+
+        def get_providers(self):
+            return ["DmlExecutionProvider", "CPUExecutionProvider"]
+
+        def run(self, *_args, **_kwargs):
+            events.append("gpu-run")
+            raise RuntimeError("GPU OOM")
+
+    class _CpuSession:
+        def get_inputs(self):
+            return [type("Input", (), {"name": "input"})()]
+
+        def get_providers(self):
+            return ["CPUExecutionProvider"]
+
+        def run(self, _outputs, inputs):
+            events.append("cpu-run")
+            return [next(iter(inputs.values()))]
+
+    failed = _FailingGpuSession()
+
+    def _create_session(_path, providers):
+        assert providers == ["CPUExecutionProvider"]
+        events.append("cpu-created")
+        return _CpuSession()
+
+    monkeypatch.setattr(engine, "_sessions", {"general": failed})
+    monkeypatch.setattr(engine, "_cpu_only_variants", set())
+    monkeypatch.setattr(engine, "_force_cpu_by_env", False)
+    monkeypatch.setattr(engine, "_resolve_model_path", lambda _variant: "model.onnx")
+    monkeypatch.setattr(engine, "_create_session", _create_session)
+    monkeypatch.setattr(engine.gc, "collect", lambda: events.append("gc"))
+
+    tile = np.zeros((1, 3, 8, 8), dtype=np.float32)
+    result = engine._run_session("general", tile)
+
+    assert result.shape == tile.shape
+    assert events == [
+        "gpu-run",
+        "gpu-closed",
+        "native-cleared",
+        "gc",
+        "cpu-created",
+        "cpu-run",
+    ]
 
 
 def test_quality_model_rejects_implicit_cpu_session(monkeypatch):
