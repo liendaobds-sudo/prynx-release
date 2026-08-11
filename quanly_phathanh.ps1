@@ -15,7 +15,30 @@ $cfg = @{ Repo = ""; Version = "1.0.1" }
 if (Test-Path $CONFIG) {
     try { $j = Get-Content $CONFIG -Raw | ConvertFrom-Json; if ($j.Repo) { $cfg.Repo = $j.Repo }; if ($j.Version) { $cfg.Version = $j.Version } } catch {}
 }
-function Save-Config { @{ Repo = $txtRepo.Text; Version = $txtVer.Text } | ConvertTo-Json | Set-Content $CONFIG -Encoding utf8 }
+function Save-Config {
+    # BUILD (audit 2026-08-12 REL.GUI): chỉ cập nhật trường do GUI sở hữu; giữ nguyên
+    # SourceRepo/ReleaseTargetCommit và mọi trường xác thực phát hành trong tương lai.
+    if (-not (Test-Path -LiteralPath $CONFIG -PathType Leaf)) {
+        throw "Không tìm thấy cấu hình phát hành: $CONFIG"
+    }
+    try {
+        $saved = Get-Content -LiteralPath $CONFIG -Raw | ConvertFrom-Json
+    } catch {
+        throw "Không đọc được cấu hình phát hành: $CONFIG"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$saved.SourceRepo) -or
+        [string]::IsNullOrWhiteSpace([string]$saved.ReleaseTargetCommit)) {
+        throw "Cấu hình phát hành thiếu SourceRepo hoặc ReleaseTargetCommit."
+    }
+    $repo = $txtRepo.Text.Trim()
+    $version = $txtVer.Text.Trim()
+    if ([string]$saved.Repo -eq $repo -and [string]$saved.Version -eq $version) {
+        return
+    }
+    $saved.Repo = $repo
+    $saved.Version = $version
+    $saved | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $CONFIG -Encoding utf8
+}
 
 # ---- NGUON CHAN LY DUY NHAT: suy repo phat hanh tu endpoint updater trong tauri.conf.json ----
 # Khong cho go tay (tranh phat hanh nham repo -> client khong nhan update).
