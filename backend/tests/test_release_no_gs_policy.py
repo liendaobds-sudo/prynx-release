@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+import runpy
 from pathlib import Path
 
 import pytest
@@ -391,6 +392,23 @@ def test_release_scripts_parse_under_windows_powershell(script):
 
 NOTICE = REPO / "THIRD_PARTY_NOTICES.md"
 COMPONENTS = REPO / "scripts" / "bundled_components.json"
+
+
+def test_notice_generator_khong_ghi_lai_khi_chi_doi_ngay(tmp_path: Path):
+    """BUILD (audit 2026-08-11 §REL.PROVENANCE): ngày build không làm source dirty."""
+    generator = runpy.run_path(str(NOTICE_GENERATOR), run_name="prynx_notice_test")
+    write_if_changed = generator["_write_notice_if_changed"]
+    out = tmp_path / "THIRD_PARTY_NOTICES.md"
+    old = "header\n*Sinh tự động ngày 2026-08-06 bằng generator.*\npayload-a\n"
+    same_payload = "header\n*Sinh tự động ngày 2026-08-11 bằng generator.*\npayload-a\n"
+    changed_payload = "header\n*Sinh tự động ngày 2026-08-11 bằng generator.*\npayload-b\n"
+
+    out.write_text(old, encoding="utf-8")
+    assert write_if_changed(out, same_payload) is False
+    assert out.read_text(encoding="utf-8") == old
+
+    assert write_if_changed(out, changed_payload) is True
+    assert out.read_text(encoding="utf-8") == changed_payload
 
 
 def _native_components() -> list[dict]:

@@ -47,6 +47,26 @@ OWN_CRATES = {"pdfcompare_native", "print_engine", "imposition_core", "pdf-inspe
 COPYLEFT_MARKERS = ("AGPL", "GPL-2", "GPL-3", "SSPL", "CC-BY-SA")
 # MPL/LGPL/EPL: copyleft yếu — nghĩa vụ chỉ phát sinh khi SỬA source thư viện.
 WEAK_COPYLEFT_MARKERS = ("MPL", "LGPL", "EPL", "CDDL")
+_GENERATED_DATE_PREFIX = "*Sinh tự động ngày "
+
+
+def _without_generated_date(content: str) -> str:
+    """Bỏ metadata thời điểm, giữ nguyên payload pháp lý để so sánh."""
+    return "\n".join(
+        line
+        for line in content.splitlines()
+        if not line.startswith(_GENERATED_DATE_PREFIX)
+    )
+
+
+def _write_notice_if_changed(out_path: Path, content: str) -> bool:
+    """Chỉ ghi khi payload dependency đổi; ngày chạy build không làm bẩn source."""
+    if out_path.is_file():
+        old = out_path.read_text(encoding="utf-8")
+        if _without_generated_date(old) == _without_generated_date(content):
+            return False
+    out_path.write_text(content, encoding="utf-8")
+    return True
 
 
 def _is_strong_copyleft(license_text: str) -> bool:
@@ -476,18 +496,16 @@ def main() -> int:
             print(f"THIẾU {out_path.name} — chạy scripts/gen_third_party_notices.py")
             return 1
         old = out_path.read_text(encoding="utf-8")
-        # Bỏ dòng ngày để việc đổi ngày không bị coi là lệch nội dung.
-        strip = lambda t: "\n".join(  # noqa: E731
-            l for l in t.splitlines() if not l.startswith("*Sinh tự động ngày")
-        )
-        if strip(old) != strip(content):
+        if _without_generated_date(old) != _without_generated_date(content):
             print(f"{out_path.name} đã LỆCH so với phụ thuộc thực tế — chạy lại generator.")
             return 1
         print(f"{out_path.name} khớp với phụ thuộc thực tế.")
         return 0
 
-    out_path.write_text(content, encoding="utf-8")
-    print(f"Đã ghi {out_path} ({len(content.splitlines())} dòng)")
+    if _write_notice_if_changed(out_path, content):
+        print(f"Đã ghi {out_path} ({len(content.splitlines())} dòng)")
+    else:
+        print(f"{out_path.name} đã khớp payload; giữ nguyên để build không tự làm bẩn source.")
     return 0
 
 
