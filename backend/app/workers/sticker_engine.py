@@ -684,10 +684,10 @@ _BG_BAND_STRONG_DIST_RANGE = 34.0
 # làm đứt nét thật; profile pastel vẫn dùng ngưỡng bảo thủ cũ.
 _BG_BAND_STRONG_DIST_FRACTION = 0.68
 _BG_BAND_BACKGROUND_CONNECT_GRAY = 250
-# QUALITY (feedback 2026-08-11 §STICKER.PASTEL.1): chỉ được nối lại nền khi phần
-# foreground yếu là một vành JPEG rất nhỏ. Trên artwork nhiều màu, percentile mực
-# đậm của chữ/tâm không được biến nền kem, cánh hoa hồng hoặc xám nhạt thành nền.
-_BG_BAND_MAX_RECONNECT_FOREGROUND_FRACTION = 0.02
+# QUALITY (feedback 2026-08-11 §STICKER.PASTEL.1/2): chỉ được nối lại nền khi phần
+# foreground thực sự bị loại là một vành JPEG rất nhỏ. Mốc 2,1% bao ca hoa 12 cánh
+# 1.600 mm đo được 2,048%; fixture pastel bị loại 39,75% nên vẫn bị chặn rất xa.
+_BG_BAND_MAX_RECONNECT_FOREGROUND_FRACTION = 0.021
 _BG_BAND_SOURCE_DIAMETER_PX = 4.0
 
 
@@ -737,22 +737,9 @@ def _lam_mem_dai_bien(
         (dist - _BG_BAND_SOFT_DIST_MIN) * 255.0 / dist_range, 0, 255
     ).astype(np.uint8)
 
-    sampled_xam = xam[::sample_step, ::sample_step]
-    reconnect_candidates = sampled_mask & (
-        sampled_xam < _BG_BAND_BACKGROUND_CONNECT_GRAY
-    )
-    reconnect_foreground_fraction = float(
-        np.count_nonzero(reconnect_candidates) / max(1, np.count_nonzero(sampled_mask))
-    )
-    allow_strong_background_reconnect = (
-        strong_profile
-        and reconnect_foreground_fraction
-        <= _BG_BAND_MAX_RECONNECT_FOREGROUND_FRACTION
-    )
-
     contour_base = mask
     band_diameter_mm = _BG_BAND_SOFT_MM
-    if allow_strong_background_reconnect:
+    if strong_profile:
         # §NOODLE.13: mask nền trắng ngưỡng 248 có thể bị một cầu ringing rất mảnh
         # bịt kín hõm sâu. Nối nền bằng profile mực trước, rồi mới đặt biên ở mức
         # xám 127; cách này xử lý toàn hõm mà không cần kernel 24–60 px nguồn.
@@ -785,7 +772,21 @@ def _lam_mem_dai_bien(
                 # `fill_holes=false` đã tạo các vùng 0 kín trong mask đầu vào;
                 # tuyệt đối không để phép nối nền phía trên lấp chúng trở lại.
                 rebuilt[mask == 0] = 0
-                if mask_tach_duoc_nen(rebuilt):
+                # QUALITY (feedback 2026-08-11 §STICKER.PASTEL.2): đánh giá phần
+                # foreground THỰC SỰ bị phép nối nền loại bỏ, không đánh giá mọi
+                # pixel sáng trong mask. Cách cũ chặn cả ringing mảnh quanh hoa/hole
+                # hợp lệ chỉ vì artwork có nhiều vùng sáng nhưng không hề bị xóa.
+                original_foreground = int(np.count_nonzero(mask))
+                rebuilt_foreground = int(np.count_nonzero(rebuilt))
+                removed_foreground_fraction = float(
+                    max(0, original_foreground - rebuilt_foreground)
+                    / max(1, original_foreground)
+                )
+                if (
+                    removed_foreground_fraction
+                    <= _BG_BAND_MAX_RECONNECT_FOREGROUND_FRACTION
+                    and mask_tach_duoc_nen(rebuilt)
+                ):
                     contour_base = rebuilt
                     if source_mm > 0:
                         band_diameter_mm = max(
