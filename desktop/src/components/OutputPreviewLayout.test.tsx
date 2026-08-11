@@ -9,6 +9,7 @@ import {
 } from './imposition-tools/useImposerSettingsStore';
 import { createWorkspaceStore, WorkspaceContext } from '../stores/useWorkspaceStore';
 import { useAppSettingsStore } from '../stores/appSettingsStore';
+import { useAuthStore } from '../stores/useAuthStore';
 
 const apiMocks = vi.hoisted(() => ({
     authenticatedFetch: vi.fn(),
@@ -61,6 +62,9 @@ function jsonResponse(data: unknown) {
 
 describe('Output Preview — thứ tự workflow Acrobat', () => {
     beforeEach(() => {
+        // TEST (audit 2026-08-11 §REL.QA.ENTITLEMENT): Output Preview là luồng Pro.
+        // Khai báo quyền tường minh để test không phụ thuộc feature gate dev/release.
+        useAuthStore.setState({ licensePlan: 'pro', licenseFeatures: null });
         useAppSettingsStore.setState({ isWorkspaceSidebarOpen: false, toolMenuWidth: 240 });
         vi.stubGlobal('Worker', OutputPreviewWorkerMock);
         const OriginalUrl = globalThis.URL;
@@ -142,6 +146,7 @@ describe('Output Preview — thứ tự workflow Acrobat', () => {
     });
 
     afterEach(() => {
+        useAuthStore.setState({ licensePlan: 'free', licenseFeatures: null });
         vi.unstubAllGlobals();
     });
 
