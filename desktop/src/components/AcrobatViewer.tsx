@@ -28,6 +28,7 @@ import {
 } from '../hooks/viewer/useTileRenderer';
 import { useViewerHotkeys } from '../hooks/viewer/useViewerHotkeys';
 import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
+import { usePhysicalDisplayScale } from '../hooks/viewer/usePhysicalDisplayScale';
 import { useViewerZoom } from '../hooks/viewer/useViewerZoom';
 import { useVdpHistory } from '../hooks/useVdpHistory';
 import { useWorkingPdf } from '../hooks/useWorkingPdf'; // EXPORT (audit 2026-07-30 §IMG-04)
@@ -101,6 +102,11 @@ interface Props {
 
 export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onDocumentUndo, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, pageOverlay, pageOverlayPage = 1, pageWorkflowStatuses, onViewerDirtyChange, editSession }: Props) {
   const { t } = useTranslation();
+    const {
+        scale: physicalDisplayScale,
+        rawDpi: physicalRawDpi,
+        devicePixelRatio: physicalDisplayDpr,
+    } = usePhysicalDisplayScale();
     // ═══ Global Store ═══
     const {
         file, setFile, pdfUrl, setPdfUrl, bleedView, highlightedIssue,
@@ -446,6 +452,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         pageBackgroundRgb: viewerPageBackgroundRgb,
         viewerEngineMode,
         viewerShadowEnabled,
+        accurateDpiAnchor: physicalRawDpi,
         renderDocumentToken: loaderRenderDocumentToken,
     });
 
@@ -556,6 +563,11 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     // ═══ Derived Values ═══
     const actualWidth100 = pageWidthPt * (96 / 72);
+    // UIUX (feedback 2026-08-11 §VIEW.ACTUAL-SIZE): `zoom` là số % user nhìn thấy;
+    // chỉ zoom render/layout nhân hiệu chỉnh màn hình. pageDim vẫn px@96 để
+    // DIM/VDP/edit và mọi hệ point/mm không bị đổi hợp đồng.
+    const effectiveZoom = zoom * physicalDisplayScale;
+    const calibratedActualWidth100 = actualWidth100 * physicalDisplayScale;
 
     // Lưu kích thước trang vào store để công cụ VDP căn chỉnh theo trang.
     // QUAN TRỌNG: field.x/y/width/height ở đơn vị "CSS-mm" (mm thật × 96/72), KHÔNG phải mm thật.
@@ -667,14 +679,14 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         onDocumentUndo,
         onEditUndo: () => {
             if (!editSession?.canUndo) return objectEdit.undo();
-            const cssScale = pageDim?.w ? (actualWidth100 * zoom) / (pageDim.w * 72 / 96) : 2;
+            const cssScale = pageDim?.w ? (actualWidth100 * effectiveZoom) / (pageDim.w * 72 / 96) : 2;
             const dpr = window.devicePixelRatio || 1;
             void editSession.undo(Math.max(0.5, cssScale * dpr));
             return true;
         },
         onEditRedo: () => {
             if (!editSession?.canRedo) return objectEdit.redo();
-            const cssScale = pageDim?.w ? (actualWidth100 * zoom) / (pageDim.w * 72 / 96) : 2;
+            const cssScale = pageDim?.w ? (actualWidth100 * effectiveZoom) / (pageDim.w * 72 / 96) : 2;
             const dpr = window.devicePixelRatio || 1;
             void editSession.redo(Math.max(0.5, cssScale * dpr));
             return true;
@@ -692,7 +704,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     } = useViewerZoom({
         containerRef, sidebarRef, internalScrollRef,
         numPages, zoom, setZoom, fitMode, setFitMode: setFitMode as (m: string) => void,
-        pageDim, pageDisplayMode, setPageDisplayMode: setPageDisplayMode as (m: string) => void, activePage, actualWidth100,
+        pageDim, pageDisplayMode, setPageDisplayMode: setPageDisplayMode as (m: string) => void, activePage, actualWidth100: calibratedActualWidth100,
         navigatePage, toolMode,
     });
 
@@ -1671,7 +1683,10 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                         viewerPageNum={viewerPagePosition}
                         pageInstanceId={instId || `page-${originalPageNum}-${flatIndex ?? 0}`}
                         actualWidth100={localWidth100}
-                        zoom={zoom}
+                        zoom={effectiveZoom}
+                        physicalDisplayScale={physicalDisplayScale}
+                        displayDevicePixelRatio={physicalDisplayDpr}
+                        accurateDpiAnchor={physicalRawDpi ?? 96}
                         rotation={rot}
                         bleedView={bleedView}
                         pageDim={localDim}
@@ -1712,7 +1727,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 </div>
             </div>
         );
-    }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, zoom, bleedView, highlightBoxes, isVdpMode, getTileUrl, renderOwnerId, renderDocumentToken, cancelAccurateGroup, accurateColorEnabled, accurateColorPages, viewerSimulationProfileId, viewerSimulationIntent, viewerOutputPreviewProofIdentity, viewerEngineMode, handleActivePageRenderReady, accuratePrefetchReady, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage, tabId, isActive, pageOverlay, pageOverlayPage]);
+    }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, effectiveZoom, physicalDisplayScale, physicalDisplayDpr, physicalRawDpi, bleedView, highlightBoxes, isVdpMode, getTileUrl, renderOwnerId, renderDocumentToken, cancelAccurateGroup, accurateColorEnabled, accurateColorPages, viewerSimulationProfileId, viewerSimulationIntent, viewerOutputPreviewProofIdentity, viewerEngineMode, handleActivePageRenderReady, accuratePrefetchReady, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage, tabId, isActive, pageOverlay, pageOverlayPage]);
 
     // Kiểm tra loadError SAU khi mọi hook đã được gọi (xem ghi chú ở đầu component).
     if (loadError) {
@@ -1938,8 +1953,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                             {showRulers && (
                                 <>
                                     {/* UIUX (audit 2026-07-27 §C-04): onCycleUnit — chuột phải lên thước đổi đơn vị mm→cm→inch */}
-                                    <Ruler orientation="vertical" scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} zoom={zoom} unit={measurementUnit} onMouseDown={handleRulerMouseDown} pageAnchorId={`pdf-page-container-${activePage}`} onCycleUnit={cycleMeasurementUnit} isActive={isActive !== false} />
-                                    <Ruler orientation="horizontal" scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} zoom={zoom} unit={measurementUnit} onMouseDown={handleRulerMouseDown} pageAnchorId={`pdf-page-container-${activePage}`} onCycleUnit={cycleMeasurementUnit} isActive={isActive !== false} />
+                                    <Ruler orientation="vertical" scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} zoom={effectiveZoom} unit={measurementUnit} onMouseDown={handleRulerMouseDown} pageAnchorId={`pdf-page-container-${activePage}`} onCycleUnit={cycleMeasurementUnit} isActive={isActive !== false} layoutReady={isZoomReady && !suspendViewer} />
+                                    <Ruler orientation="horizontal" scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} zoom={effectiveZoom} unit={measurementUnit} onMouseDown={handleRulerMouseDown} pageAnchorId={`pdf-page-container-${activePage}`} onCycleUnit={cycleMeasurementUnit} isActive={isActive !== false} layoutReady={isZoomReady && !suspendViewer} />
                                 </>
                             )}
                             <div

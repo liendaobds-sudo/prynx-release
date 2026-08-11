@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+    computeDevicePixelSnapOffset,
+    computeViewportTileSeamSafePresentationRect,
     computeViewportTilePanGridSpecs,
     computeViewportTileCrossfadeMs,
     computeViewportTileSpec,
@@ -9,11 +11,15 @@ import {
     mapRotatedViewportToPage,
     reduceViewportTileBuffer,
     sameViewportTileSpec,
+    splitViewportTilePanGridPhases,
     type ViewportTileBufferState,
     VIEWPORT_TILE_RUNWAY_PAD,
     viewportTileBufferItems,
     viewportTileBufferGroup,
     viewportTileCoversViewport,
+    viewportTileGridCoversViewport,
+    viewportTilePanCellSize,
+    viewportTilePanPhaseKey,
     viewportTilePresentationItems,
 } from './viewportTilePolicy';
 import {
@@ -41,6 +47,43 @@ describe('viewport tile — ánh xạ khung nhìn qua phép xoay CSS', () => {
             800,
             90,
         )).toEqual({ left: 0, top: 0, right: 600, bottom: 800 });
+    });
+});
+
+describe('viewport tile — snap compositor theo device pixel', () => {
+    it.each([
+        [1, 223.453125, 395.4765625, -0.453125, -0.4765625],
+        [2, 100.24, 80.74, -0.24, -0.24],
+    ])(
+        'đưa gốc trang về lưới vật lý ở DPR %i và ổn định sau khi đã áp offset',
+        (dpr, left, top, expectedX, expectedY) => {
+            const first = computeDevicePixelSnapOffset(left, top, dpr, 0, 0);
+            expect(first.x).toBeCloseTo(expectedX, 8);
+            expect(first.y).toBeCloseTo(expectedY, 8);
+            expect((left + first.x) * dpr).toBeCloseTo(
+                Math.round((left + first.x) * dpr),
+                8,
+            );
+            expect((top + first.y) * dpr).toBeCloseTo(
+                Math.round((top + first.y) * dpr),
+                8,
+            );
+
+            const stable = computeDevicePixelSnapOffset(
+                left + first.x,
+                top + first.y,
+                dpr,
+                first.x,
+                first.y,
+            );
+            expect(stable).toEqual(first);
+        },
+    );
+
+    it('fallback DPR không hợp lệ không tạo NaN', () => {
+        const offset = computeDevicePixelSnapOffset(10.4, 20.6, 0, 0, 0);
+        expect(offset.x).toBeCloseTo(-0.4, 8);
+        expect(offset.y).toBeCloseTo(0.4, 8);
     });
 });
 
@@ -137,6 +180,169 @@ describe('viewport tile — snap, pad và TILE_MAX', () => {
             spec => spec.clipW <= 768 && spec.clipH <= 768,
         )).toBe(true);
     });
+
+    it('chọn cell 512 cho pool nhiều lane và 768 cho lane hạn chế', () => {
+        expect(viewportTilePanCellSize('full')).toBe(512);
+        expect(viewportTilePanCellSize(undefined)).toBe(512);
+        expect(viewportTilePanCellSize('mid')).toBe(768);
+        expect(viewportTilePanCellSize('low')).toBe(768);
+    });
+
+    it('đổi target viewport phải mở một pha mới dù tập cell gần chưa đổi', () => {
+        const near = [{ key: 'cell-a' }, { key: 'cell-b' }];
+        expect(viewportTilePanPhaseKey('bucket', 'target-a', near))
+            .not.toBe(viewportTilePanPhaseKey('bucket', 'target-b', near));
+        expect(viewportTilePanPhaseKey('bucket', 'target-a', [])).toBe('');
+    });
+
+    it('tách cell giao viewport để dựng trước vòng atlas ngoài', () => {
+        const viewport = { left: 700, top: 600, right: 1500, bottom: 1300 };
+        const specs = computeViewportTilePanGridSpecs({
+            rotatedViewport: viewport,
+            pageWidth: 4000,
+            pageHeight: 4000,
+            rotation: 0,
+            dpr: 1,
+            cellSize: 512,
+            maxTile: 4000,
+            tier: 'full',
+        });
+        const phases = splitViewportTilePanGridPhases(specs, viewport);
+
+        expect(phases.near.length).toBeGreaterThan(0);
+        expect(phases.outer.length).toBeGreaterThan(0);
+        expect(phases.near.every(spec => (
+            spec.cssLeft < viewport.right
+            && spec.cssLeft + spec.cssW > viewport.left
+            && spec.cssTop < viewport.bottom
+            && spec.cssTop + spec.cssH > viewport.top
+        ))).toBe(true);
+        expect(new Set([
+            ...phases.near.map(spec => spec.key),
+            ...phases.outer.map(spec => spec.key),
+        ])).toEqual(new Set(specs.map(spec => spec.key)));
+    });
+
+    it('chỉ coi atlas đã phủ khi mọi cell giao viewport đều ready và không còn khe', () => {
+        const viewport = { left: 700, top: 600, right: 1500, bottom: 1300 };
+        const specs = computeViewportTilePanGridSpecs({
+            rotatedViewport: viewport,
+            pageWidth: 4000,
+            pageHeight: 4000,
+            rotation: 0,
+            dpr: 1,
+            cellSize: 512,
+            maxTile: 4000,
+            tier: 'full',
+        });
+        const phases = splitViewportTilePanGridPhases(specs, viewport);
+        const ready = new Set(phases.near.map(spec => spec.key));
+
+        expect(viewportTileGridCoversViewport(specs, ready, viewport)).toBe(true);
+        ready.delete(phases.near[Math.floor(phases.near.length / 2)].key);
+        expect(viewportTileGridCoversViewport(specs, ready, viewport)).toBe(false);
+        expect(viewportTileGridCoversViewport(
+            specs,
+            new Set(phases.outer.map(spec => spec.key)),
+            viewport,
+        )).toBe(false);
+    });
+
+    it('không báo phủ giả khi danh sách cell ready bị hở giữa viewport', () => {
+        const viewport = { left: 0, top: 0, right: 1000, bottom: 500 };
+        const specs = [
+            { clipX: 0, clipY: 0, clipW: 400, clipH: 500, cssLeft: 0, cssTop: 0, cssW: 400, cssH: 500, key: 'left' },
+            { clipX: 600, clipY: 0, clipW: 400, clipH: 500, cssLeft: 600, cssTop: 0, cssW: 400, cssH: 500, key: 'right' },
+        ];
+
+        expect(viewportTileGridCoversViewport(
+            specs,
+            new Set(specs.map(spec => spec.key)),
+            viewport,
+        )).toBe(false);
+    });
+
+    it.each([0, 90, 180, 270])(
+        'trình bày atlas không hở đường nối ở góc xoay %i° và không vượt mép trang',
+        rotation => {
+            const pageWidth = 600;
+            const pageHeight = 800;
+            const outerWidth = rotation === 90 || rotation === 270 ? pageHeight : pageWidth;
+            const outerHeight = rotation === 90 || rotation === 270 ? pageWidth : pageHeight;
+            const rasterDpr = 1.25;
+            const presentationDpr = 2;
+            const scaleX = 1.137;
+            const scaleY = 0.923;
+            const displayWidth = pageWidth * scaleX;
+            const displayHeight = pageHeight * scaleY;
+            const specs = computeViewportTilePanGridSpecs({
+                rotatedViewport: { left: 0, top: 0, right: outerWidth, bottom: outerHeight },
+                pageWidth,
+                pageHeight,
+                rotation,
+                dpr: rasterDpr,
+                cellSize: 256,
+                maxTile: 4000,
+                tier: 'full',
+            });
+            const before = specs.map(spec => ({
+                clipX: spec.clipX,
+                clipY: spec.clipY,
+                clipW: spec.clipW,
+                clipH: spec.clipH,
+                key: spec.key,
+            }));
+            const rects = new Map(specs.map(spec => [
+                spec.key,
+                computeViewportTileSeamSafePresentationRect(
+                    spec,
+                    scaleX,
+                    scaleY,
+                    displayWidth,
+                    displayHeight,
+                    presentationDpr,
+                ),
+            ]));
+            let horizontalPairs = 0;
+            let verticalPairs = 0;
+
+            for (const spec of specs) {
+                const rect = rects.get(spec.key)!;
+                const rightNeighbor = specs.find(candidate => (
+                    candidate.clipY === spec.clipY
+                    && candidate.clipX === spec.clipX + spec.clipW
+                ));
+                if (rightNeighbor) {
+                    horizontalPairs += 1;
+                    const rightRect = rects.get(rightNeighbor.key)!;
+                    expect(rect.left + rect.width - rightRect.left)
+                        .toBeGreaterThanOrEqual((1 / presentationDpr) - 1e-6);
+                }
+                const bottomNeighbor = specs.find(candidate => (
+                    candidate.clipX === spec.clipX
+                    && candidate.clipY === spec.clipY + spec.clipH
+                ));
+                if (bottomNeighbor) {
+                    verticalPairs += 1;
+                    const bottomRect = rects.get(bottomNeighbor.key)!;
+                    expect(rect.top + rect.height - bottomRect.top)
+                        .toBeGreaterThanOrEqual((1 / presentationDpr) - 1e-6);
+                }
+                expect(rect.left + rect.width).toBeLessThanOrEqual(displayWidth + 1e-6);
+                expect(rect.top + rect.height).toBeLessThanOrEqual(displayHeight + 1e-6);
+            }
+
+            expect(horizontalPairs).toBeGreaterThan(0);
+            expect(verticalPairs).toBeGreaterThan(0);
+            expect(specs.map(spec => ({
+                clipX: spec.clipX,
+                clipY: spec.clipY,
+                clipW: spec.clipW,
+                clipH: spec.clipH,
+                key: spec.key,
+            }))).toEqual(before);
+        },
+    );
 
     it('cùng DPI bucket tạo cùng identity dù raw zoom và CSS size khác nhau', () => {
         const reuseGroup = 'file:page:accurate:rot0';

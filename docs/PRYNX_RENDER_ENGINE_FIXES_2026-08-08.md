@@ -678,3 +678,175 @@ chúng được hạ xuống `STALE` cho tới khi chạy lại bằng pixel gat
 - Theo chỉ đạo “chưa cần build”, không tạo installer và không smoke clean-user.
   Do đó `§RENDER.11` vẫn mở và chưa được phép suy thành
   `RUNTIME (installed/release)` hay chứng nhận ngang Acrobat trên mọi môi trường.
+
+## Turbo A/B — ưu tiên viewport và atlas thích nghi phần cứng (`§PAN.TURBO`)
+
+**Ngày:** 2026-08-11
+**Nguồn:** feedback runtime: pan đã liền mạch hơn nhưng thời gian tới cell nét vẫn còn dài.
+
+### Baseline và nguyên nhân
+
+- Log thật trên `CMNM2026 - Giay moi_BLUE - in.pdf` cho thấy atlas `816 DPI` phát hàng loạt
+  cell trước/cùng lúc nền accurate `144 DPI`; `sem_wait` của cell sau tăng tới **1.623 ms**,
+  trong khi `worker_queue_ms` gần 0. Nút thắt là tranh quota raster, không phải React/IPC.
+- JSX cũ mount atlas trước target viewport. Accurate worker đi thẳng coordinator native nên
+  background có thể chiếm lane trước khi request priority 0 được phát.
+- Toàn bộ runway được mount một pha; mở file cũng cho atlas DPI cao tranh tài nguyên với frame
+  PPE đầu tiên. Mỗi lần pan vẫn luôn tạo bitmap viewport nguyên khung dù atlas đã có đủ cell nét.
+
+### Turbo A
+
+1. Target viewport được mount/phát trước atlas; atlas DPI cao chờ base PPE đầu tiên commit.
+   Nếu vào thẳng zoom cao và không có base PPE, target priority 0 tự làm frame accurate đầu tiên,
+   không chờ một cổng sẽ không bao giờ mở.
+2. Atlas chia hai pha: cell giao viewport trước, vòng ngoài chỉ mở sau khi target viewport decode.
+3. Ready key chỉ sống trong đúng raster bucket và chỉ giữ cho grid đang mounted.
+4. Hợp hình chữ nhật của cell ready được kiểm theo từng lát X. Chỉ khi phủ kín viewport mới bỏ
+   target nguyên khung; thiếu một cell hoặc có khe thì vẫn render tương tác, không báo phủ giả.
+5. Atlas nằm trên target theo thứ tự compositor, nên cell nét đã có được tái dùng trực tiếp khi pan.
+
+### Turbo B — benchmark cell PPE thật @600 DPI
+
+PDF: `CMNM2026 - Giay moi_BLUE - in.pdf`, trang `6.236 × 4.677 px`, viewport mô phỏng
+`1.920 × 1.080 px`. Pool máy audit: `32 GB / 16 logical CPU / 7 background worker`.
+
+| Cell | Cold phủ kín | Warm first-ready median | Warm phủ kín median / P95 | Pixel raster median |
+|---:|---:|---:|---:|---:|
+| 512 | **1.177 ms** | **264 ms** | **749 / 840 ms** | **3,932 MP** |
+| 640 | 1.222 ms | 389 ms | 846 / 984 ms | 4,915 MP |
+| 768 | 1.387 ms | 460 ms | 791 / 1.047 ms | 4,719 MP |
+
+Mô phỏng máy hạn chế bằng đúng một background worker:
+
+| Cell | Cold phủ kín | Warm first-ready median | Warm phủ kín median / P95 |
+|---:|---:|---:|---:|
+| 512 | 3.070 ms | **176 ms** | 2.853 / 3.530 ms |
+| 640 | 3.478 ms | 274 ms | 3.367 / 3.751 ms |
+| 768 | **2.895 ms** | 207 ms | **1.806 / 2.580 ms** |
+
+Quyết định theo số đo:
+
+- `≥16 GB`/tier full dùng cell **512 px** để tận dụng nhiều lane: first-ready nhanh hơn khoảng
+  **43%** so với 768 px và P95 phủ kín giảm khoảng **20%**.
+- `<16 GB` dùng **768 px** để giảm số lượt tuần tự; máy yếu không bị cấu hình nhiều-cell của máy mạnh.
+- 640 px không thắng ở tier nào nên không đưa vào policy sản phẩm.
+
+### Bằng chứng tự động và giới hạn
+
+- Test đỏ mới: thiếu hàm tách pha/coverage, policy cell, phase target, cleanup unmount và
+  direct high-zoom làm đúng `7` ca thất bại.
+- Sau sửa: `viewportTilePolicy + LiveTile + useTileRenderer` đạt **73/73 test**;
+  ma trận Viewer rộng đạt **127/127**; toàn frontend với 4 test worker đạt
+  **2.222 pass, 2 skip**.
+- Lượt full mặc định từng timeout ngẫu nhiên ở Logo/Output Preview/Office dưới tải song song;
+  chạy riêng các file đó đạt `29/29` và `13/13`, không có diff ở các module này từ Turbo.
+- TypeScript toàn frontend: đạt.
+- Benchmark gọi trực tiếp PPE worker hiện hành, không build lại app và không dùng renderer khác.
+- Chưa chạy lại thao tác pan bằng chuột với pixel gate hai frame sau Turbo A; vì vậy kết luận hiện
+  là `AUTO + BENCH`, chưa nâng thành `RUNTIME UI` hay `installed/release`.
+
+### Hotfix đường nối atlas (`§PAN.SEAM`)
+
+**Nguồn:** ảnh runtime ngày 2026-08-11 cho thấy một vệt sáng dọc và một vệt sáng ngang xuất hiện
+tạm thời đúng tại ranh giới cell atlas trên vùng nền xanh, rồi mất khi bitmap viewport nguyên khung
+hoàn tất.
+
+Nguyên nhân trong frontend gồm hai phần cùng khuếch đại nhau:
+
+1. `LiveTile.applyExactFit()` cho phép bitmap co về `naturalWidth / devicePixelRatio` khi chênh
+   tối đa hai pixel. Quy tắc này vốn dùng cho tile toàn trang trắng; với cell nằm giữa mảng màu,
+   phần khung còn thiếu làm lộ `background: white` thành đường sáng.
+2. WebView2 có thể làm tròn hai bitmap kề nhau thành hai quad compositor khác nhau ở scale phân số,
+   nên ngay cả hai rect khớp toán học vẫn có khả năng lộ khe dưới một pixel.
+
+Bản sửa chỉ áp dụng cho atlas:
+
+- cell luôn fill 100% khung và dùng nền trong suốt, không đi qua nhánh co ảnh 1:1 của tile toàn trang;
+- rect trình bày nới cạnh phải/dưới đúng một device pixel ở cạnh nội bộ, chặn tuyệt đối tại mép trang;
+- clip raster, DPI, kích thước bitmap, key cache và coverage logic giữ nguyên, nên không phát thêm
+  request PPE và không tăng số pixel raster.
+
+Bằng chứng tự động:
+
+- Trước sửa: đúng `5` ca đỏ — bốn góc xoay chưa có rect seam-safe và LiveTile atlas co `512 px`
+  thành `256 px` trong khung `256,25 px`.
+- Sau sửa: policy + LiveTile đạt **49/49**; ma trận `workspace + hooks/viewer` đạt **249/249**;
+  toàn frontend đạt **2.229 pass, 2 skip**; TypeScript toàn frontend đạt.
+- Runtime đúng chuỗi thao tác của user vẫn cần nghiệm thu trong Tauri; chưa suy từ test DOM thành
+  kết luận đường nối đã biến mất trên mọi mức zoom/DPI màn hình.
+
+### Hotfix độ nét toàn trang (`§VIEW.SHARP`)
+
+**Nguồn:** hai ảnh so sánh PrynX/Acrobat ngày 2026-08-11 trên `Binder162.pdf` và ca tái hiện
+Tauri dev bằng chính file đó.
+
+Baseline đã đo:
+
+- Trang nhìn thấy rộng `417,037 pt`, là ảnh JPEG CMYK `3.508 × 2.480 px`; detector đánh dấu
+  `highRisk=true` do `DeviceCMYK` và thiếu Output Intent.
+- PPE trực tiếp ở `192 DPI` tạo bitmap `1.112 × 388 px`. Bitmap nguồn có phương sai Laplacian
+  `3.023`, gần ảnh Acrobat `2.544` sau chuẩn hóa; vì vậy engine đã tạo đủ chi tiết.
+- Tauri trước sửa hiển thị đúng bitmap `1.112 × 388` trong rect `1.112 × 388`, nhưng gốc rect là
+  `(223,453; 395,477)`. WebView2 nội suy bitmap 1:1 vì cả hai trục gần nửa pixel; ảnh compositor
+  chỉ còn phương sai Laplacian `824`, khớp ảnh user `757` và thấp hơn Acrobat khoảng ba lần.
+
+Kết luận ở vòng này chỉ đúng cho một phần compositor: bố cục flex căn giữa làm gốc mặt trang
+rơi giữa device pixel. Feedback runtime tiếp theo xác nhận vẫn còn một nguồn mờ độc lập trong
+vòng đời surface PPE; vì vậy không còn coi lệch nửa pixel là nguyên nhân duy nhất.
+
+Bản sửa:
+
+- Tính offset ổn định từ tọa độ layout thật và `devicePixelRatio`, rồi dịch mặt trang active tối đa
+  nửa device pixel để gốc bitmap nằm đúng lưới pixel vật lý.
+- Đo chính inner page đã xoay thay vì khung ngoài, nên bitmap và mọi overlay cùng dịch một lượng;
+  hit-test tiếp tục đọc `getBoundingClientRect()` sau dịch chuyển.
+- Resize/đổi zoom cập nhật theo `requestAnimationFrame`; khi cuộn chỉ snap sau `48 ms` dừng tay,
+  tránh nhún trong lúc trang đang chuyển động như Acrobat.
+- Không đổi DPI, clip, cache key, số request, số worker hay số pixel raster.
+
+Bằng chứng hiện có:
+
+- Trước sửa: đúng `3` ca policy đỏ vì chưa có hàm device-pixel snap; sau sửa policy + LiveTile
+  đạt **52/52**, ma trận `workspace + hooks/viewer` đạt **252/252**, toàn frontend đạt
+  **2.232 pass, 2 skip**, TypeScript đạt.
+- Tauri sau sửa đưa target từ `(223,453; 395,477)` về `(223; 394,992)`; sai số còn `0,008 px`
+  là lượng tử layout `1/64 px` của Chromium, không còn offset gần nửa pixel.
+- Cửa sổ dev do agent khởi chạy ở trạng thái occluded sau HMR nên screenshot compositor sau sửa
+  chỉ thu nền; không dùng ảnh đó làm acceptance. Cần nghiệm thu mắt thật trên cửa sổ Tauri của user
+  trước khi nâng trạng thái từ `AUTO + RUNTIME-GEOMETRY` lên `RUNTIME UI`.
+
+### Hotfix surface nét ổn định (`§VIEW.SURFACE`)
+
+**Nguồn:** feedback runtime tiếp theo ngày 2026-08-11: Acrobat giữ một bề mặt nét ổn định,
+trong khi PrynX tiếp tục đổi qua lại `mờ → nét` dù lỗi lệch nửa pixel đã được xử lý.
+
+Baseline mới đã đo từ `PrynX_RenderPerf.log` trên ca toàn trang `Binder162.pdf`:
+
+- cùng một frame phát một full-page PPE `144 DPI`, sau đó phát bốn tile `204 DPI`;
+- trang đích chỉ khoảng `1.112 × 388 px`, nên việc chia hai cấp chất lượng không tiết kiệm
+  raster có ý nghĩa nhưng buộc người dùng nhìn thấy nền thấp DPI trước khi tile phủ xong;
+- khi scale giảm, `LiveTile` đổi generation và đặt lại quality rank về 0, vì vậy surface nét hơn
+  vẫn có thể bị thay bằng request DPI thấp mới;
+- viewport cũ bị unmount ngay khi qua ngưỡng tiling và PPE dùng crossfade tối đa `160 ms`, làm
+  lộ nền mềm hoặc một pha hòa trộn mềm giữa hai surface đã decode.
+
+Bản sửa:
+
+1. Khi footprint toàn trang nằm trọn trong viewport và renderer full-page theo kịp mật độ màn
+   hình, dựng thẳng một surface PPE ở scale đích; không dựng nền 144 DPI rồi phủ atlas lên.
+2. `LiveTile` giữ bitmap cùng identity có scale/color-rank cao hơn khi scale yêu cầu giảm; chỉ co
+   surface đã decode bằng compositor và không phát request PPE hạ DPI.
+3. Khi chuyển từ tile về full-page, giữ viewport nét cũ tới khi surface toàn trang mới báo ready.
+4. Surface PPE mới chỉ thay thế sau decode và swap nguyên tử (`0 ms`); crossfade vẫn giữ nguyên
+   cho compatibility lane không-accurate.
+5. Không thêm hard-cap, worker, cache budget hay giảm chất lượng theo máy. Ca toàn trang chỉ dựng
+   xấp xỉ số pixel của viewport; zoom lớn/footprint tràn khung vẫn dùng viewport tile hiện hành.
+
+Bằng chứng tự động:
+
+- Trước sửa: đúng `4` ca đỏ — direct full-page chưa tồn tại, viewport bị rút sớm, PPE còn
+  crossfade và zoom-down phát lại request DPI thấp.
+- Sau sửa: policy + LiveTile đạt **31/31**; ma trận `workspace + hooks/viewer` đạt **256/256**;
+  toàn frontend đạt **2.236 pass, 2 skip**; TypeScript toàn frontend đạt.
+- Runtime sau HMR vẫn chờ thao tác mở lại đúng file của user để xác nhận log không còn cặp
+  `144 DPI + 204 DPI`; trạng thái hiện tại là `AUTO`, chưa nâng thành `RUNTIME UI`.

@@ -53,8 +53,95 @@ export const VIEWPORT_TILE_CROSSFADE_MAX_MS = 160;
 // 18% pixel và khiến đường làm nét chậm hơn mà không còn mang lại lợi ích tương ứng.
 export const VIEWPORT_TILE_RUNWAY_PAD = 0;
 export const VIEWPORT_TILE_COVERAGE_TOLERANCE_PX = 1;
+const VIEWPORT_TILE_PRESENTATION_BLEED_DEVICE_PX = 1;
 
 export type ViewportTilePanPrefetchTier = 'low' | 'mid' | 'full';
+
+export interface DevicePixelSnapOffset {
+    x: number;
+    y: number;
+}
+
+/**
+ * UIUX (feedback 2026-08-11 §VIEW.SHARP): bitmap 1:1 vẫn bị WebView2 lọc mềm
+ * nếu gốc trang nằm giữa hai device pixel. Trừ offset đang áp để lấy tọa độ layout
+ * thật, rồi trả về dịch chuyển ổn định đưa gốc trang lên lưới pixel vật lý.
+ */
+export function computeDevicePixelSnapOffset(
+    transformedLeft: number,
+    transformedTop: number,
+    devicePixelRatio: number,
+    currentX: number,
+    currentY: number,
+): DevicePixelSnapOffset {
+    const safeDpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0
+        ? devicePixelRatio
+        : 1;
+    const baseLeft = transformedLeft - currentX;
+    const baseTop = transformedTop - currentY;
+    const normalize = (value: number) => (Math.abs(value) < 1e-9 ? 0 : value);
+    return {
+        x: normalize(Math.round(baseLeft * safeDpr) / safeDpr - baseLeft),
+        y: normalize(Math.round(baseTop * safeDpr) / safeDpr - baseTop),
+    };
+}
+
+export interface ViewportTilePresentationRect {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+}
+
+/**
+ * UIUX (feedback 2026-08-11 §PAN.SEAM): WebView2 có thể làm tròn hai bitmap kề
+ * nhau về hai quad compositor khác nhau và lộ nền ở ranh giới dưới một pixel.
+ * Chỉ nới cạnh phải/dưới ở lúc trình bày đúng một device pixel; clip raster và
+ * key cache giữ nguyên, còn mép ngoài trang luôn bị chặn tại kích thước trang.
+ */
+export function computeViewportTileSeamSafePresentationRect(
+    tile: Pick<ViewportTileSpec, 'cssLeft' | 'cssTop' | 'cssW' | 'cssH'>,
+    scaleX: number,
+    scaleY: number,
+    pageWidth: number,
+    pageHeight: number,
+    devicePixelRatio: number,
+): ViewportTilePresentationRect {
+    const left = tile.cssLeft * scaleX;
+    const top = tile.cssTop * scaleY;
+    const rawRight = (tile.cssLeft + tile.cssW) * scaleX;
+    const rawBottom = (tile.cssTop + tile.cssH) * scaleY;
+    const safeDpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0
+        ? devicePixelRatio
+        : 1;
+    const bleed = VIEWPORT_TILE_PRESENTATION_BLEED_DEVICE_PX / safeDpr;
+    const epsilon = 1e-6;
+    const right = Math.min(
+        pageWidth,
+        rawRight + (rawRight < pageWidth - epsilon ? bleed : 0),
+    );
+    const bottom = Math.min(
+        pageHeight,
+        rawBottom + (rawBottom < pageHeight - epsilon ? bleed : 0),
+    );
+    return {
+        left,
+        top,
+        width: Math.max(0, right - left),
+        height: Math.max(0, bottom - top),
+    };
+}
+
+/**
+ * PERF (audit 2026-08-11 §PAN.TURBO-B): benchmark PDF khách @600 DPI cho thấy
+ * pool 7 lane dùng 512 px đạt first-ready/full-cover 264/749 ms, còn lane đơn
+ * dùng 768 px phủ xong trong 1.806 ms thay vì 2.853 ms với 512 px.
+ */
+export function viewportTilePanCellSize(
+    tier: ViewportTilePanPrefetchTier | undefined,
+): number {
+    return tier === 'low' || tier === 'mid' ? 768 : 512;
+}
 
 interface ComputeViewportTilePanGridInput {
     rotatedViewport: ViewportRect;
@@ -165,6 +252,113 @@ export function computeViewportTilePanGridSpecs({
             - ((rightCx - viewCx) ** 2 + (rightCy - viewCy) ** 2);
     });
     return specs;
+}
+
+export interface ViewportTilePanGridPhases<T extends ViewportTileSpec = ViewportTileSpec> {
+    near: T[];
+    outer: T[];
+}
+
+function viewportRectsIntersect(
+    tile: Pick<ViewportTileSpec, 'cssLeft' | 'cssTop' | 'cssW' | 'cssH'>,
+    viewport: ViewportRect,
+    tolerancePx = 0,
+): boolean {
+    const tolerance = Math.max(0, tolerancePx);
+    return tile.cssLeft < viewport.right - tolerance
+        && tile.cssLeft + tile.cssW > viewport.left + tolerance
+        && tile.cssTop < viewport.bottom - tolerance
+        && tile.cssTop + tile.cssH > viewport.top + tolerance;
+}
+
+/**
+ * PERF (audit 2026-08-11 §PAN.TURBO-A): cell đang giao viewport đi pha gần;
+ * runway chỉ được mở sau frame tương tác để không tranh lượt raster đầu tiên.
+ */
+export function splitViewportTilePanGridPhases<T extends ViewportTileSpec>(
+    specs: readonly T[],
+    viewport: ViewportRect,
+): ViewportTilePanGridPhases<T> {
+    const near: T[] = [];
+    const outer: T[] = [];
+    for (const spec of specs) {
+        (viewportRectsIntersect(spec, viewport) ? near : outer).push(spec);
+    }
+    return { near, outer };
+}
+
+/** Target đổi phải đóng runway cũ, kể cả vẫn nằm trong cùng tập cell gần. */
+export function viewportTilePanPhaseKey(
+    bufferGroup: string,
+    targetKey: string,
+    nearSpecs: readonly Pick<ViewportTileSpec, 'key'>[],
+): string {
+    if (nearSpecs.length === 0) return '';
+    return `${bufferGroup}:target:${targetKey}:near:${nearSpecs.map(spec => spec.key).join('|')}`;
+}
+
+/**
+ * Chỉ công nhận atlas đã phủ khi hợp các cell ready che kín viewport. Kiểm theo
+ * từng lát X để một cell thiếu hoặc một khe giữa grid không thể tạo false-positive.
+ */
+export function viewportTileGridCoversViewport<T extends ViewportTileSpec>(
+    specs: readonly T[],
+    readyKeys: ReadonlySet<string>,
+    viewport: ViewportRect,
+    tolerancePx = VIEWPORT_TILE_COVERAGE_TOLERANCE_PX,
+): boolean {
+    const values = [
+        viewport.left,
+        viewport.top,
+        viewport.right,
+        viewport.bottom,
+        tolerancePx,
+    ];
+    if (!values.every(Number.isFinite)
+        || viewport.right <= viewport.left
+        || viewport.bottom <= viewport.top) {
+        return false;
+    }
+    const tolerance = Math.max(0, tolerancePx);
+    const readyRects = specs
+        .filter(spec => readyKeys.has(spec.key) && viewportRectsIntersect(spec, viewport))
+        .map(spec => ({
+            left: Math.max(viewport.left, spec.cssLeft),
+            top: Math.max(viewport.top, spec.cssTop),
+            right: Math.min(viewport.right, spec.cssLeft + spec.cssW),
+            bottom: Math.min(viewport.bottom, spec.cssTop + spec.cssH),
+        }))
+        .filter(rect => rect.right > rect.left && rect.bottom > rect.top);
+    if (readyRects.length === 0) return false;
+
+    const xBreaks = [
+        viewport.left,
+        viewport.right,
+        ...readyRects.flatMap(rect => [rect.left, rect.right]),
+    ].sort((left, right) => left - right);
+    const uniqueX = xBreaks.filter((value, index) => (
+        index === 0 || value - xBreaks[index - 1] > tolerance
+    ));
+
+    for (let index = 0; index < uniqueX.length - 1; index += 1) {
+        const left = uniqueX[index];
+        const right = uniqueX[index + 1];
+        if (right - left <= tolerance) continue;
+        const midpoint = (left + right) / 2;
+        const intervals = readyRects
+            .filter(rect => rect.left <= midpoint + tolerance && rect.right >= midpoint - tolerance)
+            .map(rect => [rect.top, rect.bottom] as const)
+            .sort((first, second) => first[0] - second[0]);
+        let coveredBottom = viewport.top;
+        for (const [top, bottom] of intervals) {
+            if (top > coveredBottom + tolerance) return false;
+            coveredBottom = Math.max(coveredBottom, bottom);
+            if (coveredBottom >= viewport.bottom - tolerance) break;
+        }
+        if (coveredBottom < viewport.bottom - tolerance) return false;
+    }
+    return uniqueX[0] <= viewport.left + tolerance
+        && uniqueX[uniqueX.length - 1] >= viewport.right - tolerance;
 }
 
 /**

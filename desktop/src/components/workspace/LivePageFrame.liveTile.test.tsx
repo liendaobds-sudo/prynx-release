@@ -2,7 +2,13 @@
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { LiveTile } from './LivePageFrame';
+import {
+    LiveTile,
+    shouldEnableViewerViewportAccurateTile,
+    shouldMountViewerViewportLayer,
+    shouldUseViewerDirectFullPageSurface,
+    viewerSurfaceSwapMs,
+} from './LivePageFrame';
 import { cacheTileUrl, clearTileUrlCache } from '../../lib/tileUrlCache';
 import { CancelledTileRenderError } from '../../hooks/viewer/tileRenderScheduler';
 
@@ -35,6 +41,39 @@ function makeProps(overrides: Record<string, unknown> = {}) {
 }
 
 describe('LiveTile — cold-open màu chính xác', () => {
+    it('toàn trang vừa khung xin thẳng PPE đúng mật độ màn hình thay vì nền 144 DPI', () => {
+        expect(shouldUseViewerDirectFullPageSurface(
+            true, 2.125, 2.1, 1112, 388, 1400, 800,
+        )).toBe(true);
+        expect(shouldUseViewerDirectFullPageSurface(
+            true, 1.5, 2.1, 1112, 388, 1400, 800,
+        )).toBe(false);
+        expect(shouldUseViewerDirectFullPageSurface(
+            true, 2.125, 2.1, 1800, 1200, 1400, 800,
+        )).toBe(false);
+        expect(shouldUseViewerDirectFullPageSurface(
+            false, 2.125, 2.1, 1112, 388, 1400, 800,
+        )).toBe(false);
+    });
+
+    it('giữ viewport nét tới khi surface toàn trang mới đã decode xong', () => {
+        expect(shouldMountViewerViewportLayer(false, true, true, true, false)).toBe(true);
+        expect(shouldMountViewerViewportLayer(false, true, true, true, true)).toBe(false);
+        expect(shouldMountViewerViewportLayer(true, false, true, false, false)).toBe(true);
+    });
+
+    it('PPE thay surface nguyên tử sau decode, không hòa trộn mờ với nét', () => {
+        expect(viewerSurfaceSwapMs(true, 160)).toBe(0);
+        expect(viewerSurfaceSwapMs(false, 160)).toBe(160);
+    });
+
+    it('direct high-zoom tự phát viewport nếu không có base PPE nào đang chạy', () => {
+        expect(shouldEnableViewerViewportAccurateTile(false, false, false)).toBe(true);
+        expect(shouldEnableViewerViewportAccurateTile(false, true, false)).toBe(false);
+        expect(shouldEnableViewerViewportAccurateTile(true, true, false)).toBe(true);
+        expect(shouldEnableViewerViewportAccurateTile(false, true, true)).toBe(true);
+    });
+
     it('giữ PDFium cho trang compatibility chưa được đánh dấu màu rủi ro', async () => {
         const getTileUrl = vi.fn((..._args: unknown[]) => new Promise<never>(() => {}));
         render(
@@ -122,6 +161,43 @@ describe('LiveTile — cold-open màu chính xác', () => {
         expect(onTileReady).toHaveBeenCalledWith({ scale: 1 });
     });
 
+    it('atlas luôn phủ kín khung màu thay vì co ảnh và lộ nền trắng ở đường nối', async () => {
+        vi.spyOn(window, 'devicePixelRatio', 'get').mockReturnValue(2);
+        const getTileUrl = vi.fn();
+        const cachedUrl = 'blob:http://localhost/accurate-atlas-cache';
+        cacheTileUrl(
+            'D:\\jobs\\gradient.pdf|revision:r1|color:accurate_1_1_0_0_0_512_512',
+            { url: cachedUrl, byteLength: 64, cacheable: true },
+            'D:\\jobs\\gradient.pdf|revision:r1|color:accurate',
+        );
+        const view = render(
+            <LiveTile {...makeProps({
+                getTileUrl,
+                accurateOnly: true,
+                clipW: 512,
+                clipH: 512,
+                cssW: 256.25,
+                cssH: 256.25,
+                seamlessGridPresentation: true,
+            })} />,
+        );
+
+        await act(async () => {
+            await Promise.resolve();
+        });
+        const image = view.container.querySelector('img')!;
+        const tile = view.container.querySelector('.tile-container') as HTMLElement;
+        Object.defineProperty(image, 'naturalWidth', { configurable: true, value: 512 });
+        Object.defineProperty(image, 'naturalHeight', { configurable: true, value: 512 });
+        fireEvent.load(image);
+
+        expect(getTileUrl).not.toHaveBeenCalled();
+        expect(image.style.width).toBe('100%');
+        expect(image.style.height).toBe('100%');
+        expect(image.style.background).toBe('transparent');
+        expect(tile.style.background).toBe('transparent');
+    });
+
     it('không hủy và dựng lại base đang chạy khi trang prefetch trở thành active', async () => {
         const getTileUrl = vi.fn(() => new Promise<never>(() => {}));
         const onRenderReady = vi.fn();
@@ -176,6 +252,51 @@ describe('LiveTile — cold-open màu chính xác', () => {
             .toEqual(['accurate']);
     });
 
+    it('giữ bitmap PPE nét hơn khi zoom xuống thay vì render lại surface thấp DPI', async () => {
+        const sharpUrl = 'blob:http://localhost/accurate-sharp-surface';
+        cacheTileUrl(
+            'D:\\jobs\\gradient.pdf|revision:r1|color:accurate_1_2.125_0_0_0_0_0',
+            { url: sharpUrl, byteLength: 64, cacheable: true },
+            'D:\\jobs\\gradient.pdf|revision:r1|color:accurate',
+        );
+        const getTileUrl = vi.fn(() => new Promise<never>(() => {}));
+        const onTileReady = vi.fn();
+        const view = render(
+            <LiveTile {...makeProps({
+                getTileUrl,
+                accurateOnly: true,
+                zoom: 2.125,
+                onTileReady,
+                renderPriority: 10,
+            })} />,
+        );
+
+        await act(async () => {
+            await Promise.resolve();
+        });
+        const image = view.container.querySelector('img')!;
+        fireEvent.load(image);
+        expect(image.src).toBe(sharpUrl);
+        expect(onTileReady).toHaveBeenLastCalledWith({ scale: 2.125 });
+
+        view.rerender(
+            <LiveTile {...makeProps({
+                getTileUrl,
+                accurateOnly: true,
+                zoom: 1.5,
+                onTileReady,
+                renderPriority: 10,
+            })} />,
+        );
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        expect(getTileUrl).not.toHaveBeenCalled();
+        expect(image.src).toBe(sharpUrl);
+        expect(onTileReady).toHaveBeenLastCalledWith({ scale: 2.125 });
+    });
+
     it('tự nối lại cancellation nội bộ thay vì hiện lỗi cuối cho người dùng', async () => {
         const getTileUrl = vi.fn()
             .mockRejectedValueOnce(new CancelledTileRenderError())
@@ -200,5 +321,21 @@ describe('LiveTile — cold-open màu chính xác', () => {
         expect(view.queryByText('Đã hủy dựng trang.')).toBeNull();
         expect(view.queryByText('Thử lại')).toBeNull();
         expect(view.getByText('Đang dựng hình…')).toBeTruthy();
+    });
+
+    it('báo atlas bỏ mounted cell để ready coverage không giữ key ma', async () => {
+        const getTileUrl = vi.fn(() => new Promise<never>(() => {}));
+        const onTileUnmount = vi.fn();
+        const view = render(
+            <LiveTile {...makeProps({
+                getTileUrl,
+                accurateOnly: true,
+                onTileUnmount,
+            })} />,
+        );
+
+        await waitFor(() => expect(getTileUrl).toHaveBeenCalledTimes(1));
+        view.unmount();
+        expect(onTileUnmount).toHaveBeenCalledTimes(1);
     });
 });

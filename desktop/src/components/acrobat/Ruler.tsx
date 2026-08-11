@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 
 interface RulerProps {
   orientation: 'horizontal' | 'vertical';
-  scrollContainerRef: React.RefObject<HTMLElement>;
+  scrollContainerRef: React.RefObject<HTMLElement | null>;
   zoom: number;
   unit: 'mm' | 'cm' | 'inch';
   thickness?: number;
@@ -14,11 +14,13 @@ interface RulerProps {
   onCycleUnit?: () => void;
   /** Tab đang hiển thị — tab nền không giữ listener/RAF của thước. */
   isActive?: boolean;
+  /** Vùng cuộn đã mount; ref thay đổi không tự kích hoạt React effect. */
+  layoutReady?: boolean;
 }
 
 const DPI = 96;
 
-export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness = 20, onMouseDown, pageAnchorId, onCycleUnit, isActive = true }: RulerProps) {
+export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness = 20, onMouseDown, pageAnchorId, onCycleUnit, isActive = true, layoutReady = true }: RulerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const mousePosRef = useRef<{x: number, y: number} | null>(null);
@@ -29,7 +31,7 @@ export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness =
     const canvas = canvasRef.current;
     const container = containerRef.current;
     const scroller = scrollContainerRef.current;
-    if (!isActive || !canvas || !container || !scroller) return;
+    if (!isActive || !layoutReady || !canvas || !container || !scroller) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
@@ -242,7 +244,7 @@ export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness =
       scroller.removeEventListener('scroll', scheduleDraw);
       window.removeEventListener('mousemove', handleMouseMove);
     };
-  }, [isActive, scrollContainerRef, zoom, unit, orientation, thickness, pageAnchorId]);
+  }, [isActive, layoutReady, scrollContainerRef, zoom, unit, orientation, thickness, pageAnchorId]);
 
   return (
     <div

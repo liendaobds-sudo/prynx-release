@@ -31,6 +31,11 @@ import {
     usesNativeAccurateWorker,
 } from './useTileRenderer';
 import { registerRenderDocumentIdentity, renderPipelineIdentity } from './renderCoordinator';
+import {
+    computeAccurateViewerBaseZoom,
+    computeRenderZoomPure,
+    RENDER_BUDGET_PX,
+} from '../../components/workspace/renderZoomPolicy';
 
 describe('Viewer — định tuyến render màu chính xác', () => {
     beforeEach(() => {
@@ -250,6 +255,78 @@ describe('Viewer — định tuyến render màu chính xác', () => {
     it('đổi mật độ viewport CSS sang đúng lưới PPE', () => {
         expect(accurateViewerRasterDpr(2, 1)).toBeCloseTo(1);
         expect(accurateViewerRasterDpr(2, 2)).toBeCloseTo(2);
+    });
+
+    it('neo 100% PPE tại Raw DPI 92 để raster map 1:1', () => {
+        const physicalScale = 92 / 96;
+        expect(accurateViewerDpi(physicalScale, 92)).toBe(92);
+        expect(accurateViewerRequestScale(physicalScale, 92)).toBeCloseTo(physicalScale, 8);
+        expect(accurateViewerRasterDpr(physicalScale, 1, 92)).toBeCloseTo(1, 8);
+        expect(computeAccurateViewerBaseZoom(
+            physicalScale,
+            physicalScale,
+            1,
+            physicalScale,
+        )).toBeCloseTo(physicalScale, 8);
+    });
+
+    it('giữ bucket 12 DPI quanh Raw DPI thay vì tạo cache miss theo từng wheel', () => {
+        const targetScale = (92 * 1.25) / 96;
+        expect(accurateViewerDpi(targetScale, 92)).toBe(116);
+        expect(accurateViewerDpi(targetScale * 0.995, 92)).toBe(116);
+    });
+
+    it('đổi DPR vẫn đổi raster dù tỷ lệ CSS vật lý trùng nhau', () => {
+        const physicalScale = 92 / 96;
+        const dpr1 = computeRenderZoomPure(
+            physicalScale,
+            800,
+            800,
+            1000,
+            RENDER_BUDGET_PX.high,
+            physicalScale,
+            1,
+        );
+        const dpr2 = computeRenderZoomPure(
+            physicalScale,
+            800,
+            800,
+            1000,
+            RENDER_BUDGET_PX.high,
+            physicalScale,
+            2,
+        );
+        expect(dpr1).toBeCloseTo(physicalScale, 8);
+        expect(dpr2).toBeCloseTo(physicalScale * 2, 8);
+    });
+
+    it('truyền Raw DPI vào request PPE native', async () => {
+        const { result, unmount } = renderHook(() => useTileRenderer({
+            file: {
+                path: 'D:\\jobs\\physical-92.pdf',
+                name: 'physical-92.pdf',
+                type: 'application/pdf',
+            },
+            pdfRef: null,
+            pdfUrl: 'localfile://physical-92',
+            activePage: 1,
+            isActive: true,
+            accurateColorEnabled: true,
+            accurateColorPages: [1],
+            accurateDpiAnchor: 92,
+        }));
+
+        await act(async () => {
+            await result.current.getTileUrl(
+                1, 0, 92 / 96, undefined, undefined, undefined, undefined,
+                { colorStage: 'accurate' },
+            );
+        });
+        const nativeCall = transportMocks.invoke.mock.calls.find(([command]) => (
+            command === 'render_ppe_page'
+        ));
+        expect(nativeCall?.[1]).toEqual(expect.objectContaining({ dpi: 92 }));
+        unmount();
     });
 
     it('không dựng trước PPE hai trang kề sau khi trang active hoàn tất', async () => {

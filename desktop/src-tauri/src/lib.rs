@@ -1248,6 +1248,92 @@ fn get_system_memory_status() -> Result<SystemMemoryStatus, String> {
     system_memory_status().ok_or_else(|| "Không đọc được trạng thái bộ nhớ hệ thống.".to_string())
 }
 
+// UIUX (feedback 2026-08-11 §VIEW.ACTUAL-SIZE): 100% phải là kích thước vật lý,
+// không phải mặc định 96 CSS px/in trên mọi màn hình. Raw DPI lấy theo đúng monitor
+// chứa cửa sổ; frontend tự chia DPR để ra số CSS pixel trên một inch.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CurrentDisplayMetrics {
+    monitor_id: String,
+    monitor_name: Option<String>,
+    raw_dpi_x: Option<u32>,
+    raw_dpi_y: Option<u32>,
+    scale_factor: f64,
+    width_px: u32,
+    height_px: u32,
+}
+
+#[cfg(target_os = "windows")]
+fn raw_dpi_for_window(window: &tauri::WebviewWindow) -> Option<(u32, u32)> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONEAREST};
+    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_RAW_DPI};
+
+    let raw_hwnd = window.hwnd().ok()?.0;
+    let hwnd = HWND(raw_hwnd as *mut std::ffi::c_void);
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    if monitor.0.is_null() {
+        return None;
+    }
+
+    let mut dpi_x = 0_u32;
+    let mut dpi_y = 0_u32;
+    unsafe { GetDpiForMonitor(monitor, MDT_RAW_DPI, &mut dpi_x, &mut dpi_y) }.ok()?;
+    if dpi_x == 0 || dpi_y == 0 {
+        return None;
+    }
+    Some((dpi_x, dpi_y))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn raw_dpi_for_window(_window: &tauri::WebviewWindow) -> Option<(u32, u32)> {
+    None
+}
+
+#[tauri::command]
+fn get_current_display_metrics(
+    window: tauri::WebviewWindow,
+) -> Result<CurrentDisplayMetrics, String> {
+    let monitor = window
+        .current_monitor()
+        .map_err(|error| format!("Không đọc được màn hình hiện tại: {error}"))?;
+    let fallback_scale = window.scale_factor().unwrap_or(1.0);
+    let (monitor_name, width_px, height_px, position_x, position_y, scale_factor) =
+        if let Some(monitor) = monitor {
+            (
+                monitor.name().cloned(),
+                monitor.size().width,
+                monitor.size().height,
+                monitor.position().x,
+                monitor.position().y,
+                monitor.scale_factor(),
+            )
+        } else {
+            (None, 0, 0, 0, 0, fallback_scale)
+        };
+    let (raw_dpi_x, raw_dpi_y) = raw_dpi_for_window(&window)
+        .map(|(x, y)| (Some(x), Some(y)))
+        .unwrap_or((None, None));
+    let monitor_id = format!(
+        "{}:{}x{}@{},{}",
+        monitor_name.as_deref().unwrap_or("unknown"),
+        width_px,
+        height_px,
+        position_x,
+        position_y,
+    );
+
+    Ok(CurrentDisplayMetrics {
+        monitor_id,
+        monitor_name,
+        raw_dpi_x,
+        raw_dpi_y,
+        scale_factor,
+        width_px,
+        height_px,
+    })
+}
+
 fn configured_doc_cache_limit() -> Option<usize> {
     if let Ok(raw) = std::env::var("PRYNX_DOC_CACHE_LIMIT") {
         if let Ok(value) = raw.trim().parse::<usize>() {
@@ -4565,7 +4651,7 @@ pub fn run() {
         .manage(SystemFilesState(Mutex::new(Vec::new())))
         // SEC (audit 2026-08-04 §BE.03): không expose command nghiệp vụ không có
         // consumer/quyền native. Mọi bình bản và xóa đường bế đi qua sidecar đã gate.
-        .invoke_handler(tauri::generate_handler![render_pdf_page, render_ppe_page, shadow_render_ppe_page, release_ppe_session_owner, cancel_pdf_render, get_pdf_viewer_bootstrap, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_startup_args, mark_frontend_interactive, read_system_file, get_file_size, stat_system_file, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, get_pending_system_files, write_file_atomic, copy_file_atomic, read_dir_json, preview_perf_logging_enabled, append_render_perf, log_frontend_error, grant_upscale_file_path, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
+        .invoke_handler(tauri::generate_handler![render_pdf_page, render_ppe_page, shadow_render_ppe_page, release_ppe_session_owner, cancel_pdf_render, get_pdf_viewer_bootstrap, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_current_display_metrics, get_startup_args, mark_frontend_interactive, read_system_file, get_file_size, stat_system_file, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, get_pending_system_files, write_file_atomic, copy_file_atomic, read_dir_json, preview_perf_logging_enabled, append_render_perf, log_frontend_error, grant_upscale_file_path, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(state) = app.try_state::<SystemFilesState>() {
                 if let Ok(mut pending) = state.0.lock() {

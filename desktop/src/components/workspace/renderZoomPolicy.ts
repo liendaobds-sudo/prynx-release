@@ -20,14 +20,18 @@ export function computeAccurateViewerBaseZoom(
     renderZoom: number,
     _zoom: number,
     _dpr: number,
+    minimumRenderZoom: number = ACCURATE_VIEWER_BASE_ZOOM_MIN,
 ): number {
     const safeRenderZoom = Number.isFinite(renderZoom) && renderZoom > 0
         ? renderZoom
         : ACCURATE_VIEWER_BASE_ZOOM_MIN;
+    const safeMinimum = Number.isFinite(minimumRenderZoom) && minimumRenderZoom > 0
+        ? Math.min(minimumRenderZoom, ACCURATE_VIEWER_BASE_ZOOM_CAP)
+        : ACCURATE_VIEWER_BASE_ZOOM_MIN;
     // renderZoom chỉ đổi sau nhịp debounce, vì vậy bitmap PPE nét cũ vẫn được scale
     // tạm trong lúc lăn; khi dừng mới dựng target 96–144 DPI rồi thay thế.
     return Math.max(
-        ACCURATE_VIEWER_BASE_ZOOM_MIN,
+        safeMinimum,
         Math.min(safeRenderZoom, ACCURATE_VIEWER_BASE_ZOOM_CAP),
     );
 }
@@ -84,13 +88,24 @@ export function computeRenderZoomPure(
      * `previewQuality`. Mặc định vẫn 6000; chỉ hạ khi người dùng chọn `fast`.
      */
     budgetPx: number = RENDER_BUDGET_PX.high,
+    physicalDisplayScale: number = 1,
+    devicePixelRatioOverride?: number,
 ): number {
-    const dpr = window.devicePixelRatio || 1;
-    const target = Math.max(dpr, z * dpr);
+    const dpr = Number.isFinite(devicePixelRatioOverride) && Number(devicePixelRatioOverride) > 0
+        ? Number(devicePixelRatioOverride)
+        : (window.devicePixelRatio || 1);
+    const safePhysicalScale = Number.isFinite(physicalDisplayScale) && physicalDisplayScale > 0
+        ? physicalDisplayScale
+        : 1;
+    // UIUX (audit 2026-08-11 §AS.2): sàn cũ = DPR luôn tương đương 96 DPI.
+    // Trên màn 92 PPI nó buộc WebView2 co bitmap 96 → 92, làm mất ánh xạ pixel 1:1.
+    // Sàn vật lý vẫn giữ nguyên mức oversample khi thu nhỏ, chỉ bỏ resampling sai ở 100%.
+    const physicalRasterFloor = dpr * safePhysicalScale;
+    const target = Math.max(physicalRasterFloor, z * dpr);
     const widthAt100 = actualWidth100 || 800;
     const ratio = pageDimW && pageDimW > 0
         ? Math.max(1, (pageDimH || 0) / pageDimW)
         : 1.414;
     const capByBudget = (budgetPx || RENDER_BUDGET_PX.high) / (widthAt100 * ratio);
-    return Math.max(dpr, Math.min(24, target, capByBudget));
+    return Math.max(physicalRasterFloor, Math.min(24, target, capByBudget));
 }

@@ -39,6 +39,8 @@ interface UseTileRendererProps {
     pageBackgroundRgb?: OutputPreviewRgb | null;
     viewerEngineMode?: ViewerEngineMode;
     viewerShadowEnabled?: boolean;
+    /** Raw DPI của monitor hiện tại; neo lưới cache PPE để 100% map raster 1:1. */
+    accurateDpiAnchor?: number | null;
     /** Identity do đúng loader/tab sở hữu; không đọc lại singleton theo path. */
     renderDocumentToken?: string | null;
 }
@@ -146,7 +148,7 @@ export function shouldUseAccurateViewerRender(
     return enabled && accuratePages.includes(pageNum);
 }
 
-export function accurateViewerDpi(zoomScale: number): number {
+export function accurateViewerDpi(zoomScale: number, bucketAnchorDpi: number = 96): number {
     // PERF (audit 2026-08-07 §ZOOM.3): Ctrl+Wheel tạo scale thập phân gần nhau;
     // nếu dùng DPI chính xác từng đơn vị, mỗi lần chỉnh nhẹ lại thành một cache miss PPE.
     // Bo LÊN nấc 12 DPI để ảnh cuối chỉ downsample (không phóng mờ), đồng thời các mức
@@ -154,20 +156,32 @@ export function accurateViewerDpi(zoomScale: number): number {
     const requestedDpi = Number.isFinite(zoomScale) && zoomScale > 0
         ? 96 * zoomScale
         : 24;
-    const bucketedDpi = Math.ceil(requestedDpi / ACCURATE_VIEWER_DPI_BUCKET)
-        * ACCURATE_VIEWER_DPI_BUCKET;
+    const anchorDpi = Number.isFinite(bucketAnchorDpi) && bucketAnchorDpi > 0
+        ? Math.round(bucketAnchorDpi)
+        : 96;
+    // UIUX/PERF (audit 2026-08-11 §AS.3): neo lưới 12 DPI tại Raw DPI màn hình.
+    // 100% trên màn 92 PPI vì thế xin đúng 92 DPI; các mức wheel vẫn dùng chung bucket,
+    // không biến từng số thập phân thành một cache miss mới.
+    const bucketOffset = Math.ceil(
+        (requestedDpi - anchorDpi - 1e-7) / ACCURATE_VIEWER_DPI_BUCKET,
+    );
+    const bucketedDpi = anchorDpi + bucketOffset * ACCURATE_VIEWER_DPI_BUCKET;
     // Biên 9600 đồng bộ validation API và cao hơn miền renderZoom hợp lệ của Viewer.
     return Math.max(24, Math.min(9600, bucketedDpi));
 }
 
-export function accurateViewerRequestScale(zoomScale: number): number {
+export function accurateViewerRequestScale(zoomScale: number, bucketAnchorDpi: number = 96): number {
     // PERF (feedback 2026-08-09 §ZOOM.F2): scale request PPE phải neo theo DPI bucket,
     // không theo zoom thập phân. Nhờ đó hai nấc zoom gần nhau cùng DPI dùng
     // chung identity/cache, và bitmap đã nét không bị thay bằng nền mờ khi thu nhỏ.
-    return accurateViewerDpi(zoomScale) / 96;
+    return accurateViewerDpi(zoomScale, bucketAnchorDpi) / 96;
 }
 
-export function accurateViewerRasterDpr(zoom: number, displayDpr: number): number {
+export function accurateViewerRasterDpr(
+    zoom: number,
+    displayDpr: number,
+    bucketAnchorDpi: number = 96,
+): number {
     if (!Number.isFinite(zoom) || zoom <= 0) return Math.max(1, displayDpr || 1);
     const renderScale = zoom * Math.max(1, displayDpr || 1);
     // PERF (audit 2026-08-08 §RENDER.3): Viewer quy 1 pt PDF thành 96/72 CSS px,
@@ -175,7 +189,7 @@ export function accurateViewerRasterDpr(zoom: number, displayDpr: number): numbe
     // không phải DPI/(72×zoom); công thức cũ render clip dư 33% và lệch mép trang.
     // Tỷ số này cho computeViewportTileSpec clip trực tiếp trong hệ PPE, tránh
     // làm tròn rồi đặt tile lệch dưới một pixel ở mép viewport.
-    return accurateViewerDpi(renderScale) / (96 * zoom);
+    return accurateViewerDpi(renderScale, bucketAnchorDpi) / (96 * zoom);
 }
 
 export function shouldCancelAccurateRenderForViewport(
@@ -194,7 +208,7 @@ export function isInteractiveViewportRender(isTile: boolean, priority: number): 
     return isTile && priority < 100;
 }
 
-export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isActive, accurateColorEnabled = false, accurateColorPages = [], accurateColorProfileId = 'fogra39', accurateColorIntent = 'relative', outputPreviewFilter = 'all', simulatePaperColor = false, simulateBlackInk = false, pageBackgroundRgb = null, viewerEngineMode = 'current', viewerShadowEnabled = false, renderDocumentToken: loaderDocumentToken }: UseTileRendererProps) {
+export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isActive, accurateColorEnabled = false, accurateColorPages = [], accurateColorProfileId = 'fogra39', accurateColorIntent = 'relative', outputPreviewFilter = 'all', simulatePaperColor = false, simulateBlackInk = false, pageBackgroundRgb = null, viewerEngineMode = 'current', viewerShadowEnabled = false, accurateDpiAnchor = 96, renderDocumentToken: loaderDocumentToken }: UseTileRendererProps) {
     const activePageRef = useRef(activePage);
     const accurateRenderAbortRef = useRef(new Map<
         string,
@@ -369,6 +383,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                 useAccuratePipeline ? normalizedProfileId : null,
                 useAccuratePipeline ? normalizedIntent : null,
                 useAccuratePipeline ? accurateProofIdentity : null,
+                useAccuratePipeline ? accurateDpiAnchor : null,
             ]);
             const coordinatedRequest: RenderCoordinatorRequestInput = {
                 ownerId,
@@ -382,7 +397,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                 page: pageNum,
                 rotation: normalizedRotation,
                 raster: useAccuratePipeline
-                    ? { kind: 'dpi', dpi: accurateViewerDpi(zoomScale), clip }
+                    ? { kind: 'dpi', dpi: accurateViewerDpi(zoomScale, accurateDpiAnchor ?? 96), clip }
                     : { kind: 'scale', scale: zoomScale, clip },
                 color: {
                     pipeline: colorPipeline,
@@ -513,7 +528,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                                     const bytes = await invoke<ArrayBuffer>('render_ppe_page', {
                                         filePath: nativeFilePath,
                                         page: pageNum,
-                                        dpi: accurateViewerDpi(zoomScale),
+                                        dpi: accurateViewerDpi(zoomScale, accurateDpiAnchor ?? 96),
                                         rotation: normalizedRotation,
                                         clipX: request.raster.clip?.x ?? null,
                                         clipY: request.raster.clip?.y ?? null,
@@ -561,7 +576,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                                 body: JSON.stringify({
                                     file_path: nativeFilePath,
                                     page: pageNum,
-                                    dpi: accurateViewerDpi(zoomScale),
+                                    dpi: accurateViewerDpi(zoomScale, accurateDpiAnchor ?? 96),
                                     profile_id: normalizedProfileId,
                                     intent: normalizedIntent,
                                     output_preview_filter: outputPreviewFilter,
@@ -658,7 +673,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                 reject(e);
             }
         });
-    }, [activePageRef, accurateColorEnabled, accurateColorPages, accuratePipelineIdentity, accurateProofIdentity, accurateRenderIdentity, cancelAccurateGroup, cancelAccurateRendersForViewport, file, nativeDocumentIdentity, normalizedIntent, normalizedProfileId, outputPreviewFilter, pageBackgroundRgb, pdfRef, pdfUrl, renderOwnerId, simulateBlackInk, simulatePaperColor, viewerEngineMode, viewerShadowEnabled]);
+    }, [activePageRef, accurateColorEnabled, accurateColorPages, accurateDpiAnchor, accuratePipelineIdentity, accurateProofIdentity, accurateRenderIdentity, cancelAccurateGroup, cancelAccurateRendersForViewport, file, nativeDocumentIdentity, normalizedIntent, normalizedProfileId, outputPreviewFilter, pageBackgroundRgb, pdfRef, pdfUrl, renderOwnerId, simulateBlackInk, simulatePaperColor, viewerEngineMode, viewerShadowEnabled]);
 
     // Text extraction via pdfjs
     const getTextBlocksForPage = useCallback(async (pageNum: number, existingBlocks: Record<number, any[]>) => {

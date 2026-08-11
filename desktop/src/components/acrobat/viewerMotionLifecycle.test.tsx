@@ -99,6 +99,37 @@ describe('viewer motion lifecycle', () => {
     expect(callbacks).toHaveLength(0);
   });
 
+  it('Ruler tự vẽ khi vùng cuộn xuất hiện sau lần render đầu, không cần đổi zoom', () => {
+    const delayedScrollRef: RefObject<HTMLElement | null> = { current: null };
+    const view = render(
+      <Ruler
+        orientation="horizontal"
+        scrollContainerRef={delayedScrollRef}
+        zoom={1}
+        unit="mm"
+        pageAnchorId="page-anchor"
+        layoutReady={false}
+      />,
+    );
+
+    expect(callbacks).toHaveLength(0);
+    delayedScrollRef.current = scroller;
+    view.rerender(
+      <Ruler
+        orientation="horizontal"
+        scrollContainerRef={delayedScrollRef}
+        zoom={1}
+        unit="mm"
+        pageAnchorId="page-anchor"
+        layoutReady
+      />,
+    );
+
+    expect(callbacks).toHaveLength(1);
+    flushFrame();
+    expect(callbacks).toHaveLength(0);
+  });
+
   it('Guide và DIM đồng bộ một frame rồi dừng, không tự reschedule', () => {
     const guideView = render(
       <GuideLayer

@@ -50,6 +50,33 @@ describe('computeRenderZoomPure — ngân sách pixel', () => {
         expect(z).toBeGreaterThanOrEqual(window.devicePixelRatio || 1);
     });
 
+    it('map 100% vật lý 92 PPI thẳng 1:1 thay vì render 96 rồi co xuống', () => {
+        const physicalScale = 92 / 96;
+        const z = computeRenderZoomPure(
+            physicalScale,
+            A4_W,
+            A4_W,
+            A4_H,
+            RENDER_BUDGET_PX.high,
+            physicalScale,
+        );
+        expect(z).toBeCloseTo(physicalScale, 8);
+        expect(A4_W * z).toBeCloseTo(A4_W * 92 / 96, 8);
+    });
+
+    it('giữ oversample chống mờ khi thu nhỏ sau hiệu chỉnh vật lý', () => {
+        const physicalScale = 92 / 96;
+        const z = computeRenderZoomPure(
+            physicalScale * 0.5,
+            A4_W,
+            A4_W,
+            A4_H,
+            RENDER_BUDGET_PX.high,
+            physicalScale,
+        );
+        expect(z).toBeCloseTo(physicalScale, 8);
+    });
+
     it('trần cứng 24× vẫn còn hiệu lực với trang rất nhỏ', () => {
         // Trang 10×10pt: ngân sách cho phép hệ số khổng lồ, nhưng 24 phải chặn lại.
         const tiny = 10 * 96 / 72;
