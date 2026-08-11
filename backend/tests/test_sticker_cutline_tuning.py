@@ -541,7 +541,7 @@ def test_khoa_cache_preview_phu_day_du_tham_so_xuat() -> None:
         "dpi_y": 144.0,
         "offset_mm": 0.4,
         "bleed_mm": 2.0,
-        "cut_mode": "original",
+        "cut_mode": "bleed",
         "corner_style": "round",
         "fill_holes": True,
         "cutline_smoothness": 52.0,
@@ -558,7 +558,7 @@ def test_khoa_cache_preview_phu_day_du_tham_so_xuat() -> None:
         "dpi_y": 145.0,
         "offset_mm": 0.5,
         "bleed_mm": 2.1,
-        "cut_mode": "bleed",
+        "cut_mode": "original",
         "corner_style": "preserve",
         "fill_holes": False,
         "cutline_smoothness": 53.0,
@@ -575,6 +575,15 @@ def test_khoa_cache_preview_phu_day_du_tham_so_xuat() -> None:
     }
     assert original not in changed
     assert len(changed) == len(variants)
+
+    # PERF (feedback 2026-08-11 §CUTLINE.NOREBUILD2): ở chế độ original,
+    # bleed chỉ đổi phần ảnh bù xén chứ không đổi quỹ đạo CutContour.
+    original_mode = {**base, "cut_mode": "original"}
+    assert sticker_export_module._cutline_export_cache_key(
+        **original_mode
+    ) == sticker_export_module._cutline_export_cache_key(
+        **{**original_mode, "bleed_mm": 2.1}
+    )
 
 
 def test_cache_preview_anh_xa_dung_tung_tem_va_dich_dung_toan_tam() -> None:

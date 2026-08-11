@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { tv } from '../../i18n';
+import { stickerSourceOwnerFromHistory } from '../stickerSheetTabSelector';
 import { saveBlob } from '../../lib/saveBlob';
 import { toast } from '../ui/Toast';
 import StickerSheetPanel from './StickerSheetPanel';
@@ -80,7 +81,11 @@ export default function StickerCutlineTool({
             setCompletedExport(null);
         }
         const current = useStickerSheetStore.getState().getTab(tabId);
-        if (current.sourceFile === workspaceSource) return;
+        const historySourceOwner = stickerSourceOwnerFromHistory(pdfFile);
+        if (
+            current.sourceFile === workspaceSource
+            || (historySourceOwner !== null && historySourceOwner === current.sourceFile)
+        ) return;
         // UIUX (feedback 2026-08-09 §MP.THUMBNAIL): tài liệu trong Viewer là nguồn
         // duy nhất; đổi file/thumbnail không giữ lại một nguồn ảnh riêng trong panel.
         // Chỉ đồng bộ file, tuyệt đối không inspect/detect ngầm.

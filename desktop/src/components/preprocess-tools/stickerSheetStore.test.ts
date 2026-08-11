@@ -381,6 +381,45 @@ describe('stickerSheetStore — state machine nguồn tem theo tab', () => {
         });
     });
 
+    it('không dựng lại CutContour khi chỉ đổi màu, cách tách trang hoặc tràn lề không dời dao', async () => {
+        const sessionId = '8'.repeat(32);
+        vi.mocked(inspectStickerSource).mockResolvedValue(inspection(sessionId));
+        vi.mocked(detectStickerSource).mockResolvedValue(aiDetection(1, 128, sessionId));
+        useStickerSheetStore.getState().selectSource(
+            'tab-cutline-output-only',
+            new File(['image'], 'sheet.png', { type: 'image/png' }),
+        );
+        await useStickerSheetStore.getState().detectStickers('tab-cutline-output-only', 'ai');
+        await vi.waitFor(() => expect(previewStickerCutline).toHaveBeenCalledTimes(1));
+        await vi.waitFor(() => expect(
+            useStickerSheetStore.getState().getTab('tab-cutline-output-only').isCutlinePreviewing,
+        ).toBe(false));
+
+        vi.mocked(previewStickerCutline).mockClear();
+        const before = useStickerSheetStore.getState().getTab('tab-cutline-output-only');
+        useStickerSheetStore.getState().setOutputSettings('tab-cutline-output-only', {
+            ...before.outputSettings,
+            bleedColorType: 'solid',
+            solidBleedCmyk: [35, 0, 0, 0],
+            cropToSticker: !before.outputSettings.cropToSticker,
+        });
+        useStickerSheetStore.getState().setOutputSettings('tab-cutline-output-only', {
+            bleedMm: before.outputSettings.bleedMm + 1,
+        });
+
+        const outputOnly = useStickerSheetStore.getState().getTab('tab-cutline-output-only');
+        expect(outputOnly.isCutlinePreviewing).toBe(false);
+        expect(outputOnly.cutlinePreview).toBe(before.cutlinePreview);
+        expect(previewStickerCutline).not.toHaveBeenCalled();
+
+        useStickerSheetStore.getState().setOutputSettings('tab-cutline-output-only', {
+            cutMode: 'bleed',
+        });
+        expect(useStickerSheetStore.getState().getTab('tab-cutline-output-only').isCutlinePreviewing)
+            .toBe(true);
+        await vi.waitFor(() => expect(previewStickerCutline).toHaveBeenCalledTimes(1));
+    });
+
     it('trả slider về preview đã áp dụng khi backend từ chối topology mới', async () => {
         const sessionId = 'b'.repeat(32);
         vi.mocked(inspectStickerSource).mockResolvedValue(inspection(sessionId));

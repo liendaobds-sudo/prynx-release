@@ -58,6 +58,7 @@ import { useStickerSheetStore } from './preprocess-tools/stickerSheetStore';
 import {
     resolveStickerSourceSyncMarker,
     selectStickerSheetTabSummary,
+    stickerSourceOwnerFromHistory,
     viewerShowsStickerSource,
 } from './stickerSheetTabSelector';
 import LogoRebuildWorkspace from './preprocess-tools/LogoRebuildWorkspace';
@@ -923,6 +924,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     value: sourceImageFile,
                     configurable: true,
                 });
+                if (stickerSheetSourceVisible && stickerSheetSourceFile) {
+                    // PERF/UIUX (feedback 2026-08-11 §AI.UNDO1): PDF nguồn có thể
+                    // được strip thành path-stub. Giữ owner để Undo không bị effect
+                    // đồng bộ nguồn mở lại chính PDF đó lần thứ hai giữa lúc Viewer nạp.
+                    Object.defineProperty(historyFile, '__prynxStickerSourceFile', {
+                        value: stickerSheetSourceFile,
+                        configurable: true,
+                    });
+                }
                 const next = [...prev, historyFile];
                 return next.length > MAX_HISTORY ? next.slice(next.length - MAX_HISTORY) : next;
             });
@@ -1011,6 +1021,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         sourceImageFile,
         stickerSheetMode,
         stickerSheetSourceFile,
+        stickerSheetSourceVisible,
     ]);
     const ensureCropFileId = useCallback(async (signal?: AbortSignal) => {
         if (!file) throw new Error(t('misc.acrobatViewer:chua_co_file_de_cat_kho'));
@@ -1359,7 +1370,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setPdfUrl(objUrl);
         const restoredSource = (prevFile as File & { __prynxSourceImageFile?: File | null })
             .__prynxSourceImageFile ?? null;
-        syncedStickerSourceRef.current = restoredSource;
+        const restoredStickerSource = stickerSourceOwnerFromHistory(prevFile);
+        syncedStickerSourceRef.current = restoredStickerSource ?? restoredSource;
         setSourceImageFile(restoredSource);
 
         // URL cũ còn có thể đang được loader hiện tại dùng trong cùng tick.

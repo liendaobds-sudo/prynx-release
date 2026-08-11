@@ -66,6 +66,10 @@ def _cutline_export_cache_key(
     min_detail_area_mm2: float,
 ) -> str:
     """Khóa chung để preview và export chỉ chia sẻ đúng cùng một hình học."""
+    normalized_cut_mode = str(cut_mode).strip().lower()
+    # PERF (feedback 2026-08-11 §CUTLINE.NOREBUILD2): bleed chỉ dời CutContour
+    # ở chế độ ``bleed``; các chế độ khác phải tái dùng được path đã duyệt.
+    effective_bleed_mm = float(bleed_mm) if normalized_cut_mode == "bleed" else 0.0
     payload = {
         "page": int(page_number),
         "revision": int(revision),
@@ -73,8 +77,8 @@ def _cutline_export_cache_key(
         "dpi": float(dpi),
         "dpi_y": float(dpi_y),
         "offset_mm": float(offset_mm),
-        "bleed_mm": float(bleed_mm),
-        "cut_mode": str(cut_mode),
+        "bleed_mm": effective_bleed_mm,
+        "cut_mode": normalized_cut_mode,
         "corner_style": str(corner_style),
         "fill_holes": bool(fill_holes),
         "cutline_smoothness": float(cutline_smoothness),

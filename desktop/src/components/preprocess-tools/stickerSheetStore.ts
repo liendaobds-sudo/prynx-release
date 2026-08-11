@@ -197,6 +197,41 @@ const CUTLINE_TIMERS = new Map<string, ReturnType<typeof setTimeout>>();
 const CUTLINE_RUNNING = new Set<string>();
 const CUTLINE_DESIRED = new Map<string, StickerCutlinePreviewRequest>();
 
+function sameStickerOutputSettings(
+    left: StickerOutputSettings,
+    right: StickerOutputSettings,
+): boolean {
+    return (
+        left.cutMode === right.cutMode
+        && left.offsetMm === right.offsetMm
+        && left.cornerStyle === right.cornerStyle
+        && left.fillHoles === right.fillHoles
+        && left.bleedMm === right.bleedMm
+        && left.bleedColorType === right.bleedColorType
+        && left.cropToSticker === right.cropToSticker
+        && left.solidBleedCmyk.every((value, index) => value === right.solidBleedCmyk[index])
+    );
+}
+
+function cutlineGeometryChanged(
+    previous: StickerOutputSettings,
+    next: StickerOutputSettings,
+): boolean {
+    if (
+        previous.cutMode !== next.cutMode
+        || previous.offsetMm !== next.offsetMm
+        || previous.cornerStyle !== next.cornerStyle
+        || previous.fillHoles !== next.fillHoles
+    ) return true;
+
+    // PERF (feedback 2026-08-11 §CUTLINE.NOREBUILD1): màu/crop không đi vào
+    // endpoint CutContour; độ rộng tràn lề chỉ dời dao ở chế độ cắt theo tràn lề.
+    return (
+        (previous.cutMode === 'bleed' || next.cutMode === 'bleed')
+        && previous.bleedMm !== next.bleedMm
+    );
+}
+
 function defaultPageState(status: StickerSheetStatus = 'idle'): StickerSheetPageState {
     return {
         status,
@@ -506,16 +541,14 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
         set(state => {
             const tab = state.tabs[tabId] || defaultTabState();
             if (workflowMutationLocked(tab)) return state;
-            pageNumber = tab.activeSourcePage;
-            changed = true;
-            // UIUX (audit 2026-08-10 §SHEETEXPORT.2): cách đóng trang PDF không
-            // đổi hình học đường bế, nên không xóa preview hoặc khóa nút xuất.
-            shouldRefreshPreview = Object.keys(settings)
-                .some(key => key !== 'cropToSticker');
             const outputSettings = sanitizeStickerOutputSettings({
                 ...tab.outputSettings,
                 ...settings,
             });
+            if (sameStickerOutputSettings(tab.outputSettings, outputSettings)) return state;
+            pageNumber = tab.activeSourcePage;
+            changed = true;
+            shouldRefreshPreview = cutlineGeometryChanged(tab.outputSettings, outputSettings);
             const pages = shouldRefreshPreview
                 ? Object.fromEntries(Object.entries(tab.pages).map(([key, page]) => [
                     key,

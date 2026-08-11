@@ -276,6 +276,45 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
         expect(detectStickerSource).not.toHaveBeenCalled();
     });
 
+    it('Undo về path-stub của nguồn PDF không reset phiên AI hoặc mở nguồn lần hai', async () => {
+        const source = new File(['pdf'], 'sheet-source.pdf', { type: 'application/pdf' });
+        const historyFile = new File([], 'sheet-source.pdf', { type: 'application/pdf' });
+        Object.defineProperty(historyFile, '__prynxStickerSourceFile', {
+            value: source,
+            configurable: true,
+        });
+        useStickerSheetStore.getState().initTab('undo-source-tab');
+        const current = useStickerSheetStore.getState().getTab('undo-source-tab');
+        useStickerSheetStore.setState({
+            tabs: {
+                'undo-source-tab': {
+                    ...current,
+                    mode: 'ai-sheet',
+                    status: 'mask-ready',
+                    sourceFile: source,
+                    inspection: inspection().inspection,
+                    manifest: detection().manifest,
+                },
+            },
+        });
+
+        render(
+            <StickerCutlineTool
+                tabId="undo-source-tab"
+                pdfFile={historyFile}
+                sourceImageFile={null}
+                isActive
+                onFileFixed={vi.fn()}
+            />,
+        );
+
+        await waitFor(() => expect(
+            useStickerSheetStore.getState().getTab('undo-source-tab').sourceFile,
+        ).toBe(source));
+        expect(useStickerSheetStore.getState().getTab('undo-source-tab').status).toBe('mask-ready');
+        expect(useStickerSheetStore.getState().getTab('undo-source-tab').manifest).not.toBeNull();
+    });
+
     it('khóa đổi luồng nguồn trong lúc công cụ trực tiếp đang chạy', async () => {
         const pdf = new File(['pdf'], 'current.pdf', { type: 'application/pdf' });
         render(

@@ -127,9 +127,9 @@ describe('StickerSheetPanel', () => {
         expect(screen.queryByText(/Ảnh không có DPI|300 DPI/)).toBeNull();
         expect(screen.queryByText('DPI X')).toBeNull();
         expect(screen.queryByText('DPI Y')).toBeNull();
-        expect(screen.getByText(/Khổ toàn ảnh/).textContent).toContain('423.3 × 317.5 mm');
-        expect(screen.getByText(/Ảnh gốc/).textContent).toContain('1200 × 900 px');
-        expect(screen.getByText(/Không giảm độ phân giải/)).toBeTruthy();
+        expect(screen.queryByText(/Khổ toàn ảnh/)).toBeNull();
+        expect(screen.queryByText(/Ảnh gốc/)).toBeNull();
+        expect(screen.queryByText(/Không giảm độ phân giải/)).toBeNull();
         expect(screen.queryByRole('button', { name: 'Xác nhận vùng tem' })).toBeNull();
         expect(screen.queryByText('Vùng tem đã được xác nhận')).toBeNull();
         expect(screen.getByRole('group', { name: 'Cách tạo PDF' })).toBeTruthy();
@@ -152,7 +152,8 @@ describe('StickerSheetPanel', () => {
         await waitFor(() => expect(
             useStickerSheetStore.getState().getTab('tab').outputSettings.bleedColorType,
         ).toBe('solid'));
-        await waitFor(() => expect(previewStickerCutline).toHaveBeenCalled());
+        expect(useStickerSheetStore.getState().getTab('tab').isCutlinePreviewing).toBe(false);
+        expect(previewStickerCutline).not.toHaveBeenCalled();
 
         const cmykGroup = await screen.findByRole('group', { name: 'Màu bù xén CMYK' });
         const cyan = within(cmykGroup).getByRole('spinbutton', { name: 'C (%)' }) as HTMLInputElement;
@@ -161,6 +162,8 @@ describe('StickerSheetPanel', () => {
 
         expect(useStickerSheetStore.getState().getTab('tab').outputSettings.solidBleedCmyk)
             .toEqual([35, 0, 0, 0]);
+        expect(useStickerSheetStore.getState().getTab('tab').isCutlinePreviewing).toBe(false);
+        expect(previewStickerCutline).not.toHaveBeenCalled();
     });
 
     it('khóa xuất theo đúng danh sách thumbnail hiện tại, không bắt trang đã xóa', async () => {

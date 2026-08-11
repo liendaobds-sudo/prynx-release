@@ -11,6 +11,7 @@ import type { StickerSheetTabState } from './preprocess-tools/stickerSheetStore'
 import {
     resolveStickerSourceSyncMarker,
     selectStickerSheetTabSummary,
+    stickerSourceOwnerFromHistory,
     viewerShowsStickerSource,
 } from './stickerSheetTabSelector';
 
@@ -54,5 +55,17 @@ describe('selectStickerSheetTabSummary', () => {
 
         expect(viewerShowsStickerSource(normalizedPdf, sourceImage, sourceImage)).toBe(true);
         expect(viewerShowsStickerSource(pdfSource, null, pdfSource)).toBe(true);
+    });
+
+    it('nhận file lịch sử là cùng nguồn PDF để Undo không kích hoạt lượt mở thứ hai', () => {
+        const pdfSource = new File(['pdf'], 'sheet-source.pdf', { type: 'application/pdf' });
+        const historyFile = new File([], 'sheet-source.pdf', { type: 'application/pdf' });
+        Object.defineProperty(historyFile, '__prynxStickerSourceFile', {
+            value: pdfSource,
+            configurable: true,
+        });
+
+        expect(stickerSourceOwnerFromHistory(historyFile)).toBe(pdfSource);
+        expect(viewerShowsStickerSource(historyFile, null, pdfSource)).toBe(true);
     });
 });

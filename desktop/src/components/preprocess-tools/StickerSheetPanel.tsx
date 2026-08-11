@@ -116,12 +116,6 @@ export default function StickerSheetPanel({
         && manifest.boundary_source === 'ai'
         && state.status === 'mask-review',
     );
-    const physicalWidthMm = manifest
-        ? manifest.original_width_px / Math.max(1, state.outputDpi) * 25.4
-        : 0;
-    const physicalHeightMm = manifest
-        ? manifest.original_height_px / Math.max(1, state.outputDpiY) * 25.4
-        : 0;
     const roundRadiusMm = cutlineRoundRadiusMm(
         state.curveTension,
         state.outputDpi,
@@ -509,15 +503,6 @@ export default function StickerSheetPanel({
                                 <span className="mt-0.5 block text-[9px] font-medium opacity-75">{tv('Mỗi tem là một trang PDF riêng')}</span>
                             </button>
                         </div>
-                    </div>
-
-                    <div>
-                        <p className="mt-2 text-[10px] text-slate-500 dark:text-zinc-400">
-                            {tv('Khổ toàn ảnh')}: {physicalWidthMm.toFixed(1)} × {physicalHeightMm.toFixed(1)} mm
-                        </p>
-                        <p className="mt-1 text-[10px] text-slate-500 dark:text-zinc-400">
-                            {tv('Ảnh gốc')}: {manifest.original_width_px} × {manifest.original_height_px} px · {tv('Không giảm độ phân giải; PNG trong suốt dùng nén không mất dữ liệu.')}
-                        </p>
                     </div>
 
                     <div className="grid grid-cols-2 gap-2">

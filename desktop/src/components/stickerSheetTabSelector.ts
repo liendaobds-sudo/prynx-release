@@ -23,14 +23,25 @@ export function resolveStickerSourceSyncMarker(
         : nextSourceImage;
 }
 
+export function stickerSourceOwnerFromHistory(viewerFile: File | null): File | null {
+    return (
+        viewerFile as (File & { __prynxStickerSourceFile?: File | null }) | null
+    )?.__prynxStickerSourceFile ?? null;
+}
+
 export function viewerShowsStickerSource(
     viewerFile: File | null,
     sourceImageFile: File | null,
     stickerSourceFile: File | null,
 ): boolean {
+    const historyStickerSource = stickerSourceOwnerFromHistory(viewerFile);
     return Boolean(
         stickerSourceFile
-        && (viewerFile === stickerSourceFile || sourceImageFile === stickerSourceFile),
+        && (
+            viewerFile === stickerSourceFile
+            || sourceImageFile === stickerSourceFile
+            || historyStickerSource === stickerSourceFile
+        ),
     );
 }
 
