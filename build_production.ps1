@@ -25,6 +25,7 @@ param(
     [switch]$Release,
     [switch]$AllowPlaintextDieline,
     [switch]$SkipPreflightQA,
+    [switch]$ReusePassedNoGs,
     [switch]$NoOpenExplorer,
     [ValidateRange(1, 8)]
     [int]$NuitkaJobs = 4,
@@ -105,6 +106,9 @@ if ($SkipNuitka) {
 }
 if ($Release -and $SkipPreflightQA) {
     throw "Release build refuses -SkipPreflightQA: security regression tests are mandatory."
+}
+if ($ReusePassedNoGs -and -not $Release) {
+    throw "-ReusePassedNoGs chi duoc dung cho luong phat hanh."
 }
 if ($Release -and ($SkipTauri -or $NuitkaOnly)) {
     throw "Release build must create and verify a fresh installer; -SkipTauri/-NuitkaOnly are not allowed."
@@ -966,8 +970,13 @@ if (-not $SkipNuitka) {
         $env:PRYNX_RELEASE_NATIVE_SITE = $nativeSiteDir
         $env:PRYNX_NO_GS_AUDIT_OUT = $buildNoGsAuditOut
         try {
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-                -File "$ROOT\scripts\run_release_qa.ps1"
+            if ($ReusePassedNoGs) {
+                & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+                    -File "$ROOT\scripts\run_release_qa.ps1" -ReusePassedNoGs
+            } else {
+                & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+                    -File "$ROOT\scripts\run_release_qa.ps1"
+            }
             $releaseQaExit = $LASTEXITCODE
         } finally {
             if ($null -eq $previousReleaseNativeSite) {

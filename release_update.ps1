@@ -14,6 +14,7 @@ param(
     [string]$ReleaseRepo = "",                            # (TUY CHON) override; mac dinh SUY TU endpoint updater. Neu dat ma KHAC endpoint -> dung.
     [string]$KeyPassword = "",                            # mat khau cua ~/.tauri/prynx.key (de trong neu khong dat)
     [string]$Notes = "",
+    [switch]$ReusePassedNoGs,                              # tai dung PDF 18x16 neu fingerprint backend/native van khop
     [switch]$SkipPreflightQA                              # KHAN CAP: bo qua pytest Preflight truoc build
 )
 $ErrorActionPreference = "Stop"
@@ -319,6 +320,7 @@ Write-Host "  [OK] Da tim thay file khoa ky updater." -ForegroundColor Green
 # -> $null ep int = 0 -> ValidateRange(1,8) tu choi -> build chet truoc khi chay.
 $buildArgs = @{ Release = $true }
 if ($SkipPreflightQA) { $buildArgs.SkipPreflightQA = $true }
+if ($ReusePassedNoGs) { $buildArgs.ReusePassedNoGs = $true }
 $buildExit = $null
 try {
     # Chỉ truyền đường dẫn không bí mật. build_production chụp/xóa ngay đầu,
@@ -392,11 +394,41 @@ $stagedSignatureHash = (Get-FileHash -LiteralPath $stagedSigPath -Algorithm SHA2
 # ---- 5. Bat buoc nghiem thu artifact da cai truoc upload ----
 # BUILD (audit 2026-08-03 REL.10): uploader khong duoc tin moi ma thoat build.
 $verifier = "$ROOT\scripts\verify_installed_artifact.ps1"
+$cleanUserVerifier = "$ROOT\scripts\verify_artifact_clean_user.ps1"
 if (-not (Test-Path -LiteralPath $verifier -PathType Leaf)) { throw "Thieu installed-artifact verifier: $verifier" }
+if (-not (Test-Path -LiteralPath $cleanUserVerifier -PathType Leaf)) { throw "Thieu clean-user verifier: $cleanUserVerifier" }
 Write-Host "  [..] Cai tam va chay runtime smoke truoc khi cho phep upload..." -ForegroundColor Yellow
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifier `
-    -Installer $stagedSetupPath -Manifest $manifestPath -ExpectedVersion $Version
-if ($LASTEXITCODE -ne 0) { throw "Installed-artifact verifier that bai; KHONG upload GitHub." }
+$existingPrynXRegistryPaths = @(
+    "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\PrynX",
+    "Registry::HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Uninstall\PrynX",
+    "Registry::HKEY_LOCAL_MACHINE\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\PrynX",
+    "Registry::HKEY_CURRENT_USER\Software\prynx\PrynX",
+    "Registry::HKEY_LOCAL_MACHINE\Software\prynx\PrynX",
+    "Registry::HKEY_LOCAL_MACHINE\Software\WOW6432Node\prynx\PrynX"
+)
+$needsCleanUserSmoke = @($existingPrynXRegistryPaths | Where-Object {
+    Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue
+}).Count -gt 0
+if ($needsCleanUserSmoke) {
+    # BUILD (audit 2026-08-12 REL.CLEANUSER.AUTO): may phat hanh thuong da cai
+    # PrynX; UAC dung de smoke tren profile tam sach, khong ghi de ban dang dung.
+    Write-Host "  [..] May da cai PrynX; chuyen sang profile Windows tam sach..." -ForegroundColor Yellow
+    $cleanUserArgs = @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ('"' + $cleanUserVerifier + '"'),
+        "-Installer", ('"' + $publishedSetupPath + '"'),
+        "-Manifest", ('"' + $manifestPath + '"'),
+        "-ExpectedVersion", $Version
+    )
+    $cleanUserProcess = Start-Process -FilePath "powershell.exe" -ArgumentList $cleanUserArgs `
+        -Verb RunAs -Wait -PassThru
+    if ($cleanUserProcess.ExitCode -ne 0) {
+        throw "Clean-user installed-artifact verifier that bai; KHONG upload GitHub."
+    }
+} else {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifier `
+        -Installer $stagedSetupPath -Manifest $manifestPath -ExpectedVersion $Version
+    if ($LASTEXITCODE -ne 0) { throw "Installed-artifact verifier that bai; KHONG upload GitHub." }
+}
 
 $runtimeVerified = Get-ReleaseManifestField -Path $manifestPath -Name "RUNTIME_VERIFIED"
 $installedExeHash = Get-ReleaseManifestField -Path $manifestPath -Name "EXE_SHA256"

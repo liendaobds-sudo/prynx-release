@@ -124,9 +124,17 @@ $btnPublish.BackColor = [System.Drawing.Color]::FromArgb(79, 70, 229); $btnPubli
 $btnPublish.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 $form.Controls.Add($btnPublish)
 
+# ---- Lua chon tai dung QA PDF cho PHAT HANH ----
+$chkReuseNoGs = New-Object System.Windows.Forms.CheckBox
+$chkReuseNoGs.Text = "Dùng lại kiểm tra PDF 18×16 đã đạt (chỉ khi dấu vân tay còn khớp)"
+$chkReuseNoGs.Location = New-Object System.Drawing.Point(15, 310)
+$chkReuseNoGs.Width = 595
+$chkReuseNoGs.Checked = $false
+$form.Controls.Add($chkReuseNoGs)
+
 # ---- Log ----
 $txtLog = New-Object System.Windows.Forms.TextBox
-$txtLog.Location = New-Object System.Drawing.Point(15, 318); $txtLog.Width = 595; $txtLog.Height = 250
+$txtLog.Location = New-Object System.Drawing.Point(15, 342); $txtLog.Width = 595; $txtLog.Height = 226
 $txtLog.Multiline = $true; $txtLog.ScrollBars = "Vertical"; $txtLog.ReadOnly = $true
 $txtLog.BackColor = [System.Drawing.Color]::FromArgb(24, 24, 27); $txtLog.ForeColor = [System.Drawing.Color]::White
 $txtLog.Font = New-Object System.Drawing.Font("Consolas", 9)
@@ -220,7 +228,8 @@ $btnPublish.Add_Click({
     $notes = $txtNotes.Text -replace '"', "'"
     $relScript = Join-Path $ROOT "release_update.ps1"
     # KHONG truyen -ReleaseRepo: release_update.ps1 tu suy tu endpoint (nguon chan ly duy nhat).
-    $argList = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$relScript`" -Version `"$($txtVer.Text)`" -Notes `"$notes`""
+    $reuseNoGsArg = if ($chkReuseNoGs.Checked) { " -ReusePassedNoGs" } else { "" }
+    $argList = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$relScript`" -Version `"$($txtVer.Text)`" -Notes `"$notes`"$reuseNoGsArg"
     try {
         Start-Process powershell -ArgumentList $argList
     } finally {
