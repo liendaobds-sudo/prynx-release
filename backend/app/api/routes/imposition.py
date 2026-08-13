@@ -28,6 +28,12 @@ from app.schemas.imposition import (
 from app.schemas.pont import PontConfigPayload, normalize_pont_settings
 from app.config import settings
 from app.utils.errors import raise_http
+from app.workers.imposition_preview_helpers import (
+    build_pont_base_poly as _build_pont_base_poly_for_preview,
+    normalize_polygon_to_unit as _normalize_polygon_to_unit,
+    resolve_preview_secondary_gap as _resolve_preview_secondary_gap,
+    sticker_capacity_after_pont as _sticker_capacity_after_pont,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1123,93 +1129,6 @@ class PreviewLayoutRequest(BaseModel):
     # PARITY-DIAG (audit 2026-08-12 §SRPARITY.1): telemetry tùy chọn, không đổi layout.
     diagnostic_trace_id: Optional[str] = Field(default=None, max_length=96)
     diagnostic_request_id: Optional[str] = Field(default=None, max_length=96)
-
-def _build_pont_base_poly_for_preview(page, result: dict, req: Any, shape_type_hint: str = None):
-    """Polygon va chạm boong — KHỚP nup_process_chunk (dùng kích thước Ô solver, không item_w FE).
-
-    1 Dao / RECTANGLE: PHẢI dùng chữ nhật ô tem. Trước đây rơi nhánh extract_vector_paths
-    → lấy mảng màu artwork làm base_poly → get_item_polygon scale sai → boong không
-    đụng outline giả → coi như không va chạm (bug 1 Dao + theo kích thước trang).
-    """
-    pc = getattr(req, 'pont_config', None)
-    if not pc or pc.get('disableCollision', False):
-        return None
-    items = result.get('items') or []
-    pw = float(items[0].get('width', 0) or 0) if items else 0.0
-    ph = float(items[0].get('height', 0) or 0) if items else 0.0
-    if pw <= 0:
-        pw = float(result.get('trimW') or getattr(req, 'item_w', 0) or 0)
-    if ph <= 0:
-        ph = float(result.get('trimH') or getattr(req, 'item_h', 0) or 0)
-    shape = (result.get('shapeType') or shape_type_hint or getattr(req, 'shape_type', None) or '').upper()
-    cut_type = (getattr(req, 'cut_type', None) or 'default')
-    if pw > 0 and ph > 0 and (cut_type == 'one_dao' or shape == 'RECTANGLE'):
-        from shapely.geometry import box as _box
-        # PONT (audit 2026-08-13 §RECT-ROT.1): pw/ph lấy từ ô solver nên đã
-        # phản ánh xoay 90°. Polygon quanh gốc báo cho get_item_polygon chỉ
-        # tịnh tiến, không xoay lần hai thành footprint ngang giả.
-        return _box(-pw / 2.0, -ph / 2.0, pw / 2.0, ph / 2.0)
-    if shape == 'CIRCLE_ELLIPSE' and pw > 0 and ph > 0:
-        from shapely.geometry import Point
-        from shapely.affinity import scale
-        return scale(Point(0, 0).buffer(1.0, resolution=64), xfact=pw / 2.0, yfact=ph / 2.0)
-    try:
-        from app.workers.pont_collision import build_shapely_polygon_from_paths
-        paths = page.extract_vector_paths()
-        if paths:
-            return build_shapely_polygon_from_paths(paths, page.rect)
-    except Exception:
-        pass
-    # Không extract được: vẫn chữ nhật ô để dò boong (AABB đủ; poly khớp ô tem).
-    if pw > 0 and ph > 0:
-        from shapely.geometry import box as _box
-        return _box(-pw / 2.0, -ph / 2.0, pw / 2.0, ph / 2.0)
-    return None
-
-def _resolve_preview_secondary_gap(req: Any) -> Optional[float]:
-    """Cùng thứ tự ưu tiên với nup_engine (L1248-1260): one_dao+fillBlockGap → splitGap → None."""
-    from app.workers.pont_collision import MM_TO_PTS
-    cut_type = getattr(req, 'cut_type', None) or 'default'
-    fill_block_gap_mm = float(getattr(req, 'fill_block_gap', None) or 0)
-    split_gap_pt = float(getattr(req, 'split_gap', None) or 0)
-    if cut_type == 'one_dao' and fill_block_gap_mm > 0:
-        return fill_block_gap_mm * MM_TO_PTS
-    if split_gap_pt > 0:
-        return split_gap_pt
-    return None
-
-def _normalize_polygon_to_unit(poly, max_pts: int = 80):
-    """Outline shapely (page coords, Y-up PDF) → list [fx, fy] phân số 0..1 đã giản hoá.
-
-    Dùng cho preview vẽ ĐƯỜNG BẾ THẬT của tem búa/tạ (thay hình tổng hợp đoán hướng).
-    Trả None nếu không hợp lệ. Giản hoá + cap số đỉnh để payload nhỏ và vẽ nhanh.
-    """
-    if poly is None:
-        return None
-    try:
-        geom = poly
-        if getattr(geom, 'geom_type', None) == 'MultiPolygon':
-            geom = max(geom.geoms, key=lambda g: g.area)
-        if getattr(geom, 'geom_type', None) != 'Polygon':
-            return None
-        minx, miny, maxx, maxy = geom.bounds
-        w = maxx - minx
-        h = maxy - miny
-        if w <= 0 or h <= 0:
-            return None
-        tol = max(w, h) * 0.005
-        try:
-            ext = geom.simplify(tol, preserve_topology=True).exterior
-        except Exception:
-            ext = geom.exterior
-        coords = list(ext.coords)
-        if len(coords) > max_pts:
-            step = len(coords) / max_pts
-            coords = [coords[int(i * step)] for i in range(max_pts)]
-        return [[(x - minx) / w, (y - miny) / h] for x, y in coords]
-    except Exception:
-        return None
-
 
 def apply_preview_collisions(items: List[Dict[str, Any]], item_w: float, item_h: float, req: Any, overall_w: float = 0, overall_h: float = 0, base_poly=None) -> List[Dict[str, Any]]:
     """
@@ -3890,46 +3809,6 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
         _layout_ck = None
         _batch_ck = None
 
-        def _sticker_capacity_after_pont(layout_result: dict) -> int:
-            """Đếm sức chứa sau né ốc bằng đúng finalize/resolver của preview + export."""
-            raw_items = list((layout_result or {}).get("items") or [])
-            if (
-                not raw_items
-                or not req.pont_config
-                or req.pont_config.get('disableCollision', False)
-                or is_cluster
-            ):
-                return len(raw_items)
-            try:
-                from app.workers.imposition_finalize import (
-                    finalize_placements,
-                    resolve_pont_collisions_on_placements,
-                )
-
-                base_poly = _build_pont_base_poly_for_preview(
-                    doc[page_idx], layout_result, req, shape_override,
-                )
-                placements = finalize_placements(
-                    raw_items,
-                    req.usable_w,
-                    req.usable_h,
-                    req.margin_left,
-                    req.margin_bottom,
-                    req.margin_top,
-                    page_idx,
-                )
-                placements = resolve_pont_collisions_on_placements(
-                    placements, req, base_poly,
-                )
-                return len(placements)
-            except Exception as exc:
-                logger.warning(
-                    "[BATCH CAPACITY] page %s pont collision failed: %s",
-                    page_idx,
-                    exc,
-                )
-                return len(raw_items)
-
         if _use_sticker:
             _layout_ck = _sticker_nest_cache_key(
                 file_path=file_path,
@@ -3956,7 +3835,10 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
             if _cached_layout is not None:
                 # PONT (audit 2026-08-13 §BATCH-CAP.1): cache chỉ chứa layout
                 # thô; sức chứa vẫn phải tính lại sau né ốc theo cấu hình hiện tại.
-                return _sticker_capacity_after_pont(_cached_layout)
+                return _sticker_capacity_after_pont(
+                    _cached_layout, req, doc[page_idx], page_idx,
+                    shape_override, is_cluster=is_cluster, logger=logger,
+                )
         else:
             _batch_ck = (
                 file_path, _mtime, page_idx, _use_sticker,
@@ -4004,7 +3886,10 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                     die_offset_mm=getattr(req, 'die_offset_mm', 0),
                     alternate_rotation=_batch_alternate_rotation,
                 )
-                _cap = _sticker_capacity_after_pont(result)
+                _cap = _sticker_capacity_after_pont(
+                    result, req, doc[page_idx], page_idx,
+                    shape_override, is_cluster=is_cluster, logger=logger,
+                )
                 with _NEST_CACHE_LOCK:
                     _NEST_A_CACHE[_layout_ck] = _copy_mod.deepcopy(result)
                     _NEST_A_CACHE.move_to_end(_layout_ck)

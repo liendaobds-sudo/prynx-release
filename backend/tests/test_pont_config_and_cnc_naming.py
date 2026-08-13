@@ -202,10 +202,19 @@ def test_cnc_keeps_pont_layers_items_and_front_cut_contract(
     try:
         for page_index, expected_count in enumerate(expected_names_per_page):
             paths = rendered[page_index].extract_vector_paths()
-            assert len(paths) == expected_count
-            if expected_count and pont_shape == "circle":
-                assert all(path.get("fill") is not None for path in paths)
-            elif expected_count:
-                assert all(path.get("fill") is None for path in paths)
+            # PAGE-DIE (audit 2026-08-13 §CNC.PAGE.1): file không có CutContour
+            # dùng chính kích thước trang làm khuôn. Các clip/khuôn này là bốn
+            # hình chữ nhật lớn; boong là bốn path nhỏ mang itemName riêng.
+            die_paths = [
+                path for path in paths
+                if path.get("color") == (0.0, 1.0, 1.0, 0.0)
+            ]
+            pont_paths = [path for path in paths if path not in die_paths]
+            assert len(die_paths) == (4 if page_index == len(expected_names_per_page) - 1 else 0)
+            assert len(pont_paths) == expected_count
+            if pont_shape == "circle":
+                assert all(path.get("fill") is not None for path in pont_paths)
+            else:
+                assert all(path.get("fill") is None for path in pont_paths)
     finally:
         rendered.close()

@@ -68,6 +68,7 @@ from app.workers.nup_process_chunk import process_chunk
 from app.workers.nup_output_finalize import NupOutputContext, finalize_nup_output
 from app.workers.nup_cut_border import resolve_cut_border_config
 from app.workers.nup_repeat_metadata import (
+    build_chunk_worker_metadata as _build_chunk_worker_metadata,
     build_repeat_sheet_metadata as _build_repeat_sheet_metadata,
 )
 from app.workers.page_space_canonicalization import canonicalize_page_space_file
@@ -3679,10 +3680,12 @@ def _run_nup_engine_impl(
 
 
 
-            {
-                s: repeat_sheet_metadata[s] for s in range(start_sheet, end_sheet)
-                if s in repeat_sheet_metadata
-            } if repeat_sheet_metadata else None,
+            _build_chunk_worker_metadata(
+                repeat_sheet_metadata, start_sheet, end_sheet,
+                alternate_rotation=alternate_rotation,
+                diagnostic_trace_id=_diagnostic_trace_id,
+                diagnostic_job_id=_diagnostic_job_id,
+            ),
 
             (homogeneous_master_idx is not None),  # _homogeneousMode: bật registration đồng nhất (trộn mẫu)
 
@@ -3699,21 +3702,6 @@ def _run_nup_engine_impl(
         # được tuple mở rộng khi N-Up guillotine cần vẽ viền.
         if cut_border_config is not None:
             args = args + (cut_border_config,)
-
-        # INKING (2026-08-12): nối đuôi metadata để worker repeat tự solve lại
-        # vẫn nhận đúng chế độ, không thay vị trí 56 trường tuple legacy.
-        args = args + ({
-            "_nup_worker_options": True,
-            "alternate_rotation": alternate_rotation,
-        },)
-
-        # PARITY-DIAG (audit 2026-08-12 §SRPARITY.1): worker ghi số placement
-        # thật ngay trước render; nối đuôi để giữ tương thích mọi tuple legacy.
-        if _diagnostic_trace_id:
-            args = args + ({
-                "_diagnostic_trace_id": _diagnostic_trace_id,
-                "_diagnostic_job_id": _diagnostic_job_id,
-            },)
 
         args_list.append(args)
 

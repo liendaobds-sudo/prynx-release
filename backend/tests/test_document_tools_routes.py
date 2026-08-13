@@ -63,7 +63,7 @@ def test_unlock_worker_writes_valid_pdf_to_path(tmp_path):
     assert len(PdfReader(str(output)).pages) == 1
 
 
-def test_pdf_meta_returns_guillotine_footprint_for_every_page(tmp_path):
+def test_pdf_meta_guillotine_footprint_uses_page_and_ignores_embedded_trimbox(tmp_path):
     source = tmp_path / "mixed-guillotine-meta.pdf"
     writer = PdfWriter()
     first = writer.add_blank_page(width=200, height=100)
@@ -77,7 +77,7 @@ def test_pdf_meta_returns_guillotine_footprint_for_every_page(tmp_path):
     assert [
         (page["guillotine_width_pt"], page["guillotine_height_pt"])
         for page in result["pages"]
-    ] == [(180.0, 80.0), (120.0, 70.0)]
+    ] == [(200.0, 100.0), (120.0, 70.0)]
 
 
 def test_pdf_meta_visible_policy_matches_cropbox_without_changing_imposition_default(tmp_path):
@@ -124,9 +124,11 @@ def test_pdf_meta_applies_user_unit_to_all_physical_measurements(tmp_path):
 
     assert (page["width_pt"], page["height_pt"]) == (200.0, 100.0)
     assert (page["media_width_pt"], page["media_height_pt"]) == (200.0, 100.0)
+    # BLEED-UI (audit 2026-08-12 §SRPARITY.1): footprint dùng khổ trang;
+    # TrimBox chỉ giúp nhận diện bleed mặc định và không được ghi đè bleed UI.
     assert (page["guillotine_width_pt"], page["guillotine_height_pt"]) == (
-        180.0,
-        80.0,
+        200.0,
+        100.0,
     )
     assert result["detected_bleed_mm"] == pytest.approx(3.53, abs=0.01)
 

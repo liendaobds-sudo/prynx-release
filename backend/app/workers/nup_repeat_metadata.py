@@ -40,4 +40,31 @@ def build_repeat_sheet_metadata(
     return metadata
 
 
-__all__ = ["build_repeat_sheet_metadata"]
+def build_chunk_worker_metadata(
+    repeat_metadata: dict[int, tuple[int, int]],
+    start_sheet: int,
+    end_sheet: int,
+    *,
+    alternate_rotation: str,
+    diagnostic_trace_id: str = "",
+    diagnostic_job_id: str = "",
+) -> dict[str, Any]:
+    """Đóng gói metadata worker mà không làm trôi đuôi tuple N-Up legacy."""
+    return {
+        "_nup_worker_metadata": True,
+        "repeat": {
+            sheet: repeat_metadata[sheet]
+            for sheet in range(start_sheet, end_sheet)
+            if sheet in repeat_metadata
+        } or None,
+        "options": {
+            "alternate_rotation": alternate_rotation,
+        },
+        "diagnostic": {
+            "_diagnostic_trace_id": diagnostic_trace_id,
+            "_diagnostic_job_id": diagnostic_job_id,
+        } if diagnostic_trace_id else {},
+    }
+
+
+__all__ = ["build_repeat_sheet_metadata", "build_chunk_worker_metadata"]

@@ -150,13 +150,24 @@ def process_chunk(args):
     from app.workers.nup_diecut import resolve_one_dao_trim
 
     diagnostic_meta = {}
-    if args and isinstance(args[-1], dict) and "_diagnostic_trace_id" in args[-1]:
-        diagnostic_meta = args[-1]
-        args = args[:-1]
     worker_options = {}
-    if args and isinstance(args[-1], dict) and args[-1].get("_nup_worker_options"):
-        worker_options = args[-1]
-        args = args[:-1]
+
+    has_repeat_metadata_slot = (
+        len(args) > 56
+        and (args[54] is None or isinstance(args[54], dict))
+    )
+    if has_repeat_metadata_slot:
+        raw_worker_metadata = args[54]
+        if raw_worker_metadata and raw_worker_metadata.get("_nup_worker_metadata"):
+            chunk_repeat_metadata = raw_worker_metadata.get("repeat")
+            worker_options = raw_worker_metadata.get("options") or {}
+            diagnostic_meta = raw_worker_metadata.get("diagnostic") or {}
+        else:
+            chunk_repeat_metadata = raw_worker_metadata
+        base_args = args[:54] + args[55:]
+    else:
+        chunk_repeat_metadata, base_args = None, args
+
     from app.utils.preview_perf_log import log as _diag_log, sanitize_diagnostic_id
     diagnostic_trace_id = sanitize_diagnostic_id(
         diagnostic_meta.get("_diagnostic_trace_id")
@@ -164,16 +175,6 @@ def process_chunk(args):
     diagnostic_job_id = sanitize_diagnostic_id(
         diagnostic_meta.get("_diagnostic_job_id")
     )
-
-    has_repeat_metadata_slot = (
-        len(args) > 56
-        and (args[54] is None or isinstance(args[54], dict))
-    )
-    if has_repeat_metadata_slot:
-        chunk_repeat_metadata = args[54]
-        base_args = args[:54] + args[55:]
-    else:
-        chunk_repeat_metadata, base_args = None, args
 
     # Engine mới nối page_sheet_mode và cut_border_config sau tuple legacy 56 giá trị.
     # Keep direct/older process_chunk callers compatible.
