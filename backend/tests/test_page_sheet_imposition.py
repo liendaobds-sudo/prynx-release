@@ -11,6 +11,7 @@ from app.api.routes.imposition import (
     PreviewLayoutBatchRequest,
     preview_layouts_batch,
 )
+from app.api.routes.document_tools import _get_pdf_meta
 from app.workers import nup_engine, pdf_wrapper as pdf_lib
 from tests.license_helpers import PRO_LICENSE
 from app.workers.page_sheet_geometry import resolve_page_sheet_geometry
@@ -31,6 +32,71 @@ PONT_CONFIG = {
     "groupName": "MarkLine",
     "itemName": "MKLINE",
 }
+
+LARGE_MEDIA_PT = (906.147, 1353.595)
+LOGICAL_CROP_PT = (100.0, 80.0, 517.037, 225.510)
+
+
+def _make_large_canvas_page_sheet(path) -> None:
+    """Tạo ca giống Binder162: trang logic nhỏ nằm trong CropBox trên canvas lớn."""
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=LARGE_MEDIA_PT)
+    page.CropBox = pikepdf.Array(LOGICAL_CROP_PT)
+    if "/TrimBox" in page.obj:
+        del page.obj[pikepdf.Name("/TrimBox")]
+
+    tint_transform = pikepdf.Dictionary({
+        "/FunctionType": 2,
+        "/Domain": pikepdf.Array([0, 1]),
+        "/C0": pikepdf.Array([0, 0, 0, 0]),
+        "/C1": pikepdf.Array([0, 1, 0, 0]),
+        "/N": 1,
+    })
+    page.Resources = pikepdf.Dictionary({
+        "/ColorSpace": pikepdf.Dictionary({
+            "/CutContour": pikepdf.Array([
+                pikepdf.Name("/Separation"),
+                pikepdf.Name("/CutContour"),
+                pikepdf.Name("/DeviceCMYK"),
+                tint_transform,
+            ]),
+        }),
+    })
+    crop_x0, crop_y0, crop_x1, crop_y1 = LOGICAL_CROP_PT
+    art_x = crop_x0 + 5.0
+    art_y = crop_y0 + 5.0
+    art_w = crop_x1 - crop_x0 - 10.0
+    art_h = crop_y1 - crop_y0 - 10.0
+    page.Contents = pikepdf.Stream(
+        pdf,
+        (
+            f"0 0 0 1 k {art_x} {art_y} {art_w} {art_h} re f\n"
+            f"/CutContour CS 1 SCN {art_x} {art_y} {art_w} {art_h} re S\n"
+        ).encode("ascii"),
+    )
+    pdf.save(path)
+    pdf.close()
+
+
+def _make_large_canvas_page_sheet_without_cut(path) -> None:
+    """Tạo trang logic có artwork nhưng cố ý không có CutContour."""
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=LARGE_MEDIA_PT)
+    page.CropBox = pikepdf.Array(LOGICAL_CROP_PT)
+    if "/TrimBox" in page.obj:
+        del page.obj[pikepdf.Name("/TrimBox")]
+
+    crop_x0, crop_y0, crop_x1, crop_y1 = LOGICAL_CROP_PT
+    page.Contents = pikepdf.Stream(
+        pdf,
+        (
+            "0.05 0.45 0.9 rg "
+            f"{crop_x0 + 5.0} {crop_y0 + 5.0} "
+            f"{crop_x1 - crop_x0 - 10.0} {crop_y1 - crop_y0 - 10.0} re f\n"
+        ).encode("ascii"),
+    )
+    pdf.save(path)
+    pdf.close()
 
 
 def _make_layered_page(
@@ -192,6 +258,190 @@ def test_resolver_uses_only_source_size_and_user_bleed():
     same_input = resolve_page_sheet_geometry(154 * MM_TO_PT, 216 * MM_TO_PT, 0)
     assert same_input.trim_width / MM_TO_PT == pytest.approx(154)
     assert same_input.trim_height / MM_TO_PT == pytest.approx(216)
+
+
+def test_large_canvas_page_sheet_preview_and_export_use_logical_cropbox(tmp_path):
+    """Hồi quy Binder162: preview và export đều dùng trang logic 147,1 x 51,3 mm."""
+    source = tmp_path / "page-sheet-large-canvas.pdf"
+    output = tmp_path / "page-sheet-large-canvas-out.pdf"
+    _make_large_canvas_page_sheet(source)
+
+    meta_page = _get_pdf_meta({"path": str(source)})["pages"][0]
+    logical_w = LOGICAL_CROP_PT[2] - LOGICAL_CROP_PT[0]
+    logical_h = LOGICAL_CROP_PT[3] - LOGICAL_CROP_PT[1]
+    assert (meta_page["width_pt"], meta_page["height_pt"]) == pytest.approx(
+        (logical_w, logical_h),
+    )
+    assert (meta_page["media_width_pt"], meta_page["media_height_pt"]) == pytest.approx(
+        LARGE_MEDIA_PT,
+    )
+
+    common = {
+        "usable_w": 320 * MM_TO_PT,
+        "usable_h": 450 * MM_TO_PT,
+        "gap_x": 2 * MM_TO_PT,
+        "gap_y": 2 * MM_TO_PT,
+        "strategy": "optimal_auto",
+        "path": str(source),
+        "bleed": 0.0,
+        "task_mode": "nup",
+        "is_die_cut": False,
+        "page_sheet_mode": True,
+        "sheet_w": 320 * MM_TO_PT,
+        "sheet_h": 450 * MM_TO_PT,
+        "margin_left": 0.0,
+        "margin_right": 0.0,
+        "margin_top": 0.0,
+        "margin_bottom": 0.0,
+    }
+    logical_preview = preview_layouts_batch(
+        PreviewLayoutBatchRequest(
+            **common,
+            pages=[{
+                "page_idx": 0,
+                "item_w": meta_page["width_pt"],
+                "item_h": meta_page["height_pt"],
+            }],
+        ),
+        PRO_LICENSE,
+    )["capacities"][0]
+    raw_media_preview = preview_layouts_batch(
+        PreviewLayoutBatchRequest(
+            **common,
+            pages=[{
+                "page_idx": 0,
+                "item_w": meta_page["media_width_pt"],
+                "item_h": meta_page["media_height_pt"],
+            }],
+        ),
+        PRO_LICENSE,
+    )["capacities"][0]
+
+    assert logical_preview > 0
+    assert raw_media_preview == 0
+
+    nup_engine.run_nup_engine(
+        str(source),
+        str(output),
+        _settings(
+            sheetWidth=320,
+            sheetHeight=450,
+            gridStrategy="optimal_auto",
+            targetQuantity=0,
+            targetQuantitiesByPage={},
+            bleed=0,
+            gapX=2,
+            gapY=2,
+            cols=0,
+            rows=0,
+        ),
+        job_id="page-sheet-large-canvas",
+    )
+
+    with pikepdf.Pdf.open(output) as pdf:
+        assert len(pdf.pages) == 2
+        assert sum(
+            str(instruction.operator) == "Do"
+            for instruction in pikepdf.parse_content_stream(pdf.pages[0])
+        ) == logical_preview
+    print_paths = _vector_paths(output, 0)
+    assert any(
+        path.get("fill") is not None
+        and max(path["rect"].width, path["rect"].height) > logical_w * 0.8
+        and min(path["rect"].width, path["rect"].height) > logical_h * 0.8
+        for path in print_paths
+    ), "Artwork trong CropBox phải hiện đủ lớn, không bị co theo toàn MediaBox."
+
+
+def test_page_sheet_without_cutcontour_uses_logical_page_as_rectangular_die(tmp_path):
+    """Nguyên tấm không có CutContour vẫn xuất trang in và trang khuôn theo CropBox."""
+    source = tmp_path / "page-sheet-no-cut.pdf"
+    output = tmp_path / "page-sheet-no-cut-out.pdf"
+    _make_large_canvas_page_sheet_without_cut(source)
+
+    meta_page = _get_pdf_meta({"path": str(source)})["pages"][0]
+    common = {
+        "usable_w": 320 * MM_TO_PT,
+        "usable_h": 450 * MM_TO_PT,
+        "gap_x": 2 * MM_TO_PT,
+        "gap_y": 2 * MM_TO_PT,
+        "strategy": "optimal_auto",
+        "pages": [{
+            "page_idx": 0,
+            "item_w": meta_page["width_pt"],
+            "item_h": meta_page["height_pt"],
+        }],
+        "path": str(source),
+        "bleed": 0.0,
+        "task_mode": "nup",
+        "is_die_cut": False,
+        "page_sheet_mode": True,
+        "sheet_w": 320 * MM_TO_PT,
+        "sheet_h": 450 * MM_TO_PT,
+        "margin_left": 0.0,
+        "margin_right": 0.0,
+        "margin_top": 0.0,
+        "margin_bottom": 0.0,
+    }
+    capacity = preview_layouts_batch(
+        PreviewLayoutBatchRequest(**common),
+        PRO_LICENSE,
+    )["capacities"][0]
+    assert capacity == 18
+
+    nup_engine.run_nup_engine(
+        str(source),
+        str(output),
+        _settings(
+            sheetWidth=320,
+            sheetHeight=450,
+            gridStrategy="optimal_auto",
+            targetQuantity=0,
+            targetQuantitiesByPage={},
+            bleed=0,
+            gapX=2,
+            gapY=2,
+            cols=0,
+            rows=0,
+        ),
+        job_id="page-sheet-no-cut",
+    )
+
+    logical_w = LOGICAL_CROP_PT[2] - LOGICAL_CROP_PT[0]
+    logical_h = LOGICAL_CROP_PT[3] - LOGICAL_CROP_PT[1]
+    with pikepdf.Pdf.open(output) as pdf:
+        assert len(pdf.pages) == 2
+        assert sum(
+            str(instruction.operator) == "Do"
+            for instruction in pikepdf.parse_content_stream(pdf.pages[0])
+        ) == capacity
+
+    print_paths = _vector_paths(output, 0)
+    cut_paths = _vector_paths(output, 1)
+    cut_count = (
+        _matching_path_count(cut_paths, logical_w, logical_h)
+        + _matching_path_count(cut_paths, logical_h, logical_w)
+    )
+    assert cut_count == capacity
+    assert any(
+        path.get("fill") is not None
+        and max(path["rect"].width, path["rect"].height) > logical_w * 0.8
+        and min(path["rect"].width, path["rect"].height) > logical_h * 0.8
+        for path in print_paths
+    ), "Trang in phải chứa artwork thật trong tất cả vị trí đã tính."
+
+
+def test_page_sheet_small_crop_difference_keeps_media_size(tmp_path):
+    """CropBox chỉ hụt vài pt vẫn là bleed/crop thường, không đổi footprint nguyên tấm."""
+    source = tmp_path / "page-sheet-small-crop.pdf"
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(200.0, 100.0))
+    page.CropBox = pikepdf.Array([3.0, 3.0, 197.0, 97.0])
+    pdf.save(source)
+    pdf.close()
+
+    meta_page = _get_pdf_meta({"path": str(source)})["pages"][0]
+    assert (meta_page["width_pt"], meta_page["height_pt"]) == (200.0, 100.0)
 
 
 @pytest.mark.parametrize("bleed", [-1, float("nan"), float("inf"), 77])

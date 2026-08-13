@@ -19,6 +19,8 @@ export interface NupSlice {
     setRows: (v: number) => void;
     gridStrategy: NupSettings['gridStrategy'];
     setGridStrategy: (v: NupSettings['gridStrategy']) => void;
+    alternateRotation: NupSettings['alternateRotation'];
+    setAlternateRotation: (v: NupSettings['alternateRotation']) => void;
     cutBorder: CutBorderConfig;
     setCutBorder: (v: Partial<CutBorderConfig>) => void;
     groupingStrategy: 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none';
@@ -80,7 +82,7 @@ export interface NupSlice {
 
 export const NUP_PERSIST_KEYS = [
     'impositionUnit',
-    'layoutType', 'columns', 'rows', 'gridStrategy', 'groupingStrategy', 'cutBorder',
+    'layoutType', 'columns', 'rows', 'gridStrategy', 'alternateRotation', 'groupingStrategy', 'cutBorder',
     'clusterCombineMode',
     'clusterTileW', 'clusterTileH', 'clusterSizingMode', 'clusterCols', 'clusterRows',
     'tileGapX', 'tileGapY', 'clusterNesting', 'duplexFlow', 'duplexFlipEdge',
@@ -116,6 +118,8 @@ export const createNupSlice: ImposerSlice<NupSlice> = (set) => ({
     setRows: (v) => set({ rows: v }),
     gridStrategy: 'optimal_auto',
     setGridStrategy: (v) => set({ gridStrategy: v }),
+    alternateRotation: 'none',
+    setAlternateRotation: (v) => set({ alternateRotation: v }),
     cutBorder: { ...DEFAULT_CUT_BORDER_CONFIG },
     setCutBorder: (v) => set((state) => ({
         cutBorder: {

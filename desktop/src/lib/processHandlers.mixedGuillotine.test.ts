@@ -57,6 +57,7 @@ describe('payload Dàn nhiều kích thước', () => {
                 sheetWidth: 320,
                 sheetHeight: 450,
                 bleed: 3,
+                alternateRotation: 'column',
                 gapX: 2,
                 gapY: 2,
                 duplexFlow: 'double',
@@ -70,6 +71,7 @@ describe('payload Dàn nhiều kích thước', () => {
             'D:\\mixed.pdf',
             expect.objectContaining({
                 layoutType: 'mixed_guillotine',
+                alternateRotation: 'none',
                 duplexFlow: 'double',
                 duplexFlipEdge: 'short',
                 exportUniqueSheets: true,

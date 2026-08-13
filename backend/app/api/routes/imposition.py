@@ -711,8 +711,17 @@ def _nup_process_worker(source_path: str, output_path: str, settings: dict, job_
     import tempfile
     import os
     from app.workers.nup_engine import run_nup_engine
+    from app.utils.preview_perf_log import log as _perf, sanitize_diagnostic_id
+    _trace_id = sanitize_diagnostic_id(settings.get("_diagnosticTraceId"))
+    _safe_job_id = sanitize_diagnostic_id(job_id)
     try:
         report_msg = run_nup_engine(source_path, output_path, settings, job_id=job_id, progress_callback=None)
+        if _trace_id:
+            logger.warning(
+                "[IMPOSITION-DIAG] event=job.completed trace=%s job=%s",
+                _trace_id, _safe_job_id,
+            )
+        _perf("EXPORT", "job.completed", trace_id=_trace_id, job_id=_safe_job_id)
         
         # Write success state
         state_file = os.path.join(tempfile.gettempdir(), f"nup_state_{job_id}.txt")
@@ -720,6 +729,17 @@ def _nup_process_worker(source_path: str, output_path: str, settings: dict, job_
             f.write(f"completed|||{report_msg}")
             
     except Exception as e:
+        if _trace_id:
+            logger.warning(
+                "[IMPOSITION-DIAG] event=job.failed trace=%s job=%s error_type=%s",
+                _trace_id, _safe_job_id, type(e).__name__,
+            )
+        _perf(
+            "EXPORT", "job.failed",
+            trace_id=_trace_id,
+            job_id=_safe_job_id,
+            error_type=type(e).__name__,
+        )
         state_file = os.path.join(tempfile.gettempdir(), f"nup_state_{job_id}.txt")
         with open(state_file, 'w', encoding='utf-8') as f:
             f.write(f"failed|||{str(e)}")
@@ -732,6 +752,21 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
     """
     source_path = _validate_file_path(body.get("source_path"))
     settings = dict(body.get("settings", {}) or {})
+    from app.utils.preview_perf_log import log as _perf, sanitize_diagnostic_id
+    _diagnostic_trace_id = sanitize_diagnostic_id(settings.get("diagnosticTraceId"))
+    _diagnostic_preview_request_id = sanitize_diagnostic_id(
+        settings.get("diagnosticPreviewRequestId")
+    )
+    _diagnostic_pending_request_id = sanitize_diagnostic_id(
+        settings.get("diagnosticPendingRequestId")
+    )
+    _diagnostic_preview_state = sanitize_diagnostic_id(
+        settings.get("diagnosticPreviewState")
+    )
+    _diagnostic_layout_type = sanitize_diagnostic_id(settings.get("layoutType"))
+    _diagnostic_strategy = sanitize_diagnostic_id(settings.get("gridStrategy"))
+    if _diagnostic_trace_id:
+        settings["_diagnosticTraceId"] = _diagnostic_trace_id
     page_sheet_raw = settings.get("page_sheet_mode", False)
     if type(page_sheet_raw) is not bool:
         raise HTTPException(status_code=422, detail="page_sheet_mode phải là boolean.")
@@ -746,6 +781,34 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
     # renderer vẫn gate lần hai để không rò sang tem bế/CNC/nguyên tấm.
     try:
         settings = normalize_pont_settings(settings)  # FIX (audit 2026-08-05 §OC.2)
+        from app.workers.nup_layout_solver import (
+            normalize_alternate_rotation,
+            rectangle_inking_is_allowed,
+        )
+        alternate_rotation = normalize_alternate_rotation(
+            settings.get(
+                "alternateRotation", settings.get("alternate_rotation", "none")
+            ),
+            strict=True,
+        )
+        _job_is_die_cut = bool(settings.get("isDieCutMode", False))
+        _job_diecut_inking = rectangle_inking_is_allowed(
+            is_die_cut=_job_is_die_cut,
+            is_cnc=imposer_mode == "cnc",
+            page_sheet_mode=page_sheet_raw,
+            layout_type=str(settings.get("layoutType", "") or ""),
+            cut_type=str(settings.get("cutType", "default") or "default"),
+            shape_type=settings.get("shapeType"),
+            shapes_by_page=settings.get("detectedShapesByPage"),
+        )
+        if (
+            page_sheet_raw
+            or str(settings.get("layoutType", "") or "") == "mixed_guillotine"
+            or imposer_mode == "cnc"
+            or (_job_is_die_cut and not _job_diecut_inking)
+        ):
+            alternate_rotation = "none"
+        settings["alternateRotation"] = alternate_rotation
         from app.workers.nup_cut_border import (
             cut_border_is_applicable,
             normalize_cut_border_settings,
@@ -792,7 +855,37 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
         "cancel_requested": False,
         "process": None,
         "pid": None,
+        "diagnostic_trace_id": _diagnostic_trace_id,
     }
+    if _diagnostic_trace_id:
+        logger.warning(
+            "[IMPOSITION-DIAG] event=job.accepted trace=%s job=%s "
+            "preview_request=%s pending_request=%s preview_capacity=%s preview_state=%s "
+            "layout=%s strategy=%s sheet_mm=%sx%s gap_mm=%sx%s bleed_mm=%s split_gap_mm=%s",
+            _diagnostic_trace_id, job_id, _diagnostic_preview_request_id,
+            _diagnostic_pending_request_id, settings.get("diagnosticPreviewCapacity"),
+            _diagnostic_preview_state, _diagnostic_layout_type, _diagnostic_strategy,
+            settings.get("sheetWidth"), settings.get("sheetHeight"),
+            settings.get("gapX"), settings.get("gapY"), settings.get("bleed"),
+            settings.get("splitGap"),
+        )
+    _perf(
+        "EXPORT", "job.accepted",
+        trace_id=_diagnostic_trace_id,
+        preview_request_id=_diagnostic_preview_request_id,
+        pending_request_id=_diagnostic_pending_request_id,
+        job_id=job_id,
+        layout_type=_diagnostic_layout_type,
+        strategy=_diagnostic_strategy,
+        sheet_w_mm=settings.get("sheetWidth"),
+        sheet_h_mm=settings.get("sheetHeight"),
+        gap_x_mm=settings.get("gapX"),
+        gap_y_mm=settings.get("gapY"),
+        bleed_mm=settings.get("bleed"),
+        split_gap_mm=settings.get("splitGap"),
+        preview_capacity=settings.get("diagnosticPreviewCapacity"),
+        preview_state=_diagnostic_preview_state,
+    )
 
     # Queue outer processes so concurrent jobs cannot multiply process trees
     # without bound. Each granted process still uses the capped inner pool.
@@ -950,7 +1043,7 @@ async def download_nup_result(job_id: str, _: dict = Depends(require_license)):
     )
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Literal
 class PreviewLayoutRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     
@@ -961,6 +1054,7 @@ class PreviewLayoutRequest(BaseModel):
     gap_x: float = Field(ge=0, le=10000)
     gap_y: float = Field(ge=0, le=10000)
     strategy: str
+    alternate_rotation: Literal["none", "row", "column"] = "none"
     shape_type: str = "CUSTOM"
     shape_props: Dict[str, Any] = Field(default_factory=dict)
     pont_config: Optional[PontConfigPayload] = None
@@ -1026,6 +1120,9 @@ class PreviewLayoutRequest(BaseModel):
     cluster_count: Optional[int] = 2
     cluster_gap: Optional[float] = 0
     cluster_distribution: Optional[str] = "default"
+    # PARITY-DIAG (audit 2026-08-12 §SRPARITY.1): telemetry tùy chọn, không đổi layout.
+    diagnostic_trace_id: Optional[str] = Field(default=None, max_length=96)
+    diagnostic_request_id: Optional[str] = Field(default=None, max_length=96)
 
 def _build_pont_base_poly_for_preview(page, result: dict, req: Any, shape_type_hint: str = None):
     """Polygon va chạm boong — KHỚP nup_process_chunk (dùng kích thước Ô solver, không item_w FE).
@@ -1048,7 +1145,10 @@ def _build_pont_base_poly_for_preview(page, result: dict, req: Any, shape_type_h
     cut_type = (getattr(req, 'cut_type', None) or 'default')
     if pw > 0 and ph > 0 and (cut_type == 'one_dao' or shape == 'RECTANGLE'):
         from shapely.geometry import box as _box
-        return _box(0.0, 0.0, pw, ph)
+        # PONT (audit 2026-08-13 §RECT-ROT.1): pw/ph lấy từ ô solver nên đã
+        # phản ánh xoay 90°. Polygon quanh gốc báo cho get_item_polygon chỉ
+        # tịnh tiến, không xoay lần hai thành footprint ngang giả.
+        return _box(-pw / 2.0, -ph / 2.0, pw / 2.0, ph / 2.0)
     if shape == 'CIRCLE_ELLIPSE' and pw > 0 and ph > 0:
         from shapely.geometry import Point
         from shapely.affinity import scale
@@ -1063,7 +1163,7 @@ def _build_pont_base_poly_for_preview(page, result: dict, req: Any, shape_type_h
     # Không extract được: vẫn chữ nhật ô để dò boong (AABB đủ; poly khớp ô tem).
     if pw > 0 and ph > 0:
         from shapely.geometry import box as _box
-        return _box(0.0, 0.0, pw, ph)
+        return _box(-pw / 2.0, -ph / 2.0, pw / 2.0, ph / 2.0)
     return None
 
 def _resolve_preview_secondary_gap(req: Any) -> Optional[float]:
@@ -1416,6 +1516,12 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
     Preview sticker layout — uses the SAME compute function as nup_engine
     to guarantee preview ≡ output.
     """
+    from app.utils.preview_perf_log import log as _diag_log, sanitize_diagnostic_id
+    _diagnostic_trace_id = sanitize_diagnostic_id(req.diagnostic_trace_id)
+    _diagnostic_request_id = sanitize_diagnostic_id(req.diagnostic_request_id)
+    _diagnostic_layout_type = sanitize_diagnostic_id(req.layout_type)
+    _diagnostic_strategy = sanitize_diagnostic_id(req.strategy)
+
     if req.page_sheet_mode:
         _preview_imposer_mode = str(req.imposer_mode or "").strip().lower()
         _preview_task_mode = str(req.task_mode or "").strip().lower()
@@ -1439,6 +1545,27 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
         req.detected_shapes_by_page = {}
         req.detected_shape_params_by_page = {}
         req.duplex_flow = "normal"
+
+    # INKING (audit 2026-08-12 §INK-DIE-02): tem bế chỉ nhận Inking khi hình
+    # chuẩn là RECTANGLE (bao gồm hình vuông); CNC/hình khác luôn bị khóa.
+    _preview_alternate_rotation = req.alternate_rotation
+    from app.workers.nup_layout_solver import rectangle_inking_is_allowed
+    _preview_diecut_inking = rectangle_inking_is_allowed(
+        is_die_cut=bool(req.is_die_cut),
+        is_cnc=str(req.imposer_mode or "").lower() == "cnc",
+        page_sheet_mode=bool(req.page_sheet_mode),
+        layout_type=str(req.layout_type or ""),
+        cut_type=str(req.cut_type or "default"),
+        shape_type=req.shape_type,
+        shapes_by_page=req.detected_shapes_by_page,
+    )
+    if (
+        req.page_sheet_mode
+        or req.layout_type == "mixed_guillotine"
+        or str(req.imposer_mode or "").lower() == "cnc"
+        or (bool(req.is_die_cut) and not _preview_diecut_inking)
+    ):
+        _preview_alternate_rotation = "none"
 
     if req.strategy == 'manual' and (req.cols <= 0 or req.rows <= 0):
         raise HTTPException(
@@ -1764,6 +1891,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         _is_gui_cluster,
                         _ct_cl, _dsm_cl, round(float(_dom_cl or 0), 3),
                         int(req.cols or 0), int(req.rows or 0),
+                        _preview_alternate_rotation,
                     )
                     _hit = _ZONE_NEST_CACHE.get(_ck)
                     if _hit is not None:
@@ -1785,7 +1913,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                             if req.strategy == 'manual':
                                 _sol = _sm_c(
                                     _tw_g, _th_g, req.gap_x, req.gap_y,
-                                    req.cols, req.rows,
+                                    req.cols, req.rows, _preview_alternate_rotation,
                                 )
                                 if (_sol.get('overallWidth', 0) > zone_w + 0.01
                                         or _sol.get('overallHeight', 0) > zone_h + 0.01):
@@ -1794,12 +1922,13 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                                 _sol = _sol_c(
                                     zone_w, zone_h, _tw_g, _th_g,
                                     req.gap_x, req.gap_y, req.strategy, _sg_c,
+                                    _preview_alternate_rotation,
                                 )
                             _r = {'items': [{
                                 'x': _c['x'], 'y': _c['y'],
                                 'width': _c['width'], 'height': _c['height'],
                                 'isRotated': _c.get('isRotated', False),
-                                'isRotated180': False,
+                                'isRotated180': _c.get('isRotated180', False),
                             } for _c in _sol.get('cells', [])]}
                         except Exception as _e_zg:
                             logger.warning("preview gui zone p_idx=%s lỗi: %s", p_idx, _e_zg)
@@ -2381,7 +2510,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                                 "cells": _cells_h, "overallWidth": ov_w,
                                 "overallHeight": ov_h, "totalItems": len(_cells_h),
                             })
-                    logger.info(
+                    logger.warning(
                         "[HOMOGENEOUS PREVIEW] master=trang %d, shape=%s, %d ô (tờ 0, perType=%s)",
                         _master_idx, homogeneous_plan.shape_type.name, len(cells),
                         _use_per_type_pv,
@@ -2536,13 +2665,17 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 _uw_ct = max(_trim_w_ct, req.usable_w - _gutter_total) if _cmode_mp == 'column' else req.usable_w
                 _uh_ct = max(_trim_h_ct, req.usable_h - _gutter_total) if _cmode_mp == 'row' else req.usable_h
                 if req.strategy == 'manual' and getattr(req, 'cols', 0) > 0 and getattr(req, 'rows', 0) > 0:
-                    _lay_ct = _sm_ct(_trim_w_ct, _trim_h_ct, req.gap_x, req.gap_y, req.cols, req.rows)
+                    _lay_ct = _sm_ct(
+                        _trim_w_ct, _trim_h_ct, req.gap_x, req.gap_y,
+                        req.cols, req.rows, _preview_alternate_rotation,
+                    )
                 else:
                     _lay_ct = _sol_ct(
                         usable_w=_uw_ct, usable_h=_uh_ct,
                         orig_w=_trim_w_ct, orig_h=_trim_h_ct,
                         gap_x=req.gap_x, gap_y=req.gap_y,
                         strategy='simple_auto', secondary_gap=getattr(req, 'split_gap', None),
+                        alternate_rotation=_preview_alternate_rotation,
                     )
                 _cells_ct = _lay_ct.get('cells', [])
                 _cap_ct = len(_cells_ct)
@@ -2624,7 +2757,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                             'absX': _ax, 'absY': _ay,
                             'width': _c['width'], 'height': _c['height'],
                             'isRotated': bool(_c.get('isRotated', False)),
-                            'isRotated180': False,
+                            'isRotated180': bool(_c.get('isRotated180', False)),
                             'pageIdx': _pi_ct,
                         })
                         _pbp_ct[str(_pi_ct)] = _pbp_ct.get(str(_pi_ct), 0) + 1
@@ -2683,7 +2816,10 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 _uw_ce = max(_trim_w_ce, _uw_ce)
                 _uh_ce = max(_trim_h_ce, _uh_ce)
                 if req.strategy == 'manual' and getattr(req, 'cols', 0) > 0 and getattr(req, 'rows', 0) > 0:
-                    _lay_ce = _sm_ce(_trim_w_ce, _trim_h_ce, req.gap_x, req.gap_y, req.cols, req.rows)
+                    _lay_ce = _sm_ce(
+                        _trim_w_ce, _trim_h_ce, req.gap_x, req.gap_y,
+                        req.cols, req.rows, _preview_alternate_rotation,
+                    )
                     if (_lay_ce.get('overallWidth', 0) > _uw_ce + 0.01
                             or _lay_ce.get('overallHeight', 0) > _uh_ce + 0.01):
                         doc.close()
@@ -2697,6 +2833,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         orig_w=_trim_w_ce, orig_h=_trim_h_ce,
                         gap_x=req.gap_x, gap_y=req.gap_y,
                         strategy=req.strategy, secondary_gap=getattr(req, 'split_gap', None),
+                        alternate_rotation=_preview_alternate_rotation,
                     )
                 _cells_ce = _lay_ce.get('cells', [])
                 if _cells_ce:
@@ -2744,7 +2881,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                                     'absX': _ax, 'absY': _ay,
                                     'width': _c['width'], 'height': _c['height'],
                                     'isRotated': bool(_c.get('isRotated', False)),
-                                    'isRotated180': False,
+                                    'isRotated180': bool(_c.get('isRotated180', False)),
                                     'blockId': _band,
                                 })
                                 _ow_ce = max(_ow_ce, _ax + _c['width'])
@@ -2799,7 +2936,10 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 _trim_w_mp = max(req.item_w - 2 * _bleed_mp, 1.0)
                 _trim_h_mp = max(req.item_h - 2 * _bleed_mp, 1.0)
                 if req.strategy == 'manual' and getattr(req, 'cols', 0) > 0 and getattr(req, 'rows', 0) > 0:
-                    _mp_layout = solve_manual(_trim_w_mp, _trim_h_mp, req.gap_x, req.gap_y, req.cols, req.rows)
+                    _mp_layout = solve_manual(
+                        _trim_w_mp, _trim_h_mp, req.gap_x, req.gap_y,
+                        req.cols, req.rows, _preview_alternate_rotation,
+                    )
                     if (_mp_layout.get('overallWidth', 0) > req.usable_w + 0.01
                             or _mp_layout.get('overallHeight', 0) > req.usable_h + 0.01):
                         doc.close()
@@ -2813,6 +2953,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         orig_w=_trim_w_mp, orig_h=_trim_h_mp,
                         gap_x=req.gap_x, gap_y=req.gap_y,
                         strategy=req.strategy, secondary_gap=getattr(req, 'split_gap', None),
+                        alternate_rotation=_preview_alternate_rotation,
                     )
                 _mp_cells = _mp_layout.get('cells', [])
                 _mp_cap = len(_mp_cells)
@@ -3000,7 +3141,10 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 trim_h = max(req.item_h - 2 * bleed_pt, 1.0)
                 _split_gap_val = getattr(req, 'split_gap', None)
                 if req.strategy == 'manual' and getattr(req, 'cols', 0) > 0 and getattr(req, 'rows', 0) > 0:
-                    result = solve_manual(trim_w, trim_h, req.gap_x, req.gap_y, req.cols, req.rows)
+                    result = solve_manual(
+                        trim_w, trim_h, req.gap_x, req.gap_y,
+                        req.cols, req.rows, _preview_alternate_rotation,
+                    )
                     if (result.get('overallWidth', 0) > compute_w + 0.01
                             or result.get('overallHeight', 0) > compute_h + 0.01):
                         doc.close()
@@ -3017,9 +3161,43 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         gap_x=req.gap_x,
                         gap_y=req.gap_y,
                         strategy=req.strategy,
-                        secondary_gap=_split_gap_val
+                        secondary_gap=_split_gap_val,
+                        alternate_rotation=_preview_alternate_rotation,
                     )
                 logger.info(f"[PREVIEW SOLVER RESULT] totalItems={result.get('totalItems')} strategy={result.get('strategyUsed')}")
+                _diag_log(
+                    "PREVIEW", "solver.result",
+                    trace_id=_diagnostic_trace_id,
+                    request_id=_diagnostic_request_id,
+                    layout_type=_diagnostic_layout_type,
+                    strategy=_diagnostic_strategy,
+                    sheet_w_mm=req.sheet_w / 2.83465,
+                    sheet_h_mm=req.sheet_h / 2.83465,
+                    usable_w_mm=req.usable_w / 2.83465,
+                    usable_h_mm=req.usable_h / 2.83465,
+                    item_w_pt=req.item_w,
+                    item_h_pt=req.item_h,
+                    gap_x_mm=req.gap_x / 2.83465,
+                    gap_y_mm=req.gap_y / 2.83465,
+                    bleed_mm=req.bleed / 2.83465,
+                    split_gap_mm=(req.split_gap or 0) / 2.83465,
+                    capacity=result.get("totalItems"),
+                    strategy_used=result.get("strategyUsed"),
+                )
+                if _diagnostic_trace_id:
+                    logger.warning(
+                        "[IMPOSITION-DIAG] event=preview.solver.result trace=%s request=%s "
+                        "capacity=%s layout=%s strategy=%s sheet_mm=%.3fx%.3f "
+                        "usable_mm=%.3fx%.3f item_pt=%.3fx%.3f gap_mm=%.3fx%.3f "
+                        "bleed_mm=%.3f split_gap_mm=%.3f",
+                        _diagnostic_trace_id, _diagnostic_request_id,
+                        result.get("totalItems"), _diagnostic_layout_type, _diagnostic_strategy,
+                        req.sheet_w / 2.83465, req.sheet_h / 2.83465,
+                        req.usable_w / 2.83465, req.usable_h / 2.83465,
+                        req.item_w, req.item_h,
+                        req.gap_x / 2.83465, req.gap_y / 2.83465,
+                        req.bleed / 2.83465, (req.split_gap or 0) / 2.83465,
+                    )
                 result['shapeType'] = 'CUSTOM'
                 result['strategyUsed'] = req.strategy
                 result['widthUsed'] = result.get('overallWidth', 0)
@@ -3060,6 +3238,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     cut_type=_ct_a,
                     die_size_mode=_dsm_a,
                     die_offset_mm=_dom_a,
+                    alternate_rotation=_preview_alternate_rotation,
                 )
                 with _NEST_CACHE_LOCK:
                     _hit_a = _NEST_A_CACHE.get(_ck_a)
@@ -3091,6 +3270,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         cut_type=_ct_a,
                         die_size_mode=_dsm_a,
                         die_offset_mm=_dom_a,
+                        alternate_rotation=_preview_alternate_rotation,
                     )
                     _plog("compute layout done (nest)")
                     with _NEST_CACHE_LOCK:
@@ -3264,13 +3444,16 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
         if not getattr(req, 'is_die_cut', False) and _tm in ('nup', 'step_repeat', 'booklet'):
             from app.workers.nup_layout_solver import solve_optimal_layout, solve_manual
             if req.strategy == 'manual' and getattr(req, 'cols', 0) > 0 and getattr(req, 'rows', 0) > 0:
+                result = solve_manual(
+                    trim_w, trim_h, req.gap_x, req.gap_y,
+                    req.cols, req.rows, _preview_alternate_rotation,
+                )
                 if (result.get('overallWidth', 0) > req.usable_w + 0.01
                         or result.get('overallHeight', 0) > req.usable_h + 0.01):
                     raise HTTPException(
                         status_code=422,
                         detail="L\u01b0\u1edbi th\u1ee7 c\u00f4ng v\u01b0\u1ee3t v\u00f9ng gi\u1ea5y s\u1eed d\u1ee5ng.",
                     )
-                result = solve_manual(trim_w, trim_h, req.gap_x, req.gap_y, req.cols, req.rows)
             else:
                 result = solve_optimal_layout(
                     usable_w=req.usable_w,
@@ -3280,7 +3463,8 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     gap_x=req.gap_x,
                     gap_y=req.gap_y,
                     strategy=req.strategy,
-                    secondary_gap=getattr(req, 'split_gap', None)
+                    secondary_gap=getattr(req, 'split_gap', None),
+                    alternate_rotation=_preview_alternate_rotation,
                 )
             result['shapeType'] = 'CUSTOM'
             result['strategyUsed'] = req.strategy
@@ -3300,6 +3484,9 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 shape_props=req.shape_props,
                 strategy=req.strategy
             )
+            from app.workers.nup_layout_solver import apply_alternate_rotation
+            if str(req.shape_type or '').strip().upper() == 'RECTANGLE':
+                result = apply_alternate_rotation(result, _preview_alternate_rotation)
         
         items = result.get("items", [])
         items = apply_preview_collisions(items, req.item_w, req.item_h, req, result.get("widthUsed", 0), result.get("heightUsed", 0))
@@ -3350,7 +3537,7 @@ _NEST_CACHE_LOCK = _threading_batch.RLock()
 def _sticker_nest_cache_key(
     *, file_path, mtime, page_idx, compute_w, compute_h, gap_x, gap_y,
     strategy, shape_override, shape_props, bleed_pt, secondary_gap,
-    cut_type, die_size_mode, die_offset_mm,
+    cut_type, die_size_mode, die_offset_mm, alternate_rotation='none',
 ):
     """Một cache key dùng chung cho batch capacity và preview từng trang."""
     return (
@@ -3362,6 +3549,7 @@ def _sticker_nest_cache_key(
         round(float(bleed_pt), 3),
         round(float(secondary_gap), 3) if secondary_gap is not None else None,
         cut_type, die_size_mode, round(float(die_offset_mm or 0), 3),
+        str(alternate_rotation or 'none'),
     )
 
 
@@ -3435,6 +3623,7 @@ class PreviewLayoutBatchRequest(BaseModel):
     gap_x: float
     gap_y: float
     strategy: str = "optimal_auto"
+    alternate_rotation: Literal["none", "row", "column"] = "none"
     cols: int = 0
     rows: int = 0
     # Mỗi phần tử: {page_idx:int, shape_type?:str, shape_props?:dict, item_w?:float, item_h?:float}
@@ -3544,6 +3733,25 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
         req.is_die_cut = False
         req.task_mode = "step_repeat" if req.task_mode == "step_repeat" else "nup"
         req.cut_type = "default"
+    _batch_alternate_rotation = req.alternate_rotation
+    from app.workers.nup_layout_solver import rectangle_inking_is_allowed
+    _batch_shapes = {
+        str(index): page.get("shape_type")
+        for index, page in enumerate(req.pages or [])
+    }
+    _batch_diecut_inking = rectangle_inking_is_allowed(
+        is_die_cut=bool(req.is_die_cut),
+        is_cnc=str(req.imposer_mode or "").lower() == "cnc",
+        page_sheet_mode=bool(req.page_sheet_mode),
+        cut_type=str(req.cut_type or "default"),
+        shapes_by_page=_batch_shapes,
+    )
+    if (
+        req.page_sheet_mode
+        or str(req.imposer_mode or "").lower() == "cnc"
+        or (bool(req.is_die_cut) and not _batch_diecut_inking)
+    ):
+        _batch_alternate_rotation = "none"
     enforce_feature(_imposition_feature(req), license_info)
     if req.strategy == 'manual' and (req.cols <= 0 or req.rows <= 0):
         raise HTTPException(
@@ -3681,6 +3889,47 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
         shape_override = _shape if (_shape and _shape != 'CUSTOM') else ('CUSTOM' if _shape == 'CUSTOM' else None)
         _layout_ck = None
         _batch_ck = None
+
+        def _sticker_capacity_after_pont(layout_result: dict) -> int:
+            """Đếm sức chứa sau né ốc bằng đúng finalize/resolver của preview + export."""
+            raw_items = list((layout_result or {}).get("items") or [])
+            if (
+                not raw_items
+                or not req.pont_config
+                or req.pont_config.get('disableCollision', False)
+                or is_cluster
+            ):
+                return len(raw_items)
+            try:
+                from app.workers.imposition_finalize import (
+                    finalize_placements,
+                    resolve_pont_collisions_on_placements,
+                )
+
+                base_poly = _build_pont_base_poly_for_preview(
+                    doc[page_idx], layout_result, req, shape_override,
+                )
+                placements = finalize_placements(
+                    raw_items,
+                    req.usable_w,
+                    req.usable_h,
+                    req.margin_left,
+                    req.margin_bottom,
+                    req.margin_top,
+                    page_idx,
+                )
+                placements = resolve_pont_collisions_on_placements(
+                    placements, req, base_poly,
+                )
+                return len(placements)
+            except Exception as exc:
+                logger.warning(
+                    "[BATCH CAPACITY] page %s pont collision failed: %s",
+                    page_idx,
+                    exc,
+                )
+                return len(raw_items)
+
         if _use_sticker:
             _layout_ck = _sticker_nest_cache_key(
                 file_path=file_path,
@@ -3698,13 +3947,16 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                 cut_type=req.cut_type,
                 die_size_mode=req.die_size_mode,
                 die_offset_mm=req.die_offset_mm,
+                alternate_rotation=_batch_alternate_rotation,
             )
             with _NEST_CACHE_LOCK:
                 _cached_layout = _NEST_A_CACHE.get(_layout_ck)
                 if _cached_layout is not None:
                     _NEST_A_CACHE.move_to_end(_layout_ck)
             if _cached_layout is not None:
-                return len(_cached_layout.get("items", []))
+                # PONT (audit 2026-08-13 §BATCH-CAP.1): cache chỉ chứa layout
+                # thô; sức chứa vẫn phải tính lại sau né ốc theo cấu hình hiện tại.
+                return _sticker_capacity_after_pont(_cached_layout)
         else:
             _batch_ck = (
                 file_path, _mtime, page_idx, _use_sticker,
@@ -3718,6 +3970,7 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                 round(p.get("item_w", 0) or 0, 3), round(p.get("item_h", 0) or 0, 3),
                 int(req.cols or 0), int(req.rows or 0),
                 bool(req.page_sheet_mode),
+                _batch_alternate_rotation,
                 round(float(req.sheet_w or 0), 3),
                 round(float(req.sheet_h or 0), 3),
                 round(float(req.margin_left or 0), 3),
@@ -3749,8 +4002,9 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                     cut_type=getattr(req, 'cut_type', 'default'),
                     die_size_mode=getattr(req, 'die_size_mode', 'die'),
                     die_offset_mm=getattr(req, 'die_offset_mm', 0),
+                    alternate_rotation=_batch_alternate_rotation,
                 )
-                _cap = len(result.get("items", []))
+                _cap = _sticker_capacity_after_pont(result)
                 with _NEST_CACHE_LOCK:
                     _NEST_A_CACHE[_layout_ck] = _copy_mod.deepcopy(result)
                     _NEST_A_CACHE.move_to_end(_layout_ck)
@@ -3765,7 +4019,7 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                         raise ValueError("Manual grid requires positive columns and rows")
                     res = solve_manual(
                         trim_w, trim_h, req.gap_x, req.gap_y,
-                        req.cols, req.rows,
+                        req.cols, req.rows, _batch_alternate_rotation,
                     )
                     if (res.get('overallWidth', 0) > compute_w + 0.01
                             or res.get('overallHeight', 0) > compute_h + 0.01):
@@ -3780,6 +4034,7 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                         gap_y=req.gap_y,
                         strategy=req.strategy,
                         secondary_gap=_secondary_gap,
+                        alternate_rotation=_batch_alternate_rotation,
                     )
                 _cells = list(res.get('cells', []))
                 if (

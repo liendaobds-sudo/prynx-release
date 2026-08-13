@@ -48,7 +48,7 @@ import AutoCatalogSection from './sections/AutoCatalogSection';
 import PreprocessingRouter from './sections/PreprocessingRouter';
 import GridSettingsSection from './sections/GridSettingsSection';
 import AdvancedSettingsSection from './sections/AdvancedSettingsSection';
-import GridPreview from './sections/GridPreview';
+import GridPreview, { type GridPreviewDiagnosticEvent } from './sections/GridPreview';
 import ProductFirstPanel from './ProductFirstPanel';
 import { HIDE_PRODUCT_FIRST } from '../../lib/featureFocus';
 import { useWorkspaceToolActivationGuard } from '../../hooks/useToolActivationGuard';
@@ -69,6 +69,7 @@ import {
     shapeDetectionSourceKey,
     projectPageRecordToViewer,
     projectShapeParamsToViewer,
+    canUseRectangleStickerInking,
     resolvePreviewItemDimension,
     usesPageSizedStickerShape,
 } from './shapeDetectionPolicy';
@@ -225,10 +226,10 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         taskMode: s.taskMode,
         pageSheetMode,
     });
-    const sourcePageDimForGeometry = pageSheetMode
-        ? (s.sourceMediaPageDim || s.sourcePageDim)
-        : s.sourcePageDim;
-
+    // PAGEBOX (audit 2026-08-13 §PS.1): /pdf-meta đã chọn hộp trang hiệu dụng.
+    // Dùng lại đúng kích thước đó cho Nguyên tấm decal; nếu quay về MediaBox thô,
+    // trang logic nhỏ trên canvas lớn sẽ báo 0 tem/tờ dù phần nhìn thấy vẫn vừa giấy.
+    const sourcePageDimForGeometry = s.sourcePageDim;
     // UIUX (audit 2026-07-27 §B-13/§B-21): chọn tool mới → focus vào panel cấu hình
     // để Tab đi thẳng vào field đầu của form (không phải Tab xuyên qua toolbar).
     // Guard: chỉ khi đổi thật, không cướp focus lúc mount đầu.
@@ -296,17 +297,32 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         () => projectPageRecordToViewer(detectedShapesByPage, viewerPageOrder),
         [detectedShapesByPage, viewerPageOrder],
     );
+    const rectangleStickerInking = canUseRectangleStickerInking(
+        activeTool,
+        pageSheetMode,
+        s.cutType,
+        previewDetectedShapesByPage,
+        bookReportPageCount,
+    );
+    // INKING (audit 2026-08-12 §INK-DIE-03): trạng thái được nhớ theo profile,
+    // nhưng chỉ truyền xuống engine cho N-Up phù hợp hoặc tem bế chữ nhật/vuông.
+    const effectiveAlternateRotation = (
+        (
+            activeTool === 'nup'
+            && !pageSheetMode
+            && s.layoutType !== 'mixed_guillotine'
+            && (s.taskMode === 'nup' || s.taskMode === 'step_repeat')
+        ) || rectangleStickerInking
+    ) ? s.alternateRotation : 'none' as const;
     const previewDetectedDimensionsByPage = useMemo(
         () => projectPageRecordToViewer(detectedDimensionsByPage, viewerPageOrder),
         [detectedDimensionsByPage, viewerPageOrder],
     );
     const sourceDimensionsByPage = useMemo(
         () => Object.fromEntries(
-            ((pageSheetMode && s.sourceMediaPageDims.length > 0
-                ? s.sourceMediaPageDims
-                : s.sourcePageDims) || []).map((dim, index) => [index, dim]),
+            (s.sourcePageDims || []).map((dim, index) => [index, dim]),
         ),
-        [pageSheetMode, s.sourcePageDims, s.sourceMediaPageDims],
+        [s.sourcePageDims],
     );
     const previewSourceDimensionsByPage = useMemo(
         () => projectPageRecordToViewer(sourceDimensionsByPage, viewerPageOrder),
@@ -411,6 +427,47 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         }),
         [detectionSourceKey, viewerPageOrder, viewerPageInstanceIds, viewerPageRotations, previewSourceDimensionsByPage, sourceTotalPages],
     );
+    const diagnosticTraceId = useMemo(() => {
+        const randomId = globalThis.crypto?.randomUUID?.()
+            || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+        return `sr-${randomId}`.slice(0, 64);
+    }, [tabId, previewSourceKey]);
+    const previewDiagnosticRef = useRef<{
+        traceId: string;
+        appliedRequestId?: string;
+        pendingRequestId?: string;
+        capacity?: number;
+        state: 'none' | 'pending' | 'applied' | 'failed';
+    }>({ traceId: diagnosticTraceId, state: 'none' });
+    useEffect(() => {
+        previewDiagnosticRef.current = { traceId: diagnosticTraceId, state: 'none' };
+    }, [diagnosticTraceId]);
+    const handlePreviewDiagnosticEvent = useCallback((event: GridPreviewDiagnosticEvent) => {
+        if (event.traceId !== diagnosticTraceId) return;
+        const current = previewDiagnosticRef.current.traceId === diagnosticTraceId
+            ? previewDiagnosticRef.current
+            : { traceId: diagnosticTraceId, state: 'none' as const };
+        if (event.phase === 'pending') {
+            previewDiagnosticRef.current = {
+                ...current,
+                pendingRequestId: event.requestId,
+                state: 'pending',
+            };
+        } else if (event.phase === 'applied') {
+            previewDiagnosticRef.current = {
+                traceId: diagnosticTraceId,
+                appliedRequestId: event.requestId,
+                capacity: event.capacity,
+                state: 'applied',
+            };
+        } else if (current.pendingRequestId === event.requestId) {
+            previewDiagnosticRef.current = {
+                ...current,
+                pendingRequestId: undefined,
+                state: event.phase === 'failed' ? 'failed' : (current.appliedRequestId ? 'applied' : 'none'),
+            };
+        }
+    }, [diagnosticTraceId]);
 
     // ═══ Paper Presets ═══
     const { savedForms, handleSavePreset: _savePreset, handleUpdatePreset: _updatePreset, handleDeletePreset: _deletePreset } = usePaperPresets('printauto_saved_forms');
@@ -1049,6 +1106,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     gap_x: (s.gapX || 0) * MM_TO_PT,
                     gap_y: (s.gapY || 0) * MM_TO_PT,
                     strategy: s.gridStrategy || 'optimal_auto',
+                    alternate_rotation: effectiveAlternateRotation,
                     pages,
                     ...(srcPath ? { path: srcPath } : { file_id: srcFileId }),
                     cols: s.columns || 0,
@@ -1232,6 +1290,9 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             const _pressNup = resolvePressSheetDims();
             const effSheetW = _pressNup.w;
             const effSheetH = _pressNup.h;
+            const diagnosticSnapshot = previewDiagnosticRef.current.traceId === diagnosticTraceId
+                ? previewDiagnosticRef.current
+                : { traceId: diagnosticTraceId, state: 'none' as const };
 
             // Gripper chỉ cộng lề dưới khi N-up + classification offset (máy offset).
             // Không cộng cho bế tem/CNC — tránh rò nhíp từ session booklet offset.
@@ -1288,12 +1349,18 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     : (s.layoutType === 'repeat' ? 'sequential' : s.layoutType),
                 formsize: finalFormsize, customSheetWidth: effSheetW, customSheetHeight: effSheetH,
                 bleed: s.bleed, columns: s.columns, rows: s.rows, gridStrategy: s.gridStrategy,
+                alternateRotation: effectiveAlternateRotation,
                 groupingStrategy: s.taskMode === 'step_repeat'
                     ? 'none'
                     : (dieGeometryMode || s.markType === 'guillotine' ? s.groupingStrategy : 'none'),
                 clusterMode: effClusterMode, clusterCount: s.clusterCount, clusterGap: s.clusterGap,
                 clusterGapMode: s.clusterGapMode, clusterDistribution: s.clusterDistribution, clusterBorder: s.clusterBorder,
                 splitGap: splitGap,
+                diagnosticTraceId,
+                diagnosticPreviewRequestId: diagnosticSnapshot.appliedRequestId,
+                diagnosticPendingRequestId: diagnosticSnapshot.pendingRequestId,
+                diagnosticPreviewCapacity: diagnosticSnapshot.capacity,
+                diagnosticPreviewState: diagnosticSnapshot.state,
                 gapX: s.gapX, gapY: s.gapY, marginTop: s.marginTop, marginBottom: effMarginBottom, marginLeft: s.marginLeft, marginRight: s.marginRight,
                 marginMode: dieGeometryMode ? 'labels_only' : s.marginMode,
                 duplexFlow: pageSheetMode ? 'normal' : s.duplexFlow, align: s.align, mirrorAlign: true,
@@ -1324,8 +1391,11 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 targetQuantity: s.targetQuantity, targetQuantitiesByPage: s.targetQuantitiesByPage,
                 // UI hiển thị ?? true khi chưa tick; PHẢI dùng cùng fallback lúc chạy
                 // (trước đây !!undefined = false → checkbox tick nhưng vẫn đè tab hiện tại).
-                detectedShapesByPage: dieGeometryMode ? detectedShapesByPage : undefined,
-                detectedShapeParamsByPage: dieGeometryMode ? detectedShapeParamsByPage : undefined,
+                // INKING (audit 2026-08-12 §INK-DIE-06): working PDF đi theo thứ
+                // tự viewer; shape map cũng phải project y hệt để trang đã xóa
+                // không còn khóa Inking và trang reorder không lệch khuôn.
+                detectedShapesByPage: dieGeometryMode ? previewDetectedShapesByPage : undefined,
+                detectedShapeParamsByPage: dieGeometryMode ? previewDetectedShapeParamsByPage : undefined,
                 spawnNewTab: s.spawnNewTabByTool[activeTool] ?? true,
                 // Report & xuất tờ duy nhất (spec: binh-tem-be-report) — luôn bật cho sticker & CNC
                 exportUniqueSheets: s.layoutType === 'mixed_guillotine'
@@ -1376,6 +1446,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 ? lastSameSizeLayoutRef.current
                 : s.layoutType,
             columns: s.columns, rows: s.rows, gridStrategy: s.gridStrategy,
+            alternateRotation: effectiveAlternateRotation,
             groupingStrategy: s.groupingStrategy, duplexFlow: s.duplexFlow,
             align: s.align, clusterMode: s.clusterMode, clusterCount: s.clusterCount,
             clusterGap: s.clusterGap, clusterGapMode: s.clusterGapMode,
@@ -1411,7 +1482,14 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                         : preset.nup.layoutType,
                 );
                 s.setColumns(preset.nup.columns); s.setRows(preset.nup.rows);
-                s.setGridStrategy(preset.nup.gridStrategy || 'optimal_auto'); s.setDuplexFlow(preset.nup.duplexFlow);
+                s.setGridStrategy(preset.nup.gridStrategy || 'optimal_auto');
+                const alternateRotation = preset.nup.alternateRotation;
+                s.setAlternateRotation(
+                    alternateRotation === 'row' || alternateRotation === 'column'
+                        ? alternateRotation
+                        : 'none',
+                );
+                s.setDuplexFlow(preset.nup.duplexFlow);
                 s.setAlign(preset.nup.align as any);
                 s.setClusterMode(preset.nup.clusterMode); s.setClusterCount(preset.nup.clusterCount);
                 s.setClusterGap(preset.nup.clusterGap); s.setClusterGapMode(preset.nup.clusterGapMode);
@@ -1618,7 +1696,11 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                         </>
                     )}
 
-                    <AdvancedSettingsSection activeTool={activeTool} sourceTotalPages={bookReportPageCount} />
+                    <AdvancedSettingsSection
+                        activeTool={activeTool}
+                        sourceTotalPages={bookReportPageCount}
+                        rectangleStickerInking={rectangleStickerInking}
+                    />
 
                     {/* Grid preview for all modes */}
                     {(s.taskMode === 'nup' || s.taskMode === 'step_repeat' || s.taskMode === 'sticker_imposer') && (
@@ -1702,6 +1784,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                             <GridPreview
                                 activeTool={activeTool}
                                 taskMode={s.taskMode} gridStrategy={s.gridStrategy} columns={s.columns} rows={s.rows}
+                                alternateRotation={effectiveAlternateRotation}
                                 isDieCut={stickerLike}
                                 pageSheetMode={pageSheetMode}
                                 // Defensive: không bao giờ gửi layoutType='repeat' khi
@@ -1825,6 +1908,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                 fillBlockGap={stickerLike ? s.fillBlockGap : undefined}
                                 getWorkingFile={getWorkingFile}
                                 previewSourceKey={previewSourceKey}
+                                diagnosticTraceId={diagnosticTraceId}
+                                onDiagnosticEvent={handlePreviewDiagnosticEvent}
                             />
                             );
                             })()}

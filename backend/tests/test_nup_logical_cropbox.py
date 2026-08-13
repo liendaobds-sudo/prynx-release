@@ -5,13 +5,43 @@ from __future__ import annotations
 import pikepdf
 import pytest
 
+from tests.license_helpers import PRO_LICENSE
 from app.workers import nup_engine
 from app.workers import pdf_wrapper as pdf_lib
-from app.workers.mixed_guillotine_adapter import resolve_guillotine_trim
+from app.api.routes.imposition import (
+    PreviewLayoutBatchRequest,
+    PreviewLayoutRequest,
+    preview_layout,
+    preview_layouts_batch,
+)
+from app.workers.mixed_guillotine_adapter import (
+    resolve_guillotine_source_clip,
+    resolve_guillotine_trim,
+)
+from app.workers.nup_diecut import resolve_one_dao_trim
+from app.workers.pont_collision import (
+    build_collision_base_polygon,
+    calculate_forbidden_zones,
+    detect_collisions,
+)
 
 
 LARGE_MEDIA = [50.0, 30.0, 956.15, 1383.60]
 LOGICAL_CROP = [100.0, 80.0, 517.04, 225.51]
+PONT_5MM = {
+    "shape": "circle",
+    "size": 5.0,
+    "thickness": 0.5,
+    "isGraphtec": False,
+    "layerName": "Marks_Model_",
+    "groupName": "MarkLine",
+    "itemName": "MKLINE",
+    "marginTop": 7.0,
+    "marginBottom": 7.0,
+    "marginLeft": 7.0,
+    "marginRight": 7.0,
+    "disableCollision": False,
+}
 
 
 def _make_cropbox_pdf(path, media_box, crop_box):
@@ -69,6 +99,39 @@ def _minimum_rendered_gray(path):
         doc.close()
 
 
+def _rendered_dark_ratio(path):
+    import numpy as np
+    import pypdfium2 as pdfium
+
+    doc = pdfium.PdfDocument(str(path))
+    try:
+        bitmap = doc[0].render(scale=0.35)
+        gray = np.asarray(bitmap.to_pil().convert("L"))
+        return float((gray < 64).mean())
+    finally:
+        doc.close()
+
+
+def _rendered_page_ratios(path):
+    """Tỷ lệ điểm ảnh để chặn PDF có operator nhưng render thực tế trắng."""
+    import numpy as np
+    import pypdfium2 as pdfium
+
+    doc = pdfium.PdfDocument(str(path))
+    try:
+        ratios = []
+        for page_index in range(len(doc)):
+            bitmap = doc[page_index].render(scale=0.5)
+            rgb = np.asarray(bitmap.to_pil().convert("RGB"))
+            ratios.append({
+                "nonwhite": float(np.any(rgb < 245, axis=2).mean()),
+                "colored": float(((rgb.max(axis=2) - rgb.min(axis=2)) > 20).mean()),
+            })
+        return ratios
+    finally:
+        doc.close()
+
+
 def test_canonicalization_preserves_large_logical_cropbox(tmp_path):
     source = _make_cropbox_pdf(
         tmp_path / "large-canvas.pdf",
@@ -95,10 +158,24 @@ def test_canonicalization_preserves_large_logical_cropbox(tmp_path):
 
     doc = pdf_lib.open(canonical)
     try:
-        assert resolve_guillotine_trim(doc[0], 0.0) == pytest.approx(
+        page = doc[0]
+        crop_width = LOGICAL_CROP[2] - LOGICAL_CROP[0]
+        crop_height = LOGICAL_CROP[3] - LOGICAL_CROP[1]
+        assert resolve_guillotine_trim(page, 0.0) == pytest.approx(
             (
-                LOGICAL_CROP[2] - LOGICAL_CROP[0],
-                LOGICAL_CROP[3] - LOGICAL_CROP[1],
+                crop_width,
+                crop_height,
+            ),
+        )
+        assert resolve_guillotine_trim(page, 2.0) == pytest.approx(
+            (crop_width - 4.0, crop_height - 4.0),
+        )
+        assert resolve_guillotine_source_clip(page, 2.0) == pytest.approx(
+            (
+                page.cropbox.x0,
+                page.rect.height - page.cropbox.y1,
+                page.cropbox.x1,
+                page.rect.height - page.cropbox.y0,
             ),
         )
     finally:
@@ -119,8 +196,352 @@ def test_small_crop_difference_keeps_media_as_logical_page(tmp_path):
         doc.close()
 
 
-def test_explicit_trimbox_remains_finished_size_even_when_difference_is_small(tmp_path):
-    """TrimBox là khai báo thành phẩm rõ ràng, khác CropBox fallback vài pt."""
+def test_one_dao_individual_sticker_uses_logical_cropbox_for_preview_and_export(
+    tmp_path,
+):
+    """Từng tem + 1 Dao theo trang phải cho 18 tem/tờ, không lấy canvas lớn."""
+    source = _make_cropbox_pdf(
+        tmp_path / "one-dao-logical-crop.pdf",
+        LARGE_MEDIA,
+        LOGICAL_CROP,
+    )
+    doc = pdf_lib.open(source)
+    try:
+        assert resolve_one_dao_trim(
+            doc[0], "one_dao", "page", 0,
+        ) == pytest.approx((417.04, 145.51))
+    finally:
+        doc.close()
+
+    mm_to_pt = 72.0 / 25.4
+    request_common = {
+        "usable_w": 320.0 * mm_to_pt,
+        "usable_h": 450.0 * mm_to_pt,
+        "gap_x": 2.0 * mm_to_pt,
+        "gap_y": 2.0 * mm_to_pt,
+        "strategy": "optimal_auto",
+        "path": source,
+        "bleed": 0.0,
+        "task_mode": "step_repeat",
+        "is_die_cut": True,
+        "page_sheet_mode": False,
+        "sheet_w": 320.0 * mm_to_pt,
+        "sheet_h": 450.0 * mm_to_pt,
+        "cut_type": "one_dao",
+        "die_size_mode": "page",
+        "die_offset_mm": 0.0,
+    }
+    preview = preview_layout(
+        PreviewLayoutRequest(
+            **request_common,
+            item_w=417.04,
+            item_h=145.51,
+            shape_type="RECTANGLE",
+            layout_type="repeat",
+        ),
+        license_info=PRO_LICENSE,
+    )
+    assert preview["totalItems"] == 18
+
+    batch = preview_layouts_batch(
+        PreviewLayoutBatchRequest(
+            **request_common,
+            pages=[{
+                "page_idx": 0,
+                "shape_type": "RECTANGLE",
+                "shape_props": {},
+                "item_w": 417.04,
+                "item_h": 145.51,
+            }],
+        ),
+        license_info=PRO_LICENSE,
+    )
+    assert batch["capacities"] == {0: 18}
+
+    output = tmp_path / "one-dao-logical-crop-out.pdf"
+    nup_engine.run_nup_engine(
+        source,
+        str(output),
+        {
+            "imposerMode": "sticker_imposer",
+            "isDieCutMode": True,
+            "sheetWidth": 320.0,
+            "sheetHeight": 450.0,
+            "layoutType": "repeat",
+            "gridStrategy": "optimal_auto",
+            "targetQuantity": 0,
+            "targetQuantitiesByPage": {},
+            "gapX": 2.0,
+            "gapY": 2.0,
+            "marginTop": 0.0,
+            "marginBottom": 0.0,
+            "marginLeft": 0.0,
+            "marginRight": 0.0,
+            "markType": "none",
+            "pontType": "none",
+            "bleed": 0.0,
+            "cutType": "one_dao",
+            "dieSizeMode": "page",
+            "dieOffsetMm": 0.0,
+            "separateCutPage": False,
+            "detectedShapesByPage": {"0": "RECTANGLE"},
+            "detectedShapeParamsByPage": {"0": {}},
+        },
+        job_id="one-dao-logical-crop",
+    )
+    assert _do_count(output) == 18
+    assert _minimum_rendered_gray(output) < 64
+    assert _rendered_dark_ratio(output) > 0.80
+
+
+def test_one_dao_rotated_rectangle_avoids_5mm_ponts_in_preview_batch_and_export(
+    tmp_path,
+):
+    """Ca thật 147,1 × 51,3 mm: footprint xoay dọc không được xoay lần hai."""
+    source = _make_cropbox_pdf(
+        tmp_path / "one-dao-pont-logical-crop.pdf",
+        LARGE_MEDIA,
+        LOGICAL_CROP,
+    )
+    mm_to_pt = 72.0 / 25.4
+    request_common = {
+        "usable_w": 320.0 * mm_to_pt,
+        "usable_h": 450.0 * mm_to_pt,
+        "gap_x": 0.0,
+        "gap_y": 0.0,
+        "strategy": "optimal_auto",
+        "path": source,
+        "bleed": 0.0,
+        "task_mode": "step_repeat",
+        "is_die_cut": True,
+        "page_sheet_mode": False,
+        "pont_config": dict(PONT_5MM),
+        "sheet_w": 320.0 * mm_to_pt,
+        "sheet_h": 450.0 * mm_to_pt,
+        "margin_left": 0.0,
+        "margin_right": 0.0,
+        "margin_top": 0.0,
+        "margin_bottom": 0.0,
+        "cut_type": "one_dao",
+        "die_size_mode": "page",
+        "die_offset_mm": 0.0,
+    }
+
+    preview = preview_layout(
+        PreviewLayoutRequest(
+            **request_common,
+            item_w=417.04,
+            item_h=145.51,
+            shape_type="RECTANGLE",
+            layout_type="repeat",
+        ),
+        license_info=PRO_LICENSE,
+    )
+    assert preview["totalItems"] == 16
+    assert len(preview["cells"]) == 16
+
+    # Chốt trực tiếp bất biến hình học: mọi footprint sau resolver đều rời 4
+    # vùng an toàn quanh ốc, không chỉ kiểm con số 16.
+    placements = [{
+        "abs_x": cell["absX"],
+        "abs_y": cell["absY"],
+        "width": cell["width"],
+        "height": cell["height"],
+        "cell": cell,
+    } for cell in preview["cells"]]
+    base_poly, base_rect = build_collision_base_polygon(
+        None,
+        "RECTANGLE",
+        placements[0]["width"],
+        placements[0]["height"],
+        is_rect_cell=True,
+    )
+    zones = calculate_forbidden_zones(
+        PONT_5MM,
+        {},
+        request_common["sheet_w"],
+        request_common["sheet_h"],
+    )
+    assert detect_collisions(
+        placements,
+        zones,
+        base_poly,
+        base_rect,
+        request_common["sheet_h"],
+    ) == []
+
+    batch = preview_layouts_batch(
+        PreviewLayoutBatchRequest(
+            **request_common,
+            pages=[{
+                "page_idx": 0,
+                "shape_type": "RECTANGLE",
+                "shape_props": {},
+                "item_w": 417.04,
+                "item_h": 145.51,
+            }],
+        ),
+        license_info=PRO_LICENSE,
+    )
+    assert batch["capacities"] == {0: 16}
+
+    output = tmp_path / "one-dao-pont-logical-crop-out.pdf"
+    nup_engine.run_nup_engine(
+        source,
+        str(output),
+        {
+            "imposerMode": "sticker_imposer",
+            "isDieCutMode": True,
+            "sheetWidth": 320.0,
+            "sheetHeight": 450.0,
+            "layoutType": "repeat",
+            "gridStrategy": "optimal_auto",
+            "targetQuantity": 0,
+            "targetQuantitiesByPage": {},
+            "gapX": 0.0,
+            "gapY": 0.0,
+            "marginTop": 0.0,
+            "marginBottom": 0.0,
+            "marginLeft": 0.0,
+            "marginRight": 0.0,
+            "markType": "none",
+            "pontType": "5mm",
+            "pontConfig": dict(PONT_5MM),
+            "bleed": 0.0,
+            "cutType": "one_dao",
+            "dieSizeMode": "page",
+            "dieOffsetMm": 0.0,
+            "separateCutPage": False,
+            "detectedShapesByPage": {"0": "RECTANGLE"},
+            "detectedShapeParamsByPage": {"0": {}},
+        },
+        job_id="one-dao-pont-logical-crop",
+    )
+    assert _do_count(output) == 16
+    assert _minimum_rendered_gray(output) < 64
+    assert _rendered_dark_ratio(output) > 0.65
+
+
+def test_default_cut_without_contour_uses_logical_page_for_preview_and_export(
+    tmp_path,
+):
+    """Mặc định không CutContour phải lấy khổ trang, không xuất hai trang trắng."""
+    source = _make_cropbox_pdf(
+        tmp_path / "default-page-fallback.pdf",
+        LARGE_MEDIA,
+        LOGICAL_CROP,
+    )
+    mm_to_pt = 72.0 / 25.4
+    request_common = {
+        "usable_w": 320.0 * mm_to_pt,
+        "usable_h": 450.0 * mm_to_pt,
+        "gap_x": 0.0,
+        "gap_y": 0.0,
+        "strategy": "optimal_auto",
+        "path": source,
+        "bleed": 0.0,
+        "task_mode": "step_repeat",
+        "is_die_cut": True,
+        "page_sheet_mode": False,
+        "pont_config": dict(PONT_5MM),
+        "sheet_w": 320.0 * mm_to_pt,
+        "sheet_h": 450.0 * mm_to_pt,
+        "margin_left": 0.0,
+        "margin_right": 0.0,
+        "margin_top": 0.0,
+        "margin_bottom": 0.0,
+        "cut_type": "default",
+        "die_size_mode": "die",
+        "die_offset_mm": 0.0,
+    }
+
+    preview = preview_layout(
+        PreviewLayoutRequest(
+            **request_common,
+            item_w=LOGICAL_CROP[2] - LOGICAL_CROP[0],
+            item_h=LOGICAL_CROP[3] - LOGICAL_CROP[1],
+            # UI có thể chưa kịp đổi từ Đặc biệt; fallback PageBox vẫn là chữ nhật.
+            shape_type="CUSTOM",
+            shape_props={},
+            layout_type="repeat",
+        ),
+        license_info=PRO_LICENSE,
+    )
+    assert preview["totalItems"] == 16
+    assert len(preview["cells"]) == 16
+
+    batch = preview_layouts_batch(
+        PreviewLayoutBatchRequest(
+            **request_common,
+            pages=[{
+                "page_idx": 0,
+                "shape_type": "CUSTOM",
+                "shape_props": {},
+                "item_w": LOGICAL_CROP[2] - LOGICAL_CROP[0],
+                "item_h": LOGICAL_CROP[3] - LOGICAL_CROP[1],
+            }],
+        ),
+        license_info=PRO_LICENSE,
+    )
+    assert batch["capacities"] == {0: 16}
+
+    output = tmp_path / "default-page-fallback-out.pdf"
+    nup_engine.run_nup_engine(
+        source,
+        str(output),
+        {
+            "imposerMode": "sticker_imposer",
+            "isDieCutMode": True,
+            "sheetWidth": 320.0,
+            "sheetHeight": 450.0,
+            "layoutType": "repeat",
+            "gridStrategy": "optimal_auto",
+            "targetQuantity": 0,
+            "targetQuantitiesByPage": {},
+            "gapX": 0.0,
+            "gapY": 0.0,
+            "marginTop": 0.0,
+            "marginBottom": 0.0,
+            "marginLeft": 0.0,
+            "marginRight": 0.0,
+            "markType": "none",
+            "pontType": "5mm",
+            "pontConfig": dict(PONT_5MM),
+            "bleed": 0.0,
+            "cutType": "default",
+            "dieSizeMode": "die",
+            "dieOffsetMm": 0.0,
+            "separateCutPage": True,
+            "pontsOnCutFile": True,
+            "detectedShapesByPage": {"0": "CUSTOM"},
+            "detectedShapeParamsByPage": {"0": {}},
+        },
+        job_id="default-page-fallback",
+    )
+
+    with pikepdf.Pdf.open(output) as pdf:
+        assert len(pdf.pages) == 2
+    assert _do_count(output) == 16
+    page_ratios = _rendered_page_ratios(output)
+    assert page_ratios[0]["nonwhite"] > 0.50
+    assert page_ratios[1]["colored"] > 0.01
+
+    rendered = pdf_lib.open(str(output))
+    try:
+        cut_rects = [
+            path["rect"]
+            for path in rendered[1].extract_vector_paths()
+            if path.get("type") == "s"
+            and abs(path["rect"].width - (LOGICAL_CROP[3] - LOGICAL_CROP[1])) < 1.0
+            and abs(path["rect"].height - (LOGICAL_CROP[2] - LOGICAL_CROP[0])) < 1.0
+        ]
+        assert len(cut_rects) == 16
+    finally:
+        rendered.close()
+
+
+def test_ui_bleed_overrides_embedded_trimbox(tmp_path):
+    """Bleed người dùng chọn là nguồn duy nhất để suy ra khổ thành phẩm."""
     media = [0.0, 0.0, 200.0, 100.0]
     source = _make_cropbox_pdf(tmp_path / "explicit-trim.pdf", media, media)
     with pikepdf.Pdf.open(source, allow_overwriting_input=True) as pdf:
@@ -131,9 +552,55 @@ def test_explicit_trimbox_remains_finished_size_even_when_difference_is_small(tm
 
     doc = pdf_lib.open(source)
     try:
-        assert resolve_guillotine_trim(doc[0], 0.0) == pytest.approx((194.0, 94.0))
+        assert resolve_guillotine_trim(doc[0], 2.0) == pytest.approx((196.0, 96.0))
+        assert resolve_guillotine_trim(doc[0], 3.0) == pytest.approx((194.0, 94.0))
+        assert resolve_guillotine_source_clip(doc[0], 2.0) is None
     finally:
         doc.close()
+
+
+def test_export_capacity_follows_ui_bleed_not_embedded_trimbox(tmp_path):
+    """Hồi quy S&R: UI 2 mm → 16 con/tờ, UI 3 mm → 17 con/tờ."""
+    mm_to_pt = 72.0 / 25.4
+    media = [0.0, 0.0, 434.0452, 162.5179]
+    source = _make_cropbox_pdf(tmp_path / "sr-explicit-trim.pdf", media, media)
+    with pikepdf.Pdf.open(source, allow_overwriting_input=True) as pdf:
+        inset = 3.0 * mm_to_pt
+        pdf.pages[0].obj[pikepdf.Name("/TrimBox")] = pikepdf.Array(
+            [inset, inset, media[2] - inset, media[3] - inset],
+        )
+        pdf.save(source)
+
+    base_settings = {
+        "imposerMode": "guillotine",
+        "isDieCutMode": False,
+        "sheetWidth": 330.0,
+        "sheetHeight": 480.0,
+        "layoutType": "repeat",
+        "gridStrategy": "optimal_auto",
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": {},
+        "gapX": 2.0,
+        "gapY": 2.0,
+        "marginTop": 8.0,
+        "marginBottom": 8.0,
+        "marginLeft": 8.0,
+        "marginRight": 8.0,
+        "gripperMargin": 0.0,
+        "markType": "none",
+        "pontType": "none",
+        "splitGap": 6.0,
+    }
+
+    for bleed_mm, expected_capacity in ((2.0, 16), (3.0, 17)):
+        output = tmp_path / f"sr-bleed-{int(bleed_mm)}.pdf"
+        nup_engine.run_nup_engine(
+            source,
+            str(output),
+            {**base_settings, "bleed": bleed_mm},
+            job_id=f"sr-bleed-{int(bleed_mm)}",
+        )
+        assert _do_count(output) == expected_capacity
 
 
 def test_user_unit_output_uses_physical_size_once(tmp_path):

@@ -1,10 +1,17 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { authenticatedFetch, uploadPDF } from '../../lib/api';
 import StickerTool from './StickerTool';
 
+
+vi.mock('../../lib/api', () => ({
+    authenticatedFetch: vi.fn(),
+    getApiUrl: () => 'http://127.0.0.1:8321',
+    uploadPDF: vi.fn(),
+}));
 
 vi.mock('react-i18next', () => ({
     useTranslation: () => ({
@@ -27,6 +34,10 @@ vi.mock('react-i18next', () => ({
             'preprocess.sticker:bo_nen_trang_2': 'Giữ nền trắng',
             'preprocess.sticker:tom_tat_hinh_hoc_bu_xen': 'Tóm tắt hình học bù xén',
             'preprocess.sticker:mau_nen_bu_xen': 'Màu nền bù xén',
+            'preprocess.common:run': 'Thực thi',
+            'preprocess.sticker:da_tao_bu_xen_thanh_cong': 'Đã tạo bù xén thành công!',
+            'preprocess.sticker:buoc_tiep_theo_chon_kieu_dan_trang': 'Bước tiếp theo: Chọn kiểu dàn trang (Imposition)',
+            'preprocess.sticker:quay_lai_chinh_sua_bu_xen': 'Quay lại chỉnh sửa bù xén',
         }[key] || key),
     }),
 }));
@@ -65,6 +76,7 @@ vi.mock('../../hooks/useToolActivationGuard', () => ({
 
 describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () => {
     beforeEach(() => {
+        vi.clearAllMocks();
         window.localStorage.clear();
     });
 
@@ -92,5 +104,42 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
         expect(bleedInput).toBeTruthy();
         fireEvent.change(bleedInput!, { target: { value: '2' } });
         expect(screen.getByTestId('sticker-bleed-geometry-summary')).toBeTruthy();
+    });
+
+    it('tự thu thiết lập sau khi tạo đường cắt và cho xổ lại mà vẫn giữ kết quả', async () => {
+        vi.mocked(uploadPDF).mockResolvedValue({ id: 'source-id' });
+        vi.mocked(authenticatedFetch).mockResolvedValue({
+            ok: true,
+            headers: new Headers(),
+            blob: vi.fn(async () => new Blob(['result'], { type: 'application/pdf' })),
+        } as unknown as Response);
+        const onFileFixed = vi.fn().mockResolvedValue(undefined);
+
+        render(
+            <StickerTool
+                pdfFile={new File(['pdf'], 'tem.pdf', { type: 'application/pdf' })}
+                onFileFixed={onFileFixed}
+            />,
+        );
+
+        const settingsToggle = screen.getByRole('button', { name: /Thiết lập bù xén/ });
+        expect(settingsToggle.getAttribute('aria-expanded')).toBe('true');
+        fireEvent.click(screen.getByRole('button', { name: 'Thực thi' }));
+
+        await waitFor(() => expect(onFileFixed).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(settingsToggle.getAttribute('aria-expanded')).toBe('false'));
+        expect(screen.queryByText('1. Đường cắt (Dieline)')).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Thực thi' })).toBeNull();
+
+        const resultCard = screen.getByRole('status');
+        expect(resultCard.textContent).toContain('Đã tạo bù xén thành công!');
+        expect(settingsToggle.compareDocumentPosition(resultCard) & Node.DOCUMENT_POSITION_FOLLOWING)
+            .toBeTruthy();
+
+        fireEvent.click(settingsToggle);
+        expect(settingsToggle.getAttribute('aria-expanded')).toBe('true');
+        expect(screen.getByText('1. Đường cắt (Dieline)')).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Thực thi' })).toBeTruthy();
+        expect(screen.getByRole('status')).toBe(resultCard);
     });
 });

@@ -669,7 +669,13 @@ def test_small_logo_uses_nearest_upscale_before_trace(monkeypatch):
     assert any("nội suy giữ biên" in warning for warning in prepared.warnings)
 
 
-def test_worker_scales_despeckle_area_with_upscale(monkeypatch):
+@pytest.mark.parametrize(
+    ("mode", "expected_status"),
+    [("monochrome", "review"), ("fixed_palette", "ready")],
+)
+def test_worker_scales_despeckle_area_with_upscale(
+    monkeypatch, mode: str, expected_status: str
+):
     calls = {}
 
     class FakeCancel:
@@ -713,7 +719,8 @@ def test_worker_scales_despeckle_area_with_upscale(monkeypatch):
     result = logo_worker.process_logo_preview(
         _monochrome_logo_bytes((100, 50)),
         LogoRebuildSettings(
-            mode="monochrome",
+            mode=mode,
+            palette=["#000000"] if mode == "fixed_palette" else [],
             despeckle_size_px=4,
             physical_width_mm=50.0,
             physical_height_mm=25.0,
@@ -729,9 +736,12 @@ def test_worker_scales_despeckle_area_with_upscale(monkeypatch):
     assert result.preprocess_hash == "b" * 64
     assert result.native_metrics is not None
     assert result.native_metrics["iou"] == 1.0
-    assert result.status == "review"
+    assert result.status == expected_status
     assert any("4 px" in warning and "8 px" in warning for warning in result.warnings)
-    assert any("chưa áp dụng khử hạt" in reason for reason in result.review_reasons)
+    has_pending_despeckle = any(
+        "chưa áp dụng khử hạt" in reason for reason in result.review_reasons
+    )
+    assert has_pending_despeckle is (mode == "monochrome")
 
 
 def test_structured_contract_error_never_falls_back_to_vtracer(monkeypatch):

@@ -353,12 +353,12 @@ def _solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item_w:
             fr = _best_fill_layout(item_w, item_h, right_avail_w, usable_h, gap_x, gap_y, p5_params, p6_params, p5_row_params, p6_row_params, p5_col_params, p6_col_params, shape_type, shape_props, nfp_provider=_ensure_nfp_params if nfp_context is not None else None)
             _logger.debug(f"[FILL_DEBUG] right_items_a generated: {fr['totalItems']} items, rot={fr.get('items', [{}])[0].get('isRotated') if fr['items'] else None}")
             for it in fr['items']:
-                right_items_a.append({**it, 'x': it['x'] + right_x})
+                right_items_a.append({**it, 'x': it['x'] + right_x, 'blockId': 1})
         bottom_items_a = []
         if bottom_avail_h >= min(item_w, item_h) - 0.01:
             fb = _best_fill_layout(item_w, item_h, best_w, bottom_avail_h, gap_x, gap_y, p5_params, p6_params, p5_row_params, p6_row_params, p5_col_params, p6_col_params, shape_type, shape_props, nfp_provider=_ensure_nfp_params if nfp_context is not None else None)
             for it in fb['items']:
-                bottom_items_a.append({**it, 'y': it['y'] + bottom_y})
+                bottom_items_a.append({**it, 'y': it['y'] + bottom_y, 'blockId': 2})
         config_a = right_items_a + bottom_items_a
 
         # Config B: bottom fill spans full usable width, right fill spans only main block height
@@ -366,12 +366,12 @@ def _solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item_w:
         if bottom_avail_h >= min(item_w, item_h) - 0.01:
             fb = _best_fill_layout(item_w, item_h, usable_w, bottom_avail_h, gap_x, gap_y, p5_params, p6_params, p5_row_params, p6_row_params, p5_col_params, p6_col_params, shape_type, shape_props, nfp_provider=_ensure_nfp_params if nfp_context is not None else None)
             for it in fb['items']:
-                bottom_items_b.append({**it, 'y': it['y'] + bottom_y})
+                bottom_items_b.append({**it, 'y': it['y'] + bottom_y, 'blockId': 2})
         right_items_b = []
         if right_avail_w >= min(item_w, item_h) - 0.01:
             fr = _best_fill_layout(item_w, item_h, right_avail_w, best_h, gap_x, gap_y, p5_params, p6_params, p5_row_params, p6_row_params, p5_col_params, p6_col_params, shape_type, shape_props, nfp_provider=_ensure_nfp_params if nfp_context is not None else None)
             for it in fr['items']:
-                right_items_b.append({**it, 'x': it['x'] + right_x})
+                right_items_b.append({**it, 'x': it['x'] + right_x, 'blockId': 1})
         config_b = right_items_b + bottom_items_b
 
         best_of_ab = config_a if len(config_a) >= len(config_b) else config_b

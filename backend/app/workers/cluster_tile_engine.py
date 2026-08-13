@@ -316,7 +316,12 @@ def _cascade_pack_cluster(
 
         if offset_x > 0.5 or offset_y > 0.5:
             result = [
-                (r[0], r[1] + offset_x, r[2] + offset_y, r[3], r[4], r[5])
+                # INKING (audit 2026-08-12 §INK-DIE-04): tuple thứ 7 là cờ
+                # 180°. Không được làm rơi khi căn giữa cụm trước khi nhân bản.
+                (
+                    r[0], r[1] + offset_x, r[2] + offset_y,
+                    r[3], r[4], r[5], r[6] if len(r) > 6 else False,
+                )
                 for r in result
             ]
             logger.info(

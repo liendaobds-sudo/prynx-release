@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import {
     createImposerSettingsStore,
     ImposerSettingsContext,
 } from '../useImposerSettingsStore';
 import GridSettingsSection, { type GridSettingsProps } from './GridSettingsSection';
 import AdvancedSettingsSection from './AdvancedSettingsSection';
+import { buildReportPreview } from '../../../lib/reportPreview';
 
 // MIXED-GUILLOTINE (audit 2026-07-30 §MG.8/§MG.9): khóa phạm vi hiển thị mode và cạnh lật.
 type TestTool = 'nup' | 'sticker_imposer' | 'cnc_imposer';
@@ -20,6 +21,7 @@ interface RenderOptions {
     duplexFlow?: 'normal' | 'double';
     taskMode?: 'nup' | 'step_repeat' | 'booklet';
     markType?: 'none' | 'corners' | 'guillotine';
+    rectangleStickerInking?: boolean;
 }
 
 afterEach(() => {
@@ -89,6 +91,7 @@ function renderAdvancedSettings({
     duplexFlow = 'double',
     taskMode = 'nup',
     markType = 'guillotine',
+    rectangleStickerInking = false,
 }: RenderOptions = {}) {
     localStorage.clear();
     const store = createImposerSettingsStore();
@@ -103,7 +106,11 @@ function renderAdvancedSettings({
     });
     const view = render(
         <ImposerSettingsContext.Provider value={store}>
-            <AdvancedSettingsSection activeTool={activeTool} sourceTotalPages={4} />
+            <AdvancedSettingsSection
+                activeTool={activeTool}
+                sourceTotalPages={4}
+                rectangleStickerInking={rectangleStickerInking}
+            />
         </ImposerSettingsContext.Provider>,
     );
     return { store, ...view };
@@ -173,6 +180,66 @@ describe('GridSettingsSection — Dàn nhiều kích thước', () => {
     });
 });
 
+describe('AdvancedSettingsSection — Đối đầu xen kẽ (Inking)', () => {
+    it('là thiết lập riêng, giữ nguyên Cách xếp và cập nhật kiểu xoay', () => {
+        const { store } = renderAdvancedSettings({ activeTool: 'nup', layoutType: 'sequential' });
+
+        const select = screen.getByRole('combobox', { name: 'Xoay đối đầu xen kẽ (Inking)' });
+        expect(Array.from((select as HTMLSelectElement).options).map(option => option.value)).toEqual([
+            'none',
+            'row',
+            'column',
+        ]);
+        fireEvent.change(select, { target: { value: 'row' } });
+        expect(store.getState().alternateRotation).toBe('row');
+        expect(store.getState().gridStrategy).toBe('optimal_auto');
+
+        renderGridSettings({ activeTool: 'nup', layoutType: 'sequential' });
+        expect(screen.queryByRole('option', { name: /Inking/ })).toBeNull();
+        const strategySelect = screen.getAllByRole('option', { name: 'Xếp tối ưu' }).at(-1)?.closest('select');
+        expect(Array.from((strategySelect as HTMLSelectElement).options).map(option => option.value)).toEqual([
+            'optimal_auto',
+            'simple_auto',
+            'manual',
+        ]);
+    });
+
+    it.each([
+        ['CNC', 'cnc_imposer', 'sticker', 'sequential', 'nup'],
+        ['Nguyên tấm decal', 'sticker_imposer', 'page_sheet', 'sequential', 'nup'],
+        ['Dàn nhiều kích thước', 'nup', 'sticker', 'mixed_guillotine', 'nup'],
+        ['Booklet', 'nup', 'sticker', 'sequential', 'booklet'],
+    ] as const)('ẩn trong %s', (_label, activeTool, impositionUnit, layoutType, taskMode) => {
+        renderAdvancedSettings({ activeTool, impositionUnit, layoutType, taskMode });
+
+        expect(screen.queryByRole('combobox', { name: 'Xoay đối đầu xen kẽ (Inking)' })).toBeNull();
+    });
+
+    it('hiện riêng trong Bình tem bế khi toàn bộ tem là vuông/chữ nhật', () => {
+        const { store } = renderAdvancedSettings({
+            activeTool: 'sticker_imposer',
+            impositionUnit: 'sticker',
+            layoutType: 'sequential',
+            rectangleStickerInking: true,
+        });
+
+        const select = screen.getByRole('combobox', { name: 'Xoay đối đầu xen kẽ (Inking)' });
+        fireEvent.change(select, { target: { value: 'column' } });
+        expect(store.getState().alternateRotation).toBe('column');
+    });
+
+    it('ẩn trong Bình tem bế khi có tem không phải vuông/chữ nhật', () => {
+        renderAdvancedSettings({
+            activeTool: 'sticker_imposer',
+            impositionUnit: 'sticker',
+            layoutType: 'sequential',
+            rectangleStickerInking: false,
+        });
+
+        expect(screen.queryByRole('combobox', { name: 'Xoay đối đầu xen kẽ (Inking)' })).toBeNull();
+    });
+});
+
 describe('AdvancedSettingsSection — đường viền cắt thủ công', () => {
     it.each([
         ['Dàn nhiều mẫu', 'nup'],
@@ -213,5 +280,46 @@ describe('AdvancedSettingsSection — đường viền cắt thủ công', () =>
             thickness: 0.6,
         });
         expect(screen.getByTestId('cut-border-overlap-warning')).toBeTruthy();
+    });
+});
+
+describe('AdvancedSettingsSection — thứ tự trường report', () => {
+    function openReportSettings() {
+        fireEvent.click(screen.getByRole('button', { name: /Thông tin sản phẩm \(Report\)/i }));
+    }
+
+    it('hiển thị theo fieldOrder và lưu thứ tự mới khi bấm mũi tên', () => {
+        const { store } = renderAdvancedSettings({
+            activeTool: 'sticker_imposer',
+            taskMode: 'nup',
+        });
+        act(() => {
+            store.setState({
+                reportOrderCode: 'DH-001',
+                reportMaterial: 'Decal Đế vàng',
+                reportLamination: 1,
+                reportDisplay: {
+                    ...store.getState().reportDisplay,
+                    fieldOrder: ['material', 'lamination', 'orderCode'],
+                },
+            });
+        });
+        openReportSettings();
+
+        const order = screen.getByTestId('report-field-order');
+        const fieldKeys = () => Array.from(order.children).map(node => node.getAttribute('data-report-field'));
+        expect(fieldKeys().slice(0, 3)).toEqual(['material', 'lamination', 'orderCode']);
+        expect(screen.getByText('Decal Đế vàng - Cán bóng - DH-001')).toBeTruthy();
+
+        fireEvent.click(screen.getByRole('button', { name: /Mã đơn hàng ↑/ }));
+
+        expect(store.getState().reportDisplay.fieldOrder.slice(0, 3)).toEqual([
+            'material', 'orderCode', 'lamination',
+        ]);
+        expect(buildReportPreview(store.getState().reportDisplay, {
+            material: store.getState().reportMaterial,
+            laminationType: store.getState().reportLamination,
+            orderCode: store.getState().reportOrderCode,
+        })).toBe('Decal Đế vàng - DH-001 - Cán bóng');
     });
 });

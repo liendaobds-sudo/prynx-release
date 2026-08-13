@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
     batchCapacityDetectionReady,
     buildPageSizedShapeState,
+    canUseRectangleStickerInking,
     inheritedSingleMoldMaster,
     shapeDetectionSourceKey,
     projectPageRecordToViewer,
@@ -85,6 +86,36 @@ describe('shapeDetectionPolicy', () => {
             { 0: 'ELLIPSE', 1: 'CUSTOM' },
             [2, 1, 2],
         )).toEqual({ 0: 'CUSTOM', 1: 'ELLIPSE', 2: 'CUSTOM' });
+    });
+
+    it('chỉ cho tem bế chữ nhật/vuông dùng Inking trên toàn bộ trang còn sống', () => {
+        expect(canUseRectangleStickerInking(
+            'sticker_imposer', false, 'default',
+            { 0: 'RECTANGLE', 1: 'RECTANGLE' }, 2,
+        )).toBe(true);
+        expect(canUseRectangleStickerInking(
+            'sticker_imposer', false, 'default',
+            { 0: 'RECTANGLE', 1: 'CUSTOM' }, 2,
+        )).toBe(false);
+        expect(canUseRectangleStickerInking(
+            'sticker_imposer', false, 'one_dao', {}, 2,
+        )).toBe(true);
+        expect(canUseRectangleStickerInking(
+            'cnc_imposer', false, 'one_dao', { 0: 'RECTANGLE' }, 1,
+        )).toBe(false);
+        expect(canUseRectangleStickerInking(
+            'sticker_imposer', true, 'one_dao', { 0: 'RECTANGLE' }, 1,
+        )).toBe(false);
+    });
+
+    it('bỏ trang không phải chữ nhật sau khi viewer đã xóa trang đó', () => {
+        const projected = projectPageRecordToViewer(
+            { 0: 'RECTANGLE', 1: 'CIRCLE_ELLIPSE', 2: 'RECTANGLE' },
+            [1, 3],
+        );
+        expect(canUseRectangleStickerInking(
+            'sticker_imposer', false, 'default', projected, 2,
+        )).toBe(true);
     });
 
     it('remaps inherited mold master after thumbnail reorder', () => {

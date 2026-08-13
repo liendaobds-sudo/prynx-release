@@ -486,3 +486,103 @@ và sau toàn phase nên nút hủy cũng phải chờ.
 
 Backend dev đã được khởi động lại và đang nghe `127.0.0.1:8321` bằng extension mới. Chưa có lại chính file logo
 nguồn của user nên mức runtime trên là ca stress tương đương về đặc tính, không được coi là nghiệm thu chính file đó.
+
+## Hotfix H2 — FlatColor không còn bọc đường biên pixel
+
+Ngày triển khai: **2026-08-12**. Trạng thái: **đã kiểm chứng core/PyO3 và runtime backend**.
+
+### Nguyên nhân gốc
+
+Kết quả runtime thật của logo 2.281×2.275 px cho thấy `source_nodes = output_nodes = 66.604`, 96 component,
+96 outer và 87 hole. IoU 1,0/MAE 0,0 chỉ chứng minh SVG chép đúng raster; nó không chứng minh vector đã sạch.
+`profiles/flat_color.rs` vẫn cố ý giữ toàn bộ line contour từ Lô E, còn `despeckle_size_px` chỉ đi qua provenance
+và sinh warning chứ chưa thay đổi artifact.
+
+### Bản sửa H2 — tối đa 5 file
+
+1. `native/src/logo_engine/preprocess.rs`
+   - Thực thi khử hạt FlatColor theo diện tích `despeckle_size_px²`.
+   - Component nhỏ được nhập vào nhãn bao quanh có biên tiếp xúc lớn nhất; xử lý vùng nhỏ trước để kết quả xác định.
+   - Tính lại alpha/label count/component/preprocess hash và validate contract sau biến đổi.
+2. `native/src/logo_engine/profiles/flat_color.rs`
+   - Ghép khử hạt trước contour và curve-fit sau topology.
+   - Mức mượt 0–1 ánh xạ sai số tối đa 1–2 px; không hạ độ phân giải, không hard-cap node theo máy.
+   - Hình chữ nhật và shared boundary thẳng vẫn là line chính xác; output báo đúng node nguồn/đầu ra và max error.
+3. `native/src/logo_engine/profile_tests.rs`
+   - Thêm regression component màu đơn lẻ bị loại, preprocess hash thay đổi và biên palette răng cưa giảm node trên 2×.
+4. `native/src/logo_engine/result.rs`
+   - FlatColor không còn phát warning giả “chưa áp dụng khử hạt”; warning tạm thời chỉ còn cho Silhouette.
+5. `native/src/logo_vectorizer.rs`
+   - Khóa hợp đồng PyO3: FlatColor despeckle không warning, Silhouette vẫn khai báo giới hạn hiện tại.
+
+### Hotfix H2b — curve-fit không quét node × toàn bộ segment
+
+`native/src/logo_engine/curve_fit.rs` dựng BVH theo bounding box segment cho phase kiểm cận sai số cuối. Truy vấn chỉ
+đi qua nhánh hình học gần điểm nguồn nhưng giữ nguyên phép đo line/cubic và ngưỡng sai số. Đây là lô hiệu năng một file,
+không thêm cap hoặc giảm chất lượng. Stress 2.281×2.275 px, 16.768 node nguồn/6.516 node đầu ra giảm từ **22,687 s**
+còn **19,514 s** ở raster scale 4; geometry, IoU 0,9998909486 và MAE 0,0002717195 không đổi.
+
+## Hotfix H3 — đồng bộ review policy và UI
+
+Ngày triển khai: **2026-08-12**. Phạm vi 4 file.
+
+1. `backend/app/workers/logo_rebuild.py` và `backend/tests/test_logo_rebuild.py`
+   - Chỉ ép `review` do khử hạt chưa thực thi khi mode là `monochrome`.
+   - FlatColor structured core có despeckle được giữ status từ validator thật; không còn review giả.
+2. `desktop/src/components/preprocess-tools/LogoRebuildWorkspace.tsx` và test tương ứng
+   - Logo màu không còn hiện cảnh báo “core chưa áp dụng khử hạt”.
+   - Chuyển sang Đen trắng vẫn hiện cảnh báo đúng giới hạn hiện tại.
+
+### Bằng chứng kiểm chứng cuối
+
+- Rust Logo/PyO3: **69/69 passed**; cargo check release/offline và rustfmt target đạt.
+- Backend Logo: **51/51 passed**; feature-gate **4/4 passed**.
+- Frontend workspace: **29/29 passed**; typecheck và ESLint riêng hai file đạt.
+- Runtime qua endpoint thật trên fixture 600×600 có 240 hạt nhiễu: HTTP 200 trong **1,312 s**, status `ready`,
+  component `2`, outer/hole `2/0`, node `1.094 → 48`, IoU `0,9917683`, MAE `0,0019923`, không có review reason.
+- Runtime stress đúng canvas 2.281×2.275 px: hoàn tất **19,514 s**, component `3`, outer/hole `3/0`, node
+  `16.768 → 6.516`, max error `0,7443 px`, SVG khoảng 81 KiB.
+
+Backend dev đã được cài extension release mới và khởi động lại trên `127.0.0.1:8321`. Artifact preview sinh trước
+Hotfix H2 không tự đổi; người dùng phải bấm tạo preview lại. Chưa có file logo nguồn của user trong workspace nên
+không được coi các fixture trên là nghiệm thu chính logo đó. Silhouette despeckle vẫn là giới hạn đã khai báo.
+
+## Hotfix H4 — Workspace logo bị toolbar/ruler cắt mất nội dung
+
+Ngày triển khai: **2026-08-12**. Trạng thái: **đã kiểm chứng responsive trên bản dev**.
+
+### Nguyên nhân gốc
+
+Overlay logo dùng `z-40`, ngang với ruler Acrobat và thấp hơn toolbar `z-70` cùng nút sidebar `z-100`. Vì vậy toolbar,
+ruler và các nút của viewer vẫn đè lên mép trên/trái của workspace. Bên trong workspace, canvas còn giữ min-height
+520 px và main giữ 620 px, trong khi toàn trang dùng một vùng scroll; ở cửa sổ cao khoảng 920 px, header/panel dễ bị
+cuộn ra ngoài và tạo cảm giác nội dung bị cắt.
+
+### Bản sửa
+
+1. `desktop/src/components/ImpositionTab.tsx`
+   - Nâng overlay logo lên `z-[110]`, trên toolbar/ruler/sidebar nhưng dưới processing `z-[120]`, error `z-[130]`
+     và hệ modal ngữ nghĩa từ 1.100 trở lên.
+   - Gắn test id cho regression contract của lớp overlay.
+2. `desktop/src/components/preprocess-tools/LogoRebuildWorkspace.tsx`
+   - Đổi root thành grid `header + minmax(0,1fr)` khóa trong chiều cao thật của tab.
+   - Desktop rộng: sidebar và main cuộn dọc độc lập; không cuộn cả workspace làm mất header.
+   - Màn hình dưới breakpoint XL: workspace trở lại một cột và cuộn toàn trang, tránh mất phần main.
+3. `desktop/src/components/preprocess-tools/LogoCompareViewport.tsx`
+   - Bỏ min-height 520 px cứng ở desktop rộng; canvas co theo hàng `minmax(0,1fr)`, vẫn giữ tối thiểu 320 px ở
+     màn hình hẹp.
+4. `desktop/src/components/preprocess-tools/LogoRebuildWorkspace.test.tsx`
+   - Thêm regression khóa overflow desktop/hẹp, grid co giãn và z-index overlay.
+
+### Bằng chứng
+
+- Typecheck: đạt; Logo workspace: **30/30 passed**; ESLint riêng ba file workspace: đạt; diff check: đạt.
+- Trang kiểm runtime tạm chỉ render workspace ở đúng viewport **1.914×920 px**:
+  - header `top=16`, sidebar/main `top=114`, `bottom=904` — toàn bộ nằm trong viewport;
+  - workspace overflow `hidden`, sidebar/main overflow-y `auto`;
+  - canvas cao 716 px, không còn min-height cứng làm tràn.
+- Viewport hẹp **900×700 px**: workspace overflow `auto`, sidebar/main `visible`, scrollHeight 1.412 px; nội dung
+  chuyển một cột và vẫn truy cập được bằng một thanh cuộn chung.
+
+Trang kiểm runtime tạm đã bị xóa sau khi đo. Full ESLint `ImpositionTab.tsx` vẫn có backlog 143 finding tồn tại từ
+trước; bản sửa không thêm finding trong ba file workspace và typecheck vẫn đạt.

@@ -871,6 +871,7 @@ pub fn l_layout(
                     solve_grid_internal(tbw, tbh, main_w, main_h, gap_x, gap_y, false);
                 for it in main_items.iter_mut() {
                     it.is_rotated = primary_rotated;
+                    it.block_id = 0;
                 }
 
                 let right_x = tbw + split_gap;
@@ -882,6 +883,7 @@ pub fn l_layout(
                     for it in ri.iter_mut() {
                         it.x += right_x;
                         it.is_rotated = !primary_rotated;
+                        it.block_id = 1;
                     }
                     right_items = ri;
                 }
@@ -896,6 +898,7 @@ pub fn l_layout(
                     for it in bi.iter_mut() {
                         it.y += bottom_y;
                         it.is_rotated = !primary_rotated;
+                        it.block_id = 2;
                     }
                     bottom_items = bi;
                 }

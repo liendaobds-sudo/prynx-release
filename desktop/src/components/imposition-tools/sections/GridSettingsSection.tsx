@@ -497,11 +497,6 @@ export default function GridSettingsSection(props: GridSettingsProps) {
               </div>
             </div>
           )}
-
-
-
-
-
           <div className="flex items-center gap-3">
             <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">
               {t('imposition.gridSettings:cach_xep')}

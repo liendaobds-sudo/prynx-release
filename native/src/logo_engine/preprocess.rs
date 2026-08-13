@@ -92,6 +92,166 @@ pub(crate) fn preprocess_rgba(
     Ok(artifact)
 }
 
+/// Loại component nhỏ hơn bình phương kích thước khử hạt bằng cách nhập chúng
+/// vào màu bao quanh chiếm ưu thế. Cách làm này giữ nguyên độ phân giải nguồn;
+/// tham số chỉ quyết định vùng nhiễu nào bị loại, không phải quality cap.
+pub(crate) fn despeckle_artifact(
+    artifact: &mut PreprocessArtifact,
+    profile: LogoEngineProfile,
+    despeckle_size_px: usize,
+) -> Result<usize, String> {
+    if despeckle_size_px == 0 {
+        return Ok(0);
+    }
+    artifact.validate_contract()?;
+    let minimum_area = despeckle_size_px
+        .checked_mul(despeckle_size_px)
+        .ok_or_else(|| "Kích thước khử hạt vượt giới hạn biểu diễn".to_string())?;
+    let width = artifact.width_px as usize;
+    let height = artifact.height_px as usize;
+    let mut components = collect_component_pixels(&artifact.labels, width, height);
+    // LOGO-ENGINE-V2 (audit 2026-08-12 Hotfix H2): xử lý vùng nhỏ trước để
+    // chúng nhập vào vùng lớn ổn định, không đổi kết quả theo thứ tự palette.
+    components.sort_by_key(|component| (component.pixels.len(), component.first_pixel));
+
+    let mut removed_components = 0;
+    for component in components {
+        if component.pixels.len() >= minimum_area {
+            continue;
+        }
+        let Some(replacement) = dominant_neighbor_label(
+            &artifact.labels,
+            &component.pixels,
+            component.label,
+            width,
+            height,
+        ) else {
+            continue;
+        };
+        for &index in &component.pixels {
+            artifact.labels[index] = replacement;
+            if replacement == TRANSPARENT_PIXEL_LABEL {
+                artifact.alpha_mask[index] = 0;
+            }
+        }
+        removed_components += 1;
+    }
+
+    artifact.label_pixel_counts.fill(0);
+    for (&alpha, &label) in artifact.alpha_mask.iter().zip(&artifact.labels) {
+        if alpha == 0 || label == TRANSPARENT_PIXEL_LABEL {
+            continue;
+        }
+        let count = artifact
+            .label_pixel_counts
+            .get_mut(usize::from(label))
+            .ok_or_else(|| "Khử hạt sinh nhãn màu ngoài palette".to_string())?;
+        *count += 1;
+    }
+    if artifact.label_pixel_counts.iter().sum::<u64>() == 0 {
+        return Err("Khử hạt đã loại toàn bộ vùng logo hiển thị".to_string());
+    }
+    artifact.components = collect_components(&artifact.labels, width, height);
+    artifact.artifact_hash = hash_artifact(
+        artifact.width_px,
+        artifact.height_px,
+        profile,
+        &artifact.palette,
+        &artifact.alpha_mask,
+        &artifact.labels,
+    );
+    artifact.validate_contract()?;
+    Ok(removed_components)
+}
+
+#[derive(Debug)]
+struct ComponentPixels {
+    label: u16,
+    first_pixel: usize,
+    pixels: Vec<usize>,
+}
+
+fn collect_component_pixels(labels: &[u16], width: usize, height: usize) -> Vec<ComponentPixels> {
+    let mut visited = vec![false; labels.len()];
+    let mut components = Vec::new();
+    let mut queue = VecDeque::new();
+
+    for start in 0..labels.len() {
+        let label = labels[start];
+        if label == TRANSPARENT_PIXEL_LABEL || visited[start] {
+            continue;
+        }
+        visited[start] = true;
+        queue.push_back(start);
+        let mut pixels = Vec::new();
+        while let Some(index) = queue.pop_front() {
+            pixels.push(index);
+            let x = index % width;
+            let y = index / width;
+            if x > 0 {
+                enqueue_same_label(index - 1, label, labels, &mut visited, &mut queue);
+            }
+            if x + 1 < width {
+                enqueue_same_label(index + 1, label, labels, &mut visited, &mut queue);
+            }
+            if y > 0 {
+                enqueue_same_label(index - width, label, labels, &mut visited, &mut queue);
+            }
+            if y + 1 < height {
+                enqueue_same_label(index + width, label, labels, &mut visited, &mut queue);
+            }
+        }
+        components.push(ComponentPixels {
+            label,
+            first_pixel: start,
+            pixels,
+        });
+    }
+    components
+}
+
+fn dominant_neighbor_label(
+    labels: &[u16],
+    pixels: &[usize],
+    own_label: u16,
+    width: usize,
+    height: usize,
+) -> Option<u16> {
+    let mut boundary_counts = std::collections::BTreeMap::<u16, usize>::new();
+    for &index in pixels {
+        let x = index % width;
+        let y = index / width;
+        let mut visit = |neighbor: usize| {
+            let label = labels[neighbor];
+            if label != own_label {
+                *boundary_counts.entry(label).or_default() += 1;
+            }
+        };
+        if x > 0 {
+            visit(index - 1);
+        }
+        if x + 1 < width {
+            visit(index + 1);
+        }
+        if y > 0 {
+            visit(index - width);
+        }
+        if y + 1 < height {
+            visit(index + width);
+        }
+    }
+    boundary_counts
+        .into_iter()
+        .max_by_key(|(label, count)| {
+            (
+                *count,
+                usize::from(*label == TRANSPARENT_PIXEL_LABEL),
+                std::cmp::Reverse(*label),
+            )
+        })
+        .map(|(label, _)| label)
+}
+
 fn build_palette(
     profile: LogoEngineProfile,
     palette: &[String],

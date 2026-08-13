@@ -90,6 +90,75 @@ describe('StickerSheetPanel', () => {
         expect(useStickerSheetStore.getState().getTab('tab').activeTool).toBe('restore');
     });
 
+    it('gom cả nút xuất vào cùng khung thiết lập sau khi vùng tem sẵn sàng', async () => {
+        render(<StickerSheetPanel tabId="tab" onExport={vi.fn()} onExportPng={vi.fn()} />);
+
+        const settingsToggle = screen.getByRole('button', { name: /Thiết lập bù xén/ });
+        expect(settingsToggle.getAttribute('aria-expanded')).toBe('true');
+        expect(screen.getByText('Kích thước và đường cắt')).toBeTruthy();
+        const settingsRegion = document.getElementById('sticker-settings-tab');
+        expect(settingsRegion).not.toBeNull();
+        expect(within(settingsRegion as HTMLElement).getByRole('button', { name: 'Lưu bộ PNG' })).toBeTruthy();
+        expect(within(settingsRegion as HTMLElement).getByRole('button', { name: 'Tạo PDF có đường cắt' })).toBeTruthy();
+
+        const current = useStickerSheetStore.getState().getTab('tab');
+        useStickerSheetStore.setState({
+            tabs: {
+                tab: {
+                    ...current,
+                    status: 'mask-ready',
+                    pages: {
+                        1: {
+                            ...(current.pages[1] || current),
+                            status: 'mask-ready',
+                        },
+                    },
+                },
+            },
+        });
+
+        await waitFor(() => expect(
+            screen.getByRole('button', { name: /Thiết lập bù xén/ }).getAttribute('aria-expanded'),
+        ).toBe('false'));
+        expect(screen.queryByRole('button', { name: 'Lưu bộ PNG' })).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Tạo PDF có đường cắt' })).toBeNull();
+    });
+
+    it('cho xổ lại cả thiết lập lẫn nút xuất sau khi đã thu gọn', async () => {
+        const current = useStickerSheetStore.getState().getTab('tab');
+        useStickerSheetStore.setState({
+            tabs: {
+                tab: {
+                    ...current,
+                    status: 'mask-ready',
+                    pages: {
+                        1: {
+                            ...(current.pages[1] || current),
+                            status: 'mask-ready',
+                        },
+                    },
+                },
+            },
+        });
+
+        render(<StickerSheetPanel tabId="tab" onExport={vi.fn()} onExportPng={vi.fn()} />);
+        const settingsToggle = screen.getByRole('button', { name: /Thiết lập bù xén/ });
+        expect(settingsToggle.getAttribute('aria-expanded')).toBe('false');
+        expect(screen.queryByText('Kích thước và đường cắt')).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Lưu bộ PNG' })).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Tạo PDF có đường cắt' })).toBeNull();
+
+        fireEvent.click(settingsToggle);
+
+        await waitFor(() => expect(
+            screen.getByRole('button', { name: /Thiết lập bù xén/ }).getAttribute('aria-expanded'),
+        ).toBe('true'));
+        expect(screen.getByText('Kích thước và đường cắt')).toBeTruthy();
+        expect(screen.getByText('Cách tạo PDF')).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Lưu bộ PNG' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Tạo PDF có đường cắt' })).toBeTruthy();
+    });
+
     it('chỉ hiện hai nút lịch sử dạng gọn sau khi có chỉnh sửa', () => {
         const current = useStickerSheetStore.getState().getTab('tab');
         useStickerSheetStore.setState({
@@ -195,6 +264,7 @@ describe('StickerSheetPanel', () => {
         const { rerender } = render(
             <StickerSheetPanel tabId="tab" pageOrder={[1]} onExport={vi.fn()} />,
         );
+        fireEvent.click(screen.getByRole('button', { name: /Thiết lập bù xén/ }));
         await waitFor(() => expect(
             (screen.getByRole('button', { name: 'Tạo PDF có đường cắt' }) as HTMLButtonElement).disabled,
         ).toBe(false));

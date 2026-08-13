@@ -105,10 +105,7 @@ export function buildReportPreview(cfg: ReportDisplayConfig | undefined, data: R
     const order = rd.fieldOrder && rd.fieldOrder.length ? rd.fieldOrder : DEFAULT_FIELD_ORDER;
 
     const parts: string[] = [];
-    const orderCode = (fields.orderCode || '').trim();
-    if (orderCode) parts.push(orderCode);
-
-    const used = new Set<string>(['orderCode']);
+    const used = new Set<string>();
     for (const key of order) {
         if (used.has(key)) continue;
         used.add(key);

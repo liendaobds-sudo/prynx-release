@@ -11,17 +11,50 @@ Extracted from nup_engine.py for modularity.
 import math
 import logging
 
+from app.core.imposition_page_box import effective_imposition_box
+
 logger = logging.getLogger(__name__)
 
 MM_TO_PTS = 2.83465
+
+
+def resolve_default_page_die(page):
+    """Dựng khuôn chữ nhật theo trang logic khi PDF không có CutContour thật.
+
+    ``Mặc định`` vẫn ưu tiên đường khuôn được nhận diện. Nếu không có, quy tắc
+    của Bình tem bế là lấy đúng kích thước trang đang hiển thị trên UI (MediaBox
+    thường, CropBox khi đó là trang con trên canvas lớn). Geometry trả về dùng
+    hệ top-down giống ``extract_vector_paths`` và renderer N-Up.
+    """
+    try:
+        source_box = effective_imposition_box(page)
+    except (AttributeError, TypeError, ValueError):
+        source_box = page.rect
+    page_height = float(page.rect.height)
+    rect = type(page.rect)(
+        float(source_box.x0),
+        page_height - float(source_box.y1),
+        float(source_box.x1),
+        page_height - float(source_box.y0),
+    )
+    return {
+        'items': [('re', rect)],
+        'rect': rect,
+        'color': (0, 1, 1, 0),
+        'width': 0.5,
+        'spot_name': None,
+        'is_page_fallback': True,
+    }
 
 
 def resolve_one_dao_trim(page, cut_type, die_size_mode, die_offset_mm, MM=MM_TO_PTS):
     """Nguồn chân lý DUY NHẤT cho trim khi 1 Dao + 'theo kích thước trang'.
 
     Chỉ tác dụng khi cut_type == 'one_dao' và die_size_mode == 'page': trả
-    (trim_w, trim_h) = mediabox (page.rect) ± offset ở CẢ 2 cạnh đối (offset > 0
-    = mở ra, < 0 = co vào). Kẹp min 1.0pt để không sinh kích thước âm khi co quá.
+    (trim_w, trim_h) = hộp trang hiệu dụng ± offset ở CẢ 2 cạnh đối (offset > 0
+    = mở ra, < 0 = co vào). Hộp hiệu dụng giữ MediaBox cho bleed nhỏ thông thường,
+    nhưng chọn CropBox khi PDF đặt trang logic nhỏ trên một canvas lớn. Kẹp min
+    1.0pt để không sinh kích thước âm khi co quá.
 
     Trả None ở mọi trường hợp khác → caller GIỮ NGUYÊN logic cũ (ưu tiên đường
     khuôn thật / trimbox / rect-2*bleed). Dùng chung export (nup_engine,
@@ -30,8 +63,16 @@ def resolve_one_dao_trim(page, cut_type, die_size_mode, die_offset_mm, MM=MM_TO_
     if cut_type != 'one_dao' or die_size_mode != 'page':
         return None
     off = float(die_offset_mm or 0) * MM
-    tw = page.rect.width + 2 * off
-    th = page.rect.height + 2 * off
+    # [PAGEBOX FIX 2026-08-13] UI hiển thị kích thước trang logic (CropBox) và
+    # 1 Dao phải dùng đúng kích thước đó; đọc page.rect ở đây sẽ lấy MediaBox
+    # lớn của các PDF kiểu Binder162 và làm preview báo 0 tem/tờ.
+    try:
+        source_box = effective_imposition_box(page)
+    except (AttributeError, TypeError, ValueError):
+        # Giữ tương thích với các Page giả tối giản trong unit test/consumer cũ.
+        source_box = page.rect
+    tw = float(source_box.width) + 2 * off
+    th = float(source_box.height) + 2 * off
     return (max(1.0, tw), max(1.0, th))
 
 

@@ -377,6 +377,7 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
             />,
         );
         fireEvent.click(screen.getByRole('button', { name: 'Ảnh AI nhiều tem' }));
+        fireEvent.click(screen.getByRole('button', { name: /Thiết lập bù xén/ }));
         const exportButton = screen.getByRole('button', { name: 'Tạo PDF có đường cắt' }) as HTMLButtonElement;
         await waitFor(() => expect(exportButton.disabled).toBe(false));
         fireEvent.click(exportButton);
@@ -397,13 +398,20 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
         );
         resolveCommit();
         await waitFor(() => expect(screen.getByRole('button', { name: 'Bình tem bế' })).toBeTruthy());
+        const settingsToggle = screen.getByRole('button', { name: /Thiết lập bù xén/ });
+        const resultCard = screen.getByRole('status');
+        expect(settingsToggle.compareDocumentPosition(resultCard) & Node.DOCUMENT_POSITION_FOLLOWING)
+            .toBeTruthy();
+        await waitFor(() => expect(settingsToggle.getAttribute('aria-expanded')).toBe('false'));
+        expect(screen.queryByRole('button', { name: 'Tạo PDF có đường cắt' })).toBeNull();
+        expect(screen.getByText('Đã tạo bù xén thành công!')).toBeTruthy();
         const finished = useStickerSheetStore.getState().getTab('export-tab');
         expect(finished.mode).toBe('ai-sheet');
         expect(finished.status).toBe('mask-ready');
         expect(finished.manifest).not.toBeNull();
         expect(finished.sourceFile).toBe(source);
         expect(screen.queryByText('direct-engine:tem.pdf')).toBeNull();
-        expect(screen.getByText(/tem\.pdf/)).toBeTruthy();
+        expect(screen.queryByText(/tem\.pdf/)).toBeNull();
 
         fireEvent.click(screen.getByRole('button', { name: 'Bình tem bế' }));
         fireEvent.click(screen.getByRole('button', { name: 'Bình bế rớt (CNC)' }));
@@ -465,6 +473,7 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
                 onFileFixed={vi.fn()}
             />,
         );
+        fireEvent.click(screen.getByRole('button', { name: /Thiết lập bù xén/ }));
         const exportButton = screen.getByRole('button', { name: 'Tạo PDF có đường cắt' }) as HTMLButtonElement;
         await waitFor(() => expect(exportButton.disabled).toBe(false));
         fireEvent.click(exportButton);

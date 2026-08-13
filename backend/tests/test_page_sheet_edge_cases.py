@@ -250,22 +250,24 @@ def test_form_inherits_page_cutcontour_resources_for_strip_and_cut(tmp_path):
     assert _count_size(cut_paths, 184, 124) == 1
 
 
-def test_missing_cutcontour_fails_instead_of_emitting_blank_cut_page(tmp_path):
+def test_missing_cutcontour_uses_page_size_instead_of_emitting_blank_cut_page(tmp_path):
     source = tmp_path / "no-cutcontour.pdf"
     output = tmp_path / "no-cutcontour-output.pdf"
     _make_page_without_cut_contour(source)
 
-    with pytest.raises(
-        ValueError,
-        match=r"(?i)(CutContour|đường cắt|đường khuôn|khuôn bế)",
-    ):
-        nup_engine.run_nup_engine(
-            str(source),
-            str(output),
-            _settings(),
-            job_id="page-sheet-missing-cutcontour",
-        )
-    assert not output.exists()
+    nup_engine.run_nup_engine(
+        str(source),
+        str(output),
+        _settings(),
+        job_id="page-sheet-missing-cutcontour",
+    )
+
+    with pikepdf.open(output) as pdf:
+        assert len(pdf.pages) == 2
+    print_paths = _paths(output, 0)
+    cut_paths = _paths(output, 1)
+    assert _count_size(print_paths, 100, 50) == 1
+    assert _count_size(cut_paths, PAGE_W, PAGE_H) == 1
 
 
 def test_process_cmyk_decoration_matching_spot_appearance_stays_on_print(tmp_path):

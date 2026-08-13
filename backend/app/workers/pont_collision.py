@@ -192,7 +192,12 @@ def build_collision_base_polygon(page, shape_type: str, item_w: float, item_h: f
             )
             base_rect_pts = (-rx, -ry, rx, ry)
     elif is_rect_cell and item_w > 0 and item_h > 0:
-        base_poly = box(0.0, 0.0, item_w, item_h)
+        # PONT (audit 2026-08-13 §RECT-ROT.1): item_w/item_h ở đây đã là kích
+        # thước HIỆU DỤNG của ô sau solver (đã đổi W/H khi ô xoay 90°). Đặt
+        # rectangle quanh gốc để get_item_polygon chỉ tịnh tiến tới tâm ô,
+        # không xoay lần hai theo cờ isRotated.
+        base_poly = box(-item_w / 2.0, -item_h / 2.0, item_w / 2.0, item_h / 2.0)
+        base_rect_pts = base_poly.bounds
     elif page is not None:
         paths = page.extract_vector_paths()
         if paths:
@@ -202,8 +207,10 @@ def build_collision_base_polygon(page, shape_type: str, item_w: float, item_h: f
 
     # Giữ đúng fallback đã ship: nếu không đọc được contour thì dùng hình chữ nhật ô.
     if base_poly is None and item_w > 0 and item_h > 0:
-        base_poly = box(0.0, 0.0, item_w, item_h)
-        base_rect_pts = (0.0, 0.0, item_w, item_h)
+        # Fallback cũng nhận kích thước ô hiệu dụng, nên phải cùng quy ước
+        # rectangle-tâm với nhánh is_rect_cell để tránh xoay footprint hai lần.
+        base_poly = box(-item_w / 2.0, -item_h / 2.0, item_w / 2.0, item_h / 2.0)
+        base_rect_pts = base_poly.bounds
 
     return base_poly, base_rect_pts
 

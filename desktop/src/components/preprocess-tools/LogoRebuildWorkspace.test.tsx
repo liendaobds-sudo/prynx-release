@@ -150,7 +150,33 @@ describe('LogoRebuildWorkspace', () => {
     expect((screen.getByLabelText('Khử hạt nhỏ') as HTMLInputElement).value).toBe('4');
     expect(screen.queryByText(/auto.?color/i)).toBeNull();
     expect((screen.getByLabelText('Cân bằng độ sáng cho artwork phẳng không đều màu') as HTMLInputElement).checked).toBe(false);
+    expect(screen.queryByText(/Khử hạt chưa được PrynX core áp dụng/i)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Đen trắng' }));
     expect(screen.getByText(/Khử hạt chưa được PrynX core áp dụng/i)).toBeTruthy();
+  });
+
+  it('giữ workspace trong viewport và cuộn độc lập hai cột nội dung dài', async () => {
+    const { container } = render(<LogoRebuildWorkspace />);
+    await screen.findByText(/prynx-logo-core 0.1.0-dev.1 · Schema kết quả 1/i);
+
+    const workspace = screen.getByTestId('logo-rebuild-workspace');
+    const sidebar = container.querySelector('aside');
+    const main = container.querySelector('main');
+    const viewport = screen.getByTestId('logo-compare-viewport');
+
+    expect(workspace.className).toContain('overflow-auto');
+    expect(workspace.className).toContain('xl:overflow-hidden');
+    expect(sidebar?.className).toContain('xl:overflow-y-auto');
+    expect(main?.className).toContain('xl:overflow-y-auto');
+    expect(main?.className).toContain('xl:grid-rows-[minmax(0,1fr)_auto]');
+    expect(viewport.parentElement?.className).toContain('xl:min-h-0');
+
+    const impositionSource = readFileSync(
+      resolve(process.cwd(), 'src/components/ImpositionTab.tsx'),
+      'utf8',
+    );
+    expect(impositionSource).toContain('data-testid="logo-rebuild-overlay"');
+    expect(impositionSource).toContain('z-[110]');
   });
 
   it('hiển thị giới hạn trước vùng chọn ảnh và chỉ mô tả artwork phẳng', async () => {

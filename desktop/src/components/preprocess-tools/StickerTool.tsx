@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
@@ -366,6 +367,10 @@ export default function StickerTool({
     const [error, setError] = useState('');
     const [warning, setWarning] = useState('');
     const [isSuccess, setIsSuccess] = useState(false);
+    // UIUX (feedback 2026-08-12 §DIRECT.COMPACT1): đồng bộ luồng trực tiếp với
+    // ảnh AI — hoàn tất thì thu thiết lập, nhưng vẫn cho xổ lại mà không mất kết quả.
+    const [settingsOpen, setSettingsOpen] = useState(true);
+    const settingsPanelId = React.useId();
 
     const runVectorMirror = async () => {
         // Step 1: Upload
@@ -530,9 +535,11 @@ export default function StickerTool({
                 const baseName = pdfFile.name.replace(/\.[^/.]+$/, "");
                 await onFileFixed(resultBlob, `${prefix}_${baseName}.pdf`, resultPath);
                 setIsSuccess(true);
+                setSettingsOpen(false);
             }
         } catch (error: unknown) {
             if (recordedRecipeOperation) recipeRecorder.discardPending();
+            setSettingsOpen(true);
             setError(
                 error instanceof Error && error.message
                     ? error.message
@@ -565,6 +572,33 @@ export default function StickerTool({
 
     return (
         <div className="flex flex-col gap-4">
+            <div className="rounded-xl border border-slate-200 bg-white/70 dark:border-zinc-700 dark:bg-zinc-900/40">
+                <button
+                    type="button"
+                    aria-expanded={settingsOpen}
+                    aria-controls={settingsPanelId}
+                    onClick={() => setSettingsOpen(open => !open)}
+                    className="flex min-h-11 w-full items-center justify-between gap-2 px-3 text-left"
+                >
+                    <span className="text-[13px] font-bold uppercase tracking-wide text-slate-800 dark:text-zinc-100">
+                        {tv('Thiết lập bù xén', 'preprocess.stickerSheet')}
+                    </span>
+                    <span className="flex items-center gap-2 text-[10px] font-semibold text-slate-500 dark:text-zinc-400">
+                        {settingsOpen
+                            ? tv('Thu gọn', 'preprocess.stickerSheet')
+                            : tv('Xem lại / chỉnh sửa', 'preprocess.stickerSheet')}
+                        <ChevronDown
+                            aria-hidden="true"
+                            className={`h-4 w-4 transition-transform duration-200 ${settingsOpen ? 'rotate-180' : ''}`}
+                        />
+                    </span>
+                </button>
+
+                {settingsOpen && (
+                    <div
+                        id={settingsPanelId}
+                        className="flex flex-col gap-4 border-t border-slate-200 px-3 pb-3 pt-3 dark:border-zinc-700"
+                    >
             {/* TABS SELECTOR */}
             {showProductTypeSelector && <div className="flex bg-slate-100 dark:bg-zinc-800/50 p-1 rounded-xl shadow-inner border border-slate-200 dark:border-white/5 relative z-10">
                 <button
@@ -1051,20 +1085,37 @@ export default function StickerTool({
                 </div>
             )}
             {/* Execute */}
-            {!isSuccess ? (
-                <button
-                    onClick={() => { void handleRun(); }}
-                    disabled={isProcessing || !pdfFile}
-                    className={`w-full h-12 rounded-xl text-[14px] font-bold transition-all mt-2 flex items-center justify-center gap-2 ${
-                        isProcessing || !pdfFile
-                            ? 'bg-slate-300 dark:bg-zinc-700 text-slate-500 cursor-not-allowed'
-                            : 'bg-indigo-600 hover:bg-indigo-700 text-white'
-                    }`}
-                >
-                    {t('preprocess.common:run')}{isProcessing ? '…' : ''}
-                </button>
-            ) : (
-                <div className="mt-4 bg-white dark:bg-zinc-800 p-4 rounded-xl shadow-sm border border-emerald-200 dark:border-emerald-800/50 animate-in fade-in slide-in-from-bottom-2 duration-300">
+            <button
+                onClick={() => { void handleRun(); }}
+                disabled={isProcessing || !pdfFile}
+                className={`w-full h-12 rounded-xl text-[14px] font-bold transition-all mt-2 flex items-center justify-center gap-2 ${
+                    isProcessing || !pdfFile
+                        ? 'bg-slate-300 dark:bg-zinc-700 text-slate-500 cursor-not-allowed'
+                        : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                }`}
+            >
+                {t('preprocess.common:run')}{isProcessing ? '…' : ''}
+            </button>
+                    </div>
+                )}
+            </div>
+
+            {/* Warning (nghiệp vụ, không phải lỗi chặn) */}
+            {warning && (
+                <div className="bg-amber-50 dark:bg-amber-900/20 p-3 rounded-lg border border-amber-200 dark:border-amber-800/50 mt-2">
+                    <span className="text-[12px] text-amber-700 dark:text-amber-300 font-medium">⚠️ {warning}</span>
+                </div>
+            )}
+
+            {/* Error */}
+            {error && (
+                <div className="bg-red-50 dark:bg-red-900/20 p-3 rounded-lg border border-red-200 dark:border-red-800/50 mt-2">
+                    <span className="text-[12px] text-red-600 dark:text-red-400 font-medium">❌ {error}</span>
+                </div>
+            )}
+
+            {isSuccess && (
+                <div role="status" className="bg-white dark:bg-zinc-800 p-4 rounded-xl shadow-sm border border-emerald-200 dark:border-emerald-800/50 animate-in fade-in slide-in-from-bottom-2 duration-300">
                     <div className="flex items-center gap-2 mb-4">
                         <div className="w-8 h-8 bg-emerald-100 dark:bg-emerald-900/50 rounded-full flex items-center justify-center shrink-0">
                             <span className="text-sm">✅</span>
@@ -1131,7 +1182,10 @@ export default function StickerTool({
                         )}
                     </div>
                     <button
-                        onClick={() => setIsSuccess(false)}
+                        onClick={() => {
+                            setIsSuccess(false);
+                            setSettingsOpen(true);
+                        }}
                         className="mt-4 w-full text-xs font-bold text-slate-400 hover:text-slate-600 dark:hover:text-zinc-300 py-1 transition-colors"
                     >
                         {t('preprocess.sticker:quay_lai_chinh_sua_bu_xen')}
@@ -1139,19 +1193,6 @@ export default function StickerTool({
                 </div>
             )}
 
-            {/* Warning (nghiệp vụ, không phải lỗi chặn) */}
-            {warning && (
-                <div className="bg-amber-50 dark:bg-amber-900/20 p-3 rounded-lg border border-amber-200 dark:border-amber-800/50 mt-2">
-                    <span className="text-[12px] text-amber-700 dark:text-amber-300 font-medium">⚠️ {warning}</span>
-                </div>
-            )}
-
-            {/* Error */}
-            {error && (
-                <div className="bg-red-50 dark:bg-red-900/20 p-3 rounded-lg border border-red-200 dark:border-red-800/50 mt-2">
-                    <span className="text-[12px] text-red-600 dark:text-red-400 font-medium">❌ {error}</span>
-                </div>
-            )}
         </div>
     );
 }

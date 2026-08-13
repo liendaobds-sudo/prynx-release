@@ -63,6 +63,29 @@ export function usesPageSizedStickerShape(
         && dieSizeMode === 'page';
 }
 
+/**
+ * INKING (audit 2026-08-12 §INK-DIE-03): RECTANGLE là mã nhận diện dùng chung
+ * cho cả tem vuông và chữ nhật. Chỉ mở Inking khi mọi trang đang còn trong
+ * viewer đều là RECTANGLE; one_dao luôn dùng dao thẳng chữ nhật.
+ */
+export function canUseRectangleStickerInking(
+    activeTool: string,
+    pageSheetMode: boolean,
+    cutType: string | undefined,
+    shapesByPage: Record<number, string> | undefined,
+    pageCount: number,
+): boolean {
+    if (activeTool !== 'sticker_imposer' || pageSheetMode) return false;
+    if (cutType === 'one_dao') return true;
+    if (!shapesByPage || pageCount <= 0) return false;
+    for (let page = 0; page < pageCount; page += 1) {
+        if (String(shapesByPage[page] || '').trim().toUpperCase() !== 'RECTANGLE') {
+            return false;
+        }
+    }
+    return true;
+}
+
 export function buildPageSizedShapeState(
     sourcePageDims: PageDimension[],
     fallbackDim: PageDimension | null,

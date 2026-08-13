@@ -12,7 +12,7 @@ import {
     createOptionalContentTransfer,
     finishOptionalContentTransfer,
 } from './pdfOptionalContent';
-import { imposeCatalogBatchViaBackend, ImpositionMode, type GuillotineSettings, type ProcessingSettings } from '../lib/pdfImposer';
+import { imposeCatalogBatchViaBackend, ImpositionMode, type DieCutSettings, type GuillotineSettings, type ProcessingSettings } from '../lib/pdfImposer';
 import { planCatalog, verifyCatalogPlan, type PlanConfig } from '../lib/imposerEngine/CatalogPlanner';
 import { getImposerCapability } from '../components/imposition-tools/types';
 import { applyRule, executeShuffle, parseRule, reversePages, shuffleEvenOdd } from '../lib/preprocessEngine/ShuffleEngine';
@@ -24,6 +24,7 @@ import i18n, { tv } from '../i18n';
 import { formatError, isCanceled } from './errorMessages';
 import { toast } from '../components/ui/Toast';
 import { waitForAppForegroundDelay } from './appVisibility';
+import { previewPerfLog } from './previewPerfLog';
 
 // UIUX (audit 2026-07-27 §D-09): tác vụ nặng chạy lâu — trấn an để user không tưởng app treo.
 // (KHÔNG thêm nút hủy: backend chưa có endpoint cancel cho các route preprocess.)
@@ -106,7 +107,29 @@ export async function runProcessEngine(
         const isGuillotine = settings.imposerMode === 'guillotine';
         const isCnc = settings.imposerMode === 'cnc';
         const guillotineSettings = isGuillotine ? settings as GuillotineSettings : undefined;
+        const dieCutSettings = isDieCut ? settings as DieCutSettings : undefined;
         const isPageSheet = isGuillotine && settings.pageSheetMode === true;
+        const requestedAlternateRotation = isGuillotine
+            ? guillotineSettings?.alternateRotation
+            : dieCutSettings?.alternateRotation;
+        const dieShapes = Object.values(dieCutSettings?.detectedShapesByPage || {});
+        const rectangleStickerInking = isDieCut && !isCnc && (
+            dieCutSettings?.cutType === 'one_dao'
+            || (
+                dieShapes.length > 0
+                && dieShapes.every(shape => String(shape || '').trim().toUpperCase() === 'RECTANGLE')
+            )
+            || (dieShapes.length === 0 && String(dieCutSettings?.shapeType || '').trim().toUpperCase() === 'RECTANGLE')
+        );
+        const effectiveAlternateRotation = (
+            (
+                isGuillotine
+                && !isPageSheet
+                && guillotineSettings?.layoutType !== 'mixed_guillotine'
+            ) || rectangleStickerInking
+        ) && (
+            requestedAlternateRotation === 'row' || requestedAlternateRotation === 'column'
+        ) ? requestedAlternateRotation : 'none';
         // Page-sheet dùng capability guillotine để giữ marks; raw UI state không đi qua boundary này.
         const caps = getImposerCapability(isPageSheet ? 'guillotine' : settings.imposerMode);
         const pontSettingsMode = caps.supportsPont || isPageSheet;
@@ -152,10 +175,16 @@ export async function runProcessEngine(
                     cutBorderThickness: Number(guillotineSettings.cutBorderThickness) || 0.3,
                 } : {}),
                 gridStrategy: isGuillotine || isDieCut || isCnc ? (settings as any).gridStrategy || 'simple_auto' : 'simple_auto',
+                alternateRotation: effectiveAlternateRotation,
                 layoutType: isGuillotine || isDieCut || isCnc ? (settings as any).layoutType || 'sequential' : 'sequential',
                 align: settings.align || 'center',
                 cols: settings.cols, rows: settings.rows,
                 splitGap: (settings as any).splitGap,
+                diagnosticTraceId: (settings as any).diagnosticTraceId,
+                diagnosticPreviewRequestId: (settings as any).diagnosticPreviewRequestId,
+                diagnosticPendingRequestId: (settings as any).diagnosticPendingRequestId,
+                diagnosticPreviewCapacity: (settings as any).diagnosticPreviewCapacity,
+                diagnosticPreviewState: (settings as any).diagnosticPreviewState,
                 // CNC cũng là die-cut về bản chất → giữ cờ NHẤT QUÁN với UI (audit #C3).
                 // Routing backend vẫn theo imposerMode='cnc' (ưu tiên trước isDieCutMode).
                 isDieCutMode: isDieCut || isCnc,
@@ -228,7 +257,25 @@ export async function runProcessEngine(
                 cncDuplexMarks: isCnc ? (settings as any).cncDuplexMarks : undefined,
             };
 
+            void previewPerfLog('nup-export START', {
+                trace_id: (settings as any).diagnosticTraceId || '',
+                preview_request_id: (settings as any).diagnosticPreviewRequestId || '',
+                pending_request_id: (settings as any).diagnosticPendingRequestId || '',
+                preview_capacity: Number((settings as any).diagnosticPreviewCapacity ?? -1),
+                preview_state: (settings as any).diagnosticPreviewState || 'none',
+                sheet_w_mm: settings.sheetWidth,
+                sheet_h_mm: settings.sheetHeight,
+                gap_x_mm: settings.gapX || 0,
+                gap_y_mm: settings.gapY || 0,
+                bleed_mm: settings.bleed || 0,
+                split_gap_mm: Number((settings as any).splitGap ?? 0),
+            });
             const jobId = await startNupJobBackend(serverPath, backendSettings);
+            void previewPerfLog('nup-export ACCEPTED', {
+                trace_id: (settings as any).diagnosticTraceId || '',
+                job_id: jobId,
+                preview_capacity: Number((settings as any).diagnosticPreviewCapacity ?? -1),
+            });
             ctx.setCancelHandler?.(async () => {
                 await cancelNupJobBackend(jobId);
             });
@@ -238,6 +285,10 @@ export async function runProcessEngine(
                 const status = await getNupJobStatus(jobId);
 
                 if (status.status === 'completed') {
+                    void previewPerfLog('nup-export COMPLETE', {
+                        trace_id: (settings as any).diagnosticTraceId || '',
+                        job_id: jobId,
+                    });
                     done = true;
                     const newFileName = `Imposed_${file.name.replace('.pdf', '')}_.pdf`;
                     const nativeOutputPath = (
@@ -305,8 +356,16 @@ export async function runProcessEngine(
                         }
                     }
                 } else if (status.status === 'failed') {
+                    void previewPerfLog('nup-export FAILED', {
+                        trace_id: (settings as any).diagnosticTraceId || '',
+                        job_id: jobId,
+                    });
                     throw new Error(status.error || i18n.t('lib.processHandlers:loi_xu_ly_he_thong'));
                 } else if (status.status === 'cancelled') {
+                    void previewPerfLog('nup-export CANCELLED', {
+                        trace_id: (settings as any).diagnosticTraceId || '',
+                        job_id: jobId,
+                    });
                     throw new Error("ABORT_BY_USER");
                 } else {
                     const prog = status.progress || '';

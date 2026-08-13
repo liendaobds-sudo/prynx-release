@@ -20,6 +20,16 @@ fn silhouette_request(rows: &[&str]) -> LogoEngineRequest {
 }
 
 fn flat_request(colors: &[[u8; 3]], width: usize, height: usize) -> LogoEngineRequest {
+    flat_request_with_options(colors, width, height, 0.5, 0)
+}
+
+fn flat_request_with_options(
+    colors: &[[u8; 3]],
+    width: usize,
+    height: usize,
+    smoothing: f64,
+    despeckle_size_px: usize,
+) -> LogoEngineRequest {
     assert_eq!(colors.len(), width * height);
     let mut rgba = Vec::with_capacity(colors.len() * 4);
     for color in colors {
@@ -35,8 +45,16 @@ fn flat_request(colors: &[[u8; 3]], width: usize, height: usize) -> LogoEngineRe
         .iter()
         .map(|color| format!("#{:02x}{:02x}{:02x}", color[0], color[1], color[2]))
         .collect();
-    LogoEngineRequest::from_legacy_api(width, height, rgba, "fixed_palette", palette, 0.5, 0)
-        .unwrap()
+    LogoEngineRequest::from_legacy_api(
+        width,
+        height,
+        rgba,
+        "fixed_palette",
+        palette,
+        smoothing,
+        despeckle_size_px,
+    )
+    .unwrap()
 }
 
 fn trace_silhouette(rows: &[&str]) -> CoreProfileOutput {
@@ -153,6 +171,67 @@ fn flat_color_keeps_shared_boundaries_as_exact_lines() {
         .layers
         .iter()
         .all(|layer| layer_has_vertical_boundary(layer, 2.0)));
+}
+
+#[test]
+fn flat_color_despeckle_removes_isolated_color_component() {
+    const RED: [u8; 3] = [255, 0, 0];
+    const BLUE: [u8; 3] = [0, 0, 255];
+    let mut pixels = vec![BLUE; 81];
+    for y in 2..7 {
+        for x in 2..7 {
+            pixels[y * 9 + x] = RED;
+        }
+    }
+    pixels[0] = RED;
+
+    let raw = trace_core_profile(
+        &flat_request_with_options(&pixels, 9, 9, 0.0, 0),
+        CoreProfileOptions::default(),
+    )
+    .unwrap();
+    let cleaned = trace_core_profile(
+        &flat_request_with_options(&pixels, 9, 9, 0.0, 2),
+        CoreProfileOptions::default(),
+    )
+    .unwrap();
+
+    assert_eq!(raw.metrics.component_count, 3);
+    assert_eq!(raw.metrics.outer_count, 3);
+    assert_eq!(cleaned.metrics.component_count, 2);
+    assert_eq!(cleaned.metrics.outer_count, 2);
+    assert_ne!(raw.preprocess_hash, cleaned.preprocess_hash);
+    assert!(cleaned.scene.validate_contract().is_ok());
+}
+
+#[test]
+fn flat_color_curve_fit_reduces_jagged_palette_boundary() {
+    const RED: [u8; 3] = [255, 0, 0];
+    const BLUE: [u8; 3] = [0, 0, 255];
+    const OFFSETS: [isize; 8] = [0, 1, 2, 1, 0, -1, -2, -1];
+    let width = 96;
+    let height = 160;
+    let mut pixels = Vec::with_capacity(width * height);
+    for y in 0..height {
+        let boundary = (width as isize / 2 + OFFSETS[y % OFFSETS.len()]) as usize;
+        for x in 0..width {
+            pixels.push(if x < boundary { RED } else { BLUE });
+        }
+    }
+    let output = trace_core_profile(
+        &flat_request_with_options(&pixels, width, height, 1.0, 0),
+        CoreProfileOptions::default(),
+    )
+    .unwrap();
+
+    assert!(
+        output.metrics.output_nodes * 2 < output.metrics.source_nodes,
+        "curve-fit phải giảm node: {} -> {}",
+        output.metrics.source_nodes,
+        output.metrics.output_nodes
+    );
+    assert!(output.metrics.max_error_px <= 2.0 + 1e-9);
+    assert!(output.scene.validate_contract().is_ok());
 }
 
 #[test]

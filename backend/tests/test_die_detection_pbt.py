@@ -44,6 +44,15 @@ class _FakePage:
         return []  # không có đường bế → CUSTOM(custom)
 
 
+class _FakeCanvasPage(_FakePage):
+    """PDF có MediaBox lớn nhưng CropBox là trang logic đang nhìn thấy."""
+
+    def __init__(self, idx, media_w=906.147, media_h=1353.595,
+                 crop_w=417.0373, crop_h=145.51):
+        super().__init__(idx, w=media_w, h=media_h)
+        self.cropbox = _FakeRect(crop_w, crop_h)
+
+
 class _FakeDoc:
     def __init__(self, n, boom_set=frozenset()):
         self.page_count = n
@@ -128,6 +137,21 @@ def test_per_page_isolation(data, n):
     for i in range(n):
         if i not in boom:
             assert res.shapes[i].type is clean.shapes[i].type
+
+
+def test_custom_fallback_uses_logical_cropbox_on_large_canvas():
+    """Không có đường bế: kích thước phải theo CropBox logic, không theo canvas."""
+    from app.workers.die_detection import _page_dims_pt
+
+    page = _FakeCanvasPage(0)
+    assert _page_dims_pt(page) == pytest.approx((417.0373, 145.51), abs=1e-4)
+    result = detect_die_shapes(type("Doc", (), {
+        "page_count": 1,
+        "__getitem__": lambda self, index: page,
+    })())
+    assert result.shapes[0].source == "custom"
+    assert result.shapes[0].trim.w == pytest.approx(417.0373, abs=1e-3)
+    assert result.shapes[0].trim.h == pytest.approx(145.51, abs=1e-3)
 
 
 # =========================================================================

@@ -225,6 +225,103 @@ def _py_get_src_page_idx(sheet_idx, cell_on_sheet_idx, layout_type, total_capaci
 
 # ── Public API (Rust-first, Python-fallback) ────────────────
 
+_ALTERNATE_ROTATION_MODES = frozenset({'none', 'row', 'column'})
+
+
+def normalize_alternate_rotation(value: Any, *, strict: bool = False) -> str:
+    """Chuẩn hóa chế độ xoay đối đầu độc lập với chiến lược xếp lưới."""
+    mode = str(value or 'none').strip().lower()
+    if mode in _ALTERNATE_ROTATION_MODES:
+        return mode
+    if strict:
+        raise ValueError("Chế độ xoay đối đầu phải là none, row hoặc column.")
+    return 'none'
+
+
+def rectangle_inking_is_allowed(
+    *,
+    is_die_cut: bool,
+    is_cnc: bool = False,
+    page_sheet_mode: bool = False,
+    layout_type: str = '',
+    cut_type: str = 'default',
+    shape_type: Any = None,
+    shapes_by_page: Any = None,
+) -> bool:
+    """Chỉ cho Inking vào tem bế vuông/chữ nhật, không cho CNC/decal nguyên tấm.
+
+    `RECTANGLE` là mã chuẩn dùng chung cho cả hình vuông và chữ nhật. Khi gửi
+    nhiều trang, mọi trang còn sống phải cùng là RECTANGLE; một trang hình khác
+    là đủ để khóa mode ở boundary backend.
+    """
+    if not is_die_cut or is_cnc or page_sheet_mode or layout_type == 'mixed_guillotine':
+        return False
+    if str(cut_type or '').strip().lower() == 'one_dao':
+        return True
+    values = list((shapes_by_page or {}).values()) if isinstance(shapes_by_page, dict) else []
+    if values:
+        return all(str(value or '').strip().upper() == 'RECTANGLE' for value in values)
+    return str(shape_type or '').strip().upper() == 'RECTANGLE'
+
+
+def apply_alternate_rotation(layout: Dict[str, Any], mode: str) -> Dict[str, Any]:
+    """Xoay 180° xen kẽ theo hàng/cột mà không đổi hình học lưới.
+
+    `isRotated` vẫn là góc nền 0/90° do solver chọn; renderer đã có
+    hợp đồng ghép thêm `isRotated180`, nên các ô lẻ thành 180/270°.
+    """
+    normalized_mode = normalize_alternate_rotation(mode)
+    if normalized_mode == 'none':
+        return layout
+
+    # INKING (audit 2026-08-12 §INK-DIE-01): N-Up dùng `cells`, còn bình tem bế
+    # dùng `items`. Giữ một phép biến đổi duy nhất để Preview và PDF không thể
+    # diễn giải hàng/cột khác nhau.
+    item_key = 'cells' if 'cells' in layout else 'items'
+    source_cells = list(layout.get(item_key) or [])
+
+    # INKING (2026-08-12): L-shape gồm cụm chính + cụm bù xoay 90°.
+    # Mỗi cụm phải bắt đầu chu kỳ 0°/180° từ dải đầu tiên của
+    # chính nó. Hàng/cột ở đây là trục của NỘI DUNG: với cụm đã xoay
+    # nền 90°, hàng nằm theo trục X vật lý và cột nằm theo trục Y.
+    # blockId là hợp đồng solver: 0=chính, 1=phải, 2=đáy.
+    # Ghép isRotated vào khóa nhóm để vẫn đúng nếu một solver tương lai
+    # vô tình trả nhiều hướng nền trong cùng một block.
+    coordinate_indexes_by_group: Dict[Any, Dict[float, int]] = {}
+    for source_cell in source_cells:
+        block_id = source_cell.get('blockId', 0)
+        is_rotated = bool(source_cell.get('isRotated', False))
+        group_key = (block_id, is_rotated)
+        if normalized_mode == 'row':
+            coordinate_key = 'x' if is_rotated else 'y'
+        else:
+            coordinate_key = 'y' if is_rotated else 'x'
+        coordinate = round(float(source_cell.get(coordinate_key, 0.0)), 6)
+        coordinate_indexes_by_group.setdefault(group_key, {})[coordinate] = 0
+    for coordinates in coordinate_indexes_by_group.values():
+        for index, coordinate in enumerate(sorted(coordinates)):
+            coordinates[coordinate] = index
+
+    rotated_cells: List[Dict[str, Any]] = []
+    for source_cell in source_cells:
+        cell = dict(source_cell)
+        block_id = source_cell.get('blockId', 0)
+        is_rotated = bool(source_cell.get('isRotated', False))
+        group_key = (block_id, is_rotated)
+        if normalized_mode == 'row':
+            coordinate_key = 'x' if is_rotated else 'y'
+        else:
+            coordinate_key = 'y' if is_rotated else 'x'
+        coordinate = round(float(cell.get(coordinate_key, 0.0)), 6)
+        band_index = coordinate_indexes_by_group.get(group_key, {}).get(coordinate, 0)
+        cell['isRotated180'] = bool(band_index % 2)
+        rotated_cells.append(cell)
+
+    result = dict(layout)
+    result[item_key] = rotated_cells
+    return result
+
+
 def solve_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y, is_rotated=False):
     if _USE_RUST:
         return _rust_solve_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y, is_rotated)
@@ -232,12 +329,16 @@ def solve_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y, is_rotated=Fals
     return _py_solve_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y, is_rotated)
 
 
-def solve_optimal_layout(usable_w, usable_h, orig_w, orig_h, gap_x, gap_y, strategy='simple_auto', secondary_gap=None):
+def solve_optimal_layout(
+    usable_w, usable_h, orig_w, orig_h, gap_x, gap_y,
+    strategy='simple_auto', secondary_gap=None, alternate_rotation='none',
+):
     if _USE_RUST:
         res = _rust_solve_optimal(usable_w, usable_h, orig_w, orig_h, gap_x, gap_y, strategy, secondary_gap)
     else:
         _allow_python_path()
         res = _py_solve_optimal_layout(usable_w, usable_h, orig_w, orig_h, gap_x, gap_y, strategy, secondary_gap)
+    res = apply_alternate_rotation(res, alternate_rotation)
     # ── DEBUG MARKER (Task: chẩn đoán grid-preference) ──
     try:
         cells = res.get('cells', [])
@@ -344,11 +445,13 @@ def _py_solve_manual(item_w, item_h, gap_x, gap_y, cols, rows):
     }
 
 
-def solve_manual(item_w, item_h, gap_x, gap_y, cols, rows):
+def solve_manual(item_w, item_h, gap_x, gap_y, cols, rows, alternate_rotation='none'):
     if _USE_RUST and _rust_solve_manual is not None:
-        return _rust_solve_manual(item_w, item_h, gap_x, gap_y, int(cols), int(rows))
-    _allow_python_path()
-    return _py_solve_manual(item_w, item_h, gap_x, gap_y, cols, rows)
+        result = _rust_solve_manual(item_w, item_h, gap_x, gap_y, int(cols), int(rows))
+    else:
+        _allow_python_path()
+        result = _py_solve_manual(item_w, item_h, gap_x, gap_y, cols, rows)
+    return apply_alternate_rotation(result, alternate_rotation)
 
 
 def compute_ratio_stack_alloc(capacity: int, qtys: List[int]) -> Dict[str, Any]:
@@ -495,7 +598,7 @@ def build_guillotine_preview_sheet(
             'absX': abs_x, 'absY': abs_y,
             'width': cell['width'], 'height': cell['height'],
             'isRotated': bool(cell.get('isRotated', False)),
-            'isRotated180': False,
+            'isRotated180': bool(cell.get('isRotated180', False)),
             'pageIdx': page_idx,
         })
         page_key = str(page_idx)

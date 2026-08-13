@@ -4,6 +4,7 @@ exports[`useImposerSettingsStore — characterization (golden) > default state (
 {
   "activeDashboardTool": "none",
   "align": "center",
+  "alternateRotation": "none",
   "autoCatalog": false,
   "batchOutput": null,
   "blankPlacement": "end",
@@ -281,6 +282,7 @@ exports[`useImposerSettingsStore — characterization (golden) > default state (
 exports[`useImposerSettingsStore — characterization (golden) > tập partialize keys (đưa vào localStorage) khớp snapshot vàng 1`] = `
 [
   "align",
+  "alternateRotation",
   "autoCatalog",
   "blankPlacement",
   "bleed",

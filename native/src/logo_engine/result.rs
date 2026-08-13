@@ -123,9 +123,9 @@ pub(crate) fn build_structured_result(
         .mae
         .ok_or_else(|| "QC structured result thiếu MAE".to_string())?;
     let mut warnings = Vec::new();
-    if request.despeckle_size_px > 0 {
+    if request.despeckle_size_px > 0 && request.profile == LogoEngineProfile::Silhouette {
         warnings.push(format!(
-            "Core PrynX chưa áp dụng khử hạt {} px; chưa dùng kết quả này trên production.",
+            "Profile đen trắng chưa áp dụng khử hạt {} px; cần kiểm tra kết quả trước khi dùng production.",
             request.despeckle_size_px
         ));
     }

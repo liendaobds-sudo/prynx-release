@@ -61,6 +61,8 @@ export interface ImpositionPreset {
     columns: number;
     rows: number;
     gridStrategy: 'manual' | 'simple_auto' | 'optimal_auto' | 'staggered' | 'row_alt' | 'head_to_tail';
+    /** Optional để preset cũ mặc định về tắt. */
+    alternateRotation?: 'none' | 'row' | 'column';
     duplexFlow: 'normal' | 'double';
     align: string;
     clusterMode: 'none' | 'row' | 'column';

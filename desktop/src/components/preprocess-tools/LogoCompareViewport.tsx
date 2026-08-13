@@ -280,7 +280,7 @@ export default function LogoCompareViewport({
   const hasPreview = Boolean(previewUrl);
 
   return (
-    <figure className="flex min-h-[520px] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+    <figure className="flex min-h-[320px] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 xl:min-h-0">
       <figcaption className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-3 py-2 dark:border-zinc-800">
         <div className="flex flex-wrap gap-1" role="group" aria-label={labels.viewport}>
           {(['source', 'vector', 'split', 'overlay'] as const).map(value => (

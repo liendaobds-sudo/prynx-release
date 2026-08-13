@@ -408,43 +408,236 @@ fn validate_options(options: CurveFitOptions) -> Result<(), String> {
 }
 
 fn path_boundary_error(points: &[FitPoint], path: &ScenePath, precision: f64) -> f64 {
+    let index = SegmentBvh::from_path(path);
     points
         .iter()
-        .map(|point| point_path_distance_upper_bound(*point, path, precision.max(1e-9)))
+        .map(|point| index.distance_upper_bound(*point, precision.max(1e-9), f64::INFINITY))
         .fold(0.0_f64, f64::max)
 }
 
-fn point_path_distance_upper_bound(point: FitPoint, path: &ScenePath, precision: f64) -> f64 {
-    let mut current = from_scene_point(path.start);
-    let mut best = f64::INFINITY;
-    for segment in &path.segments {
-        match segment {
-            SceneSegment::Line { to } => {
-                let end = from_scene_point(*to);
-                best = best.min(point_segment_distance(point, current, end));
-                current = end;
+#[derive(Clone, Copy, Debug)]
+struct AxisAlignedBounds {
+    min_x: f64,
+    min_y: f64,
+    max_x: f64,
+    max_y: f64,
+}
+
+impl AxisAlignedBounds {
+    fn from_line(start: FitPoint, end: FitPoint) -> Self {
+        Self {
+            min_x: start.x.min(end.x),
+            min_y: start.y.min(end.y),
+            max_x: start.x.max(end.x),
+            max_y: start.y.max(end.y),
+        }
+    }
+
+    fn from_cubic(cubic: CubicBezier) -> Self {
+        Self {
+            min_x: cubic
+                .start
+                .x
+                .min(cubic.control_1.x)
+                .min(cubic.control_2.x)
+                .min(cubic.end.x),
+            min_y: cubic
+                .start
+                .y
+                .min(cubic.control_1.y)
+                .min(cubic.control_2.y)
+                .min(cubic.end.y),
+            max_x: cubic
+                .start
+                .x
+                .max(cubic.control_1.x)
+                .max(cubic.control_2.x)
+                .max(cubic.end.x),
+            max_y: cubic
+                .start
+                .y
+                .max(cubic.control_1.y)
+                .max(cubic.control_2.y)
+                .max(cubic.end.y),
+        }
+    }
+
+    fn union(self, other: Self) -> Self {
+        Self {
+            min_x: self.min_x.min(other.min_x),
+            min_y: self.min_y.min(other.min_y),
+            max_x: self.max_x.max(other.max_x),
+            max_y: self.max_y.max(other.max_y),
+        }
+    }
+
+    fn center_x(self) -> f64 {
+        (self.min_x + self.max_x) * 0.5
+    }
+
+    fn center_y(self) -> f64 {
+        (self.min_y + self.max_y) * 0.5
+    }
+
+    fn distance(self, point: FitPoint) -> f64 {
+        let dx = if point.x < self.min_x {
+            self.min_x - point.x
+        } else if point.x > self.max_x {
+            point.x - self.max_x
+        } else {
+            0.0
+        };
+        let dy = if point.y < self.min_y {
+            self.min_y - point.y
+        } else if point.y > self.max_y {
+            point.y - self.max_y
+        } else {
+            0.0
+        };
+        dx.hypot(dy)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum IndexedPathSegment {
+    Line { start: FitPoint, end: FitPoint },
+    Cubic(CubicBezier),
+}
+
+impl IndexedPathSegment {
+    fn bounds(self) -> AxisAlignedBounds {
+        match self {
+            Self::Line { start, end } => AxisAlignedBounds::from_line(start, end),
+            Self::Cubic(cubic) => AxisAlignedBounds::from_cubic(cubic),
+        }
+    }
+
+    fn distance_upper_bound(self, point: FitPoint, precision: f64) -> f64 {
+        match self {
+            Self::Line { start, end } => point_segment_distance(point, start, end),
+            Self::Cubic(cubic) => point_cubic_distance_upper_bound(point, cubic, precision),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum SegmentBvh {
+    Leaf {
+        bounds: AxisAlignedBounds,
+        segments: Vec<IndexedPathSegment>,
+    },
+    Branch {
+        bounds: AxisAlignedBounds,
+        left: Box<SegmentBvh>,
+        right: Box<SegmentBvh>,
+    },
+}
+
+impl SegmentBvh {
+    fn from_path(path: &ScenePath) -> Self {
+        let mut segments = Vec::with_capacity(path.segments.len() + usize::from(path.closed));
+        let mut current = from_scene_point(path.start);
+        for segment in &path.segments {
+            match segment {
+                SceneSegment::Line { to } => {
+                    let end = from_scene_point(*to);
+                    segments.push(IndexedPathSegment::Line {
+                        start: current,
+                        end,
+                    });
+                    current = end;
+                }
+                SceneSegment::Cubic {
+                    control_1,
+                    control_2,
+                    to,
+                } => {
+                    let cubic = CubicBezier {
+                        start: current,
+                        control_1: from_scene_point(*control_1),
+                        control_2: from_scene_point(*control_2),
+                        end: from_scene_point(*to),
+                    };
+                    segments.push(IndexedPathSegment::Cubic(cubic));
+                    current = cubic.end;
+                }
             }
-            SceneSegment::Cubic {
-                control_1,
-                control_2,
-                to,
-            } => {
-                let cubic = CubicBezier {
-                    start: current,
-                    control_1: from_scene_point(*control_1),
-                    control_2: from_scene_point(*control_2),
-                    end: from_scene_point(*to),
+        }
+        let start = from_scene_point(path.start);
+        if path.closed && current != start {
+            segments.push(IndexedPathSegment::Line {
+                start: current,
+                end: start,
+            });
+        }
+        debug_assert!(!segments.is_empty());
+        Self::build(segments)
+    }
+
+    fn build(mut segments: Vec<IndexedPathSegment>) -> Self {
+        let bounds = segments
+            .iter()
+            .map(|segment| segment.bounds())
+            .reduce(AxisAlignedBounds::union)
+            .expect("ScenePath hợp lệ luôn có segment");
+        if segments.len() <= 8 {
+            return Self::Leaf { bounds, segments };
+        }
+        let split_x = bounds.max_x - bounds.min_x >= bounds.max_y - bounds.min_y;
+        segments.sort_by(|first, second| {
+            let first = first.bounds();
+            let second = second.bounds();
+            if split_x {
+                first.center_x().total_cmp(&second.center_x())
+            } else {
+                first.center_y().total_cmp(&second.center_y())
+            }
+        });
+        let right_segments = segments.split_off(segments.len() / 2);
+        let left = Box::new(Self::build(segments));
+        let right = Box::new(Self::build(right_segments));
+        Self::Branch {
+            bounds,
+            left,
+            right,
+        }
+    }
+
+    fn bounds(&self) -> AxisAlignedBounds {
+        match self {
+            Self::Leaf { bounds, .. } | Self::Branch { bounds, .. } => *bounds,
+        }
+    }
+
+    fn distance_upper_bound(&self, point: FitPoint, precision: f64, mut best: f64) -> f64 {
+        if self.bounds().distance(point) >= best {
+            return best;
+        }
+        match self {
+            Self::Leaf { segments, .. } => {
+                for segment in segments {
+                    if segment.bounds().distance(point) < best {
+                        best = best.min(segment.distance_upper_bound(point, precision));
+                    }
+                }
+                best
+            }
+            Self::Branch { left, right, .. } => {
+                let left_distance = left.bounds().distance(point);
+                let right_distance = right.bounds().distance(point);
+                let (near, far, far_distance) = if left_distance <= right_distance {
+                    (left, right, right_distance)
+                } else {
+                    (right, left, left_distance)
                 };
-                best = best.min(point_cubic_distance_upper_bound(point, cubic, precision));
-                current = cubic.end;
+                best = near.distance_upper_bound(point, precision, best);
+                if far_distance < best {
+                    best = far.distance_upper_bound(point, precision, best);
+                }
+                best
             }
         }
     }
-    let start = from_scene_point(path.start);
-    if path.closed && current != start {
-        best = best.min(point_segment_distance(point, current, start));
-    }
-    best
 }
 
 fn point_cubic_distance_upper_bound(point: FitPoint, cubic: CubicBezier, precision: f64) -> f64 {
@@ -503,45 +696,7 @@ fn midpoint(first: FitPoint, second: FitPoint) -> FitPoint {
 }
 
 fn distance_to_bounding_box(point: FitPoint, cubic: CubicBezier) -> f64 {
-    let min_x = cubic
-        .start
-        .x
-        .min(cubic.control_1.x)
-        .min(cubic.control_2.x)
-        .min(cubic.end.x);
-    let max_x = cubic
-        .start
-        .x
-        .max(cubic.control_1.x)
-        .max(cubic.control_2.x)
-        .max(cubic.end.x);
-    let min_y = cubic
-        .start
-        .y
-        .min(cubic.control_1.y)
-        .min(cubic.control_2.y)
-        .min(cubic.end.y);
-    let max_y = cubic
-        .start
-        .y
-        .max(cubic.control_1.y)
-        .max(cubic.control_2.y)
-        .max(cubic.end.y);
-    let dx = if point.x < min_x {
-        min_x - point.x
-    } else if point.x > max_x {
-        point.x - max_x
-    } else {
-        0.0
-    };
-    let dy = if point.y < min_y {
-        min_y - point.y
-    } else if point.y > max_y {
-        point.y - max_y
-    } else {
-        0.0
-    };
-    dx.hypot(dy)
+    AxisAlignedBounds::from_cubic(cubic).distance(point)
 }
 
 fn from_scene_point(point: ScenePoint) -> FitPoint {

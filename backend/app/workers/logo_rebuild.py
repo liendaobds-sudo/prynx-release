@@ -1244,8 +1244,12 @@ def _process_logo_preview_reserved(
     status = quality.status
     review_reasons = list(quality.reasons)
     review_actions = list(quality.actions)
-    if structured is not None and effective_despeckle_size > 0:
-        reason = "Core PrynX chưa áp dụng khử hạt đã yêu cầu."
+    if (
+        structured is not None
+        and settings.mode == "monochrome"
+        and effective_despeckle_size > 0
+    ):
+        reason = "Profile đen trắng chưa áp dụng khử hạt đã yêu cầu."
         action = "Đặt khử hạt về 0 hoặc tiếp tục chỉnh thủ công trước khi xuất."
         if reason not in review_reasons:
             review_reasons.append(reason)

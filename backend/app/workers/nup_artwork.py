@@ -14,6 +14,7 @@ Hàm `place_one_artwork` xử lý cho MỘT placement:
 
 import logging
 
+from app.core.imposition_page_box import effective_imposition_box
 from app.workers import pdf_wrapper as pdf_lib
 from app.workers.nup_clip_shape import build_die_clip_rings
 
@@ -844,6 +845,12 @@ def place_one_artwork(
                 else src_page
             )
             largest_path = find_largest_die_path(geometry_page)
+            if largest_path is None:
+                # [PAGE-SHEET FIX 2026-08-13] Nguyên tấm decal không bắt buộc
+                # file nguồn phải có CutContour. Khi thiếu, trang logic mà người
+                # dùng đang thấy chính là khuôn chữ nhật của tấm.
+                from app.workers.nup_diecut import resolve_default_page_die
+                largest_path = resolve_default_page_die(geometry_page)
             if largest_path:
                 die_items_cache[cache_key] = {
                     'items': largest_path.get('items', []),
@@ -851,12 +858,17 @@ def place_one_artwork(
                     'color': largest_path.get('color', (0, 0, 0)),
                     'width': largest_path.get('width', 0.5),
                     'spot_name': largest_path.get('spot_name'),
+                    'is_page_fallback': bool(largest_path.get('is_page_fallback')),
                 }
             else:
                 die_items_cache[cache_key] = None
 
         cached_cut = die_items_cache.get(cache_key)
-        if cached_cut and src_page_idx not in local_stripped_pages:
+        if (
+            cached_cut
+            and not cached_cut.get('is_page_fallback')
+            and src_page_idx not in local_stripped_pages
+        ):
             target_color = cached_cut.get('color')
             target_spot = cached_cut.get('spot_name')
             try:
@@ -887,10 +899,25 @@ def place_one_artwork(
         cache_key = f"{job_id}_{src_page_idx}"
         largest_path = None
         if cache_key not in diecut_geom_cache:
-            sx0, sy0, sx1, sy1 = src_page.rect
-            _off_pt = (float(die_offset_mm or 0) * 2.83465
-                       if (cut_type == 'one_dao' and die_size_mode == 'page') else None)
-            if _off_pt is not None:
+            _page_sized_one_dao = (
+                cut_type == 'one_dao' and die_size_mode == 'page'
+            )
+            _off_pt = (
+                float(die_offset_mm or 0) * 2.83465
+                if _page_sized_one_dao else None
+            )
+            if _page_sized_one_dao:
+                # [PAGEBOX FIX 2026-08-13] Solver 1 Dao theo trang dùng hộp
+                # hiệu dụng; renderer phải clip/map đúng cùng hộp đó. Nếu vẫn lấy
+                # MediaBox lớn, số tem/tờ đúng nhưng artwork bị co hoặc biến mất.
+                try:
+                    source_box = effective_imposition_box(src_page)
+                except (AttributeError, TypeError, ValueError):
+                    source_box = src_page.rect
+                sx0, sy0, sx1, sy1 = (
+                    float(source_box.x0), float(source_box.y0),
+                    float(source_box.x1), float(source_box.y1),
+                )
                 tx0 = sx0 - _off_pt
                 ty0 = sy0 - _off_pt
                 tx1 = sx1 + _off_pt
@@ -898,6 +925,23 @@ def place_one_artwork(
                 largest_path = None
             else:
                 largest_path = find_largest_die_path(src_page)
+                if largest_path is None and cut_type == 'default':
+                    from app.workers.nup_diecut import resolve_default_page_die
+                    largest_path = resolve_default_page_die(src_page)
+                if (largest_path or {}).get('is_page_fallback'):
+                    # [PAGEBOX FIX 2026-08-13] Fallback PageBox phải map chính
+                    # vùng trang logic; lấy MediaBox lớn làm artwork co thành trắng.
+                    try:
+                        source_box = effective_imposition_box(src_page)
+                    except (AttributeError, TypeError, ValueError):
+                        source_box = src_page.rect
+                    page_height = float(src_page.rect.height)
+                    sx0 = float(source_box.x0)
+                    sy0 = page_height - float(source_box.y1)
+                    sx1 = float(source_box.x1)
+                    sy1 = page_height - float(source_box.y0)
+                else:
+                    sx0, sy0, sx1, sy1 = src_page.rect
                 if largest_path:
                     r = largest_path['rect']
                     tx0, ty0, tx1, ty1 = r.x0, r.y0, r.x1, r.y1
@@ -918,12 +962,18 @@ def place_one_artwork(
                     # spot bế THẬT của file (tên có thể lạ, ngoài danh sách chuẩn) →
                     # truyền vào strip để gỡ đúng đường bế khi tách trang khuôn.
                     'spot_name': largest_path.get('spot_name'),
+                    'is_page_fallback': bool(largest_path.get('is_page_fallback')),
                 }
             else:
                 die_items_cache[cache_key] = None
 
         # Strip die-cut paths khỏi trang nguồn (để không in lên artwork khi tách trang khuôn)
-        if (separate_cut_page or cut_type == 'one_dao') and src_page_idx not in local_stripped_pages:
+        _cached_before_strip = die_items_cache.get(cache_key) or {}
+        if (
+            (separate_cut_page or cut_type == 'one_dao')
+            and src_page_idx not in local_stripped_pages
+            and not _cached_before_strip.get('is_page_fallback')
+        ):
             local_stripped_pages.add(src_page_idx)
             try:
                 pike_page = src_doc._pdf.pages[src_page_idx]
@@ -1016,27 +1066,43 @@ def place_one_artwork(
                 )
         # Chỉ truyền kwarg khi thực sự có clip theo hình → luồng cũ bất biến.
         _clip_kw = {'out_clip_path': _clip_rings} if _clip_rings else {}
+        _source_clip_kw = {}
+        _cached_source_die = die_items_cache.get(cache_key) or {}
+        if _cached_source_die.get('is_page_fallback'):
+            _source_clip_kw = {
+                'clip': pdf_lib.Rect(sx0, sy0, sx1, sy1),
+            }
+        elif cut_type == 'one_dao' and die_size_mode == 'page':
+            # ``show_pdf_page`` nhận clip theo hệ top-down của wrapper, trong khi
+            # PageBox PDF dùng Y-up. Đổi trục Y giống resolver bình cắt xén.
+            _page_h = float(src_page.rect.height)
+            _source_clip_kw = {
+                'clip': pdf_lib.Rect(
+                    sx0, _page_h - sy1,
+                    sx1, _page_h - sy0,
+                ),
+            }
 
         if cell.get('isRotated', False) and cell.get('isRotated180', False):
             shift_x = trim_rect.x0 - (vis_h - rel_ty1)
             shift_y = trim_rect.y0 - rel_tx0
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_h, shift_y + vis_w)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=270, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y, **_clip_kw)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=270, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y, **_source_clip_kw, **_clip_kw)
         elif cell.get('isRotated180', False):
             shift_x = trim_rect.x0 - (vis_w - rel_tx1)
             shift_y = trim_rect.y0 - (vis_h - rel_ty1)
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_w, shift_y + vis_h)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=180, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y, **_clip_kw)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=180, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y, **_source_clip_kw, **_clip_kw)
         elif cell.get('isRotated', False):
             shift_x = trim_rect.x0 - rel_ty0
             shift_y = trim_rect.y0 - (vis_w - rel_tx1)
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_h, shift_y + vis_w)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=90, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y, **_clip_kw)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=90, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y, **_source_clip_kw, **_clip_kw)
         else:
             shift_x = trim_rect.x0 - rel_tx0
             shift_y = trim_rect.y0 - rel_ty0
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_w, shift_y + vis_h)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y, **_clip_kw)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y, **_source_clip_kw, **_clip_kw)
     else:
         if cell.get('isRotated', False) and cell.get('isRotated180', False):
             out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, rotate=270, clip=guillotine_source_clip, out_clip=cell_out_clip, mirror_x=mirror_x, mirror_y=mirror_y)

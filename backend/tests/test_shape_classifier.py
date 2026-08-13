@@ -121,6 +121,87 @@ def test_width_profile_trapezoid_includes_preview_bbox():
     assert result["bbH"] == 200
 
 
+def test_width_profile_trapezoid_tolerates_small_sampling_noise():
+    """Ramp thật vẫn được nhận khi điểm Bezier gây dao động lấy mẫu nhỏ."""
+    samples = []
+    for index in range(50):
+        frac = (index + 0.5) / 50
+        noise = (0.2, -0.1, 0.1, -0.15)[index % 4]
+        width = (
+            60.0
+            if frac < 0.10
+            else 85.0 + 15.0 * (frac - 0.10) / 0.90 + noise
+        )
+        y = frac * 200.0
+        samples.extend([((100.0 - width) / 2.0, y), ((100.0 + width) / 2.0, y)])
+
+    result = _analyze_width_profile(samples, 0, 100, 0, 200, 100, 200, edges=[])
+
+    assert result is not None
+    assert result["shapeType"] == "trapezoid"
+
+
+def test_wavy_sticker_outline_is_not_trapezoid():
+    """Viền tem gợn sóng không được suy thành hình thang chỉ vì hai lát biên lệch nhau."""
+    # Profile 50 lát đo từ contour hồi quy 126,5 × 123,2 mm. Bề rộng phần giữa
+    # gần như cố định nhưng dao động nhiều; hai lát ngoài cùng thu hẹp do các gợn
+    # cục bộ. Logic cũ chỉ so lát đầu/cuối nên trả TRAPEZOID.
+    widths = [
+        326, 391, 408, 418, 422, 425, 428, 427, 426, 415,
+        411, 413, 413, 409, 407, 408, 412, 409, 406, 403,
+        407, 409, 410, 410, 409, 406, 405, 401, 395, 395,
+        401, 416, 426, 424, 420, 424, 427, 433, 432, 429,
+        424, 419, 406, 397, 397, 389, 363, 350, 291, 177,
+    ]
+    samples = []
+    for index, width in enumerate(widths):
+        x = (index + 0.5) * 10.0
+        samples.extend([(x, 225.0 - width / 2.0), (x, 225.0 + width / 2.0)])
+
+    result = _analyze_width_profile(
+        samples,
+        0.0,
+        500.0,
+        0.0,
+        450.0,
+        500.0,
+        450.0,
+        edges=[],
+    )
+
+    assert result is None or result.get("shapeType") != "trapezoid"
+
+    top = []
+    bottom = []
+    for index, width in enumerate(widths):
+        x = (index + 0.5) * 10.0
+        top.append((x, 225.0 - width / 2.0))
+        bottom.append((x, 225.0 + width / 2.0))
+    classified = classify_shape(lines(top + bottom[::-1]))
+    assert classified["shape_type"] is ShapeType.CUSTOM
+
+
+def test_broad_middle_bulge_is_not_hammer():
+    """Bướu giữa với hai đầu gần bằng nhau phải là Đặc biệt, không phải Búa."""
+    widths = [
+        200.5, 218.7, 227.4, 231.8, 253.5, 265.9, 266.7, 274.0, 290.3, 302.0,
+        305.2, 307.1, 298.0, 291.9, 283.2, 272.4, 269.0, 264.5, 262.6, 264.2,
+        274.1, 282.5, 284.1, 284.2, 281.8, 275.6, 263.0, 262.9, 263.9, 260.9,
+        261.9, 260.3, 255.7, 252.5, 253.7, 261.7, 266.1, 273.9, 276.4, 277.6,
+        278.1, 277.2, 272.9, 266.2, 259.2, 245.7, 242.1, 239.0, 234.5, 215.7,
+    ]
+    top = []
+    bottom = []
+    for index, width in enumerate(widths):
+        x = (index + 0.5) * 10.0
+        top.append((x, 225.0 - width / 2.0))
+        bottom.append((x, 225.0 + width / 2.0))
+
+    classified = classify_shape(lines(top + bottom[::-1]))
+
+    assert classified["shape_type"] is ShapeType.CUSTOM
+
+
 def test_arrow7_not_hammer_regression():
     """Fix #4: mũi tên 7 cạnh KHÔNG được nhận nhầm thành HAMMER (trước đây bị)."""
     arrow = lines([(0, 30), (60, 30), (60, 10), (100, 50), (60, 90), (60, 70), (0, 70)])

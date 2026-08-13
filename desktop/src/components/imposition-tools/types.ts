@@ -133,6 +133,9 @@ export const DEFAULT_CUT_BORDER_CONFIG: CutBorderConfig = {
     thickness: 0.3,
 };
 
+/** Xoay artwork 180° xen kẽ, độc lập với thuật toán chọn bố cục lưới. */
+export type AlternateRotation = 'none' | 'row' | 'column';
+
 export interface NupSettings {
     // MIXED-GUILLOTINE (audit 2026-07-30 §MG.8/§MG.9): mode riêng, không thay đổi hành vi các mode cũ.
     layoutType: 'repeat' | 'sequential' | 'cut_stacks' | 'ratio_stack' | 'mixed_guillotine';
@@ -146,6 +149,7 @@ export interface NupSettings {
     targetQuantitiesByPage?: Record<number, number>;
     hiddenOcgLayerIds?: number[];
     gridStrategy: 'manual' | 'simple_auto' | 'optimal_auto' | 'staggered' | 'row_alt' | 'head_to_tail';
+    alternateRotation: AlternateRotation;
     clusterTileW?: number;
     clusterTileH?: number;
     clusterMode: 'none' | 'row' | 'column';
@@ -161,6 +165,12 @@ export interface NupSettings {
     tileGapX?: number;
     tileGapY?: number;
     splitGap?: number;
+    /** PARITY-DIAG (audit 2026-08-12 §SRPARITY.1): nối đúng preview với job xuất. */
+    diagnosticTraceId?: string;
+    diagnosticPreviewRequestId?: string;
+    diagnosticPendingRequestId?: string;
+    diagnosticPreviewCapacity?: number;
+    diagnosticPreviewState?: 'none' | 'pending' | 'applied' | 'failed';
     clusterNesting?: boolean;
     gapX: number;
     gapY: number;

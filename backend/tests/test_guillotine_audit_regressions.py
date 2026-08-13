@@ -287,3 +287,88 @@ def test_small_nup_jobs_run_inline_without_limiting_large_jobs(
     total_sheets, available_workers, expected
 ):
     assert nup_engine._plan_nup_chunking(total_sheets, available_workers) == expected
+
+
+@pytest.mark.parametrize(
+    ("split_gap_mm", "expected_capacity"),
+    [(0.0, 17), (2.0, 16)],
+)
+def test_sr_330x480_log_capacity_matches_rendered_pdf(
+    monkeypatch, tmp_path, split_gap_mm, expected_capacity
+):
+    """Hồi quy ảnh audit: preview/export phải cùng 17 hoặc cùng 16 theo khe phụ."""
+    from app.utils import preview_perf_log as perf_log
+
+    source = str(tmp_path / f"sr-{split_gap_mm}.pdf")
+    output = str(tmp_path / f"sr-{split_gap_mm}-out.pdf")
+    # MediaBox gồm bleed 2 mm mỗi cạnh; thành phẩm 149,1 × 53,3 mm.
+    mm = 2.83465
+    _make_pdf(source, [((149.1 + 4.0) * mm, (53.3 + 4.0) * mm)])
+
+    log_path = tmp_path / "preview_perf.log"
+    monkeypatch.setenv("PRYNX_PERF", "1")
+    monkeypatch.setattr(perf_log, "log_paths", lambda: [log_path])
+    perf_log._enabled = None
+    monkeypatch.setenv("PRYNX_NUP_WORKERS", "1")
+
+    settings = _settings(
+        sheetWidth=330.0,
+        sheetHeight=480.0,
+        bleed=2.0,
+        gapX=2.0,
+        gapY=2.0,
+        marginLeft=8.0,
+        marginRight=8.0,
+        splitGap=split_gap_mm,
+        _diagnosticTraceId=f"sr-test-{int(split_gap_mm)}",
+    )
+    from app.workers.nup_layout_solver import solve_optimal_layout
+    usable_w_pt = (330.0 - 8.0 - 8.0) * mm
+    usable_h_pt = 480.0 * mm
+    preview_layout = solve_optimal_layout(
+        usable_w_pt,
+        usable_h_pt,
+        149.1 * mm,
+        53.3 * mm,
+        2.0 * mm,
+        2.0 * mm,
+        "optimal_auto",
+        split_gap_mm * mm,
+    )
+    perf_log.log(
+        "PREVIEW", "solver.result",
+        trace_id=f"sr-test-{int(split_gap_mm)}",
+        request_id=f"sr-test-{int(split_gap_mm)}-p1",
+        split_gap_mm=split_gap_mm,
+        capacity=preview_layout["totalItems"],
+    )
+    nup_engine.run_nup_engine(
+        source,
+        output,
+        settings,
+        job_id=f"sr-job-{int(split_gap_mm)}",
+    )
+
+    with pikepdf.open(output) as pdf:
+        assert len(pdf.pages) == 1
+        instructions = pikepdf.parse_content_stream(pdf.pages[0])
+        resource_names = {
+            str(name) for name in (pdf.pages[0].get("/Resources", {}).get("/XObject", {}) or {})
+        }
+        rendered_items = sum(
+            str(instruction.operator) == "Do"
+            and bool(instruction.operands)
+            and str(instruction.operands[0]) in resource_names
+            for instruction in instructions
+        )
+    assert rendered_items == expected_capacity
+    assert preview_layout["totalItems"] == expected_capacity
+
+    log_text = log_path.read_text(encoding="utf-8")
+    assert f"trace_id=sr-test-{int(split_gap_mm)}" in log_text
+    assert f"job_id=sr-job-{int(split_gap_mm)}" in log_text
+    assert f"capacity={expected_capacity}" in log_text
+    assert f"placements={expected_capacity}" in log_text
+    assert "[PREVIEW] solver.result" in log_text
+    assert "[EXPORT] solver.result" in log_text
+    assert "[EXPORT] worker.render" in log_text

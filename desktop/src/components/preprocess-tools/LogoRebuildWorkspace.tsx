@@ -883,9 +883,9 @@ export default function LogoRebuildWorkspace({
       tabIndex={-1}
       onDragOver={handleWorkspaceDragOver}
       onDrop={handleWorkspaceDrop}
-      className="h-full w-full overflow-auto bg-slate-100 p-4 text-slate-800 outline-none dark:bg-zinc-950 dark:text-zinc-100"
+      className="h-full min-h-0 w-full min-w-0 overflow-auto bg-slate-100 text-slate-800 outline-none dark:bg-zinc-950 dark:text-zinc-100 xl:overflow-hidden"
     >
-      <div className="mx-auto flex min-h-full max-w-[1500px] flex-col gap-4">
+      <div className="mx-auto grid h-full min-h-0 max-w-[1500px] grid-rows-[auto_minmax(0,1fr)] gap-4 p-4">
         <header className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <div>
             <h1 className="flex items-center gap-2 text-lg font-bold">
@@ -932,8 +932,8 @@ export default function LogoRebuildWorkspace({
           </div>
         </header>
 
-        <div className="grid flex-1 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
-          <aside className="space-y-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="grid min-h-0 min-w-0 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
+          <aside className="space-y-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 xl:min-h-0 xl:overflow-y-auto xl:overscroll-contain">
             {capabilitiesStatus === 'ready' && capabilities && capabilities.limitations.length > 0 && (
               <section aria-label={tv('Giới hạn hiện tại')} className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
                 <strong>{tv('Phạm vi hiện tại: artwork/logo phẳng')}</strong>
@@ -1247,7 +1247,7 @@ export default function LogoRebuildWorkspace({
               <label className="block text-xs font-semibold">
                 {tv('Khử hạt nhỏ (px)')}
                 <input aria-label={tv('Khử hạt nhỏ')} type="number" min={0} max={128} value={despeckle} onChange={event => commitEditor('despeckle', current => ({ ...current, despeckle: clampPercent(Number(event.target.value), 0, 128) }))} className="mt-1 w-full rounded border border-slate-200 bg-transparent px-2 py-1.5 dark:border-zinc-700" />
-                {despeckle > 0 && capabilities?.engine?.engine === 'prynx-logo-core' && (
+                {mode === 'monochrome' && despeckle > 0 && capabilities?.engine?.engine === 'prynx-logo-core' && (
                   <span className="mt-1 block text-[11px] font-normal text-amber-700 dark:text-amber-300">
                     {tv('Khử hạt chưa được PrynX core áp dụng; giá trị lớn hơn 0 sẽ đưa kết quả vào trạng thái cần kiểm tra.')}
                   </span>
@@ -1284,7 +1284,7 @@ export default function LogoRebuildWorkspace({
             )}
           </aside>
 
-          <main className="grid min-h-[620px] grid-rows-[minmax(520px,1fr)_auto] gap-4">
+          <main className="grid min-w-0 grid-rows-[minmax(320px,auto)_auto] gap-4 pb-1 xl:min-h-0 xl:grid-rows-[minmax(0,1fr)_auto] xl:overflow-y-auto xl:overscroll-contain">
             <LogoCompareViewport
               key={`${sourceUrl}:${previewUrl}`}
               selectionMode={selectionMode}

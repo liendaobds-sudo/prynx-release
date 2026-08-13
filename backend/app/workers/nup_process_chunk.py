@@ -138,10 +138,32 @@ def process_chunk(args):
 
     import os, tempfile, math
 
-    from app.workers.nup_layout_solver import get_src_page_idx, solve_manual, solve_optimal_layout
+    from app.workers.nup_layout_solver import (
+        get_src_page_idx,
+        normalize_alternate_rotation,
+        rectangle_inking_is_allowed,
+        solve_manual,
+        solve_optimal_layout,
+    )
 
     from app.workers.nup_engine import compute_sticker_layout_for_page, _find_largest_die_path
     from app.workers.nup_diecut import resolve_one_dao_trim
+
+    diagnostic_meta = {}
+    if args and isinstance(args[-1], dict) and "_diagnostic_trace_id" in args[-1]:
+        diagnostic_meta = args[-1]
+        args = args[:-1]
+    worker_options = {}
+    if args and isinstance(args[-1], dict) and args[-1].get("_nup_worker_options"):
+        worker_options = args[-1]
+        args = args[:-1]
+    from app.utils.preview_perf_log import log as _diag_log, sanitize_diagnostic_id
+    diagnostic_trace_id = sanitize_diagnostic_id(
+        diagnostic_meta.get("_diagnostic_trace_id")
+    )
+    diagnostic_job_id = sanitize_diagnostic_id(
+        diagnostic_meta.get("_diagnostic_job_id")
+    )
 
     has_repeat_metadata_slot = (
         len(args) > 56
@@ -174,6 +196,19 @@ def process_chunk(args):
      prog_file, total_page_count, layout_type, is_die_cut, pont_config, strategy, detected_shapes_by_page, target_quantity, detected_shape_params_by_page, sheet_mapping, chunk_precalc_placements,
      cut_type, grouping_strategy, chunk_cluster_tile_cuts, separate_cut_page, ponts_on_cut_file, fill_block_gap_mm, global_total_sheets, main_secondary_gap, mark_thick, mark_style, duplex_flow, die_size_mode, die_offset_mm, target_quantities_by_page, manual_cols, manual_rows, homogeneous_mode, homogeneous_master_idx) = base_args
 
+    alternate_rotation = normalize_alternate_rotation(
+        worker_options.get("alternate_rotation", "none")
+    )
+    _chunk_diecut_inking = rectangle_inking_is_allowed(
+        is_die_cut=bool(is_die_cut),
+        page_sheet_mode=bool(page_sheet_mode),
+        layout_type=str(layout_type or ''),
+        cut_type=str(cut_type or 'default'),
+        shapes_by_page=detected_shapes_by_page,
+    )
+    if page_sheet_mode or layout_type == 'mixed_guillotine' or (is_die_cut and not _chunk_diecut_inking):
+        alternate_rotation = 'none'
+
     src_doc = pdf_lib.open(source_path)
     # Geometry must remain immutable while the print copy is stripped. Shared
     # Form XObjects can be referenced by more than one source page.
@@ -183,11 +218,11 @@ def process_chunk(args):
 
     page_count = src_doc.page_count
 
-    # [GUILLOTINE-BOX FIX 2026-08-04] Solver và renderer phải cùng dùng vùng
-    # TrimBox/CropBox. Cache một lần mỗi trang trong worker để không đọc PageBox
-    # lại cho từng ô khi một tờ có hàng trăm sản phẩm.
+    # [GUILLOTINE-BOX FIX 2026-08-04 / PAGE-SHEET 2026-08-13] Solver và renderer
+    # phải cùng dùng hộp trang hiệu dụng. Cache một lần mỗi trang trong worker để
+    # không đọc PageBox lại cho từng ô khi một tờ có hàng trăm sản phẩm.
     guillotine_source_clips = {}
-    if not is_die_cut and not page_sheet_mode:
+    if not is_die_cut:
         for source_page_idx in range(page_count):
             clip_values = resolve_guillotine_source_clip(
                 src_doc[source_page_idx], bleed_pt,
@@ -386,18 +421,18 @@ def process_chunk(args):
 
                     cur_trim_h = cur_geom_rect[3] - cur_geom_rect[1]
 
-                elif not is_die_cut and not page_sheet_mode:
+                elif not is_die_cut:
 
-                    # [GUILLOTINE-BOX FIX 2026-08-04] Nhánh repeat tự solve lại
-                    # trong worker nên phải dùng cùng PageBox với engine/preview.
-                    # Nếu vẫn lấy MediaBox, canvas lớn + CropBox nhỏ tạo tờ trắng.
+                    # Nhánh repeat tự solve lại trong worker nên phải dùng cùng
+                    # PageBox với engine/preview. Điều này cũng áp dụng cho Nguyên
+                    # tấm decal có CropBox logic trên MediaBox lớn.
                     cur_trim_w, cur_trim_h = resolve_guillotine_trim(
                         src_page, bleed_pt,
                     )
 
                 else:
 
-                    # MediaBox (rect) — khớp nup_engine; không ưu tiên TrimBox.
+                    # Nhánh die-cut cũ: giữ hình học trang hiện hành.
                     cur_trim_w = src_page.rect.width
 
                     cur_trim_h = src_page.rect.height
@@ -453,6 +488,7 @@ def process_chunk(args):
                             cut_type=cut_type,
                             die_size_mode=die_size_mode,
                             die_offset_mm=die_offset_mm,
+                            alternate_rotation=alternate_rotation,
 
                         )
                         _layout_cache[src_page_idx] = sticker_layout
@@ -480,12 +516,13 @@ def process_chunk(args):
                     if strategy == 'manual' and manual_cols > 0 and manual_rows > 0:
                         cur_layout = solve_manual(
                             cur_trim_w, cur_trim_h, gap_x, gap_y,
-                            manual_cols, manual_rows,
+                            manual_cols, manual_rows, alternate_rotation,
                         )
                     else:
                         cur_layout = solve_optimal_layout(
                             _uw_solve, _uh_solve, cur_trim_w, cur_trim_h,
                             gap_x, gap_y, strategy, main_secondary_gap,
+                            alternate_rotation,
                         )
 
                     cur_cells = cur_layout['cells']
@@ -679,6 +716,32 @@ def process_chunk(args):
                 # Invalid legacy mapping: preserve the old full-sheet behavior.
                 pass
 
+        if sheet_idx == start_sheet:
+            # Đây là danh sách thật sẽ đi qua collision rồi dựng PDF, không phải
+            # capacity ước lượng ở route/engine.
+            _diag_log(
+                "EXPORT", "worker.placements",
+                trace_id=diagnostic_trace_id,
+                job_id=diagnostic_job_id or job_id,
+                chunk=chunk_idx,
+                sheet=sheet_idx,
+                layout_type=layout_type,
+                source="precalculated" if chunk_precalc_placements is not None else "solver",
+                solver_capacity=cur_capacity * cx_count * cy_count,
+                placements_before_collision=len(placements),
+                split_gap_pt=main_secondary_gap,
+            )
+            if diagnostic_trace_id:
+                logger.warning(
+                    "[IMPOSITION-DIAG] event=export.worker.placements trace=%s job=%s "
+                    "chunk=%s sheet=%s source=%s solver_capacity=%s "
+                    "placements_before_collision=%s split_gap_pt=%s",
+                    diagnostic_trace_id, diagnostic_job_id or job_id,
+                    chunk_idx, sheet_idx,
+                    "precalculated" if chunk_precalc_placements is not None else "solver",
+                    cur_capacity * cx_count * cy_count, len(placements), main_secondary_gap,
+                )
+
         # --- Duplex Mirroring ---
         # MIXED-GUILLOTINE (audit 2026-07-30 §MG.5): mặt sau mode mới đã được
         # planner phản chiếu cả vị trí lẫn góc xoay. Chỉ dùng phép mirror X legacy
@@ -767,6 +830,7 @@ def process_chunk(args):
                     _is_rect_cell = (
                         page_sheet_mode
                         or cut_type == 'one_dao'
+                        or bool((_layout_cache.get(first_src_idx) or {}).get('isPageFallback'))
                         or str(shape_type).upper() == 'RECTANGLE'
                     )
                     base_poly, base_rect_pts = build_collision_base_polygon(
@@ -825,6 +889,22 @@ def process_chunk(args):
                                        len(placements), original_len - len(placements))
 
         # --- Phase 3: Render ---
+        if sheet_idx == start_sheet:
+            _diag_log(
+                "EXPORT", "worker.render",
+                trace_id=diagnostic_trace_id,
+                job_id=diagnostic_job_id or job_id,
+                chunk=chunk_idx,
+                sheet=sheet_idx,
+                placements=len(placements),
+            )
+            if diagnostic_trace_id:
+                logger.warning(
+                    "[IMPOSITION-DIAG] event=export.worker.render trace=%s job=%s "
+                    "chunk=%s sheet=%s placements=%s",
+                    diagnostic_trace_id, diagnostic_job_id or job_id,
+                    chunk_idx, sheet_idx, len(placements),
+                )
 
         # ── Bbox mỗi (cluster, block) theo toạ độ trim để xác định mép NGOÀI vs mép TRONG ──
         # Mép ngoài block → bleed đầy đủ; mép trong (giáp ô khác) → clip nửa gap (tránh chồng bleed).
@@ -1304,9 +1384,12 @@ def process_chunk(args):
 
                     if page_sheet_mode:
                         # The cell represents the page trim, not the union bbox
-                        # of its sticker paths. Map cut geometry from MediaBox
-                        # into the same bleed rectangle used for artwork.
-                        source_rect = src_doc[src_page_idx_c].rect
+                        # of its sticker paths. Map cut geometry from the same
+                        # effective source box used to clip the artwork.
+                        source_rect = (
+                            guillotine_source_clips.get(src_page_idx_c)
+                            or src_doc[src_page_idx_c].rect
+                        )
                         draw_die_lines_for_placement(
                             cut_shape,
                             die_items,

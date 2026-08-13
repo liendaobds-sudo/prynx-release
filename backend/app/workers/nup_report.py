@@ -180,7 +180,7 @@ def build_report_string(rd: Optional[Dict[str, Any]], data: Dict[str, Any]) -> s
     rd (report display config): { fieldOrder: [...], show<Field>: bool,
                                   removeDiacritics: bool, customText: str }
     data: dict field text (từ compute_report_data).
-    Quy tắc: orderCode luôn đứng đầu (nếu có); bỏ field rỗng; dọn '- -'.
+    Quy tắc: mọi field đi theo fieldOrder; bỏ field rỗng; dọn '- -'.
     """
     rd = rd or {}
     field_order: List[str] = rd.get("fieldOrder") or DEFAULT_FIELD_ORDER
@@ -202,13 +202,7 @@ def build_report_string(rd: Optional[Dict[str, Any]], data: Dict[str, Any]) -> s
     }
 
     parts: List[str] = []
-
-    # orderCode luôn ở đầu nếu có nội dung
-    order_code = (data.get("orderCode") or "").strip()
-    if order_code:
-        parts.append(order_code)
-
-    used = {"orderCode"}
+    used = set()
     for key in field_order:
         if key in used:
             continue

@@ -7,6 +7,7 @@ APPDATA). Đây là telemetry chẩn đoán cục bộ, không phải log vận 
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from datetime import datetime
@@ -16,6 +17,7 @@ from typing import Any, Optional
 _lock = threading.Lock()
 _enabled: Optional[bool] = None
 _session_id = f"S{int(time.time())}"
+_DIAGNOSTIC_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
 
 
 def _is_enabled() -> bool:
@@ -26,6 +28,12 @@ def _is_enabled() -> bool:
         v = (os.environ.get("PRYNX_PERF") or "").strip().lower()
         _enabled = v in ("1", "true", "yes", "on")
     return _enabled
+
+
+def sanitize_diagnostic_id(value: Any) -> str:
+    """Chỉ cho phép mã đối chiếu một dòng; giá trị bẩn không được lọt vào log."""
+    text = str(value or "").strip()
+    return text if _DIAGNOSTIC_ID_RE.fullmatch(text) else ""
 
 
 def log_paths() -> list[Path]:

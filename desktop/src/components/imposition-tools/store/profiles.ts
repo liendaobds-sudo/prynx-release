@@ -8,7 +8,7 @@
 export const ALGO_PROFILE_KEYS: string[] = [
     'taskMode',
     'impositionUnit',
-    'layoutType', 'columns', 'rows', 'gridStrategy', 'groupingStrategy', 'cutBorder',
+    'layoutType', 'columns', 'rows', 'gridStrategy', 'alternateRotation', 'groupingStrategy', 'cutBorder',
     // MIXED-GUILLOTINE (audit 2026-07-30 §MG.8/§MG.9): nhớ cạnh lật riêng theo từng công cụ.
     'duplexFlow', 'duplexFlipEdge', 'align',
     'clusterMode', 'clusterCount', 'clusterGap', 'clusterGapMode',

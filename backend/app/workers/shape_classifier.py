@@ -948,6 +948,48 @@ _MAX_HEAD_EXTENT_FRAC = 0.6
 # thuôn nhọn (tam giác/giọt nước/contour bù-xén ngôi sao+chữ), KHÔNG phải đầu+cán.
 _MIN_TIP_WIDTH_FRAC = 0.15
 
+# Búa thật phải có tương phản rõ giữa đầu lớn và đầu còn lại. Nếu hai đầu gần
+# bằng nhau, một bướu cục bộ ở giữa contour không đủ để kết luận là búa.
+_MIN_HAMMER_END_CONTRAST_FRAC = 0.12
+
+# Đầu búa phải gọn ở mút; profile cần đi vào cán trước khi qua nửa trục. Ca
+# contour tem hồi quy có vùng "đầu" giả kéo dài khoảng 0.49 trục nên dùng ngưỡng
+# bảo thủ hơn cổng CUSTOM chung ở trên.
+_MAX_CONFIDENT_HAMMER_HEAD_EXTENT_FRAC = 0.42
+
+# [SHAPE-RAMP FIX 2026-08-12] Profile hình thang thật phải tăng/giảm gần như
+# một chiều. Tỉ lệ dưới đây đo
+# tổng quãng đường profile đã đi so với chênh lệch ròng giữa hai đầu: ramp đều
+# xấp xỉ 1; contour gợn sóng đổi chiều nhiều sẽ lớn hơn đáng kể.
+_MAX_RAMP_VARIATION_RATIO = 1.6
+
+
+def _is_steady_width_ramp(widths: List[float]) -> bool:
+    """Kiểm tra profile có thật sự là một ramp đều, không chỉ lệch hai đầu."""
+    if len(widths) < 10:
+        return False
+
+    # Trung bình trượt 5 lát để bỏ rung do lấy mẫu Bezier/điểm neo, nhưng vẫn giữ
+    # các lần đổi chiều lớn của contour bất quy tắc.
+    radius = 2
+    smoothed = []
+    for index in range(len(widths)):
+        start = max(0, index - radius)
+        end = min(len(widths), index + radius + 1)
+        window = widths[start:end]
+        smoothed.append(sum(window) / len(window))
+
+    net_change = abs(smoothed[-1] - smoothed[0])
+    max_width = max(smoothed)
+    if max_width <= 0 or net_change <= max_width * 0.05:
+        return False
+
+    total_variation = sum(
+        abs(smoothed[index] - smoothed[index - 1])
+        for index in range(1, len(smoothed))
+    )
+    return total_variation <= net_change * _MAX_RAMP_VARIATION_RATIO
+
 
 def _analyze_width_profile(samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w, total_h, edges=None, force=False):
     """
@@ -1056,7 +1098,11 @@ def _analyze_width_profile(samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w,
     # Compute max peak width early (needed for both ramp and hammer detection)
     max_peak_width = max(head_start_peak, head_end_peak)
 
-    if ramp_ratio > 0.3 and min_w > max_w * 0.2:
+    if (
+        ramp_ratio > 0.3
+        and min_w > max_w * 0.2
+        and _is_steady_width_ramp(widths)
+    ):
         # Before concluding trapezoid, check if there's a clear waist (= hammer).
         # A true trapezoid ramps smoothly; a hammer has a sudden narrow section.
         # If waist_width / max_peak is < 0.85, it's hammer territory — skip ramp.
@@ -1114,6 +1160,16 @@ def _analyze_width_profile(samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w,
     else:
         return None
 
+    # [SHAPE-HAMMER GUARD 2026-08-12] Chặn contour có một bướu rộng ở giữa nhưng
+    # hai mút gần cùng bề rộng. Đây là ca hồi quy sau khi profile không còn đủ
+    # đều để nhận Hình thang; không được rơi thẳng sang Búa.
+    if (
+        shape_type == 'hammer'
+        and not force
+        and ramp_ratio < _MIN_HAMMER_END_CONTRAST_FRAC
+    ):
+        return None
+
     # Determine which end is big
     big_end_first = head_start_peak >= head_end_peak
     big_d = max(head_start_peak, head_end_peak)
@@ -1146,7 +1202,16 @@ def _analyze_width_profile(samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w,
     # nhỏ (đo thực nghiệm: 0.29–0.33). Hình đặc biệt (dấu +, quả lê, lưỡi liềm) là khối
     # phình rồi thắt, "đầu" trải >0.6 trục (0.69–0.77) → KHÔNG phải đầu+cán → trả None
     # (→ CUSTOM). Bỏ qua khi force=True (chế độ TRÍCH tham số sau khi type đã chốt).
-    if not force and big_d_along_axis_frac > _MAX_HEAD_EXTENT_FRAC:
+    if (
+        not force
+        and (
+            big_d_along_axis_frac > _MAX_HEAD_EXTENT_FRAC
+            or (
+                shape_type == 'hammer'
+                and big_d_along_axis_frac > _MAX_CONFIDENT_HAMMER_HEAD_EXTENT_FRAC
+            )
+        )
+    ):
         return None
 
     # Find small head transition

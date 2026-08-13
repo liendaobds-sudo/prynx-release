@@ -20,6 +20,7 @@ import OpenInDesignModal from './imposition-tools/OpenInDesignModal';
 import { DEFAULT_CUT_BORDER_CONFIG, PREDEFINED_SIZES, isWorkspaceTool, resolveRightPanel, type BookletSettings, type NupSettings } from './imposition-tools/types';
 import { ImposerSettingsContext, createImposerSettingsStore, useImposerSettingsStore } from './imposition-tools/useImposerSettingsStore';
 import { resolveEffectiveSeparateCut } from './imposition-tools/pageSheetPolicy';
+import { canUseRectangleStickerInking } from './imposition-tools/shapeDetectionPolicy';
 import { disposeImposerPersistScope } from './imposition-tools/store/persist';
 import { generateBindingMap } from '../lib/imposerEngine/VirtualMap';
 import { getApiUrl, uploadPDF, authenticatedFetch } from '../lib/api';
@@ -1638,7 +1639,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     : (settings as any).imposerMode === 'diecut'
                         ? 'sticker_imposer'
                         : 'nup';
-            let recordParams: any = settings;
+            // Mã chẩn đoán chỉ sống trong lần chạy hiện tại; không lưu vào recipe rồi
+            // phát lại một trace cũ cho tài liệu khác.
+            const {
+                diagnosticTraceId, diagnosticPreviewRequestId,
+                diagnosticPendingRequestId, diagnosticPreviewCapacity,
+                diagnosticPreviewState, ...recordableSettings
+            } = settings as any;
+            let recordParams: any = recordableSettings;
             if (opId === 'sticker_imposer' || opId === 'cnc_imposer') {
                 // KHÔNG lưu HÌNH per-file (detectedShapes*) / thứ tự trang / đếm theo trang:
                 // phát lại sẽ DÒ LẠI hình trên file tem mới → đúng cho từng sản phẩm.
@@ -1646,7 +1654,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     detectedShapesByPage, detectedShapeParamsByPage, detectedDimensionsByPage,
                     shapeType, shapeParams, targetQuantitiesByPage, pageOrder, pageRotations,
                     ...rest
-                } = settings as any;
+                } = recordableSettings;
                 recordParams = rest;
             }
             recipeRecorder.noteOperation(opId, recordParams);
@@ -1887,6 +1895,23 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         const sheetH = isCustom ? config.customSheetHeight : (PREDEFINED_SIZES[config.formsize]?.h ?? config.customSheetHeight);
 
         const cutBorder = config.cutBorder || DEFAULT_CUT_BORDER_CONFIG;
+        const rectangleStickerInking = canUseRectangleStickerInking(
+            config.cncMode ? 'cnc_imposer' : (config.isDieCutMode ? 'sticker_imposer' : 'nup'),
+            config.pageSheetMode === true,
+            config.cutType,
+            config.detectedShapesByPage,
+            viewerNumPages || Object.keys(config.detectedShapesByPage || {}).length,
+        );
+        const effectiveAlternateRotation = (
+            (
+                !config.isDieCutMode
+                && !config.cncMode
+                && !config.pageSheetMode
+                && config.layoutType !== 'mixed_guillotine'
+            ) || rectangleStickerInking
+        ) && (
+            config.alternateRotation === 'row' || config.alternateRotation === 'column'
+        ) ? config.alternateRotation : 'none';
         const settings: any = {
             imposerMode: config.cncMode ? 'cnc' : (config.isDieCutMode ? 'diecut' : 'guillotine'),
             impositionMode: ImpositionMode.NUp,
@@ -1898,6 +1923,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             cols: config.columns || 0,
             rows: config.rows || 0,
             gridStrategy: config.gridStrategy,
+            alternateRotation: effectiveAlternateRotation,
             clusterMode: config.clusterMode,
             clusterCount: config.clusterCount,
             clusterGap: config.clusterGap,
@@ -1955,6 +1981,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             pontsOnCutFile: config.pontsOnCutFile,
             hiddenOcgLayerIds: config.hiddenOcgLayerIds,
             splitGap: config.splitGap,
+            diagnosticTraceId: config.diagnosticTraceId,
+            diagnosticPreviewRequestId: config.diagnosticPreviewRequestId,
+            diagnosticPendingRequestId: config.diagnosticPendingRequestId,
+            diagnosticPreviewCapacity: config.diagnosticPreviewCapacity,
+            diagnosticPreviewState: config.diagnosticPreviewState,
             // ═══ Bình Bế Rớt (CNC) ═══
             cncMode: config.cncMode,
             cncTwoSided: config.cncTwoSided,
@@ -2753,7 +2784,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
                     {/* UIUX (audit 2026-07-27 §B-23): whitespace-pre-line để dòng "hướng khắc phục" của formatError xuống hàng */}
                     {error && (
-                        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-100 dark:bg-red-900 border border-red-400 dark:border-red-600 text-red-700 dark:text-red-200 px-4 py-3 rounded shadow-lg z-[100] flex items-center gap-3 whitespace-pre-line">
+                        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-100 dark:bg-red-900 border border-red-400 dark:border-red-600 text-red-700 dark:text-red-200 px-4 py-3 rounded shadow-lg z-[130] flex items-center gap-3 whitespace-pre-line">
                             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                             {error}
                         </div>
@@ -2791,7 +2822,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     {/* LEFT: Acrobat Workspace */}
                     <div className="flex-1 relative z-0">
                         {isProcessing && (
-                            <div className="absolute inset-0 bg-[#525659]/70 backdrop-blur-sm z-50 flex flex-col items-center justify-center text-white">
+                            <div className="absolute inset-0 bg-[#525659]/70 backdrop-blur-sm z-[120] flex flex-col items-center justify-center text-white">
                                 <div className="flex items-center gap-3">
                                     <div className="w-5 h-5 border-2 border-white/25 border-t-white/90 rounded-full animate-spin"></div>
                                     <span className="text-sm font-medium text-white/90">{processStatus}</span>
@@ -2824,8 +2855,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
                         {LOGO_REBUILD_ENABLED && logoWorkspaceOpened && (
                             <div
+                                data-testid="logo-rebuild-overlay"
                                 aria-hidden={activeDashboardTool !== 'logo_rebuild'}
-                                className={`absolute inset-y-0 left-0 z-40 ${activeDashboardTool === 'logo_rebuild' ? '' : 'hidden'}`}
+                                // UIUX (audit 2026-08-12 §LOGO.UI.01): viewer có toolbar z-70,
+                                // ruler z-40 và nút sidebar z-100; workspace công cụ phải phủ
+                                // toàn bộ viewer nhưng vẫn nằm dưới processing/error/modal.
+                                className={`absolute inset-y-0 left-0 z-[110] ${activeDashboardTool === 'logo_rebuild' ? '' : 'hidden'}`}
                                 style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}
                             >
                                 <LogoRebuildWorkspace

@@ -55,6 +55,8 @@ export interface GridPreviewProps {
   /** §MG-A2: % in dư cho phép để gom bản kẽm (Dàn nhiều kích thước). */
   mixedExcessPercent?: number;
   gridStrategy: NupSettings["gridStrategy"];
+  /** Xoay 180° xen kẽ theo hàng/cột; chỉ áp dụng cho bình cắt xén cùng khổ. */
+  alternateRotation?: NupSettings["alternateRotation"];
   splitGap?: number;
   columns: number;
   rows: number;
@@ -120,6 +122,17 @@ export interface GridPreviewProps {
   getWorkingFile?: () => Promise<File>;
   /** Đổi khi xoay/xóa/sắp trang → invalidate cache path preview. */
   previewSourceKey?: string;
+  /** Mã đối chiếu cục bộ của một tab/tài liệu; không chứa tên hay đường dẫn file. */
+  diagnosticTraceId?: string;
+  onDiagnosticEvent?: (event: GridPreviewDiagnosticEvent) => void;
+}
+
+export interface GridPreviewDiagnosticEvent {
+  traceId: string;
+  requestId: string;
+  generation: number;
+  phase: "pending" | "applied" | "failed" | "aborted" | "stale";
+  capacity?: number;
 }
 
 // =====================================================================
@@ -337,6 +350,104 @@ const BLOCK_COLORS = [
 
 const ROTATED180_OPACITY = 0.55;
 
+export type CellDirectionDegrees = 0 | 90 | 180 | 270;
+
+const CELL_DIRECTION_STYLES: Record<
+  CellDirectionDegrees,
+  { arrow: string; background: string }
+> = {
+  0: { arrow: "#047857", background: "rgba(209, 250, 229, 0.96)" },
+  90: { arrow: "#1d4ed8", background: "rgba(219, 234, 254, 0.96)" },
+  180: { arrow: "#c2410c", background: "rgba(255, 237, 213, 0.96)" },
+  270: { arrow: "#7e22ce", background: "rgba(243, 232, 255, 0.96)" },
+};
+
+/**
+ * INKING (2026-08-12): hướng đầu nội dung sau khi cộng xoay bố cục (90°)
+ * và xoay đối đầu (180°). Marker preview phải đọc đúng cả trường hợp 270°.
+ */
+export function resolveCellDirectionDegrees(
+  isRotated: boolean,
+  isRotated180: boolean,
+): CellDirectionDegrees {
+  return (((isRotated ? 90 : 0) + (isRotated180 ? 180 : 0)) % 360) as CellDirectionDegrees;
+}
+
+function renderCellDirectionIndicator(
+  sx: number,
+  sy: number,
+  sw: number,
+  sh: number,
+  isRotated: boolean,
+  isRotated180: boolean,
+  side: "front" | "back",
+) {
+  const direction = resolveCellDirectionDegrees(isRotated, isRotated180);
+  const directionStyle = CELL_DIRECTION_STYLES[direction];
+  const cx = sx + sw / 2;
+  const cy = sy + sh / 2;
+  const shortSide = Math.min(sw, sh);
+  const availableRadius = Math.max(1, shortSide / 2 - 0.75);
+  // Marker lớn hơn bản cũ nhưng luôn chừa mép, kể cả ô tem rất mỏng.
+  const radius = Math.min(
+    9.5,
+    availableRadius,
+    Math.max(3.5, shortSide * 0.32),
+  );
+  const shaftTop = cy - radius * 0.34;
+  const shaftBottom = cy + radius * 0.57;
+  const tipY = cy - radius * 0.76;
+  const wingY = cy - radius * 0.12;
+  const wingX = radius * 0.39;
+
+  return (
+    <g
+      data-testid="cell-direction-indicator"
+      data-rotation={direction}
+      data-direction-color={directionStyle.arrow}
+      data-indicator-diameter={(radius * 2).toFixed(2)}
+      data-side={side}
+      aria-hidden="true"
+      pointerEvents="none"
+      transform={`rotate(${direction} ${cx} ${cy})`}
+    >
+      <circle
+        cx={cx}
+        cy={cy}
+        r={radius}
+        fill={directionStyle.background}
+        stroke={directionStyle.arrow}
+        strokeWidth={0.9}
+      />
+      <line
+        x1={cx}
+        y1={shaftBottom}
+        x2={cx}
+        y2={shaftTop}
+        stroke="white"
+        strokeWidth={3.1}
+        strokeLinecap="round"
+      />
+      <line
+        x1={cx}
+        y1={shaftBottom}
+        x2={cx}
+        y2={shaftTop}
+        stroke={directionStyle.arrow}
+        strokeWidth={1.65}
+        strokeLinecap="round"
+      />
+      <path
+        d={`M ${cx} ${tipY} L ${cx - wingX} ${wingY} L ${cx + wingX} ${wingY} Z`}
+        fill={directionStyle.arrow}
+        stroke="white"
+        strokeWidth={0.45}
+        strokeLinejoin="round"
+      />
+    </g>
+  );
+}
+
 // =====================================================================
 // Debounce delay for API calls (ms)
 // =====================================================================
@@ -394,9 +505,16 @@ function renderCellShape(
   shapeProps: Record<string, any> | null,
   idx: number,
   diePolygon?: number[][] | null,
+  showInkingDirection = false,
 ) {
   const color = BLOCK_COLORS[blockId % BLOCK_COLORS.length];
-  const opacity = is180 && !isRotated ? ROTATED180_OPACITY : 1; // Subtle hint for 180 flip
+  // Khi marker hướng đang hiển thị, giữ mọi ô cùng độ đậm; nếu vẫn làm mờ riêng
+  // góc 180° thì người dùng dễ hiểu nhầm đó là ô bị vô hiệu hóa.
+  const opacity = showInkingDirection
+    ? 1
+    : is180 && !isRotated
+      ? ROTATED180_OPACITY
+      : 1;
 
   const cx = sx + sw / 2;
   const cy = sy + sh / 2;
@@ -844,6 +962,7 @@ export default function GridPreview(props: GridPreviewProps) {
     duplexFlipEdge = "long",
     mixedExcessPercent = 0,
     gridStrategy,
+    alternateRotation = "none",
     splitGap = 0,
     columns,
     rows,
@@ -900,7 +1019,26 @@ export default function GridPreview(props: GridPreviewProps) {
     dieOffsetMm,
     getWorkingFile,
     previewSourceKey,
+    diagnosticTraceId = "",
+    onDiagnosticEvent,
   } = props;
+
+  // INKING (audit 2026-08-12 §INK-DIE-03): tem vuông/chữ nhật dùng cùng cờ
+  // xoay với PDF; hình khác/CNC/nguyên tấm vẫn bị khóa phòng thủ tại đây.
+  const rectangleStickerInking = activeTool === "sticker_imposer"
+    && isDieCut
+    && !pageSheetMode
+    && imposerMode !== "cnc"
+    && String(shapeType || "").trim().toUpperCase() === "RECTANGLE";
+  const effectiveAlternateRotation: NupSettings["alternateRotation"] = (
+    (
+      activeTool === "nup"
+      && !isDieCut
+      && !pageSheetMode
+      && imposerMode !== "cnc"
+      && layoutType !== "mixed_guillotine"
+    ) || rectangleStickerInking
+  ) ? alternateRotation : "none";
 
   const settingsStore = React.useContext(ImposerSettingsContext);
 
@@ -923,6 +1061,14 @@ export default function GridPreview(props: GridPreviewProps) {
   useEffect(() => {
     onMixedPlacedByPageRef.current = onMixedPlacedByPage;
   }, [onMixedPlacedByPage]);
+  const onDiagnosticEventRef = useRef(onDiagnosticEvent);
+  useEffect(() => {
+    onDiagnosticEventRef.current = onDiagnosticEvent;
+  }, [onDiagnosticEvent]);
+  const diagnosticTraceIdRef = useRef(diagnosticTraceId);
+  useEffect(() => {
+    diagnosticTraceIdRef.current = diagnosticTraceId;
+  }, [diagnosticTraceId]);
 
   // getWorkingFile được tạo mới mỗi lần parent render (không useCallback ở
   // ImpositionTab) → nếu để trong dep array của effect fetch preview thì MỌI
@@ -1189,6 +1335,7 @@ export default function GridPreview(props: GridPreviewProps) {
       gy: gapY,
       sg: splitGap,
       gs: gridStrategy,
+      ar: effectiveAlternateRotation,
       cols: columns,
       rows: rows,
       st: _shapeTypeDep,
@@ -1251,6 +1398,7 @@ export default function GridPreview(props: GridPreviewProps) {
     gapY,
     splitGap,
     gridStrategy,
+    effectiveAlternateRotation,
     columns,
     rows,
     _shapeTypeDep,
@@ -1349,6 +1497,7 @@ export default function GridPreview(props: GridPreviewProps) {
     setIsLoading(true);
     setPreviewError(null);
     const gen = ++previewGenRef.current;
+    const requestId = `${diagnosticTraceId || "preview"}-p${gen}`.slice(0, 96);
 
     // Số trang viewer (SSOT cho ratio_stack) — luôn gửi, không để backend đoán từ file gốc.
     const viewerPageCount = resolvePreviewPageCount(previewSourceKey, sourceTotalPages || 0);
@@ -1364,7 +1513,19 @@ export default function GridPreview(props: GridPreviewProps) {
       try {
         const _tPrev = performance.now();
         const previewSrc = await resolvePreviewSource();
+        if (diagnosticTraceIdRef.current !== diagnosticTraceId) {
+          return;
+        }
+        onDiagnosticEventRef.current?.({
+          traceId: diagnosticTraceId,
+          requestId,
+          generation: gen,
+          phase: "pending",
+        });
         void previewPerfLog("preview-layout START", {
+          trace_id: diagnosticTraceId,
+          request_id: requestId,
+          generation: gen,
           taskMode: taskMode || "",
           isDieCut: !!isDieCut,
           grouping: groupingStrategy || "",
@@ -1372,6 +1533,16 @@ export default function GridPreview(props: GridPreviewProps) {
           pageIdx: _pageIdxForRequest,
           ignoreViewPage: _layoutIgnoresViewPage,
           hasPath: !!(previewSrc.path || filePath),
+          sheet_w_mm: sheetWidth,
+          sheet_h_mm: sheetHeight,
+          usable_w_mm: usableW,
+          usable_h_mm: usableH,
+          item_w_pt: (typeof itemWPt === "number" && itemWPt > 0) ? itemWPt : itemW * MM_TO_PT,
+          item_h_pt: (typeof itemHPt === "number" && itemHPt > 0) ? itemHPt : itemH * MM_TO_PT,
+          gap_x_mm: gapX,
+          gap_y_mm: gapY,
+          bleed_mm: bleed,
+          split_gap_mm: splitGap,
         });
         // Multi-sheet: shape/props theo master (trang 0 / fingerprint), không theo trang view.
         const _reqShapeType = (() => {
@@ -1407,6 +1578,7 @@ export default function GridPreview(props: GridPreviewProps) {
           gap_x: gapX * MM_TO_PT,
           gap_y: gapY * MM_TO_PT,
           strategy: gridStrategy || "optimal_auto",
+          alternate_rotation: effectiveAlternateRotation,
           cols: columns || 0,
           rows: rows || 0,
           shape_type: pageSheetMode ? "RECTANGLE" : _reqShapeType,
@@ -1481,6 +1653,8 @@ export default function GridPreview(props: GridPreviewProps) {
           imposer_mode: pageSheetMode ? undefined : imposerMode,
           cnc_two_sided: pageSheetMode ? false : !!cncTwoSided,
           cnc_flip_edge: pageSheetMode ? undefined : (cncFlipEdge || "long"),
+          diagnostic_trace_id: diagnosticTraceId || undefined,
+          diagnostic_request_id: requestId,
         };
 
         const res = await authenticatedFetch(`${getApiUrl()}/imposition/preview-layout`, {
@@ -1516,10 +1690,19 @@ export default function GridPreview(props: GridPreviewProps) {
             })
           ) {
             void previewPerfLog("preview-layout AUTO_SWITCH_MIXED_SIZE", {
+              trace_id: diagnosticTraceId,
+              request_id: requestId,
+              generation: gen,
               ms: Math.round(performance.now() - _tPrev),
               status: res.status,
             });
             if (gen === previewGenRef.current) {
+              onDiagnosticEventRef.current?.({
+                traceId: diagnosticTraceId,
+                requestId,
+                generation: gen,
+                phase: "aborted",
+              });
               settingsStore.getState().setLayoutType("mixed_guillotine");
             }
             return;
@@ -1533,10 +1716,19 @@ export default function GridPreview(props: GridPreviewProps) {
             errText,
           );
           void previewPerfLog("preview-layout FAIL", {
+            trace_id: diagnosticTraceId,
+            request_id: requestId,
+            generation: gen,
             ms: Math.round(performance.now() - _tPrev),
             status: res.status,
           });
           if (gen === previewGenRef.current) {
+            onDiagnosticEventRef.current?.({
+              traceId: diagnosticTraceId,
+              requestId,
+              generation: gen,
+              phase: "failed",
+            });
             setLayoutResult(null);
             setIsLoading(false);
             setPreviewError(message);
@@ -1546,12 +1738,24 @@ export default function GridPreview(props: GridPreviewProps) {
         }
 
         const data: BackendLayoutResult = await res.json();
-        void previewPerfLog("preview-layout OK", {
-          ms: Math.round(performance.now() - _tPrev),
-          items: data.totalItems ?? (data.cells?.length ?? 0),
-          strategy: data.strategyUsed || "",
-          mixed: !!(data as any).isMixedPreview,
-        });
+
+        if (controller.signal.aborted || gen !== previewGenRef.current) {
+          const phase = controller.signal.aborted ? "aborted" : "stale";
+          onDiagnosticEventRef.current?.({
+            traceId: diagnosticTraceId,
+            requestId,
+            generation: gen,
+            phase,
+          });
+          void previewPerfLog(`preview-layout ${phase.toUpperCase()}`, {
+            trace_id: diagnosticTraceId,
+            request_id: requestId,
+            generation: gen,
+            ms: Math.round(performance.now() - _tPrev),
+            items: data.totalItems ?? (data.cells?.length ?? 0),
+          });
+          return;
+        }
 
         // Only apply if this request wasn't aborted AND still latest generation
         if (!controller.signal.aborted && gen === previewGenRef.current) {
@@ -1669,6 +1873,23 @@ export default function GridPreview(props: GridPreviewProps) {
             layoutCacheRef.current = convertedResult;
             setLayoutResult(convertedResult);
             setPreviewError(null);
+            onDiagnosticEventRef.current?.({
+              traceId: diagnosticTraceId,
+              requestId,
+              generation: gen,
+              phase: "applied",
+              capacity: convertedResult.totalItems,
+            });
+            void previewPerfLog("preview-layout APPLIED", {
+              trace_id: diagnosticTraceId,
+              request_id: requestId,
+              generation: gen,
+              ms: Math.round(performance.now() - _tPrev),
+              capacity: convertedResult.totalItems,
+              strategy: data.strategyUsed || "",
+              mixed: !!(data as any).isMixedPreview,
+              split_gap_mm: splitGap,
+            });
             if (onCapacityChangeRef.current)
               onCapacityChangeRef.current(convertedResult.totalItems);
             if (onMixedPlacedByPageRef.current) {
@@ -1721,7 +1942,25 @@ export default function GridPreview(props: GridPreviewProps) {
           setIsLoading(false);
         }
       } catch (err: any) {
-        if (err.name !== "AbortError" && gen === previewGenRef.current) {
+        if (err.name === "AbortError") {
+          onDiagnosticEventRef.current?.({
+            traceId: diagnosticTraceId,
+            requestId,
+            generation: gen,
+            phase: "aborted",
+          });
+          void previewPerfLog("preview-layout ABORTED", {
+            trace_id: diagnosticTraceId,
+            request_id: requestId,
+            generation: gen,
+          });
+        } else if (gen === previewGenRef.current) {
+          onDiagnosticEventRef.current?.({
+            traceId: diagnosticTraceId,
+            requestId,
+            generation: gen,
+            phase: "failed",
+          });
           console.error("Preview layout fetch error:", err);
           setLayoutResult(null);
           setIsLoading(false);
@@ -2137,6 +2376,30 @@ export default function GridPreview(props: GridPreviewProps) {
               </>
             )}
           </div>
+          {effectiveAlternateRotation !== "none" && visibleCells.length > 0 && (
+            <div
+              data-testid="inking-direction-legend"
+              className="flex items-center justify-center gap-1.5 text-[11px] text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 rounded px-2 py-1"
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 14 14"
+                aria-hidden="true"
+                className="shrink-0"
+              >
+                <circle cx="7" cy="7" r="6" fill="white" stroke="currentColor" strokeWidth="0.8" />
+                <line x1="7" y1="10" x2="7" y2="4.8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                <path d="M 7 2.5 L 4.8 5.8 L 9.2 5.8 Z" fill="currentColor" />
+              </svg>
+              <span>
+                {t(
+                  'imposition.gridPreview:mui_ten_chi_huong_dau_noi_dung',
+                  'Mũi tên chỉ hướng đầu nội dung sau khi xoay.',
+                )}
+              </span>
+            </div>
+          )}
           {/* Chia cụm zone modes: nút lật giữa các tờ (mỗi tờ 1 bộ loại khác nhau). */}
           {layoutResult.sheets && layoutResult.sheets.length > 1 && (
             <div className="flex items-center gap-3 text-[13px] font-medium">
@@ -2486,8 +2749,19 @@ export default function GridPreview(props: GridPreviewProps) {
                             parsedItemParams,
                             c.idx,
                             itemDiePoly,
+                            effectiveAlternateRotation !== "none",
                           )
                         )}
+                        {effectiveAlternateRotation !== "none" &&
+                          renderCellDirectionIndicator(
+                            c.sx,
+                            c.sy,
+                            c.sw,
+                            c.sh,
+                            c.isRotated,
+                            c.is180,
+                            "front",
+                          )}
                         {isMixed && (
                           <text
                             x={c.sx + c.sw / 2}
@@ -2746,7 +3020,18 @@ export default function GridPreview(props: GridPreviewProps) {
                               parsedItemParams,
                               c.idx,
                               itemDiePoly,
+                              effectiveAlternateRotation !== "none",
                             )}
+                            {effectiveAlternateRotation !== "none" &&
+                              renderCellDirectionIndicator(
+                                c.sx,
+                                c.sy,
+                                c.sw,
+                                c.sh,
+                                c.isRotated,
+                                c.is180,
+                                "back",
+                              )}
                             {isMixed && (
                               <text
                                 x={cx}

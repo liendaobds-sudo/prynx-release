@@ -54,35 +54,39 @@ def resolve_guillotine_geometry(
 ) -> tuple[float, float, tuple[float, float, float, float] | None]:
     """Trả khổ thành phẩm và vùng nguồn cho mọi chế độ bình cắt xén.
 
-    TrimBox khai báo rõ luôn là thành phẩm. Nếu không có TrimBox, chỉ chọn CropBox
-    khi nó nhỏ đáng kể so với MediaBox (trang logic trên canvas lớn); sai khác nhỏ
-    vẫn là crop/bleed thông thường. Renderer phải clip cùng hộp mà solver đã chọn.
-    Tọa độ clip trả về theo hệ top-down mà ``show_pdf_page`` tiêu thụ.
+    Bleed trên UI là nguồn duy nhất để suy ra khổ thành phẩm. TrimBox nhúng trong
+    PDF không được ghi đè lựa chọn đó. CropBox chỉ được chọn khi nó nhỏ đáng kể so
+    với MediaBox và thực sự đại diện cho một trang logic trên canvas lớn.
+
+    Renderer dùng toàn bộ hộp trang logic làm vùng có bleed; footprint của solver
+    là hộp đó trừ bleed UI ở bốn cạnh. Tọa độ clip trả về theo hệ top-down mà
+    ``show_pdf_page`` tiêu thụ.
     """
     rect = page.rect
-    # TrimBox khai báo rõ là thành phẩm nên luôn được tôn trọng. Khi file không
-    # có TrimBox, wrapper rơi về CropBox; lúc đó chỉ dùng CropBox nếu nó thực sự
-    # là trang logic nhỏ trên canvas lớn. Sai khác vài pt thường chỉ là crop/bleed.
-    pike_page = getattr(page, "_page", None)
-    has_explicit_trim = pike_page is not None and "/TrimBox" in pike_page
-    logical_box = page.trimbox if has_explicit_trim else effective_imposition_box(page)
+    bleed = max(0.0, float(bleed_pt))
+
+    # [BLEED-UI FIX 2026-08-12] Không dùng TrimBox làm khổ thành phẩm: nhiều PDF
+    # mang TrimBox từ lần xuất trước (ví dụ 3 mm), trong khi người dùng đang chọn
+    # bleed khác trên UI. Chỉ giữ ngoại lệ CropBox cho trang con trên canvas lớn.
+    logical_box = effective_imposition_box(page)
+    logical_width = float(logical_box.width)
+    logical_height = float(logical_box.height)
     logical_differs = (
-        abs(float(logical_box.width) - float(rect.width)) > 1.0
-        or abs(float(logical_box.height) - float(rect.height)) > 1.0
+        abs(logical_width - float(rect.width)) > 1.0
+        or abs(logical_height - float(rect.height)) > 1.0
     )
-    if logical_differs and logical_box.width > 0 and logical_box.height > 0:
-        bleed = max(0.0, float(bleed_pt))
+    source_clip = None
+    if logical_differs and logical_width > 0 and logical_height > 0:
         source_clip = (
-            float(logical_box.x0) - bleed,
-            float(rect.height) - float(logical_box.y1) - bleed,
-            float(logical_box.x1) + bleed,
-            float(rect.height) - float(logical_box.y0) + bleed,
+            float(logical_box.x0),
+            float(rect.height) - float(logical_box.y1),
+            float(logical_box.x1),
+            float(rect.height) - float(logical_box.y0),
         )
-        return float(logical_box.width), float(logical_box.height), source_clip
     return (
-        max(0.0, float(rect.width) - 2.0 * float(bleed_pt)),
-        max(0.0, float(rect.height) - 2.0 * float(bleed_pt)),
-        None,
+        max(0.0, logical_width - 2.0 * bleed),
+        max(0.0, logical_height - 2.0 * bleed),
+        source_clip,
     )
 
 

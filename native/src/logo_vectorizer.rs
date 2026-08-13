@@ -700,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn structured_result_keeps_mm_and_declares_despeckle_limit() {
+    fn structured_result_keeps_mm_and_only_declares_pending_silhouette_despeckle() {
         let result = render_structured(
             flat_structured_request(4),
             StructuredResultOptions {
@@ -722,10 +722,31 @@ mod tests {
             })
         );
         assert!(result.svg.contains("width=\"40mm\" height=\"20mm\""));
-        assert!(result
+        assert!(!result
             .warnings
             .iter()
-            .any(|warning| warning.contains("chưa áp dụng khử hạt 4 px")));
+            .any(|warning| warning.contains("chưa áp dụng khử hạt")));
+
+        let silhouette = LogoEngineRequest::from_legacy_api(
+            2,
+            2,
+            [0_u8, 0, 0, 255].repeat(4),
+            "monochrome",
+            vec![],
+            0.5,
+            4,
+        )
+        .unwrap();
+        let silhouette_result = render_structured(
+            silhouette,
+            StructuredResultOptions::default(),
+            CancelToken::new(),
+        )
+        .unwrap();
+        assert!(silhouette_result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Profile đen trắng chưa áp dụng khử hạt 4 px")));
     }
 
     #[test]

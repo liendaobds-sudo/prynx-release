@@ -82,6 +82,7 @@ describe('runProcessEngine N-Up native fast path', () => {
         expect(payload).toMatchObject({
             page_sheet_mode: true,
             isDieCutMode: false,
+            alternateRotation: 'none',
             markType: 'guillotine',
             duplexFlow: 'normal',
             exportUniqueSheets: true,
@@ -140,6 +141,43 @@ describe('runProcessEngine N-Up native fast path', () => {
         expect(payload).not.toHaveProperty('pontsOnCutFile');
     });
 
+    it.each([
+        ['tem chữ nhật', { 0: 'RECTANGLE', 1: 'RECTANGLE' }, 'row'],
+        ['tem có hình khác', { 0: 'RECTANGLE', 1: 'CIRCLE_ELLIPSE' }, 'none'],
+    ] as const)('khóa Inking đúng cho %s khi xuất PDF', async (_label, detectedShapesByPage, expected) => {
+        const context: ProcessContext = {
+            file: new File(['source'], 'sticker.pdf', { type: 'application/pdf' }),
+            commitWorkingFile: vi.fn().mockResolvedValue(undefined),
+            setError: vi.fn(),
+            setIsProcessing: vi.fn(),
+            setProcessStatus: vi.fn(),
+            setReportMsg: vi.fn(),
+            setBatchOutput: vi.fn(),
+            getWorkingBytes: vi.fn(),
+            getWorkingSourcePath: vi.fn().mockResolvedValue('D:\\sticker.pdf'),
+        };
+
+        await runProcessEngine(
+            context,
+            {
+                impositionMode: ImpositionMode.NUp,
+                imposerMode: 'diecut',
+                isDieCutMode: true,
+                sheetWidth: 320,
+                sheetHeight: 450,
+                bleed: 0,
+                alternateRotation: 'row',
+                detectedShapesByPage,
+            } as any,
+            false,
+        );
+
+        expect(api.startNupJobBackend.mock.calls[0][1]).toMatchObject({
+            alternateRotation: expected,
+            detectedShapesByPage,
+        });
+    });
+
     it('skips source upload and result download for clean desktop files', async () => {
         const commitWorkingFile = vi.fn().mockResolvedValue(undefined);
         const getWorkingBytes = vi.fn();
@@ -165,10 +203,16 @@ describe('runProcessEngine N-Up native fast path', () => {
                 bleed: 0,
                 cols: 2,
                 rows: 2,
+                alternateRotation: 'row',
                 cutBorderEnabled: true,
                 cutBorderPosition: 'bleed',
                 cutBorderColor: '#12A34B',
                 cutBorderThickness: 0.6,
+                diagnosticTraceId: 'sr-test-ui',
+                diagnosticPreviewRequestId: 'sr-test-ui-p3',
+                diagnosticPendingRequestId: 'sr-test-ui-p4',
+                diagnosticPreviewCapacity: 16,
+                diagnosticPreviewState: 'pending',
             } as unknown as import('./pdfImposer').ProcessingSettings,
             false,
         );
@@ -181,10 +225,16 @@ describe('runProcessEngine N-Up native fast path', () => {
         expect(getWorkingBytes).not.toHaveBeenCalled();
         expect(api.downloadNupJob).not.toHaveBeenCalled();
         expect(api.startNupJobBackend.mock.calls[0][1]).toMatchObject({
+            alternateRotation: 'row',
             cutBorderEnabled: true,
             cutBorderPosition: 'bleed',
             cutBorderColor: '#12A34B',
             cutBorderThickness: 0.6,
+            diagnosticTraceId: 'sr-test-ui',
+            diagnosticPreviewRequestId: 'sr-test-ui-p3',
+            diagnosticPendingRequestId: 'sr-test-ui-p4',
+            diagnosticPreviewCapacity: 16,
+            diagnosticPreviewState: 'pending',
         });
         expect(commitWorkingFile).toHaveBeenCalledWith(
             expect.any(Blob),

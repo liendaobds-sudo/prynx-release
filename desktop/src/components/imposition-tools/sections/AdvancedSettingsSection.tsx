@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { useImposerSettingsStore } from '../useImposerSettingsStore';
 import { useShallow } from 'zustand/react/shallow';
 import { Divider, inputCls, Checkbox } from '../SharedUI';
-import { DEFAULT_MATERIALS, LAMINATION_OPTIONS, PREDEFINED_SIZES, type ReportFieldKey } from '../types';
+import { DEFAULT_MATERIALS, DEFAULT_REPORT_CONFIG, LAMINATION_OPTIONS, PREDEFINED_SIZES, type ReportFieldKey } from '../types';
 import { buildReportPreview } from '../../../lib/reportPreview';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../../i18n';
@@ -13,7 +13,7 @@ import { resolveImpositionModes } from '../pageSheetPolicy';
 import { canUseCutBorder } from '../cutBorderPolicy';
 import { formatSizeMm } from '../../../lib/measurementFormat';
 
-const REPORT_FIELD_LABELS: Record<string, string> = {
+const REPORT_FIELD_LABELS: Record<ReportFieldKey, string> = {
     orderCode: 'Mã đơn hàng', identifier: 'Mẫu/Trang', gangCount: 'Số mẫu ghép',
     labelName: 'Tên nhãn',
     material: 'Chất liệu', lamination: 'Cán màng', labelsPerSheet: 'SL/tờ',
@@ -21,11 +21,54 @@ const REPORT_FIELD_LABELS: Record<string, string> = {
     paperSize: 'Khổ giấy', cutFileRef: 'File bế', modeLabel: 'Chế độ',
 };
 const REPORT_SHOW_KEYS: Array<[string, ReportFieldKey]> = [
-    ['showIdentifier', 'identifier'], ['showGangCount', 'gangCount'], ['showLabelName', 'labelName'], ['showMaterial', 'material'],
+    ['', 'orderCode'], ['showIdentifier', 'identifier'], ['showGangCount', 'gangCount'], ['showLabelName', 'labelName'], ['showMaterial', 'material'],
     ['showLamination', 'lamination'], ['showLabelsPerSheet', 'labelsPerSheet'], ['showActualQty', 'actualQty'],
     ['showSheetCount', 'sheetCount'], ['showDimensions', 'dimensions'], ['showPaperSize', 'paperSize'],
     ['showModeLabel', 'modeLabel'],
 ];
+const REPORT_SHOW_FLAG = Object.fromEntries(
+    REPORT_SHOW_KEYS.map(([flag, key]) => [key, flag]),
+) as Record<ReportFieldKey, string>;
+
+function orderedReportControls(fieldOrder: ReportFieldKey[]): Array<[string, ReportFieldKey]> {
+    const available = new Set(REPORT_SHOW_KEYS.map(([, key]) => key));
+    const ordered: ReportFieldKey[] = [];
+    for (const key of fieldOrder || []) {
+        if (available.delete(key)) ordered.push(key);
+    }
+    for (const [, key] of REPORT_SHOW_KEYS) {
+        if (available.delete(key)) ordered.push(key);
+    }
+    return ordered.map(key => [REPORT_SHOW_FLAG[key], key]);
+}
+
+function moveReportField(fieldOrder: ReportFieldKey[], key: ReportFieldKey, direction: -1 | 1): ReportFieldKey[] {
+    const fullOrder: ReportFieldKey[] = [];
+    const seen = new Set<ReportFieldKey>();
+    for (const field of fieldOrder || []) {
+        if (!seen.has(field)) {
+            seen.add(field);
+            fullOrder.push(field);
+        }
+    }
+    for (const field of DEFAULT_REPORT_CONFIG.fieldOrder) {
+        if (!seen.has(field)) {
+            seen.add(field);
+            fullOrder.push(field);
+        }
+    }
+
+    const visibleOrder = orderedReportControls(fullOrder).map(([, field]) => field);
+    const fromVisible = visibleOrder.indexOf(key);
+    const toVisible = fromVisible + direction;
+    if (fromVisible < 0 || toVisible < 0 || toVisible >= visibleOrder.length) return fullOrder;
+
+    const otherKey = visibleOrder[toVisible];
+    const from = fullOrder.indexOf(key);
+    const to = fullOrder.indexOf(otherKey);
+    [fullOrder[from], fullOrder[to]] = [fullOrder[to], fullOrder[from]];
+    return fullOrder;
+}
 
 // Nhóm con thu/xổ riêng trong "Thiết lập mở rộng" — mỗi nhóm tự quản trạng thái đóng/mở.
 // infoButton render NGOÀI nút toggle nên bấm ⓘ không làm xổ/thu nhóm.
@@ -64,7 +107,15 @@ function CollapsibleGroup({
     );
 }
 
-export default function AdvancedSettingsSection({ activeTool, sourceTotalPages = 0 }: { activeTool: string; sourceTotalPages?: number }) {
+export default function AdvancedSettingsSection({
+    activeTool,
+    sourceTotalPages = 0,
+    rectangleStickerInking = false,
+}: {
+    activeTool: string;
+    sourceTotalPages?: number;
+    rectangleStickerInking?: boolean;
+}) {
   const { t } = useTranslation();
     const s = useImposerSettingsStore(useShallow(state => ({
         taskMode: state.taskMode,
@@ -77,6 +128,8 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
         cncFlipEdge: state.cncFlipEdge, setCncFlipEdge: state.setCncFlipEdge,
         cncDuplexMarks: state.cncDuplexMarks, setCncDuplexMarks: state.setCncDuplexMarks,
         layoutType: state.layoutType, setLayoutType: state.setLayoutType,
+        gridStrategy: state.gridStrategy, setGridStrategy: state.setGridStrategy,
+        alternateRotation: state.alternateRotation, setAlternateRotation: state.setAlternateRotation,
         // Grouping Strategy
         groupingStrategy: state.groupingStrategy, setGroupingStrategy: state.setGroupingStrategy,
         clusterCombineMode: state.clusterCombineMode, setClusterCombineMode: state.setClusterCombineMode,
@@ -110,7 +163,6 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
         previewCapacity: state.previewCapacity,
         targetQuantity: state.targetQuantity,
         sourcePageDim: state.sourcePageDim,
-        sourceMediaPageDim: state.sourceMediaPageDim,
         formsize: state.formsize,
         customSheetWidth: state.customSheetWidth,
         customSheetHeight: state.customSheetHeight,
@@ -147,6 +199,19 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
         }
     }, [s.taskMode, s.groupingStrategy, s.setGroupingStrategy]);
 
+    useEffect(() => {
+        // Tương thích trạng thái thử nghiệm cũ: Inking từng bị gộp nhầm vào Cách xếp.
+        // Chuyển một lần sang field độc lập rồi trả solver về lưới đơn giản như hành vi cũ.
+        if (activeTool !== 'nup') return;
+        if ((s.gridStrategy as string) === 'inking_rows') {
+            s.setGridStrategy('simple_auto');
+            s.setAlternateRotation('row');
+        } else if ((s.gridStrategy as string) === 'inking_columns') {
+            s.setGridStrategy('simple_auto');
+            s.setAlternateRotation('column');
+        }
+    }, [activeTool, s.gridStrategy, s.setGridStrategy, s.setAlternateRotation]);
+
     const [isExpanded, setIsExpanded] = useState(false);
     const {
         pageSheetMode,
@@ -175,6 +240,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
     const [infoModal, setInfoModal] = useState<{ title: string, content: React.ReactNode } | null>(null);
     const [showClusterModal, setShowClusterModal] = useState(false);
     const [matInput, setMatInput] = useState<string | null>(null); // null = không thêm; '' = đang nhập
+    const orderedReportFields = orderedReportControls(s.reportDisplay.fieldOrder || []);
 
     const addMaterial = () => {
         const name = (matInput || '').trim();
@@ -222,6 +288,47 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
             <div className={`grid transition-[grid-template-rows] duration-300 ${isExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
                 <div className="overflow-hidden">
                     <div className="pt-3 flex flex-col gap-3">
+
+
+                        {/* Inking là phép xoay artwork sau khi dựng lưới, không phải một Cách xếp. */}
+                        {(
+                            (activeTool === 'nup' && !pageSheetMode && s.taskMode !== 'booklet' && s.layoutType !== 'mixed_guillotine')
+                            || (activeTool === 'sticker_imposer' && rectangleStickerInking)
+                        ) && (
+                        <CollapsibleGroup title={t('imposition.advancedSettings:doi_dau_xen_ke_inking')}>
+                            <div data-testid="alternate-rotation-settings" className="flex flex-col gap-2">
+                                <div className="flex items-center gap-3">
+                                    <label
+                                        htmlFor="alternate-rotation"
+                                        className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]"
+                                    >
+                                        {t('imposition.advancedSettings:kieu_xoay')}
+                                    </label>
+                                    <select
+                                        id="alternate-rotation"
+                                        aria-label={t('imposition.advancedSettings:xoay_doi_dau_xen_ke_inking')}
+                                        value={s.alternateRotation}
+                                        onChange={(e) => s.setAlternateRotation(e.target.value as 'none' | 'row' | 'column')}
+                                        className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+                                    >
+                                        <option value="none">{t('imposition.advancedSettings:khong_xoay_xen_ke')}</option>
+                                        <option value="row">{t('imposition.advancedSettings:doi_dau_theo_hang')}</option>
+                                        <option value="column">{t('imposition.advancedSettings:doi_dau_theo_cot')}</option>
+                                    </select>
+                                </div>
+                                <p className="text-[11px] leading-relaxed text-slate-500 dark:text-zinc-400">
+                                    {t('imposition.advancedSettings:inking_giu_nguyen_cach_xep_mo_ta')}
+                                </p>
+                                {s.alternateRotation !== 'none' && (
+                                    <p className="text-[11px] leading-relaxed text-indigo-600 dark:text-indigo-300">
+                                        {s.alternateRotation === 'row'
+                                            ? t('imposition.advancedSettings:inking_theo_hang_mo_ta')
+                                            : t('imposition.advancedSettings:inking_theo_cot_mo_ta')}
+                                    </p>
+                                )}
+                            </div>
+                        </CollapsibleGroup>
+                        )}
 
 
                         {/* ══ BÌNH 2 MẶT (CNC) — In 2 mặt + Cạnh lật + Dấu canh in 2 mặt ══ */}
@@ -578,14 +685,54 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                         {/* Trường hiển thị */}
                                         <div>
                                             <label className="text-[10px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:truong_hien_thi_tren_report')}</label>
-                                            <div className="grid grid-cols-2 gap-x-3 gap-y-1">
-                                                {REPORT_SHOW_KEYS.map(([flag, key]) => (
-                                                    <Checkbox
-                                                        key={flag}
-                                                        checked={(s.reportDisplay as any)[flag]}
-                                                        onChange={(v) => s.setReportDisplay(prev => ({ ...prev, [flag]: v }))}
-                                                        label={tv(REPORT_FIELD_LABELS[key])}
-                                                    />
+                                            <div className="text-[10px] text-slate-400 mb-1.5">
+                                                {t('imposition.advancedSettings:sap_xep')} ↑ / ↓
+                                            </div>
+                                            <div className="flex flex-col gap-1" data-testid="report-field-order">
+                                                {orderedReportFields.map(([flag, key], index) => (
+                                                    <div
+                                                        key={key}
+                                                        data-report-field={key}
+                                                        className="flex items-center gap-1.5 min-h-7 rounded px-1.5 py-0.5 bg-white/70 dark:bg-zinc-900/50 border border-slate-200/80 dark:border-white/10"
+                                                    >
+                                                        <span className="w-4 text-[10px] text-slate-400 tabular-nums text-right shrink-0">{index + 1}</span>
+                                                        <div className="min-w-0 flex-1">
+                                                            {flag ? (
+                                                                <Checkbox
+                                                                    checked={(s.reportDisplay as any)[flag] !== false}
+                                                                    onChange={(v) => s.setReportDisplay(prev => ({ ...prev, [flag]: v }))}
+                                                                    label={tv(REPORT_FIELD_LABELS[key])}
+                                                                />
+                                                            ) : (
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className="w-4 h-4 rounded border border-indigo-300 dark:border-indigo-500/50 bg-indigo-50 dark:bg-indigo-500/10 flex items-center justify-center text-[10px] text-indigo-600 dark:text-indigo-300 shrink-0">•</span>
+                                                                    <span className="text-sm">{tv(REPORT_FIELD_LABELS[key])}</span>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            disabled={index === 0}
+                                                            aria-label={`${t('imposition.advancedSettings:sap_xep')} ${tv(REPORT_FIELD_LABELS[key])} ↑`}
+                                                            title={`${t('imposition.advancedSettings:sap_xep')} ↑`}
+                                                            onClick={() => s.setReportDisplay(prev => ({
+                                                                ...prev,
+                                                                fieldOrder: moveReportField(prev.fieldOrder, key, -1),
+                                                            }))}
+                                                            className="w-6 h-6 rounded border border-slate-200 dark:border-white/10 text-slate-500 hover:text-indigo-600 hover:border-indigo-300 disabled:opacity-30 disabled:cursor-not-allowed"
+                                                        >↑</button>
+                                                        <button
+                                                            type="button"
+                                                            disabled={index === orderedReportFields.length - 1}
+                                                            aria-label={`${t('imposition.advancedSettings:sap_xep')} ${tv(REPORT_FIELD_LABELS[key])} ↓`}
+                                                            title={`${t('imposition.advancedSettings:sap_xep')} ↓`}
+                                                            onClick={() => s.setReportDisplay(prev => ({
+                                                                ...prev,
+                                                                fieldOrder: moveReportField(prev.fieldOrder, key, 1),
+                                                            }))}
+                                                            className="w-6 h-6 rounded border border-slate-200 dark:border-white/10 text-slate-500 hover:text-indigo-600 hover:border-indigo-300 disabled:opacity-30 disabled:cursor-not-allowed"
+                                                        >↓</button>
+                                                    </div>
                                                 ))}
                                             </div>
                                         </div>
@@ -653,9 +800,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                             const sh = _free ? s.customSheetHeight : (PREDEFINED_SIZES[s.formsize]?.h || s.customSheetHeight);
                                             const _pageSheetPageCount = Math.max(
                                                 1,
-                                                s.sourceMediaPageDims?.length
-                                                    || s.sourcePageDims?.length
-                                                    || 1,
+                                                sourceTotalPages || 1,
                                             );
                                             const _pageSheetRequestedQty = pageSheetMode
                                                 ? Array.from({ length: _pageSheetPageCount }, (_, pageIdx) => {
@@ -673,11 +818,11 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                                 identifier: undefined,
                                                 gangCount: pageSheetMode ? _pageSheetPageCount : undefined,
                                                 labelName: s.reportDisplay.labelNameText,
-                                                widthMm: (pageSheetMode ? s.sourceMediaPageDim : s.sourcePageDim)
-                                                    ? (pageSheetMode ? s.sourceMediaPageDim : s.sourcePageDim).w * 0.352778 - 2 * (s.bleed || 0)
+                                                widthMm: s.sourcePageDim
+                                                    ? s.sourcePageDim.w * 0.352778 - 2 * (s.bleed || 0)
                                                     : undefined,
-                                                heightMm: (pageSheetMode ? s.sourceMediaPageDim : s.sourcePageDim)
-                                                    ? (pageSheetMode ? s.sourceMediaPageDim : s.sourcePageDim).h * 0.352778 - 2 * (s.bleed || 0)
+                                                heightMm: s.sourcePageDim
+                                                    ? s.sourcePageDim.h * 0.352778 - 2 * (s.bleed || 0)
                                                     : undefined,
                                                 // UIUX (audit 2026-08-04 §DIM.5): preview report khớp khổ tờ thập phân thật.
                                                 paperSize: `Khổ ${formatSizeMm(sw, sh)}`,

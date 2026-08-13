@@ -18,6 +18,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from app.core.imposition_page_box import effective_imposition_box
 from app.workers.shape_types import ShapeType, coerce_shape_type
 
 logger = logging.getLogger(__name__)
@@ -412,9 +413,17 @@ def from_legacy_settings(settings: dict[str, Any]) -> dict[int, DetectedShape]:
 # =========================================================================
 
 def _page_dims_pt(page) -> tuple[float, float]:
-    """Kích thước trang (points) tính cả UserUnit, theo MediaBox."""
+    """Kích thước trang logic (points), tính cả UserUnit.
+
+    Bình tem bế phải đo vùng trang người dùng nhìn thấy. Một số PDF đặt artwork
+    trên MediaBox lớn nhưng dùng CropBox làm trang logic; lấy MediaBox ở nhánh
+    CUSTOM sẽ làm kích thước nhận diện phình lên đúng bằng canvas nền.
+    """
     try:
-        box = page.mediabox or page.cropbox or page.trimbox or page.rect
+        # [DIE-BOX FIX 2026-08-12] Dùng cùng policy hộp trang với imposition:
+        # CropBox chỉ thắng khi thực sự là trang logic trên canvas lớn; bleed
+        # nhỏ thông thường vẫn giữ MediaBox.
+        box = effective_imposition_box(page)
         w, h = float(box.width), float(box.height)
     except Exception:
         w, h = float(page.rect.width), float(page.rect.height)

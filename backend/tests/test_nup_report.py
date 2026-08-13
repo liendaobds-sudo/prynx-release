@@ -92,9 +92,19 @@ class TestBuildReportString:
             order_code="DH1", mode_label="Be tem",
         )
 
-    def test_order_code_first(self):
+    def test_default_order_keeps_order_code_first(self):
         s = build_report_string({}, self._data())
         assert s.startswith("DH1")
+
+    def test_custom_field_order_includes_order_code_at_requested_position(self):
+        rd = {"fieldOrder": ["material", "lamination", "orderCode"]}
+        s = build_report_string(rd, self._data())
+        assert s == "Decal PP - Cán bóng - DH1"
+
+    def test_custom_field_order_skips_duplicate_keys(self):
+        rd = {"fieldOrder": ["material", "material", "orderCode"]}
+        s = build_report_string(rd, self._data())
+        assert s == "Decal PP - DH1"
 
     def test_no_double_dash(self):
         s = build_report_string({}, self._data())

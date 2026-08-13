@@ -165,21 +165,32 @@ export default function StickerCutlineTool({
                 />
             ) : (
                 <>
+                    <StickerSheetPanel
+                        tabId={tabId}
+                        onExport={handleExport}
+                        onExportPng={handleExportPng}
+                        isExporting={tab?.isExporting === true}
+                        pageOrder={pageOrder}
+                    />
                     {completedExport && (
                         <div
                             role="status"
-                            className="rounded-xl border border-emerald-300 bg-emerald-50 p-3 dark:border-emerald-800 dark:bg-emerald-950/30"
+                            className="animate-in fade-in slide-in-from-bottom-2 rounded-xl border border-emerald-200 bg-white p-4 shadow-sm duration-300 dark:border-emerald-800/50 dark:bg-zinc-800"
                         >
-                            <div className="text-[12px] font-bold text-emerald-800 dark:text-emerald-200">
-                                ✓ {tv('Kết quả')}
+                            <div className="mb-3 flex items-center gap-2">
+                                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-900/50">
+                                    <span className="text-sm">✅</span>
+                                </div>
+                                <div className="min-w-0">
+                                    <h3 className="text-[13px] font-bold text-emerald-700 dark:text-emerald-400">
+                                        {tv('Đã tạo bù xén thành công!', 'preprocess.sticker')}
+                                    </h3>
+                                    <p className="text-[10px] leading-tight text-slate-500 dark:text-zinc-400">
+                                        {tv('Bước tiếp theo: Chọn kiểu dàn trang (Imposition)', 'preprocess.sticker')}
+                                    </p>
+                                </div>
                             </div>
-                            <div
-                                className="mt-1 truncate text-[10px] text-emerald-700 dark:text-emerald-300"
-                                title={completedExport.filename}
-                            >
-                                {completedExport.filename} · {completedExport.stickerCount} {tv('tem')}
-                            </div>
-                            <div className="mt-3 grid grid-cols-2 gap-2">
+                            <div className="grid grid-cols-2 gap-2">
                                 <button
                                     type="button"
                                     disabled={workflowBusy || !onOpenTool}
@@ -199,13 +210,6 @@ export default function StickerCutlineTool({
                             </div>
                         </div>
                     )}
-                    <StickerSheetPanel
-                        tabId={tabId}
-                        onExport={() => { void handleExport(); }}
-                        onExportPng={() => { void handleExportPng(); }}
-                        isExporting={tab?.isExporting === true}
-                        pageOrder={pageOrder}
-                    />
                 </>
             )}
         </div>

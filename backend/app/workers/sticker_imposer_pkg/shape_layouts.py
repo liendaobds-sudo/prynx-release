@@ -646,6 +646,7 @@ def _py_solve_l_shape_layout(usable_w: float, usable_h: float, item_w: float, it
                 main_block = solve_grid_layout(tbw, tbh, main_w, main_h, gap_x, gap_y)
                 for item in main_block['items']:
                     item['isRotated'] = primary_rotated
+                    item['blockId'] = 0
                     main_items.append(item)
 
                 # Right fill block (full height of usable area)
@@ -657,6 +658,7 @@ def _py_solve_l_shape_layout(usable_w: float, usable_h: float, item_w: float, it
                     for item in fill_r['items']:
                         item['x'] += right_x
                         item['isRotated'] = not primary_rotated
+                        item['blockId'] = 1
                         right_items.append(item)
 
                 # Bottom fill block (full width of usable area, below main block only)
@@ -668,6 +670,7 @@ def _py_solve_l_shape_layout(usable_w: float, usable_h: float, item_w: float, it
                     for item in fill_b['items']:
                         item['y'] += bottom_y
                         item['isRotated'] = not primary_rotated
+                        item['blockId'] = 2
                         bottom_items.append(item)
 
                 if not right_items and bottom_items:
@@ -779,7 +782,41 @@ def solve_l_shape_layout(usable_w: float, usable_h: float, item_w: float, item_h
     # Rust native doesn't support secondary_gap — skip when it's set
     if _HAS_RUST and secondary_gap is None:
         try:
-            return _native.shape_l_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y)
+            result = _native.shape_l_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y)
+            items = list(result.get('items') or [])
+            # INKING (audit 2026-08-12 §INK-DIE-05): extension Rust cũ có thể
+            # chưa phát blockId 1/2. Suy cụm từ việc c/r của fill restart về 0:
+            # main là prefix cùng hướng, fill phải có c=0; fill đáy restart r=0.
+            # Lớp tương thích này giúp bản dev hiện tại đúng ngay trước khi rebuild native.
+            if (
+                result.get('strategyUsed') == 'l_shape'
+                and items
+                and not any(int(item.get('blockId', 0) or 0) != 0 for item in items)
+            ):
+                main_rotated = bool(items[0].get('isRotated', False))
+                main_items = [
+                    item for item in items
+                    if bool(item.get('isRotated', False)) == main_rotated
+                ]
+                main_max_x = max(
+                    float(item.get('x', 0.0)) + float(item.get('width', 0.0))
+                    for item in main_items
+                )
+                main_max_y = max(
+                    float(item.get('y', 0.0)) + float(item.get('height', 0.0))
+                    for item in main_items
+                )
+                for item in items:
+                    if bool(item.get('isRotated', False)) == main_rotated:
+                        item['blockId'] = 0
+                    elif float(item.get('y', 0.0)) >= main_max_y - 0.01:
+                        item['blockId'] = 2
+                    elif float(item.get('x', 0.0)) >= main_max_x - 0.01:
+                        item['blockId'] = 1
+                    else:
+                        # Không suy đoán ngoài hai vùng L-shape chuẩn.
+                        item['blockId'] = 0
+            return result
         except Exception:
             pass
     return _py_solve_l_shape_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y, secondary_gap)

@@ -13,6 +13,7 @@ from app.workers.nup_diecut import (
     _find_largest_die_path,
     extract_page_die_cut_polygon,
     get_optimal_head_to_tail_overlap,
+    resolve_default_page_die,
     resolve_one_dao_trim,
 )
 
@@ -45,6 +46,8 @@ def compute_sticker_layout_for_page(
     die_size_mode: str = 'die',
 
     die_offset_mm: float = 0,
+
+    alternate_rotation: str = 'none',
 
 ) -> dict:
 
@@ -154,6 +157,11 @@ def compute_sticker_layout_for_page(
     _one_dao_trim = resolve_one_dao_trim(page, cut_type, die_size_mode, die_offset_mm)
 
     largest_path = None if _one_dao_trim is not None else _find_largest_die_path(page)
+    if largest_path is None and cut_type == 'default':
+        # [PAGEBOX FIX 2026-08-13] Không có CutContour: Mặc định dùng khuôn
+        # chữ nhật theo trang logic, không rơi về MediaBox thô rồi báo sai SL.
+        largest_path = resolve_default_page_die(page)
+    _is_page_fallback = bool((largest_path or {}).get('is_page_fallback'))
 
     if _one_dao_trim is not None:
 
@@ -210,7 +218,7 @@ def compute_sticker_layout_for_page(
     # 1 Dao (mọi die_size_mode): ép RECTANGLE — dao thẳng LETA không nest tròn/hex/búa.
     # page-mode: thêm base_poly = chữ nhật trang (bên dưới). die-mode: trim từ khuôn
     # nhưng strategy vẫn grid/L-shape chữ nhật.
-    if _is_one_dao:
+    if _is_one_dao or _is_page_fallback:
         shape_type = 'RECTANGLE'
         shape_props = {}
         _need_auto = False
@@ -240,7 +248,7 @@ def compute_sticker_layout_for_page(
 
             logger.debug(f"   SHAyE: classify_shape failed: {e}")
 
-    if _is_one_dao:
+    if _is_one_dao or _is_page_fallback:
 
         # Giữ RECTANGLE + props rỗng đã set — KHÔNG honor override CIRCLE/CUSTOM.
         pass
@@ -362,10 +370,10 @@ def compute_sticker_layout_for_page(
 
     # 1 Dao: base_poly = CHỮ NHẬT trim (page hoặc die bbox), KHÔNG NFP contour cong
     # (tránh nest/khử đè theo outline tròn trong khi dao cắt thẳng).
-    if _is_one_dao:
+    if _is_one_dao or _is_page_fallback:
         from shapely.geometry import box as _box
         base_poly = _box(0, 0, trim_w, trim_h)
-        logger.debug(f"   POLY: 1-dao rectangle {trim_w:.2f}x{trim_h:.2f}")
+        logger.debug(f"   POLY: page rectangle {trim_w:.2f}x{trim_h:.2f}")
     elif _skip_unused_custom_nfp:
 
         logger.debug("   NFP: SKIPPED (explicit CUSTOM + optimal_auto; polygon fallback retained)")
@@ -435,7 +443,7 @@ def compute_sticker_layout_for_page(
         )
 
     # If user explicitly chose CUSTOM via dropdown, force it — trừ 1 Dao (luôn RECTANGLE).
-    if shape_type_override == 'CUSTOM' and not _is_one_dao:
+    if shape_type_override == 'CUSTOM' and not (_is_one_dao or _is_page_fallback):
 
         shape_type = 'CUSTOM'
 
@@ -444,7 +452,7 @@ def compute_sticker_layout_for_page(
         logger.debug(f"   OVERRIDE: forced CUSTOM by user")
 
     # 1 Dao: chốt lại RECTANGLE sau mọi nhánh NFP/override (FE có thể gửi CIRCLE/CUSTOM).
-    if _is_one_dao:
+    if _is_one_dao or _is_page_fallback:
         shape_type = 'RECTANGLE'
         shape_props = {'width': trim_w, 'height': trim_h}
         if base_poly is None:
@@ -489,6 +497,20 @@ def compute_sticker_layout_for_page(
 
     )
 
+    # INKING (audit 2026-08-12 §INK-DIE-01): chỉ tem vuông/chữ nhật được xoay
+    # đối đầu. Áp sau khi solver đã chốt toàn bộ cụm L-shape để Preview/PDF dùng
+    # đúng cùng một danh sách placement và mỗi block tự bắt đầu từ hướng gốc.
+    from app.workers.nup_layout_solver import (
+        apply_alternate_rotation,
+        normalize_alternate_rotation,
+    )
+    _effective_alternate_rotation = (
+        normalize_alternate_rotation(alternate_rotation)
+        if str(shape_type).strip().upper() == 'RECTANGLE'
+        else 'none'
+    )
+    result = apply_alternate_rotation(result, _effective_alternate_rotation)
+
     # Attach metadata for callers
 
     result['shapeType'] = shape_type
@@ -498,6 +520,10 @@ def compute_sticker_layout_for_page(
     result['trimW'] = trim_w
 
     result['trimH'] = trim_h
+
+    result['alternateRotation'] = _effective_alternate_rotation
+
+    result['isPageFallback'] = _is_page_fallback
 
     logger.debug(f"   RESULT: totalItems={result.get('totalItems', 0)} strategyUsed={result.get('strategyUsed', 'N/A')}")
 

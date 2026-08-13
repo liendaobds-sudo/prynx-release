@@ -43,6 +43,8 @@ logger = logging.getLogger(__name__)
 from app.workers.nup_layout_solver import (
     build_sequential_product_sequence,
     get_src_page_idx,
+    normalize_alternate_rotation,
+    rectangle_inking_is_allowed,
     solve_grid,
     solve_manual,
     solve_optimal_layout,
@@ -55,6 +57,7 @@ from app.workers.nup_diecut import (
     extract_page_die_cut_polygon,
     get_optimal_head_to_tail_overlap,
     _find_largest_die_path,
+    resolve_default_page_die,
     resolve_one_dao_trim,
 )
 from app.workers.nup_marks import _draw_ponts_on_page
@@ -70,6 +73,7 @@ from app.workers.nup_repeat_metadata import (
 from app.workers.page_space_canonicalization import canonicalize_page_space_file
 from app.core.disk_space_guard import ensure_job_disk_space, estimate_nup_disk
 from app.workers.mixed_guillotine_adapter import (
+    resolve_guillotine_geometry,
     resolve_guillotine_trim,
 )
 
@@ -231,6 +235,9 @@ def _run_nup_engine_impl(
 
 ) -> str:
     import math
+    from app.utils.preview_perf_log import log as _diag_log, sanitize_diagnostic_id
+    _diagnostic_trace_id = sanitize_diagnostic_id(settings.get("_diagnosticTraceId"))
+    _diagnostic_job_id = sanitize_diagnostic_id(job_id)
 
     page_sheet_mode = settings.get("page_sheet_mode", False) is True
     _mixed_mode_requested = settings.get("layoutType") == "mixed_guillotine"
@@ -355,7 +362,9 @@ def _run_nup_engine_impl(
 
                 geom_rect = (r.x0, r.y0, r.x1, r.y1)
 
-    # Dùng MediaBox (page.rect) = đúng kích thước file (gồm bleed). trim = page - 2*bleed(UI).
+    # MediaBox thô chỉ dùng cho các nhánh hình học cũ. Nguyên tấm decal lấy hộp trang
+    # hiệu dụng giống /pdf-meta: giữ MediaBox khi chỉ lệch bleed nhỏ, chọn CropBox khi
+    # đó là trang logic thật nằm trên một canvas lớn.
     src_w = first_page.rect.width
 
     src_h = first_page.rect.height
@@ -395,7 +404,12 @@ def _run_nup_engine_impl(
 
     if page_sheet_mode:
         from app.workers.page_sheet_geometry import resolve_page_sheet_geometry
-        _page_sheet_geo = resolve_page_sheet_geometry(src_w, src_h, bleed_pt)
+        _page_sheet_source_w, _page_sheet_source_h, _ = resolve_guillotine_geometry(
+            first_page, 0.0,
+        )
+        _page_sheet_geo = resolve_page_sheet_geometry(
+            _page_sheet_source_w, _page_sheet_source_h, bleed_pt,
+        )
         trim_w = _page_sheet_geo.trim_width
         trim_h = _page_sheet_geo.trim_height
     elif geom_rect:
@@ -545,6 +559,26 @@ def _run_nup_engine_impl(
 
     strategy = settings.get('gridStrategy', 'simple_auto')
 
+    alternate_rotation = normalize_alternate_rotation(
+        settings.get(
+            'alternateRotation', settings.get('alternate_rotation', 'none')
+        )
+    )
+    _diecut_inking_allowed = rectangle_inking_is_allowed(
+        is_die_cut=bool(is_die_cut),
+        is_cnc=bool(is_cnc),
+        page_sheet_mode=bool(page_sheet_mode),
+        layout_type=str(layout_type or ''),
+        cut_type=str(settings.get('cutType', 'default') or 'default'),
+        shape_type=frontend_shape,
+        shapes_by_page=detected_shapes_by_page,
+    )
+    if (
+        is_cnc or page_sheet_mode or layout_type == 'mixed_guillotine'
+        or (is_die_cut and not _diecut_inking_allowed)
+    ):
+        alternate_rotation = 'none'
+
     grouping_strategy = settings.get('groupingStrategy', 'maximize_area')
     # Bình trang là S&R từng source page. Grouping cũ trong preset/UI không được
     # phép đổi mode thành cluster mixed hoặc làm skip full_layouts.
@@ -681,6 +715,11 @@ def _run_nup_engine_impl(
 
             largest_path = (None if _one_dao_trim is not None
                             else _find_largest_die_path(src_page))
+
+            if largest_path is None and settings.get('cutType', 'default') == 'default':
+                # [PAGEBOX FIX 2026-08-13] Mặc định không có CutContour vẫn là
+                # khuôn hợp lệ: dùng đúng PageBox logic mà UI đang hiển thị.
+                largest_path = resolve_default_page_die(src_page)
 
             has_die_by_page[p_idx] = largest_path is not None
 
@@ -904,6 +943,7 @@ def _run_nup_engine_impl(
                 cut_type=settings.get('cutType', 'default'),
                 die_size_mode=settings.get('dieSizeMode', 'die'),
                 die_offset_mm=settings.get('dieOffsetMm', 0),
+                alternate_rotation=alternate_rotation,
             )
             try:
                 from app.workers.rot_audit_log import get_logger as _rot_get_logger
@@ -981,6 +1021,7 @@ def _run_nup_engine_impl(
                 _is_rect_repeat = (
                     page_sheet_mode
                     or cut_type == 'one_dao'
+                    or bool((full_layouts.get(_p_idx) or {}).get('isPageFallback'))
                     or str(_shape_repeat).upper() == 'RECTANGLE'
                 )
                 try:
@@ -1368,6 +1409,7 @@ def _run_nup_engine_impl(
                         cut_type=settings.get('cutType', 'default'),
                         die_size_mode=settings.get('dieSizeMode', 'die'),
                         die_offset_mm=settings.get('dieOffsetMm', 0),
+                        alternate_rotation=alternate_rotation,
                     )
                 except Exception as _e_zl:
                     logger.warning(f"   [CLUSTER] zone_layout_fn p_idx={p_idx} lỗi: {_e_zl}")
@@ -2266,8 +2308,11 @@ def _run_nup_engine_impl(
                     _pg_dims = _gdoc_dims[_pi_dims]
                     if page_sheet_mode:
                         from app.workers.page_sheet_geometry import resolve_page_sheet_geometry
+                        _source_w_dims, _source_h_dims, _ = resolve_guillotine_geometry(
+                            _pg_dims, 0.0,
+                        )
                         _geo_dims = resolve_page_sheet_geometry(
-                            _pg_dims.rect.width, _pg_dims.rect.height, bleed_pt,
+                            _source_w_dims, _source_h_dims, bleed_pt,
                         )
                         _tw_dims, _th_dims = _geo_dims.trim_width, _geo_dims.trim_height
                     else:
@@ -2461,8 +2506,8 @@ def _run_nup_engine_impl(
                            and page_count >= 2 and page_count % 2 == 0)
             _n_units_g = (page_count // 2) if _gui_duplex else page_count
 
-            # page_infos guillotine: qty theo trang (duplex → key trang chẵn); trim từ
-            # trimbox nếu lệch rect else rect-2*bleed (KHÔNG dò đường bế).
+            # page_infos guillotine: qty theo trang (duplex → key trang chẵn); khổ
+            # thành phẩm lấy từ trang logic trừ đúng bleed UI (KHÔNG dò đường bế).
             _gdoc = pdf_lib.open(source_path)
             _gui_page_infos = []
             _gui_trim = {}
@@ -2480,8 +2525,11 @@ def _run_nup_engine_impl(
                     _pg = _gdoc[_fp]
                     if page_sheet_mode:
                         from app.workers.page_sheet_geometry import resolve_page_sheet_geometry
+                        _source_w_gui, _source_h_gui, _ = resolve_guillotine_geometry(
+                            _pg, 0.0,
+                        )
                         _geo_gui = resolve_page_sheet_geometry(
-                            _pg.rect.width, _pg.rect.height, bleed_pt,
+                            _source_w_gui, _source_h_gui, bleed_pt,
                         )
                         _tw, _th = _geo_gui.trim_width, _geo_gui.trim_height
                     else:
@@ -2523,6 +2571,7 @@ def _run_nup_engine_impl(
                 if strategy == 'manual':
                     _sol = solve_manual(
                         _tw, _th, gap_x, gap_y, cols_manual, rows_manual,
+                        alternate_rotation,
                     )
                     if (_sol.get('overallWidth', 0) > zone_w + 0.01
                             or _sol.get('overallHeight', 0) > zone_h + 0.01):
@@ -2531,12 +2580,13 @@ def _run_nup_engine_impl(
                     _sol = solve_optimal_layout(
                         zone_w, zone_h, _tw, _th,
                         gap_x, gap_y, strategy, secondary_gap,
+                        alternate_rotation,
                     )
                 _items = [{
                     'x': _c['x'], 'y': _c['y'],
                     'width': _c['width'], 'height': _c['height'],
                     'isRotated': _c.get('isRotated', False),
-                    'isRotated180': False,
+                    'isRotated180': _c.get('isRotated180', False),
                 } for _c in _sol.get('cells', [])]
                 _res = {'items': _items}
                 _gui_zcache[_ck] = _res
@@ -2712,7 +2762,10 @@ def _run_nup_engine_impl(
                 _gui_duplex, len(_gui_page_infos),
             )
         elif strategy == 'manual' and cols_manual > 0 and rows_manual > 0:
-            layout = solve_manual(trim_w, trim_h, gap_x, gap_y, cols_manual, rows_manual)
+            layout = solve_manual(
+                trim_w, trim_h, gap_x, gap_y,
+                cols_manual, rows_manual, alternate_rotation,
+            )
         elif _is_cluster_type_early:
             # CHIA CỌC theo loại: dao guillotine cần đường xén THẲNG xuyên tờ → ép lưới
             # ĐỀU (simple_auto). optimal_auto (L-fill) dựng khối chính+phụ lệch nhau, ô
@@ -2743,11 +2796,16 @@ def _run_nup_engine_impl(
             _uh_ct = (usable_h - _gutter_total) if cluster_mode == 'row' else usable_h
             _uw_ct = max(trim_w, _uw_ct)
             _uh_ct = max(trim_h, _uh_ct)
-            layout = solve_optimal_layout(_uw_ct, _uh_ct, trim_w, trim_h, gap_x, gap_y, 'simple_auto', secondary_gap)
+            layout = solve_optimal_layout(
+                _uw_ct, _uh_ct, trim_w, trim_h,
+                gap_x, gap_y, 'simple_auto', secondary_gap,
+                alternate_rotation,
+            )
         else:
             layout = solve_optimal_layout(
                 usable_w, usable_h, trim_w, trim_h,
                 gap_x, gap_y, strategy, secondary_gap,
+                alternate_rotation,
             )
 
         if strategy == 'manual':
@@ -2768,6 +2826,39 @@ def _run_nup_engine_impl(
     capacity = layout['totalItems']
 
     total_capacity = capacity * cx_count * cy_count
+    _diag_log(
+        "EXPORT", "solver.result",
+        trace_id=_diagnostic_trace_id,
+        job_id=_diagnostic_job_id,
+        layout_type=layout_type,
+        strategy=strategy,
+        sheet_w_mm=sheet_w / MM_TO_PTS,
+        sheet_h_mm=sheet_h / MM_TO_PTS,
+        usable_w_mm=usable_w / MM_TO_PTS,
+        usable_h_mm=usable_h / MM_TO_PTS,
+        trim_w_pt=trim_w,
+        trim_h_pt=trim_h,
+        gap_x_mm=gap_x / MM_TO_PTS,
+        gap_y_mm=gap_y / MM_TO_PTS,
+        bleed_mm=bleed_pt / MM_TO_PTS,
+        split_gap_mm=settings.get("splitGap"),
+        secondary_gap_pt=secondary_gap,
+        capacity=capacity,
+        total_capacity=total_capacity,
+        strategy_used=layout.get("strategyUsed"),
+    )
+    if _diagnostic_trace_id:
+        logger.warning(
+            "[IMPOSITION-DIAG] event=export.solver.result trace=%s job=%s "
+            "capacity=%s total_capacity=%s layout=%s strategy=%s "
+            "sheet_mm=%.3fx%.3f usable_mm=%.3fx%.3f trim_pt=%.3fx%.3f "
+            "gap_mm=%.3fx%.3f bleed_mm=%.3f split_gap_mm=%s secondary_gap_pt=%s",
+            _diagnostic_trace_id, _diagnostic_job_id, capacity, total_capacity,
+            layout_type, strategy, sheet_w / MM_TO_PTS, sheet_h / MM_TO_PTS,
+            usable_w / MM_TO_PTS, usable_h / MM_TO_PTS, trim_w, trim_h,
+            gap_x / MM_TO_PTS, gap_y / MM_TO_PTS, bleed_pt / MM_TO_PTS,
+            settings.get("splitGap"), secondary_gap,
+        )
 
     # Repeat may contain resized pages with different capacities. Build the
     # sheet count from each page's own geometry; process_chunk uses the same
@@ -2781,7 +2872,7 @@ def _run_nup_engine_impl(
             if strategy == 'manual':
                 _repeat_layout = solve_manual(
                     _tw_repeat, _th_repeat, gap_x, gap_y,
-                    cols_manual, rows_manual,
+                    cols_manual, rows_manual, alternate_rotation,
                 )
                 if (
                     _repeat_layout.get('overallWidth', 0) > usable_w + 0.01
@@ -2794,6 +2885,7 @@ def _run_nup_engine_impl(
                 _repeat_layout = solve_optimal_layout(
                     usable_w, usable_h, _tw_repeat, _th_repeat,
                     gap_x, gap_y, strategy, secondary_gap,
+                    alternate_rotation,
                 )
             _repeat_capacity_by_page[_pi_repeat] = int(_repeat_layout['totalItems']) * cx_count * cy_count
             if _repeat_capacity_by_page[_pi_repeat] < 1:
@@ -3607,6 +3699,21 @@ def _run_nup_engine_impl(
         # được tuple mở rộng khi N-Up guillotine cần vẽ viền.
         if cut_border_config is not None:
             args = args + (cut_border_config,)
+
+        # INKING (2026-08-12): nối đuôi metadata để worker repeat tự solve lại
+        # vẫn nhận đúng chế độ, không thay vị trí 56 trường tuple legacy.
+        args = args + ({
+            "_nup_worker_options": True,
+            "alternate_rotation": alternate_rotation,
+        },)
+
+        # PARITY-DIAG (audit 2026-08-12 §SRPARITY.1): worker ghi số placement
+        # thật ngay trước render; nối đuôi để giữ tương thích mọi tuple legacy.
+        if _diagnostic_trace_id:
+            args = args + ({
+                "_diagnostic_trace_id": _diagnostic_trace_id,
+                "_diagnostic_job_id": _diagnostic_job_id,
+            },)
 
         args_list.append(args)
 

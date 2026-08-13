@@ -104,6 +104,7 @@ function MixedPreview({
       duplexFlow="double"
       duplexFlipEdge="long"
       gridStrategy="optimal_auto"
+      alternateRotation="column"
       columns={0}
       rows={0}
       gapX={0}
@@ -279,6 +280,76 @@ function renderedProductRect(container: HTMLElement): SVGRectElement {
   return rect as SVGRectElement;
 }
 
+function inkingDirectionResponse() {
+  const cells = [
+    { isRotated: false, isRotated180: false },
+    { isRotated: true, isRotated180: false },
+    { isRotated: false, isRotated180: true },
+    { isRotated: true, isRotated180: true },
+  ].map((rotation, index) => ({
+    x: pt(index * 20),
+    y: 0,
+    width: pt(20),
+    height: pt(10),
+    blockId: 0,
+    ...rotation,
+  }));
+
+  return {
+    success: true,
+    cells,
+    overallWidth: pt(80),
+    overallHeight: pt(10),
+    totalItems: 4,
+    strategyUsed: "optimal_auto",
+    isMixedPreview: false,
+    absPlacement: false,
+    sheetsNeeded: 1,
+  };
+}
+
+function InkingDirectionPreview({
+  alternateRotation,
+  duplexFlow = "normal",
+  activeTool = "nup",
+  isDieCut = false,
+  shapeType = "RECTANGLE",
+}: {
+  alternateRotation: "none" | "row" | "column";
+  duplexFlow?: "normal" | "double";
+  activeTool?: "nup" | "sticker_imposer" | "cnc_imposer";
+  isDieCut?: boolean;
+  shapeType?: string;
+}) {
+  return (
+    <GridPreview
+      activeTool={activeTool}
+      taskMode="nup"
+      isDieCut={isDieCut}
+      layoutType="sequential"
+      duplexFlow={duplexFlow}
+      gridStrategy="optimal_auto"
+      alternateRotation={alternateRotation}
+      columns={0}
+      rows={0}
+      gapX={0}
+      gapY={0}
+      sheetWidth={100}
+      sheetHeight={80}
+      marginTop={0}
+      marginBottom={0}
+      marginLeft={0}
+      marginRight={0}
+      align="center"
+      shapeType={shapeType}
+      itemW={20}
+      itemH={10}
+      sourceTotalPages={1}
+      filePath="C:\\inking-direction.pdf"
+    />
+  );
+}
+
 describe("GridPreview — mặt sau mixed đã được backend materialize", () => {
   beforeEach(() => {
     authenticatedFetchMock.mockReset();
@@ -306,6 +377,7 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
       String(authenticatedFetchMock.mock.calls[0]?.[1]?.body),
     );
     expect(requestBody.layout_type).toBe("mixed_guillotine");
+    expect(requestBody.alternate_rotation).toBe("none");
     expect(requestBody.duplex_flip_edge).toBe("long");
 
     fireEvent.click(screen.getByRole("button", { name: "►" }));
@@ -455,5 +527,113 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     }, { timeout: 3_000 });
     expect(getWorkingFile).toHaveBeenCalled();
     expect(authenticatedFetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("GridPreview — hướng xoay Inking", () => {
+  beforeEach(() => {
+    authenticatedFetchMock.mockReset();
+    authenticatedFetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => inkingDirectionResponse(),
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("hiển thị đủ hướng 0/90/180/270 ở cả mặt trước và mặt sau", async () => {
+    const { container } = render(
+      <InkingDirectionPreview alternateRotation="row" duplexFlow="double" />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("cell-direction-indicator")).toHaveLength(8);
+    }, { timeout: 3_000 });
+
+    const indicators = screen.getAllByTestId("cell-direction-indicator");
+    const rotationsFor = (side: "front" | "back") =>
+      indicators
+        .filter((indicator) => indicator.getAttribute("data-side") === side)
+        .map((indicator) => indicator.getAttribute("data-rotation"));
+
+    expect(rotationsFor("front")).toEqual(["0", "90", "180", "270"]);
+    expect(rotationsFor("back")).toEqual(["0", "90", "180", "270"]);
+
+    const expectedDirectionColors = ["#047857", "#1d4ed8", "#c2410c", "#7e22ce"];
+    const frontIndicators = indicators.filter(
+      (indicator) => indicator.getAttribute("data-side") === "front",
+    );
+    expect(
+      frontIndicators.map((indicator) =>
+        indicator.getAttribute("data-direction-color"),
+      ),
+    ).toEqual(expectedDirectionColors);
+    expect(new Set(expectedDirectionColors)).toHaveLength(4);
+    expect(
+      frontIndicators.every(
+        (indicator) => Number(indicator.getAttribute("data-indicator-diameter")) >= 10,
+      ),
+    ).toBe(true);
+
+    expect(screen.getByTestId("inking-direction-legend")).toBeTruthy();
+
+    const backMirrorGroup = container.querySelector('g[transform*="scale(-1, 1)"]');
+    expect(backMirrorGroup).not.toBeNull();
+    expect(
+      backMirrorGroup?.querySelectorAll('[data-testid="cell-direction-indicator"]'),
+    ).toHaveLength(4);
+  });
+
+  it("không hiển thị marker và chú thích khi Inking tắt", async () => {
+    render(
+      <InkingDirectionPreview alternateRotation="none" />,
+    );
+
+    await waitFor(() => expect(authenticatedFetchMock).toHaveBeenCalled(), {
+      timeout: 3_000,
+    });
+    expect(screen.queryByTestId("cell-direction-indicator")).toBeNull();
+    expect(screen.queryByTestId("inking-direction-legend")).toBeNull();
+  });
+
+  it('gửi Inking và hiển thị hướng cho tem bế chữ nhật', async () => {
+    render(
+      <InkingDirectionPreview
+        activeTool="sticker_imposer"
+        isDieCut
+        shapeType="RECTANGLE"
+        alternateRotation="column"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("cell-direction-indicator")).toHaveLength(4);
+    }, { timeout: 3_000 });
+    const body = JSON.parse(String(authenticatedFetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.is_die_cut).toBe(true);
+    expect(body.shape_type).toBe('RECTANGLE');
+    expect(body.alternate_rotation).toBe('column');
+  });
+
+  it.each(['CIRCLE_ELLIPSE', 'CUSTOM'])('ép Inking về none cho tem bế %s', async (shapeType) => {
+    render(
+      <InkingDirectionPreview
+        activeTool="sticker_imposer"
+        isDieCut
+        shapeType={shapeType}
+        alternateRotation="row"
+      />,
+    );
+
+    await waitFor(() => expect(authenticatedFetchMock).toHaveBeenCalled(), {
+      timeout: 3_000,
+    });
+    const body = JSON.parse(String(authenticatedFetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.alternate_rotation).toBe('none');
+    expect(screen.queryByTestId("cell-direction-indicator")).toBeNull();
   });
 });

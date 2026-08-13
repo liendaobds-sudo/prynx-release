@@ -59,6 +59,8 @@ export interface GuillotineSettings extends BaseSettings {
     imposerMode: 'guillotine';
     layoutType?: 'repeat' | 'sequential' | 'cut_stacks' | 'mixed_guillotine';
     gridStrategy?: 'manual' | 'simple_auto' | 'optimal_auto' | 'staggered' | 'row_alt' | 'head_to_tail';
+    /** Xoay thêm 180° theo hàng/cột; không thay đổi cách solver dựng lưới. */
+    alternateRotation?: 'none' | 'row' | 'column';
     cutStack?: boolean;
 
     markType?: 'none' | 'corners' | 'guillotine';
@@ -97,6 +99,8 @@ export interface DieCutSettings extends BaseSettings {
     
     layoutType?: 'repeat' | 'sequential';
     gridStrategy?: 'manual' | 'simple_auto' | 'optimal_auto' | 'staggered' | 'row_alt' | 'head_to_tail';
+    /** Chỉ có hiệu lực khi mọi tem là RECTANGLE (bao gồm hình vuông); CNC luôn tắt. */
+    alternateRotation?: 'none' | 'row' | 'column';
     
     cutType?: 'default' | 'one_dao';
     fillBlockGap?: number;

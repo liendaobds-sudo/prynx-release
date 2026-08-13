@@ -116,7 +116,7 @@ export const PARTIALIZE_KEYS: readonly string[] = [
     ...PREPROC_PERSIST_KEYS,
 ];
 
-// Migrate v1→v8 — GIỮ NGUYÊN verbatim từ store monolith (hành vi không đổi).
+// Migrate v1→v11 — giữ tương thích thiết lập đã lưu qua các phiên bản.
 function migrate(persistedState: any, version: number): any {
     if (version < 2) {
         // v1 → v2: add pontConfig to persisted state
@@ -199,13 +199,42 @@ function migrate(persistedState: any, version: number): any {
             },
         };
     }
+    if (version < 11) {
+        // INKING (2026-08-12): bản UI thử nghiệm từng ghép xoay đối đầu
+        // vào gridStrategy. Tách nó thành thiết lập độc lập mà không để
+        // dropdown “Cách xếp” bị giá trị không hợp lệ sau khi nạp lại.
+        const migrateLegacyInking = (value: any) => {
+            if (!value || typeof value !== 'object') return value;
+            if (value.gridStrategy === 'inking_rows') {
+                return {
+                    ...value,
+                    gridStrategy: 'simple_auto',
+                    alternateRotation: value.alternateRotation || 'row',
+                };
+            }
+            if (value.gridStrategy === 'inking_columns') {
+                return {
+                    ...value,
+                    gridStrategy: 'simple_auto',
+                    alternateRotation: value.alternateRotation || 'column',
+                };
+            }
+            return value;
+        };
+        const migrated = migrateLegacyInking(persistedState);
+        const profiles = { ...(migrated.toolProfiles || {}) };
+        for (const tool of Object.keys(profiles)) {
+            profiles[tool] = migrateLegacyInking(profiles[tool]);
+        }
+        persistedState = { ...migrated, toolProfiles: profiles };
+    }
     return persistedState;
 }
 
 export const PERSIST_CONFIG: PersistOptions<ImposerSettingsState, Partial<ImposerSettingsState>> = {
     name: LEGACY_IMPOSER_PERSIST_KEY,
     storage: persistStorage,
-    version: 10,
+    version: 11,
     migrate,
     partialize: (state) => {
         const out: Record<string, any> = {};

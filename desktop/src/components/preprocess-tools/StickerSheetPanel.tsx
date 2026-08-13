@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react';
-import { Redo2, Undo2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { ChevronDown, Redo2, Undo2 } from 'lucide-react';
 
 import { tv } from '../../i18n';
 import { StickerBleedColorControl } from './StickerOutputSettingsPanel';
@@ -101,6 +101,7 @@ export default function StickerSheetPanel({
 
     const manifest = state.manifest;
     const hasMask = Boolean(manifest) && ['mask-review', 'confirming', 'mask-ready', 'exporting'].includes(state.status);
+    const [settingsOpen, setSettingsOpen] = useState(state.status === 'mask-review');
     const busy = state.isRefining
         || state.isCutlinePreviewing
         || ['inspecting', 'detecting', 'confirming', 'exporting'].includes(state.status);
@@ -145,6 +146,12 @@ export default function StickerSheetPanel({
     const allPagesExportable = exportablePageCount === exportPageCount;
     const canDetectActivePage = ['source-ready', 'error'].includes(state.status);
     const canDetectAllPages = pageCount > 1 && pendingPageCount > 0;
+
+    useEffect(() => {
+        // UIUX (feedback 2026-08-12 §AI.COMPACT1): sau khi xác nhận hoặc đang xuất,
+        // thu cả thiết lập lẫn thao tác xuất; người dùng có thể xổ ra để xem lại.
+        setSettingsOpen(state.status === 'mask-review');
+    }, [state.status]);
     const prepareCutline = async () => {
         const pageNumber = state.activeSourcePage;
         await actions.detectStickers(tabId, 'ai', pageNumber);
@@ -356,31 +363,58 @@ export default function StickerSheetPanel({
                         </div>
                     )}
 
-                    <div>
-                        <ToolSectionLabel>{tv('Sửa nhanh vùng tem')}</ToolSectionLabel>
-                        <div className="grid grid-cols-3 gap-1.5">
-                            {TOOL_OPTIONS.map(option => (
-                                <button
-                                    key={option.id}
-                                    type="button"
-                                    title={tv(option.hint)}
-                                    aria-pressed={state.activeTool === option.id}
-                                    onClick={() => actions.setActiveTool(tabId, option.id)}
-                                    disabled={busy}
-                                    className={`min-h-10 rounded-lg border px-1.5 text-[10px] font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                                        state.activeTool === option.id
-                                            ? 'border-violet-500 bg-violet-100 text-violet-800 dark:bg-violet-950/50 dark:text-violet-200'
-                                            : 'border-slate-200 bg-white text-slate-600 hover:border-violet-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300'
-                                    }`}
-                                >
-                                    {tv(option.label)}
-                                </button>
-                            ))}
-                        </div>
-                        <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500 dark:text-zinc-400">
-                            {tv(TOOL_OPTIONS.find(option => option.id === state.activeTool)?.hint || '')}
-                        </p>
-                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-white/70 dark:border-zinc-700 dark:bg-zinc-900/40">
+                        <button
+                            type="button"
+                            aria-expanded={settingsOpen}
+                            aria-controls={`sticker-settings-${tabId}`}
+                            onClick={() => setSettingsOpen(open => !open)}
+                            className="flex min-h-11 w-full items-center justify-between gap-2 px-3 text-left"
+                        >
+                            <span className="text-[13px] font-bold uppercase tracking-wide text-slate-800 dark:text-zinc-100">
+                                {tv('Thiết lập bù xén', 'preprocess.stickerSheet')}
+                            </span>
+                            <span className="flex items-center gap-2 text-[10px] font-semibold text-slate-500 dark:text-zinc-400">
+                                {settingsOpen
+                                    ? tv('Thu gọn', 'preprocess.stickerSheet')
+                                    : tv('Xem lại / chỉnh sửa', 'preprocess.stickerSheet')}
+                                <ChevronDown
+                                    aria-hidden="true"
+                                    className={`h-4 w-4 transition-transform duration-200 ${settingsOpen ? 'rotate-180' : ''}`}
+                                />
+                            </span>
+                        </button>
+
+                        {settingsOpen && (
+                            <div
+                                id={`sticker-settings-${tabId}`}
+                                className="space-y-4 border-t border-slate-200 px-3 pb-3 pt-3 dark:border-zinc-700"
+                            >
+                                <div>
+                                    <ToolSectionLabel>{tv('Sửa nhanh vùng tem')}</ToolSectionLabel>
+                                    <div className="grid grid-cols-3 gap-1.5">
+                                        {TOOL_OPTIONS.map(option => (
+                                            <button
+                                                key={option.id}
+                                                type="button"
+                                                title={tv(option.hint)}
+                                                aria-pressed={state.activeTool === option.id}
+                                                onClick={() => actions.setActiveTool(tabId, option.id)}
+                                                disabled={busy}
+                                                className={`min-h-10 rounded-lg border px-1.5 text-[10px] font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                                                    state.activeTool === option.id
+                                                        ? 'border-violet-500 bg-violet-100 text-violet-800 dark:bg-violet-950/50 dark:text-violet-200'
+                                                        : 'border-slate-200 bg-white text-slate-600 hover:border-violet-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300'
+                                                }`}
+                                            >
+                                                {tv(option.label)}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500 dark:text-zinc-400">
+                                        {tv(TOOL_OPTIONS.find(option => option.id === state.activeTool)?.hint || '')}
+                                    </p>
+                                </div>
 
                     {/* UIUX (feedback 2026-08-10 §AI.HISTORY1): chỉ bày lịch sử sau
                         khi người dùng đã sửa vùng tem; Ctrl+Z/Y vẫn hoạt động như cũ. */}
@@ -433,101 +467,107 @@ export default function StickerSheetPanel({
                         </div>
                     )}
 
-                    <div>
-                        <ToolSectionLabel>{tv('Kích thước và đường cắt')}</ToolSectionLabel>
-                        <div className="grid grid-cols-2 gap-2">
-                            <ToolNumberInput
-                                label={tv('Offset')}
-                                value={state.outputSettings.offsetMm}
-                                onChange={value => actions.setOutputSettings(tabId, { offsetMm: value })}
-                                min={-10}
-                                max={10}
-                                step={0.1}
-                                suffix="mm"
-                            />
-                            <ToolNumberInput
-                                label={tv('Tràn lề')}
-                                value={state.outputSettings.bleedMm}
-                                onChange={value => actions.setOutputSettings(tabId, { bleedMm: Math.max(0, value) })}
-                                min={0}
-                                max={10}
-                                step={0.5}
-                                suffix="mm"
-                            />
-                        </div>
-                        {/* UIUX (feedback 2026-08-11 §AI.BLEED1): độ rộng và cách
-                            sinh màu tràn lề phải cùng hiển thị, không dùng mặc định ẩn. */}
-                        <StickerBleedColorControl
-                            value={state.outputSettings}
-                            onChange={next => actions.setOutputSettings(tabId, next)}
-                            disabled={busy || isExporting}
-                            className="mt-3"
-                        />
-                    </div>
+                                <div>
+                                    <ToolSectionLabel>{tv('Kích thước và đường cắt')}</ToolSectionLabel>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <ToolNumberInput
+                                            label={tv('Offset')}
+                                            value={state.outputSettings.offsetMm}
+                                            onChange={value => actions.setOutputSettings(tabId, { offsetMm: value })}
+                                            min={-10}
+                                            max={10}
+                                            step={0.1}
+                                            suffix="mm"
+                                        />
+                                        <ToolNumberInput
+                                            label={tv('Tràn lề')}
+                                            value={state.outputSettings.bleedMm}
+                                            onChange={value => actions.setOutputSettings(tabId, { bleedMm: Math.max(0, value) })}
+                                            min={0}
+                                            max={10}
+                                            step={0.5}
+                                            suffix="mm"
+                                        />
+                                    </div>
+                                    {/* UIUX (feedback 2026-08-11 §AI.BLEED1): độ rộng và cách
+                                        sinh màu tràn lề phải cùng hiển thị, không dùng mặc định ẩn. */}
+                                    <StickerBleedColorControl
+                                        value={state.outputSettings}
+                                        onChange={next => actions.setOutputSettings(tabId, next)}
+                                        disabled={busy || isExporting}
+                                        className="mt-3"
+                                    />
+                                </div>
 
-                    <div>
-                        <ToolSectionLabel>{tv('Cách tạo PDF')}</ToolSectionLabel>
-                        <div
-                            role="group"
-                            aria-label={tv('Cách tạo PDF')}
-                            className="grid grid-cols-2 gap-2"
-                        >
-                            <button
-                                type="button"
-                                aria-label={tv('Giữ nguyên tấm')}
-                                aria-pressed={!state.outputSettings.cropToSticker}
-                                onClick={() => actions.setOutputSettings(tabId, { cropToSticker: false })}
-                                disabled={busy || isExporting}
-                                className={`min-h-14 rounded-xl border px-2 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                                    !state.outputSettings.cropToSticker
-                                        ? 'border-violet-500 bg-violet-100 text-violet-800 dark:bg-violet-950/50 dark:text-violet-200'
-                                        : 'border-slate-200 bg-white text-slate-600 hover:border-violet-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300'
-                                }`}
-                            >
-                                <span className="block text-[11px] font-bold">{tv('Giữ nguyên tấm')}</span>
-                                <span className="mt-0.5 block text-[9px] font-medium opacity-75">{tv('Một trang, giữ vị trí và đường cắt từng tem')}</span>
-                            </button>
-                            <button
-                                type="button"
-                                aria-label={tv('Tách từng tem')}
-                                aria-pressed={state.outputSettings.cropToSticker}
-                                onClick={() => actions.setOutputSettings(tabId, { cropToSticker: true })}
-                                disabled={busy || isExporting}
-                                className={`min-h-14 rounded-xl border px-2 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                                    state.outputSettings.cropToSticker
-                                        ? 'border-violet-500 bg-violet-100 text-violet-800 dark:bg-violet-950/50 dark:text-violet-200'
-                                        : 'border-slate-200 bg-white text-slate-600 hover:border-violet-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300'
-                                }`}
-                            >
-                                <span className="block text-[11px] font-bold">{tv('Tách từng tem')}</span>
-                                <span className="mt-0.5 block text-[9px] font-medium opacity-75">{tv('Mỗi tem là một trang PDF riêng')}</span>
-                            </button>
-                        </div>
-                    </div>
+                                <div>
+                                    <ToolSectionLabel>{tv('Cách tạo PDF')}</ToolSectionLabel>
+                                    <div
+                                        role="group"
+                                        aria-label={tv('Cách tạo PDF')}
+                                        className="grid grid-cols-2 gap-2"
+                                    >
+                                        <button
+                                            type="button"
+                                            aria-label={tv('Giữ nguyên tấm')}
+                                            aria-pressed={!state.outputSettings.cropToSticker}
+                                            onClick={() => actions.setOutputSettings(tabId, { cropToSticker: false })}
+                                            disabled={busy || isExporting}
+                                            className={`min-h-14 rounded-xl border px-2 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                                                !state.outputSettings.cropToSticker
+                                                    ? 'border-violet-500 bg-violet-100 text-violet-800 dark:bg-violet-950/50 dark:text-violet-200'
+                                                    : 'border-slate-200 bg-white text-slate-600 hover:border-violet-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300'
+                                            }`}
+                                        >
+                                            <span className="block text-[11px] font-bold">{tv('Giữ nguyên tấm')}</span>
+                                            <span className="mt-0.5 block text-[9px] font-medium opacity-75">{tv('Một trang, giữ vị trí và đường cắt từng tem')}</span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            aria-label={tv('Tách từng tem')}
+                                            aria-pressed={state.outputSettings.cropToSticker}
+                                            onClick={() => actions.setOutputSettings(tabId, { cropToSticker: true })}
+                                            disabled={busy || isExporting}
+                                            className={`min-h-14 rounded-xl border px-2 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                                                state.outputSettings.cropToSticker
+                                                    ? 'border-violet-500 bg-violet-100 text-violet-800 dark:bg-violet-950/50 dark:text-violet-200'
+                                                    : 'border-slate-200 bg-white text-slate-600 hover:border-violet-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300'
+                                            }`}
+                                        >
+                                            <span className="block text-[11px] font-bold">{tv('Tách từng tem')}</span>
+                                            <span className="mt-0.5 block text-[9px] font-medium opacity-75">{tv('Mỗi tem là một trang PDF riêng')}</span>
+                                        </button>
+                                    </div>
+                                </div>
 
-                    <div className="grid grid-cols-2 gap-2">
-                        <button
-                            type="button"
-                            onClick={() => { void finalizeMaskAndExport(onExportPng); }}
-                            disabled={!onExportPng || busy || isExporting || !allPagesExportable}
-                            className="h-11 rounded-xl border border-violet-300 bg-white text-[11px] font-bold text-violet-700 shadow-sm hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-violet-800 dark:bg-zinc-900 dark:text-violet-300"
-                        >
-                            {tv('Lưu bộ PNG')}
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => { void finalizeMaskAndExport(onExport); }}
-                            disabled={!onExport || busy || isExporting || !allPagesExportable}
-                            className="h-11 rounded-xl bg-violet-600 px-2 text-[11px] font-bold text-white shadow-sm hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                            {isExporting ? tv('Đang tạo file…') : tv('Tạo PDF có đường cắt')}
-                        </button>
+                                <div className="border-t border-slate-200 pt-4 dark:border-zinc-700">
+                                    <ToolSectionLabel>{tv('Kết quả')}</ToolSectionLabel>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => { void finalizeMaskAndExport(onExportPng); }}
+                                            disabled={!onExportPng || busy || isExporting || !allPagesExportable}
+                                            className="h-11 rounded-xl border border-violet-300 bg-white text-[11px] font-bold text-violet-700 shadow-sm hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-violet-800 dark:bg-zinc-900 dark:text-violet-300"
+                                        >
+                                            {tv('Lưu bộ PNG')}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => { void finalizeMaskAndExport(onExport); }}
+                                            disabled={!onExport || busy || isExporting || !allPagesExportable}
+                                            className="h-11 rounded-xl bg-violet-600 px-2 text-[11px] font-bold text-white shadow-sm hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                            {isExporting ? tv('Đang tạo file…') : tv('Tạo PDF có đường cắt')}
+                                        </button>
+                                    </div>
+                                    {!allPagesExportable && (
+                                        <p className="mt-2 text-[10px] leading-relaxed text-amber-700 dark:text-amber-300">
+                                            {exportPageCount - exportablePageCount} {tv('trang còn cần nhận diện trước khi xuất.')}
+                                        </p>
+                                    )}
+                                </div>
+                            </div>
+                        )}
                     </div>
-                    {!allPagesExportable && (
-                        <p className="text-[10px] leading-relaxed text-amber-700 dark:text-amber-300">
-                            {exportPageCount - exportablePageCount} {tv('trang còn cần nhận diện trước khi xuất.')}
-                        </p>
-                    )}
 
                 </>
             )}

@@ -48,3 +48,9 @@ def test_moi_session_chi_co_mot_file_log(monkeypatch, tmp_path):
     assert perf_log.log_paths() == [
         appdata / "PrynX" / "logs" / "preview_perf.log"
     ]
+
+
+def test_ma_doi_chieu_chan_xuong_dong_va_ky_tu_la():
+    assert perf_log.sanitize_diagnostic_id("sr-abc_123.p1") == "sr-abc_123.p1"
+    assert perf_log.sanitize_diagnostic_id("sr-ok\nFAKE") == ""
+    assert perf_log.sanitize_diagnostic_id("mã-có-dấu") == ""

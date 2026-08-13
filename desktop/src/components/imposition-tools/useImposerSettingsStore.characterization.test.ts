@@ -39,7 +39,7 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
         const raw = localStorage.getItem(PERSIST_KEY);
         expect(raw).toBeTruthy();
         const parsed = JSON.parse(raw as string);
-        expect(parsed.version).toBe(10);
+        expect(parsed.version).toBe(11);
         const keys = Object.keys(parsed.state).sort();
         expect(keys).toMatchSnapshot();
     });
@@ -151,6 +151,42 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
         st().switchToolProfile('booklet', 'nup');
         expect(st().scaleMode).toBe('fit');
         expect(st().signatureMode).toBe('thread');
+    });
+
+    it('migration v10 → v11: tách Inking khỏi Cách xếp ở state và profile cũ', async () => {
+        localStorage.clear();
+        localStorage.setItem(PERSIST_KEY, JSON.stringify({
+            version: 10,
+            state: {
+                gridStrategy: 'inking_rows',
+                toolProfiles: {
+                    nup: { gridStrategy: 'inking_columns' },
+                },
+            },
+        }));
+
+        const store = createImposerSettingsStore();
+        await Promise.resolve();
+
+        expect(store.getState().gridStrategy).toBe('simple_auto');
+        expect(store.getState().alternateRotation).toBe('row');
+        expect(store.getState().toolProfiles.nup).toMatchObject({
+            gridStrategy: 'simple_auto',
+            alternateRotation: 'column',
+        });
+    });
+
+    it('xoay đối đầu được lưu và khôi phục riêng theo công cụ', () => {
+        const store = createImposerSettingsStore();
+        const st = () => store.getState();
+
+        st().setAlternateRotation('row');
+        st().switchToolProfile('nup', 'sticker_imposer');
+        st().setAlternateRotation('none');
+        st().switchToolProfile('sticker_imposer', 'nup');
+
+        expect(st().alternateRotation).toBe('row');
+        expect(st().gridStrategy).toBe('optimal_auto');
     });
 
     it('đường viền cắt được lưu và khôi phục theo profile N-Up', () => {
