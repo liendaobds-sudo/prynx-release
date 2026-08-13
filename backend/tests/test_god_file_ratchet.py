@@ -36,13 +36,16 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 # preflight và đường xuất file của đợt đó đã land; không refactor chúng trong lượt đóng
 # gói vì đây là đường sản xuất file. Chốt lại đúng trạng thái 2026-08-11 để mọi tăng trưởng
 # tiếp theo tiếp tục bị khóa. `sticker_engine.py` cũng đã ổn định và được đưa vào ratchet.
+# MỐC ĐO LẠI rc.6 (2026-08-13): `imposition.py` +140 và `nup_engine.py` +16 do tách
+# imposition_preview_helpers và cập nhật nup repeat metadata cho đợt bình nguyên tấm.
+# Đây là thay đổi engine đường xuất, không nhồi tính năng mới vào file cũ.
 CEILINGS: dict[str, int] = {
-    "app/api/routes/imposition.py": 3915,
+    "app/api/routes/imposition.py": 4055,
     "app/api/routes/pdf_tools.py": 2217,
     "app/api/routes/preflight.py": 1992,
     "app/api/routes/edit.py": 1432,
     "app/core/stream_editor.py": 3713,
-    "app/workers/nup_engine.py": 3716,
+    "app/workers/nup_engine.py": 3732,
     "app/core/channel_remover.py": 2246,
     "app/core/edit_session.py": 2211,
     "app/workers/sticker_engine.py": 9757,
