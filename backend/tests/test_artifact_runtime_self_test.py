@@ -415,7 +415,7 @@ def test_release_qa_forces_utf8_and_does_not_rewrite_preflight_golden():
         encoding="utf-8"
     )
 
-    utf8_set = release_qa.index('$env:PYTHONIOENCODING = "utf-8"')
+    utf8_set = release_qa.index('$env:PYTHONIOENCODING = "utf-8:replace"')
     backend_suite = release_qa.index('Invoke-Checked "Backend test suite"')
     utf8_restore = release_qa.rindex('"PYTHONIOENCODING"')
     assert utf8_set < backend_suite < utf8_restore
