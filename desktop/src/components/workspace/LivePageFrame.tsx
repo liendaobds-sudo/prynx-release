@@ -69,6 +69,7 @@ import {
     computeAccurateViewerBaseZoom,
     computeRenderZoomPure,
     computeViewerBackgroundZoom,
+    isViewerFullPageWithinSurfaceBudget,
     RENDER_BUDGET_PX,
     shouldUseViewerViewportTiles,
     VIEWPORT_TILE_SETTLE_MS,
@@ -227,20 +228,25 @@ export function shouldRenderViewerBaseTile(
     _accurateColorPage: boolean,
     _needsTiling: boolean,
     _isActiveFrame: boolean,
+    fullPageWithinSurfaceBudget = true,
 ): boolean {
     // COLOR (feedback 2026-08-09 §RENDER.F8): slot nền vẫn theo vòng đời trang;
     // policy pipeline bên dưới mới quyết định slot này có được phép dùng PDFium hay không.
-    return shouldRenderBasePage;
+    return shouldRenderBasePage && fullPageWithinSurfaceBudget;
 }
 
 export function shouldRenderViewerAccurateBaseTile(
     shouldRenderBasePage: boolean,
     accurateColorPage: boolean,
     needsTiling: boolean,
+    fullPageWithinSurfaceBudget = true,
 ): boolean {
     // Zoom thường dùng full-page PPE; zoom cao giao cho viewport PPE để không raster
     // hai bitmap lớn cùng lúc. Trang rủi ro không có lớp PDFium nằm dưới.
-    return shouldRenderBasePage && accurateColorPage && !needsTiling;
+    return shouldRenderBasePage
+        && accurateColorPage
+        && !needsTiling
+        && fullPageWithinSurfaceBudget;
 }
 
 export function shouldEnableViewerAccurateLayer(
@@ -309,7 +315,18 @@ export function shouldUseViewerDirectFullPageSurface(
     const renderIsTargetDensity = renderScale + 0.001 >= targetScale * 0.95;
     const pageFitsViewport = pageWidth <= viewportWidth + 1
         && pageHeight <= viewportHeight + 1;
-    return renderIsTargetDensity && pageFitsViewport;
+    // PERF (audit 2026-08-13 §VIEW.LARGE.1): trước đây chỉ kiểm tra footprint CSS.
+    // Standee 800×1750 mm nằm vừa khung nhưng render nền 92 DPI thành khoảng
+    // 2.900×6.340 px; decode/ghép ảnh sau IPC có thể làm WebView báo lỗi trang.
+    // Tính footprint raster thực tế của surface hiện tại; nếu vượt ngân sách thì
+    // chuyển sang viewport PPE, không giảm DPI của frame chính.
+    const fullPageWithinSurfaceBudget = isViewerFullPageWithinSurfaceBudget(
+        pageWidth,
+        pageHeight,
+        renderScale,
+        targetScale,
+    );
+    return renderIsTargetDensity && pageFitsViewport && fullPageWithinSurfaceBudget;
 }
 
 export function viewerSurfaceSwapMs(
@@ -339,18 +356,23 @@ export function shouldKeepViewerAccurateBaseMounted(
     accurateColorPage: boolean,
     renderAccurateBaseTile: boolean,
     accurateCommitted: boolean,
+    fullPageWithinSurfaceBudget = true,
 ): boolean {
     // Giữ bitmap accurate full-page cũ làm fallback đúng màu khi chuyển qua viewport.
-    return accurateColorPage && (renderAccurateBaseTile || accurateCommitted);
+    return accurateColorPage
+        && fullPageWithinSurfaceBudget
+        && (renderAccurateBaseTile || accurateCommitted);
 }
 
 export function shouldRequestViewerAccurateBase(
     renderAccurateBaseTile: boolean,
     accurateCommitted: boolean,
     accurateBaseReady: boolean,
+    fullPageWithinSurfaceBudget = true,
 ): boolean {
     // Nếu frame accurate đầu tiên đến từ viewport, warm một full-page PPE ở nền để
     // lần zoom-out sau luôn có fallback đúng màu.
+    if (!fullPageWithinSurfaceBudget) return false;
     return renderAccurateBaseTile || (accurateCommitted && !accurateBaseReady);
 }
 
@@ -3752,7 +3774,19 @@ export const LivePageFrame = (props: any) => {
                     scrollViewport?.clientWidth || window.innerWidth,
                     scrollViewport?.clientHeight || window.innerHeight,
                 );
-                const needsTiling = !directFullPageSurface && shouldUseViewerViewportTiles(
+                const fullPageWithinSurfaceBudget = Boolean(isImage)
+                    || isViewerFullPageWithinSurfaceBudget(
+                        outerWidth,
+                        outerHeight,
+                        fullPageTargetRenderZoom,
+                        zoom * dpr,
+                    );
+                // Trang accurate vẫn chuyển viewport khi không phù hợp để dựng
+                // nguyên surface; mọi pipeline đều chuyển viewport khi bitmap
+                // toàn trang vượt ngân sách giải mã của WebView.
+                const forceViewport = !fullPageWithinSurfaceBudget
+                    || (accurateColorPage && !directFullPageSurface);
+                const needsTiling = shouldUseViewerViewportTiles(
                     viewerIsActive,
                     isActiveFrame,
                     isImage,
@@ -3760,17 +3794,20 @@ export const LivePageFrame = (props: any) => {
                     zoom,
                     dpr,
                     accurateColorPage,
+                    forceViewport,
                 );
                 const renderBaseTile = shouldRenderViewerBaseTile(
                     shouldRenderBasePage,
                     accurateColorPage,
                     needsTiling,
                     isActiveFrame,
+                    fullPageWithinSurfaceBudget,
                 );
                 const renderAccurateBaseTile = shouldRenderViewerAccurateBaseTile(
                     shouldRenderBasePage,
                     accurateColorPage,
                     needsTiling,
+                    fullPageWithinSurfaceBudget,
                 );
                 // PERF (audit độ nét 2026-07-28 §R.1): TRẦN zoom cho nền của trang KHÔNG
                 // đang xem. Virtuoso giữ ~9 trang mounted và LiveTile gọi _loadTile() ĐỒNG BỘ
@@ -3827,11 +3864,13 @@ export const LivePageFrame = (props: any) => {
                     accurateColorPage,
                     renderAccurateBaseTile,
                     accurateCommitted,
+                    fullPageWithinSurfaceBudget,
                 );
                 const requestAccurateBase = shouldRequestViewerAccurateBase(
                     renderAccurateBaseTile,
                     accurateCommitted,
                     accurateBaseReady,
+                    fullPageWithinSurfaceBudget,
                 );
                 const useDisplayBase = shouldUseViewerDisplayLayer(
                     accurateColorPage,
@@ -3854,7 +3893,7 @@ export const LivePageFrame = (props: any) => {
                                 <span className="text-xs font-semibold text-slate-500 tracking-wider">{t('misc.livePageFrame:dang_dung_hinh', 'Loading...')}</span>
                             </div>
                         </div>
-                        {useDisplayBase && (
+                        {useDisplayBase && renderBaseTile && (
                             <div className="absolute inset-0 z-10">
                                 <LiveTile
                                     // COLOR (feedback 2026-08-09 §RENDER.F8): compatibility lane

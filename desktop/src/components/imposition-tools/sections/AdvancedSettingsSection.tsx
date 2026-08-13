@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 import { tv } from '../../../i18n';
 import BookReportSettings from './BookReportSettings';
 import { resolveImpositionModes } from '../pageSheetPolicy';
+import { resolveStickerCutControlPolicy } from '../shapeDetectionPolicy';
 import { canUseCutBorder } from '../cutBorderPolicy';
 import { formatSizeMm } from '../../../lib/measurementFormat';
 
@@ -84,12 +85,15 @@ function CollapsibleGroup({
     children: React.ReactNode;
 }) {
     const [open, setOpen] = useState(defaultOpen);
+    const contentId = React.useId();
     return (
         <div className="rounded-lg border border-slate-200/80 dark:border-white/10 overflow-hidden bg-slate-50/70 dark:bg-zinc-800/20">
             <div className="flex items-center gap-2 px-3 py-2">
                 <button
                     type="button"
                     onClick={() => setOpen(o => !o)}
+                    aria-expanded={open}
+                    aria-controls={contentId}
                     className="flex items-center gap-2 flex-1 min-w-0 text-left hover:opacity-80 transition-opacity"
                 >
                     <svg className={`w-3.5 h-3.5 shrink-0 text-indigo-500 transition-transform duration-200 ${open ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" /></svg>
@@ -98,7 +102,11 @@ function CollapsibleGroup({
                 </button>
                 {infoButton}
             </div>
-            <div className={`grid transition-[grid-template-rows] duration-200 ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+            <div
+                id={contentId}
+                aria-hidden={!open}
+                className={`grid transition-[grid-template-rows] duration-200 ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}
+            >
                 <div className="overflow-hidden">
                     <div className="p-3 flex flex-col gap-3">{children}</div>
                 </div>
@@ -111,10 +119,12 @@ export default function AdvancedSettingsSection({
     activeTool,
     sourceTotalPages = 0,
     rectangleStickerInking = false,
+    hasValidDie = null,
 }: {
     activeTool: string;
     sourceTotalPages?: number;
     rectangleStickerInking?: boolean;
+    hasValidDie?: boolean | null;
 }) {
   const { t } = useTranslation();
     const s = useImposerSettingsStore(useShallow(state => ({
@@ -240,7 +250,19 @@ export default function AdvancedSettingsSection({
     const [infoModal, setInfoModal] = useState<{ title: string, content: React.ReactNode } | null>(null);
     const [showClusterModal, setShowClusterModal] = useState(false);
     const [matInput, setMatInput] = useState<string | null>(null); // null = không thêm; '' = đang nhập
+    const cutTypeInputId = React.useId();
+    const dieSizeModeInputId = React.useId();
+    const dieOffsetInputId = React.useId();
+    const fillBlockGapInputId = React.useId();
     const orderedReportFields = orderedReportControls(s.reportDisplay.fieldOrder || []);
+    const cutControlPolicy = resolveStickerCutControlPolicy(
+        activeTool,
+        hasValidDie,
+        s.cutType,
+        s.gridStrategy,
+        s.dieSizeMode,
+        s.fillBlockGap,
+    );
 
     const addMaterial = () => {
         const name = (matInput || '').trim();
@@ -449,9 +471,10 @@ export default function AdvancedSettingsSection({
                         {stickerGeometryMode && (
                             <div className="flex flex-col gap-1 relative z-[20] pb-1">
                                 <div className="flex items-center gap-3">
-                                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:duong_cat')}</label>
+                                    <label htmlFor={cutTypeInputId} className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:duong_cat')}</label>
                                     <div className="flex flex-1 items-center gap-2 min-w-0">
                                         <select
+                                            id={cutTypeInputId}
                                             value={s.cutType}
                                             onChange={e => s.setCutType(e.target.value)}
                                             className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
@@ -468,26 +491,13 @@ export default function AdvancedSettingsSection({
                             </div>
                         )}
 
-                        {/* KC CỤM PHỤ — chỉ khi 1 Dao */}
-                        {stickerGeometryMode && s.cutType === 'one_dao' && (
-                            <div className="flex items-center gap-3 relative z-[20] pb-1">
-                                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]" title={t('imposition.advancedSettings:khoang_cach_giua_cum_chinh_va_cum_phu')}>{t('imposition.advancedSettings:kc_cum_phu')}</label>
-                                <div className="flex flex-1 items-center gap-2 min-w-0">
-                                    <div className="relative flex-1">
-                                        <input type="number" step="0.5" min="0" value={s.fillBlockGap} onChange={e => s.setFillBlockGap(Number(e.target.value))}
-                                            className="w-full h-8 px-2 pr-8 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium" />
-                                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none">mm</span>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
-
                         {/* KIỂU KHUÔN — chỉ khi 1 Dao: theo khuôn có sẵn / theo kích thước trang */}
-                        {stickerGeometryMode && s.cutType === 'one_dao' && (
+                        {stickerGeometryMode && cutControlPolicy.showDieSizeSelector && (
                             <div className="flex items-center gap-3 relative z-[20] pb-1">
-                                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:kieu_khuon')}</label>
+                                <label htmlFor={dieSizeModeInputId} className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:kieu_khuon')}</label>
                                 <div className="flex flex-1 items-center gap-2 min-w-0">
                                     <select
+                                        id={dieSizeModeInputId}
                                         value={s.dieSizeMode}
                                         onChange={e => s.setDieSizeMode(e.target.value as 'die' | 'page')}
                                         className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
@@ -495,7 +505,9 @@ export default function AdvancedSettingsSection({
                                         <option value="die">{t('imposition.advancedSettings:kieu_khuon_die')}</option>
                                         <option value="page">{t('imposition.advancedSettings:kieu_khuon_page')}</option>
                                     </select>
-                                    <div
+                                    <button
+                                        type="button"
+                                        aria-label={t('imposition.advancedSettings:giai_thich', 'Giải thích')}
                                         className="shrink-0 w-6 h-6 flex items-center justify-center text-slate-400 hover:text-indigo-600 cursor-pointer transition-colors"
                                         onClick={() => setInfoModal({
                                             title: t('imposition.advancedSettings:kieu_khuon'),
@@ -515,21 +527,64 @@ export default function AdvancedSettingsSection({
                                         })}
                                     >
                                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                                    </div>
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {stickerGeometryMode && cutControlPolicy.showDieSizeStatus && (
+                            <div className="flex items-center gap-3 relative z-[20] pb-1" data-testid="die-size-status">
+                                <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:kieu_khuon')}</span>
+                                <div className="flex-1 min-w-0 rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-zinc-800/50 px-2.5 py-2 text-[11px] leading-snug text-slate-600 dark:text-zinc-300">
+                                    {cutControlPolicy.dieStatus === 'page_only'
+                                        ? t('imposition.advancedSettings:kieu_khuon_tu_dong_theo_trang', 'Không có đường bế hợp lệ — tự dùng kích thước trang')
+                                        : t('imposition.advancedSettings:dang_kiem_tra_khuon', 'Đang kiểm tra đường bế trong file…')}
                                 </div>
                             </div>
                         )}
 
                         {/* CO/MỞ — chỉ khi 1 Dao + theo kích thước trang */}
-                        {stickerGeometryMode && s.cutType === 'one_dao' && s.dieSizeMode === 'page' && (
+                        {stickerGeometryMode && s.cutType === 'one_dao' && cutControlPolicy.effectiveDieSizeMode === 'page' && (
                             <div className="flex items-center gap-3 relative z-[20] pb-1">
-                                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:co_mo')}</label>
+                                <label htmlFor={dieOffsetInputId} className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:co_mo')}</label>
                                 <div className="flex flex-1 items-center gap-2 min-w-0">
                                     <div className="relative flex-1">
-                                        <input type="number" step="0.5" value={s.dieOffsetMm} onChange={e => s.setDieOffsetMm(Number(e.target.value))}
+                                        <input id={dieOffsetInputId} type="number" step="0.5" value={s.dieOffsetMm} onChange={e => s.setDieOffsetMm(Number(e.target.value))}
                                             className="w-full h-8 px-2 pr-8 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium" />
                                         <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none">mm</span>
                                     </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* KC KHỐI PHỤ phụ thuộc Xếp tối ưu, nên đặt sau nhóm chọn hình học khuôn. */}
+                        {stickerGeometryMode && cutControlPolicy.showFillBlockGap && (
+                            <div className="flex flex-col gap-1 relative z-[20] pb-1">
+                                <div className="flex items-center gap-3">
+                                    <label
+                                        htmlFor={fillBlockGapInputId}
+                                        className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]"
+                                        title={t('imposition.advancedSettings:khoang_cach_giua_cum_chinh_va_cum_phu')}
+                                    >
+                                        {t('imposition.advancedSettings:kc_khoi_phu', 'KC KHỐI PHỤ')}
+                                    </label>
+                                    <div className="flex flex-1 items-center gap-2 min-w-0">
+                                        <div className="relative flex-1">
+                                            <input
+                                                id={fillBlockGapInputId}
+                                                type="number"
+                                                step="0.5"
+                                                min="0"
+                                                value={s.fillBlockGap}
+                                                onChange={e => s.setFillBlockGap(Math.max(0, Number(e.target.value) || 0))}
+                                                className="w-full h-8 px-2 pr-8 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+                                            />
+                                            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none">mm</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="text-[10px] text-app-text-3 pl-[107px] leading-snug">
+                                    {t('imposition.advancedSettings:kc_khoi_phu_tu_dong', '0 = tự dùng Hở tem; chỉ áp dụng cho khối phụ L-shape')}
                                 </div>
                             </div>
                         )}

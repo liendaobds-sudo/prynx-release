@@ -83,6 +83,7 @@ interface ComparisonState {
   setDpi: (d: number) => void;
 
   // Reset
+  resetJob: () => void;
   reset: () => void;
 }
 
@@ -129,6 +130,20 @@ export const useComparisonStore = create<ComparisonState>()(
       setCloudApiKey: (key) => set({ cloudApiKey: key }),
       setTolerance: (t) => set({ tolerance: t }),
       setDpi: (d) => set({ dpi: d }),
+
+      // PERF (audit 2026-08-13 §PA.R3): Hủy job chỉ dọn trạng thái chạy/kết quả;
+      // giữ hai file và cài đặt để người dùng có thể chạy lại ngay, không upload lại.
+      resetJob: () =>
+        set({
+          jobId: null,
+          jobStatus: 'idle',
+          progress: 0,
+          currentPage: 0,
+          totalPages: 0,
+          progressMessage: '',
+          results: [],
+          summary: null,
+        }),
 
       reset: () =>
         set({

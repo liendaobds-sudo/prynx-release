@@ -252,6 +252,11 @@ def to_legacy_response(result: DetectionResult) -> dict[str, Any]:
         "shapes": [s.type.name for s in result.shapes],
         "dimensions": [{"w": s.trim.w, "h": s.trim.h} for s in result.shapes],
         "shapeParams": [s.props for s in result.shapes],
+        # UIUX (audit 2026-08-13 §DIE-FALLBACK-01): frontend không được suy khuôn
+        # thật từ tên hình vì nhánh fallback cũng có thể trả RECTANGLE/CUSTOM.
+        "hasValidDie": bool(result.shapes) and all(
+            _shape_has_confirmed_die_geometry(s) for s in result.shapes
+        ),
         "perPage": [
             {"page": st.page, "ok": st.ok, "source": st.source, "error": st.error}
             for st in result.statuses
@@ -265,10 +270,19 @@ def to_legacy_response(result: DetectionResult) -> dict[str, Any]:
 
 
 def _shape_has_die_geometry(shape: DetectedShape) -> bool:
-    """Trang có khuôn nhận diện được (vector/spot), không phải CUSTOM trống."""
-    if shape is None or shape.type is ShapeType.CUSTOM:
+    """Trang có nguồn hình học khuôn thật, kể cả khuôn bất quy tắc CUSTOM."""
+    if shape is None:
         return False
     return shape.source in ("vector", "separation", "xobject", "raster_fallback")
+
+
+def _shape_has_confirmed_die_geometry(shape: DetectedShape) -> bool:
+    """Tín hiệu đủ chắc để UI mở lựa chọn Nguyên tấm, loại path artwork đoán mò."""
+    if not _shape_has_die_geometry(shape):
+        return False
+    # `vector` confidence 0.5 là nhánh chọn path lớn nhất khi không có tín hiệu
+    # bế; vẫn giữ tương thích layout cũ nhưng không được coi là khuôn xác nhận.
+    return not (shape.source == "vector" and float(shape.confidence) <= 0.5)
 
 
 def apply_master_die_inheritance(result: DetectionResult) -> DetectionResult:

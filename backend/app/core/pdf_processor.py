@@ -57,14 +57,28 @@ class PDFProcessor:
 
         def render_page(i):
             with pdfium_guard("pdf_processor_render_rgb"):
+                # KIENTRUC (audit 2026-08-13 §P25.1): đóng page/bitmap TƯỜNG MINH
+                # ngay trong khóa. Nếu để GC dọn, finalizer của pypdfium2 có thể
+                # chạy trên thread khác NGOÀI pdfium_guard → access violation.
                 page = pdf[i]
-                # rev_byteorder=True ensures RGB output format instead of default BGR
-                bitmap = page.render(scale=scale, rev_byteorder=True)
-                pil_img = bitmap.to_pil()
-                # Ensure it is standard 3-channel RGB for OpenCV compatibility
-                return np.array(pil_img.convert("RGB"))
+                try:
+                    # rev_byteorder=True ensures RGB output format instead of default BGR
+                    bitmap = page.render(scale=scale, rev_byteorder=True)
+                    try:
+                        pil_img = bitmap.to_pil()
+                        # Ensure it is standard 3-channel RGB for OpenCV compatibility
+                        # (np.array COPY dữ liệu nên đóng bitmap sau đó là an toàn)
+                        return np.array(pil_img.convert("RGB"))
+                    finally:
+                        bitmap.close()
+                finally:
+                    page.close()
 
-        images = [render_page(i) for i in range(start_idx, end_idx)]
+        try:
+            images = [render_page(i) for i in range(start_idx, end_idx)]
+        finally:
+            with pdfium_guard("pdf_processor_close_rgb"):
+                pdf.close()
 
         logger.info(f"Converted {len(images)} pages")
         return images
@@ -90,14 +104,26 @@ class PDFProcessor:
 
         def render_page_cmyk(i):
             with pdfium_guard("pdf_processor_render_cmyk"):
+                # KIENTRUC (audit 2026-08-13 §P25.1): đóng tường minh trong khóa,
+                # không để finalizer GC chạy ngoài pdfium_guard (xem render_page).
                 page = pdf[i]
-                bitmap = page.render(scale=scale, rev_byteorder=True)
-                pil_img = bitmap.to_pil()
-                if pil_img.mode != "CMYK":
-                    pil_img = pil_img.convert("CMYK")
-                return np.array(pil_img)  # Shape: (H, W, 4)
+                try:
+                    bitmap = page.render(scale=scale, rev_byteorder=True)
+                    try:
+                        pil_img = bitmap.to_pil()
+                        if pil_img.mode != "CMYK":
+                            pil_img = pil_img.convert("CMYK")
+                        return np.array(pil_img)  # Shape: (H, W, 4)
+                    finally:
+                        bitmap.close()
+                finally:
+                    page.close()
 
-        cmyk_images = [render_page_cmyk(i) for i in range(n_pages)]
+        try:
+            cmyk_images = [render_page_cmyk(i) for i in range(n_pages)]
+        finally:
+            with pdfium_guard("pdf_processor_close_cmyk"):
+                pdf.close()
 
         logger.info(f"Converted {len(cmyk_images)} CMYK pages")
         return cmyk_images
@@ -361,9 +387,19 @@ class PDFDocumentReader:
         """Return rendered page width/height in PDF points without rasterizing."""
         if self._pdf is None:
             raise RuntimeError("PDFDocumentReader is not open. Use 'with' statement.")
+        # KIENTRUC (audit 2026-08-13 §P25.1): get_size() vẫn là lời gọi PDFium —
+        # reader này chạy trong thread so sánh nên phải nằm trong pdfium_guard
+        # như mọi lời gọi khác của class (trước đây bị sót).
         if page_index < 0 or page_index >= len(self._pdf):
             raise IndexError(f"Page index {page_index} out of range (0-{len(self._pdf)-1})")
-        width, height = self._pdf[page_index].get_size()
+        from app.core.pdfium_lock import pdfium_guard
+
+        with pdfium_guard("pdf_reader_page_size"):
+            page = self._pdf[page_index]
+            try:
+                width, height = page.get_size()
+            finally:
+                page.close()
         return float(width), float(height)
 
     def render_page(self, page_index: int) -> np.ndarray:
@@ -376,10 +412,19 @@ class PDFDocumentReader:
         from app.core.pdfium_lock import pdfium_guard
 
         with pdfium_guard("pdf_reader_render_rgb"):
+            # KIENTRUC (audit 2026-08-13 §P25.1): đóng page/bitmap tường minh trong
+            # khóa — reader này chạy song song với pool so-ảnh, GC trên worker
+            # thread không được phép còn finalizer PDFium nào để chạy.
             page = self._pdf[page_index]
-            bitmap = page.render(scale=self.scale, rev_byteorder=True)
-            pil_img = bitmap.to_pil()
-            return np.array(pil_img.convert("RGB"))
+            try:
+                bitmap = page.render(scale=self.scale, rev_byteorder=True)
+                try:
+                    pil_img = bitmap.to_pil()
+                    return np.array(pil_img.convert("RGB"))
+                finally:
+                    bitmap.close()
+            finally:
+                page.close()
 
     def render_page_cmyk(self, page_index: int) -> np.ndarray:
         """Render a single page (0-indexed) to CMYK numpy array."""
@@ -392,8 +437,14 @@ class PDFDocumentReader:
 
         with pdfium_guard("pdf_reader_render_cmyk"):
             page = self._pdf[page_index]
-            bitmap = page.render(scale=self.scale, rev_byteorder=True)
-            pil_img = bitmap.to_pil()
-            if pil_img.mode != "CMYK":
-                pil_img = pil_img.convert("CMYK")
-            return np.array(pil_img)  # Shape: (H, W, 4)
+            try:
+                bitmap = page.render(scale=self.scale, rev_byteorder=True)
+                try:
+                    pil_img = bitmap.to_pil()
+                    if pil_img.mode != "CMYK":
+                        pil_img = pil_img.convert("CMYK")
+                    return np.array(pil_img)  # Shape: (H, W, 4)
+                finally:
+                    bitmap.close()
+            finally:
+                page.close()

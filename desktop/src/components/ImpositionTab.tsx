@@ -648,7 +648,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             const names: Record<string, string> = {
                 'bgremover': t('tabs.imposition:tach_nen_ai'),
                 'upscale': t('tabs.imposition:phong_to_anh'),
-                'logo_rebuild': tv('Phục hồi & Vector hóa Logo'),
+                'logo_rebuild': tv('Vector hóa Logo'),
                 'sticker': t('tabs.imposition:tao_vien_cat_be'),
                 'split': t('tabs.imposition:tach_file'),
                 'datamerge': t('tabs.imposition:tron_du_lieu_vdp'),

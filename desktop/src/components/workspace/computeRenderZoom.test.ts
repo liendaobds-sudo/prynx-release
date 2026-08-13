@@ -14,6 +14,9 @@ import {
     shouldPrefetchViewerPage,
     shouldUseViewerViewportTiles,
     VIEWPORT_TILE_SETTLE_MS,
+    VIEWER_DIRECT_FULL_PAGE_MAX_PIXELS,
+    estimateViewerFullPagePixels,
+    isViewerFullPageWithinSurfaceBudget,
 } from './renderZoomPolicy';
 
 // A4 dọc: 595×842 pt → px@96 (usePdfLoader dựng dims bằng widthPt × 96/72).
@@ -145,5 +148,23 @@ describe('Viewer — ưu tiên làm nét vùng đang nhìn', () => {
         expect(shouldUseViewerViewportTiles(true, true, false, 6.0133, 6.33, 1, true)).toBe(true);
         expect(shouldUseViewerViewportTiles(true, true, false, 6.0133, 6.32, 1, true)).toBe(true);
         expect(shouldUseViewerViewportTiles(true, true, false, 6.0133, 6.32, 1, false)).toBe(false);
+    });
+
+    it('trang Standee vượt ngân sách full-page thì chuyển viewport mà không hạ DPI', () => {
+        const pageWidth = 3023 * 0.1;
+        const pageHeight = 6614 * 0.1;
+        const renderScale = 0.958;
+        const targetScale = 0.1;
+        const estimatedPixels = pageWidth * pageHeight
+            * (renderScale / targetScale) ** 2;
+        expect(estimatedPixels).toBeGreaterThan(VIEWER_DIRECT_FULL_PAGE_MAX_PIXELS);
+        expect(shouldUseViewerViewportTiles(
+            true, true, false, renderScale, targetScale, 1, true, true,
+        )).toBe(true);
+        expect(estimateViewerFullPagePixels(pageWidth, pageHeight, renderScale, targetScale))
+            .toBeGreaterThan(VIEWER_DIRECT_FULL_PAGE_MAX_PIXELS);
+        expect(isViewerFullPageWithinSurfaceBudget(
+            pageWidth, pageHeight, renderScale, targetScale,
+        )).toBe(false);
     });
 });

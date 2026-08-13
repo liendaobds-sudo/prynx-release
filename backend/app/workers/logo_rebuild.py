@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from xml.etree import ElementTree
 
 from PIL import Image, ImageCms, ImageOps
@@ -93,6 +93,10 @@ _MIN_SMALL_ACCENT_CHROMA = 48.0
 _MAX_SMALL_ACCENT_RMS_RGB = 45.0
 _MAX_SMALL_ACCENT_SUGGESTIONS = 4
 _MERGE_PALETTE_DISTANCE_RGB = 18.0
+# LOGO-REBUILD (audit 2026-08-13 §LR4.02): sàn diện tích TUYỆT ĐỐI theo px ảnh
+# nguồn (8×8) cho màu nhấn liền khối — các cổng coverage đều tương đối nên dấu
+# nhỏ trên scan 2–8K (coverage < 0,1%) sẽ biến mất nếu chỉ xét tỷ lệ.
+_MIN_ACCENT_SOURCE_AREA_PX = 64
 _MAX_ENGINE_DESPECKLE_AREA_PX = 128
 _STRUCTURED_RESULT_SCHEMA_VERSION = 1
 
@@ -273,7 +277,25 @@ def _reserve_logo_work_size(width: int, height: int):
         raise LogoInputError("Kích thước vùng logo không hợp lệ.")
     total_mb, available_mb = read_memory_status_mb()
     if total_mb is None or available_mb is None:
-        yield (width, height), []
+        # LOGO-REBUILD (audit 2026-08-13 §LR4.05): không đo được RAM thì không
+        # lập được ngân sách — giữ NGUYÊN kích thước (không hạ chất lượng máy
+        # mạnh) nhưng chỉ cho một job Logo chạy mỗi lúc, tránh hai preview song
+        # song cùng cam kết toàn bộ bộ nhớ còn lại.
+        estimated_mb = _estimated_logo_memory_mb(width, height)
+        with _LOGO_MEMORY_LOCK:
+            if _RESERVED_LOGO_MEMORY_MB > 0:
+                raise LogoInputError(
+                    "Không đo được RAM trống của máy; hãy đợi preview logo đang "
+                    "chạy xong rồi thử lại."
+                )
+            _RESERVED_LOGO_MEMORY_MB += estimated_mb
+        try:
+            yield (width, height), []
+        finally:
+            with _LOGO_MEMORY_LOCK:
+                _RESERVED_LOGO_MEMORY_MB = max(
+                    0.0, _RESERVED_LOGO_MEMORY_MB - estimated_mb
+                )
         return
 
     with _LOGO_MEMORY_LOCK:
@@ -524,6 +546,22 @@ def _normalize_monochrome_polarity(image: Image.Image) -> tuple[Image.Image, boo
     return grayscale.point(lookup).convert("RGBA"), True
 
 
+def _accent_grid_pixel_budget() -> int:
+    """Ngân sách lưới dò màu nhấn theo RAM máy.
+
+    PERF (audit 2026-08-13 §LR4.02): máy mạnh dùng lưới lớn (full-res với scan
+    tới 16 Mpx) để không mất dấu nhỏ; chỉ máy dưới 16 GB mới giảm. Không đọc
+    được RAM thì dùng mức thấp nhất cho an toàn.
+    """
+
+    total_mb, _available_mb = read_memory_status_mb()
+    if total_mb is None or total_mb < 8 * 1024:
+        return 1_000_000
+    if total_mb < 16 * 1024:
+        return 4_000_000
+    return 16_000_000
+
+
 def suggest_logo_palette(
     source_bytes: bytes,
     settings: LogoRebuildSettings,
@@ -621,54 +659,89 @@ def suggest_logo_palette(
     # K-means có thể chia một dấu đỏ JPEG thành nhiều cụm đều dưới 0,1% rồi
     # loại hết. Bổ sung detector theo vùng hue liên kết: giữ mảng đủ lớn/sắc,
     # nhưng bỏ nhiễu rời và màu viền gần màu chủ đạo.
-    rgb_sample = sample_rgba[:, :, :3]
-    hsv = cv2.cvtColor(rgb_sample, cv2.COLOR_RGB2HSV)
-    hue_bins = ((hsv[:, :, 0].astype(np.int16) + 7) // 15) % 12
-    saturated = visible & (hsv[:, :, 1] >= 96) & (hsv[:, :, 2] >= 32)
-    minimum_component_pixels = max(8, math.ceil(len(colors) * 0.0005))
-    for hue_bin in range(12):
-        mask = (saturated & (hue_bins == hue_bin)).astype(np.uint8)
-        component_count, component_labels, stats, _centroids = (
-            cv2.connectedComponentsWithStats(mask, connectivity=8)
+    # LOGO-REBUILD (audit 2026-08-13 §LR4.02): detector accent chạy trên lưới
+    # RIÊNG dày hơn lưới k-means 40k px (scan lớn bị bóp về 40k làm dấu 15×15
+    # chỉ còn ~2 px), kèm sàn diện tích tuyệt đối theo px nguồn vì mọi cổng
+    # coverage đều tương đối — dấu rõ trên scan 2–8K vẫn có coverage < 0,1%.
+    source_pixel_count = rgba.shape[0] * rgba.shape[1]
+    accent_rgba = rgba
+    accent_budget = _accent_grid_pixel_budget()
+    if source_pixel_count > accent_budget:
+        accent_scale = math.sqrt(accent_budget / float(source_pixel_count))
+        accent_rgba = cv2.resize(
+            rgba,
+            (
+                max(1, int(rgba.shape[1] * accent_scale)),
+                max(1, int(rgba.shape[0] * accent_scale)),
+            ),
+            interpolation=cv2.INTER_NEAREST,
         )
-        for component_index in range(1, component_count):
-            area = int(stats[component_index, cv2.CC_STAT_AREA])
-            if area < minimum_component_pixels:
+    accent_grid_pixel_count = accent_rgba.shape[0] * accent_rgba.shape[1]
+    accent_visible = accent_rgba[:, :, 3] > 0
+    accent_visible_count = int(np.count_nonzero(accent_visible))
+    if accent_visible_count:
+        accent_rgb = accent_rgba[:, :, :3]
+        hsv = cv2.cvtColor(accent_rgb, cv2.COLOR_RGB2HSV)
+        hue_bins = ((hsv[:, :, 0].astype(np.int16) + 7) // 15) % 12
+        saturated = accent_visible & (hsv[:, :, 1] >= 96) & (hsv[:, :, 2] >= 32)
+        minimum_component_pixels = max(8, math.ceil(accent_visible_count * 0.0005))
+        absolute_component_floor = max(
+            4,
+            math.ceil(
+                _MIN_ACCENT_SOURCE_AREA_PX
+                * (accent_grid_pixel_count / float(source_pixel_count))
+            ),
+        )
+        for hue_bin in range(12):
+            mask = (saturated & (hue_bins == hue_bin)).astype(np.uint8)
+            if not bool(np.any(mask)):
                 continue
-            coverage = area / float(len(colors))
-            if not _MIN_SMALL_ACCENT_COVERAGE <= coverage < _MIN_PALETTE_COVERAGE:
-                continue
-            box_area = max(
-                1,
-                int(stats[component_index, cv2.CC_STAT_WIDTH])
-                * int(stats[component_index, cv2.CC_STAT_HEIGHT]),
+            component_count, component_labels, stats, _centroids = (
+                cv2.connectedComponentsWithStats(mask, connectivity=8)
             )
-            if area / box_area < 0.15:
-                continue
-            component_mask = component_labels == component_index
-            component_colors = rgb_sample[component_mask].astype(np.float64)
-            component_alpha = (
-                sample_rgba[:, :, 3][component_mask].astype(np.float64) / 255.0
-            )
-            center = np.average(component_colors, axis=0, weights=component_alpha)
-            if float(np.max(center) - np.min(center)) < _MIN_SMALL_ACCENT_CHROMA:
-                continue
-            rms_distance = math.sqrt(
-                float(
-                    np.average(
-                        np.sum((component_colors - center) ** 2, axis=1),
-                        weights=component_alpha,
+            for component_index in range(1, component_count):
+                area = int(stats[component_index, cv2.CC_STAT_AREA])
+                coverage = area / float(accent_visible_count)
+                if coverage >= _MIN_PALETTE_COVERAGE:
+                    continue
+                meets_relative_floor = (
+                    area >= minimum_component_pixels
+                    and coverage >= _MIN_SMALL_ACCENT_COVERAGE
+                )
+                meets_absolute_floor = area >= absolute_component_floor
+                if not (meets_relative_floor or meets_absolute_floor):
+                    continue
+                box_area = max(
+                    1,
+                    int(stats[component_index, cv2.CC_STAT_WIDTH])
+                    * int(stats[component_index, cv2.CC_STAT_HEIGHT]),
+                )
+                if area / box_area < 0.15:
+                    continue
+                component_mask = component_labels == component_index
+                component_colors = accent_rgb[component_mask].astype(np.float64)
+                component_alpha = (
+                    accent_rgba[:, :, 3][component_mask].astype(np.float64) / 255.0
+                )
+                center = np.average(component_colors, axis=0, weights=component_alpha)
+                if float(np.max(center) - np.min(center)) < _MIN_SMALL_ACCENT_CHROMA:
+                    continue
+                rms_distance = math.sqrt(
+                    float(
+                        np.average(
+                            np.sum((component_colors - center) ** 2, axis=1),
+                            weights=component_alpha,
+                        )
                     )
                 )
-            )
-            if rms_distance > _MAX_SMALL_ACCENT_RMS_RGB:
-                continue
-            if any(
-                float(np.linalg.norm(center - existing)) < 48.0
-                for existing, _existing_coverage, _existing_small in merged
-            ):
-                continue
-            merged.append((center, coverage, True))
+                if rms_distance > _MAX_SMALL_ACCENT_RMS_RGB:
+                    continue
+                if any(
+                    float(np.linalg.norm(center - existing)) < 48.0
+                    for existing, _existing_coverage, _existing_small in merged
+                ):
+                    continue
+                merged.append((center, coverage, True))
 
     suggestions: list[LogoPaletteSuggestion] = []
     dominant_candidates = sorted(
@@ -715,11 +788,22 @@ def prepare_logo_image(
     settings: LogoRebuildSettings,
     planned_size: tuple[int, int] | None = None,
     memory_warnings: list[str] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> PreparedLogo:
+    def _cancel_checkpoint() -> None:
+        # LOGO-REBUILD (audit 2026-08-13 §LR4.04): ICC, warp phối cảnh CUBIC,
+        # resize và illumination Gaussian có thể kéo dài nhiều giây trên scan
+        # lớn; nút Hủy phải cắt được GIỮA các bước thay vì đợi hết prepare.
+        if cancel_check is not None and cancel_check():
+            raise LogoJobCancelled("Đã hủy preview logo.")
+
     warnings: list[str] = []
     image, source_dpi = _load_logo_image(source_bytes)
+    _cancel_checkpoint()
     image = _convert_to_srgb(image, warnings)
+    _cancel_checkpoint()
     image = _apply_perspective(image, settings)
+    _cancel_checkpoint()
     image = _apply_crop(image, settings)
     physical_width_mm = settings.physical_width_mm
     physical_height_mm = settings.physical_height_mm
@@ -756,6 +840,7 @@ def prepare_logo_image(
     else:
         warnings.extend(memory_warnings or [])
     if image.size != planned_size:
+        _cancel_checkpoint()
         is_upscale = planned_size[0] > image.width or planned_size[1] > image.height
         image = image.resize(
             planned_size,
@@ -766,6 +851,7 @@ def prepare_logo_image(
                 "Ảnh nhỏ đã được nâng bằng nội suy giữ biên lên "
                 f"{planned_size[0]}×{planned_size[1]} px trước khi dựng nét."
             )
+    _cancel_checkpoint()
     rgba = image.convert("RGBA")
     alpha_minimum, alpha_maximum = rgba.getchannel("A").getextrema()
     if alpha_maximum == 0:
@@ -784,6 +870,7 @@ def prepare_logo_image(
             )
         else:
             rgba = _correct_illumination(rgba).convert("RGBA")
+    _cancel_checkpoint()
 
     if settings.mode == "monochrome":
         if has_transparency:
@@ -1108,6 +1195,7 @@ def _process_logo_preview_reserved(
         settings,
         planned_size=planned_size,
         memory_warnings=memory_warnings,
+        cancel_check=token.is_cancelled,
     )
     if token.is_cancelled():
         raise LogoJobCancelled("Đã hủy preview logo.")
@@ -1121,6 +1209,21 @@ def _process_logo_preview_reserved(
             "Khử hạt đã quy đổi từ "
             f"{settings.despeckle_size_px} px ảnh nguồn thành "
             f"{effective_despeckle_size} px ở kích thước dựng nét."
+        )
+    if (
+        settings.mode == "fixed_palette"
+        and settings.despeckle_size_px > 0
+        and prepared.work_area_scale > 1.0
+    ):
+        # LOGO-REBUILD (audit 2026-08-13 §LR4.01): khử hạt tính theo px ảnh
+        # nguồn; với logo nhỏ đã upscale phải nói rõ chi tiết nào sẽ mất thay
+        # vì chỉ báo con số quy đổi.
+        source_despeckle = settings.despeckle_size_px
+        warnings.append(
+            "Ảnh đã được phóng to trước khi dựng nét: khử hạt "
+            f"{source_despeckle} px sẽ gộp mọi chi tiết nhỏ hơn "
+            f"{source_despeckle}×{source_despeckle} px ảnh nguồn "
+            "(dấu, chấm, ký hiệu nhỏ) vào màu lân cận; đặt 0 nếu cần giữ các chi tiết này."
         )
 
     from app.workers.logo_svg_cleanup import (
@@ -1188,8 +1291,13 @@ def _process_logo_preview_reserved(
             svg = _apply_svg_geometry(svg, prepared)
             engine = str(info.get("engine", "vtracer"))
             engine_version = str(info.get("version", "unknown"))
+    except LogoInputError:
+        raise
     except ValueError as exc:
-        raise RuntimeError("Engine từ chối hợp đồng đầu vào đã được backend xác nhận.") from exc
+        # LOGO-REBUILD (audit 2026-08-13 §LR4.03): lệch hợp đồng ở biên Rust là
+        # lỗi đầu vào có hướng xử lý (route map LogoInputError → 422 kèm nguyên
+        # nhân thật), không phải 500 "Không thể tạo SVG preview" mù thông tin.
+        raise LogoInputError(f"Engine từ chối hợp đồng đầu vào: {exc}") from exc
     except RuntimeError as exc:
         if token.is_cancelled() or "hủy" in str(exc).lower():
             raise LogoJobCancelled("Đã hủy preview logo.") from exc

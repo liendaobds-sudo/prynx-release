@@ -466,6 +466,22 @@ export async function getJobStatus(jobId: string) {
   return res.json();
 }
 
+export async function cancelCompareJob(jobId: string): Promise<{
+  job_id: string;
+  status: string;
+  cancelled: boolean;
+  message: string;
+}> {
+  const res = await authenticatedFetch(`${API_BASE}/api/jobs/${jobId}/cancel`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Không thể hủy job so sánh' }));
+    throw new Error(formatApiErrorDetail(err.detail, 'Không thể hủy job so sánh'));
+  }
+  return res.json();
+}
+
 export async function getJobResults(jobId: string) {
   const res = await authenticatedFetch(`${API_BASE}/api/jobs/${jobId}/results`);
   if (!res.ok) throw new Error(tv('Không thể lấy kết quả'));

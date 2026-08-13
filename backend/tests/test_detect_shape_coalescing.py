@@ -265,6 +265,28 @@ def test_master_die_inheritance_propagates_circle():
     assert out.shapes[2].trim.w == 50.0
 
 
+def test_master_die_inheritance_keeps_valid_die_signal():
+    """Một khuôn master + nhiều artwork vẫn phải mở được lựa chọn Nguyên tấm."""
+    from app.workers.die_detection import (
+        DetectionResult, DetectedShape, Trim, PageDetectionStatus,
+        apply_master_die_inheritance, make_custom_shape, to_legacy_response,
+    )
+    from app.workers.shape_types import ShapeType
+
+    master = DetectedShape(
+        page=0, type=ShapeType.CUSTOM, props={},
+        trim=Trim(60.0, 30.0), poly=((0, 0), (60, 0), (50, 30), (0, 25)),
+        source="separation", confidence=1.0,
+    )
+    shapes = [master, make_custom_shape(1, 100.0, 100.0)]
+    statuses = [PageDetectionStatus(i, True, shapes[i].source) for i in range(2)]
+    result = DetectionResult(shapes=shapes, statuses=statuses, total_pages=2, success_pages=2)
+
+    inherited = apply_master_die_inheritance(result)
+    assert to_legacy_response(inherited)["hasValidDie"] is True
+    assert inherited.shapes[1].props["inheritedFromPage"] == 0
+
+
 def test_batch_single_mold_master_one_type():
     """Master ở giữa file được chọn từ inheritedFromPage, không từ page đầu."""
     pages = [

@@ -7,6 +7,7 @@ import pytest
 from app.core.disk_space_guard import (
     JobDiskEstimate,
     ensure_job_disk_space,
+    estimate_compare_disk,
     estimate_nup_disk,
     estimate_vdp_disk,
 )
@@ -38,6 +39,28 @@ def test_vdp_estimate_includes_template_records_and_variable_images():
     expected_rendered = 40 * MIB + 1_000 * 128 * 1024 + 200 * MIB
     assert estimate.temp_bytes == expected_rendered + 10 * MIB
     assert estimate.output_bytes == expected_rendered * 2
+
+
+def test_compare_estimate_scales_with_pixels_and_keeps_page_floor():
+    """PERF (audit 2026-08-13 §PB-1): hệ số 0,25 B/px × biên 1,5; floor 2 MiB/trang."""
+    # 250 trang A4 @300 DPI ≈ 8,7 Mpx/trang → nhánh theo pixel thắng floor.
+    pixels_a4_300 = 2481 * 3509
+    estimate = estimate_compare_disk(
+        total_render_pixels=250 * pixels_a4_300, page_count=250
+    )
+    assert estimate.temp_bytes == 0
+    assert estimate.output_bytes == int(250 * pixels_a4_300 * 0.375)
+
+    # 250 trang A4 @150 DPI ≈ 2,2 Mpx/trang → floor 2 MiB/trang thắng.
+    pixels_a4_150 = 1241 * 1755
+    estimate_low = estimate_compare_disk(
+        total_render_pixels=250 * pixels_a4_150, page_count=250
+    )
+    assert estimate_low.output_bytes == 250 * 2 * MIB
+
+    # Job nhỏ không được ước lượng dưới sàn chung 64 MiB.
+    tiny = estimate_compare_disk(total_render_pixels=1000, page_count=1)
+    assert tiny.output_bytes == 64 * MIB
 
 
 def test_vdp_variable_image_estimate_counts_each_embedding(tmp_path):

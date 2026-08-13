@@ -8,6 +8,8 @@ import {
     projectPageRecordToViewer,
     projectShapeParamsToViewer,
     resolvePreviewItemDimension,
+    resolveStickerCutControlPolicy,
+    resolveStickerUnitAvailability,
     usesPageSizedStickerShape,
 } from './shapeDetectionPolicy';
 
@@ -86,6 +88,73 @@ describe('shapeDetectionPolicy', () => {
             { 0: 'ELLIPSE', 1: 'CUSTOM' },
             [2, 1, 2],
         )).toEqual({ 0: 'CUSTOM', 1: 'ELLIPSE', 2: 'CUSTOM' });
+    });
+
+    it('chỉ hiện lựa chọn đơn vị khi đã xác nhận có khuôn bế thật', () => {
+        expect(resolveStickerUnitAvailability('sticker_imposer', true)).toEqual({
+            showSelector: true,
+            forceSticker: false,
+        });
+        expect(resolveStickerUnitAvailability('sticker_imposer', false)).toEqual({
+            showSelector: false,
+            forceSticker: true,
+        });
+        expect(resolveStickerUnitAvailability('sticker_imposer', null)).toEqual({
+            showSelector: false,
+            forceSticker: false,
+        });
+        expect(resolveStickerUnitAvailability('nup', false)).toEqual({
+            showSelector: false,
+            forceSticker: false,
+        });
+    });
+
+    it('1 Dao tự dùng kích thước trang khi file không có khuôn hợp lệ', () => {
+        expect(resolveStickerCutControlPolicy(
+            'sticker_imposer', false, 'one_dao', 'optimal_auto', 'die', 3,
+        )).toEqual({
+            dieStatus: 'page_only',
+            effectiveDieSizeMode: 'page',
+            effectiveFillBlockGap: 3,
+            showDieSizeSelector: false,
+            showDieSizeStatus: true,
+            showFillBlockGap: true,
+        });
+    });
+
+    it('chỉ hiện KC cụm phụ khi 1 Dao dùng Xếp tối ưu', () => {
+        expect(resolveStickerCutControlPolicy(
+            'sticker_imposer', true, 'one_dao', 'simple_auto', 'die', 4,
+        ).effectiveFillBlockGap).toBe(0);
+        expect(resolveStickerCutControlPolicy(
+            'sticker_imposer', true, 'one_dao', 'simple_auto', 'die', 4,
+        ).showFillBlockGap).toBe(false);
+        expect(resolveStickerCutControlPolicy(
+            'sticker_imposer', true, 'default', 'optimal_auto', 'die', 4,
+        ).showFillBlockGap).toBe(false);
+    });
+
+    it('chờ nhận diện trước khi mở lựa chọn kiểu khuôn', () => {
+        expect(resolveStickerCutControlPolicy(
+            'sticker_imposer', null, 'one_dao', 'optimal_auto', 'die', 0,
+        )).toMatchObject({
+            dieStatus: 'unknown',
+            effectiveDieSizeMode: 'die',
+            showDieSizeSelector: false,
+            showDieSizeStatus: true,
+        });
+    });
+
+    it('không thay đổi tham số khoảng cách của CNC dùng chung dashboard', () => {
+        expect(resolveStickerCutControlPolicy(
+            'cnc_imposer', null, 'one_dao', 'simple_auto', 'die', 4,
+        )).toMatchObject({
+            effectiveDieSizeMode: 'die',
+            effectiveFillBlockGap: 4,
+            showDieSizeSelector: false,
+            showDieSizeStatus: false,
+            showFillBlockGap: false,
+        });
     });
 
     it('chỉ cho tem bế chữ nhật/vuông dùng Inking trên toàn bộ trang còn sống', () => {

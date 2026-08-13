@@ -343,6 +343,61 @@ def test_jpeg_holdout_keeps_connected_small_brand_accent():
     assert any("màu nhấn nhỏ" in warning for warning in warnings)
 
 
+@pytest.mark.parametrize(
+    "memory_status",
+    [(32 * 1024, 24 * 1024), (12 * 1024, 8 * 1024), (6 * 1024, 4 * 1024), (None, None)],
+    ids=["ram-32gb", "ram-12gb", "ram-6gb", "ram-unreadable"],
+)
+def test_palette_keeps_absolute_small_accent_on_high_res_scan(
+    monkeypatch, memory_status
+):
+    """§LR4.02: dấu 15×15 px trên scan 2000×2000 (coverage 0,0056% — dưới sàn
+    tương đối 0,1%) phải vào gợi ý nhờ lưới accent dày + sàn tuyệt đối px nguồn,
+    ở mọi tier RAM."""
+
+    monkeypatch.setattr(logo_worker, "read_memory_status_mb", lambda: memory_status)
+    source = Image.new("RGB", (2000, 2000), "#ffffff")
+    source.paste("#d71920", (1000, 1000, 1015, 1015))
+
+    suggestions, warnings = logo_worker.suggest_logo_palette(
+        _image_bytes(source),
+        LogoRebuildSettings(mode="monochrome"),
+    )
+
+    def distance_from_red(color: str) -> float:
+        channels = tuple(int(color[index : index + 2], 16) for index in (1, 3, 5))
+        return sum(
+            (actual - expected) ** 2 for actual, expected in zip(channels, (215, 25, 32))
+        ) ** 0.5
+
+    accents = [item for item in suggestions if distance_from_red(item.color) < 70]
+    assert accents, ([item.model_dump() for item in suggestions], warnings)
+    assert any(item.coverage_ratio < 0.001 for item in accents)
+    assert any("màu nhấn nhỏ" in warning for warning in warnings)
+
+
+def test_palette_high_res_scan_does_not_promote_disconnected_speckles(monkeypatch):
+    """§LR4.02: sàn tuyệt đối không được nâng nhiễu rời trên scan lớn thành màu."""
+
+    monkeypatch.setattr(
+        logo_worker, "read_memory_status_mb", lambda: (32 * 1024, 24 * 1024)
+    )
+    rng = random.Random(20260813)
+    source = Image.new("RGB", (2000, 2000), "#ffffff")
+    for _ in range(400):
+        x = rng.randrange(0, 1998)
+        y = rng.randrange(0, 1998)
+        source.putpixel((x, y), (215, 25, 32))
+
+    suggestions, warnings = logo_worker.suggest_logo_palette(
+        _image_bytes(source),
+        LogoRebuildSettings(mode="monochrome"),
+    )
+
+    assert [item.color for item in suggestions] == ["#ffffff"]
+    assert not any("màu nhấn nhỏ" in warning for warning in warnings)
+
+
 def test_palette_suggestion_ignores_hidden_rgb_of_transparent_pixels():
     source = Image.new("RGBA", (100, 100), (255, 0, 0, 0))
     source.paste((21, 101, 192, 255), (25, 25, 75, 75))
@@ -742,6 +797,58 @@ def test_worker_scales_despeckle_area_with_upscale(
         "chưa áp dụng khử hạt" in reason for reason in result.review_reasons
     )
     assert has_pending_despeckle is (mode == "monochrome")
+    # LOGO-REBUILD (audit 2026-08-13 §LR4.01): ảnh upscale + despeckle > 0 phải
+    # cảnh báo rõ ngưỡng chi tiết bị mất (chỉ FlatColor mới thực thi khử hạt).
+    has_loss_warning = any(
+        "gộp mọi chi tiết nhỏ hơn 4×4 px" in warning for warning in result.warnings
+    )
+    assert has_loss_warning is (mode == "fixed_palette")
+
+
+def test_scaled_despeckle_size_keeps_source_pixel_semantics():
+    """§LR4.01: đơn vị khử hạt là px ảnh nguồn, quy đổi theo sqrt(diện tích)."""
+
+    # Upscale 100×100 → 1200×1200 (scale diện tích 144): cạnh 4 px nguồn = 48 px làm việc.
+    assert logo_worker._scaled_despeckle_size(4, 144.0) == 48
+    # Không upscale thì giữ nguyên.
+    assert logo_worker._scaled_despeckle_size(4, 1.0) == 4
+    # Downscale (máy yếu giảm ảnh làm việc) thì thu nhỏ tương ứng nhưng không về 0.
+    assert logo_worker._scaled_despeckle_size(4, 0.25) == 2
+    assert logo_worker._scaled_despeckle_size(1, 0.01) == 1
+    # Tắt khử hạt phải giữ nguyên 0 ở mọi hệ số.
+    assert logo_worker._scaled_despeckle_size(0, 144.0) == 0
+    # Trần an toàn của engine.
+    assert logo_worker._scaled_despeckle_size(64, 16.0) == 128
+
+
+@pytest.mark.parametrize(
+    ("despeckle_size_px", "expect_mark_kept"),
+    [(0, True), (4, False)],
+)
+def test_small_source_mark_survival_depends_on_despeckle_real_engine(
+    despeckle_size_px: int, expect_mark_kept: bool
+):
+    """Regression §LR4.01: dấu 3×3 px nguồn trên logo 100×100 qua engine thật.
+
+    Khử hạt tính theo px nguồn nên 4 px nuốt dấu 3×3 (9 < 4² px nguồn) bất kể
+    hệ số upscale theo tier RAM; 0 px phải giữ nguyên dấu.
+    """
+
+    pytest.importorskip("pdfcompare_native")
+    image = Image.new("RGB", (100, 100), (255, 255, 255))
+    image.paste((215, 25, 32), (50, 50, 53, 53))
+    result = logo_worker.process_logo_preview(
+        _image_bytes(image),
+        LogoRebuildSettings(
+            mode="fixed_palette",
+            palette=["#ffffff", "#d71920"],
+            despeckle_size_px=despeckle_size_px,
+            physical_width_mm=25.0,
+            physical_height_mm=25.0,
+        ),
+        f"lr401-mark-{despeckle_size_px}",
+    )
+    assert ("#d71920" in result.svg) is expect_mark_kept
 
 
 def test_structured_contract_error_never_falls_back_to_vtracer(monkeypatch):
@@ -797,6 +904,77 @@ def test_structured_contract_error_never_falls_back_to_vtracer(monkeypatch):
         )
 
     assert calls["legacy"] == 0
+
+
+def test_native_value_error_becomes_input_error_not_500(monkeypatch):
+    """§LR4.03: lệch hợp đồng ở biên Rust phải ra LogoInputError (422 kèm
+    nguyên nhân), không bị gói thành RuntimeError 500 mù thông tin."""
+
+    class FakeCancel:
+        def cancel(self):
+            return None
+
+        def is_cancelled(self):
+            return False
+
+    class FakeNative:
+        LogoVectorizerCancel = FakeCancel
+
+        @staticmethod
+        def logo_vectorizer_info():
+            return _fake_native_info()
+
+        @staticmethod
+        def logo_vectorize_structured_rgba(*_args, **_kwargs):
+            raise ValueError("Nhãn background nằm ngoài palette")
+
+    monkeypatch.setattr(logo_worker, "_load_native_module", lambda: FakeNative)
+    monkeypatch.setattr(logo_worker, "read_memory_status_mb", lambda: (None, None))
+    monkeypatch.setattr(
+        logo_worker, "_upscale_target_dimensions", lambda width, height: (width, height)
+    )
+
+    with pytest.raises(logo_worker.LogoInputError, match="Nhãn background"):
+        logo_worker.process_logo_preview(
+            _monochrome_logo_bytes((32, 32)),
+            LogoRebuildSettings(mode="monochrome", despeckle_size_px=0),
+            "native-value-error-422",
+        )
+
+
+def test_prepare_logo_image_cancels_between_heavy_steps():
+    """§LR4.04: nút Hủy phải cắt được giữa các bước prepare, không đợi hết."""
+
+    calls = {"count": 0}
+
+    def cancel_after_first_checkpoint() -> bool:
+        calls["count"] += 1
+        return calls["count"] > 1
+
+    with pytest.raises(logo_worker.LogoJobCancelled):
+        logo_worker.prepare_logo_image(
+            _monochrome_logo_bytes((640, 640)),
+            LogoRebuildSettings(mode="monochrome", illumination_correction=True),
+            cancel_check=cancel_after_first_checkpoint,
+        )
+    assert calls["count"] > 1
+
+
+def test_reserve_logo_work_size_serializes_when_memory_unreadable(monkeypatch):
+    """§LR4.05: không đo được RAM thì giữ nguyên kích thước nhưng chỉ một job
+    Logo mỗi lúc; job xong phải trả slot."""
+
+    monkeypatch.setattr(logo_worker, "read_memory_status_mb", lambda: (None, None))
+
+    with logo_worker._reserve_logo_work_size(800, 600) as (size, memory_warnings):
+        assert size == (800, 600)
+        assert memory_warnings == []
+        with pytest.raises(logo_worker.LogoInputError, match="Không đo được RAM"):
+            with logo_worker._reserve_logo_work_size(400, 300):
+                pass
+
+    with logo_worker._reserve_logo_work_size(400, 300) as (size, _memory_warnings):
+        assert size == (400, 300)
 
 
 def test_cmyk_icc_transform_runs_before_rgb_conversion(monkeypatch):

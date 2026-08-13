@@ -722,11 +722,13 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   },
   ...(LOGO_REBUILD_ENABLED ? [{
     id: 'imposition',
-    title: 'Phục hồi & Vector hóa Logo',
-    tabTitle: 'Phục hồi Logo',
+    // UIUX (audit 2026-08-13 §LR4.07): engine chỉ nội suy NEAREST khi phóng to,
+    // không phục hồi nét bị mất — copy không được hứa "phục hồi".
+    title: 'Vector hóa Logo',
+    tabTitle: 'Vector hóa Logo',
     icon: '🧩',
-    description: 'Tái tạo logo raster thành SVG có palette xác nhận',
-    longDescription: 'Gợi ý màu từ pixel nhìn thấy, dựng lại đường vector và xuất SVG để kiểm tra trước khi in.',
+    description: 'Dựng vector từ logo raster phẳng thành SVG có palette xác nhận',
+    longDescription: 'Gợi ý màu từ pixel nhìn thấy, dựng lại đường vector và xuất SVG để kiểm tra trước khi in. Ảnh nhỏ được phóng to bằng nội suy giữ biên — chưa tự phục hồi phần logo bị che hoặc mất nét.',
     category: 'image',
     component: ImpositionTab,
     isEnabled: true,

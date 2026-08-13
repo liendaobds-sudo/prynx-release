@@ -1,6 +1,9 @@
 """Integration & regression tests for Preflight engine and rule modules."""
+import asyncio
 import re
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 import pikepdf
@@ -91,6 +94,81 @@ def _make_mismatched_page_sizes_pdf(path: Path) -> Path:
     pdf = pikepdf.Pdf.new()
     pdf.add_blank_page(page_size=(612, 792))
     pdf.add_blank_page(page_size=(500, 700))
+    pdf.save(path)
+    pdf.close()
+    return path
+
+
+def _make_repeated_unembedded_font_pdf(path: Path, pages: int = 100) -> Path:
+    """Một font TrueType không nhúng được dùng lại trên nhiều trang."""
+    pdf = pikepdf.Pdf.new()
+    font_descriptor = pikepdf.Dictionary({
+        "/Type": "/FontDescriptor",
+        "/FontName": "/FakeFontQA",
+        "/Flags": 32,
+        "/ItalicAngle": 0,
+        "/Ascent": 800,
+        "/Descent": -200,
+        "/CapHeight": 700,
+        "/StemV": 80,
+    })
+    font = pikepdf.Dictionary({
+        "/Type": "/Font",
+        "/Subtype": "/TrueType",
+        "/BaseFont": "/ABCDEF+FakeFontQA-Regular",
+        "/FirstChar": 32,
+        "/LastChar": 126,
+        "/Widths": pikepdf.Array([500] * 95),
+        "/FontDescriptor": pdf.make_indirect(font_descriptor),
+    })
+    font_ref = pdf.make_indirect(font)
+    for page_number in range(1, pages + 1):
+        page = pdf.add_blank_page(page_size=(612, 792))
+        page["/Resources"] = pikepdf.Dictionary({
+            "/Font": pikepdf.Dictionary({"/F1": font_ref}),
+        })
+        page["/Contents"] = pdf.make_stream(
+            f"BT /F1 12 Tf 72 700 Td (Page {page_number}) Tj ET".encode("ascii")
+        )
+    pdf.save(path)
+    pdf.close()
+    return path
+
+
+def _make_same_family_mixed_embedding_pdf(path: Path) -> Path:
+    """Hai subset cùng họ trên một trang, chỉ một subset được nhúng."""
+    pdf = pikepdf.Pdf.new()
+
+    def make_font(base_font: str, embedded: bool):
+        descriptor = pikepdf.Dictionary({
+            "/Type": "/FontDescriptor",
+            "/FontName": f"/{base_font.split('+', 1)[-1]}",
+            "/Flags": 32,
+            "/ItalicAngle": 0,
+            "/Ascent": 800,
+            "/Descent": -200,
+            "/CapHeight": 700,
+            "/StemV": 80,
+        })
+        if embedded:
+            descriptor["/FontFile2"] = pdf.make_stream(b"fake-font-data")
+        return pdf.make_indirect(pikepdf.Dictionary({
+            "/Type": "/Font",
+            "/Subtype": "/TrueType",
+            "/BaseFont": f"/{base_font}",
+            "/FirstChar": 32,
+            "/LastChar": 126,
+            "/Widths": pikepdf.Array([500] * 95),
+            "/FontDescriptor": pdf.make_indirect(descriptor),
+        }))
+
+    page = pdf.add_blank_page(page_size=(612, 792))
+    page["/Resources"] = pikepdf.Dictionary({
+        "/Font": pikepdf.Dictionary({
+            "/F1": make_font("ABCDEF+SameFamily-Regular", True),
+            "/F2": make_font("GHIJKL+SameFamily-Regular", False),
+        }),
+    })
     pdf.save(path)
     pdf.close()
     return path
@@ -225,6 +303,39 @@ class TestPreflightEngine:
         report = PreflightEngine().run(str(pdf_path), rules=["PAGE_SIZE_MISMATCH"])
         assert any(i.rule_id == "PAGE_SIZE_MISMATCH" for i in report.issues)
 
+    def test_font_summary_separates_unique_font_from_page_occurrences(self, tmp_path):
+        pdf_path = _make_repeated_unembedded_font_pdf(
+            tmp_path / "one-font-many-pages.pdf",
+            pages=100,
+        )
+
+        report = PreflightEngine().run(str(pdf_path), rules=["FONT_NOT_EMBEDDED"])
+
+        assert report.font_summary["total"] == 100
+        assert report.font_summary["not_embedded"] == 100
+        assert report.font_summary["unique_total"] == 1
+        assert report.font_summary["unique_not_embedded"] == 1
+        assert report.font_summary["fonts"] == [{
+            "name": "FakeFontQA-Regular",
+            "embedded": False,
+            "pages": list(range(1, 101)),
+            "not_embedded_pages": list(range(1, 101)),
+            "occurrences": 100,
+        }]
+        # Vẫn giữ issue từng trang/bbox để Preflight và Viewer highlight chính xác.
+        assert len(report.issues) == 100
+
+    def test_font_family_grouping_does_not_hide_mixed_subset_embedding(self, tmp_path):
+        pdf_path = _make_same_family_mixed_embedding_pdf(tmp_path / "mixed-subsets.pdf")
+
+        report = PreflightEngine().run(str(pdf_path), rules=["FONT_NOT_EMBEDDED"])
+
+        assert report.font_summary["total"] == 2
+        assert report.font_summary["unique_total"] == 1
+        assert report.font_summary["unique_not_embedded"] == 1
+        assert report.font_summary["fonts"][0]["not_embedded_pages"] == [1]
+        assert len(report.issues) == 1
+
     def test_page_nums_filters_content_stream_checks(self, tmp_path):
         pdf_path = _make_mismatched_page_sizes_pdf(tmp_path / "chunk.pdf")
         engine = PreflightEngine()
@@ -252,6 +363,171 @@ class TestPreflightEngine:
         assert isinstance(issues, list)
         assert isinstance(stats, dict)
         assert "image_total" in stats
+
+    @pytest.mark.parametrize(
+        "rules",
+        [
+            ["FONT_NOT_EMBEDDED", "TEXT_DETECTED"],
+            ["FONT_NOT_EMBEDDED"],
+            ["TEXT_DETECTED"],
+        ],
+    )
+    def test_font_only_scan_does_not_spawn_process_pool(self, tmp_path, monkeypatch, rules):
+        """Công cụ Chữ & Font không dựng pool chỉ vì PDF có hơn 10 trang."""
+        pdf_path = _make_blank_pdf(tmp_path / "font-only.pdf", pages=15)
+
+        def fail_if_pool_created(*_args, **_kwargs):
+            raise AssertionError("font-only preflight không được tạo ProcessPool")
+
+        monkeypatch.setattr("concurrent.futures.ProcessPoolExecutor", fail_if_pool_created)
+        report = PreflightEngine().run(str(pdf_path), rules=rules)
+
+        assert report.total_pages == 15
+
+
+@pytest.mark.asyncio
+async def test_inspect_route_offloads_engine_run(monkeypatch):
+    """Route inspect phải nhường việc PDF đồng bộ cho threadpool."""
+    from app.api.routes import preflight as preflight_route
+    from app.schemas.preflight import InspectByIdRequest
+    from app.core.preflight_models import PreflightReport
+
+    monkeypatch.setattr(
+        preflight_route,
+        "_get_file_info",
+        lambda _file_id: ("font-only.pdf", "font-only.pdf"),
+    )
+    calls = {}
+
+    class FakeEngine:
+        def run(self, pdf_path, **kwargs):
+            calls["run"] = (pdf_path, kwargs)
+            return PreflightReport(file_name="font-only.pdf", total_pages=1)
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        calls["offloaded"] = func
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(preflight_route, "PreflightEngine", FakeEngine)
+    monkeypatch.setattr(preflight_route, "run_in_threadpool", fake_run_in_threadpool)
+
+    response = await preflight_route.inspect_pdf(
+        InspectByIdRequest(file_id="font-file", rules=["FONT_NOT_EMBEDDED"])
+    )
+
+    assert response.total_pages == 1
+    assert calls["offloaded"].__name__ == "run"
+    assert isinstance(calls["offloaded"].__self__, FakeEngine)
+    assert calls["run"] == (
+        "font-only.pdf",
+        {"rules": ["FONT_NOT_EMBEDDED"], "tac_threshold": 300},
+    )
+
+
+@pytest.mark.asyncio
+async def test_inspect_route_keeps_event_loop_responsive(monkeypatch):
+    """Quét đồng bộ đang chạy không được làm heartbeat của sidecar đứng."""
+    from app.api.routes import preflight as preflight_route
+    from app.schemas.preflight import InspectByIdRequest
+    from app.core.preflight_models import PreflightReport
+
+    started = threading.Event()
+    finished = threading.Event()
+
+    class SlowEngine:
+        def run(self, _pdf_path, **_kwargs):
+            started.set()
+            time.sleep(0.2)
+            finished.set()
+            return PreflightReport(file_name="slow.pdf", total_pages=1)
+
+    monkeypatch.setattr(
+        preflight_route,
+        "_get_file_info",
+        lambda _file_id: ("slow.pdf", "slow.pdf"),
+    )
+    monkeypatch.setattr(preflight_route, "PreflightEngine", SlowEngine)
+
+    heartbeat_gaps = []
+
+    async def heartbeat():
+        previous = time.perf_counter()
+        while not finished.is_set():
+            await asyncio.sleep(0.01)
+            now = time.perf_counter()
+            if started.is_set() and not finished.is_set():
+                heartbeat_gaps.append(now - previous)
+            previous = now
+
+    heartbeat_task = asyncio.create_task(heartbeat())
+    await asyncio.sleep(0)
+    await preflight_route.inspect_pdf(InspectByIdRequest(file_id="slow-file"))
+    await heartbeat_task
+
+    assert len(heartbeat_gaps) >= 3
+    assert max(heartbeat_gaps) < 0.1
+
+
+@pytest.mark.asyncio
+async def test_inspect_route_keeps_large_content_scan_working(monkeypatch, tmp_path):
+    """ProcessPool của Preflight tổng quát vẫn chạy được từ threadpool trên Windows."""
+    from app.api.routes import preflight as preflight_route
+    from app.schemas.preflight import InspectByIdRequest
+
+    pdf_path = _make_blank_pdf(tmp_path / "large-content.pdf", pages=15)
+    monkeypatch.setattr(
+        preflight_route,
+        "_get_file_info",
+        lambda _file_id: (str(pdf_path), pdf_path.name),
+    )
+
+    response = await preflight_route.inspect_pdf(
+        InspectByIdRequest(file_id="large-content", rules=["OBJECT_OFF_PAGE"])
+    )
+
+    assert response.total_pages == 15
+    assert all(issue.rule_id != "INTERNAL_ERROR" for issue in response.issues)
+
+
+@pytest.mark.asyncio
+async def test_fix_route_disconnect_cancels_action_engine(monkeypatch):
+    """Nút Hủy frontend phải chạm tới cooperative cancel của ActionEngine."""
+    from app.api.routes import preflight as preflight_route
+    from app.schemas.preflight import FixRequest
+
+    monkeypatch.setattr(
+        preflight_route,
+        "_get_file_info",
+        lambda _file_id: ("font-only.pdf", "font-only.pdf"),
+    )
+    monkeypatch.setattr(preflight_route, "enforce_preflight_actions", lambda *_args: None)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class SlowActionEngine:
+        async def execute(self, *_args, **_kwargs):
+            started.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+    class DisconnectedRequest:
+        async def is_disconnected(self):
+            await started.wait()
+            return True
+
+    monkeypatch.setattr(preflight_route, "ActionEngine", SlowActionEngine)
+
+    with pytest.raises(asyncio.CancelledError):
+        await preflight_route.fix_pdf(
+            FixRequest(file_id="font-file", action_id="OUTLINE_FONTS", params={}),
+            DisconnectedRequest(),
+            license_info={},
+        )
+
+    assert cancelled.is_set()
 
 
 # ── Coverage parity (backend ALL_RULES vs frontend TS sources) ───────────────

@@ -14,7 +14,8 @@ from app.workers.shape_types import (
     ShapeType, SHAPE_TYPE_NAMES, from_legacy_value, from_legacy_name, coerce_shape_type,
 )
 from app.workers.die_detection import (
-    DetectedShape, Trim, DetectionConfig, make_custom_shape,
+    DetectedShape, Trim, DetectionConfig, DetectionResult, PageDetectionStatus,
+    make_custom_shape,
     to_legacy_response, from_legacy_settings, shape_to_dict, shape_from_dict,
     detect_die_shapes, _match_die_channel, MAX_TRIM_PT,
 )
@@ -266,3 +267,77 @@ def test_legacy_response_shape(n, data):
     assert resp["success"] is True                  # không fail toàn cục
     assert len(resp["shapes"]) == n == len(resp["dimensions"]) == len(resp["shapeParams"])
     assert len(resp["perPage"]) == n
+    assert resp["hasValidDie"] is False
+
+
+def test_legacy_response_reports_real_die_geometry_without_inferring_from_fallback_label():
+    custom = make_custom_shape(0, 200, 100)
+    die = DetectedShape(
+        page=1,
+        type=ShapeType.RECTANGLE,
+        props={},
+        trim=Trim(120, 60),
+        poly=(),
+        source="separation",
+        confidence=1.0,
+    )
+
+    without_die = DetectionResult(
+        shapes=[custom],
+        statuses=[PageDetectionStatus(0, True, "custom")],
+        total_pages=1,
+        success_pages=1,
+    )
+    with_die = DetectionResult(
+        shapes=[custom, die],
+        statuses=[
+            PageDetectionStatus(0, True, "custom"),
+            PageDetectionStatus(1, True, "separation"),
+        ],
+        total_pages=2,
+        success_pages=2,
+    )
+
+    assert to_legacy_response(without_die)["hasValidDie"] is False
+    # Chỉ một phần file có khuôn không đủ để hai mode cho kết quả rõ ràng.
+    assert to_legacy_response(with_die)["hasValidDie"] is False
+
+
+def test_legacy_response_rejects_low_confidence_largest_vector_path_as_valid_die():
+    guessed_artwork_frame = DetectedShape(
+        page=0,
+        type=ShapeType.RECTANGLE,
+        props={},
+        trim=Trim(200, 100),
+        poly=(),
+        source="vector",
+        confidence=0.5,
+    )
+    result = DetectionResult(
+        shapes=[guessed_artwork_frame],
+        statuses=[PageDetectionStatus(0, True, "vector")],
+        total_pages=1,
+        success_pages=1,
+    )
+
+    assert to_legacy_response(result)["hasValidDie"] is False
+
+
+def test_legacy_response_accepts_custom_shape_when_it_comes_from_a_real_die_channel():
+    irregular_die = DetectedShape(
+        page=0,
+        type=ShapeType.CUSTOM,
+        props={},
+        trim=Trim(80, 45),
+        poly=((0, 0), (80, 0), (70, 45), (0, 35)),
+        source="separation",
+        confidence=1.0,
+    )
+    result = DetectionResult(
+        shapes=[irregular_die],
+        statuses=[PageDetectionStatus(0, True, "separation")],
+        total_pages=1,
+        success_pages=1,
+    )
+
+    assert to_legacy_response(result)["hasValidDie"] is True

@@ -14,6 +14,18 @@ use crate::pdf_engine::print_layout::{
     booklet_sheet_sides, chunk_pages, multipage_grid, poster_tiles, resolve_page_numbers,
     LayoutMode, PageSubset,
 };
+
+/// Booklet 2-up: Auto/không chọn → ép giấy ngang. Portrait/landscape do user chọn thì giữ nguyên.
+fn effective_print_orientation(layout: LayoutMode, orientation: Option<&str>) -> Option<&str> {
+    if layout == LayoutMode::Booklet {
+        match orientation {
+            Some("portrait") | Some("landscape") => orientation,
+            _ => Some("landscape"),
+        }
+    } else {
+        orientation
+    }
+}
 #[cfg(windows)]
 #[derive(Clone, Debug)]
 pub(crate) struct PrintJobControl {
@@ -385,6 +397,88 @@ pub async fn open_printer_properties(
     .map_err(|e| format!("Luồng thuộc tính máy in bị lỗi: {e}"))?
 }
 
+// PRINTWIN (audit 2026-08-13 §PRINTWIN.01/§PRINTWIN.03): dialog modal (PrintDlgW /
+// DocumentPropertiesW) phải có owner CÙNG process — dùng HWND của app xuyên process
+// làm Windows disable cửa sổ PrynX khi worker chết/bị kill, trông như app treo.
+// Worker chạy CREATE_NO_WINDOW không có cửa sổ nào, nên tạo một cửa sổ owner 1×1
+// ngoài màn hình: dialog có owner + message pump (vòng modal tự bơm), taskbar hiện
+// mục "PrynX — Hộp thoại máy in" để hộp driver không "mất tích". Hủy khi Drop.
+#[cfg(windows)]
+pub(crate) struct DialogOwnerWindow {
+    hwnd: windows::Win32::Foundation::HWND,
+}
+
+// windows-rs khai báo DefWindowProcW là `unsafe fn` (ABI Rust) nên không gán thẳng
+// vào WNDCLASSW.lpfnWndProc được — cần wrapper đúng ABI "system".
+#[cfg(windows)]
+unsafe extern "system" fn dialog_owner_wndproc(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
+    unsafe { windows::Win32::UI::WindowsAndMessaging::DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+#[cfg(windows)]
+impl DialogOwnerWindow {
+    pub(crate) fn create() -> Option<Self> {
+        use windows::core::PCWSTR;
+        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, RegisterClassW, SetForegroundWindow, ShowWindow, SW_SHOWNORMAL,
+            WNDCLASSW, WS_EX_APPWINDOW, WS_POPUP,
+        };
+
+        let class_name = to_wide_nul("PrynxPrintDialogOwner");
+        let title = to_wide_nul("PrynX — Hộp thoại máy in");
+        unsafe {
+            let hinstance = GetModuleHandleW(PCWSTR::null()).ok()?;
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(dialog_owner_wndproc),
+                hInstance: hinstance.into(),
+                lpszClassName: PCWSTR(class_name.as_ptr()),
+                ..Default::default()
+            };
+            // Đăng ký lần hai trong cùng process trả ERROR_CLASS_ALREADY_EXISTS — bỏ qua.
+            let _ = RegisterClassW(&wc);
+            let hwnd = CreateWindowExW(
+                WS_EX_APPWINDOW,
+                PCWSTR(class_name.as_ptr()),
+                PCWSTR(title.as_ptr()),
+                WS_POPUP,
+                -32000,
+                -32000,
+                1,
+                1,
+                None,
+                None,
+                Some(hinstance.into()),
+                None,
+            )
+            .ok()?;
+            let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
+            // Cần AllowSetForegroundWindow từ parent (run_isolated_inner) mới ăn;
+            // thất bại thì dialog vẫn có taskbar entry để user tìm thấy.
+            let _ = SetForegroundWindow(hwnd);
+            Some(Self { hwnd })
+        }
+    }
+
+    pub(crate) fn hwnd_value(&self) -> isize {
+        self.hwnd.0 as isize
+    }
+}
+
+#[cfg(windows)]
+impl Drop for DialogOwnerWindow {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(self.hwnd);
+        }
+    }
+}
+
 #[cfg(windows)]
 pub(crate) fn open_printer_properties_blocking(
     owner_hwnd: isize,
@@ -402,6 +496,18 @@ pub(crate) fn open_printer_properties_blocking(
     if printer_name.trim().is_empty() {
         return Err("Chưa chọn máy in".into());
     }
+
+    // PRINTWIN (audit 2026-08-13 §PRINTWIN.01): worker gọi với hwnd=0 → tạo owner
+    // cùng process để UI driver không mở khuất/không taskbar rồi bị bấm nền đóng mất.
+    let owner_window = if owner_hwnd == 0 {
+        DialogOwnerWindow::create()
+    } else {
+        None
+    };
+    let effective_owner_hwnd = owner_window
+        .as_ref()
+        .map(DialogOwnerWindow::hwnd_value)
+        .unwrap_or(owner_hwnd);
 
     let name_w = to_wide_nul(&printer_name);
     let name_pcwstr = PCWSTR(name_w.as_ptr());
@@ -441,7 +547,7 @@ pub(crate) fn open_printer_properties_blocking(
             buf[..copy_len].copy_from_slice(&input[..copy_len]);
         }
 
-        let hwnd = HWND(owner_hwnd as *mut std::ffi::c_void);
+        let hwnd = HWND(effective_owner_hwnd as *mut std::ffi::c_void);
         let result = if advanced {
             AdvancedDocumentPropertiesW(
                 hwnd,
@@ -493,7 +599,9 @@ pub async fn print_pdf(
     let auto_rotate = auto_rotate.unwrap_or(false);
     let mode_for_fallback = parse_scale_mode(scale_mode.as_deref());
     print_breadcrumb("print_pdf: enter (isolated PrintDlg)");
-    // Out-of-process: driver AV không kéo sập UI. hwnd owner = 0 trong worker.
+    // Out-of-process: driver AV không kéo sập UI. Worker tự tạo HWND cùng process
+    // (PRINTWIN §PRINTWIN.03) — không truyền HWND app xuyên process, tránh disable
+    // cửa sổ PrynX khi worker chết. Fallback in-process vẫn dùng HWND app.
     let result = tauri::async_runtime::spawn_blocking(move || {
         let job = crate::pdf_engine::print_worker::PrintWorkerJob::PrintDlg {
             file_path: file_path.clone(),
@@ -502,9 +610,7 @@ pub async fn print_pdf(
             pages: pages.clone(),
             scale_mode,
             auto_rotate,
-            // UIUX (audit 2026-08-05 §PRINT.4): worker vẫn cách ly driver nhưng dialog
-            // Windows được gắn với cửa sổ PrynX, không còn bật khuất phía sau.
-            owner_hwnd,
+            owner_hwnd: 0,
         };
         let r = crate::pdf_engine::print_worker::run_isolated(job)
             .map(|res| res.printed.unwrap_or(false));
@@ -584,9 +690,20 @@ pub(crate) fn print_pdf_blocking(
     // ── 2) Hộp thoại in Windows (chọn máy in, số bản, khổ giấy) ──
     // KHÔNG dùng PD_USEDEVMODECOPIESANDCOLLATE: ta tự loop số bản để copies luôn đúng
     // trên mọi driver (driver không hỗ trợ collate vẫn ra đủ bản).
+    // PRINTWIN (audit 2026-08-13 §PRINTWIN.03): đường worker gửi owner_hwnd=0 → tạo
+    // owner cùng process; chỉ fallback in-process mới dùng HWND app thật (cùng process).
+    let owner_window = if owner_hwnd == 0 {
+        DialogOwnerWindow::create()
+    } else {
+        None
+    };
+    let effective_owner_hwnd = owner_window
+        .as_ref()
+        .map(DialogOwnerWindow::hwnd_value)
+        .unwrap_or(owner_hwnd);
     let mut pd = PRINTDLGW::default();
     pd.lStructSize = std::mem::size_of::<PRINTDLGW>() as u32;
-    pd.hwndOwner = HWND(owner_hwnd as *mut std::ffi::c_void);
+    pd.hwndOwner = HWND(effective_owner_hwnd as *mut std::ffi::c_void);
     pd.Flags = PD_RETURNDC | PD_NOSELECTION;
     pd.nMinPage = 1;
     pd.nMaxPage = page_count.min(0xFFFF) as u16;
@@ -838,6 +955,16 @@ fn run_print_job(
             };
             let draw_w = (effective_w * scale).round() as i32;
             let draw_h = (effective_h * scale).round() as i32;
+            // PRINTWIN (audit 2026-08-13 §PRINTWIN.09): FPDF_RenderPage là hàm void —
+            // không có mã trả về để kiểm. Ca "tờ trắng im lặng" bắt được là kích thước
+            // vẽ suy biến (scale/ô đặt làm tròn về 0) → báo lỗi thay vì in tờ trắng.
+            if draw_w <= 0 || draw_h <= 0 {
+                b.FPDF_ClosePage(page);
+                return Err(format!(
+                    "Trang {} có kích thước vẽ không hợp lệ ({draw_w}×{draw_h}px) — kiểm tra tỉ lệ in và khổ giấy",
+                    pg
+                ));
+            }
             let off_x = cell_x + ((cell_w - draw_w as f64) / 2.0).round() as i32;
             let off_y = cell_y + ((cell_h - draw_h as f64) / 2.0).round() as i32;
             b.FPDF_RenderPage(
@@ -1016,6 +1143,15 @@ fn run_print_job(
                     let scale = (full_w / page_w_px).min(full_h / page_h_px);
                     let draw_w = (page_w_px * scale).round() as i32;
                     let draw_h = (page_h_px * scale).round() as i32;
+                    // PRINTWIN (audit 2026-08-13 §PRINTWIN.09): chặn tile suy biến —
+                    // FPDF_RenderPage void, không tự báo lỗi được.
+                    if draw_w <= 0 || draw_h <= 0 {
+                        b.FPDF_ClosePage(page_h);
+                        return Err(format!(
+                            "Trang {} có kích thước vẽ không hợp lệ ({draw_w}×{draw_h}px) — kiểm tra lưới poster",
+                            pg
+                        ));
+                    }
                     // Center the enlarged page on the multi-tile canvas, then shift by tile.
                     let base_x = ((full_w - draw_w as f64) / 2.0).round() as i32
                         - (*col as f64 * printable_w).round() as i32;
@@ -1313,6 +1449,7 @@ pub(crate) fn print_direct_blocking(
     }
 
     // DEVMODE cho orientation (None = mặc định máy in). Giữ Vec sống tới sau CreateDCW.
+    let orientation = effective_print_orientation(layout, orientation);
     let devmode_buf = build_devmode(&printer_name, orientation, devmode.as_deref());
     let devmode_ptr: Option<*const DEVMODEW> = devmode_buf
         .as_ref()
@@ -1389,7 +1526,7 @@ pub struct PrinterInfo {
 }
 
 // Liệt kê máy in cho dropdown của hộp thoại in. Máy in mặc định đứng đầu (is_default).
-// Rỗng → Ok(vec![]) (JS fallback về PrintDlgW). Xem [[nativePrint]].
+// Worker fail → Err để JS ghi log; hook vẫn mở dialog với list rỗng + PrintDlg.
 #[cfg(windows)]
 #[tauri::command]
 pub async fn list_printers() -> Result<Vec<PrinterInfo>, String> {
@@ -1404,9 +1541,8 @@ pub async fn list_printers() -> Result<Vec<PrinterInfo>, String> {
                 Ok(printers)
             }
             Err(e) => {
-                // Dialog vẫn mở được với list rỗng + PrintDlg fallback
-                print_breadcrumb(&format!("list_printers: isolated fail → empty ({e})"));
-                Ok(vec![])
+                print_breadcrumb(&format!("list_printers: isolated fail ({e})"));
+                Err(e)
             }
         }
     })
@@ -2048,6 +2184,28 @@ mod tests {
         // Custom(1.5) → scale 1.5 bất kể kích thước trang.
         let (scale, _) = plan_scale(400.0, 600.0, 800.0, 1200.0, ScaleMode::Custom(1.5), false);
         assert!((scale - 1.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn booklet_auto_orientation_forces_landscape() {
+        use super::effective_print_orientation;
+        use crate::pdf_engine::print_layout::LayoutMode;
+        assert_eq!(
+            effective_print_orientation(LayoutMode::Booklet, Some("auto")),
+            Some("landscape")
+        );
+        assert_eq!(
+            effective_print_orientation(LayoutMode::Booklet, None),
+            Some("landscape")
+        );
+        assert_eq!(
+            effective_print_orientation(LayoutMode::Booklet, Some("portrait")),
+            Some("portrait")
+        );
+        assert_eq!(
+            effective_print_orientation(LayoutMode::Size, Some("auto")),
+            Some("auto")
+        );
     }
 
     #[cfg(windows)]

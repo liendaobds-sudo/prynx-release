@@ -6,11 +6,18 @@ import {
     LiveTile,
     shouldEnableViewerViewportAccurateTile,
     shouldMountViewerViewportLayer,
+    shouldRenderViewerAccurateBaseTile,
+    shouldRenderViewerBaseTile,
+    shouldKeepViewerAccurateBaseMounted,
+    shouldRequestViewerAccurateBase,
     shouldUseViewerDirectFullPageSurface,
     viewerSurfaceSwapMs,
 } from './LivePageFrame';
 import { cacheTileUrl, clearTileUrlCache } from '../../lib/tileUrlCache';
 import { CancelledTileRenderError } from '../../hooks/viewer/tileRenderScheduler';
+import {
+    VIEWER_DIRECT_FULL_PAGE_MAX_PIXELS,
+} from './renderZoomPolicy';
 
 afterEach(() => {
     cleanup();
@@ -54,6 +61,27 @@ describe('LiveTile — cold-open màu chính xác', () => {
         expect(shouldUseViewerDirectFullPageSurface(
             false, 2.125, 2.1, 1112, 388, 1400, 800,
         )).toBe(false);
+    });
+
+    it('Standee thật không đi surface full-page khi raster vượt ngân sách WebView', () => {
+        const pageWidth = 3023 * 0.1;
+        const pageHeight = 6614 * 0.1;
+        const rasterScale = 0.958 / 0.1;
+        expect(shouldUseViewerDirectFullPageSurface(
+            true,
+            0.958,
+            0.1,
+            pageWidth,
+            pageHeight,
+            1400,
+            800,
+        )).toBe(false);
+        expect(pageWidth * pageHeight * rasterScale ** 2)
+            .toBeGreaterThan(VIEWER_DIRECT_FULL_PAGE_MAX_PIXELS);
+        expect(shouldRenderViewerBaseTile(true, false, true, true, false)).toBe(false);
+        expect(shouldRenderViewerAccurateBaseTile(true, true, true, false)).toBe(false);
+        expect(shouldKeepViewerAccurateBaseMounted(true, false, true, false)).toBe(false);
+        expect(shouldRequestViewerAccurateBase(false, true, false, false)).toBe(false);
     });
 
     it('giữ viewport nét tới khi surface toàn trang mới đã decode xong', () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+    resolveEffectiveImpositionAlign,
     resolveEffectiveSeparateCut,
     resolveImpositionModes,
     resolveImpositionSplitGap,
@@ -61,6 +62,13 @@ describe('pageSheetPolicy', () => {
             markLength: 5,
             markOffset: 3,
         })).toBe(12);
+    });
+
+    it('centers a whole decal sheet instead of inheriting a hidden guillotine alignment', () => {
+        expect(resolveEffectiveImpositionAlign(true, 'top-center')).toBe('center');
+        expect(resolveEffectiveImpositionAlign(true, 'bottom-right')).toBe('center');
+        expect(resolveEffectiveImpositionAlign(false, 'top-center')).toBe('top-center');
+        expect(resolveEffectiveImpositionAlign(false, undefined)).toBe('center');
     });
 
     it('uses the item gap for the L-shape secondary block when cut marks are disabled', () => {

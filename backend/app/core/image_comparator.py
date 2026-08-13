@@ -61,6 +61,10 @@ class ComparisonResult:
     diff_regions: list[DiffRegion] = field(default_factory=list)
     diff_mask: np.ndarray = None
     highlighted_image: np.ndarray = None
+    # PERF (audit 2026-08-13 §PB-2): pipeline so sánh encode PNG ngay trong worker
+    # rồi đặt bytes vào đây (và giải phóng highlighted_image) để main thread chỉ
+    # còn ghi file. Đường tuần tự không dùng trường này.
+    highlighted_png: bytes | None = None
     gif_image: bytes | None = None
     diff_pixel_percentage: float = 0.0
     is_imposition_mode: bool = False

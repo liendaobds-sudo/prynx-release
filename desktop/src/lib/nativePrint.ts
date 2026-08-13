@@ -113,14 +113,68 @@ export async function resolvePrintableFilePath(
     return { filePath: tmpPath, deleteAfter: true };
 }
 
-// Liệt kê máy in cho dropdown. Rỗng/lỗi → [] (dialog fallback về PrintDlgW).
+// Liệt kê máy in cho dropdown. Lỗi invoke được ném ra để hook ghi log;
+// dialog vẫn mở với list rỗng và nút hộp thoại Windows.
 export async function listPrinters(): Promise<PrinterInfo[]> {
     if (!isTauriRuntime()) return [];
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<PrinterInfo[]>('list_printers');
+}
+
+// ── Preview native cho hộp In ──
+// PRINTWIN (audit 2026-08-13 §PRINTWIN.02): file lớn không được nhồi vào pdf.js/WebView
+// (log từng ghi nhận 133 MB → OOM). Preview đi engine PDFium native theo PATH đã có
+// trên đĩa: get_pdf_metadata đọc số trang + khổ trang, render_pdf_page raster đúng
+// 1 trang đang xem. Lỗi ở đây chỉ làm mất preview — không được chặn nút In.
+
+export interface PrintPreviewPageDim {
+    widthPt: number;
+    heightPt: number;
+}
+
+export interface PrintPreviewInfo {
+    numPages: number;
+    /** Khổ từng trang (pt), key "1"-based — cùng nguồn với Viewer native. */
+    dims: Record<string, PrintPreviewPageDim>;
+}
+
+export async function getPrintPreviewInfo(filePath: string): Promise<PrintPreviewInfo | null> {
+    if (!isTauriRuntime() || !filePath) return null;
     try {
         const { invoke } = await import('@tauri-apps/api/core');
-        return await invoke<PrinterInfo[]>('list_printers');
+        const meta = await invoke<{
+            numPages: number;
+            allDims?: Record<string, PrintPreviewPageDim>;
+        }>('get_pdf_metadata', { filePath });
+        if (!meta || typeof meta.numPages !== 'number' || meta.numPages <= 0) return null;
+        return { numPages: meta.numPages, dims: meta.allDims ?? {} };
     } catch {
-        return [];
+        return null;
+    }
+}
+
+/** Raster 1 trang PNG qua render_pdf_page (px = pt × 96/72 × zoom). */
+export async function renderPrintPreviewPage(
+    filePath: string,
+    page: number,
+    zoom: number,
+): Promise<Blob | null> {
+    if (!isTauriRuntime() || !filePath || page <= 0 || !(zoom > 0)) return null;
+    try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const bytes = await invoke<ArrayBuffer>('render_pdf_page', {
+            filePath,
+            page,
+            zoom,
+            rotation: 0,
+            clipX: null,
+            clipY: null,
+            clipW: null,
+            clipH: null,
+        });
+        return new Blob([bytes], { type: 'image/png' });
+    } catch {
+        return null;
     }
 }
 

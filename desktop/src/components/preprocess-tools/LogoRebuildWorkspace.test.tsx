@@ -152,7 +152,64 @@ describe('LogoRebuildWorkspace', () => {
     expect((screen.getByLabelText('Cân bằng độ sáng cho artwork phẳng không đều màu') as HTMLInputElement).checked).toBe(false);
     expect(screen.queryByText(/Khử hạt chưa được PrynX core áp dụng/i)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Đen trắng' }));
+    // §LR4.06: đen trắng mặc định khử hạt 0; hint review chỉ hiện khi user tự tăng.
+    fireEvent.change(screen.getByLabelText('Khử hạt nhỏ'), { target: { value: '3' } });
     expect(screen.getByText(/Khử hạt chưa được PrynX core áp dụng/i)).toBeTruthy();
+  });
+
+  it('đen trắng mặc định khử hạt 0, quay về logo màu khôi phục mặc định (§LR4.06)', async () => {
+    render(<LogoRebuildWorkspace />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Đen trắng' })).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Đen trắng' }));
+    expect((screen.getByLabelText('Khử hạt nhỏ') as HTMLInputElement).value).toBe('0');
+    expect(screen.queryByText(/Khử hạt chưa được PrynX core áp dụng/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Logo màu' }));
+    expect((screen.getByLabelText('Khử hạt nhỏ') as HTMLInputElement).value).toBe('4');
+  });
+
+  it('hạ khử hạt mặc định về 0 khi preflight phát hiện ảnh nhỏ sẽ bị phóng to (§LR4.01)', async () => {
+    // Mock mặc định trả nguồn 320×180 — cạnh ngắn < 600 nên backend sẽ upscale NEAREST.
+    render(<LogoRebuildWorkspace />);
+    const file = new File(['png-data'], 'logo-nho.png', { type: 'image/png' });
+    fireEvent.change(screen.getByLabelText('Chọn ảnh có logo'), { target: { files: [file] } });
+
+    await waitFor(() => expect((screen.getByLabelText('Khử hạt nhỏ') as HTMLInputElement).value).toBe('0'));
+    expect(screen.getByText(/khử hạt đã đặt về 0 để giữ dấu và chi tiết nhỏ/i)).toBeTruthy();
+  });
+
+  it('giữ khử hạt mặc định 4 với ảnh đủ lớn không cần upscale (§LR4.01)', async () => {
+    vi.mocked(preflightLogoRebuild).mockResolvedValue({
+      status: 'ready',
+      source: {
+        width_px: 1600,
+        height_px: 900,
+        mode: 'RGB',
+        format: 'PNG',
+        file_size_bytes: 8,
+        has_alpha: false,
+        has_icc_profile: false,
+        dpi: null,
+      },
+      settings: {
+        mode: 'fixed_palette',
+        engine: 'prynx_core',
+        palette: ['#000000'],
+        smoothing: 0,
+        despeckle_size_px: 4,
+        illumination_correction: false,
+      },
+      palette_suggestions: [{ color: '#233d69', coverage_ratio: 1 }],
+      warnings: [],
+      limitations: [],
+    });
+    render(<LogoRebuildWorkspace />);
+    const file = new File(['png-data'], 'logo-scan-lon.png', { type: 'image/png' });
+    fireEvent.change(screen.getByLabelText('Chọn ảnh có logo'), { target: { files: [file] } });
+
+    await screen.findByRole('button', { name: 'Áp dụng gợi ý' });
+    expect((screen.getByLabelText('Khử hạt nhỏ') as HTMLInputElement).value).toBe('4');
   });
 
   it('giữ workspace trong viewport và cuộn độc lập hai cột nội dung dài', async () => {

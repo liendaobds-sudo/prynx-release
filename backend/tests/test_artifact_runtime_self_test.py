@@ -530,22 +530,16 @@ def test_release_gui_never_offers_stale_sidecar_packaging():
     assert "Build nhanh: bỏ qua biên dịch backend" not in source
 
 
-def test_release_gui_preserves_publisher_trust_fields_when_saving():
+def test_release_gui_never_mutates_tracked_publisher_config():
     source = (Path(__file__).parents[2] / "quanly_phathanh.ps1").read_text(
         encoding="utf-8-sig"
     )
-    save_start = source.index("function Save-Config")
-    save_end = source.index("# ---- NGUON CHAN LY DUY NHAT", save_start)
-    save_config = source[save_start:save_end]
 
-    assert "Get-Content -LiteralPath $CONFIG -Raw | ConvertFrom-Json" in save_config
-    assert "$saved.SourceRepo" in save_config
-    assert "$saved.ReleaseTargetCommit" in save_config
-    assert "[string]$saved.Repo -eq $repo" in save_config
-    assert "[string]$saved.Version -eq $version" in save_config
-    assert "$saved.Repo = $repo" in save_config
-    assert "$saved.Version = $version" in save_config
-    assert "@{ Repo = $txtRepo.Text; Version = $txtVer.Text }" not in save_config
+    assert "function Save-Config" not in source
+    assert "Set-Content -LiteralPath $CONFIG" not in source
+    assert "$saved.SourceRepo" not in source
+    assert "$saved.ReleaseTargetCommit" not in source
+    assert "$txtVer.ReadOnly = $true" in source
 
 
 def test_installed_verifier_requires_manifest_build_attestation_before_install():

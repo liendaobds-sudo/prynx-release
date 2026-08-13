@@ -270,6 +270,17 @@ describe('Viewer — định tuyến render màu chính xác', () => {
         )).toBeCloseTo(physicalScale, 8);
     });
 
+    it('giữ nguyên sàn 24 DPI khi request viewport được chuẩn hoá lần hai', () => {
+        // Trang Standee fit khoảng 10%: compositor tính clip ở 24 DPI. Nếu request
+        // 24 DPI bị lượng tử lại thành 32 DPI trên màn 92 PPI, nội dung sẽ phóng 4/3
+        // rồi bị khung tile cắt mất mép phải và phần dưới.
+        const standeeFitZoom = 0.1;
+        const requestScale = accurateViewerRequestScale(standeeFitZoom, 92);
+
+        expect(requestScale).toBe(24 / 96);
+        expect(accurateViewerDpi(requestScale, 92)).toBe(24);
+    });
+
     it('giữ bucket 12 DPI quanh Raw DPI thay vì tạo cache miss theo từng wheel', () => {
         const targetScale = (92 * 1.25) / 96;
         expect(accurateViewerDpi(targetScale, 92)).toBe(116);

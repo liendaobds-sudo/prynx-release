@@ -63,6 +63,7 @@ def test_api_detect_shape_invalid():
     data = response.json()
     assert data["success"] == False
     assert "shapes" in data
+    assert data["hasValidDie"] is None
 
 def test_start_vdp_job_invalid():
     """Test vdp generation with invalid input"""

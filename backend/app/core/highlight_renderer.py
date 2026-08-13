@@ -39,7 +39,34 @@ class HighlightRenderer:
         else:
             bgr = image
 
-        cv2.imwrite(str(filepath), bgr)
+        if not cv2.imwrite(str(filepath), bgr):
+            # OpenCV trả False (không ném exception) khi codec/đĩa ghi thất bại.
+            # Nâng thành lỗi để pipeline rollback PageResult và dọn artifact dở dang.
+            raise OSError(f"Không ghi được ảnh khác biệt: {filepath}")
+        logger.info(f"Saved highlight: {filepath}")
+
+        return result_access_url(f"/results/{job_id}/{filename}")
+
+    def save_highlighted_png_bytes(
+        self,
+        png_bytes: bytes,
+        job_id: str,
+        page_number: int,
+    ) -> str:
+        """PERF (audit 2026-08-13 §PB-2): ghi PNG đã được worker so sánh encode sẵn.
+
+        Encode (phần tốn CPU) chạy trong pool so-ảnh; main thread chỉ ghi bytes để
+        rút ngắn sàn tuần tự của pipeline trên tài liệu dài. Lỗi ghi đĩa ném OSError
+        tự nhiên — cùng đường rollback/dọn artifact với ``save_highlighted_image``.
+        """
+        output_dir = Path(settings.RESULTS_DIR) / str(job_id)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        filename = f"page_{page_number}_diff.png"
+        filepath = output_dir / filename
+
+        with open(filepath, "wb") as f:
+            f.write(png_bytes)
         logger.info(f"Saved highlight: {filepath}")
 
         return result_access_url(f"/results/{job_id}/{filename}")

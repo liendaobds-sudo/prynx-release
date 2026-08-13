@@ -22,6 +22,12 @@ interface RenderOptions {
     taskMode?: 'nup' | 'step_repeat' | 'booklet';
     markType?: 'none' | 'corners' | 'guillotine';
     rectangleStickerInking?: boolean;
+    showImpositionUnitSelector?: boolean;
+    hasValidDie?: boolean | null;
+    cutType?: 'default' | 'one_dao';
+    dieSizeMode?: 'die' | 'page';
+    gridStrategy?: 'optimal_auto' | 'simple_auto' | 'manual';
+    fillBlockGap?: number;
 }
 
 afterEach(() => {
@@ -35,6 +41,7 @@ function renderGridSettings({
     layoutType = 'sequential',
     duplexFlow = 'normal',
     taskMode = 'nup',
+    showImpositionUnitSelector = true,
 }: RenderOptions = {}) {
     localStorage.clear();
     const store = createImposerSettingsStore();
@@ -75,6 +82,7 @@ function renderGridSettings({
         setDetectedShapesByPage: () => undefined,
         viewerActivePage: 1,
         viewerPageOrder: null,
+        showImpositionUnitSelector,
     };
 
     const view = render(
@@ -92,6 +100,11 @@ function renderAdvancedSettings({
     taskMode = 'nup',
     markType = 'guillotine',
     rectangleStickerInking = false,
+    hasValidDie = null,
+    cutType = 'default',
+    dieSizeMode = 'die',
+    gridStrategy = 'optimal_auto',
+    fillBlockGap = 0,
 }: RenderOptions = {}) {
     localStorage.clear();
     const store = createImposerSettingsStore();
@@ -102,6 +115,10 @@ function renderAdvancedSettings({
         duplexFlow,
         taskMode,
         markType,
+        cutType,
+        dieSizeMode,
+        gridStrategy,
+        fillBlockGap,
         mixedExcessPercent: 0,
     });
     const view = render(
@@ -110,6 +127,7 @@ function renderAdvancedSettings({
                 activeTool={activeTool}
                 sourceTotalPages={4}
                 rectangleStickerInking={rectangleStickerInking}
+                hasValidDie={hasValidDie}
             />
         </ImposerSettingsContext.Provider>,
     );
@@ -117,6 +135,14 @@ function renderAdvancedSettings({
 }
 
 describe('GridSettingsSection — Dàn nhiều kích thước', () => {
+    it('ẩn lựa chọn đơn vị khi file không có khuôn bế hợp lệ', () => {
+        renderGridSettings({
+            activeTool: 'sticker_imposer',
+            showImpositionUnitSelector: false,
+        });
+        expect(screen.queryByText('Đơn vị bình')).toBeNull();
+    });
+
     it('dropdown cùng khổ chỉ giữ ba cách ráp nghiệp vụ', () => {
         renderGridSettings({ activeTool: 'nup' });
 
@@ -181,9 +207,15 @@ describe('GridSettingsSection — Dàn nhiều kích thước', () => {
 });
 
 describe('AdvancedSettingsSection — Đối đầu xen kẽ (Inking)', () => {
+    function openInkingSettings() {
+        const button = screen.getByRole('button', { name: 'Đối đầu xen kẽ (Inking)' });
+        if (button.getAttribute('aria-expanded') === 'false') fireEvent.click(button);
+    }
+
     it('là thiết lập riêng, giữ nguyên Cách xếp và cập nhật kiểu xoay', () => {
         const { store } = renderAdvancedSettings({ activeTool: 'nup', layoutType: 'sequential' });
 
+        openInkingSettings();
         const select = screen.getByRole('combobox', { name: 'Xoay đối đầu xen kẽ (Inking)' });
         expect(Array.from((select as HTMLSelectElement).options).map(option => option.value)).toEqual([
             'none',
@@ -223,6 +255,7 @@ describe('AdvancedSettingsSection — Đối đầu xen kẽ (Inking)', () => {
             rectangleStickerInking: true,
         });
 
+        openInkingSettings();
         const select = screen.getByRole('combobox', { name: 'Xoay đối đầu xen kẽ (Inking)' });
         fireEvent.change(select, { target: { value: 'column' } });
         expect(store.getState().alternateRotation).toBe('column');
@@ -237,6 +270,64 @@ describe('AdvancedSettingsSection — Đối đầu xen kẽ (Inking)', () => {
         });
 
         expect(screen.queryByRole('combobox', { name: 'Xoay đối đầu xen kẽ (Inking)' })).toBeNull();
+    });
+});
+
+describe('AdvancedSettingsSection — thiết lập 1 Dao', () => {
+    function openCutSettings() {
+        const button = screen.getByRole('button', { name: /Định vị.*Cắt/i });
+        if (button.getAttribute('aria-expanded') === 'false') fireEvent.click(button);
+        return button;
+    }
+
+    it('file không khuôn chỉ báo dùng kích thước trang và không hiện lựa chọn khuôn cũ', () => {
+        renderAdvancedSettings({
+            activeTool: 'sticker_imposer',
+            cutType: 'one_dao',
+            dieSizeMode: 'die',
+            hasValidDie: false,
+        });
+        openCutSettings();
+
+        expect(screen.queryByRole('option', { name: 'Theo khuôn có sẵn' })).toBeNull();
+        expect(screen.getByText('Không có đường bế hợp lệ — tự dùng kích thước trang')).toBeTruthy();
+        expect(screen.getByText('CO/MỞ')).toBeTruthy();
+    });
+
+    it('file có khuôn mới hiện đủ hai kiểu khuôn', () => {
+        renderAdvancedSettings({
+            activeTool: 'sticker_imposer',
+            cutType: 'one_dao',
+            hasValidDie: true,
+        });
+        openCutSettings();
+
+        expect(screen.getByRole('option', { name: 'Theo khuôn có sẵn' })).toBeTruthy();
+        expect(screen.getByRole('option', { name: 'Theo kích thước trang' })).toBeTruthy();
+        expect(screen.queryByTestId('die-size-status')).toBeNull();
+    });
+
+    it('chỉ hiện KC khối phụ cho Xếp tối ưu', () => {
+        const optimal = renderAdvancedSettings({
+            activeTool: 'sticker_imposer',
+            cutType: 'one_dao',
+            hasValidDie: true,
+            gridStrategy: 'optimal_auto',
+        });
+        const cutButton = openCutSettings();
+        const gapInput = screen.getByLabelText(/KC khối phụ/i);
+        const cutContent = document.getElementById(cutButton.getAttribute('aria-controls') || '');
+        expect(cutContent?.contains(gapInput)).toBe(true);
+
+        optimal.unmount();
+        renderAdvancedSettings({
+            activeTool: 'sticker_imposer',
+            cutType: 'one_dao',
+            hasValidDie: true,
+            gridStrategy: 'simple_auto',
+        });
+        openCutSettings();
+        expect(screen.queryByLabelText(/KC khối phụ/i)).toBeNull();
     });
 });
 

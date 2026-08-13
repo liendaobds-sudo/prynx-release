@@ -160,8 +160,9 @@ describe('danh mục i18n', () => {
   it('workspace Logo đổi sang English qua đúng namespace lúc runtime', async () => {
     try {
       await i18n.changeLanguage('en');
-      expect(tv('Phục hồi & Vector hóa Logo', 'preprocess.logoRebuild')).toBe(
-        'Restore & Vectorize Logo',
+      // §LR4.07: engine chỉ nội suy NEAREST — copy không được hứa "phục hồi".
+      expect(tv('Vector hóa Logo', 'preprocess.logoRebuild')).toBe(
+        'Vectorize Logo',
       );
       expect(tv('Chọn ảnh có logo', 'preprocess.logoRebuild')).toBe('Choose a logo image');
       expect(tv('Không kiểm tra được engine', 'preprocess.logoRebuild')).toBe(

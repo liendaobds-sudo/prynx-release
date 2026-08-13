@@ -8,36 +8,14 @@ $CONFIG = Join-Path $ROOT "publisher.config.json"
 $KEY_FILE = "$env:USERPROFILE\.tauri\prynx.key"
 $SECRET_STORE_SCRIPT = Join-Path $ROOT "scripts\release_secret_store.ps1"
 $SECRET_SETUP_SCRIPT = Join-Path $ROOT "scripts\setup_release_secrets.ps1"
+$RELEASE_CONTROLLER = Join-Path $ROOT "scripts\release_controller.ps1"
+$RELEASE_STATE_ROOT = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "PrynX\release-runs"
 . $SECRET_STORE_SCRIPT
 
-# ---- Doc/ghi cau hinh (nho repo + version) ----
-$cfg = @{ Repo = ""; Version = "1.0.1" }
+# ---- Đọc cấu hình phát hành; GUI không sửa file tracked khi bấm build/publish ----
+$cfg = @{ Repo = "" }
 if (Test-Path $CONFIG) {
-    try { $j = Get-Content $CONFIG -Raw | ConvertFrom-Json; if ($j.Repo) { $cfg.Repo = $j.Repo }; if ($j.Version) { $cfg.Version = $j.Version } } catch {}
-}
-function Save-Config {
-    # BUILD (audit 2026-08-12 REL.GUI): chỉ cập nhật trường do GUI sở hữu; giữ nguyên
-    # SourceRepo/ReleaseTargetCommit và mọi trường xác thực phát hành trong tương lai.
-    if (-not (Test-Path -LiteralPath $CONFIG -PathType Leaf)) {
-        throw "Không tìm thấy cấu hình phát hành: $CONFIG"
-    }
-    try {
-        $saved = Get-Content -LiteralPath $CONFIG -Raw | ConvertFrom-Json
-    } catch {
-        throw "Không đọc được cấu hình phát hành: $CONFIG"
-    }
-    if ([string]::IsNullOrWhiteSpace([string]$saved.SourceRepo) -or
-        [string]::IsNullOrWhiteSpace([string]$saved.ReleaseTargetCommit)) {
-        throw "Cấu hình phát hành thiếu SourceRepo hoặc ReleaseTargetCommit."
-    }
-    $repo = $txtRepo.Text.Trim()
-    $version = $txtVer.Text.Trim()
-    if ([string]$saved.Repo -eq $repo -and [string]$saved.Version -eq $version) {
-        return
-    }
-    $saved.Repo = $repo
-    $saved.Version = $version
-    $saved | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $CONFIG -Encoding utf8
+    try { $j = Get-Content $CONFIG -Raw | ConvertFrom-Json; if ($j.Repo) { $cfg.Repo = $j.Repo } } catch {}
 }
 
 # ---- NGUON CHAN LY DUY NHAT: suy repo phat hanh tu endpoint updater trong tauri.conf.json ----
@@ -54,10 +32,23 @@ function Get-EndpointRepo {
 }
 $DerivedRepo = Get-EndpointRepo
 
+function Get-SourceVersion {
+    $confPath = Join-Path $ROOT "desktop\src-tauri\tauri.conf.json"
+    if (-not (Test-Path -LiteralPath $confPath -PathType Leaf)) { return "" }
+    try {
+        $version = [string](Get-Content -LiteralPath $confPath -Raw | ConvertFrom-Json).version
+        if ($version -match '^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$') {
+            return $version
+        }
+    } catch {}
+    return ""
+}
+$SourceVersion = Get-SourceVersion
+
 # ---- Form ----
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "PrynX — Quản lý phát hành"
-$form.Size = New-Object System.Drawing.Size(640, 640)
+$form.Size = New-Object System.Drawing.Size(640, 700)
 $form.StartPosition = "CenterScreen"
 $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 
@@ -74,8 +65,10 @@ function New-Box($x, $y, $w, $pwd) {
     $form.Controls.Add($t); return $t
 }
 
-New-Label "Phiên bản mới:" 15 18 | Out-Null
-$txtVer = New-Box 150 15 120; $txtVer.Text = $cfg.Version
+# UIUX (audit 2026-08-13 §BR.11): phiên bản public phải được chuẩn bị, đồng bộ và
+# commit trong source trước. Ô này chỉ hiển thị nguồn thật, không còn giả làm thao tác bump version.
+New-Label "Phiên bản đã chuẩn bị trong mã nguồn:" 15 18 | Out-Null
+$txtVer = New-Box 300 15 120; $txtVer.Text = $SourceVersion; $txtVer.ReadOnly = $true
 
 New-Label "Repo phát hành (TỰ ĐỘNG từ tauri.conf.json):" 15 50 | Out-Null
 $txtRepo = New-Box 320 47 290
@@ -132,15 +125,177 @@ $chkReuseNoGs.Width = 595
 $chkReuseNoGs.Checked = $false
 $form.Controls.Add($chkReuseNoGs)
 
+# ---- Trạng thái build nền ----
+$lblRunState = New-Label "Trạng thái: Sẵn sàng" 15 340 410
+$lblRunState.ForeColor = [System.Drawing.Color]::FromArgb(55, 65, 81)
+
+$btnOpenLog = New-Object System.Windows.Forms.Button
+$btnOpenLog.Text = "Mở log"
+$btnOpenLog.Location = New-Object System.Drawing.Point(455, 334); $btnOpenLog.Width = 155
+$btnOpenLog.Enabled = $false
+$form.Controls.Add($btnOpenLog)
+
 # ---- Log ----
 $txtLog = New-Object System.Windows.Forms.TextBox
-$txtLog.Location = New-Object System.Drawing.Point(15, 342); $txtLog.Width = 595; $txtLog.Height = 226
+$txtLog.Location = New-Object System.Drawing.Point(15, 372); $txtLog.Width = 595; $txtLog.Height = 236
 $txtLog.Multiline = $true; $txtLog.ScrollBars = "Vertical"; $txtLog.ReadOnly = $true
 $txtLog.BackColor = [System.Drawing.Color]::FromArgb(24, 24, 27); $txtLog.ForeColor = [System.Drawing.Color]::White
 $txtLog.Font = New-Object System.Drawing.Font("Consolas", 9)
 $form.Controls.Add($txtLog)
 
 function Log($msg) { $txtLog.AppendText((Get-Date -Format "HH:mm:ss") + "  " + $msg + "`r`n") }
+
+$script:LastRunId = ""
+$script:LastRunState = ""
+$script:LastRunLogPath = ""
+
+function Get-ReleaseRunStatus {
+    $latestPath = Join-Path $RELEASE_STATE_ROOT "latest.json"
+    if (-not (Test-Path -LiteralPath $latestPath -PathType Leaf)) { return $null }
+    try { return Get-Content -LiteralPath $latestPath -Raw -Encoding UTF8 | ConvertFrom-Json }
+    catch { return $null }
+}
+
+function Test-ProcessAlive($processId) {
+    if ($null -eq $processId -or [int]$processId -le 0) { return $false }
+    return $null -ne (Get-Process -Id ([int]$processId) -ErrorAction SilentlyContinue)
+}
+
+function Set-BuildControlsEnabled([bool]$enabled) {
+    $btnLocal.Enabled = $enabled
+    $btnPublish.Enabled = $enabled
+    $chkReuseNoGs.Enabled = $enabled
+}
+
+function Refresh-ReleaseRunStatus {
+    $status = Get-ReleaseRunStatus
+    if ($null -eq $status) {
+        $lblRunState.Text = "Trạng thái: Sẵn sàng"
+        Set-BuildControlsEnabled $true
+        return
+    }
+
+    $script:LastRunLogPath = [string]$status.logPath
+    $btnOpenLog.Enabled = -not [string]::IsNullOrWhiteSpace($script:LastRunLogPath) -and
+        (Test-Path -LiteralPath $script:LastRunLogPath -PathType Leaf)
+    $isControllerAlive = Test-ProcessAlive $status.controllerPid
+    $isRunning = [string]$status.state -in @("starting", "running") -and $isControllerAlive
+    Set-BuildControlsEnabled (-not $isRunning)
+
+    if ($isRunning) {
+        $elapsed = [TimeSpan]::FromSeconds([double]$status.durationSeconds)
+        $lblRunState.Text = "Đang chạy: $($status.stage) — $($elapsed.ToString('hh\:mm\:ss'))"
+        $lblRunState.ForeColor = [System.Drawing.Color]::FromArgb(180, 83, 9)
+    }
+    elseif ([string]$status.state -eq "succeeded") {
+        $lblRunState.Text = "Hoàn tất: $($status.message)"
+        $lblRunState.ForeColor = [System.Drawing.Color]::FromArgb(21, 128, 61)
+    }
+    elseif ([string]$status.state -in @("failed", "blocked")) {
+        $lblRunState.Text = "Thất bại: $($status.message)"
+        $lblRunState.ForeColor = [System.Drawing.Color]::FromArgb(185, 28, 28)
+    }
+    else {
+        $lblRunState.Text = "Đã gián đoạn: controller không còn chạy. Mở log để kiểm tra."
+        $lblRunState.ForeColor = [System.Drawing.Color]::FromArgb(185, 28, 28)
+    }
+
+    if ($script:LastRunId -ne [string]$status.runId -or
+        $script:LastRunState -ne [string]$status.state) {
+        $script:LastRunId = [string]$status.runId
+        $script:LastRunState = [string]$status.state
+        Log ("[BUILD] " + $lblRunState.Text)
+    }
+}
+
+function New-SigningPasswordPackage([string]$password) {
+    if ([string]::IsNullOrEmpty($password)) { return "" }
+    $plainBytes = [Text.Encoding]::UTF8.GetBytes($password)
+    try {
+        $protected = [Security.Cryptography.ProtectedData]::Protect(
+            $plainBytes, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        $path = Join-Path ([IO.Path]::GetTempPath()) ("PrynXSigning-" + [guid]::NewGuid().ToString("N") + ".dpapi")
+        [IO.File]::WriteAllText($path, [Convert]::ToBase64String($protected), [Text.Encoding]::ASCII)
+        return $path
+    }
+    finally { [Array]::Clear($plainBytes, 0, $plainBytes.Length) }
+}
+
+function Start-HiddenPowerShell {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    function Quote-ProcessArgument([string]$value) {
+        if ($null -eq $value) { return '""' }
+        if ($value -notmatch '[\s"]') { return $value }
+        return '"' + ([regex]::Replace($value, '(\\*)"', '$1$1\"')) + '"'
+    }
+
+    # Windows PowerShell 5 Start-Process lỗi nếu môi trường có đồng thời Path/PATH.
+    $startInfo = New-Object Diagnostics.ProcessStartInfo
+    $startInfo.FileName = "powershell.exe"
+    $startInfo.Arguments = (@($Arguments | ForEach-Object {
+        Quote-ProcessArgument ([string]$_)
+    }) -join ' ')
+    $startInfo.WorkingDirectory = $ROOT
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    return [Diagnostics.Process]::Start($startInfo)
+}
+
+function Start-ReleaseController {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet("internal", "publish")][string]$Mode,
+        [string]$Version = "",
+        [string]$Notes = "",
+        [switch]$ReusePassedNoGs,
+        [string]$SigningPassword = ""
+    )
+
+    Refresh-ReleaseRunStatus
+    if (-not $btnLocal.Enabled) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Một lượt build/phát hành đang chạy. Hãy đợi hoàn tất hoặc mở log để theo dõi.",
+            "Build đang chạy") | Out-Null
+        return $false
+    }
+    if (-not (Test-Path -LiteralPath $RELEASE_CONTROLLER -PathType Leaf)) {
+        [System.Windows.Forms.MessageBox]::Show("Thiếu release controller: $RELEASE_CONTROLLER", "Không thể build") | Out-Null
+        return $false
+    }
+
+    $passwordPackage = ""
+    try {
+        $args = @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $RELEASE_CONTROLLER,
+            "-Mode", $Mode, "-StateRoot", $RELEASE_STATE_ROOT
+        )
+        if ($Mode -eq "publish") {
+            $notesBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Notes))
+            $args += @("-Version", $Version, "-NotesBase64", $notesBase64)
+            if ($ReusePassedNoGs) { $args += "-ReusePassedNoGs" }
+            $passwordPackage = New-SigningPasswordPackage $SigningPassword
+            if (-not [string]::IsNullOrWhiteSpace($passwordPackage)) {
+                $args += @("-SigningPasswordPath", $passwordPackage)
+            }
+        }
+        # UIUX (audit 2026-08-13 §BR.03/10/12): controller ẩn sống độc lập với GUI,
+        # giữ mutex, log/status và mã thoát; đóng form không giết build.
+        $controllerProcess = Start-HiddenPowerShell -Arguments $args
+        if ($null -eq $controllerProcess) { throw "Không khởi động được release controller." }
+        Set-BuildControlsEnabled $false
+        $lblRunState.Text = "Đang khởi động controller..."
+        Log "Đã khởi động build nền. Có thể đóng cửa sổ này; mở lại vẫn xem được trạng thái."
+        return $true
+    }
+    catch {
+        if ($passwordPackage -and (Test-Path -LiteralPath $passwordPackage)) {
+            Remove-Item -LiteralPath $passwordPackage -Force -ErrorAction SilentlyContinue
+        }
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "Không thể khởi động build") | Out-Null
+        return $false
+    }
+}
 
 function Test-ReleaseSecretStoreReady {
     if (Test-Path -LiteralPath (Resolve-PrynXReleaseSecretStorePath) -PathType Leaf) { return $true }
@@ -158,7 +313,7 @@ if (Test-Path -LiteralPath (Resolve-PrynXReleaseSecretStorePath)) {
 } else {
     Log "[CANH BAO] Chua cau hinh Supabase sb_secret_ cho may build."
 }
-Log "Nhap phien ban + repo, roi bam PHAT HANH. Lan dau hay bam 'Kiem tra GitHub'."
+Log "Phiên bản được đọc từ mã nguồn. Hãy đồng bộ và commit trước khi PHÁT HÀNH."
 
 # ---- Su kien ----
 $btnSecrets.Add_Click({
@@ -191,56 +346,65 @@ $btnList.Add_Click({
     if ([string]::IsNullOrWhiteSpace($out)) { Log "(chua co ban nao / hoac chua dang nhap)" } else { Log $out.Trim() }
 })
 
+$btnOpenLog.Add_Click({
+    if (-not [string]::IsNullOrWhiteSpace($script:LastRunLogPath) -and
+        (Test-Path -LiteralPath $script:LastRunLogPath -PathType Leaf)) {
+        Start-Process notepad.exe -ArgumentList ('"' + $script:LastRunLogPath + '"')
+    }
+})
+
 $btnLocal.Add_Click({
-    if (-not $txtVer.Text.Trim()) {
-        [System.Windows.Forms.MessageBox]::Show("Nhap phien ban moi (vd 1.0.0-beta.12) truoc khi build.", "Thieu phien ban")
+    $version = Get-SourceVersion
+    $txtVer.Text = $version
+    if ([string]::IsNullOrWhiteSpace($version)) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Không đọc được phiên bản hợp lệ từ tauri.conf.json. Hãy chuẩn bị mã nguồn rồi mở lại.",
+            "Thiếu phiên bản")
         return
     }
     $ok = [System.Windows.Forms.MessageBox]::Show(
-        "Build NOI BO v$($txtVer.Text) (test truoc, KHONG upload)?`r`nTao file cai dat trong Ban_Phat_Hanh\`r`nQua trinh co the mat 10-20 phut (chay trong cua so rieng).",
-        "Xac nhan build noi bo", [System.Windows.Forms.MessageBoxButtons]::YesNo)
+        "Build NỘI BỘ v$version (kiểm thử, KHÔNG upload)?`r`nTạo file cài đặt trong Ban_Phat_Hanh\`r`nMột lượt đầy đủ gần đây mất khoảng 60-110 phút (chạy trong cửa sổ riêng).",
+        "Xác nhận build nội bộ", [System.Windows.Forms.MessageBoxButtons]::YesNo)
     if ($ok -ne [System.Windows.Forms.DialogResult]::Yes) { return }
-    Save-Config
     if (-not (Test-ReleaseSecretStoreReady)) { return }
-    $buildScript = Join-Path $ROOT "build_production.ps1"
-    # PHAI truyen -Version: build_production doc tauri.conf; truoc day Build NỘI BỘ
-    # bo qua o phien ban -> installer van mang version cu (vd go .12 van ra .11).
-    $verArg = " -Version `"$($txtVer.Text.Trim())`""
+    # UIUX (audit 2026-08-13 §BR.11): build đúng version hiện có trong source;
+    # không truyền -Version để build script sửa tracked files giữa phiên.
     # KHONG -Release: build installer local, khong ky updater, khong upload.
     # BUILD (audit 2026-08-04 BLD.04): installer noi bo luon bien dich sidecar
     # cung source voi frontend; khong con duong QA voi backend cu.
-    $argList = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$buildScript`"$verArg"
-    Start-Process powershell -ArgumentList $argList
-    Log "Da khoi chay build NOI BO v$($txtVer.Text) trong cua so rieng. File cai dat se nam trong Ban_Phat_Hanh\."
+    [void](Start-ReleaseController -Mode internal -Version $version)
 })
 
 $btnPublish.Add_Click({
-    if (-not $txtVer.Text) { [System.Windows.Forms.MessageBox]::Show("Nhap phien ban truoc.", "Thieu thong tin"); return }
+    $version = Get-SourceVersion
+    $txtVer.Text = $version
+    if ([string]::IsNullOrWhiteSpace($version)) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Không đọc được phiên bản hợp lệ từ tauri.conf.json. Hãy chuẩn bị, đồng bộ và commit mã nguồn trước.",
+            "Thiếu phiên bản")
+        return
+    }
     if (-not $txtRepo.Text) { [System.Windows.Forms.MessageBox]::Show("Nhap repo phat hanh truoc.", "Thieu thong tin"); return }
     $ok = [System.Windows.Forms.MessageBox]::Show(
-        "Phat hanh phien ban " + $txtVer.Text + " len " + $txtRepo.Text + " ?`r`nQua trinh build co the mat 10-20 phut (chay trong cua so rieng).",
-        "Xac nhan phat hanh", [System.Windows.Forms.MessageBoxButtons]::YesNo)
+        "Phát hành phiên bản đã commit " + $version + " lên " + $txtRepo.Text + " ?`r`nHệ thống sẽ kiểm tra GitHub trước khi build. Một lượt đầy đủ gần đây mất khoảng 60-110 phút.",
+        "Xác nhận phát hành", [System.Windows.Forms.MessageBoxButtons]::YesNo)
     if ($ok -ne [System.Windows.Forms.DialogResult]::Yes) { return }
-    Save-Config
     if (-not (Test-ReleaseSecretStoreReady)) { return }
-    # Truyen mat khau qua bien moi truong (khong qua dong lenh)
-    $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $txtPwd.Text
-    $notes = $txtNotes.Text -replace '"', "'"
-    $relScript = Join-Path $ROOT "release_update.ps1"
-    # KHONG truyen -ReleaseRepo: release_update.ps1 tu suy tu endpoint (nguon chan ly duy nhat).
-    $reuseNoGsArg = if ($chkReuseNoGs.Checked) { " -ReusePassedNoGs" } else { "" }
-    $argList = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$relScript`" -Version `"$($txtVer.Text)`" -Notes `"$notes`"$reuseNoGsArg"
-    try {
-        Start-Process powershell -ArgumentList $argList
-    } finally {
-        Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
-    }
-    Log "Da khoi chay build+phat hanh trong cua so rieng. Theo doi tien do o cua so do."
+    [void](Start-ReleaseController -Mode publish -Version $version -Notes $txtNotes.Text `
+        -ReusePassedNoGs:$chkReuseNoGs.Checked -SigningPassword $txtPwd.Text)
+    $txtPwd.Clear()
 })
+
+$statusTimer = New-Object System.Windows.Forms.Timer
+$statusTimer.Interval = 2000
+$statusTimer.Add_Tick({ Refresh-ReleaseRunStatus })
+$statusTimer.Start()
+$form.Add_FormClosed({ $statusTimer.Stop(); $statusTimer.Dispose() })
 
 # Ep form noi len foreground khi hien (neu khong, no co the bi cua so khac che
 # -- console goi bang -WindowStyle Hidden nen form khong tu gianh foreground).
 $form.Add_Shown({
+    Refresh-ReleaseRunStatus
     $form.TopMost = $true
     $form.Activate()
     $form.BringToFront()

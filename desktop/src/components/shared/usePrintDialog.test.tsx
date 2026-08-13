@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { usePrintDialog } from './usePrintDialog';
+import { MAX_PRINT_PREVIEW_BYTES } from './PrintDialog';
 import { calculateSizePreview } from '../../lib/printPreviewLayout';
 
 const mocks = vi.hoisted(() => ({
@@ -18,6 +19,8 @@ const mocks = vi.hoisted(() => ({
     openPrinterProperties: vi.fn(),
     cancelPrintJob: vi.fn(),
     choosePrinterOutputPath: vi.fn(),
+    getPrintPreviewInfo: vi.fn(),
+    renderPrintPreviewPage: vi.fn(),
     getFileArrayBuffer: vi.fn(),
     pdfGetDocument: vi.fn(),
 }));
@@ -33,6 +36,8 @@ vi.mock('../../lib/nativePrint', () => ({
     openPrinterProperties: mocks.openPrinterProperties,
     cancelPrintJob: mocks.cancelPrintJob,
     choosePrinterOutputPath: mocks.choosePrinterOutputPath,
+    getPrintPreviewInfo: mocks.getPrintPreviewInfo,
+    renderPrintPreviewPage: mocks.renderPrintPreviewPage,
 }));
 
 vi.mock('../../lib/utils', () => ({
@@ -74,9 +79,10 @@ interface HarnessProps {
     numPages?: number;
     initialPage?: number;
     selectedPages?: number[];
+    source?: Blob;
 }
 
-function Harness({ numPages = 1, initialPage, selectedPages }: HarnessProps) {
+function Harness({ numPages = 1, initialPage, selectedPages, source }: HarnessProps) {
     const { openPrintDialog, printDialog } = usePrintDialog();
     const [result, setResult] = useState('pending');
     return (
@@ -85,7 +91,7 @@ function Harness({ numPages = 1, initialPage, selectedPages }: HarnessProps) {
                 type="button"
                 onClick={() => {
                     void openPrintDialog({
-                        source: new Blob(['pdf'], { type: 'application/pdf' }),
+                        source: source ?? new Blob(['pdf'], { type: 'application/pdf' }),
                         numPages,
                         initialPage,
                         selectedPages,
@@ -115,6 +121,8 @@ describe('usePrintDialog lifecycle', () => {
         mocks.openPrinterProperties.mockResolvedValue(null);
         mocks.cancelPrintJob.mockResolvedValue(undefined);
         mocks.choosePrinterOutputPath.mockResolvedValue(null);
+        mocks.getPrintPreviewInfo.mockResolvedValue(null);
+        mocks.renderPrintPreviewPage.mockResolvedValue(null);
         // Tái hiện PDF.js lỗi: engine native vẫn phải cho phép nhấn In.
         mocks.getFileArrayBuffer.mockRejectedValue(new Error('preview failed'));
     });
@@ -235,13 +243,20 @@ describe('usePrintDialog lifecycle', () => {
 
         await waitFor(() => expect(mocks.cancelPrintJob).toHaveBeenCalledTimes(1));
         expect(mocks.cancelPrintJob).toHaveBeenCalledWith(expect.stringMatching(/^print-/));
-        await waitFor(() => expect(screen.queryByRole('dialog', { name: 'title' })).toBeNull());
-        expect(screen.getByTestId('result').textContent).toBe('false');
+        expect(screen.getByRole('dialog', { name: 'title' })).toBeTruthy();
+        expect(mocks.deletePrintTemp).not.toHaveBeenCalled();
 
         await act(async () => {
-            direct.resolve(true);
-            await direct.promise;
+            direct.reject(new Error('Đã hủy lệnh in'));
+            try {
+                await direct.promise;
+            } catch { /* UI nhận lỗi hủy */ }
         });
+
+        expect(await screen.findByText('job_failed:Đã hủy lệnh in')).toBeTruthy();
+        expect(screen.getByRole('dialog', { name: 'title' })).toBeTruthy();
+        expect(screen.getByTestId('result').textContent).toBe('pending');
+        expect(mocks.deletePrintTemp).not.toHaveBeenCalled();
     });
 
     it('cho phép xóa rồi nhập danh sách 27-28,30-33 và gửi đúng sáu trang', async () => {
@@ -337,6 +352,109 @@ describe('usePrintDialog lifecycle', () => {
         expect(mocks.printPdfPath).toHaveBeenCalledWith(expect.objectContaining({
             pages: [27, 28, 30, 31, 32, 33],
         }));
+    });
+
+    it('không đóng overlay khi thuộc tính driver đang mở', async () => {
+        const props = deferred<number[] | null>();
+        mocks.openPrinterProperties.mockReturnValue(props.promise);
+
+        render(<Harness />);
+        fireEvent.click(screen.getByRole('button', { name: 'open' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'properties' }));
+        await waitFor(() => expect(mocks.openPrinterProperties).toHaveBeenCalledTimes(1));
+
+        fireEvent.click(screen.getByTestId('print-dialog-overlay'));
+        fireEvent.keyDown(document, { key: 'Escape' });
+        expect(screen.getByRole('dialog', { name: 'title' })).toBeTruthy();
+        expect(screen.getByTestId('result').textContent).toBe('pending');
+        expect((screen.getByRole('button', { name: 'close' }) as HTMLButtonElement).disabled).toBe(true);
+
+        await act(async () => {
+            props.resolve(null);
+            await props.promise;
+        });
+
+        fireEvent.click(screen.getByTestId('print-dialog-overlay'));
+        await waitFor(() => expect(screen.queryByRole('dialog', { name: 'title' })).toBeNull());
+        expect(screen.getByTestId('result').textContent).toBe('false');
+    });
+
+    it('list máy in rỗng vẫn mở hộp và cho thử hộp thoại Windows', async () => {
+        mocks.listPrinters.mockResolvedValue([]);
+        mocks.printPdfPath.mockResolvedValue(true);
+
+        render(<Harness />);
+        fireEvent.click(screen.getByRole('button', { name: 'open' }));
+        expect(await screen.findByText('no_printers')).toBeTruthy();
+        expect((screen.getByRole('button', { name: 'print' }) as HTMLButtonElement).disabled).toBe(true);
+        fireEvent.click(screen.getByRole('button', { name: 'try_system_dialog' }));
+        await waitFor(() => expect(mocks.printPdfPath).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(screen.queryByRole('dialog', { name: 'title' })).toBeNull());
+        expect(screen.getByTestId('result').textContent).toBe('true');
+    });
+
+    it('listPrinters lỗi vẫn mở dialog và ghi log', async () => {
+        mocks.listPrinters.mockRejectedValue(new Error('enum failed'));
+
+        render(<Harness />);
+        fireEvent.click(screen.getByRole('button', { name: 'open' }));
+        expect(await screen.findByRole('dialog', { name: 'title' })).toBeTruthy();
+        await waitFor(() => expect(mocks.logPrintEvent).toHaveBeenCalledWith(
+            expect.stringContaining('listPrinters failed'),
+        ));
+        expect(screen.getByRole('button', { name: 'try_system_dialog' })).toBeTruthy();
+    });
+
+    it('không nhồi PDF lớn vào pdf.js', async () => {
+        const source = new Blob([new Uint8Array(MAX_PRINT_PREVIEW_BYTES + 1)], { type: 'application/pdf' });
+        render(<Harness source={source} />);
+        fireEvent.click(screen.getByRole('button', { name: 'open' }));
+        expect(await screen.findByText('preview_skipped_large')).toBeTruthy();
+        // Đường native được thử trước (theo path); ở đây metadata lỗi → bỏ preview.
+        expect(mocks.getPrintPreviewInfo).toHaveBeenCalledWith('C:\\Temp\\prynx-print.pdf');
+        expect(mocks.pdfGetDocument).not.toHaveBeenCalled();
+        expect(mocks.getFileArrayBuffer).not.toHaveBeenCalled();
+        expect((screen.getByRole('button', { name: 'print' }) as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it('file lớn preview qua engine native theo path, không qua pdf.js', async () => {
+        vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+            scale: vi.fn(),
+            fillRect: vi.fn(),
+            strokeRect: vi.fn(),
+            setLineDash: vi.fn(),
+            drawImage: vi.fn(),
+            save: vi.fn(),
+            restore: vi.fn(),
+            beginPath: vi.fn(),
+            rect: vi.fn(),
+            clip: vi.fn(),
+            fillText: vi.fn(),
+        } as never);
+        mocks.getPrintPreviewInfo.mockResolvedValue({
+            numPages: 3,
+            dims: { '1': { widthPt: 595, heightPt: 842 } },
+        });
+        mocks.renderPrintPreviewPage.mockResolvedValue(new Blob(['png'], { type: 'image/png' }));
+
+        const source = new Blob([new Uint8Array(MAX_PRINT_PREVIEW_BYTES + 1)], { type: 'application/pdf' });
+        render(<Harness source={source} />);
+        fireEvent.click(screen.getByRole('button', { name: 'open' }));
+
+        await waitFor(() => expect(mocks.renderPrintPreviewPage).toHaveBeenCalled());
+        expect(mocks.renderPrintPreviewPage).toHaveBeenCalledWith(
+            'C:\\Temp\\prynx-print.pdf',
+            1,
+            expect.any(Number),
+        );
+        // zoom nhắm cạnh dài ~600px: 600 / (842pt × 96/72) ≈ 0.534, luôn ≤ 1.5.
+        const zoomArg = mocks.renderPrintPreviewPage.mock.calls[0][2] as number;
+        expect(zoomArg).toBeGreaterThan(0);
+        expect(zoomArg).toBeLessThanOrEqual(1.5);
+        expect(mocks.pdfGetDocument).not.toHaveBeenCalled();
+        expect(mocks.getFileArrayBuffer).not.toHaveBeenCalled();
+        expect(screen.getByRole('dialog', { name: 'title' })).toBeTruthy();
+        expect((screen.getByRole('button', { name: 'print' }) as HTMLButtonElement).disabled).toBe(false);
     });
 });
 

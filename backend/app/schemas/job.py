@@ -56,6 +56,15 @@ class JobCreateResponse(BaseModel):
     message: str = "Job đã được tạo thành công"
 
 
+class JobCancelResponse(BaseModel):
+    """Kết quả yêu cầu hủy job Compare; gọi lặp lại vẫn an toàn."""
+
+    job_id: str
+    status: str
+    cancelled: bool
+    message: str
+
+
 # ── Diff Region ─────────────────────────────────────────
 class DiffRegion(BaseModel):
     x: float

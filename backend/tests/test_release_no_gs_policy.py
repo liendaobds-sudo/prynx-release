@@ -20,6 +20,8 @@ from __future__ import annotations
 import json
 import re
 import runpy
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -31,6 +33,7 @@ TAURI_CONFIG = REPO / "desktop" / "src-tauri" / "tauri.conf.json"
 AUDIT = REPO / "scripts" / "gs_dependency_audit.py"
 RELEASE_QA = REPO / "scripts" / "run_release_qa.ps1"
 RELEASE_UPDATE = REPO / "release_update.ps1"
+RELEASE_CONTROLLER = REPO / "scripts" / "release_controller.ps1"
 CLEAN_USER_VERIFIER = REPO / "scripts" / "verify_artifact_clean_user.ps1"
 NOTICE_GENERATOR = REPO / "scripts" / "gen_third_party_notices.py"
 DEV_SETUP = REPO / "setup_dev_env.ps1"
@@ -356,6 +359,208 @@ def test_public_release_requires_committed_version_and_clean_source():
     assert "Assert-ReleaseSourceState -CaptureCommit" in build
 
 
+def test_release_remote_preflight_runs_before_build_and_rechecks_before_upload():
+    """BUILD (audit 2026-08-13 §BR.02): lỗi remote biết sớm không được đợi hơn một giờ."""
+    release = _read(RELEASE_UPDATE)
+    preflight = release.index("# BUILD (audit 2026-08-13 BR.02): nhung loi remote da biet")
+    build_call = release.index('& "$ROOT\\build_production.ps1" @buildArgs')
+    publish = release.index("# ---- 7. Publish len GitHub Releases ----")
+    upload_call = release.index("gh release upload", publish)
+    create_call = release.index("gh release create", publish)
+
+    source_preflight = release.index(
+        "Assert-GitHubCommitAvailable -Repo $sourceRepo -Commit $sourceHead",
+        preflight,
+    )
+    target_preflight = release.index(
+        "Assert-GitHubCommitAvailable -Repo $ReleaseRepo -Commit $releaseTargetCommit",
+        preflight,
+    )
+    state_preflight = release.index(
+        "Assert-GitHubReleaseTagState -Repo $ReleaseRepo -Tag $tag",
+        preflight,
+    )
+    assert preflight < source_preflight < target_preflight < state_preflight < build_call
+
+    source_recheck = release.index(
+        "Assert-GitHubCommitAvailable -Repo $sourceRepo -Commit $manifestCommit",
+        publish,
+    )
+    target_recheck = release.index(
+        "Assert-GitHubCommitAvailable -Repo $ReleaseRepo -Commit $releaseTargetCommit",
+        publish,
+    )
+    state_recheck = release.index(
+        "Assert-GitHubReleaseTagState -Repo $ReleaseRepo -Tag $tag",
+        publish,
+    )
+    assert publish < source_recheck < target_recheck < state_recheck < upload_call
+    assert state_recheck < create_call
+    state_change_guard = release.index(
+        "if ($releaseExists -ne $preflightReleaseExists)",
+        state_recheck,
+    )
+    assert state_recheck < state_change_guard < upload_call
+    assert state_change_guard < create_call
+    assert "elseif ($tagExists)" in release
+    assert "Tag $Tag da ton tai nhung chua co release" in release
+    assert "HTTP\\s+404" in release
+
+
+def test_release_gui_uses_read_only_source_version_without_mutating_config():
+    """UIUX (audit 2026-08-13 §BR.11): GUI hiển thị version, không giả làm bước bump."""
+    gui = _read(REPO / "quanly_phathanh.ps1")
+
+    assert "function Get-SourceVersion" in gui
+    assert "$txtVer.Text = $SourceVersion; $txtVer.ReadOnly = $true" in gui
+    assert "function Save-Config" not in gui
+    assert "Set-Content -LiteralPath $CONFIG" not in gui
+    assert "$saved.Version" not in gui
+    assert '$verArg = " -Version' not in gui
+    assert "Start-ReleaseController -Mode internal -Version $version" in gui
+    assert "Start-ReleaseController -Mode publish -Version $version" in gui
+    assert "function Start-HiddenPowerShell" in gui
+    assert "Diagnostics.ProcessStartInfo" in gui
+    assert "build_production.ps1" not in gui
+    assert "release_update.ps1" not in gui
+
+
+def test_release_controller_owns_mutex_status_log_and_child_exit_code():
+    """BUILD (audit 2026-08-13 §BR.03/10/12): controller không được bắn-và-quên."""
+    controller = _read(RELEASE_CONTROLLER)
+    gui = _read(REPO / "quanly_phathanh.ps1")
+    build = _read(BUILD)
+    release = _read(RELEASE_UPDATE)
+
+    assert "Global\\PrynX-BuildRelease-" in controller
+    assert "$mutex.WaitOne(0, $false)" in controller
+    assert "Write-JsonAtomic" in controller
+    assert 'Join-Path $StateRoot "latest.json"' in controller
+    assert 'Join-Path $runDirectory "build.log"' in controller
+    assert "$childProcess.ExitCode" in controller
+    assert "while (-not $childProcess.HasExited" in controller
+    assert "ProcessStartInfo" in controller
+    assert "StandardOutputEncoding = [Text.Encoding]::UTF8" in controller
+    assert "-EncodedCommand" in controller
+    assert "commandPathBase64" in controller
+    assert "Start-Process -FilePath \"powershell.exe\"" not in controller
+    assert "TAURI_SIGNING_PRIVATE_KEY_PASSWORD" not in gui
+    assert "New-SigningPasswordPackage" in gui
+    assert "ProtectedData]::Protect" in gui
+    assert "ProtectedData]::Unprotect" in controller
+    child_wait = controller.index("$childProcess.WaitForExit()")
+    secret_cleanup = controller.index(
+        "Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+        child_wait,
+    )
+    assert child_wait < secret_cleanup
+    assert "$btnLocal.Enabled = $enabled" in gui
+    assert "$btnPublish.Enabled = $enabled" in gui
+    assert "$statusTimer.Interval = 2000" in gui
+    assert 'Start-Process notepad.exe' in gui
+    assert "Get-StageFromLog" in controller
+    assert "ReadLineAsync" in controller
+    assert "$logWriter.AutoFlush = $true" in controller
+    assert "PRYNX_RELEASE_PROGRESS_PATH" not in build
+    assert "PRYNX_RELEASE_PROGRESS_PATH" not in release
+
+
+def test_release_controller_propagates_child_exit_and_writes_terminal_status(tmp_path: Path):
+    """Chạy controller thật với probe cục bộ; tuyệt đối không gọi build/GitHub production."""
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("không có PowerShell trên máy này")
+
+    probe = tmp_path / "probe.ps1"
+    probe.write_text(
+        '[Console]::OutputEncoding = [Text.Encoding]::UTF8\n'
+        'Write-Output "[1/5] tiến độ"\n'
+        'exit 7\n',
+        encoding="utf-8-sig",
+    )
+    state_root = tmp_path / "state"
+    proc = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(RELEASE_CONTROLLER),
+            "-Mode",
+            "internal",
+            "-StateRoot",
+            str(state_root),
+            "-CommandPath",
+            str(probe),
+        ],
+        cwd=REPO,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 7, (proc.stdout, proc.stderr)
+    status = json.loads((state_root / "latest.json").read_text(encoding="utf-8-sig"))
+    assert status["state"] == "failed"
+    assert status["exitCode"] == 7
+    assert status["stage"] == "Biên dịch backend"
+    assert status["controllerPid"] > 0
+    assert status["childPid"] is None
+    assert Path(status["logPath"]).read_text(encoding="utf-8-sig").strip() == "[1/5] tiến độ"
+
+
+def test_release_controller_binds_publish_version_notes_and_switch(tmp_path: Path):
+    """Hashtable splatting phải giữ đúng ba tham số public, kể cả ghi chú tiếng Việt."""
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("không có PowerShell trên máy này")
+
+    probe = tmp_path / "publish_probe.ps1"
+    probe.write_text(
+        'param([string]$Version, [string]$Notes, [switch]$ReusePassedNoGs)\n'
+        '[Console]::OutputEncoding = [Text.Encoding]::UTF8\n'
+        'Write-Output ("version=" + $Version)\n'
+        'Write-Output ("notes=" + $Notes)\n'
+        'Write-Output ("reuse=" + $ReusePassedNoGs.IsPresent)\n'
+        'exit 0\n',
+        encoding="utf-8-sig",
+    )
+    state_root = tmp_path / "state publish"
+    notes = "Ghi chú có dấu và khoảng trắng"
+    notes_b64 = __import__("base64").b64encode(notes.encode("utf-8")).decode("ascii")
+    proc = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(RELEASE_CONTROLLER),
+            "-Mode",
+            "publish",
+            "-Version",
+            "1.2.3-rc.4",
+            "-NotesBase64",
+            notes_b64,
+            "-ReusePassedNoGs",
+            "-StateRoot",
+            str(state_root),
+            "-CommandPath",
+            str(probe),
+        ],
+        cwd=REPO,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
+    status = json.loads((state_root / "latest.json").read_text(encoding="utf-8-sig"))
+    log = Path(status["logPath"]).read_text(encoding="utf-8-sig")
+    assert "version=1.2.3-rc.4" in log
+    assert f"notes={notes}" in log
+    assert "reuse=True" in log
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Bất biến encoding của script phát hành
 # ─────────────────────────────────────────────────────────────────────────────
@@ -379,6 +584,7 @@ _PARSE_SNIPPET = (
         pytest.param(REPO / "scripts" / "run_release_qa.ps1", id="run_release_qa"),
         pytest.param(REPO / "release_update.ps1", id="release_update"),
         pytest.param(REPO / "quanly_phathanh.ps1", id="quanly_phathanh"),
+        pytest.param(RELEASE_CONTROLLER, id="release_controller"),
     ],
 )
 def test_release_scripts_parse_under_windows_powershell(script):

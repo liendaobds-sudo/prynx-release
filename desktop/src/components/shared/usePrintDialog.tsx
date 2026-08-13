@@ -212,6 +212,9 @@ export function usePrintDialog() {
     const printDialog = state ? (
         <PrintDialog
             source={state.req.source}
+            // PRINTWIN (audit 2026-08-13 §PRINTWIN.02): path đã resolve — preview file
+            // lớn raster từng trang qua engine native thay vì nạp cả blob vào pdf.js.
+            filePath={state.filePath}
             numPages={state.req.numPages}
             printers={state.printers}
             jobId={state.jobId}

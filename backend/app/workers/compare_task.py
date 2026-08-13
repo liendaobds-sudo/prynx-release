@@ -47,11 +47,24 @@ def run_comparison(self, job_id: str):
             job_id,
             db,
             on_progress=publish_progress,
+            raise_on_cancel=True,
         )
+    except InterruptedError:
+        # Hủy là trạng thái kết thúc hợp lệ, không retry Celery như lỗi tạm thời.
+        logger.info("Job %s đã hủy", job_id)
     except Exception as e:
         logger.exception(f"Job {job_id} failed: {e}")
         from app.models.job import ComparisonJob
+        db.expire_all()
         job = db.query(ComparisonJob).filter(ComparisonJob.id == job_id).first()
+        if job and job.status == "cancelled":
+            publish_progress(
+                job_id,
+                job.progress or 0,
+                status="cancelled",
+                message="Đã hủy so sánh theo yêu cầu của người dùng.",
+            )
+            return
         if job:
             job.status = "failed"
             job.error_message = str(e)

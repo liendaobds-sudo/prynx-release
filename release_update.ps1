@@ -231,6 +231,90 @@ function Assert-GitHubTagTargetsCommit {
     }
 }
 
+function Test-GitHubReleaseExists {
+    param(
+        [Parameter(Mandatory = $true)][string]$Repo,
+        [Parameter(Mandatory = $true)][string]$Tag
+    )
+
+    $encodedTag = [System.Uri]::EscapeDataString($Tag)
+    # Windows PowerShell 5 bien native stderr thanh ErrorRecord. Tam ha EAP de
+    # phan loai 404 co chu dich, roi khoi phuc ngay ca khi gh nem loi.
+    $previousEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $raw = @(& gh api "repos/$Repo/releases/tags/$encodedTag" 2>&1)
+        $apiExit = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousEap
+    }
+    if ($apiExit -eq 0) {
+        try {
+            $release = ($raw -join "`n") | ConvertFrom-Json -ErrorAction Stop
+        }
+        catch {
+            throw "GitHub release $Tag tra ve JSON khong hop le; KHONG tiep tuc."
+        }
+        if ([string]$release.tag_name -ne $Tag) {
+            throw "GitHub tra ve release tag $($release.tag_name), khong khop $Tag; KHONG tiep tuc."
+        }
+        return $true
+    }
+
+    # Chi HTTP 404 moi co nghia release chua ton tai. Loi mang/quyen/API phai fail-closed.
+    $failure = $raw -join "`n"
+    if ($failure -match '(?i)\bHTTP\s+404\b') { return $false }
+    throw "Khong kiem tra duoc release $Tag tren GitHub repo $Repo; KHONG tiep tuc."
+}
+
+function Test-GitHubTagExists {
+    param(
+        [Parameter(Mandatory = $true)][string]$Repo,
+        [Parameter(Mandatory = $true)][string]$Tag
+    )
+
+    # matching-refs tra mang rong voi HTTP 200 khi tag chua co, nen khong can bien
+    # moi loi gh thanh "khong ton tai". Loc lai exact ref de tranh trung prefix.
+    $encodedTag = [System.Uri]::EscapeDataString($Tag)
+    $raw = @(& gh api "repos/$Repo/git/matching-refs/tags/$encodedTag" 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Khong kiem tra duoc tag $Tag tren GitHub repo $Repo; KHONG tiep tuc."
+    }
+    try {
+        $refs = @(($raw -join "`n") | ConvertFrom-Json -ErrorAction Stop)
+    }
+    catch {
+        throw "Danh sach tag $Tag tu GitHub khong hop le; KHONG tiep tuc."
+    }
+    $exactRefs = @($refs | Where-Object { [string]$_.ref -eq "refs/tags/$Tag" })
+    if ($exactRefs.Count -gt 1) {
+        throw "GitHub tra ve nhieu ref trung tag $Tag; KHONG tiep tuc."
+    }
+    return ($exactRefs.Count -eq 1)
+}
+
+function Assert-GitHubReleaseTagState {
+    param(
+        [Parameter(Mandatory = $true)][string]$Repo,
+        [Parameter(Mandatory = $true)][string]$Tag,
+        [Parameter(Mandatory = $true)][string]$ExpectedCommit
+    )
+
+    $releaseExists = Test-GitHubReleaseExists -Repo $Repo -Tag $Tag
+    $tagExists = Test-GitHubTagExists -Repo $Repo -Tag $Tag
+    if ($releaseExists) {
+        if (-not $tagExists) {
+            throw "Release $Tag da ton tai nhung tag GitHub bi thieu; KHONG clobber."
+        }
+        Assert-GitHubTagTargetsCommit -Repo $Repo -Tag $Tag -ExpectedCommit $ExpectedCommit
+    }
+    elseif ($tagExists) {
+        throw "Tag $Tag da ton tai nhung chua co release; KHONG tu suy de ghi de. Hay xu ly tag nay truoc."
+    }
+    return $releaseExists
+}
+
 function Assert-ReleaseManifestAttestation {
     param([Parameter(Mandatory = $true)][string]$ManifestPath)
 
@@ -306,6 +390,26 @@ if (-not $gh) { throw "Chua co GitHub CLI (gh). Cai: winget install GitHub.cli  
 # Kiem tra gh da dang nhap
 & gh auth status *> $null
 if ($LASTEXITCODE -ne 0) { throw "gh chua dang nhap. Chay: gh auth login" }
+
+# BUILD (audit 2026-08-13 BR.02): nhung loi remote da biet phai dung truoc
+# Nuitka/Tauri/runtime verifier. Van kiem lai cung cac bat bien ngay truoc upload.
+$sourceHeadLines = @(& git -C $ROOT rev-parse HEAD 2>$null)
+if ($LASTEXITCODE -ne 0 -or $sourceHeadLines.Count -ne 1 -or
+    $sourceHeadLines[0].Trim() -notmatch '^[0-9a-fA-F]{40}$') {
+    throw "Khong doc duoc source commit hien tai de preflight GitHub."
+}
+$sourceHead = $sourceHeadLines[0].Trim().ToLowerInvariant()
+$tag = "v$Version"
+Assert-GitHubCommitAvailable -Repo $sourceRepo -Commit $sourceHead
+Assert-GitHubCommitAvailable -Repo $ReleaseRepo -Commit $releaseTargetCommit
+$preflightReleaseExists = Assert-GitHubReleaseTagState -Repo $ReleaseRepo -Tag $tag `
+    -ExpectedCommit $releaseTargetCommit
+if ($preflightReleaseExists) {
+    Write-Host "  [OK] GitHub preflight: source/target/release $tag hop le." -ForegroundColor Green
+}
+else {
+    Write-Host "  [OK] GitHub preflight: source/target hop le; $tag san sang tao moi." -ForegroundColor Green
+}
 
 # ---- 1. Chot duong dan khoa; build chi doc noi dung ngay truoc Tauri ----
 Write-Host "  [OK] Da tim thay file khoa ky updater." -ForegroundColor Green
@@ -446,7 +550,6 @@ if ($runtimeFreeProGate -ne "enabled+free-denied-prepress.preflight") {
 Write-Host "  [OK] Runtime verifier dat; manifest da dong bang chung." -ForegroundColor Green
 
 # ---- 6. Tao latest.json ----
-$tag = "v$Version"
 $downloadUrl = "https://github.com/$ReleaseRepo/releases/download/$tag/$($setup.Name)"
 $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 if ([string]::IsNullOrWhiteSpace($Notes)) { $Notes = "PrynX $Version" }
@@ -481,13 +584,12 @@ Assert-GitHubCommitAvailable -Repo $sourceRepo -Commit $manifestCommit
 # Repo updater public chi chua asset. Tag release luon neo vao commit README da
 # pin, va commit pin phai ton tai truoc khi tao/cap nhat release.
 Assert-GitHubCommitAvailable -Repo $ReleaseRepo -Commit $releaseTargetCommit
-# AN TOAN: KHONG xoa release cu truoc (tranh khoang trong neu create loi -> client mat 'latest').
-# Tam tat Stop de gh.exe stderr ("release not found") khong abort script.
-$prevEAP = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-$null = & gh release view $tag --repo $ReleaseRepo 2>&1
-$releaseExists = ($LASTEXITCODE -eq 0)
-$ErrorActionPreference = $prevEAP
+# BUILD (audit 2026-08-13 BR.02): recheck de chan HEAD/tag/release doi trong luc build.
+$releaseExists = Assert-GitHubReleaseTagState -Repo $ReleaseRepo -Tag $tag `
+    -ExpectedCommit $releaseTargetCommit
+if ($releaseExists -ne $preflightReleaseExists) {
+    throw "Trang thai release $tag da thay doi trong luc build; KHONG tu chuyen tao moi/ghi de. Hay chay lai preflight."
+}
 
 if ($releaseExists) {
     Write-Host "  [..] Release $tag da ton tai -> ghi de asset (clobber)..." -ForegroundColor Yellow

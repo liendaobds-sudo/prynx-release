@@ -331,7 +331,14 @@ async def inspect_pdf(request: InspectByIdRequest):
         from app.core.preflight_rules.ink import _normalize_tac_threshold
         tac_threshold = _normalize_tac_threshold(request.tac_threshold)
         engine = PreflightEngine()
-        report = engine.run(pdf_path, rules=request.rules, tac_threshold=tac_threshold)
+        # PERF (audit 2026-08-13 §FONT.PERF.1): Preflight mở/duyệt PDF đồng bộ;
+        # không được giữ event loop trong lúc sidecar đang quét tài liệu.
+        report = await run_in_threadpool(
+            engine.run,
+            pdf_path,
+            rules=request.rules,
+            tac_threshold=tac_threshold,
+        )
         resp = _report_to_response(report)
         resp.summary["tac_threshold"] = tac_threshold
         return resp
@@ -356,7 +363,9 @@ async def inspect_uploaded_pdf(file: UploadFile = File(...)):
 
     try:
         engine = PreflightEngine()
-        report = engine.run(file_path)
+        # PERF (audit 2026-08-13 §FONT.PERF.1): giữ cả đường upload trực tiếp
+        # không chặn các request khác của sidecar.
+        report = await run_in_threadpool(engine.run, file_path)
         return _report_to_response(report)
     except Exception as e:
         logger.exception("Preflight inspect-upload failed")
@@ -366,6 +375,7 @@ async def inspect_uploaded_pdf(file: UploadFile = File(...)):
 @router.post("/preflight/fix", response_model=FixResponse)
 async def fix_pdf(
     request: FixRequest,
+    http_request: Request,
     license_info: dict = Depends(require_license),
 ):
     """
@@ -377,9 +387,30 @@ async def fix_pdf(
 
     try:
         engine = ActionEngine()
-        result = await engine.execute(pdf_path, request.action_id, request.params, original_name=original_name)
+        action_task = asyncio.create_task(
+            engine.execute(pdf_path, request.action_id, request.params, original_name=original_name)
+        )
+
+        async def watch_disconnect() -> None:
+            """AbortController phía UI phải hủy cả worker outline ở backend."""
+            while not action_task.done():
+                if await http_request.is_disconnected():
+                    action_task.cancel()
+                    return
+                await asyncio.sleep(0.1)
+
+        # PERF (audit 2026-08-13 §FONT.UI.2): ActionEngine đã có token cooperative;
+        # watcher này nối client disconnect vào token thay vì chỉ dừng spinner UI.
+        disconnect_task = asyncio.create_task(watch_disconnect())
+        try:
+            result = await action_task
+        finally:
+            disconnect_task.cancel()
+            await asyncio.gather(disconnect_task, return_exceptions=True)
 
         return _action_result_to_fix_response(result)
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         logger.exception("Preflight fix failed")
         raise HTTPException(status_code=500, detail=f"Lỗi sửa file ({type(e).__name__})")

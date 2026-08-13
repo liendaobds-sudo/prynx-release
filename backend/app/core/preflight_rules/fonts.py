@@ -33,6 +33,25 @@ def _font_names_match(span_font: str, object_ref: str) -> bool:
     return span == ref
 
 
+def _font_display_name(base_font: str) -> str:
+    """Bỏ ký hiệu PDF và subset prefix khỏi tên font hiển thị."""
+    token = (base_font or "").strip().lstrip("/")
+    if "+" in token:
+        prefix, remainder = token.split("+", 1)
+        if len(prefix) == 6 and prefix.isalpha():
+            token = remainder
+    return token
+
+
+def _font_identity(base_font: str) -> str:
+    """Tạo khóa ổn định để gộp cùng một font qua nhiều trang.
+
+    Chỉ bỏ subset prefix (``ABCDEF+``). Không bỏ hậu tố style vì Regular/Bold/
+    Italic là các font face khác nhau và có thể có trạng thái nhúng khác nhau.
+    """
+    return _font_display_name(base_font).casefold()
+
+
 class FontRulesMixin:
     def _check_fonts(self, pdf: pikepdf.Pdf, page_nums: list[int] = None) -> list[PreflightIssue]:
         """Check all fonts in the PDF for embedding status.
@@ -48,6 +67,7 @@ class FontRulesMixin:
         total_fonts = 0
         not_embedded = 0
         seen_fonts = set()
+        unique_fonts: dict[str, dict] = {}
 
         page_count = len(pdf.pages)
         target_pages = [p - 1 for p in page_nums] if page_nums else range(page_count)
@@ -57,17 +77,34 @@ class FontRulesMixin:
 
             for font_name, font_obj in iter_fonts(page, pdf):
                 base_font = str(font_obj.get("/BaseFont", font_name))
-                # Dedupe theo BaseFont + trang (một font dùng nhiều nơi chỉ báo 1 lần).
-                font_key = f"{base_font}_{page_num}"
+                identity = _font_identity(base_font) or str(font_name).casefold()
+                # Các field cũ vẫn đếm occurrence theo BaseFont thô + trang để
+                # không đổi hợp đồng của Preflight tổng quát. Hai subset object
+                # cùng họ trên một trang vẫn phải được xét riêng: một object có
+                # thể nhúng, object kia thiếu dữ liệu glyph.
+                font_key = (base_font.casefold(), page_num)
                 if font_key in seen_fonts:
                     continue
                 seen_fonts.add(font_key)
                 total_fonts += 1
 
-                if self._font_is_embedded(font_obj, pdf):
+                embedded = self._font_is_embedded(font_obj, pdf)
+                unique = unique_fonts.setdefault(identity, {
+                    "name": _font_display_name(base_font),
+                    "embedded": True,
+                    "pages": [],
+                    "not_embedded_pages": [],
+                    "occurrences": 0,
+                })
+                unique["embedded"] = bool(unique["embedded"] and embedded)
+                unique["pages"].append(page_num)
+                unique["occurrences"] += 1
+
+                if embedded:
                     continue
 
                 not_embedded += 1
+                unique["not_embedded_pages"].append(page_num)
                 issues.append(PreflightIssue(
                     rule_id="FONT_NOT_EMBEDDED",
                     severity="error",
@@ -80,6 +117,19 @@ class FontRulesMixin:
         # Store counts for summary
         self._font_total = total_fonts
         self._font_not_embedded = not_embedded
+        # UIUX (audit 2026-08-13 §FONT.UI.1): tách font duy nhất khỏi lượt font
+        # theo trang để UI không gọi một font dùng 100 trang là "100 font".
+        self._font_unique = sorted(
+            (
+                {
+                    **font,
+                    "pages": sorted(set(font["pages"])),
+                    "not_embedded_pages": sorted(set(font["not_embedded_pages"])),
+                }
+                for font in unique_fonts.values()
+            ),
+            key=lambda font: font["name"].casefold(),
+        )
         return issues
 
     @staticmethod

@@ -15,6 +15,7 @@ use super::print::{print_breadcrumb, PrinterGeometry, PrinterInfo};
 use super::print_layout::{LayoutMode, PageSubset};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Debug)]
@@ -39,7 +40,8 @@ pub enum PrintWorkerJob {
         orientation: Option<String>,
         devmode: Option<Vec<u8>>,
     },
-    /// UI thuộc tính driver — hwnd=0 (không modal parent); crash chỉ giết worker.
+    /// UI thuộc tính driver — worker tự tạo cửa sổ owner cùng process
+    /// (PRINTWIN §PRINTWIN.01/§PRINTWIN.03); crash chỉ giết worker.
     OpenProperties {
         printer_name: String,
         current_devmode: Option<Vec<u8>>,
@@ -80,6 +82,9 @@ pub enum PrintWorkerJob {
         pages: Option<Vec<i32>>,
         scale_mode: Option<String>,
         auto_rotate: bool,
+        /// PRINTWIN (audit 2026-08-13 §PRINTWIN.03): app luôn gửi 0 — HWND xuyên
+        /// process làm Windows disable cửa sổ PrynX khi worker chết. Giá trị 0 khiến
+        /// print_pdf_blocking tự tạo owner cùng process; field giữ lại cho tương thích.
         owner_hwnd: isize,
     },
 }
@@ -99,8 +104,47 @@ pub struct PrintWorkerResult {
     pub devmode: Option<Vec<u8>>,
 }
 
+/// PRINTWIN (audit 2026-08-13 §PRINTWIN.04): PrintDlgW và UI driver (Adobe PDF, XPS,
+/// driver hãng) yêu cầu COM/OLE đã khởi tạo trên thread gọi — thiếu thì lỗi tùy driver
+/// (êm trên Microsoft Print to PDF, chết trên driver xưởng). Guard giữ OLE sống suốt
+/// vòng đời worker và trả lại đúng thứ tự khi thoát.
+struct OleGuard {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    initialized: bool,
+}
+
+impl OleGuard {
+    fn init() -> Self {
+        #[cfg(windows)]
+        {
+            // S_OK/S_FALSE đều thành công; lỗi (vd thread đã MTA) thì vẫn chạy tiếp —
+            // không chặn job in chỉ vì thiếu OLE, driver cơ bản vẫn hoạt động.
+            let initialized =
+                unsafe { windows::Win32::System::Ole::OleInitialize(None).is_ok() };
+            if !initialized {
+                print_breadcrumb("worker: OleInitialize failed (tiếp tục không OLE)");
+            }
+            Self { initialized }
+        }
+        #[cfg(not(windows))]
+        {
+            Self { initialized: false }
+        }
+    }
+}
+
+impl Drop for OleGuard {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        if self.initialized {
+            unsafe { windows::Win32::System::Ole::OleUninitialize() };
+        }
+    }
+}
+
 /// Entry point khi process được spawn với --prynx-print-job. Trả exit code.
 pub fn run_print_worker(job_path: &str, result_path: &str) -> i32 {
+    let _ole = OleGuard::init();
     print_breadcrumb(&format!("worker: start job={}", job_path));
     let job_raw = match std::fs::read_to_string(job_path) {
         Ok(s) => s,
@@ -334,6 +378,24 @@ pub fn run_isolated_print(
     run_isolated_inner(job, Some(progress_app))
 }
 
+/// PRINTWIN (audit 2026-08-13 §PRINTWIN.07): `pid + millis` từng cho phép hai worker
+/// spawn trong cùng 1 ms (geometry + properties + print) ghi đè job JSON của nhau.
+/// nanos + bộ đếm tăng dần trong process bảo đảm tên file duy nhất.
+static WORKER_FILE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn unique_worker_file_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!(
+        "{}_{}_{}",
+        std::process::id(),
+        nanos,
+        WORKER_FILE_SEQ.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 #[derive(Clone, Debug)]
 struct PrintRunContext {
     job_id: String,
@@ -372,14 +434,7 @@ fn run_isolated_inner(
     let print_context = print_run_context(&job);
 
     let temp = std::env::temp_dir();
-    let id = format!(
-        "{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)
-    );
+    let id = unique_worker_file_id();
     let job_path = temp.join(format!("prynx_pj_{id}.json"));
     let out_path = temp.join(format!("prynx_pj_{id}.out.json"));
 
@@ -430,6 +485,14 @@ fn run_isolated_inner(
         }
     };
     let child_pid = child.id();
+    #[cfg(windows)]
+    {
+        // PRINTWIN (audit 2026-08-13 §PRINTWIN.03): cấp quyền foreground cho worker —
+        // process nền không tự đưa PrintDlg/Properties lên trước được; thiếu quyền này
+        // hộp thoại driver mở khuất sau cửa sổ PrynX.
+        use windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
+        let _ = unsafe { AllowSetForegroundWindow(child_pid) };
+    }
     if let Some(ref ctx) = print_context {
         if let Ok(mut registry) = active_print_workers().lock() {
             if let Some(active) = registry.get_mut(&ctx.job_id) {
@@ -635,9 +698,19 @@ fn kill_worker_pid(pid: u32) {
 mod tests {
     use super::{
         active_print_workers, cancel_print_worker, make_print_control_paths,
-        normalize_print_job_id, print_run_context, ActivePrintWorker, PrintWorkerJob,
+        normalize_print_job_id, print_run_context, unique_worker_file_id, ActivePrintWorker,
+        PrintWorkerJob,
     };
     use std::path::PathBuf;
+
+    // PRINTWIN (audit 2026-08-13 §PRINTWIN.07): hai worker spawn sát nhau không được
+    // ghi đè file job của nhau.
+    #[test]
+    fn worker_job_file_ids_khong_va_cham_khi_spawn_lien_tiep() {
+        let ids: std::collections::HashSet<String> =
+            (0..1000).map(|_| unique_worker_file_id()).collect();
+        assert_eq!(ids.len(), 1000);
+    }
 
     #[test]
     fn print_job_id_cannot_escape_temp_directory() {
@@ -665,6 +738,9 @@ mod tests {
         .is_none());
     }
 
+    // Round-trip serde của protocol PrintDlg. Lưu ý §PRINTWIN.03: app hiện luôn gửi
+    // owner_hwnd=0 (worker tự tạo owner cùng process); field vẫn phải giữ nguyên giá
+    // trị qua serialize để tương thích job cũ.
     #[test]
     fn system_dialog_keeps_parent_window_handle_across_worker_protocol() {
         let job = PrintWorkerJob::PrintDlg {

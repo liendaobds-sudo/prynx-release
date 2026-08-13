@@ -156,6 +156,11 @@ export function accurateViewerDpi(zoomScale: number, bucketAnchorDpi: number = 9
     const requestedDpi = Number.isFinite(zoomScale) && zoomScale > 0
         ? 96 * zoomScale
         : 24;
+    // PERF (audit 2026-08-13 §VIEW.LARGE.2): request viewport ở zoom-fit có thể đã
+    // được chuẩn hoá về sàn 24 DPI trước khi đi qua hàm này lần nữa. Neo bucket theo
+    // Raw DPI lúc đó sẽ nâng 24 → 32 DPI (màn 92 PPI), trong khi clip vẫn ở hệ 24 DPI;
+    // bitmap vì thế phóng 4/3 và bị cắt mép phải/dưới. Giữ sàn idempotent.
+    if (requestedDpi <= 24 + 1e-7) return 24;
     const anchorDpi = Number.isFinite(bucketAnchorDpi) && bucketAnchorDpi > 0
         ? Math.round(bucketAnchorDpi)
         : 96;

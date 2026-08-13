@@ -458,6 +458,7 @@ def test_normalization_forces_separate_cut_and_preserves_pont_configuration():
             pontConfig=pont_config,
             pontsOnCutFile=False,
             separateCutPage=False,
+            align="top-center",
         ),
     )
     assert enabled is True
@@ -468,6 +469,7 @@ def test_normalization_forces_separate_cut_and_preserves_pont_configuration():
     assert normalized["pontConfig"] == pont_config
     assert normalized["pontsOnCutFile"] is False
     assert normalized["duplexFlow"] == "normal"
+    assert normalized["align"] == "center"
 
     with pytest.raises(ValueError, match="CNC"):
         nup_engine._normalize_page_sheet_settings(_settings(imposerMode="cnc"))

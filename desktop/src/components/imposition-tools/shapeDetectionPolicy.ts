@@ -1,4 +1,6 @@
 export type PageDimension = { w: number; h: number };
+export type DieAvailability = boolean | null;
+export type StickerDieSizeMode = 'die' | 'page';
 
 function isUsablePageDimension(value: PageDimension | null | undefined): value is PageDimension {
     return !!value
@@ -61,6 +63,72 @@ export function usesPageSizedStickerShape(
     return activeTool === 'sticker_imposer'
         && cutType === 'one_dao'
         && dieSizeMode === 'page';
+}
+
+/**
+ * Chỉ cho chọn Nguyên tấm khi backend đã xác nhận file có khuôn bế thật.
+ * `null` là đang nhận diện/lỗi đọc file nên chưa được tự ép mode.
+ */
+export function resolveStickerUnitAvailability(
+    activeTool: string,
+    hasValidDie: DieAvailability,
+): { showSelector: boolean; forceSticker: boolean } {
+    if (activeTool !== 'sticker_imposer') {
+        return { showSelector: false, forceSticker: false };
+    }
+    return {
+        showSelector: hasValidDie === true,
+        forceSticker: hasValidDie === false,
+    };
+}
+
+export interface StickerCutControlPolicy {
+    dieStatus: 'available' | 'page_only' | 'unknown';
+    effectiveDieSizeMode: StickerDieSizeMode;
+    effectiveFillBlockGap: number;
+    showDieSizeSelector: boolean;
+    showDieSizeStatus: boolean;
+    showFillBlockGap: boolean;
+}
+
+/**
+ * UIUX (audit 2026-08-13 §DIE-FALLBACK-02): một nguồn duy nhất cho các điều
+ * khiển 1 Dao. Không đưa lựa chọn "khuôn có sẵn" khi detector đã xác nhận file
+ * không có khuôn, và không truyền KC cụm phụ cho cách xếp không tạo L-shape.
+ */
+export function resolveStickerCutControlPolicy(
+    activeTool: string,
+    hasValidDie: DieAvailability,
+    cutType: string | undefined,
+    gridStrategy: string | undefined,
+    requestedDieSizeMode: string | undefined,
+    requestedFillBlockGap: number | undefined,
+): StickerCutControlPolicy {
+    const stickerTool = activeTool === 'sticker_imposer';
+    const oneDao = stickerTool && cutType === 'one_dao';
+    const dieStatus = hasValidDie === true
+        ? 'available'
+        : hasValidDie === false ? 'page_only' : 'unknown';
+    const requestedMode: StickerDieSizeMode = requestedDieSizeMode === 'page'
+        ? 'page' : 'die';
+    const showFillBlockGap = oneDao && gridStrategy === 'optimal_auto';
+    const rawFillBlockGap = Number(requestedFillBlockGap);
+    const normalizedFillBlockGap = Number.isFinite(rawFillBlockGap)
+        ? Math.max(0, rawFillBlockGap) : 0;
+
+    return {
+        dieStatus,
+        effectiveDieSizeMode: oneDao && dieStatus === 'page_only'
+            ? 'page' : requestedMode,
+        // Chính sách ẩn/đặt 0 chỉ thuộc Bình tem bế. CNC và consumer dùng chung
+        // dashboard phải giữ nguyên tham số cũ để không tạo hồi quy âm thầm.
+        effectiveFillBlockGap: stickerTool
+            ? (showFillBlockGap ? normalizedFillBlockGap : 0)
+            : normalizedFillBlockGap,
+        showDieSizeSelector: oneDao && dieStatus === 'available',
+        showDieSizeStatus: oneDao && dieStatus !== 'available',
+        showFillBlockGap,
+    };
 }
 
 /**

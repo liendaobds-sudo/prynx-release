@@ -36,7 +36,7 @@ export const FEATURE_CATALOG = {
   'packaging.dieline': { minPlan: 'pro', label: 'Khuôn bế bao bì' },
   'util.bgremover': { minPlan: 'pro', label: 'Tách nền' },
   'util.upscale': { minPlan: 'pro', label: 'AI Upscale' },
-  'util.logo_rebuild': { minPlan: 'pro', label: 'Phục hồi & Vector hóa Logo' },
+  'util.logo_rebuild': { minPlan: 'pro', label: 'Vector hóa Logo' },
   'qc.compare_pdf': { minPlan: 'pro', label: 'So sánh PDF in ấn' },
 } as const satisfies Record<string, { minPlan: LicensePlan; label: string }>;
 

@@ -1,4 +1,4 @@
-import type { ActiveToolType } from './types';
+import type { ActiveToolType, NupSettings } from './types';
 import type { ImpositionUnit } from './store/slices/nupSlice';
 
 export interface ImpositionModes {
@@ -36,6 +36,17 @@ export function resolveEffectiveSeparateCut(
 ): boolean {
     return resolveImpositionModes(activeTool, impositionUnit).pageSheetMode
         || requestedSeparateCut === true;
+}
+
+/**
+ * Nguyên tấm decal dùng giao diện Bình tem bế nên không hiển thị điều khiển căn khối.
+ * Không để giá trị căn cũ của Bình cắt xén âm thầm neo preview/file xuất vào một mép.
+ */
+export function resolveEffectiveImpositionAlign(
+    pageSheetMode: boolean,
+    requestedAlign: NupSettings['align'] | undefined,
+): NupSettings['align'] {
+    return pageSheetMode ? 'center' : (requestedAlign ?? 'center');
 }
 
 export interface ImpositionSplitGapInput {

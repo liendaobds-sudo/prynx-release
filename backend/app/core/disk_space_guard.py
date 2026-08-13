@@ -21,6 +21,14 @@ _MIN_AUTO_RESERVE_BYTES = 2 * GIB
 _MAX_AUTO_RESERVE_BYTES = 20 * GIB
 _MIN_ESTIMATE_BYTES = 64 * MIB
 
+# PERF (audit 2026-08-13 §PB-1): hệ số artifact Compare đo từ benchmark P-B
+# (BAO_CAO_AUDIT_COMPARE_P_B_TAI_LIEU_DAI_2026-08-13.md mục 5): PNG diff + GIF
+# mỗi trang khác biệt ~0,25 B/pixel @300 DPI, nhân biên an toàn 1,5. Trang DPI
+# thấp nén kém hiệu quả hơn theo pixel nên chặn thêm floor 2 MiB/trang — mức
+# floor này dư ~1,5× so với số đo 1,33 MiB/trang @150 DPI.
+_COMPARE_BYTES_PER_PIXEL = 0.25 * 1.5
+_COMPARE_MIN_BYTES_PER_PAGE = 2 * MIB
+
 
 @dataclass(frozen=True, slots=True)
 class JobDiskEstimate:
@@ -72,6 +80,26 @@ def estimate_vdp_disk(
         temp_bytes=rendered_bytes + template,
         output_bytes=rendered_bytes * 2,
     )
+
+
+def estimate_compare_disk(
+    *, total_render_pixels: int, page_count: int
+) -> JobDiskEstimate:
+    """Ước lượng đỉnh đĩa artifact của một job Compare (PNG diff + GIF).
+
+    PERF (audit 2026-08-13 §PB-1): giả định XẤU NHẤT mọi trang đều khác biệt —
+    Compare không có giai đoạn temp riêng (ghi thẳng ``RESULTS_DIR/<job_id>``)
+    nên toàn bộ ước lượng nằm ở ``output_bytes``. Ước lượng dư không gây hại:
+    guard chỉ từ chối khi volume chắc chắn thiếu cả reserve.
+    """
+    pages = max(1, int(page_count or 0))
+    pixels = max(0, int(total_render_pixels or 0))
+    output = max(
+        _MIN_ESTIMATE_BYTES,
+        pages * _COMPARE_MIN_BYTES_PER_PAGE,
+        int(pixels * _COMPARE_BYTES_PER_PIXEL),
+    )
+    return JobDiskEstimate(temp_bytes=0, output_bytes=output)
 
 
 def _nearest_existing_parent(path: str) -> str:

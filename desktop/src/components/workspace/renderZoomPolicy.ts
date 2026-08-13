@@ -15,6 +15,42 @@ export const ACCURATE_VIEWER_BASE_ZOOM_MIN = 1;
 // cold-open. Giữ 96–144 DPI cho full-page; cao hơn chuyển sang viewport PPE để
 // không raster cả trang khổng lồ.
 export const ACCURATE_VIEWER_BASE_ZOOM_CAP = 1.5;
+// PERF (audit 2026-08-13 §VIEW.LARGE.1): WebView không cần giữ một bitmap toàn trang
+// lớn hơn khoảng 48 MiB RGBA khi người dùng chỉ nhìn một phần/ảnh fit. Trang lớn đi
+// viewport PPE, vẫn giữ mật độ hiển thị và không phải hạ chất lượng trên máy mạnh.
+export const VIEWER_DIRECT_FULL_PAGE_MAX_PIXELS = 12_000_000;
+
+/**
+ * Ước lượng số pixel mà một surface toàn trang sẽ được giải mã trong WebView.
+ * `pageWidth/pageHeight` là kích thước CSS của trang ở zoom hiện tại; tỉ lệ
+ * raster cho biết bitmap native lớn hơn khung CSS bao nhiêu lần.
+ */
+export function estimateViewerFullPagePixels(
+    pageWidth: number,
+    pageHeight: number,
+    renderScale: number,
+    targetScale: number,
+): number {
+    const values = [pageWidth, pageHeight, renderScale, targetScale];
+    if (!values.every(value => Number.isFinite(value) && value > 0)) return Number.POSITIVE_INFINITY;
+    const rasterScale = renderScale / targetScale;
+    const pixels = pageWidth * pageHeight * rasterScale * rasterScale;
+    return Number.isFinite(pixels) && pixels > 0 ? pixels : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Chỉ là cổng an toàn cho surface toàn trang của WebView, không phải cap chất
+ * lượng: khi vượt ngưỡng, viewport tile vẫn dựng ở mật độ đích của vùng đang xem.
+ */
+export function isViewerFullPageWithinSurfaceBudget(
+    pageWidth: number,
+    pageHeight: number,
+    renderScale: number,
+    targetScale: number,
+): boolean {
+    return estimateViewerFullPagePixels(pageWidth, pageHeight, renderScale, targetScale)
+        <= VIEWER_DIRECT_FULL_PAGE_MAX_PIXELS;
+}
 
 export function computeAccurateViewerBaseZoom(
     renderZoom: number,
@@ -53,18 +89,19 @@ export function shouldUseViewerViewportTiles(
     zoom: number,
     dpr: number,
     accurateColorPage: boolean,
+    forceViewport = false,
 ): boolean {
     // PERF (feedback 2026-08-09 §RENDER.F5): fit/100% dùng accurate full-page gần
     // mật độ màn hình; viewport chỉ gánh zoom cao để tránh full-page raster lớn.
     const accurateNeedsViewport = accurateColorPage
-        && zoom * dpr > ACCURATE_VIEWER_BASE_ZOOM_CAP;
+        && (forceViewport || zoom * dpr > ACCURATE_VIEWER_BASE_ZOOM_CAP);
     return viewerIsActive
         && isActiveFrame
         && !isImage
         && Number.isFinite(renderZoom)
         && Number.isFinite(zoom)
         && Number.isFinite(dpr)
-        && (accurateNeedsViewport || renderZoom < zoom * dpr * 0.95);
+        && (forceViewport || accurateNeedsViewport || renderZoom < zoom * dpr * 0.95);
 }
 
 export function computeViewerBackgroundZoom(

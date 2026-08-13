@@ -19,6 +19,12 @@ from app.core.preflight_rules.ink import InkRulesMixin
 
 logger = logging.getLogger(__name__)
 
+# PERF (audit 2026-08-13 §FONT.PERF.2): hai rule của công cụ Chữ & Font không
+# hưởng lợi từ việc chia tài liệu thành process theo chunk. Không dựng ProcessPool
+# mới chỉ vì tài liệu có nhiều trang; các nhóm content-stream khác vẫn giữ planner
+# hiện hành và chính sách RAM-gating của dự án.
+_FONT_ONLY_RULES = {"FONT_NOT_EMBEDDED", "TEXT_DETECTED"}
+
 # Re-export classes so that routes/preflight.py doesn't break
 __all__ = ["PreflightEngine", "PreflightReport", "PreflightIssue"]
 
@@ -119,6 +125,12 @@ class PreflightEngine(ColorRulesMixin, FontRulesMixin, ImageRulesMixin, Structur
         issues: list[PreflightIssue] = []
         file_name = Path(pdf_path).name
 
+        # Một instance có thể được consumer gọi lại; không để thống kê font của
+        # tài liệu trước rò sang report mới khi lượt sau không chạy rule font.
+        self._font_total = 0
+        self._font_not_embedded = 0
+        self._font_unique = []
+
         logger.info(f"Preflight: Starting inspection of '{file_name}' with rules: {active_rules}")
 
         # ── Phase A: pikepdf structural scan (fast, no rendering) ──
@@ -171,7 +183,7 @@ class PreflightEngine(ColorRulesMixin, FontRulesMixin, ImageRulesMixin, Structur
                 self._has_cmyk = False
 
             CHUNK_SIZE = 10
-            if total_pages <= CHUNK_SIZE:
+            if total_pages <= CHUNK_SIZE or active_rules.issubset(_FONT_ONLY_RULES):
                 # Sequential for small files
                 if "IMAGE_LOW_RES" in active_rules or "IMAGE_HIGH_DPI" in active_rules or "IMAGE_NOT_EMBEDDED" in active_rules or "COLOR_RGB_DETECTED" in active_rules or "COLOR_SPOT_DETECTED" in active_rules:
                     issues += self._check_image_resolution(doc, active_rules)
@@ -275,6 +287,9 @@ class PreflightEngine(ColorRulesMixin, FontRulesMixin, ImageRulesMixin, Structur
         warnings = sum(1 for i in issues if i.severity == "warning")
         info = sum(1 for i in issues if i.severity == "info")
 
+        unique_fonts = getattr(self, "_font_unique", [])
+        unique_not_embedded = sum(1 for font in unique_fonts if not font["embedded"])
+
         return PreflightReport(
             file_name=file_name,
             total_pages=total_pages,
@@ -292,9 +307,14 @@ class PreflightEngine(ColorRulesMixin, FontRulesMixin, ImageRulesMixin, Structur
                 "has_spot": getattr(self, "_has_spot", False),
             },
             font_summary={
+                # Tương thích ngược: ba field cũ vẫn là occurrence theo trang.
                 "total": getattr(self, "_font_total", 0),
                 "embedded": getattr(self, "_font_total", 0) - getattr(self, "_font_not_embedded", 0),
                 "not_embedded": getattr(self, "_font_not_embedded", 0),
+                "unique_total": len(unique_fonts),
+                "unique_embedded": len(unique_fonts) - unique_not_embedded,
+                "unique_not_embedded": unique_not_embedded,
+                "fonts": unique_fonts,
             },
             image_summary={
                 "total": getattr(self, "_image_total", 0),

@@ -501,7 +501,8 @@ async def api_detect_shape(body: dict):
             pass
         # Lỗi cấp file (vd không mở được PDF) — vẫn giữ contract cũ.
         return {"shapes": ["CUSTOM"], "dimensions": [], "shapeParams": [],
-                "perPage": [], "success": False, "error": str(e)}
+                "perPage": [], "hasValidDie": None,
+                "success": False, "error": str(e)}
 
 # =========================================================================
 #  N-Up Backend Engine (pikepdf) — for high-volume imposition (50k+ pages)

@@ -70,11 +70,17 @@ import {
     projectPageRecordToViewer,
     projectShapeParamsToViewer,
     canUseRectangleStickerInking,
+    resolveStickerCutControlPolicy,
+    resolveStickerUnitAvailability,
     resolvePreviewItemDimension,
     usesPageSizedStickerShape,
 } from './shapeDetectionPolicy';
 import { toBookReportRenderConfig } from '../../lib/bookReport';
-import { resolveImpositionModes, resolveImpositionSplitGap } from './pageSheetPolicy';
+import {
+    resolveEffectiveImpositionAlign,
+    resolveImpositionModes,
+    resolveImpositionSplitGap,
+} from './pageSheetPolicy';
 import { canUseCutBorder } from './cutBorderPolicy';
 import { formatSizeMm } from '../../lib/measurementFormat';
 
@@ -220,6 +226,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         pontSettingsMode,
         stickerToolIdentity,
     } = resolveImpositionModes(activeTool, s.impositionUnit);
+    const effectiveAlign = resolveEffectiveImpositionAlign(pageSheetMode, s.align);
     const stickerProductMode = stickerToolIdentity || activeTool === 'cnc_imposer';
     const cutBorderCapable = canUseCutBorder({
         activeTool,
@@ -273,26 +280,51 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
     const [mergeSettings, setMergeSettings] = useState<MergeSettings>(defaultMergeSettings);
     const [isDetectingShape, setIsDetectingShape] = useState(false);
     const [completedShapeDetectionKey, setCompletedShapeDetectionKey] = useState('');
+    const [dieAvailability, setDieAvailability] = useState<{
+        sourceKey: string;
+        value: boolean | null;
+    }>({ sourceKey: '', value: null });
+    const detectedDieStateRef = useRef<{
+        sourceKey: string;
+        shapes: Record<number, string>;
+        dimensions: Record<number, { w: number; h: number }>;
+        params: Record<number, any>;
+    } | null>(null);
 
     const isTauriRuntime = !!(window as any).__TAURI_INTERNALS__;
     const shapeLocalPath = (pdfFile as any)?.path as string | undefined;
-    const pageSizedOneDao = stickerGeometryMode
-        && usesPageSizedStickerShape(activeTool, s.cutType, s.dieSizeMode);
     const detectionSourceKey = shapeDetectionSourceKey(
         isTauriRuntime,
         shapeLocalPath,
         selectionFileId,
         pdfFile,
     );
-    // Chỉ thay đổi khóa này ở page-mode. Metadata đến sau không được làm nhận diện
-    // đường khuôn thật bị hủy rồi chạy lại.
-    const pageSizedShapeStateKey = useMemo(
-        () => pageSizedOneDao
-            ? JSON.stringify({ dims: s.sourcePageDims, fallback: s.sourcePageDim, count: sourceTotalPages })
-            : '',
-        [pageSizedOneDao, s.sourcePageDims, s.sourcePageDim, sourceTotalPages],
+    const currentDieAvailability = dieAvailability.sourceKey === detectionSourceKey
+        ? dieAvailability.value
+        : null;
+    const effectiveDieAvailability = !pdfFile ? false : currentDieAvailability;
+    const stickerUnitAvailability = resolveStickerUnitAvailability(
+        activeTool,
+        effectiveDieAvailability,
     );
-    const expectedShapeDetectionKey = `${activeTool}|${detectionSourceKey}|${pageSizedOneDao ? pageSizedShapeStateKey : 'vector'}`;
+    const stickerCutControlPolicy = resolveStickerCutControlPolicy(
+        activeTool,
+        effectiveDieAvailability,
+        s.cutType,
+        s.gridStrategy,
+        s.dieSizeMode,
+        s.fillBlockGap,
+    );
+    const effectiveDieSizeMode = stickerCutControlPolicy.effectiveDieSizeMode;
+    const effectiveFillBlockGap = stickerCutControlPolicy.effectiveFillBlockGap;
+    const pageSizedOneDao = usesPageSizedStickerShape(
+        activeTool,
+        s.cutType,
+        effectiveDieSizeMode,
+    );
+    // Trạng thái hoàn tất bám theo file đã nhận diện; đổi kiểu dao chỉ đổi hình học
+    // sử dụng, không làm batch capacity chờ một lượt detect mới không tồn tại.
+    const expectedShapeDetectionKey = `${activeTool}|${detectionSourceKey}|detected`;
     const previewDetectedShapesByPage = useMemo(
         () => projectPageRecordToViewer(detectedShapesByPage, viewerPageOrder),
         [detectedShapesByPage, viewerPageOrder],
@@ -636,27 +668,20 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
     // diện luôn chạy. Trước đây file lớn không upload → detect-shape không gọi →
     // mọi trang hiển thị "Đặc biệt".
     useEffect(() => {
-        if (!dieGeometryMode) {
+        const shouldDetectShape = activeTool === 'sticker_imposer'
+            || activeTool === 'cnc_imposer';
+        if (!shouldDetectShape) {
             setIsDetectingShape(false);
             return;
         }
 
         setCompletedShapeDetectionKey('');
-
-        // 1 Dao + theo kích thước trang: đường cắt là hình chữ nhật full trang.
-        // Không gọi detect-shape vì không dùng đường khuôn; lấy kích thước đã đọc từ pdf-meta.
-        if (pageSizedOneDao) {
-            const pageState = buildPageSizedShapeState(
-                s.sourcePageDims,
-                s.sourcePageDim,
-                sourceTotalPages,
-            );
-            setDetectedShapesByPage(pageState.shapes);
-            setDetectedDimensionsByPage(pageState.dimensions);
-            setDetectedShapeParamsByPage(pageState.params);
-            setDetectedShapeType('RECTANGLE');
-            setDetectedShapeParams(null);
-            setCompletedShapeDetectionKey(expectedShapeDetectionKey);
+        if (activeTool === 'sticker_imposer') {
+            setDieAvailability((current) => current.sourceKey === detectionSourceKey
+                ? current
+                : { sourceKey: detectionSourceKey, value: null });
+        }
+        if (!detectionSourceKey) {
             setIsDetectingShape(false);
             return;
         }
@@ -714,8 +739,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 if (!cancelled && res.ok && Array.isArray(data.shapes) && data.shapes.length > 0) {
                     const newShapes: Record<number, string> = {};
                     data.shapes.forEach((s: string, i: number) => { newShapes[i] = s; });
+                    const newDims: Record<number, { w: number; h: number }> = {};
                     if (data.dimensions) {
-                        const newDims: Record<number, { w: number, h: number }> = {};
                         data.dimensions.forEach((d: any, i: number) => { newDims[i] = d; });
                         setDetectedDimensionsByPage(newDims);
                     }
@@ -725,7 +750,19 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                         setDetectedShapeParamsByPage(newParams);
                     }
                     setDetectedShapesByPage(newShapes);
+                    detectedDieStateRef.current = {
+                        sourceKey: detectionSourceKey,
+                        shapes: newShapes,
+                        dimensions: newDims,
+                        params: newParams,
+                    };
                     setCompletedShapeDetectionKey(expectedShapeDetectionKey);
+                    if (activeTool === 'sticker_imposer' && typeof data.hasValidDie === 'boolean') {
+                        setDieAvailability({
+                            sourceKey: detectionSourceKey,
+                            value: data.hasValidDie,
+                        });
+                    }
                     const activeIdx = (viewerPageOrder?.length
                         ? (viewerPageOrder[(viewerActivePage || 1) - 1] ?? 1) - 1
                         : (viewerActivePage || 1) - 1);
@@ -767,9 +804,78 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         activeTool,
         detectionSourceKey,
         pdfFile,
+    ]);
+
+    useEffect(() => {
+        const usePageFallback = pageSizedOneDao
+            || (activeTool === 'sticker_imposer' && currentDieAvailability === false);
+        if (!usePageFallback) return;
+
+        // UIUX (audit 2026-08-13 §DIE-FALLBACK-01): file không có khuôn dùng
+        // khung trang làm tem; cập nhật lại khi metadata CropBox/TrimBox đến sau.
+        const pageState = buildPageSizedShapeState(
+            s.sourcePageDims,
+            s.sourcePageDim,
+            sourceTotalPages,
+        );
+        setDetectedShapesByPage(pageState.shapes);
+        setDetectedDimensionsByPage(pageState.dimensions);
+        setDetectedShapeParamsByPage(pageState.params);
+        setDetectedShapeType('RECTANGLE');
+        setDetectedShapeParams(null);
+    }, [
+        activeTool,
+        currentDieAvailability,
         pageSizedOneDao,
-        pageSizedShapeStateKey,
-        dieGeometryMode,
+        s.sourcePageDims,
+        s.sourcePageDim,
+        sourceTotalPages,
+    ]);
+
+    useEffect(() => {
+        if (pageSizedOneDao || currentDieAvailability !== true) return;
+        const detected = detectedDieStateRef.current;
+        if (!detected || detected.sourceKey !== detectionSourceKey) return;
+
+        setDetectedShapesByPage(detected.shapes);
+        setDetectedDimensionsByPage(detected.dimensions);
+        setDetectedShapeParamsByPage(detected.params);
+        const activeIdx = (viewerPageOrder?.length
+            ? (viewerPageOrder[(viewerActivePage || 1) - 1] ?? 1) - 1
+            : (viewerActivePage || 1) - 1);
+        if (detected.shapes[activeIdx]) setDetectedShapeType(detected.shapes[activeIdx]);
+        setDetectedShapeParams(detected.params[activeIdx] || null);
+    }, [
+        currentDieAvailability,
+        detectionSourceKey,
+        pageSizedOneDao,
+        viewerActivePage,
+        viewerPageOrder,
+    ]);
+
+    useEffect(() => {
+        if (!stickerUnitAvailability.forceSticker || s.impositionUnit === 'sticker') return;
+        // UIUX (audit 2026-08-13 §DIE-FALLBACK-01): không để hai lựa chọn cho cùng
+        // một kết quả fallback; file không khuôn luôn dùng khung trang của Từng tem.
+        s.setImpositionUnit('sticker');
+    }, [stickerUnitAvailability.forceSticker, s.impositionUnit, s.setImpositionUnit]);
+
+    useEffect(() => {
+        if (
+            activeTool !== 'sticker_imposer'
+            || s.cutType !== 'one_dao'
+            || effectiveDieAvailability !== false
+            || s.dieSizeMode === 'page'
+        ) return;
+        // UIUX (audit 2026-08-13 §DIE-FALLBACK-02): trạng thái lưu cũ "theo khuôn"
+        // không được sống tiếp khi detector đã xác nhận file không có đường bế.
+        s.setDieSizeMode('page');
+    }, [
+        activeTool,
+        effectiveDieAvailability,
+        s.cutType,
+        s.dieSizeMode,
+        s.setDieSizeMode,
     ]);
 
     // Auto Catalog: fetch page dimensions + plan
@@ -981,7 +1087,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         s.setFetchEpoch(e => e + 1);
     }, [s.formsize, s.customSheetWidth, s.customSheetHeight, s.marginLeft, s.marginRight, s.marginTop, s.marginBottom, s.gapX, s.gapY, s.gridStrategy, s.columns, s.rows, activeTool, detectedDimensionsByPage, detectedShapesByPage, detectedShapeParamsByPage, s.pontType, s.pontConfig,
         // Ảnh hưởng SỐ ô/tờ per-type (secondary_gap / bleed / cụm) → phải tính lại capacity.
-        s.bleed, s.cutType, s.dieSizeMode, s.dieOffsetMm, s.fillBlockGap, s.splitGap, s.marginMode, s.markType, s.groupingStrategy, s.impositionUnit,
+        s.bleed, s.cutType, effectiveDieSizeMode, s.dieOffsetMm, effectiveFillBlockGap, s.splitGap, s.marginMode, s.markType, s.groupingStrategy, s.impositionUnit,
         s.clusterSizingMode, s.clusterCols, s.clusterRows, s.clusterTileW, s.clusterTileH, s.tileGapX, s.tileGapY,
         pdfFile, sourceTotalPages, viewerPageOrder, s.sourcePageDim, s.sourcePageDims, isDetectingShape, completedShapeDetectionKey, expectedShapeDetectionKey]);
 
@@ -1124,9 +1230,9 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     margin_bottom: effMarginBottom * MM_TO_PT,
                     imposer_mode: activeTool === 'cnc_imposer' ? 'cnc' : undefined,
                     cut_type: dieGeometryMode ? (s.cutType || 'default') : undefined,
-                    die_size_mode: dieGeometryMode ? (s.dieSizeMode || 'die') : undefined,
+                    die_size_mode: dieGeometryMode ? effectiveDieSizeMode : undefined,
                     die_offset_mm: dieGeometryMode ? (s.dieOffsetMm ?? 0) : undefined,
-                    fill_block_gap: dieGeometryMode ? (s.fillBlockGap ?? 0) : undefined,
+                    fill_block_gap: dieGeometryMode ? effectiveFillBlockGap : undefined,
                     split_gap: splitGapMm * MM_TO_PT,
                     grouping_strategy: effectiveGrouping,
                     cluster_combine_mode: s.clusterCombineMode,
@@ -1363,7 +1469,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 diagnosticPreviewState: diagnosticSnapshot.state,
                 gapX: s.gapX, gapY: s.gapY, marginTop: s.marginTop, marginBottom: effMarginBottom, marginLeft: s.marginLeft, marginRight: s.marginRight,
                 marginMode: dieGeometryMode ? 'labels_only' : s.marginMode,
-                duplexFlow: pageSheetMode ? 'normal' : s.duplexFlow, align: s.align, mirrorAlign: true,
+                duplexFlow: pageSheetMode ? 'normal' : s.duplexFlow, align: effectiveAlign, mirrorAlign: true,
                 duplexFlipEdge: s.duplexFlipEdge,
                 // §MG-A2: ngưỡng in dư cho phép gom bản kẽm (Dàn nhiều kích thước).
                 mixedExcessPercent: s.mixedExcessPercent,
@@ -1374,9 +1480,9 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     ? { ...s.cutBorder }
                     : undefined,
                 cutType: dieGeometryMode ? s.cutType : undefined,
-                dieSizeMode: dieGeometryMode ? s.dieSizeMode : undefined,
+                dieSizeMode: dieGeometryMode ? effectiveDieSizeMode : undefined,
                 dieOffsetMm: dieGeometryMode ? s.dieOffsetMm : undefined,
-                fillBlockGap: dieGeometryMode ? s.fillBlockGap : undefined,
+                fillBlockGap: dieGeometryMode ? effectiveFillBlockGap : undefined,
                 pontType: pontSettingsMode ? s.pontType : 'none',
                 pontConfig: pontSettingsMode ? s.pontConfig : undefined,
                 separateCutPage: pageSheetMode ? true : (stickerGeometryMode ? s.separateCutPage : false),
@@ -1690,6 +1796,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                 detectedShapesByPage={detectedShapesByPage} setDetectedShapesByPage={setDetectedShapesByPage}
                                 viewerActivePage={viewerActivePage} viewerPageOrder={viewerPageOrder || null}
                                 paperSectionJSX={paperSectionJSX}
+                                showImpositionUnitSelector={stickerUnitAvailability.showSelector}
                                 // UIUX (audit 2026-07-27 §B-09): Enter trong form số lượng → chạy Bình luôn
                                 onRequestExecute={handleExecute}
                             />
@@ -1700,6 +1807,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                         activeTool={activeTool}
                         sourceTotalPages={bookReportPageCount}
                         rectangleStickerInking={rectangleStickerInking}
+                        hasValidDie={effectiveDieAvailability}
                     />
 
                     {/* Grid preview for all modes */}
@@ -1714,7 +1822,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                 // • Mỗi tem 1 khuôn khác nhau → trang đang xem (safePageIdx)
                                 const shapePageIdx = (() => {
                                     if (!stickerLike
-                                        || (s.cutType === 'one_dao' && s.dieSizeMode === 'page')
+                                        || (s.cutType === 'one_dao' && effectiveDieSizeMode === 'page')
                                         || sourceTotalPages <= 1) {
                                         return safePageIdx;
                                     }
@@ -1811,7 +1919,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                 sheetWidth={resolvePressSheetDims().w}
                                 sheetHeight={resolvePressSheetDims().h}
                                 marginTop={effMarginTop} marginBottom={effMarginBottom} marginLeft={effMarginLeft} marginRight={effMarginRight}
-                                align={s.align}
+                                align={effectiveAlign}
                                 // 1 Dao: luôn chữ nhật. Multi tem: shape/kích thước MASTER (shapePageIdx).
                                 shapeType={
                                     stickerLike
@@ -1821,7 +1929,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                         : 'RECTANGLE'
                                 }
                                 itemW={(() => {
-                                    if (stickerLike && s.cutType === 'one_dao' && s.dieSizeMode === 'page') {
+                                    if (stickerLike && s.cutType === 'one_dao' && effectiveDieSizeMode === 'page') {
                                         const off = (s.dieOffsetMm || 0) * 2;
                                         const w = itemDim?.w;
                                         return (typeof w === 'number' && !isNaN(w)) ? w * 0.352778 + off : 90;
@@ -1830,7 +1938,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                     return (typeof w === 'number' && !isNaN(w)) ? w * 0.352778 : 90;
                                 })()}
                                 itemH={(() => {
-                                    if (stickerLike && s.cutType === 'one_dao' && s.dieSizeMode === 'page') {
+                                    if (stickerLike && s.cutType === 'one_dao' && effectiveDieSizeMode === 'page') {
                                         const off = (s.dieOffsetMm || 0) * 2;
                                         const h = itemDim?.h;
                                         return (typeof h === 'number' && !isNaN(h)) ? h * 0.352778 + off : 55;
@@ -1844,7 +1952,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                 itemWPt={(() => {
                                     const w = itemDim?.w;
                                     if (typeof w !== 'number' || isNaN(w) || w <= 0) return undefined;
-                                    if (stickerLike && s.cutType === 'one_dao' && s.dieSizeMode === 'page') {
+                                    if (stickerLike && s.cutType === 'one_dao' && effectiveDieSizeMode === 'page') {
                                         return w + (s.dieOffsetMm || 0) * 2 * 2.83465;
                                     }
                                     return w;
@@ -1852,7 +1960,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                 itemHPt={(() => {
                                     const h = itemDim?.h;
                                     if (typeof h !== 'number' || isNaN(h) || h <= 0) return undefined;
-                                    if (stickerLike && s.cutType === 'one_dao' && s.dieSizeMode === 'page') {
+                                    if (stickerLike && s.cutType === 'one_dao' && effectiveDieSizeMode === 'page') {
                                         return h + (s.dieOffsetMm || 0) * 2 * 2.83465;
                                     }
                                     return h;
@@ -1871,12 +1979,12 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                 }
                                 shapesByPage={
                                     stickerLike
-                                        && !(s.cutType === 'one_dao' && s.dieSizeMode === 'page')
+                                        && !(s.cutType === 'one_dao' && effectiveDieSizeMode === 'page')
                                         ? previewDetectedShapesByPage : undefined
                                 }
                                 shapeParamsByPage={
                                     stickerLike
-                                        && !(s.cutType === 'one_dao' && s.dieSizeMode === 'page')
+                                        && !(s.cutType === 'one_dao' && effectiveDieSizeMode === 'page')
                                         ? previewDetectedShapeParamsByPage : undefined
                                 }
                                 isDetectingShape={stickerLike && isDetectingShape}
@@ -1903,9 +2011,9 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                 bleed={s.bleed}
                                 cutBorder={cutBorderCapable ? s.cutBorder : undefined}
                                 cutType={stickerLike ? s.cutType : undefined}
-                                dieSizeMode={stickerLike ? s.dieSizeMode : undefined}
+                                dieSizeMode={stickerLike ? effectiveDieSizeMode : undefined}
                                 dieOffsetMm={stickerLike ? s.dieOffsetMm : undefined}
-                                fillBlockGap={stickerLike ? s.fillBlockGap : undefined}
+                                fillBlockGap={stickerLike ? effectiveFillBlockGap : undefined}
                                 getWorkingFile={getWorkingFile}
                                 previewSourceKey={previewSourceKey}
                                 diagnosticTraceId={diagnosticTraceId}

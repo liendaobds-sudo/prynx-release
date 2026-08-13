@@ -65,6 +65,16 @@ interface EditorState {
 }
 
 const DEFAULT_PALETTE = ['#000000', '#ffffff'];
+// LOGO-REBUILD (audit 2026-08-13 §LR4.01): đồng bộ ngưỡng upscale của backend
+// (_upscale_target_dimensions: cạnh ngắn < 600 px sẽ bị nâng NEAREST trước khi
+// dựng nét). Khử hạt tính theo px ẢNH NGUỒN — giá trị N nuốt mọi chi tiết nhỏ
+// hơn N×N px nguồn (dấu tiếng Việt, chấm, ®), nên ảnh nhỏ phải mặc định 0.
+const UPSCALE_SHORTEST_SIDE_PX = 600;
+const DEFAULT_DESPECKLE_SIZE_PX = 4;
+
+function willUpscaleSource(source: { width_px: number; height_px: number } | null): boolean {
+  return source !== null && Math.min(source.width_px, source.height_px) < UPSCALE_SHORTEST_SIDE_PX;
+}
 const DEFAULT_PERSPECTIVE: NormalizedPoint[] = [
   { x: 0.05, y: 0.05 },
   { x: 0.95, y: 0.05 },
@@ -83,7 +93,7 @@ const INITIAL_EDITOR_STATE: EditorState = {
   crop: { x: 0, y: 0, width: 100, height: 100 },
   perspective: DEFAULT_PERSPECTIVE,
   smoothing: 0,
-  despeckle: 4,
+  despeckle: DEFAULT_DESPECKLE_SIZE_PX,
   illumination: false,
   physicalWidthMm: null,
   physicalHeightMm: null,
@@ -476,6 +486,18 @@ export default function LogoRebuildWorkspace({
         && !controller.signal.aborted
       ) {
         setSourceInfo(result.source);
+        // LOGO-REBUILD (audit 2026-08-13 §LR4.01): chỉ khi biết kích thước nguồn
+        // mới hạ mặc định khử hạt; không đụng giá trị user đã tự đổi (mọi thay
+        // đổi editor đều tăng revision nên response cũ không ghi đè được).
+        if (
+          willUpscaleSource(result.source)
+          && editorRef.current.despeckle === DEFAULT_DESPECKLE_SIZE_PX
+        ) {
+          const adjustedEditor = { ...editorRef.current, despeckle: 0 };
+          editorRef.current = adjustedEditor;
+          setEditor(adjustedEditor);
+          setStatus(tv('Ảnh nhỏ sẽ được phóng to khi dựng nét: khử hạt đã đặt về 0 để giữ dấu và chi tiết nhỏ.'));
+        }
         setPaletteSuggestions(result.palette_suggestions);
         setPreflightWarnings(result.warnings);
       }
@@ -498,14 +520,16 @@ export default function LogoRebuildWorkspace({
       return;
     }
     invalidatePreview();
-    // LOGO-REBUILD (audit 2026-08-03 §LR2.03): JPEG dùng Cutout + simplify để
-    // gọn lớp và mượt biên; không tăng despeckle vì sẽ làm rơi dấu tiếng Việt.
+    // LOGO-REBUILD (audit 2026-08-03 §LR2.03 + 2026-08-13 §LR4.01): JPEG dùng
+    // simplify để gọn lớp và mượt biên. Despeckle 4 px nguồn KHÔNG an toàn tuyệt
+    // đối với dấu tiếng Việt (vẫn nuốt chi tiết < 4×4 px nguồn); preflight sẽ hạ
+    // về 0 khi phát hiện ảnh nhỏ sắp bị upscale — xem analyzePalette.
     const jpegSource = selected.type === 'image/jpeg' || /\.jpe?g$/i.test(selected.name);
     const nextEditor = {
       ...editorRef.current,
       paletteConfirmed: false,
       smoothing: jpegSource ? 1 : 0,
-      despeckle: 4,
+      despeckle: DEFAULT_DESPECKLE_SIZE_PX,
       physicalWidthMm: null,
       physicalHeightMm: null,
     };
@@ -890,7 +914,9 @@ export default function LogoRebuildWorkspace({
           <div>
             <h1 className="flex items-center gap-2 text-lg font-bold">
               <WandSparkles className="h-5 w-5 text-violet-600" />
-              {tv('Phục hồi & Vector hóa Logo')}
+              {/* UIUX (audit 2026-08-13 §LR4.07): engine chỉ nội suy NEAREST, không
+                  phục hồi nét — tên tính năng không được hứa "phục hồi". */}
+              {tv('Vector hóa Logo')}
             </h1>
             <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
               {tv('Logo màu dùng gợi ý từ pixel nhìn thấy và chỉ áp dụng sau khi bạn xác nhận.')}
@@ -971,7 +997,10 @@ export default function LogoRebuildWorkspace({
                 <button
                   type="button"
                   aria-pressed={mode === 'monochrome'}
-                  onClick={() => commitEditor('mode', current => ({ ...current, mode: 'monochrome', smoothing: 0.5 }))}
+                  // LOGO-REBUILD (audit 2026-08-13 §LR4.06): Silhouette chưa thực thi
+                  // khử hạt — giữ despeckle > 0 chỉ ép kết quả vào review vô cớ,
+                  // nên đen trắng mặc định 0.
+                  onClick={() => commitEditor('mode', current => ({ ...current, mode: 'monochrome', smoothing: 0.5, despeckle: 0 }))}
                   className={`rounded-lg border px-3 py-2 text-xs font-semibold ${mode === 'monochrome' ? 'border-violet-500 bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-200' : 'border-slate-200 dark:border-zinc-700'}`}
                 >
                   {tv('Đen trắng')}
@@ -979,7 +1008,16 @@ export default function LogoRebuildWorkspace({
                 <button
                   type="button"
                   aria-pressed={mode === 'fixed_palette'}
-                  onClick={() => commitEditor('mode', current => ({ ...current, mode: 'fixed_palette', smoothing: 0 }))}
+                  onClick={() => commitEditor('mode', current => ({
+                    ...current,
+                    mode: 'fixed_palette',
+                    smoothing: 0,
+                    // Quay lại chế độ màu: khôi phục mặc định theo ảnh (0 nếu ảnh
+                    // nhỏ sẽ upscale — §LR4.01) trừ khi user đã tự đặt giá trị khác.
+                    despeckle: current.despeckle === 0
+                      ? (willUpscaleSource(sourceInfo) ? 0 : DEFAULT_DESPECKLE_SIZE_PX)
+                      : current.despeckle,
+                  }))}
                   className={`rounded-lg border px-3 py-2 text-xs font-semibold ${mode === 'fixed_palette' ? 'border-violet-500 bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-200' : 'border-slate-200 dark:border-zinc-700'}`}
                 >
                   {tv('Logo màu')}
@@ -1250,6 +1288,11 @@ export default function LogoRebuildWorkspace({
                 {mode === 'monochrome' && despeckle > 0 && capabilities?.engine?.engine === 'prynx-logo-core' && (
                   <span className="mt-1 block text-[11px] font-normal text-amber-700 dark:text-amber-300">
                     {tv('Khử hạt chưa được PrynX core áp dụng; giá trị lớn hơn 0 sẽ đưa kết quả vào trạng thái cần kiểm tra.')}
+                  </span>
+                )}
+                {mode === 'fixed_palette' && despeckle > 0 && willUpscaleSource(sourceInfo) && (
+                  <span className="mt-1 block text-[11px] font-normal text-amber-700 dark:text-amber-300">
+                    {tv('Ảnh nhỏ sẽ được phóng to khi dựng nét: chi tiết nhỏ hơn')} {despeckle}×{despeckle} px {tv('ảnh gốc sẽ bị gộp vào màu lân cận; đặt 0 nếu cần giữ dấu nhỏ.')}
                   </span>
                 )}
               </label>

@@ -64,7 +64,7 @@ const TOOL_HEADERS: Record<string, { icon: React.ReactNode; title: string; desc:
     stick_text_number: { icon: '🔠', title: 'Header & Footer', desc: 'Vui lòng sử dụng Không gian thiết kế ở màn hình bên phải để đóng dấu cố định trang.' },
     watermark: { icon: '©️', title: 'Chèn Nền & Đóng Dấu', desc: 'Chèn phôi nền (Background), logo chìm, text mờ (Watermark).' },
     upscale: { icon: '🪄', title: 'Phóng to Ảnh', desc: 'Cải thiện độ nét cảm nhận khi phóng to; AI có thể suy đoán chi tiết.' },
-    logo_rebuild: { icon: '🧩', title: 'Phục hồi & Vector hóa Logo', desc: 'Dựng SVG từ logo đen trắng hoặc bảng màu đã xác nhận.' },
+    logo_rebuild: { icon: '🧩', title: 'Vector hóa Logo', desc: 'Dựng SVG từ logo đen trắng hoặc bảng màu đã xác nhận.' },
     pages: { icon: '📄', title: 'Quản lý trang', desc: 'Nhân bản, xóa, xoay, và di chuyển trang PDF.' },
     encrypt: { icon: '🔐', title: 'Khóa / Mở khóa PDF', desc: 'Đặt mật khẩu, hạn chế in/copy, hoặc gỡ khóa khi biết mật khẩu.' },
     metadata: { icon: '🏷️', title: 'Metadata PDF', desc: 'Xem / sửa Title, Author, Subject… hoặc xóa metadata.' },

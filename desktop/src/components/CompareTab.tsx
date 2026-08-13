@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useComparisonStore } from '../stores/comparisonStore';
-import { uploadPDF, createCompareJob, getJobStatus, getJobResults, getFileUrl } from '../lib/api';
+import { uploadPDF, createCompareJob, getJobStatus, getJobResults, getFileUrl, cancelCompareJob } from '../lib/api';
 import PDFUploader from './PDFUploader';
 import ProgressTracker from './ProgressTracker';
 import DualPDFViewer from './DualPDFViewer';
@@ -9,7 +9,6 @@ import DiffSidebar from './DiffSidebar';
 
 import ReportModal from './ReportModal';
 import { Button } from './Button';
-import { ThemeToggle } from './ThemeToggle';
 import { useTranslation } from 'react-i18next';
 import { usePrintDialog } from './shared/usePrintDialog';
 import { toast } from './ui/Toast';
@@ -17,6 +16,15 @@ import { toast } from './ui/Toast';
 import { formatError, isCanceled } from '../lib/errorMessages';
 
 type Phase = 'upload' | 'processing' | 'results';
+
+// PERF (audit 2026-08-13 §PB-3): watchdog theo TIẾN ĐỘ thay deadline cứng 10 phút.
+// Tài liệu dài hợp lệ (trần 1.000 trang; @300 DPI trên máy yếu) dễ chạy quá 10 phút
+// trong khi backend vẫn cập nhật tiến độ từng trang — deadline cũ tự hủy oan job
+// đang chạy đúng. Chỉ hủy khi KHÔNG có tín hiệu tiến triển nào (status/progress/
+// trang/thông điệp đều đứng yên) suốt COMPARE_STALL_TIMEOUT_MS — trường hợp đó
+// là job treo hoặc backend mất phản hồi. Nút Hủy vẫn là đường thoát chính.
+const COMPARE_STALL_TIMEOUT_MS = 5 * 60_000;
+const COMPARE_STALL_CHECK_INTERVAL_MS = 30_000;
 
 interface CompareTabProps {
   tabId?: string;
@@ -38,15 +46,23 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
   const [gifPan, setGifPan] = useState({ x: 0, y: 0 });
   const [isSpacePressed, setIsSpacePressed] = useState(false);
   const [isGifDragging, setIsGifDragging] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
 
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [focusedRegion, setFocusedRegion] = useState<{page: number, nx: number, ny: number} | null>(null);
   const pollingCleanupRef = useRef<(() => void) | null>(null);
+  const activeJobRef = useRef<string | null>(null);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
       pollingCleanupRef.current?.();
       pollingCleanupRef.current = null;
+      const activeJobId = activeJobRef.current;
+      activeJobRef.current = null;
+      if (activeJobId) void cancelCompareJob(activeJobId).catch(() => undefined);
     };
   }, []);
 
@@ -148,6 +164,7 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
   const handleStartCompare = useCallback(async () => {
     if (!store.fileA || !store.fileB) return;
     setError('');
+    setIsCancelling(false);
     setPhase('processing');
     store.setJobStatus('pending');
     store.setProgress(0);
@@ -162,23 +179,30 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
         tolerance: store.tolerance,
         dpi: store.dpi,
       });
+      if (!mountedRef.current) {
+        void cancelCompareJob(job_id).catch(() => undefined);
+        return;
+      }
       store.setJobId(job_id);
+      activeJobRef.current = job_id;
 
       pollingCleanupRef.current?.();
       pollingCleanupRef.current = null;
 
       let cancelled = false;
       let pollTimer: number | null = null;
-      let deadlineTimer: number | null = null;
+      let stallTimer: number | null = null;
+      let lastActivityAt = Date.now();
+      let lastActivitySignature = '';
       const cleanupPolling = () => {
         cancelled = true;
         if (pollTimer !== null) {
           window.clearTimeout(pollTimer);
           pollTimer = null;
         }
-        if (deadlineTimer !== null) {
-          window.clearTimeout(deadlineTimer);
-          deadlineTimer = null;
+        if (stallTimer !== null) {
+          window.clearInterval(stallTimer);
+          stallTimer = null;
         }
         if (pollingCleanupRef.current === cleanupPolling) {
           pollingCleanupRef.current = null;
@@ -193,6 +217,13 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
           if (cancelled) return true;
           store.setJobStatus(job.status);
 
+          // Mọi thay đổi quan sát được từ backend đều tính là "có tiến triển".
+          const activitySignature = `${job.status}|${job.progress ?? 0}|${job.current_page ?? 0}|${job.status_message ?? ''}`;
+          if (activitySignature !== lastActivitySignature) {
+            lastActivitySignature = activitySignature;
+            lastActivityAt = Date.now();
+          }
+
           let message = t('tabs.compare:chuan_bi');
           if (job.status === 'processing') {
             if (job.status_message) message = job.status_message;
@@ -206,13 +237,28 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
             const results = await getJobResults(job_id);
             if (cancelled) return true;
             store.setResults(results.pages, results.summary);
+            activeJobRef.current = null;
             setPhase('results');
             cleanupPolling();
             return true;
           }
           if (job.status === 'failed') {
             setError(job.error_message || t('tabs.compare:co_loi_xay_ra_khi_so_sanh'));
+            activeJobRef.current = null;
             setPhase('upload');
+            cleanupPolling();
+            return true;
+          }
+          if (job.status === 'cancelled') {
+            store.setProgress(
+              job.progress || 0,
+              job.current_page || undefined,
+              job.total_pages || undefined,
+              job.status_message || t('tabs.compare:da_huy_so_sanh', 'Đã hủy so sánh.'),
+            );
+            setPhase('upload');
+            setIsCancelling(false);
+            activeJobRef.current = null;
             cleanupPolling();
             return true;
           }
@@ -229,28 +275,67 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
         }
       };
 
-      deadlineTimer = window.setTimeout(() => {
+      stallTimer = window.setInterval(() => {
         if (cancelled) return;
+        if (Date.now() - lastActivityAt < COMPARE_STALL_TIMEOUT_MS) return;
         cleanupPolling();
         if (useComparisonStore.getState().jobStatus !== 'completed') {
-          setError(t('tabs.compare:qua_thoi_gian_cho_xu_ly_10_phut_file_co'));
+          activeJobRef.current = null;
+          void cancelCompareJob(job_id).catch(() => undefined);
+          setError(t('tabs.compare:job_khong_co_tien_trien_trong_5_phut'));
           setPhase('upload');
         }
-      }, 600000);
+      }, COMPARE_STALL_CHECK_INTERVAL_MS);
       void runPoll();
     } catch (e: unknown) {
-      // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy (timeout ~10 phút giữ nguyên)
+      // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
+      // (PB-3: deadline cứng 10 phút đã thay bằng watchdog theo tiến độ ở trên)
       if (!isCanceled(e)) setError(formatError(e, t('tabs.compare:khong_the_tao_job')));
       setPhase('upload');
     }
   }, [store, t]);
 
+  const handleCancelCompare = useCallback(async () => {
+    const jobId = store.jobId;
+    if (!jobId || isCancelling) return;
+
+    setIsCancelling(true);
+    setError('');
+    store.setProgress(
+      store.progress,
+      store.currentPage || undefined,
+      store.totalPages || undefined,
+      'Đang dừng và dọn kết quả dở dang...',
+    );
+    try {
+      const result = await cancelCompareJob(jobId);
+      if (!result.cancelled) {
+        setError(result.message);
+        return;
+      }
+      pollingCleanupRef.current?.();
+      pollingCleanupRef.current = null;
+      activeJobRef.current = null;
+      store.resetJob();
+      setPhase('upload');
+      toast.info(t('tabs.compare:da_huy_so_sanh', 'Đã hủy so sánh.'));
+    } catch (e: unknown) {
+      setError(formatError(e, 'Không thể hủy job so sánh.'));
+    } finally {
+      setIsCancelling(false);
+    }
+  }, [isCancelling, store, t]);
+
   const handleReset = useCallback(() => {
     pollingCleanupRef.current?.();
     pollingCleanupRef.current = null;
+    const activeJobId = activeJobRef.current;
+    activeJobRef.current = null;
+    if (activeJobId) void cancelCompareJob(activeJobId).catch(() => undefined);
     store.reset();
     setPhase('upload');
     setError('');
+    setIsCancelling(false);
     setScrollToPage(0);
     setScrollToBPage(0);
   }, [store]);
@@ -261,6 +346,14 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
       type: r.type, severity: r.severity, page: page.page_number, b_page: r.b_page, description: r.description,
     })),
   );
+  const overallStatus = store.summary?.overall_status;
+  const printVerdict = store.summary?.print_verdict;
+  const totalDiffCount = typeof store.summary?.total_diff_count === 'number'
+    ? store.summary.total_diff_count
+    : 0;
+  const visualSimilarity = typeof store.summary?.visual_similarity === 'number'
+    ? store.summary.visual_similarity
+    : store.summary?.average_similarity;
 
   // UPLOAD PHASE
   if (phase === 'upload') {
@@ -410,6 +503,15 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
             totalPages={store.totalPages}
             message={store.progressMessage}
           />
+          <div className="mt-6 flex justify-center">
+            <Button
+              onClick={() => { void handleCancelCompare(); }}
+              disabled={!store.jobId || isCancelling}
+              variant="secondary"
+            >
+              {isCancelling ? 'Đang hủy...' : 'Hủy so sánh'}
+            </Button>
+          </div>
           {error && (
             <div className="error-banner mt-6 text-center">
               {error}
@@ -438,27 +540,29 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
           {store.summary && (
              <div className="flex items-center gap-3 mr-4">
                 <span className={`px-2 py-1 text-[11px] font-bold rounded ${
-                   (store.summary as any).overall_status === 'PASS' ? 'bg-green-100 text-green-700' : 
-                   (store.summary as any).overall_status === 'FAIL' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
-                }`}>
-                   {(store.summary as any).print_verdict
-                     || ((store.summary as any).overall_status === 'PASS' ? 'ĐẠT' : 'KHÔNG ĐẠT')}
+                   overallStatus === 'PASS' ? 'bg-green-100 text-green-700' :
+                   overallStatus === 'FAIL' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
+                 }`}>
+                   {typeof printVerdict === 'string'
+                     ? printVerdict
+                     : (overallStatus === 'PASS' ? 'ĐẠT' : 'KHÔNG ĐẠT')}
                 </span>
                 <span className={`text-xs font-semibold ${
-                   ((store.summary as any).total_diff_count ?? 0) === 0
-                     ? 'text-green-700 dark:text-green-400'
-                     : 'text-red-700 dark:text-red-400'
-                }`}>
-                   {((store.summary as any).total_diff_count ?? 0) === 0
-                     ? '0 lỗi in'
-                     : `${(store.summary as any).total_diff_count} lỗi in — cần xử lý`}
+                   totalDiffCount === 0
+                      ? 'text-green-700 dark:text-green-400'
+                      : 'text-red-700 dark:text-red-400'
+                 }`}>
+                   {totalDiffCount === 0
+                      ? '0 lỗi in'
+                      : `${totalDiffCount} lỗi in — cần xử lý`}
                 </span>
                 <span
                   className="text-[11px] text-slate-400 dark:text-zinc-500"
                   title="Độ giống hình toàn trang (SSIM) — chỉ tham khảo. In ấn không chấm theo % pixel."
                 >
-                   Giống hình (tham khảo): {(store.summary as any).visual_similarity
-                     ?? (store.summary as any).average_similarity}%
+                   Giống hình (tham khảo): {typeof visualSimilarity === 'number'
+                     ? `${visualSimilarity}%`
+                     : '—'}
                 </span>
              </div>
           )}

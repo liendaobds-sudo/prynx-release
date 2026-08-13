@@ -10,7 +10,16 @@ Chính sách so sánh PDF (in ấn): PIXEL-FIRST.
     định pass/fail. So chữ thuần: tool compare_text / QC riêng.
 """
 import logging
+import os
+import shutil
+import threading
+import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable
 
 from sqlalchemy.orm import Session
 
@@ -18,9 +27,180 @@ from app.config import settings
 from app.core.pdf_processor import PDFProcessor
 from app.core.image_comparator import ImageComparator
 from app.core.highlight_renderer import HighlightRenderer
+from app.core.system_memory import plan_worker_count
 from app.models.job import ComparisonJob, PageResult, UploadedFile
 
 logger = logging.getLogger(__name__)
+
+# PERF (audit 2026-08-13 §P25.1): ngưỡng an toàn NHỎ HƠN IMPOSITION_AREA_RATIO (1.8)
+# của ImageComparator. Cặp trang chỉ được coi là "ghép 1:1 chắc chắn" khi tỉ lệ diện
+# tích còn cách xa ngưỡng dò tờ bình — chừa biên cho sai số làm tròn điểm→pixel.
+_PIPELINE_AREA_RATIO_SAFETY = 1.7
+_COMPARE_CV_THREADS_LOCK = threading.Lock()
+
+# PERF (audit 2026-08-13 §PB-2): commit PageResult theo lô nhỏ thay vì mỗi trang.
+# Đo stage trên tài liệu 250 trang cho thấy fsync SQLite mỗi trang chiếm 6–9% sàn
+# tuần tự main-thread của pipeline. Giới hạn trễ 1 giây giữ nhịp cập nhật tiến độ
+# cho UI (local mode đọc progress qua DB); checkpoint hủy vẫn chạy MỖI TRANG.
+_COMPARE_COMMIT_BATCH_PAGES = 16
+_COMPARE_COMMIT_MAX_LAG_S = 1.0
+
+# PERF (audit 2026-08-13 §PB-3): bước dò bình bài so MỌI trang nguồn với MỌI tờ
+# bình (O(A×B) lượt so mini 48 DPI) — 1.000 trang nguồn × 666 tờ ≈ 666.000 lượt,
+# bùng nổ hàng giờ trước khi vào pipeline. Trần mặc định đúng bằng thế giới đã
+# phủ benchmark/smoke ở trần 250 trang (250×250). Đây là TRẦN SẢN PHẨM như
+# PRYNX_MAX_COMPARE_PAGES, không gate theo phần cứng; người vận hành nới qua env
+# khi chấp nhận thời gian dò.
+_DEFAULT_MAX_IMPOSITION_MAP_CELLS = 250 * 250
+_MAP_PROGRESS_MIN_INTERVAL_S = 1.0
+
+
+def _max_imposition_map_cells() -> int:
+    """Trần số lượt dò bình bài; đọc mỗi lần chạy để override không cần reload."""
+    raw = os.environ.get("PRYNX_MAX_IMPOSITION_MAP_CELLS", "")
+    try:
+        value = int(raw) if raw else _DEFAULT_MAX_IMPOSITION_MAP_CELLS
+    except (TypeError, ValueError):
+        logger.warning(
+            "PRYNX_MAX_IMPOSITION_MAP_CELLS không hợp lệ (%r); dùng mặc định %d.",
+            raw,
+            _DEFAULT_MAX_IMPOSITION_MAP_CELLS,
+        )
+        return _DEFAULT_MAX_IMPOSITION_MAP_CELLS
+    return max(1, value)
+
+
+@contextmanager
+def _compare_cv_thread_budget(threads: int):
+    """Tránh nested parallelism của OpenCV rồi khôi phục cấu hình process."""
+    import cv2
+
+    # cv2.setNumThreads là thiết lập toàn process. Serialize đoạn đổi/khôi phục để
+    # hai lời gọi Compare trực tiếp ngoài scheduler cũng không giẫm cấu hình nhau.
+    with _COMPARE_CV_THREADS_LOCK:
+        previous = cv2.getNumThreads()
+        cv2.setNumThreads(max(1, int(threads)))
+        try:
+            yield
+        finally:
+            cv2.setNumThreads(previous)
+
+
+def _encode_highlight_to_png(result):
+    """PERF (audit 2026-08-13 §PB-2): encode PNG ảnh khác biệt NGAY TRONG worker.
+
+    Đo stage cho thấy encode+ghi PNG chiếm 15–16% sàn tuần tự main-thread của
+    pipeline trên tài liệu dài; phần encode (CPU) chuyển sang worker so-ảnh, main
+    thread chỉ còn ghi bytes. Byte đầu ra PHẢI trùng ``cv2.imwrite`` của đường
+    tuần tự (cùng encoder libpng, cùng tham số mặc định) — bất biến này được test
+    bằng SHA-256 ở test_compare_parallel_parity. Raster gốc được giải phóng ngay
+    để cửa sổ inflight giữ bytes PNG nhỏ thay vì ảnh thô (giảm đỉnh RAM).
+    """
+    if result is None or result.highlighted_image is None:
+        return result
+    import cv2
+
+    image = result.highlighted_image
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    ok, encoded = cv2.imencode(".png", image)
+    if not ok:
+        # Cùng semantics với cv2.imwrite trả False ở đường tuần tự: nâng thành
+        # OSError để pipeline rollback PageResult và dọn artifact dở dang.
+        raise OSError("Không encode được ảnh khác biệt PNG trong worker so sánh")
+    result.highlighted_png = encoded.tobytes()
+    result.highlighted_image = None
+    return result
+
+
+class ComparisonCancelled(InterruptedError):
+    """Job Compare đã nhận yêu cầu hủy cooperative."""
+
+
+def _is_cancelled(cancel_check: Callable[[], bool] | None) -> bool:
+    if cancel_check is None:
+        return False
+    try:
+        return bool(cancel_check())
+    except Exception:
+        # Không biến lỗi ở kênh kiểm tra hủy thành kết quả Compare sai/failed.
+        logger.exception("Không đọc được trạng thái hủy của job Compare")
+        return False
+
+
+def _raise_if_cancelled(cancel_check: Callable[[], bool] | None) -> None:
+    if _is_cancelled(cancel_check):
+        raise ComparisonCancelled("Đã hủy so sánh theo yêu cầu của người dùng.")
+
+
+def _remove_job_artifacts(job_id: str) -> None:
+    """Xóa đúng thư mục artifact của một job, không cho phép thoát RESULTS_DIR."""
+    results_root = Path(settings.RESULTS_DIR).resolve()
+    output_dir = (results_root / str(job_id)).resolve()
+    if output_dir.parent != results_root:
+        raise ValueError("Đường dẫn kết quả Compare không hợp lệ")
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+
+
+def _prepare_clean_run(job: ComparisonJob, db: Session) -> None:
+    """Retry/rerun luôn bắt đầu sạch, không nhân đôi row hoặc dùng artifact cũ."""
+    db.query(PageResult).filter(PageResult.job_id == job.id).delete(
+        synchronize_session=False
+    )
+    _remove_job_artifacts(str(job.id))
+    job.progress = 0
+    job.current_page = 0
+    job.total_pages = None
+    job.result_summary = None
+    job.error_message = None
+    job.status_message = None
+    job.completed_at = None
+
+
+def _finalize_interrupted_job(
+    job_id: str,
+    db: Session,
+    *,
+    status: str,
+    message: str,
+    preserve_cancelled: bool = True,
+) -> ComparisonJob | None:
+    """Rollback rồi dọn toàn bộ output dở dang; hàm an toàn khi gọi lặp lại."""
+    try:
+        db.rollback()
+        db.query(PageResult).filter(PageResult.job_id == job_id).delete(
+            synchronize_session=False
+        )
+        try:
+            _remove_job_artifacts(job_id)
+        except Exception:
+            # Antivirus/file lock không được ngăn DB đi vào trạng thái terminal.
+            # Artifact mồ côi sẽ được retry cleanup ở lần chạy lại cùng job.
+            logger.exception("Chưa xóa được artifact của job Compare %s", job_id)
+        job = db.query(ComparisonJob).filter(ComparisonJob.id == job_id).first()
+        if job:
+            effective_status = (
+                "cancelled"
+                if preserve_cancelled and job.status == "cancelled"
+                else status
+            )
+            job.status = effective_status
+            job.result_summary = None
+            effective_message = (
+                "Đã hủy so sánh theo yêu cầu của người dùng."
+                if effective_status == "cancelled"
+                else message
+            )
+            job.status_message = effective_message
+            job.error_message = message if effective_status == "failed" else None
+            job.completed_at = datetime.now(timezone.utc)
+        db.commit()
+        return job
+    except Exception:
+        db.rollback()
+        logger.exception("Không dọn sạch được output dở dang của job Compare %s", job_id)
+        return None
 
 
 def _looks_like_document_imposition(
@@ -67,6 +247,8 @@ def _map_source_pages_to_sheets(
     tolerance: str,
     config: dict,
     trim_insets: list,
+    cancel_check: Callable[[], bool] | None = None,
+    on_source_page: Callable[[int], None] | None = None,
 ) -> dict[int, int]:
     """Locate every source page on any imposed sheet using cheap low-DPI scans."""
     preview_dpi = max(36, min(72, int((config or {}).get("imposition_map_dpi", 48) or 48)))
@@ -80,8 +262,14 @@ def _map_source_pages_to_sheets(
 
     with processor.open_document(file_a_path, dpi=preview_dpi) as preview_a, \
          processor.open_document(file_b_path, dpi=preview_dpi) as preview_b:
-        sheet_previews = [preview_b.render_page(i) for i in range(pages_b)]
+        sheet_previews = []
+        for i in range(pages_b):
+            _raise_if_cancelled(cancel_check)
+            sheet_previews.append(preview_b.render_page(i))
         for a_idx in range(pages_a):
+            _raise_if_cancelled(cancel_check)
+            if on_source_page is not None:
+                on_source_page(a_idx)
             source_preview = preview_a.render_page(a_idx)
             page_config = dict(preview_config)
             if a_idx < len(trim_insets) and trim_insets[a_idx] is not None:
@@ -90,6 +278,7 @@ def _map_source_pages_to_sheets(
             best_sheet = None
             best_rank = (-1.0, -1.0, -1)
             for b_idx, sheet_preview in enumerate(sheet_previews):
+                _raise_if_cancelled(cancel_check)
                 candidate = comparator.compare(
                     source_preview,
                     sheet_preview,
@@ -113,10 +302,87 @@ def _map_source_pages_to_sheets(
     return page_map
 
 
-def run_comparison_pipeline(
+def _plan_pipeline_pairs(
+    doc_a,
+    doc_b,
+    pages_a: int,
+    pages_b: int,
+    work_seq: list,
+    *,
+    document_imposition: bool,
+    use_alignment: bool,
+    is_cmyk_mode: bool,
+):
+    """Cặp trang xác định TRƯỚC cho pipeline so-ảnh song song (§P25.1).
+
+    Trả list ``(a_idx, b_idx_hiệu_dụng, found_b, cần_so)`` khi thứ tự ghép trang
+    KHÔNG phụ thuộc kết quả so của trang trước; trả ``None`` khi phải giữ vòng
+    tuần tự cũ (vòng dò tờ bình theo diện tích có thể dời con trỏ trang B).
+
+    ``found_b`` được đóng băng đúng theo semantics của vòng tuần tự hiện hữu —
+    kể cả các giá trị quirk cho trang thiếu — để kết quả parity tuyệt đối.
+    """
+    if document_imposition or use_alignment:
+        # Cặp đã chốt sẵn từ page map / căn trang; mỗi phần tử độc lập hoàn toàn.
+        pairs = []
+        for a_idx, b_idx in work_seq:
+            if a_idx is not None and b_idx is not None:
+                pairs.append((a_idx, b_idx, b_idx, True))
+            elif b_idx is not None:
+                pairs.append((a_idx, b_idx, b_idx, False))
+            elif document_imposition:
+                pairs.append((a_idx, None, -1, False))
+            else:
+                # Nhánh căn trang không bao giờ dời current_b_idx (bất biến cũ = 0).
+                pairs.append((a_idx, None, 0, False))
+        return pairs
+
+    if pages_b <= 0:
+        return None
+
+    if is_cmyk_mode:
+        # compare_cmyk không có chế độ dò tờ bình; con trỏ B luôn tiến +1 sau mỗi
+        # trang có A → tính trước được, kể cả kiểu bão hòa min(i, pages_b-1).
+        pairs = []
+        counter = 0
+        for a_idx, _unused in work_seq:
+            if a_idx is not None and a_idx < pages_a:
+                eff_b = min(counter, pages_b - 1)
+                pairs.append((a_idx, eff_b, eff_b, True))
+                counter = eff_b + 1
+            else:
+                pairs.append((a_idx, None, counter, False))
+        return pairs
+
+    if pages_a != pages_b:
+        # Nhánh hiếm: căn trang thất bại + lệch số trang → giữ nguyên đường cũ.
+        return None
+
+    # Nhánh thường 1:1: chỉ an toàn khi KHÔNG cặp nào có thể kích hoạt chế độ dò
+    # tờ bình theo tỉ lệ diện tích (ImageComparator Case B, ngưỡng 1.8) — vì khi đó
+    # con trỏ B ngừng tiến và cặp trang phụ thuộc kết quả so của trang trước.
+    try:
+        for i in range(pages_a):
+            aw, ah = doc_a.page_size(i)
+            bw, bh = doc_b.page_size(i)
+            area_a = float(aw) * float(ah)
+            area_b = float(bw) * float(bh)
+            if area_a <= 0 or area_b <= 0:
+                return None
+            ratio = max(area_a, area_b) / min(area_a, area_b)
+            if ratio >= _PIPELINE_AREA_RATIO_SAFETY:
+                return None
+    except Exception as exc:
+        logger.warning("Không đọc được kích thước trang để lập pipeline: %s", exc)
+        return None
+    return [(i, i, i, True) for i in range(pages_a)]
+
+
+def _run_comparison_pipeline_impl(
     job_id: str,
     db: Session,
     on_progress: callable = None,
+    cancel_check: Callable[[], bool] | None = None,
 ):
     """
     Core comparison pipeline shared by both sync (DEV_MODE) and Celery (production).
@@ -143,9 +409,64 @@ def run_comparison_pipeline(
         logger.error(f"Job not found: {job_id}")
         return
 
-    job.status = "processing"
-    job.started_at = datetime.now(timezone.utc)
+    if job.status == "cancelled":
+        raise ComparisonCancelled("Job đã bị hủy trước khi bắt đầu.")
+    _raise_if_cancelled(cancel_check)
+
+    external_cancel_check = cancel_check
+    last_db_cancel_probe = 0.0
+
+    def cancel_requested() -> bool:
+        nonlocal last_db_cancel_probe
+        if _is_cancelled(external_cancel_check):
+            return True
+        if external_cancel_check is not None:
+            return False
+        # Nhánh Celery chạy khác process với API nên không dùng được registry RAM;
+        # đọc riêng cột status để nhận yêu cầu hủy đã ghi vào DB, không lấy object
+        # ComparisonJob đang nằm trong identity-map của session.
+        import time
+
+        now = time.monotonic()
+        if now - last_db_cancel_probe < 0.1:
+            return False
+        last_db_cancel_probe = now
+        return bool(
+            db.query(ComparisonJob.status)
+            .filter(ComparisonJob.id == job_id)
+            .scalar()
+            == "cancelled"
+        )
+
+    cancel_check = cancel_requested
+
+    # Chuyển trạng thái bằng UPDATE có điều kiện để yêu cầu hủy từ process Celery
+    # khác không bị một object SQLAlchemy cũ ghi đè ngược thành processing.
+    admitted = (
+        db.query(ComparisonJob)
+        .filter(
+            ComparisonJob.id == job_id,
+            ComparisonJob.status != "cancelled",
+        )
+        .update(
+            {
+                ComparisonJob.status: "processing",
+                ComparisonJob.started_at: datetime.now(timezone.utc),
+            },
+            synchronize_session=False,
+        )
+    )
     db.commit()
+    if not admitted:
+        raise ComparisonCancelled("Job đã bị hủy trước khi bắt đầu.")
+    db.refresh(job)
+    _raise_if_cancelled(cancel_check)
+
+    # PERF (audit 2026-08-13 §PA.R3): retry/lỗi cũ không được để lại row/artifact
+    # rồi trộn với lần chạy mới của cùng job.
+    _prepare_clean_run(job, db)
+    db.commit()
+    _raise_if_cancelled(cancel_check)
 
     notify(0, message="Bắt đầu xử lý...")
 
@@ -166,9 +487,12 @@ def run_comparison_pipeline(
     job.status_message = "Đang mở file PDF..."
     db.commit()
     notify(5, message="Đang mở file PDF...")
+    _raise_if_cancelled(cancel_check)
 
     with processor.open_document(file_a.file_path, dpi=dpi) as doc_a, \
          processor.open_document(file_b.file_path, dpi=dpi) as doc_b:
+
+        _raise_if_cancelled(cancel_check)
 
         pages_a = doc_a.page_count
         pages_b = doc_b.page_count
@@ -202,7 +526,40 @@ def run_comparison_pipeline(
 
         imposition_page_map: dict[int, int] = {}
         if document_imposition:
-            notify(10, message="\u0110ang nh\u1eadn di\u1ec7n th\u1ee9 t\u1ef1 trang tr\u00ean c\u00e1c t\u1edd b\u00ecnh...", total_pages=pages_a)
+            # PERF (audit 2026-08-13 §PB-3): chặn bùng nổ O(A×B) của bước dò bình bài
+            # TRƯỚC khi render preview. Job vượt trần fail ngay với hướng dẫn rõ thay
+            # vì chạy hàng giờ không tiến triển (watchdog UI sẽ hủy oan giữa chừng).
+            map_cells = pages_a * pages_b
+            max_map_cells = _max_imposition_map_cells()
+            if map_cells > max_map_cells:
+                raise ValueError(
+                    f"Tài liệu quá dài cho chế độ so bình bài: {pages_a} trang nguồn × "
+                    f"{pages_b} tờ bình = {map_cells} lượt dò, vượt trần {max_map_cells}. "
+                    "Vui lòng chia nhỏ file theo từng bộ bình, hoặc chọn chế độ ghép "
+                    "trang tuần tự nếu hai file cùng thứ tự trang. Người vận hành có "
+                    "thể nới trần qua biến môi trường PRYNX_MAX_IMPOSITION_MAP_CELLS."
+                )
+
+            # PERF (audit 2026-08-13 §PB-3): bước dò có thể chạy nhiều phút mà không
+            # chạm DB → UI local (đọc tiến độ qua DB) và watchdog theo tiến độ sẽ
+            # tưởng job treo. Cập nhật status_message theo nhịp ≤1 s giữ tín hiệu sống.
+            map_message = "Đang nhận diện thứ tự trang trên các tờ bình..."
+            job.status_message = map_message
+            db.commit()
+            notify(10, message=map_message, total_pages=pages_a)
+            last_map_report = time.monotonic()
+
+            def _report_map_progress(source_idx: int) -> None:
+                nonlocal last_map_report
+                now = time.monotonic()
+                if now - last_map_report < _MAP_PROGRESS_MIN_INTERVAL_S:
+                    return
+                last_map_report = now
+                message = f"Đang định vị trang nguồn {source_idx + 1}/{pages_a} trên các tờ bình..."
+                job.status_message = message
+                db.commit()
+                notify(10, message=message, total_pages=pages_a)
+
             imposition_page_map = _map_source_pages_to_sheets(
                 processor,
                 comparator,
@@ -213,7 +570,13 @@ def run_comparison_pipeline(
                 tolerance,
                 comparison_config,
                 trim_insets_a,
+                cancel_check,
+                on_source_page=_report_map_progress,
             )
+            # Dò xong: trả status_message về rỗng để UI quay lại hiển thị
+            # "Đang so sánh trang X/Y" theo current_page như đường thường.
+            job.status_message = None
+            db.commit()
             logger.info(
                 "Job %s: mapped %s/%s source pages to imposed sheets",
                 job_id, len(imposition_page_map), pages_a,
@@ -224,13 +587,14 @@ def run_comparison_pipeline(
         # RAM KHÔNG tích luỹ tuyến tính theo SỐ TRANG (page A/B được giải phóng mỗi
         # vòng), NHƯNG đỉnh per-page CAO và tỉ lệ với render DPI × kích thước trang:
         # đo thực tế trang ảnh 1500px @150dpi (full RGB + CMYK + SSIM + diff) đạt đỉnh
-        # ~0.5–0.7GB và ~0.5s/trang. Guard MAX_PAGES=50 (route compare) chặn bùng nổ
-        # theo số trang nhưng KHÔNG giảm đỉnh per-page → máy RAM thấp cần cân nhắc DPI.
+        # ~0.5–0.7GB và ~0.5s/trang. PERF (audit 2026-08-13 §PB-1/§PB-3): route compare
+        # giữ trần trang (mặc định 1.000, env PRYNX_MAX_COMPARE_PAGES) + admission đĩa
+        # artifact; hai guard đó chặn bùng nổ theo số trang nhưng KHÔNG giảm đỉnh
+        # per-page → máy RAM thấp cần cân nhắc DPI.
         pages_pass = pages_fail = pages_warning = 0
         total_diff_count = 0
         total_similarity = 0.0
-        current_b_idx = 0
-        
+
         total_imposition_instances = 0
         failed_imposition_instances = 0
 
@@ -251,6 +615,7 @@ def run_comparison_pipeline(
                 def _fingerprints(path, n):
                     sigs = []
                     for p in range(1, n + 1):
+                        _raise_if_cancelled(cancel_check)
                         im = processor.convert_single_page(path, p, dpi=36)
                         if im is None:
                             sigs.append(_np.zeros((32, 32), dtype=_np.uint8))
@@ -263,6 +628,7 @@ def run_comparison_pipeline(
                     """Text chuẩn hoá mỗi trang (rỗng nếu trang ảnh/không có text)."""
                     out = []
                     for p in range(1, n + 1):
+                        _raise_if_cancelled(cancel_check)
                         try:
                             blocks = processor.extract_text_blocks(path, p)
                             t = " ".join(b.get("text", "") for b in blocks)
@@ -303,89 +669,275 @@ def run_comparison_pipeline(
         total_work = len(work_seq) or 1
         page_mapping: list[int | None] = [None] * pages_a
 
-        for out_idx, (a_idx, b_idx) in enumerate(work_seq):
+        # PERF (audit 2026-08-13 §P25.1): render giữ khóa PDFium nên buộc tuần tự
+        # trong một process, nhưng so ảnh + encode kết quả (OpenCV/NumPy — đo được
+        # ~66% + 4,8% thời gian job) không cần khóa. Khi cặp trang xác định được
+        # TRƯỚC, phần so ảnh được đẩy sang pool thread; máy <8 GB (planner trả
+        # 1 worker) giữ nguyên đường tuần tự cũ — đúng rule "máy yếu mới giảm,
+        # máy mạnh chạy hết công suất". `PRYNX_COMPARE_WORKERS` ghi đè được.
+        compare_workers, compare_workers_reason = plan_worker_count(
+            kind="compare-pages",
+            per_worker_mb=640.0,
+            env_override="PRYNX_COMPARE_WORKERS",
+        )
+        pipeline_pairs = None
+        if compare_workers >= 2 and len(work_seq) >= 2:
+            pipeline_pairs = _plan_pipeline_pairs(
+                doc_a, doc_b, pages_a, pages_b, work_seq,
+                document_imposition=document_imposition,
+                use_alignment=use_alignment,
+                is_cmyk_mode=is_cmyk_mode,
+            )
+            if pipeline_pairs is not None:
+                logger.info(
+                    "Job %s: pipeline so sánh %d trang với %d worker so-ảnh (%s)",
+                    job_id, len(work_seq), compare_workers, compare_workers_reason,
+                )
+
+        def _sequential_outcomes():
+            """Đường tuần tự NGUYÊN BẢN — dùng cho máy yếu và các ca ghép trang
+            phụ thuộc kết quả so của trang trước (vòng dò tờ bình theo diện tích)."""
+            current_b_idx = 0
+            for out_idx, (a_idx, b_idx) in enumerate(work_seq):
+                _raise_if_cancelled(cancel_check)
+                # Render page A (None nếu không có A — vd trang chỉ được THÊM ở B)
+                page_idx = a_idx if a_idx is not None else -1
+                img_a = doc_a.render_page(a_idx) if (a_idx is not None and a_idx < pages_a) else None
+
+                img_b = None
+                found_b_idx = b_idx if b_idx is not None else (-1 if document_imposition else current_b_idx)
+                result = None
+                page_config = dict(comparison_config)
+                if document_imposition and a_idx is not None and a_idx < len(trim_insets_a):
+                    if trim_insets_a[a_idx] is not None:
+                        page_config["template_trim_insets"] = trim_insets_a[a_idx]
+
+                if document_imposition:
+                    # Booklet/N-up order is non-linear: compare the source page with
+                    # the sheet found by the low-DPI global search, never by index.
+                    if a_idx is not None and b_idx is not None:
+                        _raise_if_cancelled(cancel_check)
+                        img_b = doc_b.render_page(b_idx)
+                        result = comparator.compare(
+                            img_a, img_b, tolerance=tolerance, config=page_config
+                        )
+                elif use_alignment:
+                    # Cặp trang đã được căn theo nội dung → so 1:1 đúng cặp. Trang thêm/xoá
+                    # (a_idx hoặc b_idx = None) rơi vào nhánh "missing" với nhãn rõ ràng.
+                    if a_idx is not None and b_idx is not None:
+                        _raise_if_cancelled(cancel_check)
+                        img_b = doc_b.render_page(b_idx)
+                        result = comparator.compare(img_a, img_b, tolerance=tolerance, config=page_config)
+                elif is_cmyk_mode and img_a is not None and pages_b > 0:
+                    _raise_if_cancelled(cancel_check)
+                    # ── CMYK Channel-by-Channel Comparison ──
+                    cmyk_a = doc_a.render_page_cmyk(page_idx)
+                    b_idx = min(current_b_idx, pages_b - 1)
+                    cmyk_b = doc_b.render_page_cmyk(b_idx)
+                    img_b = doc_b.render_page(b_idx)
+                    found_b_idx = b_idx
+                    result = comparator.compare_cmyk(
+                        cmyk_a, cmyk_b, tolerance=tolerance,
+                        rgb_a=img_a, rgb_b=img_b, config=page_config,
+                    )
+                    # CĂN TRANG 1:1: tiến con trỏ B sang trang kế (giống nhánh thường) —
+                    # CMYK luôn so theo cặp trang, không có chế độ imposition.
+                    current_b_idx = found_b_idx + 1
+                elif img_a is not None and pages_b > 0:
+                    for b_idx in range(current_b_idx, pages_b):
+                        _raise_if_cancelled(cancel_check)
+                        test_b = doc_b.render_page(b_idx)
+                        temp_result = comparator.compare(img_a, test_b, tolerance=tolerance, config=page_config)
+
+                        if getattr(temp_result, "is_imposition_mode", False):
+                            if temp_result.similarity_score > 0.0:
+                                img_b = test_b
+                                found_b_idx = b_idx
+                                result = temp_result
+                                break
+                        else:
+                            img_b = test_b
+                            found_b_idx = b_idx
+                            result = temp_result
+                            break
+
+                    if img_b is None:
+                        img_b = doc_b.render_page(current_b_idx)
+                        result = comparator.compare(img_a, img_b, tolerance=tolerance, config=page_config)
+                    else:
+                        # CĂN TRANG 1:1 (sửa lỗi pin-về-B[0]): chế độ thường so A[i] với B[i],
+                        # nên sau khi khớp phải TIẾN con trỏ sang trang B kế tiếp. Trước đây
+                        # `current_b_idx = found_b_idx` (thiếu +1) khiến mọi trang A đều so với
+                        # cùng một trang B (B[0]) → báo khác biệt giả ở mọi trang sau trang 1.
+                        # Chế độ imposition (1 mẫu ↔ tờ N-up) GIỮ NGUYÊN: không tiến con trỏ vì
+                        # nhiều mẫu có thể nằm trên cùng một tờ.
+                        if getattr(result, "is_imposition_mode", False):
+                            current_b_idx = found_b_idx
+                        else:
+                            current_b_idx = found_b_idx + 1
+
+                yield out_idx, a_idx, b_idx, found_b_idx, result
+
+        def _pipelined_outcomes(pairs):
+            """Render tuần tự (khóa PDFium) trên thread này; so ảnh chạy trong pool.
+
+            Kết quả được trả ĐÚNG THỨ TỰ trang. Mỗi future tự giữ ảnh đầu vào trong
+            closure và giải phóng chúng ngay khi compare xong; hàng đợi ngoài chỉ giữ
+            future. Cửa sổ không vượt số worker và drain ngay trang đầu để UI/RAM không
+            bị độ trễ nạp trước `workers + 2` trang như phiên bản P-A ban đầu.
+            """
+            from app.core.gpu_accelerator import GPUAccelerator
+
+            # Khởi tạo singleton trên thread chính — tránh race khởi tạo khi
+            # nhiều worker cùng gọi get_instance() lần đầu.
+            GPUAccelerator.get_instance()
+
+            # PERF (audit 2026-08-13 §PA-2): OpenCV mặc định tự mở toàn bộ 16
+            # thread CHO MỖI phép so, trong khi pipeline đã có tới CPU-1 phép so
+            # đồng thời → oversubscribe hàng trăm native thread, gây dao động/treo.
+            # Chỉ chỉnh khi pipeline đa worker; đường tuần tự giữ nguyên OpenCV full.
+            raw_cv_threads = os.environ.get("PRYNX_COMPARE_CV_THREADS", "")
+            try:
+                pipeline_cv_threads = max(1, int(raw_cv_threads)) if raw_cv_threads else 1
+            except (TypeError, ValueError):
+                pipeline_cv_threads = 1
+            inflight_limit = compare_workers
+            startup_window = min(inflight_limit, 4)
+            pending: deque = deque()
+            first_page_reported = False
+
+            def _submit(pool, a_idx, eff_b_idx):
+                _raise_if_cancelled(cancel_check)
+                img_a = doc_a.render_page(a_idx)
+                page_config = dict(comparison_config)
+                if document_imposition and a_idx < len(trim_insets_a):
+                    if trim_insets_a[a_idx] is not None:
+                        page_config["template_trim_insets"] = trim_insets_a[a_idx]
+                if is_cmyk_mode:
+                    cmyk_a = doc_a.render_page_cmyk(a_idx)
+                    cmyk_b = doc_b.render_page_cmyk(eff_b_idx)
+                    img_b = doc_b.render_page(eff_b_idx)
+                    def compare_page():
+                        return _encode_highlight_to_png(comparator.compare_cmyk(
+                            cmyk_a, cmyk_b, tolerance=tolerance,
+                            rgb_a=img_a, rgb_b=img_b, config=page_config,
+                        ))
+                else:
+                    img_b = doc_b.render_page(eff_b_idx)
+                    def compare_page():
+                        return _encode_highlight_to_png(comparator.compare(
+                            img_a, img_b, tolerance=tolerance, config=page_config
+                        ))
+
+                future = pool.submit(compare_page)
+                return future
+
+            def _drain():
+                out_idx, a_idx, b_idx, found_b, future = pending.popleft()
+                if future is None:
+                    return out_idx, a_idx, b_idx, found_b, None
+                while True:
+                    _raise_if_cancelled(cancel_check)
+                    try:
+                        result = future.result(timeout=0.05)
+                        return out_idx, a_idx, b_idx, found_b, result
+                    except FutureTimeoutError:
+                        continue
+
+            resources = ExitStack()
+            pool = None
+            try:
+                resources.enter_context(
+                    _compare_cv_thread_budget(pipeline_cv_threads)
+                )
+                pool = ThreadPoolExecutor(
+                    max_workers=compare_workers, thread_name_prefix="prynx-cmp-page"
+                )
+                for out_idx, (a_idx, eff_b_idx, found_b, needs_compare) in enumerate(pairs):
+                    _raise_if_cancelled(cancel_check)
+                    orig_a, orig_b = work_seq[out_idx]
+                    future = _submit(pool, a_idx, eff_b_idx) if needs_compare else None
+                    pending.append((out_idx, orig_a, orig_b, found_b, future))
+
+                    # PERF (audit 2026-08-13 §PA.R1/PA-2): trong lúc trang 1 đang so,
+                    # render trước một cửa sổ NHỎ (tối đa 4) rồi drain ngay khi future
+                    # đầu đã xong. Cách này giữ first-page thấp nhưng không làm pipeline
+                    # khởi động tuần tự. Sau trang đầu, cửa sổ tối đa đúng `workers`.
+                    first_future = pending[0][-1]
+                    first_ready = first_future is None or first_future.done()
+                    should_drain_startup = (
+                        not first_page_reported
+                        and (first_ready or len(pending) >= startup_window)
+                    )
+                    if should_drain_startup or len(pending) >= inflight_limit:
+                        yield _drain()
+                        first_page_reported = True
+                while pending:
+                    yield _drain()
+            except ComparisonCancelled:
+                _finalize_interrupted_job(
+                    job_id,
+                    db,
+                    status="cancelled",
+                    message="Đã hủy so sánh theo yêu cầu của người dùng.",
+                )
+                raise
+            except Exception as exc:
+                # Ghi trạng thái lỗi trước khi chờ các phép OpenCV đang chạy tự kết
+                # thúc; UI không phải đợi cả cửa sổ worker mới biết job đã hỏng.
+                _finalize_interrupted_job(
+                    job_id, db, status="failed", message=str(exc),
+                )
+                raise
+            finally:
+                for item in pending:
+                    if item[-1] is not None:
+                        item[-1].cancel()
+                # Task OpenCV đang chạy không thể kill an toàn giữa hàm. Giữ slot job
+                # tới khi chúng tự kết thúc để không cho retry/job kế tiếp chồng thêm
+                # một pool mới; task chưa chạy bị hủy ngay.
+                if pool is not None:
+                    pool.shutdown(wait=True, cancel_futures=True)
+                resources.close()
+
+        outcomes = (
+            _pipelined_outcomes(pipeline_pairs)
+            if pipeline_pairs is not None
+            else _sequential_outcomes()
+        )
+
+        # PERF (audit 2026-08-13 §PB-2): gộp commit theo lô nhỏ. Hủy/lỗi giữa lô
+        # an toàn: phần chưa commit bị rollback trong _finalize_interrupted_job,
+        # artifact đã ghi được dọn cùng chỗ (job hủy/lỗi luôn xóa toàn bộ output).
+        pages_since_commit = 0
+        last_commit_at = time.perf_counter()
+
+        def _commit_page_batch(force: bool = False) -> None:
+            nonlocal pages_since_commit, last_commit_at
+            if pages_since_commit == 0:
+                return
+            if (
+                not force
+                and pages_since_commit < _COMPARE_COMMIT_BATCH_PAGES
+                and time.perf_counter() - last_commit_at < _COMPARE_COMMIT_MAX_LAG_S
+            ):
+                return
+            db.commit()
+            pages_since_commit = 0
+            last_commit_at = time.perf_counter()
+
+        for out_idx, a_idx, b_idx, found_b_idx, result in outcomes:
+            _raise_if_cancelled(cancel_check)
             page_num = out_idx + 1
             progress = 10 + int((out_idx / total_work) * 80)
 
             notify(progress, current_page=page_num, total_pages=total_work,
                    message=f"Đang so sánh trang {page_num}/{total_work}...")
 
-            # Render page A (None nếu không có A — vd trang chỉ được THÊM ở B)
-            page_idx = a_idx if a_idx is not None else -1
-            img_a = doc_a.render_page(a_idx) if (a_idx is not None and a_idx < pages_a) else None
-
-            img_b = None
-            found_b_idx = b_idx if b_idx is not None else (-1 if document_imposition else current_b_idx)
-            result = None
-            page_config = dict(comparison_config)
-            if document_imposition and a_idx is not None and a_idx < len(trim_insets_a):
-                if trim_insets_a[a_idx] is not None:
-                    page_config["template_trim_insets"] = trim_insets_a[a_idx]
-
-            if document_imposition:
-                # Booklet/N-up order is non-linear: compare the source page with
-                # the sheet found by the low-DPI global search, never by index.
-                if a_idx is not None and b_idx is not None:
-                    img_b = doc_b.render_page(b_idx)
-                    result = comparator.compare(
-                        img_a, img_b, tolerance=tolerance, config=page_config
-                    )
-            elif use_alignment:
-                # Cặp trang đã được căn theo nội dung → so 1:1 đúng cặp. Trang thêm/xoá
-                # (a_idx hoặc b_idx = None) rơi vào nhánh "missing" với nhãn rõ ràng.
-                if a_idx is not None and b_idx is not None:
-                    img_b = doc_b.render_page(b_idx)
-                    result = comparator.compare(img_a, img_b, tolerance=tolerance, config=page_config)
-            elif is_cmyk_mode and img_a is not None and pages_b > 0:
-                # ── CMYK Channel-by-Channel Comparison ──
-                cmyk_a = doc_a.render_page_cmyk(page_idx)
-                b_idx = min(current_b_idx, pages_b - 1)
-                cmyk_b = doc_b.render_page_cmyk(b_idx)
-                img_b = doc_b.render_page(b_idx)
-                found_b_idx = b_idx
-                result = comparator.compare_cmyk(
-                    cmyk_a, cmyk_b, tolerance=tolerance,
-                    rgb_a=img_a, rgb_b=img_b, config=page_config,
-                )
-                # CĂN TRANG 1:1: tiến con trỏ B sang trang kế (giống nhánh thường) —
-                # CMYK luôn so theo cặp trang, không có chế độ imposition.
-                current_b_idx = found_b_idx + 1
-            elif img_a is not None and pages_b > 0:
-                for b_idx in range(current_b_idx, pages_b):
-                    test_b = doc_b.render_page(b_idx)
-                    temp_result = comparator.compare(img_a, test_b, tolerance=tolerance, config=page_config)
-
-                    if getattr(temp_result, "is_imposition_mode", False):
-                        if temp_result.similarity_score > 0.0:
-                            img_b = test_b
-                            found_b_idx = b_idx
-                            result = temp_result
-                            break
-                    else:
-                        img_b = test_b
-                        found_b_idx = b_idx
-                        result = temp_result
-                        break
-
-                if img_b is None:
-                    img_b = doc_b.render_page(current_b_idx)
-                    result = comparator.compare(img_a, img_b, tolerance=tolerance, config=page_config)
-                else:
-                    # CĂN TRANG 1:1 (sửa lỗi pin-về-B[0]): chế độ thường so A[i] với B[i],
-                    # nên sau khi khớp phải TIẾN con trỏ sang trang B kế tiếp. Trước đây
-                    # `current_b_idx = found_b_idx` (thiếu +1) khiến mọi trang A đều so với
-                    # cùng một trang B (B[0]) → báo khác biệt giả ở mọi trang sau trang 1.
-                    # Chế độ imposition (1 mẫu ↔ tờ N-up) GIỮ NGUYÊN: không tiến con trỏ vì
-                    # nhiều mẫu có thể nằm trên cùng một tờ.
-                    if getattr(result, "is_imposition_mode", False):
-                        current_b_idx = found_b_idx
-                    else:
-                        current_b_idx = found_b_idx + 1
-                    
             # PIXEL-ONLY: không OCR / không text-inject. Pass/fail = ImageComparator.
 
             # Handle missing pages (out-of-range positional, hoặc trang thêm/xoá khi căn trang)
-            if img_a is None or img_b is None or result is None:
+            if result is None:
                 if document_imposition and a_idx is not None:
                     miss_desc = (
                         f"Kh\u00f4ng t\u00ecm th\u1ea5y trang ngu\u1ed3n {a_idx + 1} tr\u00ean b\u1ea5t k\u1ef3 t\u1edd b\u00ecnh n\u00e0o"
@@ -414,7 +966,9 @@ def run_comparison_pipeline(
                 total_diff_count += 1
                 job.current_page = page_num
                 job.progress = progress
-                db.commit()
+                _raise_if_cancelled(cancel_check)
+                pages_since_commit += 1
+                _commit_page_batch()
                 continue
 
             if a_idx is not None and 0 <= a_idx < len(page_mapping) and found_b_idx >= 0:
@@ -424,11 +978,20 @@ def run_comparison_pipeline(
             highlighted_url = None
             gif_url = None
 
-            if result.highlighted_image is not None:
+            if getattr(result, "highlighted_png", None) is not None:
+                # PERF (audit 2026-08-13 §PB-2): pipeline đã encode PNG trong
+                # worker — main thread chỉ ghi bytes (nhanh hơn ~10× encode).
+                _raise_if_cancelled(cancel_check)
+                highlighted_url = renderer.save_highlighted_png_bytes(
+                    result.highlighted_png, str(job_id), page_num
+                )
+            elif result.highlighted_image is not None:
+                _raise_if_cancelled(cancel_check)
                 highlighted_url = renderer.save_highlighted_image(
                     result.highlighted_image, str(job_id), page_num
                 )
             if result.gif_image is not None:
+                _raise_if_cancelled(cancel_check)
                 gif_url = renderer.save_gif_image(
                     result.gif_image, str(job_id), page_num
                 )
@@ -458,8 +1021,10 @@ def run_comparison_pipeline(
             # Normalize diff regions for frontend
             # Dùng KÍCH THƯỚC RENDER của kết quả (có thể khác img_b gốc khi đã co giãn
             # Case A) để toạ độ chuẩn hoá luôn khớp vùng khác biệt (tránh lệch toạ độ).
-            h = result.render_h or img_b.shape[0]
-            w = result.render_w or img_b.shape[1]
+            h = int(result.render_h)
+            w = int(result.render_w)
+            if h <= 0 or w <= 0:
+                raise ValueError("Kết quả so sánh không có kích thước render hợp lệ")
             diff_regions_normalized = renderer.generate_diff_overlay_data(
                 result.diff_regions, w, h
             )
@@ -507,11 +1072,18 @@ def run_comparison_pipeline(
 
             job.current_page = page_num
             job.progress = progress
-            db.commit()
+            _raise_if_cancelled(cancel_check)
+            pages_since_commit += 1
+            _commit_page_batch()
 
-            # img_a, img_b, result are overwritten next iteration → RAM freed by GC
+            # result được ghi xong rồi giải phóng ở vòng kế; raster đầu vào đã được
+            # closure trong worker giải phóng ngay khi future hoàn tất.
+
+        # Chốt lô cuối để mọi PageResult bền vững trước khi sang giai đoạn tổng hợp.
+        _commit_page_batch(force=True)
 
     # ── Generate summary (90-100%) ──
+    _raise_if_cancelled(cancel_check)
     notify(92, message="Đang tạo báo cáo tổng hợp...")
 
     llm_warnings = []
@@ -533,7 +1105,7 @@ def run_comparison_pipeline(
             "So sánh theo pixel: mọi lệch hiển thị đều cần xử lý trước khi in."
         )
 
-    job.result_summary = {
+    result_summary = {
         "total_pages": total_pages,
         "pages_pass": pages_pass,
         "pages_fail": pages_fail,
@@ -553,13 +1125,64 @@ def run_comparison_pipeline(
                          else ("WARNING" if pages_fail == 0 and pages_warning > 0 else "FAIL"),
         "llm_warnings": llm_warnings,
     }
-    job.status = "completed"
-    job.progress = 100
-    job.completed_at = datetime.now(timezone.utc)
+    _raise_if_cancelled(cancel_check)
+    completed_at = datetime.now(timezone.utc)
+    completed = (
+        db.query(ComparisonJob)
+        .filter(
+            ComparisonJob.id == job_id,
+            ComparisonJob.status == "processing",
+        )
+        .update(
+            {
+                ComparisonJob.result_summary: result_summary,
+                ComparisonJob.status: "completed",
+                ComparisonJob.progress: 100,
+                ComparisonJob.completed_at: completed_at,
+            },
+            synchronize_session=False,
+        )
+    )
+    if not completed:
+        db.rollback()
+        raise ComparisonCancelled("Job đã bị hủy trước khi hoàn tất.")
     db.commit()
+    db.refresh(job)
 
     notify(100, status="completed",
            message=f"Hoàn thành! {pages_pass} trang OK, "
                    f"{pages_fail} trang lỗi, {pages_warning} cảnh báo.")
 
-    logger.info(f"Job {job_id} completed: {job.result_summary}")
+    logger.info(f"Job {job_id} completed: {result_summary}")
+
+
+def run_comparison_pipeline(
+    job_id: str,
+    db: Session,
+    on_progress: callable = None,
+    cancel_check: Callable[[], bool] | None = None,
+    raise_on_cancel: bool = False,
+):
+    """Chạy Compare và đảm bảo hủy/lỗi không để lại DB/artifact dở dang."""
+    try:
+        return _run_comparison_pipeline_impl(
+            job_id,
+            db,
+            on_progress=on_progress,
+            cancel_check=cancel_check,
+        )
+    except ComparisonCancelled:
+        message = "Đã hủy so sánh theo yêu cầu của người dùng."
+        _finalize_interrupted_job(
+            job_id, db, status="cancelled", message=message,
+        )
+        if on_progress:
+            on_progress(job_id, 0, "cancelled", 0, 0, message)
+        if raise_on_cancel:
+            raise
+        return None
+    except Exception as exc:
+        _finalize_interrupted_job(
+            job_id, db, status="failed", message=str(exc),
+        )
+        raise

@@ -322,3 +322,90 @@ def test_booklet_reports_only_the_source_page_with_real_artwork_change(tmp_path)
     assert pages[1].diff_count >= 1
     assert pages[1].status == "fail"
     assert all(page.diff_count == 0 for page in (pages[0], pages[2], pages[3]))
+
+
+# ── Trần lượt dò bình bài + tín hiệu sống trong lúc dò (audit 2026-08-13 §PB-3) ──
+
+def _setup_booklet_job(tmp_path):
+    """Dựng job booklet (4 trang nguồn × 2 tờ bình) nhưng CHƯA chạy pipeline."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database import Base
+    from app.models.job import ComparisonJob, UploadedFile
+
+    source = tmp_path / "source.pdf"
+    booklet = tmp_path / "booklet.pdf"
+    _mk_booklet_source(source)
+    _impose_booklet(source, booklet)
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'booklet_cap.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    file_a = UploadedFile(
+        filename="source.pdf", original_name="source.pdf",
+        file_path=str(source), page_count=4,
+    )
+    file_b = UploadedFile(
+        filename="booklet.pdf", original_name="booklet.pdf",
+        file_path=str(booklet), page_count=2,
+    )
+    db.add(file_a); db.add(file_b); db.commit()
+    db.refresh(file_a); db.refresh(file_b)
+    job = ComparisonJob(
+        file_a_id=file_a.id,
+        file_b_id=file_b.id,
+        config={
+            "comparison_mode": "full",
+            "page_matching_mode": "auto",
+            "tolerance": "NORMAL",
+            "dpi": 100,
+        },
+    )
+    db.add(job); db.commit(); db.refresh(job)
+    return db, job.id
+
+
+def test_imposition_map_over_cap_fails_fast_with_guidance(tmp_path, monkeypatch):
+    """Job bình bài vượt trần A×B phải fail NGAY với hướng dẫn tiếng Việt — chặn
+    bùng nổ O(A×B) hàng giờ trên tài liệu dài (audit 2026-08-13 §PB-3)."""
+    from app.core.comparison_engine import run_comparison_pipeline
+    from app.models.job import ComparisonJob, PageResult
+
+    db, jid = _setup_booklet_job(tmp_path)
+    # Booklet chuẩn: 4 trang nguồn × 2 tờ = 8 lượt dò; hạ trần xuống 7 để kích hoạt.
+    monkeypatch.setenv("PRYNX_MAX_IMPOSITION_MAP_CELLS", "7")
+    try:
+        with pytest.raises(ValueError, match="so bình bài"):
+            run_comparison_pipeline(jid, db)
+        job = db.query(ComparisonJob).filter(ComparisonJob.id == jid).first()
+        assert job.status == "failed"
+        assert "PRYNX_MAX_IMPOSITION_MAP_CELLS" in (job.error_message or "")
+        assert db.query(PageResult).filter(PageResult.job_id == jid).count() == 0
+    finally:
+        db.close()
+
+
+def test_imposition_map_reports_progress_while_scanning(tmp_path, monkeypatch):
+    """Trong lúc dò bình bài phải phát tín hiệu sống (status_message + notify) để
+    UI local và watchdog theo tiến độ không tưởng job treo (§PB-3)."""
+    import app.core.comparison_engine as ce
+    from app.models.job import ComparisonJob
+
+    monkeypatch.setattr(ce, "_MAP_PROGRESS_MIN_INTERVAL_S", 0.0)
+    db, jid = _setup_booklet_job(tmp_path)
+    messages = []
+
+    def on_progress(job_id, progress, status, current_page, total_pages, message):
+        messages.append(message or "")
+
+    try:
+        ce.run_comparison_pipeline(jid, db, on_progress=on_progress)
+        job = db.query(ComparisonJob).filter(ComparisonJob.id == jid).first()
+        assert job.status == "completed"
+        assert any("Đang định vị trang nguồn" in m for m in messages), messages
+    finally:
+        db.close()

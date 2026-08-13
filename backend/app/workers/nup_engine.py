@@ -162,6 +162,9 @@ def _normalize_page_sheet_settings(settings: Dict[str, Any]) -> tuple[Dict[str, 
         ),
         "pontsOnCutFile": bool(normalized.get("pontsOnCutFile", True)),
         "duplexFlow": "normal",
+        # PAGE-SHEET (2026-08-13): UI Bình tem bế không hiện điều khiển căn khối.
+        # Không cho giá trị ẩn từ profile N-Up neo nguyên tấm vào mép trên/dưới.
+        "align": "center",
         "detectedShapesByPage": {},
         "detectedShapeParamsByPage": {},
     })

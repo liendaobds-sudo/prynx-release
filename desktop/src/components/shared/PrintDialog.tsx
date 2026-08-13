@@ -11,10 +11,13 @@ import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { getFileArrayBuffer } from '../../lib/utils';
 import {
     getPrinterGeometry,
+    getPrintPreviewInfo,
     openPrinterProperties,
+    renderPrintPreviewPage,
     type PrinterInfo,
     type PrinterGeometry,
     type PrinterDevmode,
+    type PrintPreviewPageDim,
     type PrintScaleMode,
     type PrintOrientation,
     type PrintLayoutMode,
@@ -61,6 +64,8 @@ export interface PrintSettings {
 
 export interface PrintDialogProps {
     source: Blob | File;
+    /** Path thật trên đĩa (hook đã resolve) — preview native cho file lớn (§PRINTWIN.02). */
+    filePath?: string;
     numPages: number;
     printers: PrinterInfo[];
     jobId: string;
@@ -100,6 +105,8 @@ function fallbackGeometryFor(orientation: PrintOrientation): PrinterGeometry {
 const PREVIEW_MAX = 360; // px, cạnh dài nhất khung giấy trong preview
 
 const MAX_COPIES = 999;
+/** PRINTWIN (audit 2026-08-13 §PRINTWIN.02): pdf.js không được nhồi cả PDF lớn vào WebView. */
+export const MAX_PRINT_PREVIEW_BYTES = 24 * 1024 * 1024;
 const EMPTY_PAGE_SELECTION: number[] = [];
 
 function clampPage(page: number, pageCount: number): number {
@@ -114,6 +121,7 @@ function RadioMark({ checked }: { checked: boolean }) {
 
 export default function PrintDialog({
     source,
+    filePath,
     numPages,
     printers,
     jobId,
@@ -164,11 +172,16 @@ export default function PrintDialog({
     const [documentReady, setDocumentReady] = useState(false);
 
     const pdfDocRef = useRef<PDFDocumentProxy | null>(null);
+    // PRINTWIN (audit 2026-08-13 §PRINTWIN.02): file lớn hơn MAX_PRINT_PREVIEW_BYTES
+    // không vào pdf.js — preview raster từng trang qua engine native theo filePath.
+    const nativePreviewRef = useRef(false);
+    const nativeDimsRef = useRef<Record<string, PrintPreviewPageDim>>({});
     const sheetUrlRef = useRef<string | null>(null);
     const pageRasterCache = useRef<Map<number, HTMLCanvasElement>>(new Map());
     const pageDimensionCache = useRef<Map<number, { w: number; h: number }>>(new Map());
     const previewRequestRef = useRef(0);
     const dialogRef = useRef<HTMLDivElement>(null);
+    const dialogBusy = printing || propertiesBusy;
 
     useEffect(() => {
         const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -255,30 +268,58 @@ export default function PrintDialog({
         setSheetIndex((i) => Math.max(0, Math.min(i, Math.max(0, previewSheets.length - 1))));
     }, [previewSheets.length]);
 
-    const rasterPage = useCallback(async (doc: PDFDocumentProxy, pageNum: number): Promise<HTMLCanvasElement | null> => {
+    const rasterPage = useCallback(async (doc: PDFDocumentProxy | null, pageNum: number): Promise<HTMLCanvasElement | null> => {
         if (pageNum <= 0) return null;
         const cached = pageRasterCache.current.get(pageNum);
         if (cached) return cached;
-        const page = await doc.getPage(pageNum);
-        const vp1 = page.getViewport({ scale: 1 });
-        pageDimensionCache.current.set(pageNum, { w: vp1.width, h: vp1.height });
-        const rasterScale = Math.min(1.5, 600 / Math.max(vp1.width, vp1.height));
-        const vp = page.getViewport({ scale: rasterScale });
+        if (doc) {
+            const page = await doc.getPage(pageNum);
+            const vp1 = page.getViewport({ scale: 1 });
+            pageDimensionCache.current.set(pageNum, { w: vp1.width, h: vp1.height });
+            const rasterScale = Math.min(1.5, 600 / Math.max(vp1.width, vp1.height));
+            const vp = page.getViewport({ scale: rasterScale });
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.ceil(vp.width);
+            canvas.height = Math.ceil(vp.height);
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return null;
+            await page.render({ canvasContext: ctx, viewport: vp }).promise;
+            pageRasterCache.current.set(pageNum, canvas);
+            return canvas;
+        }
+        // PRINTWIN (audit 2026-08-13 §PRINTWIN.02): đường native cho file lớn —
+        // raster đúng 1 trang theo path, cùng mục tiêu ~600px cạnh dài như pdf.js.
+        if (!nativePreviewRef.current || !filePath) return null;
+        const dim = nativeDimsRef.current[String(pageNum)];
+        const widthPt = dim?.widthPt || 595;
+        const heightPt = dim?.heightPt || 842;
+        pageDimensionCache.current.set(pageNum, { w: widthPt, h: heightPt });
+        // px bitmap = pt × (96/72) × zoom → chọn zoom cho cạnh dài ~600px, trần 1.5.
+        const zoom = Math.min(1.5, 600 / (Math.max(widthPt, heightPt) * 96 / 72));
+        const blob = await renderPrintPreviewPage(filePath, pageNum, zoom);
+        if (!blob) throw new Error('NATIVE_PREVIEW_FAILED');
+        const bitmap = await createImageBitmap(blob);
         const canvas = document.createElement('canvas');
-        canvas.width = Math.ceil(vp.width);
-        canvas.height = Math.ceil(vp.height);
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
         const ctx = canvas.getContext('2d');
-        if (!ctx) return null;
-        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        if (!ctx) {
+            bitmap.close();
+            return null;
+        }
+        ctx.drawImage(bitmap, 0, 0);
+        bitmap.close();
         pageRasterCache.current.set(pageNum, canvas);
         return canvas;
-    }, []);
+    }, [filePath]);
 
     /** Vẽ 1 tờ in composite (size / multi / booklet / poster) — khớp layout Rust. */
     const renderSheetComposite = useCallback(async () => {
         const requestId = ++previewRequestRef.current;
         const doc = pdfDocRef.current;
-        if (!doc || !documentReady) return;
+        if (!documentReady) return;
+        // Nguồn trang: pdf.js (file nhỏ) hoặc engine native theo path (§PRINTWIN.02).
+        if (!doc && !nativePreviewRef.current) return;
         const sheet = previewSheets[sheetIndex];
         if (!sheet) {
             setSheetImg(null);
@@ -445,6 +486,8 @@ export default function PrintDialog({
         const dimensionCache = pageDimensionCache.current;
         rasterCache.clear();
         dimensionCache.clear();
+        nativePreviewRef.current = false;
+        nativeDimsRef.current = {};
         if (sheetUrlRef.current) {
             URL.revokeObjectURL(sheetUrlRef.current);
             sheetUrlRef.current = null;
@@ -453,8 +496,28 @@ export default function PrintDialog({
             try {
                 setDocumentReady(false);
                 setPreviewError(false);
+                // PRINTWIN (audit 2026-08-13 §PRINTWIN.02): file lớn không đưa vào pdf.js —
+                // preview đi engine native theo path; native lỗi thì bỏ preview nhưng
+                // nút In vẫn hoạt động (thông báo preview_skipped_large).
+                if (source.size > MAX_PRINT_PREVIEW_BYTES) {
+                    const info = filePath ? await getPrintPreviewInfo(filePath) : null;
+                    if (cancelled) return;
+                    if (!info) {
+                        setPreviewError(true);
+                        setPreviewLoading(false);
+                        return;
+                    }
+                    nativePreviewRef.current = true;
+                    nativeDimsRef.current = info.dims;
+                    const nativePageCount = Math.max(1, info.numPages);
+                    setActualNumPages(nativePageCount);
+                    setPreviewPage(clampPage(initialPage, nativePageCount));
+                    setSheetIndex(0);
+                    setDocumentReady(true);
+                    return;
+                }
                 const buf = await getFileArrayBuffer(source);
-                const doc = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;
+                const doc = await pdfjs.getDocument({ data: buf }).promise;
                 if (cancelled) {
                     try { await doc.destroy(); } catch { /* noop */ }
                     return;
@@ -481,11 +544,13 @@ export default function PrintDialog({
                 pdfDocRef.current = null;
                 void doc.destroy().catch(() => undefined);
             }
+            nativePreviewRef.current = false;
+            nativeDimsRef.current = {};
             rasterCache.clear();
             dimensionCache.clear();
             if (sheetUrlRef.current) { URL.revokeObjectURL(sheetUrlRef.current); sheetUrlRef.current = null; }
         };
-    }, [source, initialPage]);
+    }, [source, initialPage, filePath]);
 
     // Đọc geometry khi đổi máy in hoặc hướng giấy.
     useEffect(() => {
@@ -511,7 +576,7 @@ export default function PrintDialog({
             if (e.key === 'Escape') {
                 if (pageSetupOpen) {
                     setPageSetupOpen(false);
-                } else if (!printing) {
+                } else if (!dialogBusy) {
                     onCancel();
                 }
                 return;
@@ -540,7 +605,7 @@ export default function PrintDialog({
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [onCancel, pageSetupOpen, printing]);
+    }, [onCancel, pageSetupOpen, dialogBusy]);
 
     // ── Hình học preview (mm → px) — composite sheet đã vẽ sẵn, chỉ hiển thị ──
     const paperLandscape = geo.paper_w_mm > geo.paper_h_mm;
@@ -583,8 +648,9 @@ export default function PrintDialog({
                     const p = ev.payload;
                     if (p?.jobId && p.jobId !== jobId) return;
                     if (p?.done) {
+                        // PRINTWIN (audit 2026-08-13 §PRINTWIN.08): không hạ printing
+                        // trước completePrint — tránh bấm In lần hai trên job/path đang dọn.
                         setPrintProgress(null);
-                        setPrinting(false);
                     } else if (p && p.total > 0) {
                         setPrintProgress({ current: p.current, total: p.total });
                         setPrinting(true);
@@ -627,8 +693,12 @@ export default function PrintDialog({
         };
     };
 
-    const runPrintAction = async (action: (settings: PrintSettings) => Promise<void>): Promise<void> => {
-        if (!printerName || printing || pageSelectionError) return;
+    const runPrintAction = async (
+        action: (settings: PrintSettings) => Promise<void>,
+        options?: { requirePrinter?: boolean },
+    ): Promise<void> => {
+        const requirePrinter = options?.requirePrinter !== false;
+        if ((requirePrinter && !printerName) || printing || pageSelectionError) return;
         setPrinting(true);
         setPrintProgress({ current: 0, total: 0 });
         setPrintError(null);
@@ -649,25 +719,20 @@ export default function PrintDialog({
     };
 
     const handleSystemPrint = () => {
-        if (onSystemPrint) void runPrintAction(onSystemPrint);
+        if (onSystemPrint) void runPrintAction(onSystemPrint, { requirePrinter: false });
     };
 
     const handleCancelPrint = () => {
-        void (async () => {
-            try {
-                await onCancelPrint?.();
-            } finally {
-                setPrinting(false);
-                setPrintProgress(null);
-                onCancel();
-            }
-        })();
+        // PRINTWIN (audit 2026-08-13 §PRINTWIN.06): chỉ gửi tín hiệu hủy; giữ dialog
+        // và file tạm tới khi worker trả terminal (lỗi hủy / xong).
+        void onCancelPrint?.();
     };
 
     return createPortal(
         <div
+            data-testid="print-dialog-overlay"
             className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in duration-200"
-            onClick={printing ? undefined : onCancel}
+            onClick={dialogBusy ? undefined : onCancel}
         >
             <div
                 ref={dialogRef}
@@ -682,6 +747,11 @@ export default function PrintDialog({
                 <div className="px-6 py-4 border-b border-slate-200 dark:border-zinc-700 flex items-center gap-2 shrink-0">
                     <Printer className="w-5 h-5 text-indigo-600 dark:text-indigo-400" aria-hidden="true" />
                     <h3 id="print-dialog-title" className="text-lg font-bold text-slate-800 dark:text-white">{t('print:title')}</h3>
+                    <button type="button" onClick={onCancel} disabled={dialogBusy}
+                        aria-label={t('print:close')}
+                        className="ml-auto rounded-md p-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-zinc-700 disabled:opacity-40">
+                        <X className="h-5 w-5" aria-hidden="true" />
+                    </button>
                 </div>
 
                 <div className="flex flex-row min-h-0 flex-1">
@@ -927,7 +997,7 @@ export default function PrintDialog({
                             )}
                             {previewError && !previewLoading && (
                                 <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-sm text-amber-700 dark:text-amber-300 bg-white/90">
-                                    {t('print:preview_failed')}
+                                    {t(source.size > MAX_PRINT_PREVIEW_BYTES ? 'print:preview_skipped_large' : 'print:preview_failed')}
                                 </div>
                             )}
                             {previewLoading && (
@@ -1000,14 +1070,14 @@ export default function PrintDialog({
                         </span>
                     )}
                     <div className="flex gap-3 ml-auto">
-                        {printError && onSystemPrint && (
+                        {(printError || printers.length === 0) && onSystemPrint && (
                             <button type="button" onClick={handleSystemPrint} disabled={printing || Boolean(pageSelectionError)}
                                 className="px-4 py-2 rounded-lg font-medium border border-amber-400/80 text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/30 disabled:opacity-40 transition-colors">
                                 {t('print:try_system_dialog')}
                             </button>
                         )}
-                        <button type="button" onClick={printing ? handleCancelPrint : onCancel}
-                            className="px-4 py-2 rounded-lg font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-zinc-700 transition-colors">
+                        <button type="button" onClick={printing ? handleCancelPrint : onCancel} disabled={propertiesBusy && !printing}
+                            className="px-4 py-2 rounded-lg font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-zinc-700 transition-colors disabled:opacity-40">
                             {printing ? t('print:cancel_job') : t('print:cancel')}
                         </button>
                         <button type="button" onClick={handlePrint} disabled={!printerName || printing || Boolean(pageSelectionError)}

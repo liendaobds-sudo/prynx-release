@@ -42,6 +42,7 @@ export interface GridSettingsProps {
   viewerActivePage: number;
   viewerPageOrder: number[] | null;
   paperSectionJSX?: React.ReactNode;
+  showImpositionUnitSelector?: boolean;
   // UIUX (audit 2026-07-27 §B-09): Enter trong ô SL → commit giá trị rồi chạy bình (ImposerDashboard truyền vào)
   onRequestExecute?: () => void;
 }
@@ -86,6 +87,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
     viewerActivePage,
     viewerPageOrder,
     paperSectionJSX,
+    showImpositionUnitSelector = true,
     onRequestExecute, // UIUX (audit 2026-07-27 §B-09)
   } = props;
 
@@ -188,7 +190,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
       {/* Grid Settings */}
       <div className="space-y-3">
         <div className="flex flex-col gap-3">
-          {activeTool === "sticker_imposer" && (
+          {activeTool === "sticker_imposer" && showImpositionUnitSelector && (
             <div className="flex items-center gap-3">
               <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">
                 {t('imposition.gridSettings:don_vi_binh')}

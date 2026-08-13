@@ -73,6 +73,11 @@ export interface EditObjectSelectionContext {
     objectIds: string[];
 }
 
+export interface FontInspectionCache {
+    identity: string;
+    report: unknown;
+}
+
 type CropSelectionUpdater = CropSelectionState | null | ((prev: CropSelectionState | null) => CropSelectionState | null);
 const CROP_HISTORY_LIMIT = 64;
 
@@ -167,6 +172,8 @@ export interface WorkspaceState {
     selectionFileId: string;
     /** Identity file + page order/rotation mà `selectionFileId` đại diện. */
     selectionDocumentIdentity: string;
+    /** Báo cáo Chữ & Font gần nhất, scope theo WorkspaceContext/tab. */
+    fontInspectionCache: FontInspectionCache | null;
     // Clipboard copy/paste cho edit PDF (lazy-reference: chỉ nhớ trang nguồn + id,
     // resolve lại lúc paste). pasteCount cộng dồn offset khi paste liên tiếp.
     editClipboard: { sourcePage: number; objectIds: string[]; pasteCount: number } | null;
@@ -280,6 +287,7 @@ export interface WorkspaceState {
     setHiddenObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
     setLockedObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
     setSelectionFileId: (id: string, documentIdentity?: string) => void;
+    setFontInspectionCache: (cache: FontInspectionCache | null) => void;
     setObjectSelectionContext: (context: EditObjectSelectionContext | null) => void;
     setEditAddMode: (updater: ('text' | 'image' | null) | ((prev: 'text' | 'image' | null) => 'text' | 'image' | null)) => void;
 
@@ -386,6 +394,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     lockedObjectIds: [],
     selectionFileId: '',
     selectionDocumentIdentity: '',
+    fontInspectionCache: null,
     objectSelectionContext: null,
     editAddMode: null,
 
@@ -429,6 +438,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
             file,
             selectionFileId: sameFile ? state.selectionFileId : '',
             selectionDocumentIdentity: sameFile ? state.selectionDocumentIdentity : '',
+            fontInspectionCache: sameFile ? state.fontInspectionCache : null,
             viewerSelectedPageIndices: sameFile ? state.viewerSelectedPageIndices : [],
             detectedShapeType: null,
             detectedShapeParams: null,
@@ -715,6 +725,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
                 : null,
         };
     }),
+    setFontInspectionCache: (cache) => set({ fontInspectionCache: cache }),
     setObjectSelectionContext: (context) => set((state) => {
         const prev = state.objectSelectionContext;
         if (prev === context) return state;
