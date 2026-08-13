@@ -2,6 +2,16 @@
 from __future__ import annotations
 
 import os
+import sys
+
+# PDFium / thư viện C ghi raw bytes (non-UTF-8) ra stderr → pytest capture
+# crash với UnicodeDecodeError khi đọc lại. Reconfigure stderr với error
+# handler 'replace' (thay ký tự lỗi bằng U+FFFD) thay vì mặc định 'strict'.
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(errors="replace")
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(errors="replace")
+
 import tempfile
 import uuid
 from pathlib import Path

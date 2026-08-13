@@ -323,7 +323,7 @@ $previousPythonIoEncoding = [Environment]::GetEnvironmentVariable(
     [EnvironmentVariableTarget]::Process
 )
 try {
-$env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONIOENCODING = "utf-8:replace"
 
 if (-not (Test-Path -LiteralPath $PYTHON)) {
     throw "Python venv not found: $PYTHON"
