@@ -13,14 +13,25 @@ $ErrorActionPreference = "Stop"
 $Host.UI.RawUI.WindowTitle = "PrynX - Build và phát hành"
 
 function Read-CurrentRunStatus {
+    param([ValidateRange(0, 10000)][int]$RetryMilliseconds = 2000)
+
     $latestPath = Join-Path $StateRoot "latest.json"
-    if (-not (Test-Path -LiteralPath $latestPath -PathType Leaf)) { return $null }
-    try {
-        $status = Get-Content -LiteralPath $latestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ([int]$status.controllerPid -ne $ControllerPid) { return $null }
-        return $status
-    }
-    catch { return $null }
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($RetryMilliseconds)
+    do {
+        try {
+            if (Test-Path -LiteralPath $latestPath -PathType Leaf) {
+                $status = Get-Content -LiteralPath $latestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ([int]$status.controllerPid -eq $ControllerPid) { return $status }
+            }
+        }
+        catch {
+            # UIUX (audit 2026-08-14 §BR.13): latest.json được thay nguyên tử mỗi giây;
+            # một lần hụt đọc chỉ là trạng thái chuyển tiếp, không phải build đã dừng.
+        }
+        if ([DateTime]::UtcNow -ge $deadline) { break }
+        Start-Sleep -Milliseconds 50
+    } while ($true)
+    return $null
 }
 
 $status = $null

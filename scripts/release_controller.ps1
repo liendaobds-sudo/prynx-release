@@ -16,11 +16,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ROOT = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Definition)
-$mutexName = "Global\PrynX-BuildRelease-" + (
-    [Convert]::ToBase64String(
-        [Text.Encoding]::UTF8.GetBytes([IO.Path]::GetFullPath($ROOT).ToLowerInvariant())
-    ) -replace '[^A-Za-z0-9]', ''
-)
+$mutexName = ""
 $mutex = $null
 $ownsMutex = $false
 $runDirectory = $null
@@ -183,6 +179,15 @@ try {
     $StateRoot = [IO.Path]::GetFullPath($StateRoot)
     New-Item -ItemType Directory -Force -Path $StateRoot | Out-Null
 
+    # BUILD (audit 2026-08-14 §BR.14): probe regression dùng CommandPath phải có
+    # mutex theo StateRoot riêng; nếu dùng mutex production, QA chạy bên trong build
+    # sẽ tự chặn chính hai test controller. GUI không bao giờ truyền CommandPath.
+    $mutexScope = if ([string]::IsNullOrWhiteSpace($CommandPath)) { $ROOT } else { $StateRoot }
+    $mutexName = "Global\PrynX-BuildRelease-" + (
+        [Convert]::ToBase64String(
+            [Text.Encoding]::UTF8.GetBytes([IO.Path]::GetFullPath($mutexScope).ToLowerInvariant())
+        ) -replace '[^A-Za-z0-9]', ''
+    )
     $mutex = New-Object Threading.Mutex($false, $mutexName)
     try { $ownsMutex = $mutex.WaitOne(0, $false) }
     catch [Threading.AbandonedMutexException] { $ownsMutex = $true }

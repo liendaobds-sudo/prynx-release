@@ -22,6 +22,7 @@ import re
 import runpy
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -443,7 +444,7 @@ def test_prynx_launcher_opens_live_terminal_for_internal_and_publish_runs():
     assert 'if ([string]$status.mode -eq "publish")' in watcher
 
 
-def test_release_log_terminal_streams_current_run_without_starting_a_build(tmp_path: Path):
+def test_release_log_terminal_survives_transient_status_replacement(tmp_path: Path):
     powershell = shutil.which("powershell") or shutil.which("pwsh")
     if not powershell:
         pytest.skip("không có PowerShell trên máy này")
@@ -455,19 +456,19 @@ def test_release_log_terminal_streams_current_run_without_starting_a_build(tmp_p
         "runId": "smoke",
         "mode": "internal",
         "version": "1.0.0",
-        "state": "succeeded",
-        "stage": "Đóng gói bộ cài",
-        "message": "Build nội bộ đã hoàn tất.",
+        "state": "running",
+        "stage": "Kiểm thử phát hành",
+        "message": "Build đang chạy nền.",
         "controllerPid": 4242,
         "childPid": None,
         "startedAtUtc": "2026-08-14T00:00:00Z",
         "updatedAtUtc": "2026-08-14T00:00:01Z",
         "durationSeconds": 1,
-        "exitCode": 0,
+        "exitCode": None,
         "logPath": str(log_path),
     }
     (tmp_path / "latest.json").write_text(json.dumps(status), encoding="utf-8")
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         [
             powershell,
             "-NoProfile",
@@ -484,13 +485,27 @@ def test_release_log_terminal_streams_current_run_without_starting_a_build(tmp_p
             "-NoPause",
         ],
         cwd=REPO,
-        capture_output=True,
-        timeout=30,
-        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
-    output = (proc.stdout + proc.stderr).decode("utf-8", errors="replace")
+    time.sleep(0.5)
+    (tmp_path / "latest.json").unlink()
+    time.sleep(0.15)
+    with log_path.open("a", encoding="utf-8") as log_file:
+        log_file.write("status replacement survived\n")
+    status.update(
+        state="succeeded",
+        stage="Đóng gói bộ cài",
+        message="Build nội bộ đã hoàn tất.",
+        exitCode=0,
+    )
+    (tmp_path / "latest.json").write_text(json.dumps(status), encoding="utf-8")
+    stdout, stderr = proc.communicate(timeout=30)
+    output = (stdout + stderr).decode("utf-8", errors="replace")
     assert proc.returncode == 0, output
     assert "smoke terminal" in output
+    assert "status replacement survived" in output
+    assert "Không còn đọc được trạng thái" not in output
     assert "Mã thoát: 0" in output
 
 
@@ -502,6 +517,7 @@ def test_release_controller_owns_mutex_status_log_and_child_exit_code():
     release = _read(RELEASE_UPDATE)
 
     assert "Global\\PrynX-BuildRelease-" in controller
+    assert '$mutexScope = if ([string]::IsNullOrWhiteSpace($CommandPath)) { $ROOT } else { $StateRoot }' in controller
     assert "$mutex.WaitOne(0, $false)" in controller
     assert "Write-JsonAtomic" in controller
     assert 'Join-Path $StateRoot "latest.json"' in controller
