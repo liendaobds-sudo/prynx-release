@@ -198,23 +198,6 @@ def _validate_local_pdf_path(file_path: str) -> str:
 # ── Request/Response Schemas ──
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _report_dict_to_response(report: Optional[dict]) -> Optional[ChannelReportResponse]:
     """Chuyển dict report nội bộ (ActionLogEntry.report) sang model API.
 
@@ -642,8 +625,6 @@ async def get_page_objects(file_id: str, page: int):
         raise_http(e, "Lỗi khi trích xuất object")
     finally:
         db.close()
-
-
 
 
 def _delete_images_by_ref(page, image_objs) -> int:
@@ -1122,8 +1103,6 @@ async def get_page_boxes(file_id: str, page: int):
         raise_http(e, "Không lấy được thông tin page boxes")
 
 
-
-
 @router.post("/preflight/set-page-boxes", response_model=FixFileResponse)
 async def set_page_boxes(req: SetPageBoxesRequest):
     """Cập nhật 1 loại box cho danh sách trang."""
@@ -1199,8 +1178,6 @@ async def crop_regions(req: CropRegionsRequest):
         raise_http(e, "Không crop được nhiều vùng")
 
 
-
-
 @router.post("/preflight/auto-trim", response_model=FixFileResponse)
 async def auto_trim(req: AutoTrimRequest):
     """Xóa lề trắng tự động."""
@@ -1216,8 +1193,6 @@ async def auto_trim(req: AutoTrimRequest):
         return {"success": True, "output_filename": Path(output).name}
     except Exception as e:
         raise_http(e, "Không tự động xóa lề trắng được")
-
-
 
 
 @router.post("/preflight/add-bleed", response_model=FixFileResponse)
@@ -1329,8 +1304,6 @@ async def list_inks(file_id: str):
         raise_http(e, "Không liệt kê được kênh mực")
 
 
-
-
 @router.post("/preflight/convert-spot", response_model=FixFileResponse)
 async def convert_spot(req: ConvertSpotRequest):
     """Chuyển Spot Color → CMYK."""
@@ -1380,8 +1353,6 @@ async def check_pdfx_compliance(file_id: str, standard: str):
         return engine.check_compliance(file_path, standard)
     except Exception as e:
         raise_http(e, "Kiểm tra compliance PDF/X thất bại")
-
-
 
 
 @router.post("/preflight/export-pdfx", response_model=ExportPdfxResponse)
@@ -1540,8 +1511,6 @@ async def convert_colors(req: ConvertColorsRequest):
         "log": log,
         "error": None if all_ok else "Một số bước thất bại",
     }
-
-
 
 
 @router.get("/preflight/icc-profiles", response_model=IccProfilesResponse)

@@ -617,7 +617,6 @@ def _run_nup_engine_impl(
 
     target_quantity = settings.get('targetQuantity', 0)
 
-
     target_quantities_by_page = settings.get('targetQuantitiesByPage', {})
 
     # Check if all targets are 0 (Auto-Fill 1 Sheet mode)
@@ -2827,8 +2826,6 @@ def _run_nup_engine_impl(
         logger.debug("[NUP_ENGINE SOLVER RESULT] totalItems=%s strategy=%s",
                      layout.get('totalItems'), layout.get('strategyUsed'))
 
-
-
     capacity = layout['totalItems']
 
     total_capacity = capacity * cx_count * cy_count
@@ -3682,8 +3679,6 @@ def _run_nup_engine_impl(
             int(settings.get('cols', 0) or 0),
 
             int(settings.get('rows', 0) or 0),
-
-
 
             _build_chunk_worker_metadata(
                 repeat_sheet_metadata, start_sheet, end_sheet,

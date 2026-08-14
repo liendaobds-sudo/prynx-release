@@ -580,7 +580,6 @@ def _cleanup_job_temp(job_id: str):
     _cleanup_nup_chunk_files(job_id)
 
 
-
 @scheduled_job("nup")
 def _spawn_nup_process(source_path: str, output_path: str, settings: dict, job_id: str):
     """Run one outer process only after the bounded executor grants a slot."""
