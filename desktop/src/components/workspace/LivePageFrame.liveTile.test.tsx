@@ -11,6 +11,8 @@ import {
     shouldKeepViewerAccurateBaseMounted,
     shouldRequestViewerAccurateBase,
     shouldUseViewerDirectFullPageSurface,
+    viewerPanGridRenderPolicy,
+    VIEWER_RASTER_IMAGE_RENDERING,
     viewerSurfaceSwapMs,
 } from './LivePageFrame';
 import { cacheTileUrl, clearTileUrlCache } from '../../lib/tileUrlCache';
@@ -18,11 +20,45 @@ import { CancelledTileRenderError } from '../../hooks/viewer/tileRenderScheduler
 import {
     VIEWER_DIRECT_FULL_PAGE_MAX_PIXELS,
 } from './renderZoomPolicy';
+import {
+    viewerBootstrapUsesPpeForPageOne,
+    viewerFirstFrameDpi,
+    viewerFirstFrameMatchesTile,
+    type ViewerFirstFrame,
+} from '../../lib/viewerFirstFrame';
 
 afterEach(() => {
     cleanup();
     clearTileUrlCache();
     vi.restoreAllMocks();
+});
+
+describe('viewer first-frame pipeline policy', () => {
+    it('pre-render trang 1 ở mode current khi detector yêu cầu PPE', () => {
+        expect(viewerBootstrapUsesPpeForPageOne({
+            viewerEngineMode: 'current',
+            colorRisk: {
+                highRisk: true,
+                pages: [{ page: 1, accurateColorRecommended: true }],
+            },
+        })).toBe(true);
+        expect(viewerBootstrapUsesPpeForPageOne({
+            viewerEngineMode: 'current',
+            colorRisk: {
+                highRisk: true,
+                pages: [{ page: 2, accurateColorRecommended: true }],
+            },
+        })).toBe(false);
+        expect(viewerBootstrapUsesPpeForPageOne({
+            viewerEngineMode: 'current',
+            colorRisk: {
+                highRisk: false,
+                pages: [{ page: 1, accurateColorRecommended: true }],
+            },
+        })).toBe(false);
+        expect(viewerBootstrapUsesPpeForPageOne({ viewerEngineMode: 'hybrid' })).toBe(true);
+        expect(viewerBootstrapUsesPpeForPageOne({ viewerEngineMode: 'ppe-only' })).toBe(true);
+    });
 });
 
 function makeProps(overrides: Record<string, unknown> = {}) {
@@ -48,6 +84,64 @@ function makeProps(overrides: Record<string, unknown> = {}) {
 }
 
 describe('LiveTile — cold-open màu chính xác', () => {
+    it('Standee có frame tức thì 24 DPI trước khi Viewer dựng tile nét', () => {
+        expect(viewerFirstFrameDpi(2267.72, 4960.63, 757, 629, 92)).toBe(24);
+    });
+
+    it('nhận frame PPE đã decode làm target ngay, không hiện chờ và không render lại', async () => {
+        const getTileUrl = vi.fn();
+        const onTileReady = vi.fn();
+        const firstFrame: ViewerFirstFrame = {
+            nativePath: 'D:\\jobs\\standee.pdf',
+            documentToken: 'revision-1',
+            page: 1,
+            dpi: 24,
+            renderScale: 0.25,
+            width: 756,
+            height: 1654,
+            profileId: 'fogra39',
+            intent: 'relative',
+            proofIdentity: 'show:all|paper:0|black:0|background:profile',
+            url: 'blob:http://localhost/ppe-first-frame',
+            byteLength: 1024,
+            cacheable: true,
+        };
+        expect(viewerFirstFrameMatchesTile(firstFrame, 1, 0.25, 0, 0, 0, 756, 1654))
+            .toBe(true);
+
+        const view = render(
+            <LiveTile {...makeProps({
+                getTileUrl,
+                onTileReady,
+                zoom: 0.25,
+                clipW: 756,
+                clipH: 1654,
+                cssW: 287,
+                cssH: 629,
+                accurateOnly: true,
+                showLoadStatus: true,
+                preserveUnderlay: true,
+                initialSource: firstFrame,
+                loadLabels: {
+                    loading: 'Đang dựng hình…',
+                    slow: 'Đang dựng trang lâu hơn bình thường…',
+                    error: 'Không dựng được trang này.',
+                    cancelled: 'Đã hủy dựng trang.',
+                    retry: 'Thử lại',
+                    cancel: 'Hủy',
+                },
+            })} />,
+        );
+
+        await waitFor(() => expect(view.container.querySelector('img')?.src).toContain('ppe-first-frame'));
+        expect(view.container.querySelector('img')?.style.imageRendering)
+            .toBe(VIEWER_RASTER_IMAGE_RENDERING);
+        expect(view.queryByText('Đang dựng hình…')).toBeNull();
+        expect(getTileUrl).not.toHaveBeenCalled();
+        fireEvent.load(view.container.querySelector('img')!);
+        expect(onTileReady).toHaveBeenCalledWith({ scale: 0.25 });
+    });
+
     it('toàn trang vừa khung xin thẳng PPE đúng mật độ màn hình thay vì nền 144 DPI', () => {
         expect(shouldUseViewerDirectFullPageSurface(
             true, 2.125, 2.1, 1112, 388, 1400, 800,
@@ -102,6 +196,28 @@ describe('LiveTile — cold-open màu chính xác', () => {
         expect(shouldEnableViewerViewportAccurateTile(false, true, true)).toBe(true);
     });
 
+    it('cold-open chỉ phát target chính, chưa mount pan-grid trước first-frame', () => {
+        expect(viewerPanGridRenderPolicy(false, false, false)).toEqual({
+            near: false,
+            outer: false,
+        });
+        expect(viewerPanGridRenderPolicy(false, false, true)).toEqual({
+            near: true,
+            outer: true,
+        });
+    });
+
+    it('sau first-frame vẫn tải trước near-grid đầy đủ khi pan sang pha mới', () => {
+        expect(viewerPanGridRenderPolicy(true, false, false)).toEqual({
+            near: true,
+            outer: false,
+        });
+        expect(viewerPanGridRenderPolicy(false, true, false)).toEqual({
+            near: true,
+            outer: false,
+        });
+    });
+
     it('giữ PDFium cho trang compatibility chưa được đánh dấu màu rủi ro', async () => {
         const getTileUrl = vi.fn((..._args: unknown[]) => new Promise<never>(() => {}));
         render(
@@ -154,6 +270,143 @@ describe('LiveTile — cold-open màu chính xác', () => {
         expect(image?.src).not.toContain('display');
     });
 
+    it('IntersectionObserver không phát lại cùng request PPE đang bay', async () => {
+        const getTileUrl = vi.fn(() => new Promise<never>(() => {}));
+        let observed: HTMLElement | null = null;
+        const onVisible = vi.fn((element: HTMLElement, isCleanup?: boolean) => {
+            if (!isCleanup) observed = element;
+        });
+        render(
+            <LiveTile
+                {...makeProps({ getTileUrl, onVisible, accurateOnly: true })}
+            />,
+        );
+
+        await waitFor(() => expect(getTileUrl).toHaveBeenCalledTimes(1));
+        expect(observed).not.toBeNull();
+        act(() => {
+            (observed as HTMLElement & { _loadTile?: () => void })._loadTile?.();
+        });
+
+        expect(getTileUrl).toHaveBeenCalledTimes(1);
+    });
+
+    it('phát lại cùng params khi effect đã hủy request cũ trước lúc có bitmap', async () => {
+        const getTileUrl = vi.fn(() => new Promise<never>(() => {}));
+        const cancelAccurateGroup = vi.fn();
+        const baseProps = makeProps({
+            getTileUrl,
+            accurateOnly: true,
+            cancelAccurateGroup,
+        });
+        const view = render(
+            <LiveTile {...baseProps} renderOwnerId="owner-trước" />,
+        );
+
+        await waitFor(() => expect(getTileUrl).toHaveBeenCalledTimes(1));
+        view.rerender(
+            <LiveTile {...baseProps} renderOwnerId="owner-sau" />,
+        );
+
+        await waitFor(() => expect(cancelAccurateGroup).toHaveBeenCalled());
+        await waitFor(() => expect(getTileUrl).toHaveBeenCalledTimes(2));
+        const calls = getTileUrl.mock.calls as unknown[][];
+        expect(calls[0]?.[7]).toEqual(expect.objectContaining({
+            ownerId: 'owner-trước',
+        }));
+        expect(calls[1]?.[7]).toEqual(expect.objectContaining({
+            ownerId: 'owner-sau',
+        }));
+    });
+
+    it('request lỗi nhả in-flight để cùng params được thử lại', async () => {
+        const getTileUrl = vi.fn()
+            .mockRejectedValueOnce(new Error('PPE worker lỗi'))
+            .mockReturnValue(new Promise<never>(() => {}));
+        let observed: HTMLElement | null = null;
+        const onVisible = vi.fn((element: HTMLElement, isCleanup?: boolean) => {
+            if (!isCleanup) observed = element;
+        });
+        const view = render(
+            <LiveTile {...makeProps({
+                getTileUrl,
+                onVisible,
+                accurateOnly: true,
+                showLoadStatus: true,
+                loadLabels: {
+                    loading: 'Đang dựng hình…',
+                    slow: 'Đang dựng trang lâu hơn bình thường…',
+                    error: 'Không dựng được trang này.',
+                    cancelled: 'Đã hủy dựng trang.',
+                    retry: 'Thử lại',
+                    cancel: 'Hủy',
+                },
+            })} />,
+        );
+
+        await waitFor(() => expect(view.getByText('Không dựng được trang này.')).toBeTruthy());
+        expect(observed).not.toBeNull();
+        act(() => {
+            (observed as HTMLElement & { _loadTile?: () => void })._loadTile?.();
+        });
+
+        await waitFor(() => expect(getTileUrl).toHaveBeenCalledTimes(2));
+        expect(view.getByText('Đang dựng hình…')).toBeTruthy();
+    });
+
+    it('kết quả request cũ không được ghi đè bitmap sau khi effect đổi owner', async () => {
+        const pending: Array<(source: { url: string; byteLength: number }) => void> = [];
+        const getTileUrl = vi.fn(() => new Promise<{ url: string; byteLength: number }>((resolve) => {
+            pending.push(resolve);
+        }));
+        const originalImage = globalThis.Image;
+        class ImmediateImage {
+            onload: null | (() => void) = null;
+            onerror: null | (() => void) = null;
+            naturalWidth = 640;
+            naturalHeight = 480;
+            private value = '';
+
+            set src(value: string) {
+                this.value = value;
+                queueMicrotask(() => this.onload?.());
+            }
+
+            get src() {
+                return this.value;
+            }
+        }
+        vi.stubGlobal('Image', ImmediateImage);
+        try {
+            const baseProps = makeProps({
+                getTileUrl,
+                accurateOnly: true,
+                cancelAccurateGroup: vi.fn(),
+            });
+            const view = render(
+                <LiveTile {...baseProps} renderOwnerId="owner-cũ" />,
+            );
+            await waitFor(() => expect(getTileUrl).toHaveBeenCalledTimes(1));
+
+            view.rerender(
+                <LiveTile {...baseProps} renderOwnerId="owner-mới" />,
+            );
+            await waitFor(() => expect(getTileUrl).toHaveBeenCalledTimes(2));
+
+            await act(async () => {
+                pending[0]?.({ url: 'blob:http://localhost/request-cũ', byteLength: 64 });
+                pending[1]?.({ url: 'blob:http://localhost/request-mới', byteLength: 64 });
+                await Promise.resolve();
+                await Promise.resolve();
+            });
+
+            const image = view.container.querySelector('img')!;
+            expect(decodeURI(image.src)).toBe('blob:http://localhost/request-mới');
+        } finally {
+            vi.stubGlobal('Image', originalImage);
+        }
+    });
+
     it('dùng ngay bitmap PPE từ cache mà không gọi lại PDFium', async () => {
         const getTileUrl = vi.fn();
         const onTileReady = vi.fn();
@@ -187,6 +440,33 @@ describe('LiveTile — cold-open màu chính xác', () => {
         fireEvent.load(image!);
         expect(onTileReady).toHaveBeenCalledTimes(1);
         expect(onTileReady).toHaveBeenCalledWith({ scale: 1 });
+    });
+
+    it('mở cổng trang kế tiếp ngay khi underlay prefetch đã hiện', async () => {
+        const getTileUrl = vi.fn();
+        const cachedUrl = 'blob:http://localhost/adjacent-underlay';
+        cacheTileUrl(
+            'D:\\jobs\\gradient.pdf|revision:r1|color:accurate_1_0.75_0_0_0_0_0',
+            { url: cachedUrl, byteLength: 64, cacheable: true },
+            'D:\\jobs\\gradient.pdf|revision:r1|color:accurate',
+        );
+        const baseProps = makeProps({
+            getTileUrl,
+            accurateOnly: true,
+            zoom: 0.75,
+            renderPriority: 20,
+        });
+        const view = render(<LiveTile {...baseProps} />);
+
+        await act(async () => { await Promise.resolve(); });
+        const image = view.container.querySelector('img')!;
+        fireEvent.load(image);
+        const onRenderReady = vi.fn();
+        view.rerender(<LiveTile {...baseProps} onRenderReady={onRenderReady} />);
+
+        await waitFor(() => expect(onRenderReady).toHaveBeenCalledTimes(1));
+        expect(getTileUrl).not.toHaveBeenCalled();
+        expect(image.src).toBe(cachedUrl);
     });
 
     it('atlas luôn phủ kín khung màu thay vì co ảnh và lộ nền trắng ở đường nối', async () => {

@@ -88,6 +88,7 @@ export interface StickerCutControlPolicy {
     effectiveFillBlockGap: number;
     showDieSizeSelector: boolean;
     showDieSizeStatus: boolean;
+    showDieOffset: boolean;
     showFillBlockGap: boolean;
 }
 
@@ -111,6 +112,8 @@ export function resolveStickerCutControlPolicy(
         : hasValidDie === false ? 'page_only' : 'unknown';
     const requestedMode: StickerDieSizeMode = requestedDieSizeMode === 'page'
         ? 'page' : 'die';
+    const effectiveDieSizeMode: StickerDieSizeMode = oneDao && dieStatus === 'page_only'
+        ? 'page' : requestedMode;
     const showFillBlockGap = oneDao && gridStrategy === 'optimal_auto';
     const rawFillBlockGap = Number(requestedFillBlockGap);
     const normalizedFillBlockGap = Number.isFinite(rawFillBlockGap)
@@ -118,8 +121,7 @@ export function resolveStickerCutControlPolicy(
 
     return {
         dieStatus,
-        effectiveDieSizeMode: oneDao && dieStatus === 'page_only'
-            ? 'page' : requestedMode,
+        effectiveDieSizeMode,
         // Chính sách ẩn/đặt 0 chỉ thuộc Bình tem bế. CNC và consumer dùng chung
         // dashboard phải giữ nguyên tham số cũ để không tạo hồi quy âm thầm.
         effectiveFillBlockGap: stickerTool
@@ -127,6 +129,12 @@ export function resolveStickerCutControlPolicy(
             : normalizedFillBlockGap,
         showDieSizeSelector: oneDao && dieStatus === 'available',
         showDieSizeStatus: oneDao && dieStatus !== 'available',
+        // UIUX (audit 2026-08-14 §DIE-FALLBACK-03): Co/Mở chỉ áp lên khung
+        // trang. Mặc định có CutContour thật phải giữ nguyên hình học khuôn.
+        showDieOffset: stickerTool && (
+            (oneDao && effectiveDieSizeMode === 'page')
+            || (cutType === 'default' && dieStatus === 'page_only')
+        ),
         showFillBlockGap,
     };
 }

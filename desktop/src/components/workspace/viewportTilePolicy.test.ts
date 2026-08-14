@@ -583,7 +583,7 @@ describe('viewport tile — double buffer khi pan', () => {
         )).toEqual([visible, target]);
     });
 
-    it('zoom-out thiếu coverage thì không trình bày tile cũ thành một đảo nét', () => {
+    it('zoom-out thiếu coverage không được để target chưa sẵn sàng thành lớp duy nhất', () => {
         const reuseGroup = 'file:page:accurate:rot0';
         const visible = {
             ...item('A', 'zoom:4', reuseGroup),
@@ -611,7 +611,29 @@ describe('viewport tile — double buffer khi pan', () => {
             reuseGroup,
             false,
             covers,
+        )).toEqual([visible, target]);
+        expect(viewportTilePresentationItems(
+            { visible, target },
+            'zoom:3.5',
+            reuseGroup,
+            false,
+            covers,
+            true,
         )).toEqual([target]);
+    });
+
+    it('đã có underlay toàn trang thì ẩn tile viewport cũ trong lúc zoom settle', () => {
+        const reuseGroup = 'file:page:accurate:rot0';
+        const visible = item('A', 'zoom:4', reuseGroup);
+
+        expect(viewportTilePresentationItems(
+            { visible, target: visible },
+            'zoom:3.5',
+            reuseGroup,
+            true,
+            true,
+            true,
+        )).toEqual([]);
     });
 
     it('zoom-out nhỏ còn nằm trong runway thì tiếp tục giữ tile cũ', () => {

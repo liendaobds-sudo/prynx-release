@@ -294,6 +294,45 @@ describe('AdvancedSettingsSection — thiết lập 1 Dao', () => {
         expect(screen.getByText('CO/MỞ')).toBeTruthy();
     });
 
+    it('Mặc định chỉ hiện Co/Mở khi không có đường bế thật', () => {
+        const fallback = renderAdvancedSettings({
+            activeTool: 'sticker_imposer',
+            cutType: 'default',
+            hasValidDie: false,
+        });
+        openCutSettings();
+        expect(screen.getByText('CO/MỞ')).toBeTruthy();
+
+        fallback.unmount();
+        renderAdvancedSettings({
+            activeTool: 'sticker_imposer',
+            cutType: 'default',
+            hasValidDie: true,
+        });
+        openCutSettings();
+        expect(screen.queryByText('CO/MỞ')).toBeNull();
+    });
+
+    it('đưa ghi chú Đường cắt và Co/Mở vào hai tooltip dấu hỏi', () => {
+        renderAdvancedSettings({
+            activeTool: 'sticker_imposer',
+            cutType: 'default',
+            hasValidDie: false,
+        });
+        openCutSettings();
+
+        const cutHelp = screen.getByRole('button', { name: 'Giải thích ĐƯỜNG CẮT' });
+        const cutTooltip = document.getElementById(cutHelp.getAttribute('aria-describedby') || '');
+        expect(cutTooltip?.getAttribute('role')).toBe('tooltip');
+        expect(cutTooltip?.textContent).toContain('Dao cắt về mặc định mỗi phiên');
+
+        const offsetHelp = screen.getByRole('button', { name: 'Giải thích CO/MỞ' });
+        const offsetTooltip = document.getElementById(offsetHelp.getAttribute('aria-describedby') || '');
+        expect(offsetTooltip?.getAttribute('role')).toBe('tooltip');
+        expect(offsetTooltip?.textContent).toContain('số dương = mở khuôn ra');
+        expect(screen.getAllByText(/Dao cắt về mặc định mỗi phiên/)).toHaveLength(1);
+    });
+
     it('file có khuôn mới hiện đủ hai kiểu khuôn', () => {
         renderAdvancedSettings({
             activeTool: 'sticker_imposer',

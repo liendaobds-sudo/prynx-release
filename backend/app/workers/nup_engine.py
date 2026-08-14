@@ -723,7 +723,9 @@ def _run_nup_engine_impl(
             if largest_path is None and settings.get('cutType', 'default') == 'default':
                 # [PAGEBOX FIX 2026-08-13] Mặc định không có CutContour vẫn là
                 # khuôn hợp lệ: dùng đúng PageBox logic mà UI đang hiển thị.
-                largest_path = resolve_default_page_die(src_page)
+                largest_path = resolve_default_page_die(
+                    src_page, settings.get('dieOffsetMm', 0),
+                )
 
             has_die_by_page[p_idx] = largest_path is not None
 

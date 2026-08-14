@@ -5,6 +5,7 @@ import {
   resolveActiveImageBatchReceiver,
   type NavigationTabLike,
 } from '../lib/tabNavigation';
+import { primeViewerFirstFrame } from '../lib/viewerFirstFrame';
 
 export const SYSTEM_FILES_RECEIVED_EVENT = 'system-files-received';
 export const SYSTEM_FILES_POLL_SETTLED_EVENT = 'prynx-system-files-poll-settled';
@@ -26,6 +27,33 @@ function sortIncomingFiles(files: File[]): File[] {
   return [...files].sort((a, b) => (
     a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
   ));
+}
+
+function isPathBackedPdf(file: File): boolean {
+  const nativePath = (file as File & { path?: string }).path;
+  return Boolean(
+    nativePath
+    && (file.type === 'application/pdf' || file.name.toLocaleLowerCase().endsWith('.pdf'))
+    && typeof window !== 'undefined'
+    && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__),
+  );
+}
+
+/**
+ * PERF (audit 2026-08-14 §VIEW.FIRST.2): pre-render trước khi App tạo tab. Nhờ vậy
+ * tab hiện tại vẫn giữ nguyên trong lúc PPE dựng trang 1; khi chuyển tab, pixel thật
+ * đã nằm trong cache/first-frame và không cần hiển thị màn "Đang mở file".
+ */
+function dispatchIncomingFileBatchWhenReady(
+  files: readonly File[],
+  intent: string,
+  dispatch: () => void,
+): void {
+  if (!intent && files.length === 1 && isPathBackedPdf(files[0])) {
+    void primeViewerFirstFrame(files[0]).then(dispatch, dispatch);
+    return;
+  }
+  dispatch();
 }
 
 /** Định tuyến một batch đã đóng; mọi cửa vào đều hội tụ tại đây. */
@@ -90,12 +118,14 @@ export function useIncomingFileDispatcher({
   const actionRef = useRef('');
   const waitingForPollRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const disposedRef = useRef(false);
 
   useEffect(() => {
     onOpenAppRef.current = onOpenApp;
   }, [onOpenApp]);
 
   useEffect(() => {
+    disposedRef.current = false;
     const clearTimer = () => {
       if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = null;
@@ -108,13 +138,16 @@ export function useIncomingFileDispatcher({
       filesRef.current = [];
       actionRef.current = '';
       waitingForPollRef.current = false;
-      dispatchIncomingFileBatch(
-        files,
-        action,
-        onOpenAppRef.current,
-        tabsRef.current ?? [],
-        activeTabIdRef.current ?? '',
-      );
+      dispatchIncomingFileBatchWhenReady(files, action, () => {
+        if (disposedRef.current) return;
+        dispatchIncomingFileBatch(
+          files,
+          action,
+          onOpenAppRef.current,
+          tabsRef.current ?? [],
+          activeTabIdRef.current ?? '',
+        );
+      });
     };
 
     const scheduleFallback = (delayMs: number) => {
@@ -151,6 +184,7 @@ export function useIncomingFileDispatcher({
     window.addEventListener(SYSTEM_FILES_RECEIVED_EVENT, handleSystemFiles);
     window.addEventListener(SYSTEM_FILES_POLL_SETTLED_EVENT, handlePollSettled);
     return () => {
+      disposedRef.current = true;
       clearTimer();
       filesRef.current = [];
       actionRef.current = '';

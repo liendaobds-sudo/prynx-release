@@ -18,24 +18,33 @@ logger = logging.getLogger(__name__)
 MM_TO_PTS = 2.83465
 
 
-def resolve_default_page_die(page):
+def resolve_default_page_die(page, die_offset_mm=0, MM=MM_TO_PTS):
     """Dựng khuôn chữ nhật theo trang logic khi PDF không có CutContour thật.
 
     ``Mặc định`` vẫn ưu tiên đường khuôn được nhận diện. Nếu không có, quy tắc
     của Bình tem bế là lấy đúng kích thước trang đang hiển thị trên UI (MediaBox
     thường, CropBox khi đó là trang con trên canvas lớn). Geometry trả về dùng
-    hệ top-down giống ``extract_vector_paths`` và renderer N-Up.
+    hệ top-down giống ``extract_vector_paths`` và renderer N-Up. ``die_offset_mm``
+    chỉ được caller truyền sau khi đã xác nhận KHÔNG có CutContour thật: số dương
+    mở khung fallback, số âm co vào; không bao giờ bù lên khuôn thật.
     """
     try:
         source_box = effective_imposition_box(page)
     except (AttributeError, TypeError, ValueError):
         source_box = page.rect
     page_height = float(page.rect.height)
+    off = float(die_offset_mm or 0) * MM
+    center_x = (float(source_box.x0) + float(source_box.x1)) / 2.0
+    center_y = page_height - (
+        float(source_box.y0) + float(source_box.y1)
+    ) / 2.0
+    half_w = max(0.5, float(source_box.width) / 2.0 + off)
+    half_h = max(0.5, float(source_box.height) / 2.0 + off)
     rect = type(page.rect)(
-        float(source_box.x0),
-        page_height - float(source_box.y1),
-        float(source_box.x1),
-        page_height - float(source_box.y0),
+        center_x - half_w,
+        center_y - half_h,
+        center_x + half_w,
+        center_y + half_h,
     )
     return {
         'items': [('re', rect)],

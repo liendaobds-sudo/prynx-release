@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { capturePageViewportAnchor, restorePageViewportAnchor } from './pageViewport';
+import {
+    capturePagePointViewportAnchor,
+    capturePageViewportAnchor,
+    restorePagePointViewportAnchor,
+    restorePageViewportAnchor,
+} from './pageViewport';
 
 const rect = (left: number, top: number, width: number, height: number): DOMRect => ({
     x: left,
@@ -34,5 +39,29 @@ describe('page viewport anchor', () => {
         expect(restorePageViewportAnchor(scroller, targetPage, anchor!)).toBe(true);
         expect(scroller.scrollLeft).toBe(440);
         expect(scroller.scrollTop).toBe(372.5);
+    });
+
+    it('keeps the page point under the mouse stable when a centered page grows', () => {
+        const scroller = document.createElement('div');
+        const page = document.createElement('div');
+        scroller.getBoundingClientRect = () => rect(100, 50, 800, 600);
+        page.getBoundingClientRect = () => rect(300, 150, 400, 800);
+        scroller.scrollLeft = 0;
+        scroller.scrollTop = 0;
+
+        const anchor = capturePagePointViewportAnchor(scroller, page, 500, 300);
+        expect(anchor).toEqual({
+            viewportX: 400,
+            viewportY: 250,
+            pageXRatio: 0.5,
+            pageYRatio: 0.1875,
+        });
+
+        // Sau zoom, flex centering/padding tạo một origin mới; không thể suy ra bằng
+        // cách nhân scrollLeft/Top với ratio zoom.
+        page.getBoundingClientRect = () => rect(124, 80, 800, 1600);
+        expect(restorePagePointViewportAnchor(scroller, page, anchor!)).toBe(true);
+        expect(scroller.scrollLeft).toBe(24);
+        expect(scroller.scrollTop).toBe(80);
     });
 });

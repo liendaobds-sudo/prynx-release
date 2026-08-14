@@ -147,7 +147,7 @@ def process_chunk(args):
     )
 
     from app.workers.nup_engine import compute_sticker_layout_for_page, _find_largest_die_path
-    from app.workers.nup_diecut import resolve_one_dao_trim
+    from app.workers.nup_diecut import resolve_default_page_die, resolve_one_dao_trim
 
     diagnostic_meta = {}
     worker_options = {}
@@ -401,6 +401,13 @@ def process_chunk(args):
                     else:
                         largest_path = _find_largest_die_path(src_page)
                         _die_path_cache[src_page_idx] = largest_path
+
+                    if largest_path is None and cut_type == 'default':
+                        # UIUX (audit 2026-08-14 §DIE-FALLBACK-03): chỉ bù Co/Mở
+                        # khung trang fallback; CutContour thật ở nhánh trên bất biến.
+                        largest_path = resolve_default_page_die(
+                            src_page, die_offset_mm,
+                        )
 
                     if largest_path:
 

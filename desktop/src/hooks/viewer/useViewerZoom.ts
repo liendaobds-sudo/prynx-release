@@ -2,6 +2,11 @@ import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react
 import { reduceWheelNav, createWheelNavState } from './wheelPageNav';
 import { toast } from '../../components/ui/Toast';
 import i18n from '../../i18n';
+import {
+    capturePagePointViewportAnchor,
+    restorePagePointViewportAnchor,
+    type PagePointViewportAnchor,
+} from '../../lib/pageViewport';
 
 // Padding hàng trang (AcrobatViewer): L/R 24+24, T/B 32+32, gap 12 giữa 2 trang.
 // SAFETY: scrollbar-gutter both-edges + subpixel — zoom sát 100% khung → tràn 1–2px
@@ -10,6 +15,20 @@ const FIT_PAD_X_SINGLE = 48; // 24+24
 const FIT_PAD_Y = 64;        // 32+32
 const FIT_GAP = 12;
 const FIT_SAFETY = 12;
+
+interface ViewerZoomTarget {
+    mouseX: number;
+    mouseY: number;
+    ratio: number;
+    pageId?: string;
+    pageAnchor?: PagePointViewportAnchor;
+}
+
+function renderedZoomPage(scroller: HTMLElement, pageId: string): HTMLElement | null {
+    const container = scroller.querySelector<HTMLElement>(`#${pageId}`);
+    if (!container) return null;
+    return (container.lastElementChild as HTMLElement | null) || container;
+}
 
 interface UseViewerZoomProps {
     containerRef: React.RefObject<HTMLDivElement | null>;
@@ -59,13 +78,13 @@ export function useViewerZoom(props: UseViewerZoomProps) {
 
     const activePageRef = useRef(activePage);
     useEffect(() => { activePageRef.current = activePage; }, [activePage]);
-    const zoomTargetRef = useRef<{ mouseX: number, mouseY: number, ratio: number } | null>(null);
+    const zoomTargetRef = useRef<ViewerZoomTarget | null>(null);
     const isZoomingRef = useRef(false);
     const zoomTimeoutRef = useRef<any>(null);
     const pendingZoomRef = useRef<number | null>(null);
     // Trạng thái điều hướng trang bằng wheel (chuẩn hoá chuột + trackpad) — xem wheelPageNav.ts.
     const wheelNavStateRef = useRef(createWheelNavState());
-    const lastZoomMouseRef = useRef<{ mouseX: number, mouseY: number } | null>(null);
+    const lastZoomMouseRef = useRef<Omit<ViewerZoomTarget, 'ratio'> | null>(null);
     const zoomRafRef = useRef<number | null>(null);
 
     // ═══ Fit Mode Helpers ═══
@@ -248,8 +267,20 @@ export function useViewerZoom(props: UseViewerZoomProps) {
             focal = { mouseX: el.clientWidth / 2, mouseY: el.clientHeight / 2, ratio: zoom / old };
         }
         const { mouseX, mouseY, ratio } = focal;
-        el.scrollLeft = (el.scrollLeft + mouseX) * ratio - mouseX;
-        el.scrollTop = (el.scrollTop + mouseY) * ratio - mouseY;
+        const page = focal.pageId && focal.pageAnchor
+            ? renderedZoomPage(el, focal.pageId)
+            : null;
+        const restoredFromPage = Boolean(
+            page
+            && focal.pageAnchor
+            && restorePagePointViewportAnchor(el, page, focal.pageAnchor),
+        );
+        if (!restoredFromPage) {
+            // Fallback cho khoảng xám không xác định được trang. Công thức theo scroll origin
+            // vẫn tốt hơn không neo gì, nhưng wheel trên trang luôn đi nhánh hình học phía trên.
+            el.scrollLeft = (el.scrollLeft + mouseX) * ratio - mouseX;
+            el.scrollTop = (el.scrollTop + mouseY) * ratio - mouseY;
+        }
         zoomTargetRef.current = null;
         updateViewportRect();
     }, [zoom, fitMode]);
@@ -285,6 +316,26 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                         const rect = el.getBoundingClientRect();
                         const mouseX = e.clientX - rect.left;
                         const mouseY = e.clientY - rect.top;
+                        const eventElement = e.target instanceof Element ? e.target : null;
+                        const hitPageContainer = eventElement?.closest<HTMLElement>(
+                            '[id^="pdf-page-container-"]',
+                        ) ?? null;
+                        const pageContainer = hitPageContainer && el.contains(hitPageContainer)
+                            ? hitPageContainer
+                            : el.querySelector<HTMLElement>(
+                                `#pdf-page-container-${activePageRef.current}`,
+                            );
+                        const pageElement = pageContainer
+                            ? ((pageContainer.lastElementChild as HTMLElement | null) || pageContainer)
+                            : null;
+                        const pageAnchor = pageElement
+                            ? capturePagePointViewportAnchor(
+                                el,
+                                pageElement,
+                                e.clientX,
+                                e.clientY,
+                            )
+                            : null;
 
                         isZoomingRef.current = true;
                         // Tích luỹ zoom mục tiêu, gom 1 lần/khung-hình bằng rAF rồi ZOOM THẲNG +
@@ -293,7 +344,12 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                         // nhấp nháy + giật khi commit. Cách này mượt như nút +/- mà vẫn bám con trỏ.
                         pendingZoomRef.current = (pendingZoomRef.current ?? currentZoomRef.current) * Math.exp(e.deltaY * -0.001);
                         pendingZoomRef.current = Math.max(0.01, Math.min(64, pendingZoomRef.current));
-                        lastZoomMouseRef.current = { mouseX, mouseY };
+                        lastZoomMouseRef.current = {
+                            mouseX,
+                            mouseY,
+                            pageId: pageContainer?.id,
+                            pageAnchor: pageAnchor ?? undefined,
+                        };
                         setFitMode('custom');
 
                         if (zoomRafRef.current == null) {
@@ -303,7 +359,7 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                                 const old = currentZoomRef.current;
                                 if (target != null && Math.abs(target - old) > 1e-4) {
                                     const m = lastZoomMouseRef.current || { mouseX: 0, mouseY: 0 };
-                                    zoomTargetRef.current = { mouseX: m.mouseX, mouseY: m.mouseY, ratio: target / old };
+                                    zoomTargetRef.current = { ...m, ratio: target / old };
                                     setZoom(target);
                                 }
                             });

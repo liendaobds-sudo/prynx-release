@@ -927,7 +927,9 @@ def place_one_artwork(
                 largest_path = find_largest_die_path(src_page)
                 if largest_path is None and cut_type == 'default':
                     from app.workers.nup_diecut import resolve_default_page_die
-                    largest_path = resolve_default_page_die(src_page)
+                    largest_path = resolve_default_page_die(
+                        src_page, die_offset_mm,
+                    )
                 if (largest_path or {}).get('is_page_fallback'):
                     # [PAGEBOX FIX 2026-08-13] Fallback PageBox phải map chính
                     # vùng trang logic; lấy MediaBox lớn làm artwork co thành trắng.

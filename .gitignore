@@ -120,6 +120,9 @@ desktop/src-tauri/_chk/
 # Claude Code local data (memory/plans/session — per-machine, not source)
 .claude/
 
+# Playwright MCP page snapshots (machine-local browser diagnostics, not source)
+.playwright-mcp/
+
 # Local terminal scratch
 terminals/
 

@@ -154,6 +154,55 @@ fn cmyk_image_is_not_flagged_as_approximate() {
 }
 
 #[test]
+fn softproof_minification_keeps_a_one_texel_cmyk_line() {
+    // Hồi quy menu.pdf: ảnh nguồn 502 DPI bị thu khoảng 5,2× ở mức xem vừa trang.
+    // Lấy duy nhất texel tâm làm nét chữ 1–2 texel biến mất. Fixture 60→10 px
+    // đặt một sọc K ở cột đầu: đường đo mực giữ nearest cũ, còn soft-proof phải
+    // tích phân footprint và giữ tín hiệu K trong pixel màn hình đầu; lớp tăng
+    // chi tiết được phép điều chỉnh nhẹ nhưng không được làm nét biến mất.
+    let mut samples = Vec::with_capacity(60 * 60 * 4);
+    for _y in 0..60 {
+        for x in 0..60 {
+            samples.extend_from_slice(if x == 0 {
+                &[255, 255, 255, 0]
+            } else {
+                &[255, 255, 255, 255]
+            });
+        }
+    }
+    let mut image = base_image(60, 60, 8, "DeviceCMYK");
+    // Adobe CMYK JPEG thường dùng đúng Decode đảo này như menu.pdf.
+    image.set(
+        "Decode",
+        vec![
+            1.into(),
+            0.into(),
+            1.into(),
+            0.into(),
+            1.into(),
+            0.into(),
+            1.into(),
+            0.into(),
+        ],
+    );
+
+    let measured = render_image_with_options(
+        image.clone(),
+        samples.clone(),
+        RenderOptions::ink_accurate(),
+    );
+    assert_eq!(px(&measured, 3, 0, 5), 0, "đường đo phải giữ nearest cũ");
+
+    let preview = render_image_with_options(image, samples, RenderOptions::softproof());
+    let first_pixel_k = px(&preview, 3, 0, 5);
+    assert!(
+        (28..=43).contains(&first_pixel_k),
+        "sọc một texel phải còn trong footprint, K={first_pixel_k}"
+    );
+    assert_eq!(px(&preview, 3, 1, 5), 0, "không được làm nở sang pixel kế");
+}
+
+#[test]
 fn rgb_image_is_flagged_as_approximate() {
     let r = render_image(base_image(1, 1, 8, "DeviceRGB"), vec![255, 0, 0]);
     assert!(

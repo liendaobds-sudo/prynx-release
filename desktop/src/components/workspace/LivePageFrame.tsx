@@ -64,7 +64,14 @@ import {
     scrollElementVerticallyIntoView,
 } from './verticalScroll';
 import { buildPropertyAffine, mmToPt, pickTopmostObjectAtPoint, ptToMm, selectionBounds } from './editTransformMath';
-import { previewPerfLog } from '../../lib/previewPerfLog';
+import { previewPerfLog, viewerTraceHash, viewerTraceLog } from '../../lib/previewPerfLog';
+import {
+    adoptViewerFirstFrame,
+    peekViewerFirstFrame,
+    releaseViewerFirstFrame,
+    viewerFirstFrameMatchesTile,
+    type ViewerFirstFrame,
+} from '../../lib/viewerFirstFrame';
 import {
     computeAccurateViewerBaseZoom,
     computeRenderZoomPure,
@@ -204,6 +211,39 @@ interface TileLoadLabels {
 }
 
 const EMPTY_TILE_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==';
+// UIUX (feedback 2026-08-14 §VIEW.SHARP): WebView2/Edge đã đo trên chính file Standee:
+// tăng 24 → 72 → 96 DPI nhưng cùng co về khung Viewer gần như không làm chữ nhỏ rõ hơn.
+// Chế độ WebKit này giữ tương phản cạnh khi compositor thu bitmap và không đổi pixel 1:1.
+export const VIEWER_RASTER_IMAGE_RENDERING = '-webkit-optimize-contrast' as React.CSSProperties['imageRendering'];
+
+// UIUX (feedback 2026-08-14 §VIEW.SWAP): underlay ưu tiên đúng mật độ màn hình để
+// trang kế bên hiện ngay. Mức 24 DPI chỉ còn là fallback khi bitmap toàn trang
+// vượt ngân sách surface; tile viewport vẫn giữ nguyên mật độ đích.
+export const VIEWER_ACCURATE_UNDERLAY_SCALE = 0.25;
+
+export function viewerAccurateBaseScaleForRole(
+    preferredScale: number,
+    screenScale: number,
+    isActiveFrame: boolean,
+    prefetchPage: boolean,
+    hasReadyUnderlay = true,
+): number {
+    // UIUX (feedback 2026-08-14 §VIEW.PAGE): trang liền kề dựng trước theo mật độ
+    // màn hình; khi thành active, LiveTile giữ frame này và nâng nét phía sau.
+    if (!isActiveFrame && prefetchPage) return screenScale;
+    if (isActiveFrame && !hasReadyUnderlay) return screenScale;
+    return preferredScale;
+}
+
+export function viewerPageRenderPriority(
+    viewerIsActive: boolean,
+    isActiveFrame: boolean,
+    prefetchPage: boolean,
+): number {
+    if (!viewerIsActive) return 1000;
+    if (isActiveFrame) return 10;
+    return prefetchPage ? 20 : 100;
+}
 
 export function shouldCompositeViewerTile(
     displayedColorRank: number,
@@ -249,6 +289,39 @@ export function shouldRenderViewerAccurateBaseTile(
         && fullPageWithinSurfaceBudget;
 }
 
+export function shouldRenderViewerAccurateUnderlay(
+    shouldRenderBasePage: boolean,
+    accurateColorPage: boolean,
+    needsTiling: boolean,
+    underlayWithinSurfaceBudget: boolean,
+): boolean {
+    return shouldRenderBasePage
+        && accurateColorPage
+        && needsTiling
+        && underlayWithinSurfaceBudget;
+}
+
+export function selectViewerAccurateBaseZoom(
+    preferredScale: number,
+    pageWidth: number,
+    pageHeight: number,
+    targetScale: number,
+): number | null {
+    if (isViewerFullPageWithinSurfaceBudget(
+        pageWidth,
+        pageHeight,
+        preferredScale,
+        targetScale,
+    )) return preferredScale;
+    if (isViewerFullPageWithinSurfaceBudget(
+        pageWidth,
+        pageHeight,
+        VIEWER_ACCURATE_UNDERLAY_SCALE,
+        targetScale,
+    )) return VIEWER_ACCURATE_UNDERLAY_SCALE;
+    return null;
+}
+
 export function shouldEnableViewerAccurateLayer(
     shouldRenderAccurateLayer: boolean,
     _displayLayerReady: boolean,
@@ -267,6 +340,36 @@ export function shouldEnableViewerViewportAccurateTile(
     // PERF/COLOR (audit 2026-08-11 §PAN.TURBO-A): direct high-zoom không có
     // full-page PPE để mở cổng; viewport priority 0 phải tự làm frame accurate đầu tiên.
     return accurateCommitted || !waitForAccurateBase || visibleIsTarget;
+}
+
+// Hàm policy thuần được export để khóa hồi quy cold-open bằng unit test.
+// eslint-disable-next-line react-refresh/only-export-components
+export function viewerPanGridRenderPolicy(
+    accurateCommitted: boolean,
+    hasVisibleViewportTile: boolean,
+    phaseReady: boolean,
+): { near: boolean; outer: boolean } {
+    // PERF (audit 2026-08-14 §VIEW.LARGE.4): cold-open chưa có frame PPE không được
+    // phát đồng thời pan-grid với target chính. Các cell nhỏ từng hiện trước ở 554 ms
+    // và tạo thêm 8 job PPE trước first-frame; sau first-frame vẫn mở đầy đủ runway pan.
+    const firstAccurateFrameReady = accurateCommitted || hasVisibleViewportTile || phaseReady;
+    return {
+        near: firstAccurateFrameReady,
+        outer: firstAccurateFrameReady && phaseReady,
+    };
+}
+
+export function shouldPresentViewerPanGrid(
+    planIsCurrent: boolean,
+    viewportCovered: boolean,
+    zoomSettling: boolean,
+    hasStableUnderlay: boolean,
+): boolean {
+    // UIUX (feedback 2026-08-14 §VIEW.SWAP): các cell vẫn decode ở nền nhưng chỉ
+    // được đưa vào compositor cùng lúc khi hợp của chúng đã phủ kín viewport.
+    return planIsCurrent
+        && viewportCovered
+        && !(zoomSettling && hasStableUnderlay);
 }
 
 export function shouldUseViewerDisplayLayer(
@@ -440,7 +543,7 @@ export function viewerTileFileKey(
 }
 
 // Export ở mức component để regression test không cho hiện PDFium trong cold-open PPE.
-export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible, onRenderReady, onTileReady, onTileUnmount, renderOwnerId, renderPriority = 100, renderEnabled = true, showLoadStatus = false, loadLabels, progressiveAccurate = false, accurateOnly = false, cancelAccurateGroup, presentationFadeMs = 50, seamlessGridPresentation = false }: any) => {
+export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible, onRenderReady, onTileReady, onTileUnmount, renderOwnerId, renderPriority = 100, renderEnabled = true, showLoadStatus = false, loadLabels, progressiveAccurate = false, accurateOnly = false, cancelAccurateGroup, presentationFadeMs = 50, seamlessGridPresentation = false, initialSource, preserveUnderlay = false }: any) => {
     const tileRef = useRef<LoadableTileElement>(null);
     const imgRef = useRef<HTMLImageElement>(null);
     const loadAttemptRef = useRef(0);
@@ -453,16 +556,66 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
     onTileUnmountRef.current = onTileUnmount;
     const onRenderReadyRef = useRef(onRenderReady);
     onRenderReadyRef.current = onRenderReady;
+    const previousOnRenderReadyRef = useRef(onRenderReady);
     const renderPriorityRef = useRef(renderPriority);
     renderPriorityRef.current = renderPriority;
     const showLoadStatusRef = useRef(showLoadStatus);
     showLoadStatusRef.current = showLoadStatus;
+    useEffect(() => {
+        const previous = previousOnRenderReadyRef.current;
+        previousOnRenderReadyRef.current = onRenderReady;
+        if (!previous && onRenderReady && hasVisibleTile) {
+            // UIUX (feedback 2026-08-14 §VIEW.PAGE): frame prefetch đã decode khi còn
+            // ở trang nền. Lúc nó thành active không có sự kiện load mới, nên báo ngay
+            // rằng pixel thật đang hiện để mở tiếp cổng prefetch trang kế bên.
+            onRenderReadyRef.current?.();
+        }
+    }, [hasVisibleTile, onRenderReady]);
     const labels = loadLabels as TileLoadLabels | undefined;
     const renderGroupKey = viewerRenderGroupKey(
         pageNum,
         pageInstanceId,
         Boolean(clipW && clipH),
     );
+    const traceTileIdRef = useRef(
+        viewerTraceHash(`${pageInstanceId || 'page'}:${pageNum}:${clipX}:${clipY}:${clipW}:${clipH}`),
+    );
+    const traceTileStateRef = useRef({
+        enabled: Boolean(showLoadStatus || renderPriority < 100 || seamlessGridPresentation),
+        pageNum,
+        pageInstanceId: pageInstanceId || '',
+        renderPriority,
+        renderGroupKey,
+    });
+    traceTileStateRef.current = {
+        enabled: Boolean(showLoadStatus || renderPriority < 100 || seamlessGridPresentation),
+        pageNum,
+        pageInstanceId: pageInstanceId || '',
+        renderPriority,
+        renderGroupKey,
+    };
+    const traceTileEvent = useCallback((event: string, extra: Record<string, unknown> = {}) => {
+        const state = traceTileStateRef.current;
+        if (!state.enabled) return;
+        void viewerTraceLog(event, {
+            tile_id: traceTileIdRef.current,
+            page: state.pageNum,
+            instance: viewerTraceHash(state.pageInstanceId),
+            priority: state.renderPriority,
+            group: viewerTraceHash(state.renderGroupKey),
+            ...extra,
+        });
+    }, []);
+    const readTileDomRect = useCallback((): Record<string, number> => {
+        const rect = tileRef.current?.getBoundingClientRect();
+        if (!rect) return {};
+        return {
+            dom_left: Math.round(rect.left * 100) / 100,
+            dom_top: Math.round(rect.top * 100) / 100,
+            dom_w: Math.round(rect.width * 100) / 100,
+            dom_h: Math.round(rect.height * 100) / 100,
+        };
+    }, []);
     // NÉT (audit độ nét 2026-07-28 §R.4): ép ảnh vẽ ở ĐÚNG kích thước pixel gốc để tỉ lệ
     // scale = 1.0 (map 1:1 device pixel) — đó là điều kiện DUY NHẤT để chữ nét như Acrobat.
     //
@@ -518,6 +671,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         }
     }, [cssW, cssH, clipW, clipH, seamlessGridPresentation]);
     const loadedParamsRef = useRef('');
+    const inFlightRequestRef = useRef<{ params: string; attempt: number } | null>(null);
     const preloadRef = useRef<HTMLImageElement|null>(null);
     const accurateDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const cachedRenderReadyParamsRef = useRef<string | null>(null);
@@ -546,10 +700,37 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         const timer = setTimeout(() => {
             if (!mountedRef.current) return;
             dispatchLoadState({ type: 'slow', attempt });
+            traceTileEvent('tile-slow', { attempt, zoom });
             void previewPerfLog('live-tile-load-slow', { page: pageNum, zoom });
         }, FIRST_TILE_SLOW_MS);
         return () => clearTimeout(timer);
-    }, [loadState.attempt, loadState.phase, pageNum, showLoadStatus, zoom]);
+    }, [loadState.attempt, loadState.phase, pageNum, showLoadStatus, traceTileEvent, zoom]);
+
+    useEffect(() => {
+        traceTileEvent('tile-mount', {
+            render_enabled: renderEnabled,
+            accurate_only: accurateOnly,
+            progressive_accurate: progressiveAccurate,
+            clip: Boolean(clipW && clipH),
+            zoom,
+            css_w: cssW,
+            css_h: cssH,
+            clip_x: clipX,
+            clip_y: clipY,
+            clip_w: clipW,
+            clip_h: clipH,
+            ...readTileDomRect(),
+        });
+        return () => {
+            traceTileEvent('tile-unmount', {
+                loaded: hasLoadedOnce.current,
+                phase: loadState.phase,
+                attempt: loadAttemptRef.current,
+            });
+        };
+        // Lifecycle trace intentionally belongs to the component instance.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
     
     // On mount: immediately restore cached image (no white flash!)
     useEffect(() => {
@@ -570,16 +751,60 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             window.dispatchEvent(new CustomEvent('prynx-main-tile-ready'));
         }
     }, []); // Only on mount
+
+    useEffect(() => {
+        const source = initialSource as ViewerFirstFrame | undefined;
+        const imgEl = imgRef.current;
+        if (!source || !imgEl || hasLoadedOnce.current) return;
+        // PERF (audit 2026-08-14 §VIEW.FIRST.1): bitmap này đã render + decode trước
+        // khi Workspace mount. Nhận thẳng làm target hiện tại, không phát lại PPE.
+        loadedParamsRef.current = currentParams;
+        cachedRenderReadyParamsRef.current = currentParams;
+        displayedScaleRef.current = zoom;
+        displayedColorRankRef.current = requestedColorRank;
+        displayedSurfaceRef.current = surfaceParams;
+        hasLoadedOnce.current = true;
+        setHasVisibleTile(true);
+        dispatchLoadState({ type: 'ready', attempt: loadAttemptRef.current });
+        const keptInCache = source.cacheable !== false
+            && cacheTileUrl(currentParams, source, fileKey);
+        if (!keptInCache && source.url.startsWith('blob:')) {
+            ownedBlobUrlsRef.current.add(source.url);
+        }
+        adoptViewerFirstFrame(source);
+        imgEl.src = source.url;
+        if (tileRef.current) tileRef.current.style.opacity = '1';
+        window.dispatchEvent(new CustomEvent('prynx-main-tile-ready'));
+        traceTileEvent('tile-first-frame-adopted', {
+            scale: zoom,
+            natural_w: source.width,
+            natural_h: source.height,
+            bytes: source.byteLength,
+            cached: keptInCache,
+        });
+    }, [currentParams, fileKey, initialSource, requestedColorRank, surfaceParams, traceTileEvent, zoom]);
     
     useEffect(() => {
         const el = tileRef.current;
-        if (!el) return;
+        if (!el) {
+            traceTileEvent('tile-effect-no-element');
+            return;
+        }
+        traceTileEvent('tile-effect', {
+            render_enabled: renderEnabled,
+            zoom,
+            clip_x: clipX,
+            clip_y: clipY,
+            clip_w: clipW,
+            clip_h: clipH,
+        });
         if (!renderEnabled) {
             if (accurateDelayRef.current !== null) {
                 clearTimeout(accurateDelayRef.current);
                 accurateDelayRef.current = null;
             }
             el._loadTile = undefined;
+            inFlightRequestRef.current = null;
             loadedParamsRef.current = '';
             cachedRenderReadyParamsRef.current = null;
             const attempt = ++loadAttemptRef.current;
@@ -588,12 +813,14 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                 nativeRenderCoordinator.cancelGroup(renderOwnerId, renderGroupKey);
             }
             cancelAccurateGroup?.(renderGroupKey);
+            traceTileEvent('tile-disabled', { reason: 'render-disabled', attempt });
             return;
         }
 
         if (loadedParamsRef.current === currentParams && hasLoadedOnce.current) {
             // Cache/bitmap hiện tại đã đúng generation; sự kiện load của chính ảnh đó
             // chịu trách nhiệm báo onTileReady, không phát callback hai lần.
+            traceTileEvent('tile-skip-loaded', { attempt: loadAttemptRef.current });
             onRenderReadyRef.current?.();
             return;
         }
@@ -609,6 +836,10 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             loadedParamsRef.current = currentParams;
             cachedRenderReadyParamsRef.current = null;
             dispatchLoadState({ type: 'ready', attempt: loadAttemptRef.current });
+            traceTileEvent('tile-skip-sharper-surface', {
+                scale: displayedScaleRef.current,
+                requested_color_rank: requestedColorRank,
+            });
             onTileReadyRef.current?.({ scale: displayedScaleRef.current });
             onRenderReadyRef.current?.();
             return;
@@ -616,7 +847,10 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
 
         // Trang prefetch đã có ảnh thì giữ nguyên; không hạ ảnh sharp cũ xuống coarse.
         // Khi nó thành active, priority đổi và luồng sharp tiếp tục trên ảnh đang hiển thị.
-        if (renderPriorityRef.current >= 100 && hasLoadedOnce.current) return;
+        if (renderPriorityRef.current >= 100 && hasLoadedOnce.current) {
+            traceTileEvent('tile-skip-prefetch-loaded');
+            return;
+        }
         
         // Check cache before scheduling network load
         const cachedUrl = getCachedTileUrl(currentParams);
@@ -630,27 +864,59 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             displayedSurfaceRef.current = surfaceParams;
             setHasVisibleTile(true);
             if (tileRef.current) tileRef.current.style.opacity = '1';
+            traceTileEvent('tile-cache-hit', { zoom, requested_color_rank: requestedColorRank });
             return;
         }
         
+        let effectRequestAttempt: number | null = null;
         el._loadTile = () => {
-            if (loadedParamsRef.current === currentParams && hasLoadedOnce.current) return;
-            if (!getTileUrl) return;
+            // PERF (audit 2026-08-14 §VIEW.LARGE.3): effect gọi ngay để không phụ thuộc paint,
+            // rồi IntersectionObserver có thể gọi lại trước khi request đầu hoàn tất. Cùng params
+            // đang bay phải dùng chính request đó; gọi lại sẽ tự hủy PPE generation 1 và dựng lại
+            // toàn bộ atlas dù DPI/clip không đổi.
+            if (inFlightRequestRef.current?.params === currentParams) {
+                traceTileEvent('tile-skip-inflight', { attempt: inFlightRequestRef.current.attempt });
+                return;
+            }
+            if (loadedParamsRef.current === currentParams && hasLoadedOnce.current) {
+                traceTileEvent('tile-skip-loaded-request');
+                return;
+            }
+            if (!getTileUrl) {
+                traceTileEvent('tile-skip-no-url-builder');
+                return;
+            }
             const paramsAtRequest = currentParams;
             if (cancelledRetryRef.current.params !== paramsAtRequest) {
                 cancelledRetryRef.current = { params: paramsAtRequest, count: 0 };
             }
             const attempt = ++loadAttemptRef.current;
+            effectRequestAttempt = attempt;
+            inFlightRequestRef.current = { params: paramsAtRequest, attempt };
+            const clearInFlightRequest = () => {
+                if (inFlightRequestRef.current?.attempt === attempt) {
+                    inFlightRequestRef.current = null;
+                }
+            };
             const requestIsCurrent = () => mountedRef.current
                 && loadAttemptRef.current === attempt
-                && loadedParamsRef.current === paramsAtRequest;
-            loadedParamsRef.current = paramsAtRequest;
+                && inFlightRequestRef.current?.attempt === attempt
+                && inFlightRequestRef.current.params === paramsAtRequest;
             cachedRenderReadyParamsRef.current = null;
             if (displayedSurfaceRef.current !== surfaceParams) {
                 displayedScaleRef.current = 0;
                 displayedColorRankRef.current = 0;
             }
             dispatchLoadState({ type: 'start', attempt });
+            traceTileEvent('tile-request-start', {
+                attempt,
+                scale: zoom,
+                color_stage: accurateOnly || progressiveAccurate ? 'accurate' : 'display',
+                clip_x: clipX,
+                clip_y: clipY,
+                clip_w: clipW,
+                clip_h: clipH,
+            });
             if (showLoadStatusRef.current) void previewPerfLog('live-tile-load-start', { page: pageNum, zoom });
             
             // Cancel previous preload
@@ -669,6 +935,13 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                 colorStage?: ViewerColorStage,
             ) => {
                 const colorRank = colorStage === 'accurate' ? 2 : 1;
+                traceTileEvent('tile-url-request', {
+                    attempt,
+                    scale,
+                    color_stage: colorStage || 'display',
+                    cache,
+                    priority: renderPriorityRef.current,
+                });
                 const tileRequest = getTileUrl(pageNum, rot, scale, clipX, clipY, clipW, clipH, {
                     ownerId: renderOwnerId,
                     groupKey: renderGroupKey,
@@ -680,16 +953,30 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                 tileRequest
                     .then((source: TileUrlSource) => {
                         const { url } = source;
+                        traceTileEvent('tile-url-resolved', {
+                            attempt,
+                            scale,
+                            color_stage: colorStage || 'display',
+                            bytes: source.byteLength,
+                            source_kind: url.startsWith('blob:') ? 'blob' : url.startsWith('data:') ? 'data' : 'other',
+                        });
                         if (url.startsWith('blob:') && !url.includes('#keep')) {
                             ownedBlobUrlsRef.current.add(url);
                         }
                         if (!requestIsCurrent() || !nativeRenderCoordinator.isSourceCurrent(source)) {
+                            traceTileEvent('tile-source-discarded', {
+                                attempt,
+                                scale,
+                                request_current: requestIsCurrent(),
+                                source_current: nativeRenderCoordinator.isSourceCurrent(source),
+                            });
                             nativeRenderCoordinator.markDiscarded(source);
                             if (ownedBlobUrlsRef.current.delete(url)) URL.revokeObjectURL(url);
                             return;
                         }
                         const preImg = new Image();
                         preloadRef.current = preImg;
+                        traceTileEvent('tile-decode-start', { attempt, scale, color_stage: colorStage || 'display' });
                         preImg.onload = () => {
                             const keepsOrRaisesQuality = shouldCompositeViewerTile(
                                 displayedColorRankRef.current,
@@ -706,6 +993,13 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                                 current,
                             });
                             if (!current) {
+                                traceTileEvent('tile-decode-discarded', {
+                                    attempt,
+                                    scale,
+                                    request_current: requestIsCurrent(),
+                                    quality_current: keepsOrRaisesQuality,
+                                    source_current: nativeRenderCoordinator.isSourceCurrent(source),
+                                });
                                 if (ownedBlobUrlsRef.current.delete(url)) URL.revokeObjectURL(url);
                                 if (preloadRef.current === preImg) preloadRef.current = null;
                                 return;
@@ -728,6 +1022,15 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                                     ownedBlobUrlsRef.current.delete(oldSrc);
                                 }
                             }
+                            if (!onReady) {
+                                // Chỉ stage cuối mới chứng minh target hiện tại đã hoàn tất.
+                                // Coarse/intermediate có thể đã nhìn thấy nhưng vẫn phải giữ
+                                // in-flight để stage nét tiếp tục và để effect mới không hiểu
+                                // nhầm bitmap tạm là kết quả cuối. Giữ cờ tới sau decode để
+                                // preImg.onload của stage cuối không bị đánh dấu stale sớm.
+                                loadedParamsRef.current = paramsAtRequest;
+                                clearInFlightRequest();
+                            }
                             if (!hasLoadedOnce.current) {
                                 hasLoadedOnce.current = true;
                                 if (tileRef.current) tileRef.current.style.opacity = '1';
@@ -738,6 +1041,16 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                             setHasVisibleTile(true);
                             cancelledRetryRef.current = { params: paramsAtRequest, count: 0 };
                             dispatchLoadState({ type: 'ready', attempt });
+                            traceTileEvent('tile-commit', {
+                                attempt,
+                                scale,
+                                color_stage: colorStage || 'display',
+                                natural_w: preImg.naturalWidth,
+                                natural_h: preImg.naturalHeight,
+                                bytes: source.byteLength,
+                                cacheable: source.cacheable !== false,
+                                ...readTileDomRect(),
+                            });
                             // PERF (audit 2026-08-08 §RENDER.1): chỉ mở metadata pha B
                             // sau khi bitmap trang active đã render + decode + hiện lên DOM.
                             onRenderReadyRef.current?.();
@@ -755,7 +1068,9 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                             if (!current) return;
                             onRenderReadyRef.current?.();
                             loadedParamsRef.current = '';
+                            clearInFlightRequest();
                             dispatchLoadState({ type: 'error', attempt });
+                            traceTileEvent('tile-decode-error', { attempt, scale, color_stage: colorStage || 'display' });
                             if (showLoadStatusRef.current) void previewPerfLog('live-tile-load-error', { page: pageNum, stage: 'decode' });
                         };
                         nativeRenderCoordinator.markDecodeStarted(source);
@@ -769,6 +1084,11 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                         }
                         if (!requestIsCurrent()) return;
                         const cancelled = isTileLoadCancellation(error);
+                        traceTileEvent('tile-url-error', {
+                            attempt,
+                            cancelled,
+                            error: error instanceof Error ? error.name : typeof error,
+                        });
                         if (
                             cancelled
                             && cancelledRetryRef.current.params === paramsAtRequest
@@ -780,6 +1100,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                             // dùng bấm "Thử lại" cho một cancellation kỹ thuật thoáng qua.
                             cancelledRetryRef.current.count += 1;
                             loadedParamsRef.current = '';
+                            clearInFlightRequest();
                             queueMicrotask(() => {
                                 if (!mountedRef.current || loadAttemptRef.current !== attempt) return;
                                 tileRef.current?._loadTile?.();
@@ -787,8 +1108,10 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                             return;
                         }
                         loadedParamsRef.current = '';
+                        clearInFlightRequest();
                         if (!cancelled) onRenderReadyRef.current?.();
                         dispatchLoadState({ type: cancelled ? 'cancelled' : 'error', attempt });
+                        traceTileEvent(cancelled ? 'tile-cancelled' : 'tile-error', { attempt });
                         if (showLoadStatusRef.current) {
                             const errorName = error instanceof Error ? error.name : typeof error;
                             void previewPerfLog('live-tile-load-error', { page: pageNum, error: errorName });
@@ -818,7 +1141,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                                 }
                                 accurateDelayRef.current = setTimeout(() => {
                                     accurateDelayRef.current = null;
-                                    if (loadedParamsRef.current === paramsAtRequest) {
+                                    if (requestIsCurrent()) {
                                         loadStage(index + 1);
                                     }
                                 }, VIEWPORT_TILE_SETTLE_MS);
@@ -831,7 +1154,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             } else if (!hasLoadedOnce.current && typeof coarseZoom === 'number' && coarseZoom < zoom - 0.05) {
                 // Pha 1: coarse (nhanh) hiện trước → Pha 2: sharp nối sau (tuần tự).
                 loadAt(coarseZoom, false, () => {
-                    if (loadedParamsRef.current === paramsAtRequest) loadAt(zoom, true);
+                    if (requestIsCurrent()) loadAt(zoom, true);
                 });
             } else {
                 loadAt(zoom, true);
@@ -851,10 +1174,33 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                 accurateDelayRef.current = null;
             }
             cancelAccurateGroup?.(renderGroupKey);
+            if (effectRequestAttempt !== null
+                && inFlightRequestRef.current?.attempt === effectRequestAttempt) {
+                // UIUX (feedback 2026-08-14 §VIEW.LARGE.4): cleanup effect/StrictMode đã
+                // hủy request thì phải nhả dấu in-flight. Effect kế tiếp có thể mang cùng params;
+                // giữ dấu cũ sẽ chặn lần xin mới và để trang quay "Đang dựng hình…" vĩnh viễn.
+                inFlightRequestRef.current = null;
+                loadedParamsRef.current = '';
+                loadAttemptRef.current += 1;
+                traceTileEvent('tile-effect-cleanup-cancel', {
+                    attempt: effectRequestAttempt,
+                    next_attempt: loadAttemptRef.current,
+                });
+            } else {
+                traceTileEvent('tile-effect-cleanup', {
+                    request_attempt: effectRequestAttempt,
+                    in_flight_attempt: inFlightRequestRef.current?.attempt ?? null,
+                });
+            }
+            if (preloadRef.current) {
+                preloadRef.current.onload = null;
+                preloadRef.current.onerror = null;
+                preloadRef.current = null;
+            }
             el._loadTile = undefined;
             onVisible(el, true, eager);
         };
-    }, [accurateOnly, cancelAccurateGroup, clipH, clipW, clipX, clipY, coarseZoom, currentParams, eager, getTileUrl, onVisible, pageNum, progressiveAccurate, renderEnabled, renderGroupKey, renderOwnerId, requestedColorRank, rot, surfaceParams, zoom]);
+    }, [accurateOnly, cancelAccurateGroup, clipH, clipW, clipX, clipY, coarseZoom, currentParams, eager, getTileUrl, onVisible, pageNum, progressiveAccurate, renderEnabled, renderGroupKey, renderOwnerId, requestedColorRank, rot, surfaceParams, traceTileEvent, zoom]);
     
     // Tile đã vào cache sống qua vòng mount của Virtuoso; tile coarse/quá budget
     // vẫn thuộc component và phải thu hồi khi unmount để không rò Blob URL.
@@ -862,7 +1208,12 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         mountedRef.current = true;
         return () => {
             mountedRef.current = false;
+            traceTileEvent('tile-unmount-cleanup', {
+                attempt: loadAttemptRef.current,
+                loaded: hasLoadedOnce.current,
+            });
             loadAttemptRef.current += 1;
+            inFlightRequestRef.current = null;
             cachedRenderReadyParamsRef.current = null;
             if (accurateDelayRef.current !== null) {
                 clearTimeout(accurateDelayRef.current);
@@ -880,7 +1231,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             }
             ownedBlobUrlsRef.current.clear();
         };
-    }, [cancelAccurateGroup, renderGroupKey, renderOwnerId]);
+    }, [cancelAccurateGroup, renderGroupKey, renderOwnerId, traceTileEvent]);
     useEffect(() => () => {
         onTileUnmountRef.current?.();
     }, []);
@@ -907,11 +1258,13 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
 
     const retryTile = () => {
         const attempt = ++loadAttemptRef.current;
+        traceTileEvent('tile-retry', { attempt });
         if (accurateDelayRef.current !== null) {
             clearTimeout(accurateDelayRef.current);
             accurateDelayRef.current = null;
         }
         loadedParamsRef.current = '';
+        inFlightRequestRef.current = null;
         cachedRenderReadyParamsRef.current = null;
         displayedScaleRef.current = 0;
         dispatchLoadState({ type: 'replace', attempt, phase: 'idle' });
@@ -927,11 +1280,13 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
 
     const cancelTile = () => {
         const attempt = ++loadAttemptRef.current;
+        traceTileEvent('tile-cancel-click', { attempt });
         if (accurateDelayRef.current !== null) {
             clearTimeout(accurateDelayRef.current);
             accurateDelayRef.current = null;
         }
         loadedParamsRef.current = '';
+        inFlightRequestRef.current = null;
         cachedRenderReadyParamsRef.current = null;
         dispatchLoadState({ type: 'replace', attempt, phase: 'cancelled' });
         if (renderOwnerId) nativeRenderCoordinator.cancelGroup(renderOwnerId, renderGroupKey);
@@ -939,7 +1294,10 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         if (showLoadStatus) void previewPerfLog('live-tile-load-cancelled', { page: pageNum });
     };
 
-    const showStatusOverlay = showLoadStatus && !hasVisibleTile && loadState.phase !== 'ready';
+    const showStatusOverlay = showLoadStatus
+        && !preserveUnderlay
+        && !hasVisibleTile
+        && loadState.phase !== 'ready';
     const statusText = loadState.phase === 'slow'
         ? labels?.slow
         : loadState.phase === 'error'
@@ -953,14 +1311,23 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         // background:'white' cho khung: khi snap 1:1 (§R.4) bitmap có thể hụt ≤2px so với
         // khung do làm tròn → chừa sợi mảnh ở mép phải/dưới. Nền trắng làm nó vô hình trên
         // trang PDF (PDFium render với clear_color=WHITE), thay vì hở ra nền skeleton xám.
-        <div ref={tileRef} style={{ position: 'absolute', left: cssLeft ?? clipX, top: cssTop ?? clipY, width: cssW || clipW, height: cssH || clipH, outline: 'none', opacity: showLoadStatus || hasVisibleTile ? 1 : 0, transition: presentationFadeMs > 0 ? `opacity ${presentationFadeMs}ms cubic-bezier(0.16, 1, 0.3, 1)` : 'none', background: seamlessGridPresentation ? 'transparent' : 'white' }} className="tile-container">
+        <div ref={tileRef} style={{ position: 'absolute', left: cssLeft ?? clipX, top: cssTop ?? clipY, width: cssW || clipW, height: cssH || clipH, outline: 'none', opacity: showLoadStatus || hasVisibleTile || preserveUnderlay ? 1 : 0, transition: presentationFadeMs > 0 ? `opacity ${presentationFadeMs}ms cubic-bezier(0.16, 1, 0.3, 1)` : 'none', background: seamlessGridPresentation || (preserveUnderlay && !hasVisibleTile) ? 'transparent' : 'white' }} className="tile-container">
             {/* onLoad chạy cho MỌI đường vào (tải mới, khôi phục từ cache, pixel rỗng ban
                 đầu) nên chỉ cần một chỗ để bảo đảm map 1:1 — xem applyExactFit. */}
             <img
                 ref={imgRef}
                 draggable={false}
                 onLoad={(e) => handleDisplayedImageLoad(e.currentTarget)}
-                style={{ width: '100%', height: '100%', objectFit: 'fill', pointerEvents: 'none', userSelect: 'none', background: seamlessGridPresentation ? 'transparent' : 'white', opacity: hasVisibleTile ? 1 : 0 }}
+                style={{
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'fill',
+                    imageRendering: VIEWER_RASTER_IMAGE_RENDERING,
+                    pointerEvents: 'none',
+                    userSelect: 'none',
+                    background: seamlessGridPresentation || preserveUnderlay ? 'transparent' : 'white',
+                    opacity: hasVisibleTile ? 1 : 0,
+                }}
             />
             {showStatusOverlay && (
                 <div
@@ -1039,7 +1406,20 @@ type BufferedViewportPanGridPlan = {
     outer: BufferedViewportTileSpec[];
 };
 
-const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId, zoom, dpr, accurateDpiAnchor = 96, rotation, displayWidth, displayHeight, containerRef, getTileUrl, onVisible, onRenderReady, onAccurateCommitted, renderOwnerId, accurateColor = false, accurateCommitted = false, waitForAccurateBase = false, keepDisplayUntilAccurate = false, renderEnabled = true, cancelAccurateGroup }: any) => {
+const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId, zoom, dpr, accurateDpiAnchor = 96, rotation, displayWidth, displayHeight, containerRef, getTileUrl, onVisible, onRenderReady, onAccurateCommitted, renderOwnerId, accurateColor = false, accurateCommitted = false, waitForAccurateBase = false, keepDisplayUntilAccurate = false, renderEnabled = true, cancelAccurateGroup, initialPpeFrame, stableUnderlayReady = false }: any) => {
+    const traceLayerIdRef = useRef(
+        viewerTraceHash(`layer:${pageInstanceId || 'page'}:${pageNum}`),
+    );
+    const traceLayerLastPlanRef = useRef('');
+    const traceLayerEvent = useCallback((event: string, extra: Record<string, unknown> = {}) => {
+        if (!accurateColor) return;
+        void viewerTraceLog(event, {
+            layer_id: traceLayerIdRef.current,
+            page: pageNum,
+            instance: viewerTraceHash(pageInstanceId || ''),
+            ...extra,
+        });
+    }, [accurateColor, pageInstanceId, pageNum]);
     const [tileBuffer, dispatchTileBuffer] = useReducer(
         (
             state: ViewportTileBufferState<BufferedViewportTileSpec>,
@@ -1049,6 +1429,7 @@ const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId
     );
     const [panGridPlan, setPanGridPlan] = useState<BufferedViewportPanGridPlan | null>(null);
     const [outerEnabledPhaseKey, setOuterEnabledPhaseKey] = useState<string | null>(null);
+    const [presentedPanGridPhaseKey, setPresentedPanGridPhaseKey] = useState<string | null>(null);
     const readyPanGridKeysRef = useRef<Set<string>>(new Set());
     const readyPanGridBufferGroupRef = useRef<string | null>(null);
     const retirementScheduler = useMemo(
@@ -1191,6 +1572,54 @@ const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId
             const nextPanGridPlan = phaseKey.length > 0
                 ? { phaseKey, all: nextPanGrid, near: phases.near, outer: phases.outer }
                 : null;
+            const tracePlanKey = [
+                bufferGroup,
+                baseSpec?.key || 'none',
+                `${rotatedViewport.left},${rotatedViewport.top},${rotatedViewport.right},${rotatedViewport.bottom}`,
+                nextPanGrid.length,
+                phases.near.length,
+                phases.outer.length,
+                atlasCoversViewport,
+            ].join('|');
+            if (traceLayerLastPlanRef.current !== tracePlanKey) {
+                traceLayerLastPlanRef.current = tracePlanKey;
+                traceLayerEvent('viewport-plan', {
+                    render_enabled: renderEnabled,
+                    zoom: sZoom,
+                    render_scale: renderScale,
+                    raster_dpr: rasterDpr,
+                    page_w: sDisplayW,
+                    page_h: sDisplayH,
+                    page_left: pageRect.left,
+                    page_top: pageRect.top,
+                    page_rect_w: pageRect.width,
+                    page_rect_h: pageRect.height,
+                    viewport_left: vp?.left ?? null,
+                    viewport_top: vp?.top ?? null,
+                    viewport_w: vp?.width ?? null,
+                    viewport_h: vp?.height ?? null,
+                    rotated_left: rotatedViewport.left,
+                    rotated_top: rotatedViewport.top,
+                    rotated_right: rotatedViewport.right,
+                    rotated_bottom: rotatedViewport.bottom,
+                    base_clip_x: baseSpec?.clipX ?? null,
+                    base_clip_y: baseSpec?.clipY ?? null,
+                    base_clip_w: baseSpec?.clipW ?? null,
+                    base_clip_h: baseSpec?.clipH ?? null,
+                    base_css_left: baseSpec?.cssLeft ?? null,
+                    base_css_top: baseSpec?.cssTop ?? null,
+                    base_css_w: baseSpec?.cssW ?? null,
+                    base_css_h: baseSpec?.cssH ?? null,
+                    pan_grid: nextPanGrid.length,
+                    pan_near: phases.near.length,
+                    pan_outer: phases.outer.length,
+                    atlas_covers_viewport: atlasCoversViewport,
+                    required_left: requiredViewport.left,
+                    required_top: requiredViewport.top,
+                    required_right: requiredViewport.right,
+                    required_bottom: requiredViewport.bottom,
+                });
+            }
             setPanGridPlan(previous => (
                 previous?.phaseKey === nextPanGridPlan?.phaseKey
                 && previous?.all.length === nextPanGridPlan?.all.length
@@ -1199,6 +1628,10 @@ const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId
                     : nextPanGridPlan
             ));
             setOuterEnabledPhaseKey(previous => {
+                if (atlasCoversViewport) return phaseKey;
+                return previous === phaseKey ? previous : null;
+            });
+            setPresentedPanGridPhaseKey(previous => {
                 if (atlasCoversViewport) return phaseKey;
                 return previous === phaseKey ? previous : null;
             });
@@ -1231,10 +1664,72 @@ const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId
         };
     }, [accurateColor, bufferGroup, containerRef, rasterDpr, renderEnabled, rotation, sDisplayW, sDisplayH, sZoom]);
 
+    useEffect(() => {
+        traceLayerEvent('viewport-layer-mount', {
+            render_enabled: renderEnabled,
+            zoom,
+            dpr,
+            display_w: displayWidth,
+            display_h: displayHeight,
+            rotation: rotation || 0,
+        });
+        return () => traceLayerEvent('viewport-layer-unmount', {
+            visible_tiles: tileBuffer.visible ? 1 : 0,
+            target_tiles: tileBuffer.target ? 1 : 0,
+            pan_grid_tiles: panGridPlan?.all.length ?? 0,
+        });
+        // Lifecycle trace intentionally belongs to the layer instance.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const zoomSettling = zoom !== sZoom || displayWidth !== sDisplayW || displayHeight !== sDisplayH;
+    const panGridPlanIsCurrent = Boolean(
+        panGridPlan?.phaseKey.startsWith(`${bufferGroup}:target:`),
+    );
+    const panGridPhaseReady = Boolean(
+        panGridPlan && outerEnabledPhaseKey === panGridPlan.phaseKey,
+    );
+    const panGridViewportCovered = Boolean(
+        panGridPlan && presentedPanGridPhaseKey === panGridPlan.phaseKey,
+    );
+    const panGridPolicy = viewerPanGridRenderPolicy(
+        accurateCommitted,
+        Boolean(tileBuffer.visible),
+        panGridPhaseReady,
+    );
+    const activePanGridTiles = panGridPlan && panGridPolicy.near
+        ? [
+            ...panGridPlan.near,
+            ...(panGridPolicy.outer ? panGridPlan.outer : []),
+        ]
+        : [];
+    const presentPanGrid = shouldPresentViewerPanGrid(
+        panGridPlanIsCurrent,
+        panGridViewportCovered,
+        zoomSettling,
+        Boolean(stableUnderlayReady),
+    );
+
+    useEffect(() => {
+        traceLayerEvent('viewport-layer-state', {
+            visible_key: tileBuffer.visible?.key ? viewerTraceHash(tileBuffer.visible.key) : null,
+            target_key: tileBuffer.target?.key ? viewerTraceHash(tileBuffer.target.key) : null,
+            buffered_tiles: tileBuffer.visible || tileBuffer.target ? 1 : 0,
+            pan_grid_tiles: panGridPlan?.all.length ?? 0,
+            active_pan_grid_tiles: activePanGridTiles.length,
+            cold_open_grid_blocked: Boolean(panGridPlan) && !panGridPolicy.near,
+            near_tiles: panGridPlan?.near.length ?? 0,
+            outer_tiles: panGridPlan?.outer.length ?? 0,
+            outer_enabled: panGridPolicy.outer,
+            viewport_covered: panGridViewportCovered,
+            presented: presentPanGrid,
+            stable_underlay: Boolean(stableUnderlayReady),
+        });
+    }, [activePanGridTiles.length, panGridPlan, panGridPolicy.near, panGridPolicy.outer, panGridViewportCovered, presentPanGrid, stableUnderlayReady, tileBuffer.target, tileBuffer.visible, traceLayerEvent]);
+
     // Trong lúc zoom chuyển, tile giữ clip/render scale cũ nhưng rect được scale theo
     // khổ trang sống. Nhờ đó không có generation mới theo từng wheel/rAF và zoom-out
     // tiếp tục dùng bitmap mật độ cao đã decode thay vì rơi về nền mờ.
-    const zoomSettling = zoom !== sZoom || displayWidth !== sDisplayW || displayHeight !== sDisplayH;
     const visibleCoversCurrentViewport = !tileBuffer.visible
         || !tileBuffer.target
         || tileBuffer.visible.key === tileBuffer.target.key
@@ -1252,13 +1747,13 @@ const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId
         reuseGroup,
         zoomSettling || !renderEnabled,
         visibleCoversCurrentViewport,
+        Boolean(stableUnderlayReady),
     );
-    const activePanGridTiles = panGridPlan
-        ? [
-            ...panGridPlan.near,
-            ...(outerEnabledPhaseKey === panGridPlan.phaseKey ? panGridPlan.outer : []),
-        ]
-        : [];
+    useEffect(() => {
+        if (bufferedTiles.length === 0 && activePanGridTiles.length === 0) {
+            traceLayerEvent('viewport-layer-empty', { render_enabled: renderEnabled });
+        }
+    }, [activePanGridTiles.length, bufferedTiles.length, renderEnabled, traceLayerEvent]);
     if (bufferedTiles.length === 0 && activePanGridTiles.length === 0) return null;
     const useDisplayLayer = shouldUseViewerDisplayLayer(
         accurateColor,
@@ -1313,6 +1808,16 @@ const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId
                     retirePreviousTile?.(crossfadeMs);
                 };
                 const instanceKey = pageInstanceId || `page-${pageNum}`;
+                const matchingFirstFrame = viewerFirstFrameMatchesTile(
+                    initialPpeFrame as ViewerFirstFrame | null | undefined,
+                    pageNum,
+                    tileSpec.renderScale,
+                    rotation || 0,
+                    tileSpec.clipX,
+                    tileSpec.clipY,
+                    tileSpec.clipW,
+                    tileSpec.clipH,
+                ) ? initialPpeFrame : undefined;
                 return (
                     <React.Fragment key={`vp_${tileSpec.key}`}>
                         {useDisplayLayer && (
@@ -1364,6 +1869,8 @@ const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId
                                     waitForAccurateBase,
                                     tileBuffer.visible?.key === tileSpec.key,
                                 )}
+                                initialSource={matchingFirstFrame}
+                                preserveUnderlay={Boolean(initialPpeFrame)}
                                 accurateOnly
                                 cancelAccurateGroup={cancelAccurateGroup}
                             />
@@ -1371,6 +1878,17 @@ const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId
                     </React.Fragment>
                 );
             })}
+            {activePanGridTiles.length > 0 && (
+            <div
+                data-prynx-viewport-atlas="true"
+                data-prynx-viewport-atlas-ready={presentPanGrid ? 'true' : 'false'}
+                style={{
+                    position: 'absolute',
+                    inset: 0,
+                    opacity: presentPanGrid ? 1 : 0,
+                    pointerEvents: 'none',
+                }}
+            >
             {activePanGridTiles.map((tileSpec, index) => {
                 const scaleX = displayWidth / tileSpec.sourceDisplayWidth;
                 const scaleY = displayHeight / tileSpec.sourceDisplayHeight;
@@ -1404,6 +1922,20 @@ const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId
                         onVisible={onVisible}
                         onTileReady={() => {
                             readyPanGridKeysRef.current.add(tileSpec.key);
+                            const activePlan = panGridPlan;
+                            if (
+                                activePlan
+                                && activePlan.all.some(spec => spec.key === tileSpec.key)
+                                && viewportTileGridCoversViewport(
+                                    activePlan.all,
+                                    readyPanGridKeysRef.current,
+                                    tileSpec.requiredViewport,
+                                )
+                            ) {
+                                // Tất cả cell vẫn decode độc lập, nhưng chỉ một lần cập nhật state
+                                // này mới đưa nguyên atlas đã phủ kín vào compositor.
+                                setPresentedPanGridPhaseKey(activePlan.phaseKey);
+                            }
                             void previewPerfLog('viewport-pan-grid-ready', {
                                 page: pageNum,
                                 phase,
@@ -1424,6 +1956,8 @@ const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId
                     />
                 );
             })}
+            </div>
+            )}
         </>
     );
 });
@@ -1599,6 +2133,10 @@ export const LivePageFrame = (props: any) => {
     const [baseDisplayReadyKey, setBaseDisplayReadyKey] = useState<string | null>(null);
     const [accurateCommittedKey, setAccurateCommittedKey] = useState<string | null>(null);
     const [accurateBaseReadyKey, setAccurateBaseReadyKey] = useState<string | null>(null);
+    const traceFrameIdRef = useRef(
+        viewerTraceHash(`${tabId || 'tab'}:${pageInstanceId || 'page'}:${originalPageNum}`),
+    );
+    const traceFrameLastPolicyRef = useRef('');
     // Trang ĐANG xem (active) trong danh sách ảo (Virtuoso). Chỉ frame active mới
     // đẩy editObjects của mình lên store `currentEditObjects` → panel "Thành phần"
     // luôn khớp ĐÚNG trang người dùng đang chỉnh. Trước đây mọi frame đều ghi đè
@@ -1664,16 +2202,26 @@ export const LivePageFrame = (props: any) => {
     );
     const keepDisplayUntilAccurate = showOutputPreview === true
         && detectorRequiresAccurate !== true;
+    const primedFirstFrame = peekViewerFirstFrame(nativeFilePath, renderDocumentToken);
+    const initialPpeFrame = accurateColorPage
+        && originalPageNum === 1
+        && (rotation || 0) % 360 === 0
+        && (accurateColorProfileId || 'fogra39').trim().toLocaleLowerCase() === 'fogra39'
+        && (accurateColorIntent || 'relative').trim().toLocaleLowerCase() === 'relative'
+        && accurateColorProofIdentity === primedFirstFrame?.proofIdentity
+        ? primedFirstFrame
+        : null;
 
     const previewFramePage = typeof viewerPageNum === 'number' ? viewerPageNum : originalPageNum;
     const viewerIsActive = isViewerActive !== false;
     const effectiveRenderOwnerId = renderOwnerId || `${tabId || 'viewer'}:${pdfUrl || nativeFilePath || 'memory'}`;
-    const pageRenderPriority = viewerIsActive ? (isActiveFrame ? 10 : 100) : 1000;
-    // PERF (audit 2026-07-29 §R.10): trang active ưu tiên 10, hai trang kề prefetch
-    // cùng chất lượng ở ưu tiên 100; trang xa bị hủy khỏi hàng đợi. Không dùng coarse
-    // vì đo thực tế cho thấy decode trang chiếm thời gian và zoom 0.35 tạo cache-miss mới.
-    // Accurate render mất ~2,5 giây/trang trên artifact audit: chỉ dựng trang active,
-    // không prefetch PPE hai trang kề làm chậm chính trang người dùng đang nhìn.
+    const pageRenderPriority = viewerPageRenderPriority(
+        viewerIsActive,
+        isActiveFrame,
+        prefetchPage === true,
+    );
+    // UIUX (feedback 2026-08-14 §VIEW.PAGE): target active vẫn thắng ở mức 10;
+    // underlay đọc được của trang kế bên đứng ở mức 20, trước atlas runway mức 100.
     const shouldRenderBasePage = shouldRenderViewerBasePage(
         viewerIsActive,
         isActiveFrame,
@@ -2657,6 +3205,255 @@ export const LivePageFrame = (props: any) => {
 
     const displayHeight = pageDim && pageDim.w ? displayWidth * (pageDim.h / pageDim.w) : displayWidth * 1.414;
     const cropPageBox = pageDim?.w && pageDim?.h ? { x0: 0, y0: 0, x1: pageDim.w * 25.4 / 96, y1: pageDim.h * 25.4 / 96, width: pageDim.w * 25.4 / 96, height: pageDim.h * 25.4 / 96 } : undefined;
+    const isRotated = (rotation || 0) % 180 !== 0;
+    const outerWidth = isRotated ? displayHeight : displayWidth;
+    const outerHeight = isRotated ? displayWidth : displayHeight;
+
+    useEffect(() => {
+        const frameEnabled = isActiveFrame || accurateColorPage || isViewerActive !== false;
+        if (!frameEnabled || !pageDim?.w || !pageDim?.h) return;
+        const dpr = Number.isFinite(displayDevicePixelRatio) && displayDevicePixelRatio > 0
+            ? displayDevicePixelRatio
+            : 1;
+        const fullPageTargetRenderZoom = computeRenderZoom(zoom);
+        const scrollViewport = containerRef.current?.closest('.acro-scroll') as HTMLElement | null;
+        const viewportWidth = scrollViewport?.clientWidth || (typeof window !== 'undefined' ? window.innerWidth : 0);
+        const viewportHeight = scrollViewport?.clientHeight || (typeof window !== 'undefined' ? window.innerHeight : 0);
+        const directFullPageSurface = shouldUseViewerDirectFullPageSurface(
+            accurateColorPage,
+            fullPageTargetRenderZoom,
+            zoom * dpr,
+            outerWidth,
+            outerHeight,
+            viewportWidth,
+            viewportHeight,
+        );
+        const fullPageWithinSurfaceBudget = Boolean(isImage)
+            || isViewerFullPageWithinSurfaceBudget(
+                outerWidth,
+                outerHeight,
+                fullPageTargetRenderZoom,
+                zoom * dpr,
+            );
+        const forceViewport = !fullPageWithinSurfaceBudget
+            || (accurateColorPage && !directFullPageSurface);
+        const needsTiling = shouldUseViewerViewportTiles(
+            viewerIsActive,
+            isActiveFrame,
+            isImage,
+            renderZoom,
+            zoom,
+            dpr,
+            accurateColorPage,
+            forceViewport,
+        );
+        const renderBaseTile = shouldRenderViewerBaseTile(
+            shouldRenderBasePage,
+            accurateColorPage,
+            needsTiling,
+            isActiveFrame,
+            fullPageWithinSurfaceBudget,
+        );
+        const bgZoom = computeViewerBackgroundZoom(renderZoom, dpr, isActiveFrame, needsTiling);
+        const preferredAccurateBaseZoom = accurateViewerRequestScale(
+            directFullPageSurface
+                ? Math.min(renderZoom, fullPageTargetRenderZoom)
+                : computeAccurateViewerBaseZoom(
+                    renderZoom,
+                    zoom,
+                    dpr,
+                    physicalDisplayScale * dpr,
+            ),
+            accurateDpiAnchor,
+        );
+        const screenAccurateBaseZoom = accurateViewerRequestScale(
+            zoom * dpr,
+            accurateDpiAnchor,
+        );
+        const roleAccurateBaseZoom = initialPpeFrame?.renderScale
+            ?? viewerAccurateBaseScaleForRole(
+                preferredAccurateBaseZoom,
+                screenAccurateBaseZoom,
+                isActiveFrame,
+                prefetchPage === true,
+                Boolean(accurateBaseReadyKey),
+            );
+        const selectedAccurateBaseZoom = selectViewerAccurateBaseZoom(
+            roleAccurateBaseZoom,
+            outerWidth,
+            outerHeight,
+            zoom * dpr,
+        );
+        const accurateBaseWithinSurfaceBudget = selectedAccurateBaseZoom !== null;
+        const accurateBaseZoom = selectedAccurateBaseZoom ?? roleAccurateBaseZoom;
+        const renderAccurateUnderlay = shouldRenderViewerAccurateUnderlay(
+            shouldRenderBasePage,
+            accurateColorPage,
+            needsTiling,
+            accurateBaseWithinSurfaceBudget,
+        );
+        const renderAccurateBaseTile = shouldRenderViewerAccurateBaseTile(
+            shouldRenderBasePage,
+            accurateColorPage,
+            needsTiling,
+            accurateBaseWithinSurfaceBudget,
+        ) || renderAccurateUnderlay;
+        const accuratePageCommitKey = `${viewerTraceHash(`${pdfUrl || nativeFilePath || 'memory'}:${originalPageNum}`)}:${originalPageNum}`;
+        const accurateCommitted = accurateCommittedKey === accuratePageCommitKey;
+        const accurateBaseIdentity = `${accuratePageCommitKey}:${accurateBaseZoom}`;
+        const accurateBaseReady = accurateBaseReadyKey === accurateBaseIdentity;
+        const keepAccurateBaseMounted = shouldKeepViewerAccurateBaseMounted(
+            accurateColorPage,
+            renderAccurateBaseTile,
+            accurateCommitted,
+            accurateBaseWithinSurfaceBudget,
+        );
+        const requestAccurateBase = shouldRequestViewerAccurateBase(
+            renderAccurateBaseTile,
+            accurateCommitted,
+            accurateBaseReady,
+            accurateBaseWithinSurfaceBudget,
+        );
+        const useDisplayBase = shouldUseViewerDisplayLayer(
+            accurateColorPage,
+            accurateCommitted,
+            keepDisplayUntilAccurate,
+        );
+        const mountViewportLayer = shouldMountViewerViewportLayer(
+            needsTiling,
+            accurateColorPage,
+            isActiveFrame,
+            accurateCommitted,
+            accurateBaseReady,
+        );
+        const policySignature = [
+            traceFrameIdRef.current,
+            originalPageNum,
+            isActiveFrame,
+            accurateColorPage,
+            renderZoom,
+            zoom,
+            displayWidth,
+            displayHeight,
+            directFullPageSurface,
+            fullPageWithinSurfaceBudget,
+            accurateBaseWithinSurfaceBudget,
+            renderAccurateUnderlay,
+            needsTiling,
+            renderBaseTile,
+            renderAccurateBaseTile,
+            bgZoom,
+            accurateBaseZoom,
+        ].join('|');
+        if (traceFrameLastPolicyRef.current === policySignature) return;
+        traceFrameLastPolicyRef.current = policySignature;
+        void viewerTraceLog('frame-policy', {
+            frame_id: traceFrameIdRef.current,
+            page: originalPageNum,
+            viewer_page: previewFramePage,
+            active_frame: isActiveFrame,
+            viewer_active: viewerIsActive,
+            accurate_color: accurateColorPage,
+            image: Boolean(isImage),
+            render_enabled: Boolean(getTileUrl),
+            zoom,
+            render_zoom: renderZoom,
+            target_render_zoom: fullPageTargetRenderZoom,
+            dpr,
+            physical_scale: physicalDisplayScale,
+            page_w: pageDim.w,
+            page_h: pageDim.h,
+            display_w: displayWidth,
+            display_h: displayHeight,
+            outer_w: outerWidth,
+            outer_h: outerHeight,
+            viewport_w: viewportWidth,
+            viewport_h: viewportHeight,
+            direct_full_page: directFullPageSurface,
+            full_page_budget: fullPageWithinSurfaceBudget,
+            accurate_base_budget: accurateBaseWithinSurfaceBudget,
+            force_viewport: forceViewport,
+            needs_tiling: needsTiling,
+            render_base_tile: renderBaseTile,
+            render_accurate_base: renderAccurateBaseTile,
+            render_accurate_underlay: renderAccurateUnderlay,
+            use_display_base: useDisplayBase,
+            keep_accurate_base_mounted: keepAccurateBaseMounted,
+            request_accurate_base: requestAccurateBase,
+            mount_viewport_layer: mountViewportLayer,
+            background_zoom: bgZoom,
+            accurate_base_zoom: accurateBaseZoom,
+            display_base_ready: baseDisplayReadyKey === `${viewerTraceHash(`${pdfUrl || nativeFilePath || 'memory'}:${originalPageNum}`)}:${originalPageNum}:${bgZoom}`,
+            accurate_committed: accurateCommitted,
+            accurate_base_ready: accurateBaseReady,
+        });
+    }, [
+        accurateBaseReadyKey,
+        accurateColorPage,
+        accurateCommittedKey,
+        accurateDpiAnchor,
+        baseDisplayReadyKey,
+        computeRenderZoom,
+        displayDevicePixelRatio,
+        displayHeight,
+        displayWidth,
+        getTileUrl,
+        initialPpeFrame,
+        isActiveFrame,
+        isImage,
+        isViewerActive,
+        keepDisplayUntilAccurate,
+        nativeFilePath,
+        outerHeight,
+        outerWidth,
+        pageDim,
+        physicalDisplayScale,
+        pdfUrl,
+        prefetchPage,
+        previewFramePage,
+        renderZoom,
+        shouldRenderBasePage,
+        viewerIsActive,
+        zoom,
+    ]);
+
+    useEffect(() => {
+        void viewerTraceLog('frame-render-branch', {
+            frame_id: traceFrameIdRef.current,
+            page: originalPageNum,
+            original_page_valid: originalPageNum !== -1,
+            blank_doc: Boolean(isBlankDoc),
+            has_tile_url_builder: Boolean(getTileUrl),
+            page_dim_valid: Boolean(pageDim?.w && pageDim?.h),
+            active_frame: isActiveFrame,
+            viewer_active: viewerIsActive,
+        });
+    }, [
+        getTileUrl,
+        isActiveFrame,
+        isBlankDoc,
+        originalPageNum,
+        pageDim,
+        viewerIsActive,
+    ]);
+
+    useEffect(() => {
+        void viewerTraceLog('frame-mount', {
+            frame_id: traceFrameIdRef.current,
+            page: originalPageNum,
+            active_frame: isActiveFrame,
+            page_instance: viewerTraceHash(pageInstanceId || ''),
+        });
+        return () => {
+            void viewerTraceLog('frame-unmount', {
+                frame_id: traceFrameIdRef.current,
+                page: originalPageNum,
+                active_frame: isActiveFrame,
+            });
+        };
+        // Lifecycle trace intentionally belongs to the frame instance.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // Crop PDF: Enter → dialog (mọi vùng); Esc → xóa hết; Delete/Backspace → xóa vùng cuối.
     // cropSelection toàn workspace chỉ có một ownerId nên luôn chỉ có một listener.
@@ -2748,10 +3545,6 @@ export const LivePageFrame = (props: any) => {
     }, [isObjectEditMode, originalPageNum]);
 
     const renderWidth = actualWidth100 * renderZoom;
-
-    const isRotated = (rotation || 0) % 180 !== 0;
-    const outerWidth = isRotated ? displayHeight : displayWidth;
-    const outerHeight = isRotated ? displayWidth : displayHeight;
 
     useLayoutEffect(() => {
         const element = containerRef.current;
@@ -3803,12 +4596,6 @@ export const LivePageFrame = (props: any) => {
                     isActiveFrame,
                     fullPageWithinSurfaceBudget,
                 );
-                const renderAccurateBaseTile = shouldRenderViewerAccurateBaseTile(
-                    shouldRenderBasePage,
-                    accurateColorPage,
-                    needsTiling,
-                    fullPageWithinSurfaceBudget,
-                );
                 // PERF (audit độ nét 2026-07-28 §R.1): TRẦN zoom cho nền của trang KHÔNG
                 // đang xem. Virtuoso giữ ~9 trang mounted và LiveTile gọi _loadTile() ĐỒNG BỘ
                 // (cố tình bỏ qua IntersectionObserver để chống màn trắng khi WebView2 bị
@@ -3826,19 +4613,8 @@ export const LivePageFrame = (props: any) => {
                 // Đánh đổi duy nhất: xem 2 trang cạnh nhau ở zoom >200% thì trang không active
                 // nét bằng nửa cho tới khi cuộn sang (nó thành active và render lại đủ nét).
                 const bgZoom = computeViewerBackgroundZoom(S, dpr, isActiveFrame, needsTiling);
-                const accurateBaseZoom = accurateViewerRequestScale(
-                    directFullPageSurface
-                        ? Math.min(S, fullPageTargetRenderZoom)
-                        : computeAccurateViewerBaseZoom(
-                            S,
-                            zoom,
-                            dpr,
-                            physicalDisplayScale * dpr,
-                        ),
-                    accurateDpiAnchor,
-                );
-                // COLOR (audit 2026-08-07 §GV.3): tách cache display/accurate; nếu
-                // dùng chung key, bật CMYK có thể lấy lại tile PDFium đã cache trước đó.
+                // COLOR (audit 2026-08-07 §GV.3): cache display/accurate và từng
+                // Simulation phải có identity riêng trước khi quyết định stage underlay.
                 const displayFileKey = viewerTileFileKey(
                     pdfUrl || nativeFilePath || 'unknown',
                     false,
@@ -3854,23 +4630,69 @@ export const LivePageFrame = (props: any) => {
                     accurateColorIntent,
                     accurateColorProofIdentity,
                 );
+                const accuratePageCommitKey = `${accurateFileKey}:${originalPageNum}`;
+                const hasReadyUnderlayForPage = Boolean(initialPpeFrame)
+                    || Boolean(accurateBaseReadyKey?.startsWith(`${accuratePageCommitKey}:`));
+                const preferredAccurateBaseZoom = accurateViewerRequestScale(
+                    directFullPageSurface
+                        ? Math.min(S, fullPageTargetRenderZoom)
+                        : computeAccurateViewerBaseZoom(
+                            S,
+                            zoom,
+                            dpr,
+                            physicalDisplayScale * dpr,
+                    ),
+                    accurateDpiAnchor,
+                );
+                const screenAccurateBaseZoom = accurateViewerRequestScale(
+                    zoom * dpr,
+                    accurateDpiAnchor,
+                );
+                const roleAccurateBaseZoom = initialPpeFrame?.renderScale
+                    ?? viewerAccurateBaseScaleForRole(
+                        preferredAccurateBaseZoom,
+                        screenAccurateBaseZoom,
+                        isActiveFrame,
+                        prefetchPage === true,
+                        hasReadyUnderlayForPage,
+                    );
+                const selectedAccurateBaseZoom = selectViewerAccurateBaseZoom(
+                    roleAccurateBaseZoom,
+                    outerWidth,
+                    outerHeight,
+                    zoom * dpr,
+                );
+                const accurateBaseWithinSurfaceBudget = selectedAccurateBaseZoom !== null;
+                const accurateBaseZoom = selectedAccurateBaseZoom ?? roleAccurateBaseZoom;
+                const renderAccurateUnderlay = shouldRenderViewerAccurateUnderlay(
+                    shouldRenderBasePage,
+                    accurateColorPage,
+                    needsTiling,
+                    accurateBaseWithinSurfaceBudget,
+                );
+                const renderAccurateBaseTile = shouldRenderViewerAccurateBaseTile(
+                    shouldRenderBasePage,
+                    accurateColorPage,
+                    needsTiling,
+                    accurateBaseWithinSurfaceBudget,
+                ) || renderAccurateUnderlay;
                 const displayBaseReadyKey = `${displayFileKey}:${originalPageNum}:${bgZoom}`;
                 const displayBaseReady = baseDisplayReadyKey === displayBaseReadyKey;
-                const accuratePageCommitKey = `${accurateFileKey}:${originalPageNum}`;
                 const accurateCommitted = accurateCommittedKey === accuratePageCommitKey;
                 const accurateBaseIdentity = `${accuratePageCommitKey}:${accurateBaseZoom}`;
                 const accurateBaseReady = accurateBaseReadyKey === accurateBaseIdentity;
+                const hasStableAccurateUnderlay = hasReadyUnderlayForPage;
                 const keepAccurateBaseMounted = shouldKeepViewerAccurateBaseMounted(
                     accurateColorPage,
                     renderAccurateBaseTile,
                     accurateCommitted,
-                    fullPageWithinSurfaceBudget,
+                    accurateBaseWithinSurfaceBudget,
                 );
                 const requestAccurateBase = shouldRequestViewerAccurateBase(
                     renderAccurateBaseTile,
                     accurateCommitted,
                     accurateBaseReady,
-                    fullPageWithinSurfaceBudget,
+                    accurateBaseWithinSurfaceBudget,
                 );
                 const useDisplayBase = shouldUseViewerDisplayLayer(
                     accurateColorPage,
@@ -3883,6 +4705,16 @@ export const LivePageFrame = (props: any) => {
                     accurateColorPage,
                     isActiveFrame,
                 );
+                const matchingFullPageFirstFrame = viewerFirstFrameMatchesTile(
+                    initialPpeFrame,
+                    originalPageNum,
+                    accurateBaseZoom,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ) ? initialPpeFrame : undefined;
                 return (
                     <div style={{ width: displayWidth, height: displayHeight, position: 'relative' }}>
                         {/* Loading Skeleton */}
@@ -3893,6 +4725,21 @@ export const LivePageFrame = (props: any) => {
                                 <span className="text-xs font-semibold text-slate-500 tracking-wider">{t('misc.livePageFrame:dang_dung_hinh', 'Loading...')}</span>
                             </div>
                         </div>
+                        {initialPpeFrame && !accurateCommitted && (
+                            <img
+                                src={initialPpeFrame.url}
+                                alt=""
+                                aria-hidden="true"
+                                data-prynx-initial-ppe-frame="true"
+                                className="absolute inset-0 z-[9] h-full w-full select-none"
+                                draggable={false}
+                                style={{
+                                    objectFit: 'fill',
+                                    imageRendering: VIEWER_RASTER_IMAGE_RENDERING,
+                                    pointerEvents: 'none',
+                                }}
+                            />
+                        )}
                         {useDisplayBase && renderBaseTile && (
                             <div className="absolute inset-0 z-10">
                                 <LiveTile
@@ -3925,9 +4772,8 @@ export const LivePageFrame = (props: any) => {
                         {keepAccurateBaseMounted && (
                             <div className="absolute inset-0 z-[11]">
                                 <LiveTile
-                                    // UIUX (feedback 2026-08-11 §VIEW.SURFACE): cold-open
-                                    // toàn trang xin thẳng mật độ đích; 96–144 DPI chỉ còn
-                                    // là fallback dưới viewport tile khi footprint tràn khung.
+                                    // UIUX (feedback 2026-08-14 §VIEW.SWAP): giữ một surface PPE
+                                    // toàn trang làm underlay; viewport tile vẫn dựng đúng mật độ đích.
                                     fileKey={accurateFileKey}
                                     key="full-accurate"
                                     pageNum={originalPageNum}
@@ -3945,6 +4791,7 @@ export const LivePageFrame = (props: any) => {
                                     onRenderReady={isActiveFrame ? onFirstPageRenderReady : undefined}
                                     onTileReady={({ scale }: { scale: number }) => {
                                         setAccurateCommittedKey(accuratePageCommitKey);
+                                        if (initialPpeFrame) releaseViewerFirstFrame(initialPpeFrame);
                                         if (isViewerTargetScaleReady(scale, accurateBaseZoom)) {
                                             setAccurateBaseReadyKey(accurateBaseIdentity);
                                         }
@@ -3960,8 +4807,11 @@ export const LivePageFrame = (props: any) => {
                                         displayBaseReady,
                                         accurateCommitted,
                                     )}
+                                    initialSource={matchingFullPageFirstFrame}
+                                    preserveUnderlay={Boolean(initialPpeFrame)}
                                     showLoadStatus={isActiveFrame
                                         && requestAccurateBase
+                                        && !needsTiling
                                         && !keepDisplayUntilAccurate}
                                     loadLabels={tileLoadLabels}
                                     accurateOnly
@@ -3994,14 +4844,21 @@ export const LivePageFrame = (props: any) => {
                                     onRenderReady={isActiveFrame ? onFirstPageRenderReady : undefined}
                                     onAccurateCommitted={() => {
                                         setAccurateCommittedKey(accuratePageCommitKey);
+                                        if (initialPpeFrame) releaseViewerFirstFrame(initialPpeFrame);
                                     }}
                                     renderOwnerId={effectiveRenderOwnerId}
                                     accurateColor={accurateColorPage}
                                     accurateCommitted={accurateCommitted}
-                                    waitForAccurateBase={requestAccurateBase && !accurateCommitted}
+                                    waitForAccurateBase={requestAccurateBase
+                                        && !needsTiling
+                                        && !accurateCommitted}
                                     keepDisplayUntilAccurate={keepDisplayUntilAccurate}
                                     renderEnabled={needsTiling}
                                     cancelAccurateGroup={cancelAccurateGroup}
+                                    initialPpeFrame={initialPpeFrame}
+                                    stableUnderlayReady={accurateColorPage
+                                        ? hasStableAccurateUnderlay
+                                        : displayBaseReady}
                                 />
                             </div>
                         )}

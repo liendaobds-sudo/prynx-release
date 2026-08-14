@@ -160,7 +160,7 @@ def compute_sticker_layout_for_page(
     if largest_path is None and cut_type == 'default':
         # [PAGEBOX FIX 2026-08-13] Không có CutContour: Mặc định dùng khuôn
         # chữ nhật theo trang logic, không rơi về MediaBox thô rồi báo sai SL.
-        largest_path = resolve_default_page_die(page)
+        largest_path = resolve_default_page_die(page, die_offset_mm)
     _is_page_fallback = bool((largest_path or {}).get('is_page_fallback'))
 
     if _one_dao_trim is not None:

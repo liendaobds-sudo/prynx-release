@@ -48,6 +48,7 @@ import SavePrintFilesModal from './workspace/SavePrintFilesModal';
 import { usePrintDialog } from './shared/usePrintDialog';
 import EditLayersPanel from './workspace/SelectionLayersPanel';
 import { useAppSettingsStore } from '../stores/appSettingsStore';
+import { primeViewerFirstFrame } from '../lib/viewerFirstFrame';
 
 import { WorkspaceContext, createWorkspaceStore, useWorkspaceStore } from '../stores/useWorkspaceStore';
 import { clearTileUrlCacheForFile } from './workspace/LivePageFrame';
@@ -472,7 +473,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     }, [file]);
     // FILEIO (audit 2026-08-02 §TEST.1): chuyển ảnh có trạng thái hữu hạn. Watchdog chỉ
     // đổi thông tin UI, không hard-timeout ảnh lớn; generation fence từ chối mọi callback muộn.
-    const [fileOpeningPhase, setFileOpeningPhase] = useState<FileOpeningPhase>(() => initialFile ? 'loading' : 'idle');
+    // PERF (audit 2026-08-14 §VIEW.FIRST.2): không phát spinner ngay khi tab vừa nhận
+    // File. Dispatcher đã pre-render PPE trước khi tạo tab; các cửa vào trực tiếp cũng
+    // giữ nguyên uploader/workspace trong lúc dựng, rồi swap một lần sang Viewer thật.
+    const [fileOpeningPhase, setFileOpeningPhase] = useState<FileOpeningPhase>('idle');
     // NAV (audit 2026-08-05 §AI2.ROUTE1): giữ ảnh trước bước normalize -> PDF để
     // chế độ Ảnh AI dùng lại đúng nguồn đang mở, không bắt người dùng chọn lần hai.
     const [sourceImageFile, setSourceImageFile] = useState<File | null>(() => (
@@ -494,14 +498,18 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         fileOpeningTimerRef.current = null;
     }, []);
 
-    const beginFileOpeningAttempt = useCallback(() => {
+    const beginFileOpeningAttempt = useCallback((showLoading = true) => {
         clearFileOpeningTimer();
         const attempt = ++fileOpeningAttemptRef.current;
         setError('');
-        setFileOpeningPhase('loading');
-        fileOpeningTimerRef.current = setTimeout(() => {
-            if (fileOpeningAttemptRef.current === attempt) setFileOpeningPhase('slow');
-        }, FILE_OPEN_SLOW_MS);
+        if (showLoading) {
+            setFileOpeningPhase('loading');
+            fileOpeningTimerRef.current = setTimeout(() => {
+                if (fileOpeningAttemptRef.current === attempt) setFileOpeningPhase('slow');
+            }, FILE_OPEN_SLOW_MS);
+        } else {
+            setFileOpeningPhase('idle');
+        }
         return attempt;
     }, [clearFileOpeningTimer, setError]);
 
@@ -530,7 +538,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             let cancelled = false;
             pendingSelectedOpenRef.current = null;
             initialOpenRetryRef.current = () => setInitialOpenRetryToken(token => token + 1);
-            const attempt = beginFileOpeningAttempt();
+            const attempt = beginFileOpeningAttempt(false);
             (async () => {
                 let openedFile = initialFile;
                 setSourceImageFile(isSupportedImageFileName(initialFile.name) ? initialFile : null);
@@ -545,6 +553,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     }
                     return;
                 }
+                if (cancelled || fileOpeningAttemptRef.current !== attempt) return;
+                // PERF (audit 2026-08-14 §VIEW.FIRST.1): giữ màn hiện tại cho tới khi
+                // trang 1 PPE đã decode; Viewer không còn mount trước rồi lộ khung trắng.
+                await primeViewerFirstFrame(openedFile);
                 if (cancelled || fileOpeningAttemptRef.current !== attempt) return;
                 // Ảnh đã convert thành File PDF không còn path đĩa nên dùng blob URL.
                 if (pdfUrl) URL.revokeObjectURL(pdfUrl);
@@ -1466,7 +1478,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         pendingSelectedOpenRef.current = { file: selectedFile, allFiles };
         syncedStickerSourceRef.current = selectedFile;
         setSourceImageFile(isSupportedImageFileName(selectedFile.name) ? selectedFile : null);
-        const attempt = beginFileOpeningAttempt();
+        const attempt = beginFileOpeningAttempt(false);
         try {
             selectedFile = await imageFileToPdfIfNeeded(selectedFile, getFileArrayBuffer);
         } catch (openError) {
@@ -1477,6 +1489,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             }
             return;
         }
+        if (fileOpeningAttemptRef.current !== attempt) return;
+        // Đổi file trong Workspace dùng stale-while-revalidate: giữ trang đang xem
+        // trong lúc PPE dựng trang mới, sau đó swap thẳng sang frame đã decode.
+        await primeViewerFirstFrame(selectedFile);
         if (fileOpeningAttemptRef.current !== attempt) return;
         setFile(selectedFile);
         setOriginalFileName(selectedFile.name);

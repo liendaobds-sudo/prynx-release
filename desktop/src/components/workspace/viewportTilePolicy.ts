@@ -559,8 +559,9 @@ export function sameViewportTileSpec(
 }
 
 /**
- * UIUX (feedback 2026-08-09 §ZOOM.F3): chỉ giữ tile cũ khi sau khi scale nó vẫn phủ
- * đủ bốn cạnh khung nhìn mới. Nếu thiếu một cạnh, nền đồng đều dễ chịu hơn một “đảo nét”.
+ * UIUX (feedback 2026-08-09 §ZOOM.F3): đo riêng việc tile cũ sau khi scale còn phủ
+ * đủ bốn cạnh khung nhìn mới hay không. Compositor chỉ được rút “đảo nét” này khi đã
+ * có underlay toàn trang; nếu chưa có thì vẫn phải giữ nó để không rơi xuống nền trắng.
  */
 export function viewportTileCoversViewport(
     tile: ViewportTileCoverageItem,
@@ -689,8 +690,14 @@ export function viewportTilePresentationItems<T extends ViewportTileBufferItem>(
     currentReuseGroup: string,
     zoomSettling: boolean,
     visibleCoversCurrentViewport = true,
+    hasStableUnderlay = false,
 ): T[] {
     const targetIsCurrent = state.target?.bufferGroup === currentBufferGroup;
+    // UIUX (feedback 2026-08-14 §VIEW.SWAP): underlay toàn trang mới là surface liên tục
+    // trong lúc wheel zoom. Tile viewport cũ chỉ phủ clip của khung trước; co nó theo trang
+    // sẽ tạo một “đảo ảnh” giữa nền. Khi underlay đã sẵn sàng, để compositor hiện thẳng
+    // surface đó cho tới khi target của generation mới decode xong.
+    if (hasStableUnderlay && (zoomSettling || !targetIsCurrent)) return [];
     if (!zoomSettling && targetIsCurrent) {
         const items = viewportTileBufferItems(state);
         const visibleUsesCurrentRaster = state.visible?.bufferGroup === currentBufferGroup;
@@ -702,7 +709,9 @@ export function viewportTilePresentationItems<T extends ViewportTileBufferItem>(
             && state.target
             && state.visible
             && state.visible.key !== state.target.key) {
-            return [state.target];
+            // Không có underlay thì giữ tile cũ tới khi target thật sự commit; rút cả hai
+            // surface nhìn thấy trước thời điểm đó sẽ làm trang chớp trắng.
+            return hasStableUnderlay ? [state.target] : items;
         }
         return items;
     }

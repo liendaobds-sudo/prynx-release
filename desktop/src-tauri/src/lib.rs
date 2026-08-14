@@ -1587,12 +1587,11 @@ fn preview_perf_logging_enabled() -> bool {
 // Đường log riêng cho render/thumbnail, set 1 lần trong setup(). KHÔNG dùng
 // chrono::Local::now() (đã PANIC ở release trong render_tile_png_in_process — xem note ~:609)
 // → dùng epoch millis từ SystemTime (không timezone, không panic). Bật khi:
-//   - debug build (dev chạy run_dev.bat → tự bật, không cần thao tác), HOẶC
-//   - env PRYNX_PERF=1 (opt-in cho bản release khi cần chẩn đoán máy khách).
+//   - env PRYNX_PERF=1 (opt-in khi cần chẩn đoán; Dev và release đều mặc định tắt).
 static PERF_LOG_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
 
 fn perf_enabled() -> bool {
-    cfg!(debug_assertions) || preview_perf_enabled()
+    preview_perf_enabled()
 }
 
 fn perf_log(msg: &str) {
@@ -1630,7 +1629,7 @@ fn shadow_perf_log(msg: &str) {
 
 // Cho FE đẩy dòng đo (TilePerf / ViewerPreview) vào CÙNG file PrynX_RenderPerf.log
 // → user chỉ cần gửi 1 file thay vì mở devtools copy console. Chỉ ghi khi
-// perf_enabled() (debug build / PRYNX_PERF=1). Gắn prefix "FE " để phân biệt
+// perf_enabled() (PRYNX_PERF=1). Gắn prefix "FE " để phân biệt
 // dòng Rust (render/encode thuần) với dòng FE (tổng thời gian chờ invoke).
 #[tauri::command]
 fn append_render_perf(msg: String) {
@@ -4759,8 +4758,8 @@ pub fn run() {
                 app.handle().plugin(builder.build())?;
             }
 
-            // Đường log đo render (perf_log). Ghi ra Desktop cạnh PrynX_Performance.log
-            // để dễ tìm. Chỉ ghi khi perf_enabled() (debug build hoặc PRYNX_PERF=1).
+            // Đường log đo render (perf_log). Chỉ ghi khi PRYNX_PERF=1; việc
+            // đăng ký đường dẫn không tạo file nếu cờ đang tắt.
             if let Ok(desktop_dir) = app.handle().path().desktop_dir() {
                 let _ = PERF_LOG_PATH.set(desktop_dir.join("PrynX_RenderPerf.log"));
             }

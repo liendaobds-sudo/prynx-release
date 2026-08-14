@@ -7,6 +7,9 @@ import {
     shouldCompositeViewerTile,
     shouldMountViewerViewportLayer,
     shouldRenderViewerAccurateBaseTile,
+    shouldRenderViewerAccurateUnderlay,
+    shouldPresentViewerPanGrid,
+    selectViewerAccurateBaseZoom,
     shouldRenderViewerBasePage,
     shouldRenderViewerBaseTile,
     shouldShowOutputPreviewBitmap,
@@ -15,8 +18,11 @@ import {
     shouldUseViewerDisplayLayer,
     shouldUseViewerAccurateSimulation,
     viewerBackgroundRenderOwnerId,
+    viewerAccurateBaseScaleForRole,
+    viewerPageRenderPriority,
     viewerRenderGroupKey,
     viewerTileFileKey,
+    VIEWER_ACCURATE_UNDERLAY_SCALE,
 } from './LivePageFrame';
 
 describe('Viewer — policy ghép tile progressive', () => {
@@ -151,6 +157,41 @@ describe('Viewer — policy ghép tile progressive', () => {
         expect(shouldRequestViewerAccurateBase(false, true, false)).toBe(true);
         expect(shouldRequestViewerAccurateBase(false, true, true)).toBe(false);
         expect(shouldRequestViewerAccurateBase(true, false, false)).toBe(true);
+    });
+
+    it('dựng underlay PPE cứu hộ 24 DPI cho trang vượt ngân sách surface', () => {
+        expect(VIEWER_ACCURATE_UNDERLAY_SCALE).toBe(0.25);
+        expect(shouldRenderViewerAccurateUnderlay(true, true, true, true)).toBe(true);
+        expect(shouldRenderViewerAccurateUnderlay(true, true, false, true)).toBe(false);
+        expect(shouldRenderViewerAccurateUnderlay(true, false, true, true)).toBe(false);
+        expect(shouldRenderViewerAccurateUnderlay(false, true, true, true)).toBe(false);
+        expect(shouldRenderViewerAccurateUnderlay(true, true, true, false)).toBe(false);
+
+        // Standee 800×1600 mm: base 96 DPI vượt ngân sách nhưng frame 24 DPI chỉ ~1,1 MP.
+        expect(selectViewerAccurateBaseZoom(1, 3024 * 0.1, 6048 * 0.1, 0.1)).toBe(0.25);
+        // Trang thông thường/zoom cao vẫn giữ base nét hơn nếu surface đó còn an toàn.
+        expect(selectViewerAccurateBaseZoom(1.5, 3176, 4492, 4)).toBe(1.5);
+    });
+
+    it('trang liền kề prefetch đúng mật độ màn hình và đứng sau target active', () => {
+        const screenScale = 0.75;
+        expect(viewerAccurateBaseScaleForRole(1.5, screenScale, true, true, true)).toBe(1.5);
+        expect(viewerAccurateBaseScaleForRole(1.5, screenScale, true, false, false)).toBe(screenScale);
+        expect(viewerAccurateBaseScaleForRole(1.5, screenScale, false, true, true)).toBe(screenScale);
+        expect(viewerAccurateBaseScaleForRole(1.5, screenScale, false, false, false)).toBe(1.5);
+
+        expect(viewerPageRenderPriority(true, true, false)).toBe(10);
+        expect(viewerPageRenderPriority(true, false, true)).toBe(20);
+        expect(viewerPageRenderPriority(true, false, false)).toBe(100);
+        expect(viewerPageRenderPriority(false, true, true)).toBe(1000);
+    });
+
+    it('chỉ hiện atlas trong một lần swap sau khi đã phủ kín viewport', () => {
+        expect(shouldPresentViewerPanGrid(true, false, false, true)).toBe(false);
+        expect(shouldPresentViewerPanGrid(true, true, false, true)).toBe(true);
+        expect(shouldPresentViewerPanGrid(true, true, true, true)).toBe(false);
+        expect(shouldPresentViewerPanGrid(true, true, true, false)).toBe(true);
+        expect(shouldPresentViewerPanGrid(false, true, false, true)).toBe(false);
     });
 
     it('cho phép dựng trước nền accurate của trang liền kề khi cổng prefetch đã mở', () => {

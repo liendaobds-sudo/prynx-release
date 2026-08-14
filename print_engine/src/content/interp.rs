@@ -52,6 +52,29 @@ const CONSERVATIVE_VECTOR_MAX_MIN_DIM_PX: f32 = 16.0;
 /// mọi outline quan trọng hơn. Raster nhỏ chỉ mở rộng các fill nhỏ để tránh phình mean.
 const CONSERVATIVE_VECTOR_FULL_PAGE_MIN_DIM_PX: u32 = 512;
 
+/// Bắt đầu lọc footprint khi một pixel màn hình phủ quá số texel này trên một trục.
+///
+/// Dưới ngưỡng này, lấy mẫu tâm giữ đường phóng đại/zoom gần 1:1 nhanh như cũ.
+/// Trên ngưỡng, ảnh menu/scan 300–600 DPI cần tích phân footprint để nét mảnh
+/// không rơi lọt giữa các điểm lấy mẫu.
+const PREVIEW_IMAGE_MINIFICATION_THRESHOLD: f64 = 1.25;
+
+/// Trần supersample mỗi trục cho đường xem.
+///
+/// Tám điểm đủ giữ khoảng cách mẫu dưới một texel cho ảnh tới khoảng 8× DPI đích,
+/// đồng thời chặn PDF cực lớn biến một pixel Viewer thành hàng nghìn phép đọc.
+const PREVIEW_IMAGE_MAX_SAMPLES_PER_AXIS: u32 = 8;
+
+/// Mức phục hồi vi tương phản sau khi đã tích phân footprint ảnh.
+///
+/// Chỉ đường xem dùng giá trị này. Đường đo mực/TAC không đi qua bộ lọc, nên
+/// lượng mực thật và kẽm xuất không bị một hiệu ứng hiển thị làm thay đổi.
+const PREVIEW_IMAGE_DETAIL_BOOST: f32 = 0.35;
+/// Bỏ chi tiết nhỏ hơn hai mức 8-bit để không làm nổi nhiễu JPEG/vân giấy.
+const PREVIEW_IMAGE_DETAIL_THRESHOLD: f32 = 2.0 / 255.0;
+/// Giới hạn phần chi tiết trước khi nhân hệ số, chống halo quanh chữ và vật thể.
+const PREVIEW_IMAGE_DETAIL_LIMIT: f32 = 0.12;
+
 fn needs_conservative_vector_edge(path: &Path, page_width: u32, page_height: u32) -> bool {
     if page_width.min(page_height) >= CONSERVATIVE_VECTOR_FULL_PAGE_MIN_DIM_PX {
         return true;
@@ -2626,6 +2649,22 @@ impl<'a> Renderer<'a> {
         self.buffer.sync_channels()?;
         let static_process_channels = matches!(img.colorspace, Some(ColorSpace::DeviceCMYK));
 
+        // PERF (audit 2026-08-14 §VIEW.IMAGE): Viewer trước đây lấy đúng một texel
+        // ở tâm dù đang thu ảnh CMYK 300–600 DPI xuống màn hình. menu.pdf @96 DPI
+        // có footprint khoảng 5,2×5,2 texel, nên nét chữ mảnh rơi khỏi toàn bộ trang.
+        // Chỉ đường xem ảnh CMYK đục dùng lưới phủ footprint; đường đo mực bảo thủ,
+        // ảnh có alpha và zoom gần 1:1 giữ nguyên hợp đồng cũ.
+        let preview_cmyk_grid = if !self.opts.conservative_image_sampling
+            && static_process_channels
+            && img.alpha.is_none()
+            && !overprint
+            && blend == BlendMode::Normal
+        {
+            preview_image_sample_grid(&inv64, img.width, img.height)
+        } else {
+            (1, 1)
+        };
+
         let mut ink_scratch: Vec<f32> = Vec::with_capacity(8);
         let iw = img.width as f64;
         let ih = img.height as f64;
@@ -2724,14 +2763,46 @@ impl<'a> Renderer<'a> {
                     }
                 }
                 let (sx, sy) = (sample_sx, sample_sy);
-                let center_mask = sampler.ink_into(
-                    sx,
-                    sy,
-                    &mut ink_scratch,
-                    self.buffer.space_mut(),
-                    &mut self.warnings,
-                    self.color,
-                )?;
+                let center_mask = if preview_cmyk_grid != (1, 1) {
+                    match preview_device_cmyk_raw_average(
+                        &inv64,
+                        dx,
+                        dy,
+                        img.width,
+                        img.height,
+                        preview_cmyk_grid,
+                        |sample_x, sample_y| img.device_cmyk_raw_at(sample_x, sample_y),
+                    ) {
+                        Some(raw_average) => {
+                            let footprint = img.decode_device_cmyk_units(raw_average.footprint);
+                            let core = raw_average
+                                .core
+                                .map(|value| img.decode_device_cmyk_units(value));
+                            let cmyk = boost_preview_device_cmyk_detail(footprint, core);
+                            ink_scratch.clear();
+                            ink_scratch.resize(self.buffer.space().len(), 0.0);
+                            ink_scratch[..4].copy_from_slice(&cmyk);
+                            Some(ChannelMask::PROCESS)
+                        }
+                        None => sampler.ink_into(
+                            sx,
+                            sy,
+                            &mut ink_scratch,
+                            self.buffer.space_mut(),
+                            &mut self.warnings,
+                            self.color,
+                        )?,
+                    }
+                } else {
+                    sampler.ink_into(
+                        sx,
+                        sy,
+                        &mut ink_scratch,
+                        self.buffer.space_mut(),
+                        &mut self.warnings,
+                        self.color,
+                    )?
+                };
                 let Some(center_declared) = center_mask else {
                     continue;
                 };
@@ -4037,6 +4108,134 @@ fn tex_index(t: f64, n: u32) -> u32 {
     ((t.ceil() as i64) - 1).clamp(0, n as i64 - 1) as u32
 }
 
+/// Số điểm lấy mẫu theo hai trục pixel thiết bị cho một ảnh đang thu nhỏ.
+///
+/// Mỗi bước một pixel thiết bị được đổi về vector trong lưới texel nguồn. Với
+/// xoay/nghiêng, chuẩn Euclid giữ mật độ mẫu theo đúng hướng biến đổi thay vì chỉ
+/// nhìn bbox. Zoom gần 1:1 hoặc phóng đại trả `(1, 1)` để đi đường nóng cũ.
+fn preview_image_sample_grid(inv: &[f64; 6], width: u32, height: u32) -> (u32, u32) {
+    let source_per_device_x = (inv[0] * width as f64).hypot(inv[1] * height as f64);
+    let source_per_device_y = (inv[2] * width as f64).hypot(inv[3] * height as f64);
+
+    fn samples_for_span(span: f64) -> u32 {
+        if !span.is_finite() || span <= PREVIEW_IMAGE_MINIFICATION_THRESHOLD {
+            1
+        } else {
+            (span.ceil() as u32).clamp(2, PREVIEW_IMAGE_MAX_SAMPLES_PER_AXIS)
+        }
+    }
+
+    (
+        samples_for_span(source_per_device_x),
+        samples_for_span(source_per_device_y),
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PreviewDeviceCmykRawAverage {
+    /// Trung bình trên toàn footprint — lớp chống alias giữ nét mảnh không biến mất.
+    footprint: [f32; 4],
+    /// Trung bình phần lõi bỏ một vòng mẫu ngoài — dùng làm tín hiệu chi tiết.
+    core: Option<[f32; 4]>,
+}
+
+/// Trung bình CMYK trên footprint của một pixel Viewer bằng lưới sub-pixel đều.
+///
+/// Lưới được đặt trong pixel thiết bị rồi mới nghịch đảo qua CTM, nên cùng một
+/// hàm dùng được cho ảnh xoay/nghiêng và tile có offset. Mẫu ngoài hình vuông ảnh
+/// bị loại; caller dùng đường tâm cũ nếu footprint không còn mẫu hợp lệ. Phần lõi
+/// dùng lại chính các mẫu đã đọc, nên tăng nét không thêm lookup nguồn.
+fn preview_device_cmyk_raw_average<F>(
+    inv: &[f64; 6],
+    dx: i64,
+    dy: i64,
+    width: u32,
+    height: u32,
+    grid: (u32, u32),
+    mut sample: F,
+) -> Option<PreviewDeviceCmykRawAverage>
+where
+    F: FnMut(u32, u32) -> [u8; 4],
+{
+    let (samples_x, samples_y) = grid;
+    if samples_x == 0 || samples_y == 0 || width == 0 || height == 0 {
+        return None;
+    }
+
+    let mut sum = [0_u64; 4];
+    let mut core_sum = [0_u64; 4];
+    let mut count = 0_u32;
+    let mut core_count = 0_u32;
+    let has_narrower_core = samples_x >= 4 || samples_y >= 4;
+    for sample_y in 0..samples_y {
+        let py = dy as f64 + (sample_y as f64 + 0.5) / samples_y as f64;
+        for sample_x in 0..samples_x {
+            let px = dx as f64 + (sample_x as f64 + 0.5) / samples_x as f64;
+            let u = inv[0] * px + inv[2] * py + inv[4];
+            let v = inv[1] * px + inv[3] * py + inv[5];
+            if !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
+                continue;
+            }
+            let sx = tex_index(u * width as f64, width);
+            let sy = tex_index((1.0 - v) * height as f64, height);
+            let value = sample(sx, sy);
+            for channel in 0..4 {
+                sum[channel] += value[channel] as u64;
+            }
+            count += 1;
+            let inside_core_x = samples_x < 4 || (sample_x > 0 && sample_x + 1 < samples_x);
+            let inside_core_y = samples_y < 4 || (sample_y > 0 && sample_y + 1 < samples_y);
+            if inside_core_x && inside_core_y {
+                for channel in 0..4 {
+                    core_sum[channel] += value[channel] as u64;
+                }
+                core_count += 1;
+            }
+        }
+    }
+
+    if count == 0 {
+        return None;
+    }
+    let footprint = std::array::from_fn(|channel| sum[channel] as f32 / (count as f32 * 255.0));
+    // UIUX (feedback 2026-08-14 §VIEW.SHARP.2): chỉ boost khi lưới đầy đủ.
+    // Ở mép ảnh/clip thiếu mẫu, dùng footprint thuần để không tạo viền sáng tối.
+    let expected_core_count = (if samples_x >= 4 {
+        samples_x - 2
+    } else {
+        samples_x
+    }) * (if samples_y >= 4 {
+        samples_y - 2
+    } else {
+        samples_y
+    });
+    let core = (has_narrower_core
+        && count == samples_x.saturating_mul(samples_y)
+        && core_count == expected_core_count)
+        .then(|| {
+            std::array::from_fn(|channel| core_sum[channel] as f32 / (core_count as f32 * 255.0))
+        });
+    Some(PreviewDeviceCmykRawAverage { footprint, core })
+}
+
+/// Phục hồi chi tiết đã bị box-filter làm mềm mà không đổi kích thước raster.
+///
+/// Soft-threshold loại nhiễu thấp; limiter chặn overshoot. Tính trong không gian
+/// mực sau `/Decode` để ảnh Adobe CMYK đảo kênh vẫn sắc đúng chiều sáng/tối.
+fn boost_preview_device_cmyk_detail(footprint: [f32; 4], core: Option<[f32; 4]>) -> [f32; 4] {
+    let Some(core) = core else {
+        return footprint;
+    };
+    std::array::from_fn(|channel| {
+        let detail = core[channel] - footprint[channel];
+        let magnitude = (detail.abs() - PREVIEW_IMAGE_DETAIL_THRESHOLD)
+            .max(0.0)
+            .min(PREVIEW_IMAGE_DETAIL_LIMIT);
+        (footprint[channel] + detail.signum() * magnitude * PREVIEW_IMAGE_DETAIL_BOOST)
+            .clamp(0.0, 1.0)
+    })
+}
+
 /// Dải nhiễu quanh biên texel mà hai RIP có thể làm tròn khác phía.
 ///
 /// Cận trên của tổng nhiễu: hệ số CTM lưu f32 (~1e-7 tương đối, nhân toạ độ
@@ -4313,6 +4512,72 @@ mod conservative_sampling_tests {
             ),
             Region::EMPTY,
         );
+    }
+
+    #[test]
+    fn preview_grid_tracks_source_texels_only_while_minifying() {
+        let one_device_pixel = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        assert_eq!(preview_image_sample_grid(&one_device_pixel, 6, 5), (6, 5));
+
+        let magnified = [1.0 / 12.0, 0.0, 0.0, 1.0 / 10.0, 0.0, 0.0];
+        assert_eq!(preview_image_sample_grid(&magnified, 6, 5), (1, 1));
+
+        assert_eq!(
+            preview_image_sample_grid(&one_device_pixel, 100, 100),
+            (
+                PREVIEW_IMAGE_MAX_SAMPLES_PER_AXIS,
+                PREVIEW_IMAGE_MAX_SAMPLES_PER_AXIS,
+            )
+        );
+    }
+
+    #[test]
+    fn preview_cmyk_footprint_keeps_a_one_texel_line_missed_by_center() {
+        let inv = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        let averaged = preview_device_cmyk_raw_average(&inv, 0, 0, 6, 6, (6, 6), |x, _y| {
+            if x == 0 {
+                [0, 0, 0, 255]
+            } else {
+                [0; 4]
+            }
+        })
+        .expect("footprint nằm trong ảnh");
+
+        assert!((averaged.footprint[3] - 1.0 / 6.0).abs() < 1e-6);
+        assert_eq!(averaged.core.expect("lưới 6×6 phải có lõi")[3], 0.0);
+        assert_eq!(tex_index(0.5 * 6.0, 6), 2);
+
+        let partial = preview_device_cmyk_raw_average(
+            &[1.0, 0.0, 0.0, 1.0, -0.25, 0.0],
+            0,
+            0,
+            6,
+            6,
+            (6, 6),
+            |_x, _y| [128; 4],
+        )
+        .expect("phần footprint còn nằm trong ảnh");
+        assert_eq!(partial.core, None, "mép thiếu mẫu không được tăng chi tiết");
+    }
+
+    #[test]
+    fn preview_detail_boost_is_thresholded_limited_and_keeps_thin_lines() {
+        let unchanged = boost_preview_device_cmyk_detail(
+            [0.5; 4],
+            Some([0.5 + PREVIEW_IMAGE_DETAIL_THRESHOLD / 2.0; 4]),
+        );
+        assert_eq!(unchanged, [0.5; 4], "nhiễu dưới ngưỡng không được nổi lên");
+
+        let boosted = boost_preview_device_cmyk_detail([0.0, 0.0, 0.0, 1.0 / 6.0], Some([0.0; 4]));
+        assert!(boosted[3] > 0.12, "nét một texel vẫn phải nhìn thấy");
+        assert!(
+            boosted[3] < 1.0 / 6.0,
+            "lõi sáng hơn phải giảm mực có giới hạn"
+        );
+
+        let limited = boost_preview_device_cmyk_detail([0.2; 4], Some([1.0; 4]));
+        let max_gain = PREVIEW_IMAGE_DETAIL_LIMIT * PREVIEW_IMAGE_DETAIL_BOOST;
+        assert!((limited[0] - (0.2 + max_gain)).abs() < 1e-6);
     }
 }
 

@@ -89,14 +89,40 @@ impl SampledImage {
 
     #[inline]
     fn device_cmyk_at(&self, x: u32, y: u32) -> [f32; 4] {
+        let raw = self.device_cmyk_raw_at(x, y);
+        self.decode_device_cmyk_units(std::array::from_fn(|component| {
+            raw[component] as f32 / 255.0
+        }))
+    }
+
+    /// Bốn mẫu CMYK thô tại một texel, chưa áp `/Decode`.
+    ///
+    /// Đường Viewer cộng các byte này trên footprint rồi mới áp `/Decode` một
+    /// lần cho pixel đích. `/Decode` là ánh xạ tuyến tính, nên kết quả giống hệt
+    /// giải mã từng texel nhưng tránh lặp hàng chục triệu phép float khi thu ảnh.
+    #[inline]
+    pub(crate) fn device_cmyk_raw_at(&self, x: u32, y: u32) -> [u8; 4] {
         let base = (y as usize * self.width as usize + x as usize) * self.n_comps;
         std::array::from_fn(|component| {
-            let raw = self
-                .samples
+            self.samples
                 .get(base.saturating_add(component))
                 .copied()
-                .unwrap_or(0);
-            self.decode_component(component, raw, false).clamp(0.0, 1.0)
+                .unwrap_or(0)
+        })
+    }
+
+    /// Áp `/Decode` cho bốn trung bình thô đã chuẩn hoá 0..1.
+    #[inline]
+    pub(crate) fn decode_device_cmyk_units(&self, units: [f32; 4]) -> [f32; 4] {
+        std::array::from_fn(|component| {
+            let unit = units[component];
+            match (
+                self.decode.get(2 * component),
+                self.decode.get(2 * component + 1),
+            ) {
+                (Some(d0), Some(d1)) => (d0 + unit * (d1 - d0)).clamp(0.0, 1.0),
+                _ => unit.clamp(0.0, 1.0),
+            }
         })
     }
 

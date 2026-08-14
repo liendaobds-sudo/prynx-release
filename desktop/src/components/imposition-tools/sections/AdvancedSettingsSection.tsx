@@ -71,6 +71,36 @@ function moveReportField(fieldOrder: ReportFieldKey[], key: ReportFieldKey, dire
     return fullOrder;
 }
 
+function InlineHelpTooltip({
+    label,
+    children,
+}: {
+    label: string;
+    children: React.ReactNode;
+}) {
+    const tooltipId = React.useId();
+    return (
+        <span className="group/inline-help relative inline-flex shrink-0">
+            <button
+                type="button"
+                aria-label={label}
+                aria-describedby={tooltipId}
+                className="flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-slate-200 bg-slate-100 text-[10px] font-bold leading-none text-slate-500 transition-colors hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:border-indigo-500/50 dark:hover:bg-indigo-500/10 dark:hover:text-indigo-300"
+            >
+                <span aria-hidden="true">?</span>
+            </button>
+            <span
+                id={tooltipId}
+                role="tooltip"
+                className="pointer-events-none invisible absolute bottom-full left-1/2 z-[120] mb-2 w-[270px] max-w-[calc(100vw-2rem)] -translate-x-[20%] rounded-lg bg-slate-800 px-3 py-2.5 text-left text-[12px] font-normal normal-case leading-relaxed tracking-normal text-white opacity-0 shadow-xl transition-all group-hover/inline-help:visible group-hover/inline-help:opacity-100 group-focus-within/inline-help:visible group-focus-within/inline-help:opacity-100 dark:bg-zinc-700"
+            >
+                {children}
+                <span className="absolute left-[20%] top-full -mt-1 h-2 w-2 -translate-x-1/2 rotate-45 bg-slate-800 dark:bg-zinc-700" />
+            </span>
+        </span>
+    );
+}
+
 // Nhóm con thu/xổ riêng trong "Thiết lập mở rộng" — mỗi nhóm tự quản trạng thái đóng/mở.
 // infoButton render NGOÀI nút toggle nên bấm ⓘ không làm xổ/thu nhóm.
 function CollapsibleGroup({
@@ -471,7 +501,12 @@ export default function AdvancedSettingsSection({
                         {stickerGeometryMode && (
                             <div className="flex flex-col gap-1 relative z-[20] pb-1">
                                 <div className="flex items-center gap-3">
-                                    <label htmlFor={cutTypeInputId} className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:duong_cat')}</label>
+                                    <div className="flex w-[95px] shrink-0 items-center gap-1">
+                                        <label htmlFor={cutTypeInputId} className="text-[11px] font-bold text-slate-600 uppercase tracking-wide">{t('imposition.advancedSettings:duong_cat')}</label>
+                                        <InlineHelpTooltip label={`${t('imposition.advancedSettings:giai_thich', 'Giải thích')} ${t('imposition.advancedSettings:duong_cat')}`}>
+                                            {t('imposition.advancedSettings:dao_cat_reset_moi_phien', 'Dao cắt về mặc định mỗi phiên để an toàn — chọn lại nếu cần dao khác')}
+                                        </InlineHelpTooltip>
+                                    </div>
                                     <div className="flex flex-1 items-center gap-2 min-w-0">
                                         <select
                                             id={cutTypeInputId}
@@ -483,10 +518,6 @@ export default function AdvancedSettingsSection({
                                             <option value="one_dao">1 Dao (Dao LETA)</option>
                                         </select>
                                     </div>
-                                </div>
-                                {/* UIUX (audit 2026-07-27 §B-15): nói rõ dao cắt không nhớ giữa các phiên */}
-                                <div className="text-[10px] text-app-text-3 pl-[107px] leading-snug">
-                                    {t('imposition.advancedSettings:dao_cat_reset_moi_phien', 'Dao cắt về mặc định mỗi phiên để an toàn — chọn lại nếu cần dao khác')}
                                 </div>
                             </div>
                         )}
@@ -543,10 +574,15 @@ export default function AdvancedSettingsSection({
                             </div>
                         )}
 
-                        {/* CO/MỞ — chỉ khi 1 Dao + theo kích thước trang */}
-                        {stickerGeometryMode && s.cutType === 'one_dao' && cutControlPolicy.effectiveDieSizeMode === 'page' && (
+                        {/* CO/MỞ — chỉ cho hình học theo khung trang fallback */}
+                        {stickerGeometryMode && cutControlPolicy.showDieOffset && (
                             <div className="flex items-center gap-3 relative z-[20] pb-1">
-                                <label htmlFor={dieOffsetInputId} className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:co_mo')}</label>
+                                <div className="flex w-[95px] shrink-0 items-center gap-1">
+                                    <label htmlFor={dieOffsetInputId} className="text-[11px] font-bold text-slate-600 uppercase tracking-wide">{t('imposition.advancedSettings:co_mo')}</label>
+                                    <InlineHelpTooltip label={`${t('imposition.advancedSettings:giai_thich', 'Giải thích')} ${t('imposition.advancedSettings:co_mo')}`}>
+                                        {t('imposition.advancedSettings:kieu_khuon_offset_mo_ta')}
+                                    </InlineHelpTooltip>
+                                </div>
                                 <div className="flex flex-1 items-center gap-2 min-w-0">
                                     <div className="relative flex-1">
                                         <input id={dieOffsetInputId} type="number" step="0.5" value={s.dieOffsetMm} onChange={e => s.setDieOffsetMm(Number(e.target.value))}

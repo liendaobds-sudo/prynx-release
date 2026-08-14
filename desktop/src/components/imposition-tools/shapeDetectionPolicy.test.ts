@@ -118,8 +118,21 @@ describe('shapeDetectionPolicy', () => {
             effectiveFillBlockGap: 3,
             showDieSizeSelector: false,
             showDieSizeStatus: true,
+            showDieOffset: true,
             showFillBlockGap: true,
         });
+    });
+
+    it('Mặc định chỉ cho Co/Mở khi file phải fallback theo khung trang', () => {
+        expect(resolveStickerCutControlPolicy(
+            'sticker_imposer', false, 'default', 'optimal_auto', 'die', 0,
+        ).showDieOffset).toBe(true);
+        expect(resolveStickerCutControlPolicy(
+            'sticker_imposer', true, 'default', 'optimal_auto', 'die', 0,
+        ).showDieOffset).toBe(false);
+        expect(resolveStickerCutControlPolicy(
+            'sticker_imposer', null, 'default', 'optimal_auto', 'die', 0,
+        ).showDieOffset).toBe(false);
     });
 
     it('chỉ hiện KC cụm phụ khi 1 Dao dùng Xếp tối ưu', () => {
@@ -142,6 +155,7 @@ describe('shapeDetectionPolicy', () => {
             effectiveDieSizeMode: 'die',
             showDieSizeSelector: false,
             showDieSizeStatus: true,
+            showDieOffset: false,
         });
     });
 
@@ -153,6 +167,7 @@ describe('shapeDetectionPolicy', () => {
             effectiveFillBlockGap: 4,
             showDieSizeSelector: false,
             showDieSizeStatus: false,
+            showDieOffset: false,
             showFillBlockGap: false,
         });
     });
