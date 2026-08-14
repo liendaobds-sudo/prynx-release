@@ -34,6 +34,8 @@ AUDIT = REPO / "scripts" / "gs_dependency_audit.py"
 RELEASE_QA = REPO / "scripts" / "run_release_qa.ps1"
 RELEASE_UPDATE = REPO / "release_update.ps1"
 RELEASE_CONTROLLER = REPO / "scripts" / "release_controller.ps1"
+RELEASE_LOG_TERMINAL = REPO / "scripts" / "watch_release_run.ps1"
+PRYNX_LAUNCHER = REPO / "PRYNX.bat"
 CLEAN_USER_VERIFIER = REPO / "scripts" / "verify_artifact_clean_user.ps1"
 NOTICE_GENERATOR = REPO / "scripts" / "gen_third_party_notices.py"
 DEV_SETUP = REPO / "setup_dev_env.ps1"
@@ -425,6 +427,73 @@ def test_release_gui_uses_read_only_source_version_without_mutating_config():
     assert "release_update.ps1" not in gui
 
 
+def test_prynx_launcher_opens_live_terminal_for_internal_and_publish_runs():
+    """UIUX (audit 2026-08-14 §BR.13): hai chế độ dùng chung terminal log nhìn thấy được."""
+    launcher = _read(PRYNX_LAUNCHER)
+    gui = _read(REPO / "quanly_phathanh.ps1")
+    watcher = _read(RELEASE_LOG_TERMINAL)
+
+    assert "-ShowBuildTerminal" in launcher
+    assert "param([switch]$ShowBuildTerminal)" in gui
+    assert "function Start-ReleaseLogTerminal" in gui
+    assert "$startInfo.UseShellExecute = $true" in gui
+    assert "$startInfo.CreateNoWindow = $false" in gui
+    assert "Start-ReleaseLogTerminal -ControllerPid $controllerProcess.Id" in gui
+    assert "Đóng cửa sổ này không làm dừng build." in watcher
+    assert 'if ([string]$status.mode -eq "publish")' in watcher
+
+
+def test_release_log_terminal_streams_current_run_without_starting_a_build(tmp_path: Path):
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("không có PowerShell trên máy này")
+
+    log_path = tmp_path / "build.log"
+    log_path.write_text("[1/5] smoke terminal\nBUILD COMPLETE\n", encoding="utf-8")
+    status = {
+        "schema": 1,
+        "runId": "smoke",
+        "mode": "internal",
+        "version": "1.0.0",
+        "state": "succeeded",
+        "stage": "Đóng gói bộ cài",
+        "message": "Build nội bộ đã hoàn tất.",
+        "controllerPid": 4242,
+        "childPid": None,
+        "startedAtUtc": "2026-08-14T00:00:00Z",
+        "updatedAtUtc": "2026-08-14T00:00:01Z",
+        "durationSeconds": 1,
+        "exitCode": 0,
+        "logPath": str(log_path),
+    }
+    (tmp_path / "latest.json").write_text(json.dumps(status), encoding="utf-8")
+    proc = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(RELEASE_LOG_TERMINAL),
+            "-StateRoot",
+            str(tmp_path),
+            "-ControllerPid",
+            "4242",
+            "-PollMilliseconds",
+            "50",
+            "-NoPause",
+        ],
+        cwd=REPO,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    output = (proc.stdout + proc.stderr).decode("utf-8", errors="replace")
+    assert proc.returncode == 0, output
+    assert "smoke terminal" in output
+    assert "Mã thoát: 0" in output
+
+
 def test_release_controller_owns_mutex_status_log_and_child_exit_code():
     """BUILD (audit 2026-08-13 §BR.03/10/12): controller không được bắn-và-quên."""
     controller = _read(RELEASE_CONTROLLER)
@@ -585,6 +654,7 @@ _PARSE_SNIPPET = (
         pytest.param(REPO / "release_update.ps1", id="release_update"),
         pytest.param(REPO / "quanly_phathanh.ps1", id="quanly_phathanh"),
         pytest.param(RELEASE_CONTROLLER, id="release_controller"),
+        pytest.param(RELEASE_LOG_TERMINAL, id="release_log_terminal"),
     ],
 )
 def test_release_scripts_parse_under_windows_powershell(script):

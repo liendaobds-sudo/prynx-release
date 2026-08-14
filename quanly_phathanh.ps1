@@ -1,5 +1,7 @@
 ﻿#requires -version 5
 # PrynX - Cua so quan ly phat hanh (WinForms). Luu UTF-8 BOM de hien tieng Viet dung.
+param([switch]$ShowBuildTerminal)
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
@@ -9,6 +11,7 @@ $KEY_FILE = "$env:USERPROFILE\.tauri\prynx.key"
 $SECRET_STORE_SCRIPT = Join-Path $ROOT "scripts\release_secret_store.ps1"
 $SECRET_SETUP_SCRIPT = Join-Path $ROOT "scripts\setup_release_secrets.ps1"
 $RELEASE_CONTROLLER = Join-Path $ROOT "scripts\release_controller.ps1"
+$RELEASE_LOG_TERMINAL = Join-Path $ROOT "scripts\watch_release_run.ps1"
 $RELEASE_STATE_ROOT = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "PrynX\release-runs"
 . $SECRET_STORE_SCRIPT
 
@@ -243,6 +246,36 @@ function Start-HiddenPowerShell {
     return [Diagnostics.Process]::Start($startInfo)
 }
 
+function Start-ReleaseLogTerminal {
+    param([Parameter(Mandatory = $true)][int]$ControllerPid)
+
+    if (-not (Test-Path -LiteralPath $RELEASE_LOG_TERMINAL -PathType Leaf)) {
+        throw "Thiếu trình theo dõi terminal: $RELEASE_LOG_TERMINAL"
+    }
+
+    function Quote-ProcessArgument([string]$value) {
+        if ($null -eq $value) { return '""' }
+        if ($value -notmatch '[\s"]') { return $value }
+        return '"' + ([regex]::Replace($value, '(\\*)"', '$1$1\"')) + '"'
+    }
+
+    $arguments = @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $RELEASE_LOG_TERMINAL,
+        "-StateRoot", $RELEASE_STATE_ROOT, "-ControllerPid", [string]$ControllerPid
+    )
+    $startInfo = New-Object Diagnostics.ProcessStartInfo
+    $startInfo.FileName = "powershell.exe"
+    $startInfo.Arguments = (@($arguments | ForEach-Object {
+        Quote-ProcessArgument ([string]$_)
+    }) -join ' ')
+    $startInfo.WorkingDirectory = $ROOT
+    # UIUX (audit 2026-08-14 §BR.13): terminal chỉ theo dõi log; đóng nó không giết controller/build.
+    $startInfo.UseShellExecute = $true
+    $startInfo.CreateNoWindow = $false
+    $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Normal
+    return [Diagnostics.Process]::Start($startInfo)
+}
+
 function Start-ReleaseController {
     param(
         [Parameter(Mandatory = $true)][ValidateSet("internal", "publish")][string]$Mode,
@@ -283,9 +316,23 @@ function Start-ReleaseController {
         # giữ mutex, log/status và mã thoát; đóng form không giết build.
         $controllerProcess = Start-HiddenPowerShell -Arguments $args
         if ($null -eq $controllerProcess) { throw "Không khởi động được release controller." }
+        if ($ShowBuildTerminal) {
+            try {
+                $terminalProcess = Start-ReleaseLogTerminal -ControllerPid $controllerProcess.Id
+                if ($null -eq $terminalProcess) { throw "Không khởi động được terminal theo dõi." }
+            }
+            catch {
+                Log ("[CẢNH BÁO] Build vẫn chạy nhưng không mở được terminal: " + $_.Exception.Message)
+            }
+        }
         Set-BuildControlsEnabled $false
         $lblRunState.Text = "Đang khởi động controller..."
-        Log "Đã khởi động build nền. Có thể đóng cửa sổ này; mở lại vẫn xem được trạng thái."
+        if ($ShowBuildTerminal) {
+            Log "Đã khởi động build nền và mở terminal theo dõi riêng."
+        }
+        else {
+            Log "Đã khởi động build nền. Có thể đóng cửa sổ này; mở lại vẫn xem được trạng thái."
+        }
         return $true
     }
     catch {
