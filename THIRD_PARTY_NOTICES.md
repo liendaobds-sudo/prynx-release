@@ -3,7 +3,7 @@
 PrynX sử dụng các thành phần mã nguồn mở dưới đây. Bản quyền thuộc về các
 tác giả tương ứng; mỗi thành phần được phân phối theo giấy phép của nó.
 
-*Sinh tự động ngày 2026-08-06 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
+*Sinh tự động ngày 2026-08-14 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
 
 > Đây không phải tư vấn pháp lý. Tài liệu này liệt kê thành phần và giấy
 > phép để phục vụ nghĩa vụ ghi công; việc đánh giá tuân thủ là việc riêng.
@@ -1081,7 +1081,10 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | @derhuerst/http-basic | 8.2.4 | MIT | build/test |
 | @dimforge/rapier3d-compat | 0.12.0 | Apache-2.0 | phát hành |
 | @emnapi/core | 1.10.0 | MIT | phát hành |
+| @emnapi/core | 1.8.1 | MIT | phát hành |
 | @emnapi/runtime | 1.10.0 | MIT | phát hành |
+| @emnapi/runtime | 1.8.1 | MIT | phát hành |
+| @emnapi/wasi-threads | 1.1.0 | MIT | phát hành |
 | @emnapi/wasi-threads | 1.2.1 | MIT | phát hành |
 | @emnapi/wasi-threads | 1.2.3 | MIT | phát hành |
 | @eslint-community/eslint-utils | 4.9.1 | MIT | build/test |
@@ -1105,6 +1108,7 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | @jridgewell/trace-mapping | 0.3.31 | MIT | phát hành |
 | @mediapipe/tasks-vision | 0.10.17 | Apache-2.0 | phát hành |
 | @monogrid/gainmap-js | 3.4.0 | MIT | phát hành |
+| @napi-rs/wasm-runtime | 1.1.1 | MIT | phát hành |
 | @napi-rs/wasm-runtime | 1.1.5 | MIT | phát hành |
 | @oxc-project/types | 0.133.0 | MIT | phát hành |
 | @pdf-lib/fontkit | 1.1.1 | MIT | phát hành |
@@ -1184,6 +1188,7 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | @turf/meta | 7.3.5 | MIT | phát hành |
 | @turf/union | 7.3.5 | MIT | phát hành |
 | @tweenjs/tween.js | 23.1.3 | MIT | phát hành |
+| @tybys/wasm-util | 0.10.1 | MIT | phát hành |
 | @tybys/wasm-util | 0.10.2 | MIT | phát hành |
 | @types/aria-query | 5.0.4 | MIT | build/test |
 | @types/chai | 5.2.3 | MIT | build/test |
@@ -1587,11 +1592,11 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 - Nhị phân đóng gói: 6
 - Thư viện Python: 116
 - Crate Rust: 798
-- Gói npm: 526
+- Gói npm: 531
 
 | Giấy phép | Số thành phần |
 |---|---|
-| MIT | 619 |
+| MIT | 624 |
 | MIT OR Apache-2.0 | 383 |
 | Apache-2.0 OR MIT | 90 |
 | Apache-2.0 | 41 |

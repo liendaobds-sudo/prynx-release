@@ -805,6 +805,16 @@ def test_notice_generator_khong_ghi_lai_khi_chi_doi_ngay(tmp_path: Path):
     assert out.read_text(encoding="utf-8") == changed_payload
 
 
+def test_build_chi_kiem_tra_notice_da_commit_khong_tu_sua_source():
+    """BUILD (audit 2026-08-14 REL.PROVENANCE): build không được tự làm Git dirty."""
+    source = _read(BUILD)
+    notice_call = '$noticeArgs = @("$ROOT\\scripts\\gen_third_party_notices.py", "--check")'
+
+    assert notice_call in source
+    assert '$noticeArgs = @("$ROOT\\scripts\\gen_third_party_notices.py")' not in source
+    assert source.index(notice_call) < source.index("Copy-Item -Force \"$ROOT\\THIRD_PARTY_NOTICES.md\"")
+
+
 def _native_components() -> list[dict]:
     return json.loads(_read(COMPONENTS))["native_components"]
 

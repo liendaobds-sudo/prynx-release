@@ -1169,27 +1169,27 @@ if (Test-Path $TESS_SRC) {
 }
 
 # ---- Third-party notices ----
-# Sinh lai NOTICE tu lockfile THAT o moi lan build. Ly do: NOTICE viet tay se lac
-# hau ngay sau lan `pip install` / `npm i` ke tiep, va mot NOTICE sai con te hon
-# khong co -- no la tuyen bo bang van ban rang ta da kiem ma thuc ra chua.
-# Danh sach thanh phan phai khop dung payload dang dong goi; component khai
-# `bundled=false` duoc generator loai tu dong.
-Write-Host "  Generating THIRD_PARTY_NOTICES.md..." -ForegroundColor DarkGray
+# BUILD (audit 2026-08-14 REL.PROVENANCE): build chi KIEM TRA NOTICE da commit,
+# khong duoc tu ghi lai tracked source sau khi native provenance da duoc chot.
+# Neu dependency thay doi, generator --check dung som va yeu cau cap nhat NOTICE
+# trong mot commit rieng truoc khi build lai. Component `bundled=false` duoc
+# generator loai tu dong.
+Write-Host "  Checking committed THIRD_PARTY_NOTICES.md..." -ForegroundColor DarkGray
 if (-not (Test-Path -LiteralPath $VENV_PYTHON -PathType Leaf)) {
     Write-Host "ERROR: Khong tim thay $VENV_PYTHON de sinh NOTICE." -ForegroundColor Red
     exit 1
 }
-$noticeArgs = @("$ROOT\scripts\gen_third_party_notices.py")
+$noticeArgs = @("$ROOT\scripts\gen_third_party_notices.py", "--check")
 $env:PYTHONIOENCODING = "utf-8"
 & $VENV_PYTHON @noticeArgs
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: Khong sinh duoc THIRD_PARTY_NOTICES.md." -ForegroundColor Red
-    Write-Host "  Khong phat hanh khi chua co danh muc ghi cong hop le." -ForegroundColor Red
+    Write-Host "ERROR: THIRD_PARTY_NOTICES.md da lech dependency hien tai." -ForegroundColor Red
+    Write-Host "  Hay sinh lai NOTICE, review, commit va push truoc khi build." -ForegroundColor Red
     exit 1
 }
 # Dua NOTICE vao bundle (tauri.conf.json khai resource "THIRD_PARTY_NOTICES.md").
 Copy-Item -Force "$ROOT\THIRD_PARTY_NOTICES.md" "$ROOT\desktop\src-tauri\THIRD_PARTY_NOTICES.md"
-Write-Host "  THIRD_PARTY_NOTICES.md generated and staged for bundle." -ForegroundColor Green
+Write-Host "  Committed THIRD_PARTY_NOTICES.md verified and staged for bundle." -ForegroundColor Green
 
 $requiredBundleFiles = @(
     "$ROOT\desktop\src-tauri\bin\pdfium.dll",
