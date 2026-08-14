@@ -929,6 +929,10 @@ def process_chunk(args):
                 bb[2] = max(bb[2], _x1); bb[3] = max(bb[3], _y1)
         _clip_off_x = min(gap_x / 2.0, bleed_pt) if gap_x > 0 else 0.0
         _clip_off_y = min(gap_y / 2.0, bleed_pt) if gap_y > 0 else 0.0
+        # Fallback khung trang không có đường bế thật nên không phụ thuộc bleed
+        # đang lưu ẩn trên UI; chỉ nửa khoảng hở thật mới giới hạn va chạm artwork.
+        _fallback_gap_half_x = max(0.0, gap_x / 2.0)
+        _fallback_gap_half_y = max(0.0, gap_y / 2.0)
 
 
         cut_border_trim_rects = []
@@ -978,6 +982,8 @@ def process_chunk(args):
                 guillotine_source_clip=guillotine_source_clips.get(
                     p['src_page_idx']
                 ),
+                fallback_gap_half_x=_fallback_gap_half_x,
+                fallback_gap_half_y=_fallback_gap_half_y,
             )
             cut_border_trim_rects.append(trim_rect)
 

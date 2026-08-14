@@ -325,12 +325,34 @@ describe('AdvancedSettingsSection — thiết lập 1 Dao', () => {
         const cutTooltip = document.getElementById(cutHelp.getAttribute('aria-describedby') || '');
         expect(cutTooltip?.getAttribute('role')).toBe('tooltip');
         expect(cutTooltip?.textContent).toContain('Dao cắt về mặc định mỗi phiên');
+        const cutSelect = screen.getByLabelText('ĐƯỜNG CẮT');
+        expect(cutHelp.parentElement?.parentElement).toBe(cutSelect.parentElement);
 
         const offsetHelp = screen.getByRole('button', { name: 'Giải thích CO/MỞ' });
         const offsetTooltip = document.getElementById(offsetHelp.getAttribute('aria-describedby') || '');
         expect(offsetTooltip?.getAttribute('role')).toBe('tooltip');
         expect(offsetTooltip?.textContent).toContain('số dương = mở khuôn ra');
+        const offsetInput = screen.getByLabelText('CO/MỞ');
+        expect(offsetHelp.parentElement?.parentElement).toBe(offsetInput.parentElement?.parentElement);
         expect(screen.getAllByText(/Dao cắt về mặc định mỗi phiên/)).toHaveLength(1);
+    });
+
+    it('cho gõ trực tiếp dấu âm và số thập phân vào Co/Mở', () => {
+        const { store } = renderAdvancedSettings({
+            activeTool: 'sticker_imposer',
+            cutType: 'default',
+            hasValidDie: false,
+        });
+        openCutSettings();
+
+        const input = screen.getByLabelText('CO/MỞ') as HTMLInputElement;
+        fireEvent.change(input, { target: { value: '-' } });
+        expect(input.value).toBe('-');
+        expect(store.getState().dieOffsetMm).toBe(0);
+
+        fireEvent.change(input, { target: { value: '-0.5' } });
+        expect(input.value).toBe('-0.5');
+        expect(store.getState().dieOffsetMm).toBe(-0.5);
     });
 
     it('file có khuôn mới hiện đủ hai kiểu khuôn', () => {

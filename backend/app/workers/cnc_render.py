@@ -193,6 +193,7 @@ def _resolve_die_color(color):
 
 def _render_cnc_unit(out_doc, src_doc, front_pl, *, two_sided, flip_edge, back_of,
                      sheet_w, sheet_h, bleed_pt, clip_off_x, clip_off_y,
+                     fallback_gap_half_x, fallback_gap_half_y,
                      margin_left, margin_bottom, pont_config, duplex_marks, job_id,
                      diecut_geom_cache, die_items_cache, local_stripped_pages,
                      max_geom_cache):
@@ -218,6 +219,8 @@ def _render_cnc_unit(out_doc, src_doc, front_pl, *, two_sided, flip_edge, back_o
             job_id=job_id, diecut_geom_cache=diecut_geom_cache,
             die_items_cache=die_items_cache, max_geom_cache=max_geom_cache,
             block_bbox=front_bbox, clip_off_x=clip_off_x, clip_off_y=clip_off_y,
+            fallback_gap_half_x=fallback_gap_half_x,
+            fallback_gap_half_y=fallback_gap_half_y,
             find_largest_die_path=_find_largest_die_path,
         )
     if pont_config:
@@ -240,6 +243,8 @@ def _render_cnc_unit(out_doc, src_doc, front_pl, *, two_sided, flip_edge, back_o
                 job_id=job_id, diecut_geom_cache=diecut_geom_cache,
                 die_items_cache=die_items_cache, max_geom_cache=max_geom_cache,
                 block_bbox=back_bbox, clip_off_x=clip_off_x, clip_off_y=clip_off_y,
+                fallback_gap_half_x=fallback_gap_half_x,
+                fallback_gap_half_y=fallback_gap_half_y,
                 find_largest_die_path=_find_largest_die_path,
                 mirror_x=p.get('mirror_x', False), mirror_y=p.get('mirror_y', False),
             )
@@ -329,6 +334,8 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
     usable_h = sheet_h - margin_top - margin_bottom
     clip_off_x = min(gap_x / 2.0, bleed_pt) if gap_x > 0 else 0.0
     clip_off_y = min(gap_y / 2.0, bleed_pt) if gap_y > 0 else 0.0
+    fallback_gap_half_x = max(0.0, gap_x / 2.0)
+    fallback_gap_half_y = max(0.0, gap_y / 2.0)
 
     target_quantity = settings.get('targetQuantity', 0)
     target_quantities_by_page = settings.get('targetQuantitiesByPage', {}) or {}
@@ -539,6 +546,8 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
             two_sided=two_sided, flip_edge=flip_edge, back_of=back_of,
             sheet_w=sheet_w, sheet_h=sheet_h, bleed_pt=bleed_pt,
             clip_off_x=clip_off_x, clip_off_y=clip_off_y,
+            fallback_gap_half_x=fallback_gap_half_x,
+            fallback_gap_half_y=fallback_gap_half_y,
             margin_left=margin_left, margin_bottom=margin_bottom,
             pont_config=pont_config, duplex_marks=duplex_marks, job_id=job_id,
             diecut_geom_cache=diecut_geom_cache, die_items_cache=die_items_cache,

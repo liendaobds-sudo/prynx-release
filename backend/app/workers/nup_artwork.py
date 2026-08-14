@@ -33,6 +33,35 @@ def resolve_die_output_clip(trim_rect, bleed_rect, cell_out_clip, cut_type, die_
     return cell_out_clip if cell_out_clip is not None else bleed_rect
 
 
+def resolve_page_fallback_output_clip(
+    trim_rect,
+    source_target_rect,
+    gap_half_x,
+    gap_half_y,
+):
+    """Giới hạn artwork fallback theo trang logic và nửa khoảng hở.
+
+    Khung trang fallback không có đường bế thật để định nghĩa bleed. Vì vậy không
+    được dùng bleed đang lưu ẩn trong UI để lộ thêm phần MediaBox ở riêng mép ngoài
+    block. Mask chỉ được phép nằm trong trang logic nguồn và tối đa nửa khoảng hở
+    quanh đường cắt, nhờ đó hai tem kề nhau không đè artwork lên nhau.
+    """
+    safe_gap_clip = pdf_lib.Rect(
+        trim_rect.x0 - max(0.0, float(gap_half_x or 0.0)),
+        trim_rect.y0 - max(0.0, float(gap_half_y or 0.0)),
+        trim_rect.x1 + max(0.0, float(gap_half_x or 0.0)),
+        trim_rect.y1 + max(0.0, float(gap_half_y or 0.0)),
+    )
+    clipped = source_target_rect & safe_gap_clip
+    if clipped.is_empty:
+        logger.warning(
+            "Clip fallback theo trang không giao khung nguồn; giữ khung nguồn để "
+            "tránh làm mất artwork."
+        )
+        return source_target_rect
+    return clipped
+
+
 def _die_channel_names_lower():
     """Tên kênh bế chuẩn (lowercase) — tái dùng cấu hình detection để nhất quán."""
     try:
@@ -657,6 +686,8 @@ def place_one_artwork(
     shape_clip=True,
     shape_clip_offset_pt=None,
     guillotine_source_clip=None,
+    fallback_gap_half_x=None,
+    fallback_gap_half_y=None,
 ):
     """Đặt MỘT placement `p` lên `out_page`. Trả về (trim_rect, src_page_idx).
 
@@ -669,6 +700,9 @@ def place_one_artwork(
     cũ nên không bao giờ vẽ rộng hơn trước. Tem chữ nhật tự động bỏ qua (rect đã đủ).
     shape_clip_offset_pt: bù xén cho clip theo hình; None = min(clip_off_x, clip_off_y)
     (nửa gap, kẹp bởi bleed) — mức lớn nhất mà 2 vùng clip chắc chắn không giao nhau.
+
+    fallback_gap_half_x / fallback_gap_half_y: nửa khoảng hở thật trên tờ (pt),
+    không kẹp bởi bleed. Chỉ dùng khi ``Mặc định`` phải fallback theo khung trang.
 
     homogeneous_clip / homogeneous_rect (chế độ ĐỒNG NHẤT — sticker-homogeneous-nup):
     khi ``homogeneous_clip`` ≠ None → đi nhánh REGISTRATION: đặt artwork của trang nội
@@ -1045,8 +1079,10 @@ def place_one_artwork(
         # PRYNX_SHAPE_CLIP=0) → giữ nguyên rect clip.
         # page_sheet_mode (decal cả tờ) căn theo MediaBox, đường bế bên trong KHÔNG
         # phải biên tem → không được dùng làm clip.
+        _cached_source_die = die_items_cache.get(cache_key) or {}
+        _is_page_fallback = bool(_cached_source_die.get('is_page_fallback'))
         _clip_rings = None
-        if shape_clip and not page_sheet_mode:
+        if shape_clip and not page_sheet_mode and not _is_page_fallback:
             _cached_die = die_items_cache.get(cache_key)
             if _cached_die and _cached_die.get('items'):
                 if shape_clip_offset_pt is None:
@@ -1069,8 +1105,7 @@ def place_one_artwork(
         # Chỉ truyền kwarg khi thực sự có clip theo hình → luồng cũ bất biến.
         _clip_kw = {'out_clip_path': _clip_rings} if _clip_rings else {}
         _source_clip_kw = {}
-        _cached_source_die = die_items_cache.get(cache_key) or {}
-        if _cached_source_die.get('is_page_fallback'):
+        if _is_page_fallback:
             _source_clip_kw = {
                 'clip': pdf_lib.Rect(sx0, sy0, sx1, sy1),
             }
@@ -1085,26 +1120,49 @@ def place_one_artwork(
                 ),
             }
 
+        # [PAGEBOX CLIP FIX 2026-08-14] Fallback theo trang phải dùng cùng khung
+        # nguồn logic ở mọi vị trí. Bleed lưu từ công cụ khác đang bị ẩn trên UI
+        # không được làm mask của riêng tem mép block nở thêm 2 mm.
+        def _resolve_placement_clip(source_target_rect):
+            if not _is_page_fallback:
+                return _die_clip
+            gap_half_x = (
+                clip_off_x
+                if fallback_gap_half_x is None
+                else fallback_gap_half_x
+            )
+            gap_half_y = (
+                clip_off_y
+                if fallback_gap_half_y is None
+                else fallback_gap_half_y
+            )
+            return resolve_page_fallback_output_clip(
+                trim_rect,
+                source_target_rect,
+                gap_half_x,
+                gap_half_y,
+            )
+
         if cell.get('isRotated', False) and cell.get('isRotated180', False):
             shift_x = trim_rect.x0 - (vis_h - rel_ty1)
             shift_y = trim_rect.y0 - rel_tx0
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_h, shift_y + vis_w)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=270, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y, **_source_clip_kw, **_clip_kw)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=270, out_clip=_resolve_placement_clip(target_rect), mirror_x=mirror_x, mirror_y=mirror_y, **_source_clip_kw, **_clip_kw)
         elif cell.get('isRotated180', False):
             shift_x = trim_rect.x0 - (vis_w - rel_tx1)
             shift_y = trim_rect.y0 - (vis_h - rel_ty1)
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_w, shift_y + vis_h)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=180, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y, **_source_clip_kw, **_clip_kw)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=180, out_clip=_resolve_placement_clip(target_rect), mirror_x=mirror_x, mirror_y=mirror_y, **_source_clip_kw, **_clip_kw)
         elif cell.get('isRotated', False):
             shift_x = trim_rect.x0 - rel_ty0
             shift_y = trim_rect.y0 - (vis_w - rel_tx1)
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_h, shift_y + vis_w)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=90, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y, **_source_clip_kw, **_clip_kw)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=90, out_clip=_resolve_placement_clip(target_rect), mirror_x=mirror_x, mirror_y=mirror_y, **_source_clip_kw, **_clip_kw)
         else:
             shift_x = trim_rect.x0 - rel_tx0
             shift_y = trim_rect.y0 - rel_ty0
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_w, shift_y + vis_h)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y, **_source_clip_kw, **_clip_kw)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, out_clip=_resolve_placement_clip(target_rect), mirror_x=mirror_x, mirror_y=mirror_y, **_source_clip_kw, **_clip_kw)
     else:
         if cell.get('isRotated', False) and cell.get('isRotated180', False):
             out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, rotate=270, clip=guillotine_source_clip, out_clip=cell_out_clip, mirror_x=mirror_x, mirror_y=mirror_y)

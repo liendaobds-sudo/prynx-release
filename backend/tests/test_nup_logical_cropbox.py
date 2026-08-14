@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pikepdf
 import pytest
 
@@ -86,6 +88,22 @@ def _do_count(path):
             for page in pdf.pages
             for instruction in pikepdf.parse_content_stream(page)
         )
+
+
+def _rect_clip_dimensions(path, page_index=0):
+    """Đọc kích thước các rectangle clip đặt artwork, không dùng PyMuPDF."""
+    with pikepdf.Pdf.open(path) as pdf:
+        contents = pdf.pages[page_index].obj.get("/Contents")
+        streams = contents if isinstance(contents, pikepdf.Array) else [contents]
+        raw = b"\n".join(stream.read_bytes() for stream in streams if stream is not None)
+    pattern = re.compile(
+        rb"(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+"
+        rb"(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+re\s+W\s+n"
+    )
+    return [
+        (float(match.group(3)), float(match.group(4)))
+        for match in pattern.finditer(raw)
+    ]
 
 
 def _minimum_rendered_gray(path):
@@ -538,6 +556,56 @@ def test_default_cut_without_contour_uses_logical_page_for_preview_and_export(
         assert len(cut_rects) == 16
     finally:
         rendered.close()
+
+
+def test_default_page_fallback_clip_does_not_expand_outer_block_cells(tmp_path):
+    """Ca 147,1 × 51,3: bleed ẩn 3 mm không được làm mask mép thành 53,3 mm."""
+    source = _make_cropbox_pdf(
+        tmp_path / "default-page-fallback-offset.pdf",
+        LARGE_MEDIA,
+        LOGICAL_CROP,
+    )
+    output = tmp_path / "default-page-fallback-offset-out.pdf"
+    nup_engine.run_nup_engine(
+        source,
+        str(output),
+        {
+            "imposerMode": "sticker_imposer",
+            "isDieCutMode": True,
+            "sheetWidth": 320.0,
+            "sheetHeight": 450.0,
+            "layoutType": "repeat",
+            "gridStrategy": "optimal_auto",
+            "targetQuantity": 0,
+            "targetQuantitiesByPage": {},
+            "gapX": 2.0,
+            "gapY": 2.0,
+            "marginTop": 0.0,
+            "marginBottom": 0.0,
+            "marginLeft": 0.0,
+            "marginRight": 0.0,
+            "markType": "none",
+            "pontType": "none",
+            # Giá trị này bị ẩn trong UI Bình tem bế nhưng trước đây vẫn làm
+            # riêng mask ở mép ngoài block nở thêm đúng 2 mm.
+            "bleed": 3.0,
+            "cutType": "default",
+            "dieSizeMode": "die",
+            "dieOffsetMm": -1.0,
+            "separateCutPage": True,
+            "detectedShapesByPage": {"0": "RECTANGLE"},
+            "detectedShapeParamsByPage": {"0": {}},
+        },
+        job_id="default-page-fallback-offset",
+    )
+
+    clip_dimensions = _rect_clip_dimensions(output)
+    assert len(clip_dimensions) == 18
+    logical_w = LOGICAL_CROP[2] - LOGICAL_CROP[0]
+    logical_h = LOGICAL_CROP[3] - LOGICAL_CROP[1]
+    for width, height in clip_dimensions:
+        assert min(width, height) == pytest.approx(logical_h, abs=0.02)
+        assert max(width, height) == pytest.approx(logical_w, abs=0.02)
 
 
 def test_ui_bleed_overrides_embedded_trimbox(tmp_path):

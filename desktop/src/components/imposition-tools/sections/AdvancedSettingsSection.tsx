@@ -92,12 +92,73 @@ function InlineHelpTooltip({
             <span
                 id={tooltipId}
                 role="tooltip"
-                className="pointer-events-none invisible absolute bottom-full left-1/2 z-[120] mb-2 w-[270px] max-w-[calc(100vw-2rem)] -translate-x-[20%] rounded-lg bg-slate-800 px-3 py-2.5 text-left text-[12px] font-normal normal-case leading-relaxed tracking-normal text-white opacity-0 shadow-xl transition-all group-hover/inline-help:visible group-hover/inline-help:opacity-100 group-focus-within/inline-help:visible group-focus-within/inline-help:opacity-100 dark:bg-zinc-700"
+                className="pointer-events-none invisible absolute bottom-full right-0 z-[120] mb-2 w-[270px] max-w-[calc(100vw-2rem)] rounded-lg bg-slate-800 px-3 py-2.5 text-left text-[12px] font-normal normal-case leading-relaxed tracking-normal text-white opacity-0 shadow-xl transition-all group-hover/inline-help:visible group-hover/inline-help:opacity-100 group-focus-within/inline-help:visible group-focus-within/inline-help:opacity-100 dark:bg-zinc-700"
             >
                 {children}
-                <span className="absolute left-[20%] top-full -mt-1 h-2 w-2 -translate-x-1/2 rotate-45 bg-slate-800 dark:bg-zinc-700" />
+                <span className="absolute right-1 top-full -mt-1 h-2 w-2 rotate-45 bg-slate-800 dark:bg-zinc-700" />
             </span>
         </span>
+    );
+}
+
+function SignedDieOffsetInput({
+    id,
+    value,
+    onChange,
+}: {
+    id: string;
+    value: number;
+    onChange: (value: number) => void;
+}) {
+    // UIUX (audit 2026-08-14 §DIE-FALLBACK-04): giữ chuỗi nhập dở để dấu "-"
+    // không bị Number('-') ép về 0 trước khi người dùng gõ phần số.
+    const [text, setText] = useState(String(value));
+    useEffect(() => {
+        const parsed = Number(text.replace(',', '.'));
+        if (!Number.isFinite(parsed) || parsed !== value) setText(String(value));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [value]);
+
+    const commit = (raw: string) => {
+        if (!/^-?\d*(?:[.,]\d*)?$/.test(raw)) return;
+        setText(raw);
+        if (raw === '' || raw === '-' || raw === '.' || raw === ',' || raw === '-.' || raw === '-,') return;
+        const next = Number(raw.replace(',', '.'));
+        if (Number.isFinite(next)) onChange(next);
+    };
+
+    const handleBlur = () => {
+        const next = Number(text.replace(',', '.'));
+        if (!Number.isFinite(next)) {
+            setText(String(value));
+            return;
+        }
+        setText(String(next));
+        if (next !== value) onChange(next);
+    };
+
+    return (
+        <input
+            id={id}
+            type="text"
+            inputMode="decimal"
+            autoComplete="off"
+            spellCheck={false}
+            value={text}
+            onChange={event => commit(event.target.value)}
+            onBlur={handleBlur}
+            onFocus={event => event.currentTarget.select()}
+            onKeyDown={event => {
+                if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+                event.preventDefault();
+                const parsed = Number(text.replace(',', '.'));
+                const base = Number.isFinite(parsed) ? parsed : value;
+                const next = base + (event.key === 'ArrowUp' ? 0.5 : -0.5);
+                setText(String(next));
+                onChange(next);
+            }}
+            className="w-full h-8 px-2 pr-8 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+        />
     );
 }
 
@@ -501,12 +562,7 @@ export default function AdvancedSettingsSection({
                         {stickerGeometryMode && (
                             <div className="flex flex-col gap-1 relative z-[20] pb-1">
                                 <div className="flex items-center gap-3">
-                                    <div className="flex w-[95px] shrink-0 items-center gap-1">
-                                        <label htmlFor={cutTypeInputId} className="text-[11px] font-bold text-slate-600 uppercase tracking-wide">{t('imposition.advancedSettings:duong_cat')}</label>
-                                        <InlineHelpTooltip label={`${t('imposition.advancedSettings:giai_thich', 'Giải thích')} ${t('imposition.advancedSettings:duong_cat')}`}>
-                                            {t('imposition.advancedSettings:dao_cat_reset_moi_phien', 'Dao cắt về mặc định mỗi phiên để an toàn — chọn lại nếu cần dao khác')}
-                                        </InlineHelpTooltip>
-                                    </div>
+                                    <label htmlFor={cutTypeInputId} className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:duong_cat')}</label>
                                     <div className="flex flex-1 items-center gap-2 min-w-0">
                                         <select
                                             id={cutTypeInputId}
@@ -517,6 +573,9 @@ export default function AdvancedSettingsSection({
                                             <option value="default">{t('imposition.advancedSettings:mac_dinh')}</option>
                                             <option value="one_dao">1 Dao (Dao LETA)</option>
                                         </select>
+                                        <InlineHelpTooltip label={`${t('imposition.advancedSettings:giai_thich', 'Giải thích')} ${t('imposition.advancedSettings:duong_cat')}`}>
+                                            {t('imposition.advancedSettings:dao_cat_reset_moi_phien', 'Dao cắt về mặc định mỗi phiên để an toàn — chọn lại nếu cần dao khác')}
+                                        </InlineHelpTooltip>
                                     </div>
                                 </div>
                             </div>
@@ -577,18 +636,19 @@ export default function AdvancedSettingsSection({
                         {/* CO/MỞ — chỉ cho hình học theo khung trang fallback */}
                         {stickerGeometryMode && cutControlPolicy.showDieOffset && (
                             <div className="flex items-center gap-3 relative z-[20] pb-1">
-                                <div className="flex w-[95px] shrink-0 items-center gap-1">
-                                    <label htmlFor={dieOffsetInputId} className="text-[11px] font-bold text-slate-600 uppercase tracking-wide">{t('imposition.advancedSettings:co_mo')}</label>
+                                <label htmlFor={dieOffsetInputId} className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:co_mo')}</label>
+                                <div className="flex flex-1 items-center gap-2 min-w-0">
+                                    <div className="relative flex-1">
+                                        <SignedDieOffsetInput
+                                            id={dieOffsetInputId}
+                                            value={s.dieOffsetMm}
+                                            onChange={s.setDieOffsetMm}
+                                        />
+                                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none">mm</span>
+                                    </div>
                                     <InlineHelpTooltip label={`${t('imposition.advancedSettings:giai_thich', 'Giải thích')} ${t('imposition.advancedSettings:co_mo')}`}>
                                         {t('imposition.advancedSettings:kieu_khuon_offset_mo_ta')}
                                     </InlineHelpTooltip>
-                                </div>
-                                <div className="flex flex-1 items-center gap-2 min-w-0">
-                                    <div className="relative flex-1">
-                                        <input id={dieOffsetInputId} type="number" step="0.5" value={s.dieOffsetMm} onChange={e => s.setDieOffsetMm(Number(e.target.value))}
-                                            className="w-full h-8 px-2 pr-8 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium" />
-                                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none">mm</span>
-                                    </div>
                                 </div>
                             </div>
                         )}

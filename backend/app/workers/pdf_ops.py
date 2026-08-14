@@ -501,10 +501,19 @@ def show_pdf_page(pdf: pikepdf.Pdf, dest_page: pikepdf.Page,
             xobj.BBox = pikepdf.Array([_mb[0], _mb[1], _mb[2], _mb[3]])
         except Exception:
             pass
+        # [ADOBE EMBED FIX 2026-08-14] copy sang PDF đích trước khi chuẩn hóa để
+        # tuyệt đối không sửa image stream trong tài liệu nguồn đang dùng chung.
+        if src_pdf is not pdf:
+            xobj = pdf.copy_foreign(xobj)
+        from app.workers.pdf_image_compat import normalize_adobe_embed_images
+        normalized_images = normalize_adobe_embed_images(xobj)
+        if normalized_images:
+            logger.info(
+                "Đã chuẩn hóa %d JPEG-CMYK đảo kênh để tương thích Adobe Embed.",
+                normalized_images,
+            )
         if _cache is not None:
             # Đưa XObject vào output MỘT LẦN (phần nặng = copy_foreign object graph).
-            if src_pdf is not pdf:
-                xobj = pdf.copy_foreign(xobj)
             _register_form_ocgs(pdf, xobj, src_pdf)
             _res_name = pikepdf.Name(f"/NupXo{_key[0]}_{page_idx}")
             _cache[_key] = (xobj, _res_name)
