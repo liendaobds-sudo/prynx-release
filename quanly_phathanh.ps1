@@ -155,7 +155,20 @@ $script:LastRunLogPath = ""
 function Get-ReleaseRunStatus {
     $latestPath = Join-Path $RELEASE_STATE_ROOT "latest.json"
     if (-not (Test-Path -LiteralPath $latestPath -PathType Leaf)) { return $null }
-    try { return Get-Content -LiteralPath $latestPath -Raw -Encoding UTF8 | ConvertFrom-Json }
+    try {
+        $stream = New-Object IO.FileStream(
+            $latestPath,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+        )
+        try {
+            $reader = New-Object IO.StreamReader($stream, [Text.Encoding]::UTF8, $true)
+            try { return $reader.ReadToEnd() | ConvertFrom-Json }
+            finally { $reader.Dispose() }
+        }
+        finally { $stream.Dispose() }
+    }
     catch { return $null }
 }
 

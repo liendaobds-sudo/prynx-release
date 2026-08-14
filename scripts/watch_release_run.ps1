@@ -20,7 +20,18 @@ function Read-CurrentRunStatus {
     do {
         try {
             if (Test-Path -LiteralPath $latestPath -PathType Leaf) {
-                $status = Get-Content -LiteralPath $latestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                $stream = New-Object IO.FileStream(
+                    $latestPath,
+                    [IO.FileMode]::Open,
+                    [IO.FileAccess]::Read,
+                    ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+                )
+                try {
+                    $reader = New-Object IO.StreamReader($stream, [Text.Encoding]::UTF8, $true)
+                    try { $status = $reader.ReadToEnd() | ConvertFrom-Json }
+                    finally { $reader.Dispose() }
+                }
+                finally { $stream.Dispose() }
                 if ([int]$status.controllerPid -eq $ControllerPid) { return $status }
             }
         }

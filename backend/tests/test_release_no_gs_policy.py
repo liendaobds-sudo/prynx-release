@@ -520,6 +520,8 @@ def test_release_controller_owns_mutex_status_log_and_child_exit_code():
     assert '$mutexScope = if ([string]::IsNullOrWhiteSpace($CommandPath)) { $ROOT } else { $StateRoot }' in controller
     assert "$mutex.WaitOne(0, $false)" in controller
     assert "Write-JsonAtomic" in controller
+    assert "[IO.File]::Replace($tempPath, $Path, $backupPath, $true)" in controller
+    assert "for ($attempt = 1; $attempt -le 100; $attempt++)" in controller
     assert 'Join-Path $StateRoot "latest.json"' in controller
     assert 'Join-Path $runDirectory "build.log"' in controller
     assert "$childProcess.ExitCode" in controller
@@ -546,6 +548,8 @@ def test_release_controller_owns_mutex_status_log_and_child_exit_code():
     assert "Get-StageFromLog" in controller
     assert "ReadLineAsync" in controller
     assert "$logWriter.AutoFlush = $true" in controller
+    assert "[IO.FileShare]::Delete" in gui
+    assert "[IO.FileShare]::Delete" in _read(RELEASE_LOG_TERMINAL)
     assert "PRYNX_RELEASE_PROGRESS_PATH" not in build
     assert "PRYNX_RELEASE_PROGRESS_PATH" not in release
 
@@ -592,6 +596,68 @@ def test_release_controller_propagates_child_exit_and_writes_terminal_status(tmp
     assert status["controllerPid"] > 0
     assert status["childPid"] is None
     assert Path(status["logPath"]).read_text(encoding="utf-8-sig").strip() == "[1/5] tiến độ"
+
+
+def test_release_controller_retries_status_replace_while_reader_holds_latest(tmp_path: Path):
+    """Windows reader không chia sẻ DELETE không được làm controller giết build."""
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("không có PowerShell trên máy này")
+
+    probe = tmp_path / "slow_probe.ps1"
+    probe.write_text(
+        '[Console]::OutputEncoding = [Text.Encoding]::UTF8\n'
+        'Write-Output "[0/5] probe đang chạy"\n'
+        'Start-Sleep -Seconds 3\n'
+        'Write-Output "probe hoàn tất"\n'
+        'exit 0\n',
+        encoding="utf-8-sig",
+    )
+    state_root = tmp_path / "state"
+    proc = subprocess.Popen(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(RELEASE_CONTROLLER),
+            "-Mode",
+            "internal",
+            "-StateRoot",
+            str(state_root),
+            "-CommandPath",
+            str(probe),
+        ],
+        cwd=REPO,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    latest_path = state_root / "latest.json"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            status = json.loads(latest_path.read_text(encoding="utf-8-sig"))
+            if status["state"] == "running":
+                break
+        except (OSError, json.JSONDecodeError):
+            pass
+        time.sleep(0.05)
+    else:
+        proc.kill()
+        pytest.fail("controller không tạo trạng thái running trong 10 giây")
+
+    # Trên Windows, handle đọc mặc định không chia sẻ quyền xóa/thay thế file.
+    with latest_path.open("rb") as locked_reader:
+        locked_reader.read(1)
+        time.sleep(1.5)
+
+    stdout, stderr = proc.communicate(timeout=20)
+    output = (stdout + stderr).decode("utf-8", errors="replace")
+    assert proc.returncode == 0, output
+    final_status = json.loads(latest_path.read_text(encoding="utf-8-sig"))
+    assert final_status["state"] == "succeeded"
+    assert final_status["exitCode"] == 0
 
 
 def test_release_controller_binds_publish_version_notes_and_switch(tmp_path: Path):

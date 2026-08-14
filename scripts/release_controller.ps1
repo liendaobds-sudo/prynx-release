@@ -36,8 +36,39 @@ function Write-JsonAtomic {
 
     $json = $Value | ConvertTo-Json -Depth 8
     $tempPath = "$Path.$PID.tmp"
+    $backupPath = "$Path.$PID.bak"
     [IO.File]::WriteAllText($tempPath, $json, [Text.UTF8Encoding]::new($false))
-    Move-Item -LiteralPath $tempPath -Destination $Path -Force
+    $lastError = $null
+    try {
+        for ($attempt = 1; $attempt -le 100; $attempt++) {
+            try {
+                if ([IO.File]::Exists($Path)) {
+                    Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+                    [IO.File]::Replace($tempPath, $Path, $backupPath, $true)
+                }
+                else {
+                    [IO.File]::Move($tempPath, $Path)
+                }
+                return
+            }
+            catch [IO.IOException] {
+                $lastError = $_.Exception
+            }
+            catch [UnauthorizedAccessException] {
+                $lastError = $_.Exception
+            }
+            if ($attempt -lt 100) { Start-Sleep -Milliseconds 50 }
+        }
+        throw "Không thể cập nhật file trạng thái sau 5 giây: $Path. $($lastError.Message)"
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Write-RunStatus {
