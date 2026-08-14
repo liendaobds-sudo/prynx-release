@@ -812,6 +812,9 @@ def test_build_chi_kiem_tra_notice_da_commit_khong_tu_sua_source():
 
     assert notice_call in source
     assert '$noticeArgs = @("$ROOT\\scripts\\gen_third_party_notices.py")' not in source
+    assert source.index("gen_third_party_notices.py\" --check") < source.index(
+        "Building pdfcompare_native wheel"
+    )
     assert source.index(notice_call) < source.index("Copy-Item -Force \"$ROOT\\THIRD_PARTY_NOTICES.md\"")
 
 

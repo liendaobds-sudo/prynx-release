@@ -627,6 +627,14 @@ if (-not $SkipNuitka) {
             exit 1
         }
     }
+    # BUILD (audit 2026-08-14 REL.PROVENANCE): fail truoc native/QA/Nuitka neu
+    # NOTICE da commit lech dependency; khong doi den cuoi mot luot build dai.
+    Write-Host "  Preflight committed THIRD_PARTY_NOTICES.md..." -ForegroundColor DarkGray
+    $env:PYTHONIOENCODING = "utf-8"
+    & $VENV_PYTHON "$ROOT\scripts\gen_third_party_notices.py" --check
+    if ($LASTEXITCODE -ne 0) {
+        throw "THIRD_PARTY_NOTICES.md da lech dependency. Sinh lai, review, commit va push truoc khi build."
+    }
     Write-Host "  Building pdfcompare_native wheel for the active Python..." -ForegroundColor DarkGray
     $previousVirtualEnv = $env:VIRTUAL_ENV
     $env:VIRTUAL_ENV = "$ROOT\backend\venv"
