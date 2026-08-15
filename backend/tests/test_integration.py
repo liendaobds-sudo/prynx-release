@@ -73,4 +73,7 @@ def test_start_vdp_job_invalid():
 def test_pdf_tools_split_invalid():
     """Test pdf tools split endpoint"""
     response = client.post("/api/pdf-tools/split")
-    assert response.status_code == 422 # missing file
+    # Split hỗ trợ cả upload và file_path nên FastAPI không còn chặn 422 ở tầng schema;
+    # route chủ động trả 400 khi thiếu cả hai nguồn vào.
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Thiếu file PDF cần tách."
