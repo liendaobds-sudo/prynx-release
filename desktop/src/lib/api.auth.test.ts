@@ -35,8 +35,11 @@ describe('API request authentication', () => {
     // Khai kiểu tham số cho mock: `vi.fn(async () => …)` suy ra tuple đối số
     // RỖNG nên `calls[0][1]` không tồn tại dưới mắt tsc và build gate đỏ.
     const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL, _init?: RequestInit) =>
-        new Response(null, { status: 204 }),
+      async (_input: RequestInfo | URL, _init?: RequestInit) => {
+        void _input;
+        void _init;
+        return new Response(null, { status: 204 });
+      },
     );
     vi.stubGlobal('fetch', fetchMock);
 
@@ -53,14 +56,81 @@ describe('API request authentication', () => {
     expect(headers.get('X-PrynX-Signature')).toBe('trusted-signature');
     expect(headers.get('X-Custom')).toBe('kept');
     expect(invokeMock).toHaveBeenCalledWith('sign_api_request', expect.objectContaining({
+      licenseKey: 'LICENSE-KEY',
+      licenseToken: 'license-token',
       method: 'POST',
     }));
   });
 
+  it('re-registers a stale native token binding before sending the request', async () => {
+    let nativeToken = 'stale-token';
+    invokeMock.mockImplementation(async (
+      command: string,
+      args?: Record<string, string>,
+    ) => {
+      if (command === 'register_validated_key') {
+        nativeToken = args?.token || '';
+        return undefined;
+      }
+      if (command === 'sign_api_request') {
+        if (args?.licenseToken !== nativeToken) {
+          throw new Error('Token bản quyền đã thay đổi');
+        }
+        return {
+          'X-PrynX-Signature': 'trusted-signature',
+          'X-PrynX-Timestamp': '123',
+        };
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) => {
+        void _input;
+        void _init;
+        return new Response(null, { status: 204 });
+      },
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await authenticatedFetch('http://localhost:8321/api/upscale', {
+      method: 'POST',
+      body: 'image-bytes',
+    });
+
+    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
+      'sign_api_request',
+      'register_validated_key',
+      'sign_api_request',
+    ]);
+    expect(invokeMock).toHaveBeenNthCalledWith(1, 'sign_api_request', {
+      urlPath: '/api/upscale',
+      licenseKey: 'LICENSE-KEY',
+      licenseToken: 'license-token',
+      method: 'POST',
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, 'register_validated_key', {
+      licenseKey: 'LICENSE-KEY',
+      token: 'license-token',
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(3, 'sign_api_request', {
+      urlPath: '/api/upscale',
+      licenseKey: 'LICENSE-KEY',
+      licenseToken: 'license-token',
+      method: 'POST',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const sentHeaders = new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers);
+    expect(sentHeaders.get('X-License-Token')).toBe('license-token');
+    expect(sentHeaders.get('X-PrynX-Signature')).toBe('trusted-signature');
+  });
+
   it('signs and sends the effective Request after init overrides', async () => {
     const transport = vi.fn(
-      async (_input: RequestInfo | URL, _init?: RequestInit) =>
-        new Response(null, { status: 204 }),
+      async (_input: RequestInfo | URL, _init?: RequestInit) => {
+        void _input;
+        void _init;
+        return new Response(null, { status: 204 });
+      },
     );
     vi.stubGlobal('fetch', transport);
     installBackendFetchAuth();
@@ -73,6 +143,8 @@ describe('API request authentication', () => {
     expect(await sent.text()).toBe('payload');
     expect(sent.headers.get('X-PrynX-Signature')).toBe('trusted-signature');
     expect(invokeMock).toHaveBeenCalledWith('sign_api_request', expect.objectContaining({
+      licenseKey: 'LICENSE-KEY',
+      licenseToken: 'license-token',
       method: 'POST',
     }));
 

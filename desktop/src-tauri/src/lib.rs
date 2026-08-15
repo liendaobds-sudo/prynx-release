@@ -5,6 +5,8 @@ use tauri::Manager;
 use image::ImageEncoder;
 use pdfium_render::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(not(debug_assertions))]
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::ipc::Response;
@@ -268,16 +270,23 @@ static FRONTEND_INTERACTIVE_RECORDED: AtomicBool = AtomicBool::new(false);
 // (dev không spawn sidecar). Nuitka --onefile spawn tiến trình con nên phải taskkill
 // /T (cả cây) theo PID, không thể chỉ child.kill() (chỉ diệt bootstrap, python treo).
 #[cfg(not(debug_assertions))]
-static SIDECAR_PID: OnceLock<u32> = OnceLock::new();
+static SIDECAR_PID: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+static SIDECAR_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 #[cfg(all(not(debug_assertions), target_os = "windows"))]
 fn kill_sidecar() {
-    if let Some(&pid) = SIDECAR_PID.get() {
+    let pid = SIDECAR_PID.swap(0, Ordering::AcqRel);
+    if pid != 0 {
         let _ = std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .creation_flags(0x08000000)
             .output();
-        log::warn!("[SIDECAR] taskkill /T /F PID={} khi thoat app", pid);
+        log::warn!(
+            "[SIDECAR] Đã dừng cây tiến trình PID={} bằng taskkill /T /F",
+            pid
+        );
     }
 }
 
@@ -288,7 +297,7 @@ const SIDECAR_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 const SIDECAR_STARTUP_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 #[cfg(any(test, not(debug_assertions)))]
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct SidecarStoragePaths {
     working_dir: std::path::PathBuf,
     upload_dir: std::path::PathBuf,
@@ -320,6 +329,53 @@ fn prepare_sidecar_storage(
         upload_dir,
         results_dir,
     })
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn spawn_sidecar_process<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    storage: &SidecarStoragePaths,
+) -> Result<
+    (
+        tauri::async_runtime::Receiver<tauri_plugin_shell::process::CommandEvent>,
+        tauri_plugin_shell::process::CommandChild,
+    ),
+    String,
+> {
+    use tauri_plugin_shell::ShellExt;
+
+    let sidecar = app
+        .shell()
+        .sidecar("pdf-inspector-backend")
+        .map_err(|error| format!("Không tìm thấy binary sidecar: {error}"))?;
+    sidecar
+        .current_dir(&storage.working_dir)
+        .env("UPLOAD_DIR", &storage.upload_dir)
+        .env("RESULTS_DIR", &storage.results_dir)
+        .args(["--port", "8321"])
+        .envs([
+            ("DEV_MODE", "false"),
+            // SEC (audit 2026-08-15 §SIG.02): mọi thế hệ sidecar dùng cùng
+            // secret trong Rust và phải qua startup proof trước khi nhận request.
+            ("PRYNX_TOKEN_SOURCE", "stdin"),
+            ("PRYNX_PERF", if preview_perf_enabled() { "1" } else { "0" }),
+            ("PRYNX_ENFORCE_LICENSE_TOKEN", "true"),
+            (
+                "PRYNX_FEATURE_GATING_ENABLED",
+                option_env!("PRYNX_FEATURE_GATING_ENABLED").unwrap_or(if cfg!(debug_assertions) {
+                    "false"
+                } else {
+                    "true"
+                }),
+            ),
+            (
+                "PRYNX_LOGO_REBUILD_ENABLED",
+                option_env!("PRYNX_LOGO_REBUILD_ENABLED").unwrap_or("false"),
+            ),
+            ("PRYNX_MAX_TOKEN_LIFETIME_SECONDS", "691200"),
+        ])
+        .spawn()
+        .map_err(|error| format!("Không spawn được sidecar: {error}"))
 }
 
 #[cfg(all(not(debug_assertions), target_os = "windows"))]
@@ -475,12 +531,247 @@ fn verify_sidecar_startup(secret: &str, sidecar_exited: &AtomicBool) -> Result<(
     verify_sidecar_startup_at(address, secret, SIDECAR_STARTUP_TIMEOUT, sidecar_exited)
 }
 
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn sidecar_port_is_free() -> bool {
+    std::net::TcpListener::bind(("127.0.0.1", 8321u16)).is_ok()
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn sidecar_identity_is_ready(secret: &str) -> bool {
+    let address = match "127.0.0.1:8321".parse() {
+        Ok(address) => address,
+        Err(_) => return false,
+    };
+    let probe_exited = AtomicBool::new(false);
+    verify_sidecar_startup_at(
+        address,
+        secret,
+        std::time::Duration::from_secs(2),
+        &probe_exited,
+    )
+    .is_ok()
+}
+
+#[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SidecarRecoveryAction {
+    KeepVerifiedListener,
+    Restart,
+    WaitForUnknownListener,
+    Stop,
+}
+
+#[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
+fn sidecar_recovery_action(
+    port_is_free: bool,
+    identity_is_ready: bool,
+    failed_attempts: u32,
+) -> SidecarRecoveryAction {
+    if !port_is_free {
+        if identity_is_ready {
+            SidecarRecoveryAction::KeepVerifiedListener
+        } else if failed_attempts >= 2 {
+            SidecarRecoveryAction::Stop
+        } else {
+            SidecarRecoveryAction::WaitForUnknownListener
+        }
+    } else if failed_attempts >= 3 {
+        SidecarRecoveryAction::Stop
+    } else {
+        SidecarRecoveryAction::Restart
+    }
+}
+
+#[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
+fn sidecar_restart_delay(attempt: u32) -> std::time::Duration {
+    match attempt {
+        1 => std::time::Duration::from_millis(250),
+        2 => std::time::Duration::from_secs(1),
+        _ => std::time::Duration::from_secs(3),
+    }
+}
+
+#[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
+fn replace_sidecar_generation_exit_flag(current: &mut Arc<AtomicBool>) -> Arc<AtomicBool> {
+    // SEC (audit 2026-08-15 §SIG.02): mỗi thế hệ giữ cờ riêng. Event stream
+    // của tiến trình cũ đóng muộn không được đánh dấu nhầm tiến trình mới đã chết.
+    let next = Arc::new(AtomicBool::new(false));
+    *current = Arc::clone(&next);
+    next
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn start_sidecar_event_reader(
+    mut rx: tauri::async_runtime::Receiver<tauri_plugin_shell::process::CommandEvent>,
+    sidecar_exited: Arc<AtomicBool>,
+    pid: u32,
+) {
+    tauri::async_runtime::spawn(async move {
+        use tauri_plugin_shell::process::CommandEvent;
+
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(bytes) => {
+                    log::info!(
+                        "[SIDECAR-OUT] {}",
+                        String::from_utf8_lossy(&bytes).trim_end()
+                    );
+                }
+                CommandEvent::Stderr(bytes) => {
+                    log::warn!(
+                        "[SIDECAR-ERR] {}",
+                        String::from_utf8_lossy(&bytes).trim_end()
+                    );
+                }
+                CommandEvent::Terminated(payload) => {
+                    sidecar_exited.store(true, Ordering::Release);
+                    if SIDECAR_PID.load(Ordering::Acquire) == pid {
+                        SIDECAR_PID.store(0, Ordering::Release);
+                    }
+                    log::error!(
+                        "[SIDECAR] Terminated code={:?} signal={:?}",
+                        payload.code,
+                        payload.signal
+                    );
+                }
+                CommandEvent::Error(error) => {
+                    sidecar_exited.store(true, Ordering::Release);
+                    log::error!("[SIDECAR] Error: {}", error);
+                }
+                _ => {}
+            }
+        }
+
+        sidecar_exited.store(true, Ordering::Release);
+        log::error!("[SIDECAR] Event stream closed for PID={pid}");
+    });
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn start_sidecar_supervisor<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    storage: SidecarStoragePaths,
+    sidecar_token: String,
+    sidecar_exited: Arc<AtomicBool>,
+) {
+    if let Err(error) = std::thread::Builder::new()
+        .name("prynx-sidecar-supervisor".to_string())
+        .spawn(move || {
+            let mut failed_restarts = 0u32;
+            let mut monitoring_without_events = false;
+            let mut current_sidecar_exited = sidecar_exited;
+
+            loop {
+                if SIDECAR_SHUTDOWN.load(Ordering::Acquire) {
+                    return;
+                }
+                if !current_sidecar_exited.load(Ordering::Acquire) {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    continue;
+                }
+
+                // Pipe reader có thể lỗi trong khi listener vẫn đúng instance.
+                // Probe proof trước để tránh spawn trùng hoặc đụng listener lạ.
+                let port_is_free = sidecar_port_is_free();
+                let identity_is_ready =
+                    !port_is_free && sidecar_identity_is_ready(&sidecar_token);
+                match sidecar_recovery_action(
+                    port_is_free,
+                    identity_is_ready,
+                    failed_restarts,
+                ) {
+                    SidecarRecoveryAction::KeepVerifiedListener => {
+                        failed_restarts = 0;
+                        if !monitoring_without_events {
+                            monitoring_without_events = true;
+                            log::warn!(
+                                "[SIDECAR] Event stream lỗi nhưng startup proof vẫn hợp lệ; chuyển sang probe định kỳ"
+                            );
+                        }
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        continue;
+                    }
+                    SidecarRecoveryAction::WaitForUnknownListener => {
+                        failed_restarts = failed_restarts.saturating_add(1);
+                        log::error!(
+                            "[SIDECAR] Port 8321 bị chiếm bởi listener không xác thực; chưa tự ý kill tiến trình lạ (lần {failed_restarts}/3)"
+                        );
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        continue;
+                    }
+                    SidecarRecoveryAction::Stop => {
+                        log::error!(
+                            "[SIDECAR] Dừng recovery sau 3 lần thất bại hoặc gặp listener không xác thực; cần mở lại ứng dụng"
+                        );
+                        return;
+                    }
+                    SidecarRecoveryAction::Restart => {}
+                }
+
+                if SIDECAR_PID.load(Ordering::Acquire) != 0 {
+                    // Event reader lỗi nhưng listener đã biến mất: dọn đúng PID đã spawn
+                    // trước khi thay thế, tránh để bootstrap Nuitka treo không giữ port.
+                    kill_sidecar();
+                }
+                failed_restarts = failed_restarts.saturating_add(1);
+                std::thread::sleep(sidecar_restart_delay(failed_restarts));
+                if SIDECAR_SHUTDOWN.load(Ordering::Acquire) {
+                    return;
+                }
+
+                let (rx, mut child) = match spawn_sidecar_process(&app, &storage) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        log::error!("[SIDECAR] Restart thất bại: {error}");
+                        continue;
+                    }
+                };
+                let pid = child.pid();
+                let generation_exited =
+                    replace_sidecar_generation_exit_flag(&mut current_sidecar_exited);
+                SIDECAR_PID.store(pid, Ordering::Release);
+                if SIDECAR_SHUTDOWN.load(Ordering::Acquire) {
+                    kill_sidecar();
+                    return;
+                }
+                start_sidecar_event_reader(rx, Arc::clone(&generation_exited), pid);
+
+                let token_line = format!("TOKEN:{}\n", sidecar_token);
+                if let Err(error) = child.write(token_line.as_bytes()) {
+                    log::error!("[SIDECAR] Ghi token khi restart thất bại: {error}");
+                    generation_exited.store(true, Ordering::Release);
+                    kill_sidecar();
+                    continue;
+                }
+                startup_breadcrumb("sidecar recovery: waiting for startup proof");
+                if let Err(error) = verify_sidecar_startup(&sidecar_token, &generation_exited) {
+                    log::error!("[SIDECAR] Startup proof sau restart thất bại: {error}");
+                    startup_breadcrumb(&format!("sidecar recovery: FAIL {error}"));
+                    generation_exited.store(true, Ordering::Release);
+                    kill_sidecar();
+                    continue;
+                }
+
+                failed_restarts = 0;
+                monitoring_without_events = false;
+                log::warn!("[SIDECAR] Đã khởi động lại và xác thực thành công trên port 8321");
+                startup_breadcrumb("sidecar recovery: ready (startup proof OK)");
+            }
+        })
+    {
+        log::error!("[SIDECAR] Không tạo được supervisor runtime: {error}");
+    }
+}
+
 #[cfg(test)]
 mod sidecar_startup_tests {
     use super::{
-        prepare_sidecar_storage, sidecar_startup_timeout_error, startup_retry_delay,
-        verify_startup_proof, SIDECAR_STARTUP_TIMEOUT,
+        prepare_sidecar_storage, replace_sidecar_generation_exit_flag, sidecar_recovery_action,
+        sidecar_restart_delay, sidecar_startup_timeout_error, startup_retry_delay,
+        verify_startup_proof, SidecarRecoveryAction, SIDECAR_STARTUP_TIMEOUT,
     };
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
     use std::time::Duration;
 
     #[test]
@@ -541,6 +832,51 @@ mod sidecar_startup_tests {
             verify_startup_proof("test-secret", challenge, &format!("{}0", &proof[..63])).is_err()
         );
         assert!(verify_startup_proof("test-secret", challenge, "khong-phai-hex").is_err());
+    }
+
+    #[test]
+    fn supervisor_chi_restart_khi_port_ranh_va_khong_kill_listener_la() {
+        assert_eq!(
+            sidecar_recovery_action(true, false, 0),
+            SidecarRecoveryAction::Restart
+        );
+        assert_eq!(
+            sidecar_recovery_action(false, true, 2),
+            SidecarRecoveryAction::KeepVerifiedListener
+        );
+        assert_eq!(
+            sidecar_recovery_action(false, false, 0),
+            SidecarRecoveryAction::WaitForUnknownListener
+        );
+        assert_eq!(
+            sidecar_recovery_action(false, false, 2),
+            SidecarRecoveryAction::Stop
+        );
+    }
+
+    #[test]
+    fn supervisor_dung_sau_ba_lan_va_backoff_co_gioi_han() {
+        assert_eq!(
+            sidecar_recovery_action(true, false, 3),
+            SidecarRecoveryAction::Stop
+        );
+        assert_eq!(sidecar_restart_delay(1), Duration::from_millis(250));
+        assert_eq!(sidecar_restart_delay(2), Duration::from_secs(1));
+        assert_eq!(sidecar_restart_delay(3), Duration::from_secs(3));
+        assert_eq!(sidecar_restart_delay(99), Duration::from_secs(3));
+    }
+
+    #[test]
+    fn event_the_he_cu_khong_danh_dau_nham_the_he_moi_da_thoat() {
+        let mut current = Arc::new(AtomicBool::new(false));
+        let previous_reader_flag = Arc::clone(&current);
+        let next_reader_flag = replace_sidecar_generation_exit_flag(&mut current);
+
+        previous_reader_flag.store(true, Ordering::Release);
+
+        assert!(previous_reader_flag.load(Ordering::Acquire));
+        assert!(!current.load(Ordering::Acquire));
+        assert!(Arc::ptr_eq(&current, &next_reader_flag));
     }
 
     #[test]
@@ -5045,7 +5381,7 @@ pub fn run() {
                         ("PRYNX_MAX_TOKEN_LIFETIME_SECONDS", "691200"),
                     ])
                     .spawn();
-                let (mut rx, mut child) = match spawn_result {
+                let (rx, mut child) = match spawn_result {
                     Ok(v) => v,
                     Err(e) => {
                         log::error!("[SIDECAR] Spawn that bai: {}", e);
@@ -5064,34 +5400,12 @@ pub fn run() {
                 // dài. Nay log Terminated{code} → bắt được "exit 48 = port bận" tức
                 // thì. Đọc rx còn tránh đầy buffer pipe làm sidecar block. Fire-and-forget.
                 let sidecar_exited = Arc::new(AtomicBool::new(false));
-                let sidecar_exited_for_events = Arc::clone(&sidecar_exited);
-                tauri::async_runtime::spawn(async move {
-                    use tauri_plugin_shell::process::CommandEvent;
-                    while let Some(event) = rx.recv().await {
-                        match event {
-                            CommandEvent::Stdout(bytes) => {
-                                log::info!("[SIDECAR-OUT] {}", String::from_utf8_lossy(&bytes).trim_end());
-                            }
-                            CommandEvent::Stderr(bytes) => {
-                                log::warn!("[SIDECAR-ERR] {}", String::from_utf8_lossy(&bytes).trim_end());
-                            }
-                            CommandEvent::Terminated(payload) => {
-                                sidecar_exited_for_events.store(true, Ordering::Release);
-                                log::error!("[SIDECAR] Terminated code={:?} signal={:?}", payload.code, payload.signal);
-                            }
-                            CommandEvent::Error(e) => {
-                                sidecar_exited_for_events.store(true, Ordering::Release);
-                                log::error!("[SIDECAR] Error: {}", e);
-                            }
-                            _ => {}
-                        }
-                    }
-                });
+                let sidecar_pid = child.pid();
+                SIDECAR_PID.store(sidecar_pid, Ordering::Release);
+                start_sidecar_event_reader(rx, Arc::clone(&sidecar_exited), sidecar_pid);
 
                 // Lưu PID để KILL cả cây tiến trình khi thoát app (chống treo ngầm →
-                // update NSIS không ghi đè được file). set() 1 lần, bỏ qua nếu đã có.
-                let _ = SIDECAR_PID.set(child.pid());
-
+                // update NSIS không ghi đè được file). Supervisor cập nhật PID mỗi thế hệ.
                 // Write token via stdin pipe — no file on disk ever
                 let token_line = format!("TOKEN:{}\n", sidecar_token);
                 if let Err(e) = child.write(token_line.as_bytes()) {
@@ -5147,6 +5461,12 @@ pub fn run() {
                     kill_sidecar();
                     std::process::exit(1);
                 }
+                start_sidecar_supervisor(
+                    app.clone(),
+                    sidecar_storage.clone(),
+                    sidecar_token.clone(),
+                    Arc::clone(&sidecar_exited),
+                );
                     })
                     .map_err(|error| {
                         std::io::Error::new(
@@ -5482,6 +5802,8 @@ pub fn run() {
             // Kill sidecar khi app thoát (mọi lý do) → chống pdf-inspector-backend.exe
             // treo ngầm làm NSIS update báo "Error opening file for writing".
             if let tauri::RunEvent::Exit = _event {
+                #[cfg(all(not(debug_assertions), target_os = "windows"))]
+                SIDECAR_SHUTDOWN.store(true, Ordering::Release);
                 pdf_engine::render_worker::shutdown_render_worker();
                 #[cfg(all(not(debug_assertions), target_os = "windows"))]
                 kill_sidecar();

@@ -1,6 +1,6 @@
 # PrynX — Threat model ngắn cho security review
 
-**Cập nhật:** 2026-08-04
+**Cập nhật:** 2026-08-15
 
 **Vai trò:** scan context ngắn, dùng trước mọi review/audit. `SECURITY_ARCHITECTURE.md` và code/test hiện tại giữ phần chi tiết; tài liệu này không thay thế bằng chứng.
 
@@ -30,7 +30,7 @@
 ## 4. Trust boundary và entry point
 
 1. **WebView → Tauri IPC**: mọi `invoke`, capability, shell/process, filesystem, deep-link/startup args và asset protocol. `grant_upscale_file_path` chỉ ký canonical image path đã nằm trong dynamic `plugin-fs` scope do picker/native drop cấp; renderer không tự biến một chuỗi path thành capability.
-2. **Tauri → FastAPI sidecar**: HTTP/WS localhost, CORS/origin, HMAC header, timestamp, nonce, method/path/body binding và startup challenge. Fast-path Upscale dùng grant HMAC riêng, bind `path + tab + iat/exp + nonce`, dùng một lần; production dùng secret stdin, `run_dev.bat` sinh secret theo từng phiên cho hai process cùng kế thừa.
+2. **Tauri → FastAPI sidecar**: HTTP/WS localhost, CORS/origin, HMAC header, timestamp, nonce, method/path/body binding và startup challenge. Trước khi ký, native đối chiếu hash token hiện tại của request với binding license đã verify; token đổi giữa phiên buộc đăng ký lại cache rồi mới được ký. Nếu sidecar chết sau startup, supervisor chỉ spawn thế hệ mới sau khi port rảnh và startup proof khớp secret; không tự ý kill listener không xác thực. Fast-path Upscale dùng grant HMAC riêng, bind `path + tab + iat/exp + nonce`, dùng một lần; production dùng secret stdin, `run_dev.bat` sinh secret theo từng phiên cho hai process cùng kế thừa.
 3. **Sidecar → native/parser**: PyO3, PDFium, pypdfium2, subprocess/PowerShell, codec, model/font/PDF parser và worker/process boundary.
 4. **Client → PrintSolutions/Supabase**: Edge Functions, RPC, RLS, webhook, activation, entitlement, telemetry và rate limit.
 5. **Filesystem/result boundary**: upload, picker/drop, path-by-reference, signed result URL, temp/cache/log và external application launch.

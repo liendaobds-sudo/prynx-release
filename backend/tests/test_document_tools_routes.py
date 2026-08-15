@@ -133,6 +133,25 @@ def test_pdf_meta_applies_user_unit_to_all_physical_measurements(tmp_path):
     assert result["detected_bleed_mm"] == pytest.approx(3.53, abs=0.01)
 
 
+def test_pdf_meta_summary_reads_only_first_page_but_keeps_total_count(tmp_path):
+    source = tmp_path / "summary-meta.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=100)
+    writer.add_blank_page(width=300, height=200)
+    writer.add_blank_page(width=400, height=300)
+    with source.open("wb") as stream:
+        writer.write(stream)
+
+    result = routes._get_pdf_meta({"path": str(source), "summary_only": True})
+
+    assert result["page_count"] == 3
+    assert len(result["pages"]) == 1
+    assert (result["pages"][0]["media_width_pt"], result["pages"][0]["media_height_pt"]) == (
+        200.0,
+        100.0,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("route_name", "helper_name"),

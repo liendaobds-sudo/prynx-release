@@ -33,6 +33,7 @@ Codex: skill tự nạp theo description, hoặc gọi tường minh `$prynx-die
 4. **Comment và text UI bằng tiếng Việt**, thuật ngữ ngành in chuẩn (xem `prynx-conventions`). Mỗi chỗ sửa lớn gắn tag truy vết: `PERF (audit ...)`, `[AUTO-BOTTOM FIX ...]`, `UIUX (audit ...)`.
 5. **vitest/tsc chỉ chạy trên Windows thật** — `node_modules` chứa binary Windows, không chạy được trong VM/CI Linux. Golden master snapshot chỉ `-u` khi thay đổi hình học là chủ đích và đã soi diff.
 6. **Audit lớn theo quy trình 2 chốt**: báo cáo `docs/BAO_CAO_AUDIT_*.md` → chờ duyệt → sửa theo lô ≤5 file, mỗi lô verify xong mới sang lô kế.
+7. **Số dòng là tín hiệu kiến trúc, không phải test chặn build.** Không đặt lại hard ceiling theo số dòng vật lý. Dùng `python scripts/report_architecture_debt.py` để xem tăng trưởng; build vẫn phải chặn theo hợp đồng thật như test hành vi, typecheck, số endpoint và provenance. Muốn tách god file phải có kế hoạch/test riêng, không refactor liều trong lượt đóng gói.
 
 ## Lệnh thường dùng
 
@@ -44,6 +45,7 @@ cd desktop && npx vitest run src/lib/dieline   # riêng khuôn bế
 cd desktop && npm run build:dieline-sidecar    # bundle lại engine dieline cho sidecar
 cd desktop && npm run lint && npm run lint:budget
 backend: venv + pytest (backend/tests, có golden/)
+python scripts/report_architecture_debt.py  # báo cáo god file, không làm fail build
 powershell build_production.ps1      # đóng gói release (Nuitka + maturin + tauri)
 ```
 

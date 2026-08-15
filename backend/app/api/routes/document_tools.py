@@ -282,8 +282,10 @@ def _get_pdf_meta(body: dict):
         max_w = 0.0
         max_h = 0.0
 
-        # Page sizes can differ after resize; return metadata for every page.
-        scan_limit = page_count
+        # Caller điều phối chỉ cần tổng số trang + MediaBox trang đầu. Không quét lại
+        # 500–1.000 trang rồi để frontend parse lần hai; caller cũ vẫn nhận đủ mọi trang.
+        summary_only = body.get("summary_only") is True
+        scan_limit = min(page_count, 1) if summary_only else page_count
 
         _PT_TO_MM = 1.0 / 2.83465
         detected_bleed_mm = 0.0  # bleed suy ra từ (MediaBox - TrimBox)/2 của trang đầu

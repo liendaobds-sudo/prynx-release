@@ -358,6 +358,14 @@ if (-not [string]::IsNullOrWhiteSpace($env:PRYNX_RELEASE_NATIVE_SITE)) {
     Write-Host "  [QA] Native runtime pinned to staged wheel." -ForegroundColor Green
 }
 
+# BUILD (audit 2026-08-15 ARCH.BUDGET): số dòng chỉ là tín hiệu quy hoạch.
+# Báo cáo có lỗi nội bộ cũng không được biến thành lỗi artifact/release QA.
+Write-Host "  [QA] Architecture debt report (informational)..." -ForegroundColor DarkGray
+& $PYTHON "$ROOT\scripts\report_architecture_debt.py"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  WARNING: Architecture debt report unavailable; release QA continues." -ForegroundColor Yellow
+}
+
 Invoke-Checked "Python dependency consistency" { & $PYTHON -m pip check }
 Invoke-Checked "Preflight golden fixtures" { & "$ROOT\backend\scripts\run_preflight_qa.ps1" }
 Invoke-Checked "Free-token entitlement E2E" { & "$ROOT\backend\scripts\run_free_token_e2e.ps1" }

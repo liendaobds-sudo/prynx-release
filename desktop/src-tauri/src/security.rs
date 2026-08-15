@@ -250,6 +250,23 @@ struct ValidatedLicense {
     license_token_hash: String,
 }
 
+fn hash_license_token(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(token.as_bytes()))
+}
+
+fn ensure_license_token_binding(
+    binding: &ValidatedLicense,
+    license_token: &str,
+) -> Result<(), String> {
+    // SEC (feedback 2026-08-15 §UP.403): không ký bằng binding của token cũ.
+    // Frontend sẽ đăng ký lại token đã được native verify rồi thử ký đúng một lần.
+    if binding.license_token_hash != hash_license_token(license_token) {
+        return Err("Token bản quyền đã thay đổi; cần đăng ký lại cache Rust".to_string());
+    }
+    Ok(())
+}
+
 // In-memory cache of native-verified license bindings (session-scoped).
 static VALIDATED_KEYS: std::sync::LazyLock<Mutex<HashMap<String, ValidatedLicense>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -282,8 +299,7 @@ pub fn register_validated_key(license_key: String, token: Option<String>) -> Res
         verify_license_token_internal(&tok, &hw, &license_key)
             .map_err(|e| format!("License token rejected by native gate: {}", e))?;
     }
-    use sha2::{Digest, Sha256};
-    let license_token_hash = hex::encode(Sha256::digest(tok.as_bytes()));
+    let license_token_hash = hash_license_token(&tok);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -962,6 +978,7 @@ pub(crate) fn issue_upscale_file_grant(
 pub fn sign_api_request(
     url_path: String,
     license_key: String,
+    license_token: String,
     method: String,
 ) -> Result<HashMap<String, String>, String> {
     // Gate 1: Check license in Rust cache (mandatory, not opt-in)
@@ -978,10 +995,15 @@ pub fn sign_api_request(
         }
     };
 
-    // Gate 2: Decrypt token from encrypted memory (VECTOR #14)
+    // Gate 2: Token gắn vào request phải khớp binding native đã xác thực.
+    // Nếu token vừa được làm mới nhưng cache chưa kịp cập nhật, trả lỗi trước khi
+    // tạo chữ ký để frontend đăng ký lại; không gửi request HMAC sai tới sidecar.
+    ensure_license_token_binding(&binding, &license_token)?;
+
+    // Gate 3: Decrypt token from encrypted memory (VECTOR #14)
     let token_str = decrypt_sidecar_token()?;
 
-    // Gate 3: Bind the proof to the native-verified license and hardware id.
+    // Gate 4: Bind the proof to the native-verified license and hardware id.
     // A patched WebView cannot substitute different entitlement headers after
     // obtaining a signature with a valid Free license.
     //
@@ -1033,6 +1055,33 @@ pub fn sign_api_request(
     headers.insert("X-PrynX-Signature".to_string(), signature);
 
     Ok(headers)
+}
+
+#[cfg(test)]
+mod request_signing_binding_tests {
+    use super::*;
+
+    fn binding_for(token: &str) -> ValidatedLicense {
+        ValidatedLicense {
+            validated_at: 1_700_000_000,
+            hardware_id: "hwid-test".to_string(),
+            license_token_hash: hash_license_token(token),
+        }
+    }
+
+    #[test]
+    fn chap_nhan_dung_token_da_dang_ky() {
+        let binding = binding_for("token-hien-tai");
+        assert!(ensure_license_token_binding(&binding, "token-hien-tai").is_ok());
+    }
+
+    #[test]
+    fn tu_choi_token_khac_binding_truoc_khi_ky() {
+        let binding = binding_for("token-cu");
+        let error = ensure_license_token_binding(&binding, "token-moi")
+            .expect_err("token khác binding phải bị từ chối");
+        assert!(error.contains("đăng ký lại cache Rust"));
+    }
 }
 
 #[cfg(test)]
