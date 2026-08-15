@@ -143,6 +143,62 @@ def _save_full_page_image_pdf(
     document.close()
 
 
+def _pdf_circle_path(center_x: float, center_y: float, radius: float) -> str:
+    handle = radius * 0.5522847498
+    return (
+        f"{center_x + radius} {center_y} m "
+        f"{center_x + radius} {center_y + handle} "
+        f"{center_x + handle} {center_y + radius} {center_x} {center_y + radius} c "
+        f"{center_x - handle} {center_y + radius} "
+        f"{center_x - radius} {center_y + handle} {center_x - radius} {center_y} c "
+        f"{center_x - radius} {center_y - handle} "
+        f"{center_x - handle} {center_y - radius} {center_x} {center_y - radius} c "
+        f"{center_x + handle} {center_y - radius} "
+        f"{center_x + radius} {center_y - handle} {center_x + radius} {center_y} c h"
+    )
+
+
+def _save_multi_artwork_vector_pdf(
+    path: Path,
+    *,
+    round_indices: frozenset[int] = frozenset(),
+) -> None:
+    """Tạo một tờ PDF vector nền trắng có năm artwork tách rời, không CutContour."""
+    document = pikepdf.Pdf.new()
+    page = document.add_blank_page(page_size=(600, 400))
+    # Năm hình có khoảng hở rõ ràng để connected-components không nhập thành một tem.
+    rectangles = (
+        (35, 245, 120, 105, "0.86 0.12 0.18"),
+        (175, 245, 120, 105, "0.12 0.42 0.86"),
+        (315, 245, 120, 105, "0.12 0.68 0.42"),
+        (105, 55, 120, 105, "0.88 0.56 0.08"),
+        (375, 55, 120, 105, "0.48 0.18 0.78"),
+    )
+    commands = ["1 1 1 rg 0 0 600 400 re f"]
+    commands.extend(
+        f"{color} rg {x} {y} {width} {height} re f"
+        for x, y, width, height, color in rectangles
+    )
+    for index, (x, y, width, height, _color) in enumerate(rectangles, start=1):
+        if index not in round_indices:
+            continue
+        commands.append(
+            "1 1 1 RG 3 w "
+            + _pdf_circle_path(
+                x + width / 2.0,
+                y + height / 2.0,
+                min(width, height) * 0.47,
+            )
+            + " S"
+        )
+    page.obj["/Resources"] = pikepdf.Dictionary()
+    page.obj["/Contents"] = document.make_stream(
+        ("\n".join(commands) + "\n").encode("ascii")
+    )
+    document.save(path)
+    document.close()
+
+
 def test_auto_uses_clean_alpha_without_ai(tmp_path, monkeypatch):
     source = tmp_path / "alpha.png"
     _two_sticker_image(alpha=True).save(source, format="PNG", dpi=(300, 300))
@@ -178,6 +234,48 @@ def test_auto_uses_simple_background_without_ai_and_keeps_topology(tmp_path, mon
         (12, 15, 53, 65),
         (92, 20, 56, 62),
     ]
+
+
+def test_auto_splits_multi_artwork_vector_pdf_without_ai(tmp_path, monkeypatch):
+    """PDF nhiều artwork kiểu Corel phải tách đủ vùng bằng auto, không gọi model AI."""
+    source = tmp_path / "multi-artwork.pdf"
+    _save_multi_artwork_vector_pdf(
+        source,
+        round_indices=frozenset({1, 3, 5}),
+    )
+    session = _create_session(source)
+    monkeypatch.setattr(
+        "app.workers.sticker_source_pipeline.read_memory_status_mb",
+        lambda: (32 * 1024, 16 * 1024),
+    )
+    monkeypatch.setattr(
+        "app.workers.sticker_sheet_engine._run_background_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Auto không được chạy AI")
+        ),
+    )
+
+    assert session.manifest["cut_contour_count"] == 0
+    assert session.manifest["has_vector"] is True
+
+    detected = detect_sticker_source(session, strategy="auto")
+
+    assert detected.boundary_source == "vector"
+    assert detected.strategy_confidence >= 0.60
+    assert len(detected.analysis.instances) == 5
+    fill_ratios = [
+        item.area_px / (item.width * item.height)
+        for item in detected.analysis.instances
+    ]
+    assert fill_ratios[0] < 0.86
+    assert fill_ratios[1] > 0.94
+    assert fill_ratios[2] < 0.86
+    assert fill_ratios[3] > 0.94
+    assert fill_ratios[4] < 0.86
+    assert detected.warnings == (
+        "round-sticker-contour-inferred",
+        "vector-mask-raster-preview",
+    )
 
 
 def test_auto_falls_back_to_ai_only_when_deterministic_background_fails(tmp_path, monkeypatch):

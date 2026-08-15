@@ -92,6 +92,59 @@ def _pdf_bytes(
     return buffer.getvalue()
 
 
+def _pdf_circle_path(center_x: float, center_y: float, radius: float) -> str:
+    handle = radius * 0.5522847498
+    return (
+        f"{center_x + radius} {center_y} m "
+        f"{center_x + radius} {center_y + handle} "
+        f"{center_x + handle} {center_y + radius} {center_x} {center_y + radius} c "
+        f"{center_x - handle} {center_y + radius} "
+        f"{center_x - radius} {center_y + handle} {center_x - radius} {center_y} c "
+        f"{center_x - radius} {center_y - handle} "
+        f"{center_x - handle} {center_y - radius} {center_x} {center_y - radius} c "
+        f"{center_x + handle} {center_y - radius} "
+        f"{center_x + radius} {center_y - handle} {center_x + radius} {center_y} c h"
+    )
+
+
+def _multi_artwork_vector_pdf_bytes() -> bytes:
+    """Tạo tờ PDF vector năm artwork rời, không có CutContour."""
+    document = pikepdf.Pdf.new()
+    page = document.add_blank_page(page_size=(600, 400))
+    rectangles = (
+        (35, 245, 120, 105, "0.86 0.12 0.18"),
+        (175, 245, 120, 105, "0.12 0.42 0.86"),
+        (315, 245, 120, 105, "0.12 0.68 0.42"),
+        (105, 55, 120, 105, "0.88 0.56 0.08"),
+        (375, 55, 120, 105, "0.48 0.18 0.78"),
+    )
+    commands = ["1 1 1 rg 0 0 600 400 re f"]
+    commands.extend(
+        f"{color} rg {x} {y} {width} {height} re f"
+        for x, y, width, height, color in rectangles
+    )
+    for index, (x, y, width, height, _color) in enumerate(rectangles, start=1):
+        if index not in {1, 3, 5}:
+            continue
+        commands.append(
+            "1 1 1 RG 3 w "
+            + _pdf_circle_path(
+                x + width / 2.0,
+                y + height / 2.0,
+                min(width, height) * 0.47,
+            )
+            + " S"
+        )
+    page.obj["/Resources"] = pikepdf.Dictionary()
+    page.obj["/Contents"] = document.make_stream(
+        ("\n".join(commands) + "\n").encode("ascii")
+    )
+    buffer = BytesIO()
+    document.save(buffer)
+    document.close()
+    return buffer.getvalue()
+
+
 def _palette_alpha_png_bytes() -> bytes:
     image = Image.new("P", (40, 30), 0)
     palette = [255, 255, 255, 20, 100, 220] + [0, 0, 0] * 254
@@ -466,6 +519,86 @@ def test_inspect_detect_confirm_keeps_session_and_requires_confirmation(monkeypa
             "mask_confirmed": True,
             "source_page": 1,
         }
+
+
+def test_auto_multi_artwork_pdf_detects_confirms_and_exports_five_stickers(
+    monkeypatch,
+):
+    """Luồng API mặc định phải giữ đủ năm artwork và không nạp AI."""
+    monkeypatch.setattr(
+        "app.workers.sticker_sheet_engine._run_background_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Auto không được chạy AI")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.workers.sticker_source_pipeline.read_memory_status_mb",
+        lambda: (32 * 1024, 16 * 1024),
+    )
+    source_bytes = _multi_artwork_vector_pdf_bytes()
+
+    with TestClient(app) as client:
+        inspected = client.post(
+            "/api/sticker-sheet/inspect",
+            files={"file": ("multi-artwork.pdf", source_bytes, "application/pdf")},
+        )
+        assert inspected.status_code == 200, inspected.text
+        source = inspected.json()
+        assert source["cut_contour_count"] == 0
+        assert source["has_vector"] is True
+
+        detected = client.post(
+            f"/api/sticker-sheet/{source['session_id']}/detect",
+            json={"strategy": "auto", "page_number": 1},
+        )
+        assert detected.status_code == 200, detected.text
+        manifest = detected.json()
+        assert manifest["boundary_source"] == "vector"
+        assert manifest["strategy_confidence"] == pytest.approx(0.72)
+        assert manifest["needs_review"] is True
+        assert len(manifest["instances"]) == 5
+        fill_ratios = [
+            item["area_px"] / (item["width"] * item["height"])
+            for item in manifest["instances"]
+        ]
+        assert fill_ratios[0] < 0.86
+        assert fill_ratios[1] > 0.94
+        assert fill_ratios[2] < 0.86
+        assert fill_ratios[3] > 0.94
+        assert fill_ratios[4] < 0.86
+        assert "round-sticker-contour-inferred" in manifest["warnings"]
+        assert "vector-mask-raster-preview" in manifest["warnings"]
+
+        confirmed = client.post(
+            f"/api/sticker-sheet/{source['session_id']}/confirm",
+            json={"page_number": 1},
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        assert confirmed.json()["stage"] == "mask-ready"
+
+        exported = client.post(
+            f"/api/sticker-sheet/{source['session_id']}/export",
+            json={
+                "dpi": 300,
+                "offset_mm": 0,
+                "bleed_mm": 0,
+                "crop_to_sticker": True,
+                "preserve_existing_cut": False,
+                "output_format": "pdf",
+            },
+        )
+
+    assert exported.status_code == 200, exported.text
+    assert exported.headers["X-Sticker-Sheet-Count"] == "5"
+    with pikepdf.Pdf.open(BytesIO(exported.content)) as output:
+        assert len(output.pages) == 5
+        for page in output.pages:
+            streams = page.obj.get("/Contents")
+            if isinstance(streams, pikepdf.Array):
+                content = b"\n".join(stream.read_bytes() for stream in streams)
+            else:
+                content = streams.read_bytes()
+            assert b"/CutContour CS" in content
 
 
 def test_detect_refine_assets_and_confirm_are_qualified_by_source_page():

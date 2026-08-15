@@ -57,6 +57,12 @@ _AUTO_BACKGROUND_CONFIDENCE_MIN = 0.60
 _AUTO_FRAGMENT_MIN_INSTANCES = 6
 _AUTO_FRAGMENT_MIN_NESTED = 3
 _AUTO_FRAGMENT_NESTED_RATIO = 0.18
+_ROUND_RECTANGULARITY_MIN = 0.94
+_ROUND_MAX_ASPECT_RATIO = 1.15
+_ROUND_MIN_EDGE_PX = 64
+_ROUND_CENTER_ERROR_MAX = 0.08
+_ROUND_RADIUS_ERROR_MAX = 0.12
+_ROUND_EDGE_SUPPORT_MIN = 0.55
 
 
 class StickerSourcePipelineError(ValueError):
@@ -598,6 +604,14 @@ def _background_detection(
         # "tem" nằm lồng trong cùng một bbox. Confidence màu nền vẫn rất cao,
         # nên phải có guard topology riêng để auto chuyển sang AI.
         return None
+    round_refined_count = 0
+    if boundary_source == "vector":
+        analysis, round_refined_count = _refine_dominant_round_components(
+            source_image,
+            analysis,
+            model=model,
+            alpha_threshold=alpha_threshold,
+        )
     confidence = background.confidence if boundary_source == "simple-bg" else min(0.72, background.confidence)
     return StickerSourceDetection(
         analysis=analysis,
@@ -608,8 +622,191 @@ def _background_detection(
         dpi=None,
         source_page=1,
         vector_geometry_ref=None,
-        warnings=(),
+        warnings=("round-sticker-contour-inferred",) if round_refined_count > 0 else (),
     )
+
+
+def _round_detector_max_edge_px() -> int | None:
+    total_ram_mb, _available_ram_mb = read_memory_status_mb()
+    # PERF (audit 2026-08-15 §XEPTEM.4): chỉ chuẩn hóa ảnh Hough trên máy yếu;
+    # máy >=16 GB hoặc không đọc được RAM giữ nguyên lưới render đầy đủ.
+    if total_ram_mb is not None and total_ram_mb < 8 * 1024:
+        return 512
+    if total_ram_mb is not None and total_ram_mb < 16 * 1024:
+        return 1024
+    return None
+
+
+def _circle_edge_support(
+    edges: np.ndarray,
+    center_x: float,
+    center_y: float,
+    radius: float,
+) -> float:
+    angles = np.linspace(0.0, 2.0 * np.pi, 360, endpoint=False)
+    cosines = np.cos(angles)
+    sines = np.sin(angles)
+    supported = np.zeros(angles.shape, dtype=bool)
+    for delta in range(-3, 4):
+        xs = np.rint(center_x + (radius + delta) * cosines).astype(np.int32)
+        ys = np.rint(center_y + (radius + delta) * sines).astype(np.int32)
+        valid = (
+            (xs >= 0)
+            & (xs < edges.shape[1])
+            & (ys >= 0)
+            & (ys < edges.shape[0])
+        )
+        supported[valid] |= edges[ys[valid], xs[valid]] > 0
+    return float(np.mean(supported))
+
+
+def _dominant_centered_circle(
+    source_rgb: np.ndarray,
+    instance: StickerInstance,
+    *,
+    max_edge_px: int | None,
+) -> tuple[float, float, float] | None:
+    min_edge = min(instance.width, instance.height)
+    if min_edge < _ROUND_MIN_EDGE_PX:
+        return None
+    rectangularity = instance.area_px / max(1.0, float(instance.width * instance.height))
+    aspect_ratio = max(instance.width, instance.height) / max(1.0, float(min_edge))
+    if (
+        rectangularity < _ROUND_RECTANGULARITY_MIN
+        or aspect_ratio > _ROUND_MAX_ASPECT_RATIO
+    ):
+        return None
+
+    padding = max(16, round(max(instance.width, instance.height) * 0.08))
+    left = max(0, instance.x - padding)
+    top = max(0, instance.y - padding)
+    right = min(source_rgb.shape[1], instance.x + instance.width + padding)
+    bottom = min(source_rgb.shape[0], instance.y + instance.height + padding)
+    crop = np.ascontiguousarray(source_rgb[top:bottom, left:right, :3])
+    if crop.size == 0:
+        return None
+
+    scale = 1.0
+    if max_edge_px is not None and max(crop.shape[:2]) > max_edge_px:
+        scale = max_edge_px / float(max(crop.shape[:2]))
+        crop = cv2.resize(
+            crop,
+            None,
+            fx=scale,
+            fy=scale,
+            interpolation=cv2.INTER_AREA,
+        )
+    gray = cv2.GaussianBlur(cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY), (7, 7), 1.5)
+    edges = cv2.Canny(gray, 60, 160)
+    expected_x = (instance.x + instance.width / 2.0 - left) * scale
+    expected_y = (instance.y + instance.height / 2.0 - top) * scale
+    expected_radius = min_edge / 2.0 * scale
+    try:
+        circles = cv2.HoughCircles(
+            gray,
+            cv2.HOUGH_GRADIENT,
+            dp=1.1,
+            minDist=max(12, round(expected_radius * 0.08)),
+            param1=120,
+            param2=35,
+            minRadius=max(4, round(expected_radius * 0.86)),
+            maxRadius=max(5, round(expected_radius * 1.04)),
+        )
+    except cv2.error:
+        return None
+    if circles is None:
+        return None
+
+    best: tuple[float, float, float, float] | None = None
+    for center_x, center_y, radius in circles[0]:
+        center_error = float(
+            np.hypot(center_x - expected_x, center_y - expected_y) / expected_radius
+        )
+        radius_error = float(abs(radius - expected_radius) / expected_radius)
+        if (
+            center_error > _ROUND_CENTER_ERROR_MAX
+            or radius_error > _ROUND_RADIUS_ERROR_MAX
+        ):
+            continue
+        edge_support = _circle_edge_support(edges, center_x, center_y, radius)
+        if edge_support < _ROUND_EDGE_SUPPORT_MIN:
+            continue
+        score = edge_support - center_error - radius_error
+        if best is None or score > best[0]:
+            best = (score, float(center_x), float(center_y), float(radius))
+    if best is None:
+        return None
+
+    _score, center_x, center_y, radius = best
+    return (
+        left + center_x / scale,
+        top + center_y / scale,
+        radius / scale,
+    )
+
+
+def _refine_dominant_round_components(
+    source_image: Image.Image,
+    analysis: StickerSheetAnalysis,
+    *,
+    model: StickerSheetModel,
+    alpha_threshold: int,
+) -> tuple[StickerSheetAnalysis, int]:
+    """Đổi riêng nền vuông có vòng tròn chủ đạo thành mask tròn, giữ nguyên ID."""
+    source_rgb = np.asarray(source_image.convert("RGB"), dtype=np.uint8)
+    refined_alpha = np.asarray(analysis.alpha, dtype=np.uint8).copy()
+    refined_count = 0
+    max_edge_px = _round_detector_max_edge_px()
+    for instance in analysis.instances:
+        circle = _dominant_centered_circle(
+            source_rgb,
+            instance,
+            max_edge_px=max_edge_px,
+        )
+        if circle is None:
+            continue
+        center_x, center_y, radius = circle
+        circle_alpha = np.zeros(refined_alpha.shape, dtype=np.uint8)
+        cv2.circle(
+            circle_alpha,
+            (round(center_x), round(center_y)),
+            max(1, round(radius)),
+            255,
+            thickness=-1,
+            lineType=cv2.LINE_AA,
+        )
+        other_instances = (analysis.labels > 0) & (analysis.labels != instance.id)
+        if np.any((circle_alpha >= alpha_threshold) & other_instances):
+            continue
+        refined_alpha[analysis.labels == instance.id] = 0
+        refined_alpha = np.maximum(refined_alpha, circle_alpha)
+        refined_count += 1
+
+    if refined_count == 0:
+        return analysis, 0
+    try:
+        refined = _analysis_from_alpha(
+            source_image,
+            refined_alpha,
+            model=model,
+            alpha_threshold=alpha_threshold,
+        )
+    except StickerSourcePipelineError:
+        return analysis, 0
+    if len(refined.instances) != len(analysis.instances):
+        return analysis, 0
+    for before, after in zip(analysis.instances, refined.instances):
+        before_center = (before.x + before.width / 2.0, before.y + before.height / 2.0)
+        after_center = (after.x + after.width / 2.0, after.y + after.height / 2.0)
+        center_shift = float(np.hypot(
+            before_center[0] - after_center[0],
+            before_center[1] - after_center[1],
+        ))
+        if center_shift > max(before.width, before.height) * 0.12:
+            return analysis, 0
+    refined.warnings = list(analysis.warnings)
+    refined.postprocess_seconds += analysis.postprocess_seconds
+    return refined, refined_count
 
 
 def _looks_like_fragmented_sticker_sheet(analysis: StickerSheetAnalysis) -> bool:
@@ -791,7 +988,10 @@ def detect_sticker_source(
                     "source_page": page_number,
                     "preserve_original": True,
                 },
-                warnings=("vector-mask-raster-preview",),
+                warnings=tuple(dict.fromkeys((
+                    *detected.warnings,
+                    "vector-mask-raster-preview",
+                ))),
             )
         if strategy == "vector":
             raise StickerSourcePipelineError("Không suy ra được silhouette vector đáng tin cậy.")

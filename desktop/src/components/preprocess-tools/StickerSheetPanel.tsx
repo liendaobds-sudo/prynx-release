@@ -21,6 +21,30 @@ const TOOL_OPTIONS: Array<{ id: StickerMaskTool; label: string; hint: string }> 
     { id: 'merge', label: 'Gộp với tem', hint: 'Chọn chi tiết rời, sau đó chọn tem chính.' },
 ];
 
+// UIUX (audit 2026-08-15 §XEPTEM.2): warning từ pipeline phải được chuyển thành
+// ngôn ngữ nghiệp vụ trước khi đưa lên panel; mã nội bộ không đủ rõ để thợ in
+// quyết định có cần soi lại đường bế hay không.
+const STICKER_WARNING_LABELS: Record<string, string> = {
+    'round-sticker-contour-inferred': 'Đã phát hiện tem tròn bên trong nền ảnh vuông; hãy kiểm tra đường tròn màu tím.',
+    'vector-mask-raster-preview': 'Vùng tem được suy ra từ nội dung vector; hãy kiểm tra đường bế trước khi xuất.',
+    'pdf-raster-review': 'Trang PDF chưa có biên cắt sẵn; vùng tem được suy ra từ ảnh, hãy kiểm tra đường bế.',
+    'pdf-soft-mask-review': 'PDF có lớp trong suốt; hãy kiểm tra lại đường bế trước khi xuất.',
+    'mixed-boundary-sources': 'Một số trang có đường cắt sẵn, một số trang chưa có; hãy kiểm tra từng trang.',
+    'multi-page-source': 'File có nhiều trang; hãy kiểm tra thứ tự và số tem của từng trang.',
+    'missing-dpi': 'File không có DPI; hãy xác nhận kích thước vật lý trước khi xuất.',
+    'non-square-dpi': 'DPI ngang và dọc khác nhau; kích thước tem có thể không đồng đều theo hai chiều.',
+    'color-converted-to-srgb': 'Ảnh đã được chuyển về sRGB để nhận diện; hãy kiểm tra lại màu trước khi in.',
+    'icc-profile-discarded': 'Không đọc được hồ sơ màu của ảnh; hãy kiểm tra lại màu trước khi in.',
+};
+
+function stickerWarningLabel(warning: string): string {
+    const cutScanPage = /^cut-scan-failed-page-(\d+)$/.exec(warning)?.[1];
+    if (cutScanPage) {
+        return `Không đọc được đường cắt có sẵn ở trang ${cutScanPage}; hãy kiểm tra trang này.`;
+    }
+    return STICKER_WARNING_LABELS[warning] || warning;
+}
+
 function cutlineRoundRadiusMm(roundness: number, dpiX: number, dpiY: number): number {
     const safeDpi = Math.max(1, Math.min(dpiX, dpiY));
     const sourcePixelMm = 25.4 / safeDpi;
@@ -146,6 +170,14 @@ export default function StickerSheetPanel({
     const allPagesExportable = exportablePageCount === exportPageCount;
     const canDetectActivePage = ['source-ready', 'error'].includes(state.status);
     const canDetectAllPages = pageCount > 1 && pendingPageCount > 0;
+    const confidencePercent = manifest
+        ? Math.round(Math.max(0, Math.min(1, manifest.strategy_confidence)) * 100)
+        : 0;
+    const hasLowConfidence = Boolean(manifest && manifest.strategy_confidence < 0.75);
+    const recognitionNeedsReview = Boolean(
+        manifest
+        && (manifest.needs_review || manifest.warnings.length > 0 || hasLowConfidence),
+    );
 
     useEffect(() => {
         // UIUX (feedback 2026-08-12 §AI.COMPACT1): sau khi xác nhận hoặc đang xuất,
@@ -154,7 +186,9 @@ export default function StickerSheetPanel({
     }, [state.status]);
     const prepareCutline = async () => {
         const pageNumber = state.activeSourcePage;
-        await actions.detectStickers(tabId, 'ai', pageNumber);
+        // UIUX (audit 2026-08-15 §XEPTEM.1): auto thử CutContour/vector/Alpha/
+        // nền đơn giản trước; AI chỉ là fallback khi các nhánh chắc chắn không đủ.
+        await actions.detectStickers(tabId, 'auto', pageNumber);
         const detected = useStickerSheetStore.getState().getTab(tabId);
         const detectedPage = detected.pages[pageNumber]
             || (detected.activeSourcePage === pageNumber ? detected : null);
@@ -248,7 +282,7 @@ export default function StickerSheetPanel({
                     {canDetectAllPages && (
                         <button
                             type="button"
-                            onClick={() => { void actions.detectAllStickers(tabId, 'ai'); }}
+                            onClick={() => { void actions.detectAllStickers(tabId, 'auto'); }}
                             className="h-10 min-w-0 rounded-lg border border-violet-300 bg-white px-2 text-[11px] font-bold text-violet-700 hover:bg-violet-50 dark:border-violet-800 dark:bg-zinc-900 dark:text-violet-300"
                         >
                             {tv('Nhận diện tất cả trang')} ({pendingPageCount})
@@ -263,6 +297,41 @@ export default function StickerSheetPanel({
                         <div className="text-[13px] font-bold text-emerald-800 dark:text-emerald-300">
                             {tv('Đã nhận diện')} {manifest.instances.length} {tv('tem')}
                         </div>
+                    </div>
+
+                    <div
+                        role="note"
+                        aria-label={tv('Tình trạng nhận diện vùng tem')}
+                        className={`rounded-lg border p-3 text-[11px] ${recognitionNeedsReview
+                            ? 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-200'
+                            : 'border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-800 dark:bg-sky-950/20 dark:text-sky-200'
+                        }`}
+                    >
+                        <div className="flex items-center justify-between gap-2 font-bold">
+                            <span>
+                                {recognitionNeedsReview
+                                    ? tv('Cần kiểm tra đường cắt')
+                                    : tv('Đường cắt đã được xác định')}
+                            </span>
+                            <span className="shrink-0">{tv('Độ tin cậy')} {confidencePercent}%</span>
+                        </div>
+                        {recognitionNeedsReview && (
+                            <p className="mt-1 leading-relaxed">
+                                {tv('Hãy soi đường màu tím trên từng tem trước khi xuất file.')}
+                            </p>
+                        )}
+                        {hasLowConfidence && (
+                            <p className="mt-1 leading-relaxed">
+                                {tv('Độ tin cậy chưa cao; hãy kiểm tra đủ số tem và biên của từng tem.')}
+                            </p>
+                        )}
+                        {manifest.warnings.length > 0 && (
+                            <ul className="mt-1 space-y-0.5 leading-relaxed">
+                                {manifest.warnings.map(warning => (
+                                    <li key={warning}>⚠ {tv(stickerWarningLabel(warning))}</li>
+                                ))}
+                            </ul>
+                        )}
                     </div>
 
                     {manifest.refinement_available === true && canTuneCutline && (

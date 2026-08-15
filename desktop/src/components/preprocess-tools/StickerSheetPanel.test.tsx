@@ -81,6 +81,8 @@ describe('StickerSheetPanel', () => {
     it('hiển thị số tem và chuyển công cụ mà không bày nút rà soát mơ hồ', () => {
         render(<StickerSheetPanel tabId="tab" />);
         expect(screen.getByText(/Đã nhận diện/).textContent).toContain('Đã nhận diện 2 tem');
+        expect(screen.getByText('Cần kiểm tra đường cắt')).toBeTruthy();
+        expect(screen.getByText('Độ tin cậy 98%')).toBeTruthy();
         expect(screen.queryByText(/BiRefNet|OpenCV/i)).toBeNull();
         expect(screen.queryByRole('button', { name: 'Điểm cần kiểm tra tiếp theo' })).toBeNull();
         expect(screen.queryByRole('button', { name: 'Hoàn tác' })).toBeNull();
@@ -88,6 +90,40 @@ describe('StickerSheetPanel', () => {
 
         fireEvent.click(screen.getByRole('button', { name: 'Giữ lại' }));
         expect(useStickerSheetStore.getState().getTab('tab').activeTool).toBe('restore');
+    });
+
+    it('chuyển warning nguồn thành hướng dẫn nghiệp vụ và giữ mức tin cậy', () => {
+        const current = useStickerSheetStore.getState().getTab('tab');
+        if (!current.manifest) throw new Error('Thiếu fixture manifest');
+        useStickerSheetStore.setState({
+            tabs: {
+                tab: {
+                    ...current,
+                    manifest: {
+                        ...current.manifest,
+                        boundary_source: 'vector',
+                        strategy_confidence: 0.72,
+                        needs_review: true,
+                        instances: current.manifest.instances.slice(0, 1),
+                        warnings: [
+                            'round-sticker-contour-inferred',
+                            'vector-mask-raster-preview',
+                            'Chỉ nhận diện được một tem trong nguồn.',
+                        ],
+                    },
+                },
+            },
+        });
+
+        render(<StickerSheetPanel tabId="tab" />);
+
+        expect(screen.getByText(/Đã nhận diện/).textContent).toContain('Đã nhận diện 1 tem');
+        expect(screen.getByText('Độ tin cậy 72%')).toBeTruthy();
+        expect(screen.getByText(/Đã phát hiện tem tròn bên trong nền ảnh vuông/)).toBeTruthy();
+        expect(screen.getByText(/Vùng tem được suy ra từ nội dung vector/)).toBeTruthy();
+        expect(screen.getByText('⚠ Chỉ nhận diện được một tem trong nguồn.')).toBeTruthy();
+        expect(screen.getByText(/Hãy soi đường màu tím/)).toBeTruthy();
+        expect(screen.getByText(/Độ tin cậy chưa cao/)).toBeTruthy();
     });
 
     it('gom cả nút xuất vào cùng khung thiết lập sau khi vùng tem sẵn sàng', async () => {
@@ -354,7 +390,7 @@ describe('StickerSheetPanel', () => {
         expect(screen.queryByText('Kích thước và đường cắt')).toBeNull();
         expect(screen.queryByRole('button', { name: 'Xóa bóng' })).toBeNull();
         fireEvent.click(screen.getByRole('button', { name: 'Nhận diện trang hiện tại' }));
-        expect(detectAction).toHaveBeenCalledWith('source-tab', 'ai', 1);
+        expect(detectAction).toHaveBeenCalledWith('source-tab', 'auto', 1);
         detectAction.mockRestore();
     });
 
@@ -385,7 +421,7 @@ describe('StickerSheetPanel', () => {
         expect(screen.queryByRole('button', { name: 'Chọn ảnh khác' })).toBeNull();
         expect(screen.queryByText(/Ảnh mới chỉ được nạp để xem trước/)).toBeNull();
         fireEvent.click(screen.getByRole('button', { name: 'Nhận diện tất cả trang (3)' }));
-        expect(detectAllAction).toHaveBeenCalledWith('multi-tab', 'ai');
+        expect(detectAllAction).toHaveBeenCalledWith('multi-tab', 'auto');
         expect(inspectStickerSource).not.toHaveBeenCalled();
         expect(detectStickerSource).not.toHaveBeenCalled();
         detectAllAction.mockRestore();
