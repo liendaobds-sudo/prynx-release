@@ -15,26 +15,43 @@ import type { RecipeStep } from '../../lib/recipe/recipeTypes';
 import { useTranslation } from 'react-i18next';
 
 interface Props {
+    /** Tab sở hữu nút ghi; recorder dùng ID này để cô lập các workspace đang cùng mount. */
+    tabId: string;
     /** Mở panel "Quy trình đã lưu". */
     onOpenPanel: () => void;
     /** Số trang file đang mở (gợi ý lưu vào recipe). */
     sourcePageCount?: number;
+    /** Khóa bắt đầu phiên mới khi tab đang phát recipe hoặc chạy luồng độc quyền khác. */
+    disabled?: boolean;
 }
 
-export default function RecipeRecordControl({ onOpenPanel, sourcePageCount }: Props) {
+export default function RecipeRecordControl({
+    tabId,
+    onOpenPanel,
+    sourcePageCount,
+    disabled = false,
+}: Props) {
   const { t } = useTranslation();
-    const isRecording = useRecipeRecorder(s => s.isRecording);
-    const draftCount = useRecipeRecorder(s => s.draftSteps.length);
+    const isRecording = useRecipeRecorder(
+        state => state.isRecording && state.ownerTabId === tabId,
+    );
+    const isRecordingElsewhere = useRecipeRecorder(
+        state => state.isRecording && state.ownerTabId !== tabId,
+    );
+    const draftCount = useRecipeRecorder(
+        state => state.ownerTabId === tabId ? state.draftSteps.length : 0,
+    );
     const [saveDialog, setSaveDialog] = useState<{ steps: RecipeStep[] } | null>(null);
 
     const handleToggle = () => {
         if (!isRecording) {
-            recipeRecorder.start();
-            toast.info(t('recipe.recipeRecordControl:bat_dau_ghi_quy_trinh_hay_thuc_hien_cac'));
+            if (recipeRecorder.start(tabId)) {
+                toast.info(t('recipe.recipeRecordControl:bat_dau_ghi_quy_trinh_hay_thuc_hien_cac'));
+            }
             return;
         }
-        const steps = recipeRecorder.stop();
-        if (steps.length === 0) {
+        const steps = recipeRecorder.stop(tabId);
+        if (!steps || steps.length === 0) {
             toast.info(t('recipe.recipeRecordControl:chua_ghi_duoc_buoc_nao_da_huy_phien_ghi'));
             return;
         }
@@ -46,11 +63,12 @@ export default function RecipeRecordControl({ onOpenPanel, sourcePageCount }: Pr
             <div className="flex items-center gap-1">
                 <button
                     onClick={handleToggle}
+                    disabled={isRecordingElsewhere || disabled}
                     className={`h-7 px-2 flex items-center gap-1.5 rounded text-[11px] font-medium transition-colors ${
                         isRecording
                             ? 'bg-rose-100 dark:bg-rose-900/40 text-rose-600 dark:text-rose-400'
                             : 'hover:bg-slate-200 dark:hover:bg-zinc-800 text-slate-500 dark:text-zinc-400'
-                    }`}
+                    } ${isRecordingElsewhere || disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
                     title={isRecording
                         ? t('recipe.recipeRecordControl:dung_ghi_luu_quy_trinh_recipe')
                         : t('recipe.recipeRecordControl:ghi_quy_trinh_recipe_tu_dong_luu_chuoi')}

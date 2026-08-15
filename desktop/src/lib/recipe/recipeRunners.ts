@@ -25,31 +25,50 @@
  * /pdf-tools/sticker-dieline) → đúng trên sản phẩm tem mới.
  */
 import type { RecipeRunner, RecipeRunnerRegistry } from './PlaybackRunner';
-import type { RecipeOpId } from './recipeTypes';
-import type { ProcessContext } from '../processHandlers';
-import { runProcessEngine, runShuffle, runResize, runTrimShift, runSplit, runMerge } from '../processHandlers';
+import { isLinearRecipeSplitMode, type RecipeOpId } from './recipeTypes';
+import type { ProcessContext, ProcessOutcome } from '../processHandlers';
+import {
+    PROCESS_COMPLETED,
+    runProcessEngine,
+    runShuffle,
+    runResize,
+    runTrimShift,
+    runSplit,
+    runMerge,
+} from '../processHandlers';
 import { authenticatedFetch, getApiUrl, uploadPDF, prepareFileForUpload } from '../api';
 import i18n from '../../i18n';
 
 // ─────────────── Imposition (qua runProcessEngine, ép spawnNewTab=false) ───────────────
 
 const runImposition: RecipeRunner = async (ctx, params) => {
-    await runProcessEngine(ctx, params as any, /* spawnNewTab */ false);
+    return runProcessEngine(ctx, params as any, /* spawnNewTab */ false);
 };
 
 // ─────────────── Preprocess engine (ép spawnNewTab=false) ───────────────
 
 const runShuffleStep: RecipeRunner = async (ctx, params) => {
-    await runShuffle(ctx, { ...params, spawnNewTab: false });
+    return runShuffle(ctx, { ...params, spawnNewTab: false });
 };
 const runResizeStep: RecipeRunner = async (ctx, params) => {
-    await runResize(ctx, { ...params, spawnNewTab: false });
+    return runResize(ctx, { ...params, spawnNewTab: false });
 };
 const runTrimShiftStep: RecipeRunner = async (ctx, params) => {
-    await runTrimShift(ctx, { ...params, spawnNewTab: false });
+    return runTrimShift(ctx, { ...params, spawnNewTab: false });
 };
 const runSplitStep: RecipeRunner = async (ctx, params) => {
-    await runSplit(ctx, { ...params, spawnNewTab: false });
+    // RECIPE (audit 2026-08-15 §PLAY.4): Recipe là chuỗi một working PDF.
+    // by_count/by_range có thể tạo nhiều file (ZIP), nên không được âm thầm chạy
+    // bước sau trên PDF cũ. Chỉ extract_pages luôn tạo đúng một PDF.
+    if (!isLinearRecipeSplitMode(params.mode)) {
+        return failedStep(
+            ctx.setError,
+            i18n.t('lib.processHandlers:split_nhieu_file_khong_the_phat_noi_tiep', {
+                defaultValue: 'Bước Tách tạo nhiều file nên không thể phát nối tiếp trong quy trình. Chỉ chế độ Trích xuất trang được hỗ trợ.',
+            }),
+        );
+    }
+    return runSplit(ctx, { ...params, spawnNewTab: false });
 };
 
 // ─────────────── Merge (file thứ hai từ input ngoài) ───────────────
@@ -57,8 +76,13 @@ const runSplitStep: RecipeRunner = async (ctx, params) => {
 const runMergeStep: RecipeRunner = async (ctx, params, ext) => {
     const files = ext?.files ?? [];
     // mode mặc định 'merge_files'; chèn file ngoài vào filesToMerge.
-    await runMerge(ctx, { ...params, spawnNewTab: false, filesToMerge: files });
+    return runMerge(ctx, { ...params, spawnNewTab: false, filesToMerge: files });
 };
+
+function failedStep(setError: ProcessContext['setError'], message: string): ProcessOutcome {
+    setError(message);
+    return { status: 'error', error: message };
+}
 
 // ─────────────── Prepress JSON (upload → POST → download → commit) ───────────────
 
@@ -84,20 +108,33 @@ function makePreflightRunner(endpoint: string): RecipeRunner {
             const res = await authenticatedFetch(`${getApiUrl()}/${endpoint}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ file_id: up.id, ...params }),
+                // ID upload của working revision luôn thắng dữ liệu cũ/imported.
+                body: JSON.stringify({ ...params, file_id: up.id }),
             });
-            const data = await res.json();
-            if (!data.success && !data.output_filename) {
-                setError(data.error || data.detail || i18n.t('recipe.recipeRunners:buoc_prepress_that_bai'));
-                return;
+            const data = await res.json().catch(() => ({} as any));
+            if (res.ok === false || (!data.success && !data.output_filename)) {
+                return failedStep(
+                    setError,
+                    data.error || data.detail || i18n.t('recipe.recipeRunners:buoc_prepress_that_bai'),
+                );
             }
             if (data.output_filename) {
                 const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
+                if (dl.ok === false) {
+                    return failedStep(
+                        setError,
+                        i18n.t('recipe.recipeRunners:buoc_prepress_that_bai'),
+                    );
+                }
                 const blob = await dl.blob();
                 await commitWorkingFile(blob, data.output_filename);
             }
+            return PROCESS_COMPLETED;
         } catch (e: any) {
-            setError(i18n.t('recipe.recipeRunners:loi_prepress') + ' ' + (e?.message || e));
+            return failedStep(
+                setError,
+                i18n.t('recipe.recipeRunners:loi_prepress') + ' ' + (e?.message || e),
+            );
         } finally {
             setIsProcessing(false); setProcessStatus('');
         }
@@ -125,13 +162,19 @@ const runOptimizeStep: RecipeRunner = async (ctx, params) => {
         const res = await authenticatedFetch(`${getApiUrl()}/pdf-tools/optimize`, { method: 'POST', body: formData });
         if (!res.ok) {
             const err = await res.json().catch(() => null);
-            setError(err?.detail || i18n.t('recipe.recipeRunners:nen_pdf_that_bai_res_status', { status: res.status }));
-            return;
+            return failedStep(
+                setError,
+                err?.detail || i18n.t('recipe.recipeRunners:nen_pdf_that_bai_res_status', { status: res.status }),
+            );
         }
         const blob = await res.blob();
         await commitWorkingFile(blob, `optimized_${file.name}`);
+        return PROCESS_COMPLETED;
     } catch (e: any) {
-        setError(i18n.t('recipe.recipeRunners:loi_nen_pdf') + ' ' + (e?.message || e));
+        return failedStep(
+            setError,
+            i18n.t('recipe.recipeRunners:loi_nen_pdf') + ' ' + (e?.message || e),
+        );
     } finally {
         setIsProcessing(false); setProcessStatus('');
     }
@@ -154,6 +197,11 @@ const runStickerImposition: RecipeRunner = async (ctx, params) => {
             body: JSON.stringify({ fileId: up.id }),
         });
         const data = await res.json().catch(() => ({} as any));
+        if (res.ok === false || data.success === false || !Array.isArray(data.shapes)) {
+            throw new Error(
+                data.error || data.detail || i18n.t('recipe.recipeRunners:loi_binh_tem_phat_lai'),
+            );
+        }
 
         const detectedShapesByPage: Record<number, string> = {};
         const detectedShapeParamsByPage: Record<number, any> = {};
@@ -162,10 +210,17 @@ const runStickerImposition: RecipeRunner = async (ctx, params) => {
 
         // Ghép hình MỚI vào tham số đã ghi (khổ/grid/pont giữ nguyên) rồi bình.
         const merged = { ...params, detectedShapesByPage, detectedShapeParamsByPage };
-        await runProcessEngine(ctx, merged as any, false);
+        // Giữ `await` trong try để mọi rejection bất ngờ vẫn đi qua thông báo
+        // chuyên biệt của bước dò/bình tem; outcome Hủy bình thường được trả nguyên.
+        const outcome = await runProcessEngine(ctx, merged as any, false);
+        return outcome;
     } catch (e: any) {
-        setError(i18n.t('recipe.recipeRunners:loi_binh_tem_phat_lai') + ' ' + (e?.message || e));
+        const outcome = failedStep(
+            setError,
+            i18n.t('recipe.recipeRunners:loi_binh_tem_phat_lai') + ' ' + (e?.message || e),
+        );
         setProcessStatus('');
+        return outcome;
     }
 };
 
@@ -207,8 +262,9 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
                 }),
             });
             const bleedData = await bleedRes.json();
-            if (!bleedData.success) throw new Error(bleedData.detail || i18n.t('recipe.recipeRunners:loi_tao_bu_xen_vector'));
+            if (bleedRes.ok === false || !bleedData.success) throw new Error(bleedData.detail || i18n.t('recipe.recipeRunners:loi_tao_bu_xen_vector'));
             const finalRes = await authenticatedFetch(`${getApiUrl()}/preflight/download/${bleedData.output_filename}`);
+            if (finalRes.ok === false) throw new Error(i18n.t('recipe.recipeRunners:loi_tao_bu_xen_vector'));
             resultBlob = await finalRes.blob();
         } else {
             const up = await uploadPDF(targetFile);
@@ -241,6 +297,7 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
                     ? (effectiveCornerStyle === 'preserve' ? 'contour' : (p.shapeMode || 'auto_safe'))
                     : 'contour',
             );
+            fd.append('rectangle_mode', productType === 'rectangle' ? 'true' : 'false');
             const response = await authenticatedFetch(`${getApiUrl()}/pdf-tools/sticker-dieline`, { method: 'POST', body: fd });
             if (!response.ok) {
                 const err = await response.json().catch(() => null);
@@ -252,8 +309,12 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
         const baseName = file.name.replace(/\.[^/.]+$/, '');
         const prefix = productType === 'rectangle' ? 'autobleed' : 'sticker';
         await commitWorkingFile(resultBlob, `${prefix}_${baseName}.pdf`);
+        return PROCESS_COMPLETED;
     } catch (e: any) {
-        setError(i18n.t('recipe.recipeRunners:loi_tao_duong_cat') + ' ' + (e?.message || e));
+        return failedStep(
+            setError,
+            i18n.t('recipe.recipeRunners:loi_tao_duong_cat') + ' ' + (e?.message || e),
+        );
     } finally {
         setIsProcessing(false); setProcessStatus('');
     }

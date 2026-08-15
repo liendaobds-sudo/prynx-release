@@ -1,4 +1,5 @@
 // @ts-nocheck
+import type { RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
 /**
  * Shared types, interfaces, and constants for the Imposer Dashboard.
  * 
@@ -471,7 +472,12 @@ export interface ImposerDashboardProps {
     initialFeature?: string;
     lockedMode?: 'booklet' | 'nup' | 'sticker_imposer' | 'cnc_imposer';
     onBleedUpdate?: (show: boolean, mm: number) => void;
-    onFileFixed?: (blob: Blob, name: string, path?: string) => void | Promise<void>;
+    onFileFixed?: (
+        blob: Blob,
+        name: string,
+        path?: string,
+        recipeTicket?: RecipeOperationTicket | null,
+    ) => void | Promise<void>;
     systemMergeFiles?: File[];
     /** Office file → PDF (Word/Excel path-stub File). */
     officeSourceFile?: File | null;

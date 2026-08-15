@@ -49,6 +49,40 @@ def _widths(path):
     return out
 
 
+def _make_pdf_with_print_catalog(path):
+    """PDF có layer ẩn + OutputIntent để khóa parity khi Split dựng tài liệu mới."""
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(200, 200))
+    ocg = pdf.make_indirect(
+        pikepdf.Dictionary(Type=pikepdf.Name('/OCG'), Name='Hidden Layer')
+    )
+    pdf.Root[pikepdf.Name('/OCProperties')] = pikepdf.Dictionary(
+        OCGs=pikepdf.Array([ocg]),
+        D=pikepdf.Dictionary(
+            Order=pikepdf.Array([ocg]),
+            ON=pikepdf.Array([]),
+            OFF=pikepdf.Array([ocg]),
+        ),
+    )
+    page.obj[pikepdf.Name('/Resources')] = pikepdf.Dictionary(
+        Properties=pikepdf.Dictionary(MC0=ocg),
+    )
+    page.obj[pikepdf.Name('/Contents')] = pdf.make_stream(
+        b'/OC /MC0 BDC\n1 0 0 rg 0 0 200 200 re f\nEMC\n'
+    )
+    profile = pdf.make_stream(b'test-output-profile')
+    profile[pikepdf.Name('/N')] = 4
+    intent = pdf.make_indirect(pikepdf.Dictionary({
+        '/Type': pikepdf.Name('/OutputIntent'),
+        '/S': pikepdf.Name('/GTS_PDFX'),
+        '/OutputConditionIdentifier': 'TEST',
+        '/DestOutputProfile': profile,
+    }))
+    pdf.Root[pikepdf.Name('/OutputIntents')] = pikepdf.Array([intent])
+    pdf.save(path)
+    pdf.close()
+
+
 @pytest.fixture
 def workdir():
     d = tempfile.mkdtemp(prefix="test_pdftools_")
@@ -119,6 +153,79 @@ def test_split_extract_pages(workdir):
     res = split_pdf(src, os.path.join(workdir, "e"), mode="extract_pages",
                     page_list=[1, 3, 5], base_name="e")
     assert _widths(res[0]["path"]) == [100, 102, 104]
+
+
+def test_split_extract_pages_preserves_requested_order(workdir):
+    """Parity frontend/backend: danh sách trang là thứ tự output, không tự sort."""
+    src = os.path.join(workdir, "s.pdf"); _make_pdf(src, 8, base_w=100)
+    res = split_pdf(src, os.path.join(workdir, "ordered"), mode="extract_pages",
+                    page_list=[5, 1, 3], base_name="ordered")
+    assert _widths(res[0]["path"]) == [104, 100, 102]
+
+
+def test_split_by_range_accepts_ui_string(workdir):
+    """UI gửi ranges dạng chuỗi; engine phải parse cùng cú pháp với frontend."""
+    src = os.path.join(workdir, "s.pdf"); _make_pdf(src, 8, base_w=100)
+    res = split_pdf(src, os.path.join(workdir, "string_ranges"), mode="by_range",
+                    ranges="1-2, 5, 7-8", base_name="ranges")
+    assert [_widths(item["path"]) for item in res] == [
+        [100, 101], [104], [106, 107],
+    ]
+
+
+def test_split_by_range_empty_uses_full_document_like_frontend(workdir):
+    src = os.path.join(workdir, "s.pdf"); _make_pdf(src, 4, base_w=100)
+    res = split_pdf(src, os.path.join(workdir, "default_range"), mode="by_range",
+                    ranges="", base_name="default")
+    assert len(res) == 1
+    assert _widths(res[0]["path"]) == [100, 101, 102, 103]
+
+
+def test_split_duplicate_ranges_get_unique_filenames(workdir):
+    src = os.path.join(workdir, "s.pdf"); _make_pdf(src, 4, base_w=100)
+    res = split_pdf(src, os.path.join(workdir, "duplicates"), mode="by_range",
+                    ranges="1-2, 1-2", base_name="dup")
+    assert len({item["filename"] for item in res}) == 2
+    assert len({item["path"] for item in res}) == 2
+
+
+def test_split_rejects_empty_extract_result(workdir):
+    src = os.path.join(workdir, "s.pdf"); _make_pdf(src, 3, base_w=100)
+    with pytest.raises(ValueError, match="trang hợp lệ"):
+        split_pdf(src, os.path.join(workdir, "empty"), mode="extract_pages",
+                  page_list=[0, 99], base_name="empty")
+
+
+@pytest.mark.parametrize(
+    ('mode', 'kwargs'),
+    [
+        ('by_range', {'ranges': '1-1'}),
+        ('by_count', {'pages_per_file': 1}),
+        ('extract_pages', {'page_list': [1]}),
+    ],
+)
+def test_split_preserves_ocg_state_and_output_intent(workdir, mode, kwargs):
+    src = os.path.join(workdir, 'catalog.pdf')
+    _make_pdf_with_print_catalog(src)
+    result = split_pdf(
+        src,
+        os.path.join(workdir, f'catalog_{mode}'),
+        mode=mode,
+        base_name='catalog',
+        **kwargs,
+    )[0]
+
+    with pikepdf.Pdf.open(result['path']) as output:
+        oc_props = output.Root.get('/OCProperties')
+        assert oc_props is not None
+        root_ocg = oc_props['/OCGs'][0]
+        assert oc_props['/D']['/OFF'][0].objgen == root_ocg.objgen
+        page_ocg = output.pages[0].Resources['/Properties']['/MC0']
+        assert page_ocg.objgen == root_ocg.objgen
+
+        intents = output.Root.get('/OutputIntents')
+        assert intents is not None and len(intents) == 1
+        assert bytes(intents[0]['/DestOutputProfile'].read_bytes()) == b'test-output-profile'
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -336,3 +443,57 @@ async def test_route_split_control(workdir):
         config='{"pagesPerFile": 3}', license_info=_DEV_LICENSE,
     )
     assert resp is not None
+
+
+async def test_route_split_accepts_range_string_from_ui(workdir):
+    from app.api.routes import pdf_tools
+    src = os.path.join(workdir, "range_ui.pdf"); _make_pdf(src, 6, base_w=100)
+    resp = await pdf_tools.split_pdf_endpoint(
+        file=_uploadfile(src), mode="by_range",
+        config='{"ranges": "2-4"}', license_info=_DEV_LICENSE,
+    )
+
+    assert _widths(resp.path) == [101, 102, 103]
+    output_dir = os.path.dirname(resp.path)
+    os.remove(resp.path)
+    os.rmdir(output_dir)
+
+
+async def test_route_shuffle_file_path_preserves_source(workdir):
+    """RECIPE §PLAY.PATH: path lớn đi thẳng sidecar và không bị xóa như upload tạm."""
+    from app.api.routes import pdf_tools
+
+    src = os.path.join(workdir, "shuffle_path.pdf")
+    _make_pdf(src, 6, base_w=100)
+    resp = await pdf_tools.shuffle_pages_endpoint(
+        file=None,
+        file_path=src,
+        action="reverse",
+        mapping="[]",
+        license_info=_DEV_LICENSE,
+    )
+
+    assert os.path.isfile(src), "endpoint đã xóa nhầm file PDF nguồn"
+    assert _widths(resp.path) == [105, 104, 103, 102, 101, 100]
+    os.remove(resp.path)
+
+
+async def test_route_split_file_path_preserves_source(workdir):
+    """RECIPE §PLAY.PATH: Split không tạo bản upload 500 MB khi đã có native path."""
+    from app.api.routes import pdf_tools
+
+    src = os.path.join(workdir, "split_path.pdf")
+    _make_pdf(src, 6, base_w=100)
+    resp = await pdf_tools.split_pdf_endpoint(
+        file=None,
+        file_path=src,
+        mode="by_count",
+        config='{"pagesPerFile": 6}',
+        license_info=_DEV_LICENSE,
+    )
+
+    assert os.path.isfile(src), "endpoint đã xóa nhầm file PDF nguồn"
+    assert _widths(resp.path) == [100, 101, 102, 103, 104, 105]
+    output_dir = os.path.dirname(resp.path)
+    os.remove(resp.path)
+    os.rmdir(output_dir)

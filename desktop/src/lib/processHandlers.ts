@@ -25,6 +25,7 @@ import { formatError, isCanceled } from './errorMessages';
 import { toast } from '../components/ui/Toast';
 import { waitForAppForegroundDelay } from './appVisibility';
 import { previewPerfLog } from './previewPerfLog';
+import type { BackendSplitPdfResult, PdfPathMetadata } from './api';
 
 // UIUX (audit 2026-07-27 §D-09): tác vụ nặng chạy lâu — trấn an để user không tưởng app treo.
 // (KHÔNG thêm nút hủy: backend chưa có endpoint cancel cho các route preprocess.)
@@ -86,6 +87,21 @@ export interface ProcessContext {
     getWorkingSourcePath?: () => Promise<string | undefined>;
 }
 
+// RECIPE (audit 2026-08-15 §PLAY.6-7/§REC.1): `void` không phân biệt được
+// hoàn tất, Hủy và lỗi đã bị handler giữ lại. Outcome tường minh là hợp đồng để
+// recorder/playback chỉ đi tiếp sau khi commit thật sự hoàn tất.
+export type ProcessOutcome =
+    | { status: 'completed' }
+    | { status: 'canceled' }
+    | { status: 'error'; error: string };
+
+export const PROCESS_COMPLETED: ProcessOutcome = Object.freeze({ status: 'completed' });
+export const PROCESS_CANCELED: ProcessOutcome = Object.freeze({ status: 'canceled' });
+
+function processError(error: string): ProcessOutcome {
+    return { status: 'error', error };
+}
+
 // ═════════════════════════════════════════════
 //  Main Imposition Engine (Booklet / N-Up)
 // ═════════════════════════════════════════════
@@ -94,7 +110,7 @@ export async function runProcessEngine(
     ctx: ProcessContext,
     settings: ProcessingSettings,
     spawnNewTab: boolean
-) {
+): Promise<ProcessOutcome> {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, setReportMsg } = ctx;
 
     setError('');
@@ -422,20 +438,23 @@ export async function runProcessEngine(
                 setReportMsg(i18n.t('lib.processHandlers:file_da_duoc_luu_tren_server_result', { outputPath: result.outputPath, report: result.report }));
             }
         }
+        return PROCESS_COMPLETED;
     } catch (e: any) {
         if (e.message === "ABORT_BY_USER") {
             // Silently abort, user cancelled
-            return;
+            return PROCESS_CANCELED;
         }
         // UIUX (audit 2026-07-27 §D-15): Hủy thì im lặng; lỗi khác dịch thành câu Việt + hướng khắc phục
-        if (isCanceled(e)) return;
+        if (isCanceled(e)) return PROCESS_CANCELED;
         const localizedError = settings.impositionMode === ImpositionMode.NUp
             ? localizeNupCapacityError(e)
             : e;
         if (localizedError !== e) {
             console.warn('[N-Up] Lỗi sức chứa từ backend:', e);
         }
-        setError(formatError(localizedError, i18n.t('lib.processHandlers:khong_binh_duoc_trang', { defaultValue: 'Không bình được trang' })));
+        const message = formatError(localizedError, i18n.t('lib.processHandlers:khong_binh_duoc_trang', { defaultValue: 'Không bình được trang' }));
+        setError(message);
+        return processError(message);
     } finally {
         ctx.setCancelHandler?.(null);
         setIsProcessing(false);
@@ -450,7 +469,7 @@ export async function runCatalogPlan(
     ctx: ProcessContext,
     planConfig: PlanConfig,
     sheetSettings: Partial<ProcessingSettings> & { spawnNewTab?: boolean }
-) {
+): Promise<ProcessOutcome> {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, setBatchOutput } = ctx;
 
     setError('');
@@ -532,11 +551,15 @@ export async function runCatalogPlan(
             setProcessStatus('');
         } else {
             setBatchOutput(batchOutputPayload);
-            commitWorkingFile(mergedBlob, mergedFileName);
+            await commitWorkingFile(mergedBlob, mergedFileName);
         }
+        return PROCESS_COMPLETED;
     } catch (e: any) {
         // UIUX (audit 2026-07-27 §D-15): dịch lỗi kỹ thuật, Hủy thì không báo đỏ
-        if (!isCanceled(e)) setError(formatError(e, i18n.t('lib.processHandlers:khong_xu_ly_duoc_catalog', { defaultValue: 'Không xử lý được Catalog' })));
+        if (isCanceled(e)) return PROCESS_CANCELED;
+        const message = formatError(e, i18n.t('lib.processHandlers:khong_xu_ly_duoc_catalog', { defaultValue: 'Không xử lý được Catalog' }));
+        setError(message);
+        return processError(message);
     } finally {
         setIsProcessing(false);
         setProcessStatus('');
@@ -547,11 +570,92 @@ export async function runCatalogPlan(
 //  Preprocess Handlers
 // ═════════════════════════════════════════════
 
-export async function runShuffle(ctx: ProcessContext, settings: any) {
+export async function runShuffle(ctx: ProcessContext, settings: any): Promise<ProcessOutcome> {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
     // UIUX (audit 2026-07-27 §D-09): thêm hậu tố trấn an cho tác vụ chạy dài
     setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_xao_tron_trang') + LONG_TASK_HINT());
     try {
+        const buildBackendRequest = (totalPages: number) => {
+            let action = 'reverse';
+            let mapping: number[] = [];
+            if (settings.presetId === 'special') {
+                if (settings.specialAction === 'reverse') action = 'reverse';
+                else if (settings.specialAction === 'odd_first') action = 'odd_first';
+                else action = 'even_first';
+            } else {
+                action = 'custom';
+                const rules = parseRule(settings.rule);
+                mapping = applyRule(
+                    rules,
+                    totalPages,
+                    Math.max(1, settings.groupSize),
+                    settings.mode,
+                ).map((item) => item.srcPage + 1);
+            }
+            return { action, mapping };
+        };
+
+        let sourcePath: string | undefined;
+        try { sourcePath = await ctx.getWorkingSourcePath?.(); }
+        catch { sourcePath = undefined; }
+
+        // PERF (audit 2026-08-15 §PLAY.PATH): ngưỡng backend đã tồn tại từ
+        // trước; kiểm path TRƯỚC khi đọc bytes để PDF lớn không tạo bản sao V8.
+        if (sourcePath) {
+            const { backendShufflePages, getPdfPathMetadata } = await import('../lib/api');
+            const exceedsSizeLimit = file.size > 300 * 1024 * 1024;
+            const hasUnknownPathSize = !(file.size > 0);
+            const mustUsePathBackend = exceedsSizeLimit || hasUnknownPathSize;
+            const simpleSpecialAction = settings.presetId === 'special'
+                && ['reverse', 'odd_first', 'even_first'].includes(settings.specialAction);
+            let metadata: PdfPathMetadata | undefined;
+            if (!mustUsePathBackend || !simpleSpecialAction) {
+                try {
+                    metadata = await getPdfPathMetadata(sourcePath);
+                } catch (error) {
+                    // Path lớn không được fallback đọc bytes vì sẽ tái tạo đúng OOM.
+                    if (mustUsePathBackend) throw error;
+                }
+            }
+            const shouldUsePathBackend = mustUsePathBackend
+                || (metadata?.page_count ?? 0) > 1000;
+            if (shouldUsePathBackend && settings.presetId === 'special' && settings.specialAction === 'split_odd_even') {
+                if (!metadata) throw new Error(tv('Không đọc được số trang của file PDF.'));
+                const oddPages = Array.from(
+                    { length: Math.ceil(metadata.page_count / 2) },
+                    (_, index) => index * 2 + 1,
+                );
+                const evenPages = Array.from(
+                    { length: Math.floor(metadata.page_count / 2) },
+                    (_, index) => index * 2 + 2,
+                );
+                // Scheduler sidecar tự gate theo RAM/phần cứng; không hard-cap máy mạnh ở UI.
+                const [oddBlob, evenBlob] = await Promise.all([
+                    backendShufflePages(file, 'custom', oddPages, sourcePath),
+                    backendShufflePages(file, 'custom', evenPages, sourcePath),
+                ]);
+                if (!onSpawnTab) {
+                    throw new Error(tv("Môi trường hiện tại không hỗ trợ mở nhiều Tab."));
+                }
+                onSpawnTab(new File([oddBlob], `TrangLe_${file.name}`, { type: 'application/pdf' }));
+                onSpawnTab(new File([evenBlob], `TrangChan_${file.name}`, { type: 'application/pdf' }));
+                ctx.setReportMsg('');
+                return PROCESS_COMPLETED;
+            }
+            if (shouldUsePathBackend) {
+                const { action, mapping } = buildBackendRequest(metadata?.page_count ?? 0);
+                const blob = await backendShufflePages(file, action, mapping, sourcePath);
+                const newFileName = `Shuffled_${file.name}`;
+                if (settings.spawnNewTab && onSpawnTab) {
+                    onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' }));
+                } else {
+                    await commitWorkingFile(blob, newFileName);
+                    ctx.setReportMsg('');
+                }
+                return PROCESS_COMPLETED;
+            }
+        }
+
         const inputBytes = await getWorkingBytes();
         const srcPdf = await PDFDocument.load(inputBytes);
         const totalPages = srcPdf.getPageCount();
@@ -560,19 +664,7 @@ export async function runShuffle(ctx: ProcessContext, settings: any) {
             // UIUX (audit 2026-07-27 §D-09)
             setProcessStatus(i18n.t('lib.processHandlers:dang_xao_tron_trang') + LONG_TASK_HINT());
             const { backendShufflePages } = await import('../lib/api');
-            let action = 'reverse'; let mapping: number[] = [];
-            if (settings.presetId === 'special') {
-                if (settings.specialAction === 'reverse') action = 'reverse';
-                else if (settings.specialAction === 'odd_first') action = 'odd_first';
-                else action = 'even_first';
-            } else {
-                action = 'custom';
-                const rules = parseRule(settings.rule);
-                // applyRule trả PageMapping[] = {srcPage (0-based), rotation}.
-                // Backend /shuffle custom cần danh sách SỐ TRANG 1-based; trang trắng
-                // (srcPage = -1) → 0 và bị backend lọc bỏ (điều kiện 0 < p <= total).
-                mapping = applyRule(rules, totalPages, Math.max(1, settings.groupSize), settings.mode).map((m: any) => m.srcPage + 1);
-            }
+            const { action, mapping } = buildBackendRequest(totalPages);
             const workingFile = new File([inputBytes as any], file.name, { type: 'application/pdf' });
             const blob = await backendShufflePages(workingFile, action, mapping);
             const newFileName = `Shuffled_${file.name}`;
@@ -596,7 +688,7 @@ export async function runShuffle(ctx: ProcessContext, settings: any) {
                 } else {
                     throw new Error(tv("Môi trường hiện tại không hỗ trợ mở nhiều Tab."));
                 }
-                return;
+                return PROCESS_COMPLETED;
             }
 
             let mapping: any[] = [];
@@ -614,12 +706,18 @@ export async function runShuffle(ctx: ProcessContext, settings: any) {
             if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
             else { await commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
         }
+        return PROCESS_COMPLETED;
     // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
-    } catch (err: any) { if (!isCanceled(err)) setError(formatError(err, i18n.t('lib.processHandlers:khong_xao_tron_duoc_trang', { defaultValue: 'Không xáo trộn được trang' }))); }
+    } catch (err: any) {
+        if (isCanceled(err)) return PROCESS_CANCELED;
+        const message = formatError(err, i18n.t('lib.processHandlers:khong_xao_tron_duoc_trang', { defaultValue: 'Không xáo trộn được trang' }));
+        setError(message);
+        return processError(message);
+    }
     finally { setIsProcessing(false); setProcessStatus(''); }
 }
 
-export async function runResize(ctx: ProcessContext, settings: any) {
+export async function runResize(ctx: ProcessContext, settings: any): Promise<ProcessOutcome> {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
     const perfNow = () => globalThis.performance?.now?.() ?? Date.now();
     const perfStarted = perfNow();
@@ -712,23 +810,43 @@ export async function runResize(ctx: ProcessContext, settings: any) {
         // nhánh backend-only dùng chung heuristic "auto = 300 DPI khi thu nhỏ".
         // Chỉ soi trang đầu và chỉ khi file đủ nhỏ để nạp vào RAM an toàn — file
         // lớn giữ nguyên hành vi cũ (0 = không downsample) thay vì mạo hiểm OOM.
-        const isDownsizingByProbe = async (): Promise<boolean> => {
-            if ((file.size || 0) > FE_SIZE_LIMIT) return false;
+        let pathMetadataPromise: Promise<PdfPathMetadata> | null = null;
+        const loadPathMetadata = (sourcePath: string) => {
+            pathMetadataPromise ??= import('../lib/api').then(({ getPdfPathMetadata }) => (
+                getPdfPathMetadata(sourcePath)
+            ));
+            return pathMetadataPromise;
+        };
+        const isDownsizingDimensions = (width: number, height: number): boolean => {
+            if (!(width > 0 && height > 0)) return false;
+            if (pageSizeMode === 'fixed_width') {
+                return settings.targetW * MM_TO_PT < width * 0.95;
+            }
+            if (pageSizeMode === 'fixed_height') {
+                return settings.targetH * MM_TO_PT < height * 0.95;
+            }
+            const srcArea = width * height;
+            const dstArea = (settings.targetW * MM_TO_PT) * (settings.targetH * MM_TO_PT);
+            return dstArea > 0 && dstArea < srcArea * 0.9;
+        };
+        const isDownsizingByProbe = async (sourcePath?: string): Promise<boolean> => {
             try {
+                if (sourcePath) {
+                    const metadata = await loadPathMetadata(sourcePath);
+                    const firstPage = metadata.pages?.[0];
+                    if (!firstPage) return false;
+                    return isDownsizingDimensions(
+                        Number(firstPage.media_width_pt ?? firstPage.width_pt),
+                        Number(firstPage.media_height_pt ?? firstPage.height_pt),
+                    );
+                }
+                if ((file.size || 0) > FE_SIZE_LIMIT) return false;
                 const probeBytes = await getWorkingBytes();
                 const probeDoc = await PDFDocument.load(probeBytes);
                 const { width, height } = probeDoc.getPage(0).getSize();
-                if (!(width > 0 && height > 0)) return false;
-                if (pageSizeMode === 'fixed_width') {
-                    return settings.targetW * MM_TO_PT < width * 0.95;
-                }
-                if (pageSizeMode === 'fixed_height') {
-                    return settings.targetH * MM_TO_PT < height * 0.95;
-                }
-                const srcArea = width * height;
-                const dstArea = (settings.targetW * MM_TO_PT) * (settings.targetH * MM_TO_PT);
-                return dstArea > 0 && dstArea < srcArea * 0.9;
-            } catch {
+                return isDownsizingDimensions(width, height);
+            } catch (error) {
+                if (sourcePath && (!(file.size > 0) || file.size > FE_SIZE_LIMIT)) throw error;
                 return false;
             }
         };
@@ -739,17 +857,15 @@ export async function runResize(ctx: ProcessContext, settings: any) {
             wantEdgeFill, wantSolidFill,
         });
 
+        let sourcePath: string | undefined;
+        try { sourcePath = await ctx.getWorkingSourcePath?.(); }
+        catch { sourcePath = undefined; }
+
         if (wantEdgeFill || lockedAxis || wantResizeByContent) {
             // RESIZE (audit 2026-08-01 §RT.11): một backend job duy nhất tự dò
             // contentBox, fit, lấp vùng trống và đặt lại artwork vector.
             setProcessStatus(processingStatus);
             const { backendResizePages } = await import('../lib/api');
-            let sourcePath: string | undefined;
-            try {
-                sourcePath = await ctx.getWorkingSourcePath?.();
-            } catch {
-                sourcePath = undefined;
-            }
             perfRoute = sourcePath ? 'backend_path' : 'backend_upload';
 
             let inputFile = file;
@@ -765,7 +881,7 @@ export async function runResize(ctx: ProcessContext, settings: any) {
             // "auto = 300 DPI khi thu nhỏ" với nhánh thường bên dưới.
             const targetDpi = typeof settings.targetDpi === 'number'
                 ? settings.targetDpi
-                : (await isDownsizingByProbe() ? 300 : 0);
+                : (await isDownsizingByProbe(sourcePath) ? 300 : 0);
             // RESIZE (audit 2026-08-06 §G.4): màu nền trơn người dùng chọn phải
             // đi theo cả nhánh này; ép cứng '#ffffff' làm "Đổ màu trơn + Resize
             // theo nội dung" luôn ra nền trắng. Mode khóa một chiều đã bị hạ về
@@ -780,7 +896,53 @@ export async function runResize(ctx: ProcessContext, settings: any) {
                 pageSizeMode,
                 wantResizeByContent,
             ));
-            return;
+            return PROCESS_COMPLETED;
+        }
+
+        const pathMustUseBackend = !!sourcePath
+            && (!(file.size > 0) || file.size > FE_SIZE_LIMIT);
+        let pathMetadata: PdfPathMetadata | undefined;
+        if (
+            sourcePath
+            && !(typeof settings.targetDpi === 'number' && settings.targetDpi > 0)
+        ) {
+            try { pathMetadata = await loadPathMetadata(sourcePath); }
+            catch (error) {
+                if (pathMustUseBackend) throw error;
+                pathMetadata = undefined;
+            }
+        }
+        const autoDownsizeFromPath = settings.targetDpi === undefined
+            && !!pathMetadata?.pages?.[0]
+            && isDownsizingDimensions(
+                Number(pathMetadata.pages[0].media_width_pt ?? pathMetadata.pages[0].width_pt),
+                Number(pathMetadata.pages[0].media_height_pt ?? pathMetadata.pages[0].height_pt),
+            );
+        const shouldUsePathBackend = !!sourcePath && (
+            pathMustUseBackend
+            || (typeof settings.targetDpi === 'number' && settings.targetDpi > 0)
+            || (pathMetadata?.page_count ?? 0) > 1000
+            || autoDownsizeFromPath
+        );
+
+        if (sourcePath && shouldUsePathBackend) {
+            // PERF (audit 2026-08-15 §PLAY.PATH): đây vẫn là nhánh backend cũ,
+            // chỉ quyết định trước khi gọi getWorkingBytes để tránh bản sao 50–500 MB.
+            const { backendResizePages } = await import('../lib/api');
+            perfRoute = 'backend_path';
+            const targetDpi = typeof settings.targetDpi === 'number'
+                ? settings.targetDpi
+                : ((autoDownsizeFromPath || await isDownsizingByProbe(sourcePath)) ? 300 : 0);
+            await emit(await backendResizePages(
+                file, settings.targetW, settings.targetH, effectiveScaleMode,
+                settings.applyToStr || 'all', targetDpi, resizeMode,
+                wantSolidFill ? 'solid' : 'white',
+                wantSolidFill ? (settings.bgFillColor || '#ffffff') : '#ffffff',
+                sourcePath,
+                pageSizeMode,
+                wantResizeByContent,
+            ));
+            return PROCESS_COMPLETED;
         }
 
         // Đọc input bytes
@@ -800,7 +962,7 @@ export async function runResize(ctx: ProcessContext, settings: any) {
                 pageSizeMode,
                 wantResizeByContent,
             ));
-            return;
+            return PROCESS_COMPLETED;
         }
 
         // Soi pdf-lib để lấy số trang + quyết định downsample
@@ -875,6 +1037,7 @@ export async function runResize(ctx: ProcessContext, settings: any) {
         }
 
         await emit(resizedBlob);
+        return PROCESS_COMPLETED;
     } catch (err: any) {
         const canceled = isCanceled(err);
         logResizePerf({
@@ -885,12 +1048,15 @@ export async function runResize(ctx: ProcessContext, settings: any) {
             errorType: err?.name || typeof err,
         });
         // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
-        if (!canceled) setError(formatError(err, i18n.t('lib.processHandlers:khong_doi_duoc_kho_trang', { defaultValue: 'Không đổi được khổ trang' })));
+        if (canceled) return PROCESS_CANCELED;
+        const message = formatError(err, i18n.t('lib.processHandlers:khong_doi_duoc_kho_trang', { defaultValue: 'Không đổi được khổ trang' }));
+        setError(message);
+        return processError(message);
     }
     finally { setIsProcessing(false); setProcessStatus(''); }
 }
 
-export async function runTrimShift(ctx: ProcessContext, settings: any) {
+export async function runTrimShift(ctx: ProcessContext, settings: any): Promise<ProcessOutcome> {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
     // UIUX (audit 2026-07-27 §D-09): thêm hậu tố trấn an cho tác vụ chạy dài
     setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_cat_xen_doi_noi_dung') + LONG_TASK_HINT());
@@ -921,54 +1087,128 @@ export async function runTrimShift(ctx: ProcessContext, settings: any) {
         const blob = await backendTrimShift(workingFile, settings.applyToStr || 'all', config);
         const newFileName = `TrimShift_${file.name}`;
         if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
-        else { commitWorkingFile(blob, newFileName); }
+        else { await commitWorkingFile(blob, newFileName); }
+        return PROCESS_COMPLETED;
     // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
-    } catch (err: any) { if (!isCanceled(err)) setError(formatError(err, i18n.t('lib.processHandlers:khong_cat_xen_doi_duoc', { defaultValue: 'Không cắt xén/dời được nội dung' }))); }
+    } catch (err: any) {
+        if (isCanceled(err)) return PROCESS_CANCELED;
+        const message = formatError(err, i18n.t('lib.processHandlers:khong_cat_xen_doi_duoc', { defaultValue: 'Không cắt xén/dời được nội dung' }));
+        setError(message);
+        return processError(message);
+    }
     finally { setIsProcessing(false); setProcessStatus(''); }
 }
 
-export async function runSplit(ctx: ProcessContext, settings: any) {
+async function publishBackendSplitResult(
+    ctx: ProcessContext,
+    settings: any,
+    result: BackendSplitPdfResult,
+): Promise<ProcessOutcome> {
+    if (result.kind === 'zip') {
+        if (settings.mode === 'extract_pages') {
+            const message = i18n.t('lib.processHandlers:split_extract_tra_zip_khong_hop_le', {
+                defaultValue: 'Backend trả ZIP cho thao tác chỉ được phép tạo một PDF.',
+            });
+            ctx.setError(message);
+            return processError(message);
+        }
+        // RECIPE (audit 2026-08-15 §PLAY.4): ZIP là bộ output rời, tuyệt đối không
+        // đưa vào working PDF hoặc mở tab PDF giả. Người dùng chọn nơi lưu bộ file.
+        const { saveBlob } = await import('./saveBlob');
+        const saved = await saveBlob(result.blob, result.filename, {
+            title: tv('Lưu file'),
+            filterName: 'ZIP',
+            extensions: ['zip'],
+        });
+        if (saved.kind === 'cancelled') return PROCESS_CANCELED;
+        ctx.setReportMsg(`${tv('Đã lưu thành công')}: ${result.filename}`);
+        return PROCESS_COMPLETED;
+    }
+
+    if (settings.spawnNewTab && ctx.onSpawnTab) {
+        ctx.onSpawnTab(new File([result.blob], result.filename, { type: 'application/pdf' }));
+    } else {
+        await ctx.commitWorkingFile(result.blob, result.filename);
+    }
+    ctx.setReportMsg(i18n.t('lib.processHandlers:da_tach_file_thanh_cong'));
+    return PROCESS_COMPLETED;
+}
+
+export async function runSplit(ctx: ProcessContext, settings: any): Promise<ProcessOutcome> {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, setReportMsg, getWorkingBytes } = ctx;
     // UIUX (audit 2026-07-27 §D-09): thêm hậu tố trấn an cho tác vụ chạy dài
     setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_tach_pdf') + LONG_TASK_HINT());
     try {
+        let pageList: number[] = [];
+        if (settings.mode === 'extract_pages') {
+            pageList = settings.pageListStr.split(',').map((s: string) => parseInt(s.trim())).filter((n: number) => !isNaN(n));
+        }
+        const pagesPerFile = Math.max(1, Math.trunc(Number(settings.pagesPerFile) || 1));
+        const needsDetachedMultiOutput = !settings.spawnNewTab && settings.mode !== 'extract_pages';
+
+        let sourcePath: string | undefined;
+        try { sourcePath = await ctx.getWorkingSourcePath?.(); }
+        catch { sourcePath = undefined; }
+
+        // PERF (audit 2026-08-15 §PLAY.PATH): route backend trước khi pdf-lib
+        // mở file path lớn. Không đổi ngưỡng hay mức song song hiện có.
+        let shouldUsePathBackend = !!sourcePath
+            && (needsDetachedMultiOutput || !(file.size > 0) || file.size > 300 * 1024 * 1024);
+        if (sourcePath && !shouldUsePathBackend) {
+            try {
+                const { getPdfPathMetadata } = await import('../lib/api');
+                shouldUsePathBackend = (await getPdfPathMetadata(sourcePath)).page_count > 1000;
+            } catch {
+                // File dưới ngưỡng RAM vẫn có thể fallback engine frontend hiện có.
+                shouldUsePathBackend = false;
+            }
+        }
+        if (sourcePath && shouldUsePathBackend) {
+            const { backendSplitPdf } = await import('../lib/api');
+            const result = await backendSplitPdf(
+                file,
+                settings.mode,
+                { ranges: settings.ranges, pagesPerFile, pageList },
+                sourcePath,
+            );
+            return publishBackendSplitResult(ctx, settings, result);
+        }
+
         // Tuân thủ kết quả cuối cùng: tách trên file đã áp dụng sửa đổi trang.
         const inputBytes = await getWorkingBytes();
         const quickDoc = await PDFDocument.load(inputBytes);
         const totalPages = quickDoc.getPageCount();
 
-        let pageList: number[] = [];
-        if (settings.mode === 'extract_pages') {
-            pageList = settings.pageListStr.split(',').map((s: string) => parseInt(s.trim())).filter((n: number) => !isNaN(n));
-        }
-
-        if (totalPages > 1000 || file.size > 300 * 1024 * 1024) {
+        if (totalPages > 1000 || file.size > 300 * 1024 * 1024 || needsDetachedMultiOutput) {
 
             const { backendSplitPdf } = await import('../lib/api');
             const workingFile = new File([inputBytes as any], file.name, { type: 'application/pdf' });
-            const blob = await backendSplitPdf(workingFile, settings.mode, { ranges: settings.ranges, pagesPerFile: settings.pagesPerFile, pageList });
-            const newFileName = `Split_${file.name}`;
-            if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: blob.type })); }
-            else { await commitWorkingFile(blob, newFileName); }
-            setReportMsg(i18n.t('lib.processHandlers:da_tach_file_thanh_cong'));
+            const result = await backendSplitPdf(workingFile, settings.mode, { ranges: settings.ranges, pagesPerFile, pageList });
+            return publishBackendSplitResult(ctx, settings, result);
         } else {
-            const results = await splitPdf(inputBytes, settings.mode, { ranges: settings.ranges, pagesPerFile: settings.pagesPerFile, pageList }, file.name.replace('.pdf', ''));
+            const results = await splitPdf(inputBytes, settings.mode, { ranges: settings.ranges, pagesPerFile, pageList }, file.name.replace('.pdf', ''));
             if (results.length === 0) throw new Error(tv("Thao tác tách không tạo ra file nào."));
             if (settings.spawnNewTab && onSpawnTab) {
                 for (const r of results) { onSpawnTab(new File([new Blob([r.bytes as any])], r.filename, { type: 'application/pdf' })); }
                 setReportMsg(i18n.t('lib.processHandlers:da_tao_results_length_tab_moi', { count: results.length }));
             } else {
                 const first = results[0];
-                commitWorkingFile(new Blob([first.bytes as any], { type: 'application/pdf' }), first.filename);
+                await commitWorkingFile(new Blob([first.bytes as any], { type: 'application/pdf' }), first.filename);
                 setReportMsg(i18n.t('lib.processHandlers:da_tach_thanh_results_length_file', { count: results.length }));
             }
         }
+        return PROCESS_COMPLETED;
     // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
-    } catch (err: any) { if (!isCanceled(err)) setError(formatError(err, i18n.t('lib.processHandlers:khong_tach_duoc_pdf', { defaultValue: 'Không tách được PDF' }))); }
+    } catch (err: any) {
+        if (isCanceled(err)) return PROCESS_CANCELED;
+        const message = formatError(err, i18n.t('lib.processHandlers:khong_tach_duoc_pdf', { defaultValue: 'Không tách được PDF' }));
+        setError(message);
+        return processError(message);
+    }
     finally { setIsProcessing(false); setProcessStatus(''); }
 }
 
-export async function runMerge(ctx: ProcessContext, settings: any) {
+export async function runMerge(ctx: ProcessContext, settings: any): Promise<ProcessOutcome> {
     const {
         file, onSpawnTab, commitWorkingFile, setError, setIsProcessing,
         setProcessStatus, setCancelHandler, getWorkingBytes,
@@ -1039,7 +1279,7 @@ export async function runMerge(ctx: ProcessContext, settings: any) {
             } else {
                 await commitWorkingFile(blob, newFileName);
             }
-            return;
+            return PROCESS_COMPLETED;
         }
 
         const outputBytes = await mergePdf(workingBytes, settings);
@@ -1056,16 +1296,18 @@ export async function runMerge(ctx: ProcessContext, settings: any) {
             await commitWorkingFile(blob, newFileName);
             ctx.setReportMsg('');
         }
+        return PROCESS_COMPLETED;
     // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
     } catch (error: unknown) {
-        if (!isCanceled(error)) {
-            setError(formatError(
-                error,
-                i18n.t('lib.processHandlers:khong_ghep_duoc_pdf', {
-                    defaultValue: 'Không ghép được PDF',
-                }),
-            ));
-        }
+        if (isCanceled(error)) return PROCESS_CANCELED;
+        const message = formatError(
+            error,
+            i18n.t('lib.processHandlers:khong_ghep_duoc_pdf', {
+                defaultValue: 'Không ghép được PDF',
+            }),
+        );
+        setError(message);
+        return processError(message);
     } finally {
         setCancelHandler?.(null);
         setIsProcessing(false);

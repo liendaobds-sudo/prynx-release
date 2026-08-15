@@ -13,13 +13,16 @@ vi.mock('../processHandlers', () => ({
     runProcessEngine: vi.fn(),
     runShuffle: vi.fn(),
     runResize: vi.fn(),
+    runTrimShift: vi.fn(),
     runSplit: vi.fn(),
     runMerge: vi.fn(),
+    PROCESS_COMPLETED: { status: 'completed' },
+    PROCESS_CANCELED: { status: 'canceled' },
 }));
 
 import { RECIPE_RUNNERS, isPlayableOp } from './recipeRunners';
 import { uploadPDF, authenticatedFetch } from '../api';
-import { runProcessEngine, runMerge } from '../processHandlers';
+import { runProcessEngine, runMerge, runSplit } from '../processHandlers';
 
 function makeCtx(over: Partial<ProcessContext> = {}): ProcessContext {
     return {
@@ -37,6 +40,9 @@ function makeCtx(over: Partial<ProcessContext> = {}): ProcessContext {
 
 beforeEach(() => {
     vi.clearAllMocks();
+    (runProcessEngine as any).mockResolvedValue({ status: 'completed' });
+    (runMerge as any).mockResolvedValue({ status: 'completed' });
+    (runSplit as any).mockResolvedValue({ status: 'completed' });
 });
 
 describe('recipeRunners — registry', () => {
@@ -56,8 +62,17 @@ describe('recipeRunners — registry', () => {
     });
 
     it('imposition runner ép spawnNewTab=false', async () => {
-        await RECIPE_RUNNERS.booklet!(makeCtx(), { sheetWidth: 320 }, null);
+        const outcome = await RECIPE_RUNNERS.booklet!(makeCtx(), { sheetWidth: 320 }, null);
         expect(runProcessEngine).toHaveBeenCalledWith(expect.anything(), { sheetWidth: 320 }, false);
+        expect(outcome).toEqual({ status: 'completed' });
+    });
+
+    it('imposition runner truyền nguyên outcome canceled về PlaybackRunner', async () => {
+        (runProcessEngine as any).mockResolvedValueOnce({ status: 'canceled' });
+
+        const outcome = await RECIPE_RUNNERS.booklet!(makeCtx(), { sheetWidth: 320 }, null);
+
+        expect(outcome).toEqual({ status: 'canceled' });
     });
 
     it('merge runner truyền file ngoài vào filesToMerge + spawnNewTab=false', async () => {
@@ -67,6 +82,32 @@ describe('recipeRunners — registry', () => {
             expect.anything(),
             expect.objectContaining({ mode: 'merge_files', spawnNewTab: false, filesToMerge: [f] }),
         );
+    });
+
+    it('split recipe chỉ phát chế độ extract_pages có đúng một output', async () => {
+        const context = makeCtx();
+
+        const outcome = await RECIPE_RUNNERS.split!(
+            context,
+            { mode: 'extract_pages', pageListStr: '1,3' },
+            null,
+        );
+
+        expect(outcome).toEqual({ status: 'completed' });
+        expect(runSplit).toHaveBeenCalledWith(
+            context,
+            expect.objectContaining({ mode: 'extract_pages', spawnNewTab: false }),
+        );
+    });
+
+    it.each(['by_count', 'by_range'])('split recipe %s dừng trước khi tạo nhiều output', async (mode) => {
+        const context = makeCtx();
+
+        const outcome = await RECIPE_RUNNERS.split!(context, { mode }, null);
+
+        expect(outcome).toMatchObject({ status: 'error' });
+        expect(context.setError).toHaveBeenCalledWith(expect.stringContaining('nhiều file'));
+        expect(runSplit).not.toHaveBeenCalled();
     });
 });
 
@@ -79,7 +120,10 @@ describe('recipeRunners — prepress JSON (convertcolors)', () => {
             .mockResolvedValueOnce(dl);    // download
 
         const commit = vi.fn();
-        await RECIPE_RUNNERS.convertcolors!(makeCtx({ commitWorkingFile: commit }), { conversions: ['rgb_to_cmyk'] }, null);
+        await RECIPE_RUNNERS.convertcolors!(makeCtx({ commitWorkingFile: commit }), {
+            conversions: ['rgb_to_cmyk'],
+            file_id: 'stale-imported-id',
+        }, null);
 
         expect(uploadPDF).toHaveBeenCalledTimes(1);
         const postCall = (authenticatedFetch as any).mock.calls[0];
@@ -89,14 +133,27 @@ describe('recipeRunners — prepress JSON (convertcolors)', () => {
         expect(commit).toHaveBeenCalledWith(expect.any(Blob), 'out.pdf');
     });
 
+    it('download prepress lỗi thì không commit body lỗi như PDF', async () => {
+        (authenticatedFetch as any)
+            .mockResolvedValueOnce({ ok: true, json: async () => ({ success: true, output_filename: 'out.pdf' }) })
+            .mockResolvedValueOnce({ ok: false, status: 500 });
+        const context = makeCtx({ commitWorkingFile: vi.fn() });
+
+        const outcome = await RECIPE_RUNNERS.convertcolors!(context, {}, null);
+
+        expect(outcome).toMatchObject({ status: 'error' });
+        expect(context.commitWorkingFile).not.toHaveBeenCalled();
+    });
+
     it('backend báo lỗi → setError, không commit', async () => {
         const post = { json: async () => ({ success: false, error: 'hỏng' }) };
         (authenticatedFetch as any).mockResolvedValueOnce(post);
         const setError = vi.fn();
         const commit = vi.fn();
-        await RECIPE_RUNNERS.pdfx!(makeCtx({ setError, commitWorkingFile: commit }), { standard: 'x1a' }, null);
+        const outcome = await RECIPE_RUNNERS.pdfx!(makeCtx({ setError, commitWorkingFile: commit }), { standard: 'x1a' }, null);
         expect(setError).toHaveBeenCalledWith('hỏng');
         expect(commit).not.toHaveBeenCalled();
+        expect(outcome).toEqual({ status: 'error', error: 'hỏng' });
     });
 });
 
@@ -122,9 +179,10 @@ describe('recipeRunners — optimize (multipart → blob)', () => {
         (authenticatedFetch as any).mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({ detail: 'server lỗi' }) });
         const setError = vi.fn();
         const commit = vi.fn();
-        await RECIPE_RUNNERS.optimize!(makeCtx({ setError, commitWorkingFile: commit }), { preset: 'ebook' }, null);
+        const outcome = await RECIPE_RUNNERS.optimize!(makeCtx({ setError, commitWorkingFile: commit }), { preset: 'ebook' }, null);
         expect(setError).toHaveBeenCalledWith('server lỗi');
         expect(commit).not.toHaveBeenCalled();
+        expect(outcome).toEqual({ status: 'error', error: 'server lỗi' });
     });
 });
 
@@ -147,6 +205,20 @@ describe('recipeRunners — bình tem dò lại hình (sticker_imposer)', () => 
         expect(passed.detectedShapesByPage).toEqual({ 0: 'CIRCLE', 1: 'CIRCLE' });
         expect(passed.detectedShapeParamsByPage).toEqual({ 0: { d: 10 }, 1: { d: 10 } });
         expect((runProcessEngine as any).mock.calls[0][2]).toBe(false); // spawnNewTab=false
+    });
+
+    it('dò hình trả success=false thì dừng trước engine bình', async () => {
+        (authenticatedFetch as any).mockResolvedValueOnce({
+            ok: true,
+            json: async () => ({ success: false, error: 'PDF hỏng', shapes: ['CUSTOM'] }),
+        });
+        const context = makeCtx();
+
+        const outcome = await RECIPE_RUNNERS.sticker_imposer!(context, {}, null);
+
+        expect(outcome).toMatchObject({ status: 'error' });
+        expect(context.setError).toHaveBeenCalledWith(expect.stringContaining('PDF hỏng'));
+        expect(runProcessEngine).not.toHaveBeenCalled();
     });
 });
 
@@ -188,6 +260,7 @@ describe('recipeRunners — tạo đường cắt (sticker_dieline)', () => {
         // Cả removeWhiteBg/trimWhiteEdge kiểu cũ đều không được auto-trim đổi khổ.
         expect((authenticatedFetch as any).mock.calls).toHaveLength(1);
         expect((authenticatedFetch as any).mock.calls[0][0]).toBe('http://x/api/pdf-tools/sticker-dieline');
+        expect(fd.get('rectangle_mode')).toBe('true');
         expect(fd.get('edge_bite_mm')).toBe('1.5');
         // rectangle không dùng "trang đầu" dù params có cờ.
         expect(fd.get('cut_first_page_only')).toBe('false');

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
-import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
+import { recipeRecorder, type RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
 import { ToolSectionLabel, ToolCheckboxOption, ToolNumberInput } from './ToolUI';
 import { RichSelect, ToolItem } from '../imposition-tools/SharedUI';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
@@ -22,8 +22,14 @@ import { findToolByUniqueKey } from '../../lib/toolRegistry';
 import { useToolActivationGuard } from '../../hooks/useToolActivationGuard';
 
 interface Props {
+    tabId?: string;
     pdfFile: File | null;
-    onFileFixed?: (blob: Blob, filename: string, path?: string) => void | Promise<void>;
+    onFileFixed?: (
+        blob: Blob,
+        filename: string,
+        path?: string,
+        recipeTicket?: RecipeOperationTicket | null,
+    ) => void | Promise<void>;
     onProcessingChange?: (processing: boolean) => void;
     preferPdfFile?: boolean;
     productType?: 'sticker' | 'rectangle';
@@ -219,6 +225,7 @@ export function resetStickerPreferences(): boolean {
 }
 
 export default function StickerTool({
+    tabId,
     pdfFile,
     onFileFixed,
     onProcessingChange,
@@ -507,15 +514,28 @@ export default function StickerTool({
 
         // Selection ids belong to one concrete PDF revision and must not be
         // replayed by a recipe on another file.
-        const recordedRecipeOperation = !activeObjectSelection;
-        if (recordedRecipeOperation) {
-            recipeRecorder.noteOperation('sticker_dieline', {
+        const recordingThisTab = !!tabId && recipeRecorder.isRecordingFor(tabId);
+        if (recordingThisTab && activeObjectSelection) {
+            // Selection id chỉ hợp lệ với revision hiện tại và không thể phát lại trên file khác.
+            setError(t('tabs.imposition:dang_xu_ly_file'));
+            setIsProcessing(false);
+            onProcessingChange?.(false);
+            return;
+        }
+        const recipeTicket = recordingThisTab
+            ? recipeRecorder.noteOperation('sticker_dieline', {
                 productType, cutMode, offsetMm, cornerStyle: requestedCornerStyle, fillHoles,
                 bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm,
                 cutFirstPageOnly, cropToSticker,
                 bleedSides: { ...bleedSides },
                 shapeMode: (requestedCornerStyle === 'preserve' || requestedForceContour) ? 'contour' : 'auto_safe',
-            });
+            }, undefined, tabId)
+            : null;
+        if (recordingThisTab && !recipeTicket) {
+            setError(t('tabs.imposition:dang_xu_ly_file'));
+            setIsProcessing(false);
+            onProcessingChange?.(false);
+            return;
         }
 
         try {
@@ -533,12 +553,19 @@ export default function StickerTool({
             if (onFileFixed) {
                 const prefix = productType === 'rectangle' ? 'autobleed' : 'sticker';
                 const baseName = pdfFile.name.replace(/\.[^/.]+$/, "");
-                await onFileFixed(resultBlob, `${prefix}_${baseName}.pdf`, resultPath);
+                await onFileFixed(
+                    resultBlob,
+                    `${prefix}_${baseName}.pdf`,
+                    resultPath,
+                    recipeTicket,
+                );
                 setIsSuccess(true);
                 setSettingsOpen(false);
+            } else {
+                recipeRecorder.discardPending(recipeTicket);
             }
         } catch (error: unknown) {
-            if (recordedRecipeOperation) recipeRecorder.discardPending();
+            recipeRecorder.discardPending(recipeTicket);
             setSettingsOpen(true);
             setError(
                 error instanceof Error && error.message

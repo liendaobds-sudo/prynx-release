@@ -1,15 +1,21 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
-import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
+import { recipeRecorder, type RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
 import {
     ToolSectionLabel, ToolDivider, ToolCheckboxOption, ToolWarning
 } from './ToolUI';
 import { useTranslation } from 'react-i18next';
 
 interface Props {
+  tabId?: string;
   pdfFile: File | null;
-  onFileFixed?: (blob: Blob, name: string) => void;
+  onFileFixed?: (
+    blob: Blob,
+    name: string,
+    path?: string,
+    recipeTicket?: RecipeOperationTicket | null,
+  ) => void | Promise<void>;
 }
 
 const OPTIONS = [
@@ -17,7 +23,7 @@ const OPTIONS = [
   { key: 'preserve_overprint', label: 'Giữ overprint hiện có', desc: 'Không tắt các thiết lập overprint đã có sẵn trong file; chỉ bổ sung cho object đen chưa set.' },
 ];
 
-export default function TrapPresetsTool({ pdfFile, onFileFixed }: Props) {
+export default function TrapPresetsTool({ tabId, pdfFile, onFileFixed }: Props) {
   const { t } = useTranslation();
   const [fileId, setFileId] = useState('');
   const [overprintBlack, setOverprintBlack] = useState(true);
@@ -45,13 +51,21 @@ export default function TrapPresetsTool({ pdfFile, onFileFixed }: Props) {
 
   const apply = async () => {
     setRunning(true); setStatus('');
+    const params = { overprint_black: overprintBlack, preserve_overprint: preserveOverprint };
+    const shouldRecord = !!tabId && recipeRecorder.isRecordingFor(tabId);
+    const recipeTicket = shouldRecord
+      ? recipeRecorder.noteOperation('trapping', {
+          action_id: 'SET_BLACK_OVERPRINT',
+          params,
+        }, undefined, tabId)
+      : null;
+    if (shouldRecord && !recipeTicket) {
+      setStatus(t('preprocess.trapPresets:loi_x', { msg: t('tabs.imposition:dang_xu_ly_file') }));
+      setRunning(false);
+      return;
+    }
     try {
       const fid = await ensureUploaded();
-      const params = { overprint_black: overprintBlack, preserve_overprint: preserveOverprint };
-      recipeRecorder.noteOperation('trapping', {
-        action_id: 'SET_BLACK_OVERPRINT',
-        params,
-      });
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/set-overprint`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_id: fid, action_id: 'SET_BLACK_OVERPRINT', params }),
@@ -62,11 +76,13 @@ export default function TrapPresetsTool({ pdfFile, onFileFixed }: Props) {
         if (data.output_filename && onFileFixed) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
           expectedOutputNameRef.current = data.output_filename;
-          onFileFixed(await dl.blob(), data.output_filename);
+          await onFileFixed(await dl.blob(), data.output_filename, undefined, recipeTicket);
+        } else {
+          recipeRecorder.discardPending(recipeTicket);
         }
-      } else { recipeRecorder.discardPending(); setStatus(t('preprocess.trapPresets:loi_x', { msg: data.error || 'Lỗi' })); }
-    } catch (e: any) { recipeRecorder.discardPending(); setStatus(t('preprocess.trapPresets:loi_x', { msg: e.message })); }
-    setRunning(false);
+      } else { recipeRecorder.discardPending(recipeTicket); setStatus(t('preprocess.trapPresets:loi_x', { msg: data.error || 'Lỗi' })); }
+    } catch (e: any) { recipeRecorder.discardPending(recipeTicket); setStatus(t('preprocess.trapPresets:loi_x', { msg: e.message })); }
+    finally { setRunning(false); }
   };
 
   const toggleOpt = (key: string) => {

@@ -11,6 +11,11 @@ import { tv } from '../../i18n';
 
 export const RECIPE_SCHEMA_VERSION = 1;
 
+/** Recipe tuyến tính chỉ nhận mode Split luôn tạo đúng một working PDF. */
+export function isLinearRecipeSplitMode(mode: unknown): mode is 'extract_pages' {
+    return mode === 'extract_pages';
+}
+
 /** Định danh thao tác — khớp handler/tool key trong processHandlers + PreprocessingRouter. */
 export type RecipeOpId =
     // Bình bài

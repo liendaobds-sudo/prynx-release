@@ -2,14 +2,20 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { HelpCircle } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
-import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
+import { recipeRecorder, type RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
 import ToolHelpModal from '../ToolHelpModal';
 import type { ToolHelp } from '../../lib/toolHelp';
 import { useTranslation } from 'react-i18next';
 
 interface Props {
+  tabId?: string;
   pdfFile: File | null;
-  onFileFixed?: (blob: Blob, name: string) => void;
+  onFileFixed?: (
+    blob: Blob,
+    name: string,
+    path?: string,
+    recipeTicket?: RecipeOperationTicket | null,
+  ) => void | Promise<void>;
 }
 
 // Mặc định ẩn (đã thống nhất): luôn giữ đen 100%K, hồ sơ màu Tự động, quy đổi
@@ -66,7 +72,7 @@ function ModeCard({ selected, icon, label, desc, onSelect }: {
   );
 }
 
-export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
+export default function ConvertColorsTool({ tabId, pdfFile, onFileFixed }: Props) {
   const { t } = useTranslation();
   const [fileId, setFileId] = useState('');
   const [mode, setMode] = useState<'cmyk' | 'grayscale'>('cmyk');
@@ -97,11 +103,25 @@ export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
 
   const run = async () => {
     setRunning(true); setResult(null); setError('');
+    const shouldRecord = !!tabId && recipeRecorder.isRecordingFor(tabId);
+    const conversions = mode === 'grayscale'
+      ? ['gray_to_cmyk']
+      : ['rgb_to_cmyk', ...(includeSpot ? ['spot_to_cmyk'] : [])];
+    const recipeTicket = shouldRecord
+      ? recipeRecorder.noteOperation('convertcolors', {
+          conversions,
+          icc_profile: FIXED.icc_profile,
+          rendering_intent: FIXED.rendering_intent,
+          preserve_black: FIXED.preserve_black,
+        }, undefined, tabId)
+      : null;
+    if (shouldRecord && !recipeTicket) {
+      setError(t('tabs.imposition:dang_xu_ly_file'));
+      setRunning(false);
+      return;
+    }
     try {
       const fid = await ensureUploaded();
-      const conversions = mode === 'grayscale'
-        ? ['gray_to_cmyk']
-        : ['rgb_to_cmyk', ...(includeSpot ? ['spot_to_cmyk'] : [])];
       const body = {
         file_id: fid,
         conversions,
@@ -109,10 +129,6 @@ export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
         rendering_intent: FIXED.rendering_intent,
         preserve_black: FIXED.preserve_black,
       };
-      recipeRecorder.noteOperation('convertcolors', {
-        conversions, icc_profile: FIXED.icc_profile,
-        rendering_intent: FIXED.rendering_intent, preserve_black: FIXED.preserve_black,
-      });
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/convert-colors`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -123,11 +139,13 @@ export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
         if (data.output_filename && onFileFixed) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
           expectedOutputNameRef.current = data.output_filename;
-          onFileFixed(await dl.blob(), data.output_filename);
+          await onFileFixed(await dl.blob(), data.output_filename, undefined, recipeTicket);
+        } else {
+          recipeRecorder.discardPending(recipeTicket);
         }
-      } else { recipeRecorder.discardPending(); setError(data.error || data.detail || t('preprocess.convertColors:that_bai')); }
-    } catch (e: any) { recipeRecorder.discardPending(); setError(e.message); }
-    setRunning(false);
+      } else { recipeRecorder.discardPending(recipeTicket); setError(data.error || data.detail || t('preprocess.convertColors:that_bai')); }
+    } catch (e: any) { recipeRecorder.discardPending(recipeTicket); setError(e.message); }
+    finally { setRunning(false); }
   };
 
   if (!pdfFile) return <div className="text-[11px] text-slate-400 text-center py-6">{t('preprocess.convertColors:vui_long_mo_file_pdf_truoc')}</div>;

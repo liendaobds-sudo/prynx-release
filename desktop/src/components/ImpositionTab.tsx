@@ -24,7 +24,7 @@ import { canUseRectangleStickerInking } from './imposition-tools/shapeDetectionP
 import { disposeImposerPersistScope } from './imposition-tools/store/persist';
 import { generateBindingMap } from '../lib/imposerEngine/VirtualMap';
 import { getApiUrl, uploadPDF, authenticatedFetch } from '../lib/api';
-import { recipeRecorder } from '../lib/recipe/RecipeRecorder';
+import { recipeRecorder, type RecipeOperationTicket } from '../lib/recipe/RecipeRecorder';
 import { isOutputFile, isImposedOutputFile } from '../lib/constants';
 import { writeSnapshot, deleteSnapshot } from '../lib/recovery';
 import { getFileArrayBuffer, detectColorSpace, stripBytesIfOnDisk } from '../lib/utils';
@@ -37,8 +37,14 @@ import RecipePanel from './recipe/RecipePanel';
 import { toast } from './ui/Toast';
 // UIUX (audit 2026-07-27 §B-20 + §B-23): phím tắt dialog + dịch lỗi kỹ thuật
 import DialogKeys from './ui/DialogKeys';
-import type { Recipe } from '../lib/recipe/recipeTypes';
+import { isLinearRecipeSplitMode, type Recipe } from '../lib/recipe/recipeTypes';
+import { sanitizeRecipeImpositionParams } from '../lib/recipe/recipeImpositionParams';
 import { firstDeniedRecipeStep, recipeStepAccessError } from '../lib/recipe/recipeEntitlements';
+import {
+    createWorkingArtifactController,
+    createWorkingArtifactProcessContext,
+} from '../lib/recipe/workingArtifact';
+import type { ProcessOutcome } from '../lib/processHandlers';
 import DataMergeTool from './preprocess-tools/DataMergeTool';
 import NumberingTool from './preprocess-tools/NumberingTool';
 import CoverNumberingTool from './preprocess-tools/CoverNumberingTool';
@@ -49,6 +55,7 @@ import { usePrintDialog } from './shared/usePrintDialog';
 import EditLayersPanel from './workspace/SelectionLayersPanel';
 import { useAppSettingsStore } from '../stores/appSettingsStore';
 import { primeViewerFirstFrame } from '../lib/viewerFirstFrame';
+import { statNativeSystemFile } from '../lib/nativeFileAccess';
 
 import { WorkspaceContext, createWorkspaceStore, useWorkspaceStore } from '../stores/useWorkspaceStore';
 import { clearTileUrlCacheForFile } from './workspace/LivePageFrame';
@@ -84,6 +91,26 @@ const MAX_HISTORY = 12;
 
 type FileOpeningPhase = 'idle' | 'loading' | 'slow' | 'error';
 const FILE_OPEN_SLOW_MS = 8_000;
+
+/**
+ * RECIPE (audit 2026-08-15 §REC.1): thao tác Hủy/lỗi không được để pending
+ * note sống sang commit kế tiếp. Unexpected throw cũng phải dọn cùng hợp đồng.
+ */
+async function runRecordedProcess(
+    ticket: RecipeOperationTicket | null,
+    run: () => Promise<ProcessOutcome>,
+): Promise<ProcessOutcome> {
+    try {
+        const outcome = await run();
+        // Commit thành công đã tự tiêu thụ note. Nếu completed nhưng không commit
+        // (vd split odd/even), dọn note còn sót để không ghép nhầm thao tác kế.
+        recipeRecorder.discardPending(ticket);
+        return outcome;
+    } catch (error) {
+        recipeRecorder.discardPending(ticket);
+        throw error;
+    }
+}
 
 interface Props {
     tabId?: string;
@@ -144,6 +171,7 @@ export function isEphemeralBackendPath(p?: string | null): boolean {
 
 function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onSpawnTab, initialFile, initialReport, initialFeature, lockedMode, batchOutput: initialBatchOutput, systemMergeFiles, officeSourceFile, officeSourceFiles, initialRecovery, onRequestHome, imposerStoreRef }: Props & { imposerStoreRef: React.MutableRefObject<ReturnType<typeof createImposerSettingsStore> | null> }) {
   const { t } = useTranslation();
+    const recipeOwnerTabId = tabId || 'workspace:default';
     const getCropWorkingFile = useWorkingPdf();
     //#region State & Hooks
     // ═══ All state from Zustand store ═══
@@ -306,6 +334,19 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         return registerActiveTabFeature(tabId, activeDashboardTool);
     }, [tabId, activeDashboardTool]);
 
+    // REC (audit 2026-08-15 §REC.OWN): các tab đều được giữ mounted. Recorder phải biết
+    // tab nào thực sự active để callback legacy không thể xóa pending của workspace khác.
+    useEffect(() => {
+        recipeRecorder.setTabActive(recipeOwnerTabId, isActive === true);
+        return () => recipeRecorder.setTabActive(recipeOwnerTabId, false);
+    }, [isActive, recipeOwnerTabId]);
+
+    // Đóng tab sở hữu phải kết thúc draft; nếu không recorder singleton sẽ khóa nút Ghi
+    // của mọi tab còn lại cho tới khi khởi động lại ứng dụng.
+    useEffect(() => () => {
+        recipeRecorder.cancel(recipeOwnerTabId);
+    }, [recipeOwnerTabId]);
+
     useEffect(() => {
         // UIUX (audit 2026-08-09 §LR3.04): giữ component mounted sau lần mở đầu
         // để đổi công cụ không làm mất editor/history/SVG đang dựng trong cùng tab.
@@ -326,6 +367,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // Mở file khuôn bằng AI/Corel (nơi plugin máy bế đã cài) — thay chỗ nút "Gửi Máy Bế".
     const [showOpenInDesign, setShowOpenInDesign] = useState(false);
     const [showRecipePanel, setShowRecipePanel] = useState(false);
+    const [isRecipePlaying, setIsRecipePlaying] = useState(false);
     // Keep the Crop mode, the toolbar button, and the right-hand tool panel in sync.
     // Selecting Crop from the panel enables drawing; C/toolbar toggles promote the
     // same mode into the panel without opening a separate modal.
@@ -882,7 +924,22 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // Undo/Redo riêng cho chế độ chỉnh sửa đối tượng (Ctrl+Z + nút Undo).
     const editHistory = useObjectEditHistory();
 
-    const commitWorkingFile = useCallback(async (newBlob: Blob, newName: string, existingPath?: string) => {
+    const commitWorkingFile = useCallback(async (
+        newBlob: Blob,
+        newName: string,
+        existingPath?: string,
+        recipeTicket?: RecipeOperationTicket | null,
+    ) => {
+        // Chụp vé trước MỌI await. Chỉ caller đã noteOperation và giữ đúng ticket mới
+        // được ghi Step; undefined/null đều là cấm ghi. Không suy đoán pending tại commit.
+        const capturedRecipeTicket = recipeTicket ?? null;
+        const assertRecipeCommitAllowed = () => {
+            if (recipeRecorder.canCommitWorkingFile(recipeOwnerTabId, capturedRecipeTicket)) return;
+            throw new Error(t('tabs.imposition:ket_qua_khong_thuoc_luot_ghi_hien_tai'));
+        };
+        // RECIPE (audit 2026-08-15 §REC.RACE): chặn ngay callback không mang vé và
+        // kết quả cũ về sau khi người dùng đã dừng/hủy phiên ghi.
+        assertRecipeCommitAllowed();
         let committedBlob = newBlob;
         let committedName = newName;
         let committedPath = existingPath;
@@ -925,45 +982,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             }
         }
 
-        if (file) {
-            // Cắt bớt entry cũ nhất khi vượt ngưỡng → chặn leak RAM (audit 2026-07-06).
-            setHistory(prev => {
-                // Strip bytes khi file có path đĩa → entry undo chỉ giữ tên+path (đọc lại
-                // qua getFileArrayBuffer khi cần), chặn leak RAM (audit 2026-07-06). File
-                // không path → giữ nguyên bytes (fallback). handleUndo đã xử lý cả 2 nhánh.
-                const historyFile = stripBytesIfOnDisk(file);
-                // Undo phải khôi phục đồng thời PDF hiển thị và ảnh nguồn tương ứng;
-                // nếu không, Bù xén vẫn có thể âm thầm nhận ảnh upscale mới.
-                Object.defineProperty(historyFile, '__prynxSourceImageFile', {
-                    value: sourceImageFile,
-                    configurable: true,
-                });
-                if (stickerSheetSourceVisible && stickerSheetSourceFile) {
-                    // PERF/UIUX (feedback 2026-08-11 §AI.UNDO1): PDF nguồn có thể
-                    // được strip thành path-stub. Giữ owner để Undo không bị effect
-                    // đồng bộ nguồn mở lại chính PDF đó lần thứ hai giữa lúc Viewer nạp.
-                    Object.defineProperty(historyFile, '__prynxStickerSourceFile', {
-                        value: stickerSheetSourceFile,
-                        configurable: true,
-                    });
-                }
-                const next = [...prev, historyFile];
-                return next.length > MAX_HISTORY ? next.slice(next.length - MAX_HISTORY) : next;
-            });
-        }
-        // UIUX (feedback 2026-08-11 §AI.SPLIT1): PDF tạo xong phải ở lại Viewer.
-        // Nếu marker về null, effect đồng bộ nguồn sẽ mở lại nguyên tấm ngay khi
-        // khối export hạ xuống, làm kết quả 9 trang trở về 1/1.
-        syncedStickerSourceRef.current = resolveStickerSourceSyncMarker(
-            stickerSheetSourceFile,
-            nextSourceImage,
-            activeDashboardTool === 'sticker' && stickerSheetMode === 'ai-sheet',
-        );
-        setSourceImageFile(nextSourceImage);
         // Use newName to correctly reflect the current file's processing state
         const displayName = committedName;
-        setOriginalFileName(committedName);
-        
         const newFile = new File([committedBlob as any], displayName, { type: 'application/pdf' });
         
         try {
@@ -1004,6 +1024,45 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             console.warn('Failed to write temp file for PDFium', e);
         }
 
+        // Không có await từ lần kiểm tra cuối tới khi publish state: Dừng/Hủy không
+        // thể chen giữa rồi để callback cũ thay working file của phiên mới.
+        assertRecipeCommitAllowed();
+        if (file) {
+            // Cắt bớt entry cũ nhất khi vượt ngưỡng → chặn leak RAM (audit 2026-07-06).
+            setHistory(prev => {
+                // Strip bytes khi file có path đĩa → entry undo chỉ giữ tên+path (đọc lại
+                // qua getFileArrayBuffer khi cần), chặn leak RAM (audit 2026-07-06). File
+                // không path → giữ nguyên bytes (fallback). handleUndo đã xử lý cả 2 nhánh.
+                const historyFile = stripBytesIfOnDisk(file);
+                // Undo phải khôi phục đồng thời PDF hiển thị và ảnh nguồn tương ứng;
+                // nếu không, Bù xén vẫn có thể âm thầm nhận ảnh upscale mới.
+                Object.defineProperty(historyFile, '__prynxSourceImageFile', {
+                    value: sourceImageFile,
+                    configurable: true,
+                });
+                if (stickerSheetSourceVisible && stickerSheetSourceFile) {
+                    // PERF/UIUX (feedback 2026-08-11 §AI.UNDO1): PDF nguồn có thể
+                    // được strip thành path-stub. Giữ owner để Undo không bị effect
+                    // đồng bộ nguồn mở lại chính PDF đó lần thứ hai giữa lúc Viewer nạp.
+                    Object.defineProperty(historyFile, '__prynxStickerSourceFile', {
+                        value: stickerSheetSourceFile,
+                        configurable: true,
+                    });
+                }
+                const next = [...prev, historyFile];
+                return next.length > MAX_HISTORY ? next.slice(next.length - MAX_HISTORY) : next;
+            });
+        }
+        // UIUX (feedback 2026-08-11 §AI.SPLIT1): PDF tạo xong phải ở lại Viewer.
+        // Nếu marker về null, effect đồng bộ nguồn sẽ mở lại nguyên tấm ngay khi
+        // khối export hạ xuống, làm kết quả 9 trang trở về 1/1.
+        syncedStickerSourceRef.current = resolveStickerSourceSyncMarker(
+            stickerSheetSourceFile,
+            nextSourceImage,
+            activeDashboardTool === 'sticker' && stickerSheetMode === 'ai-sheet',
+        );
+        setSourceImageFile(nextSourceImage);
+        setOriginalFileName(committedName);
         setFile(newFile);
         if (pdfUrl && !pdfUrl.startsWith('https://')) URL.revokeObjectURL(pdfUrl);
         setPdfUrl(URL.createObjectURL(committedBlob));
@@ -1014,7 +1073,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         // ─── Recipe record hook ───
         // Ghép thao tác đã "công bố" (noteOperation) với commit này thành 1 Step.
         // No-op khi không ghi. Extras (page order) đã chụp tại noteOperation.
-        recipeRecorder.noteCommit();
+        recipeRecorder.noteCommit(capturedRecipeTicket);
 
         detectColorSpace(newFile).then(cs => {
             if (cs) onTitleChange?.(`${displayName} (${cs})`);
@@ -1032,10 +1091,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         activeDashboardTool,
         file,
         onTitleChange,
+        recipeOwnerTabId,
         sourceImageFile,
         stickerSheetMode,
         stickerSheetSourceFile,
         stickerSheetSourceVisible,
+        t,
     ]);
     const ensureCropFileId = useCallback(async (signal?: AbortSignal) => {
         if (!file) throw new Error(t('misc.acrobatViewer:chua_co_file_de_cat_kho'));
@@ -1586,7 +1647,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // ═══ Processing handlers (extracted to lib/processHandlers.ts) ═══
     const [processCancelHandler, setProcessCancelHandler] = useState<(() => Promise<void>) | null>(null);
 
-    const buildProcessContext = useCallback(() => {
+    const buildProcessContext = useCallback((recipeTicket: RecipeOperationTicket | null = null) => {
         const getWorkingBytesLocal = async (): Promise<Uint8Array> => {
             if (viewerPageOrder) {
                 const bakedBlob = await applyAcrobatEdits();
@@ -1613,12 +1674,17 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         return {
             file: file!,
             onSpawnTab,
-            commitWorkingFile,
+            commitWorkingFile: (blob: Blob, name: string, path?: string) => (
+                commitWorkingFile(blob, name, path, recipeTicket)
+            ),
             // Bọc setError: khi một thao tác (đã noteOperation) BÁO LỖI (msg≠'') →
             // dọn pending note để KHÔNG bị ghép nhầm vào commit của thao tác sau.
             // UIUX (audit 2026-07-27 §B-23) fix-verify: KHÔNG formatError lần hai ở đây —
             // processHandlers đã format sẵn; format chồng từng cắt cụt 200 ký tự.
-            setError: (msg: string) => { if (msg) recipeRecorder.discardPending(); setError(msg); },
+            setError: (msg: string) => {
+                if (msg) recipeRecorder.discardPending(recipeTicket);
+                setError(msg);
+            },
             setIsProcessing, setProcessStatus, setReportMsg, setBatchOutput,
             setCancelHandler: (handler: (() => Promise<void>) | null) => {
                 setProcessCancelHandler(() => handler);
@@ -1642,12 +1708,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         // Khi ĐANG GHI quy trình: ÉP commit vào working file (spawnNewTab=false) bất kể
         // cờ UI. Mặc định spawnNewTab=true nên nếu không ép, bình tem/booklet mở tab mới
         // → KHÔNG commit → KHÔNG được ghi vào recipe (bug: recipe chỉ có bước dieline).
-        const effectiveSpawn = recipeRecorder.isRecording ? false : spawnNewTab;
+        const recordingThisTab = recipeRecorder.isRecordingFor(recipeOwnerTabId);
+        const effectiveSpawn = recordingThisTab ? false : spawnNewTab;
+        let recipeTicket: RecipeOperationTicket | null = null;
 
         // ─── Recipe record hook ───
         // Chỉ ghi khi commit vào working file (spawnNewTab=false). onConfirmScale
         // là hàm → bị JSON.stringify loại khi clone params (an toàn để phát lại).
-        if (!effectiveSpawn) {
+        if (!effectiveSpawn && recordingThisTab) {
             const opId = settings.impositionMode === ImpositionMode.Booklet
                 ? 'booklet'
                 : (settings as any).imposerMode === 'cnc'
@@ -1655,89 +1723,152 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     : (settings as any).imposerMode === 'diecut'
                         ? 'sticker_imposer'
                         : 'nup';
-            // Mã chẩn đoán chỉ sống trong lần chạy hiện tại; không lưu vào recipe rồi
-            // phát lại một trace cũ cho tài liệu khác.
-            const {
-                diagnosticTraceId, diagnosticPreviewRequestId,
-                diagnosticPendingRequestId, diagnosticPreviewCapacity,
-                diagnosticPreviewState, ...recordableSettings
-            } = settings as any;
-            let recordParams: any = recordableSettings;
-            if (opId === 'sticker_imposer' || opId === 'cnc_imposer') {
-                // KHÔNG lưu HÌNH per-file (detectedShapes*) / thứ tự trang / đếm theo trang:
-                // phát lại sẽ DÒ LẠI hình trên file tem mới → đúng cho từng sản phẩm.
-                const {
-                    detectedShapesByPage, detectedShapeParamsByPage, detectedDimensionsByPage,
-                    shapeType, shapeParams, targetQuantitiesByPage, pageOrder, pageRotations,
-                    ...rest
-                } = recordableSettings;
-                recordParams = rest;
+            const recordParams = sanitizeRecipeImpositionParams(opId, settings as any);
+            recipeTicket = recipeRecorder.noteOperation(
+                opId,
+                recordParams,
+                undefined,
+                recipeOwnerTabId,
+            );
+            if (!recipeTicket) {
+                toast.info(t('tabs.imposition:dang_xu_ly_file'));
+                return;
             }
-            recipeRecorder.noteOperation(opId, recordParams);
         }
 
-        const { runProcessEngine } = await import('../lib/processHandlers');
-        await runProcessEngine(buildProcessContext(), settings, effectiveSpawn);
-    }, [file, buildProcessContext]);
+        await runRecordedProcess(recipeTicket, async () => {
+            const { runProcessEngine } = await import('../lib/processHandlers');
+            return runProcessEngine(buildProcessContext(recipeTicket), settings, effectiveSpawn);
+        });
+    }, [file, buildProcessContext, recipeOwnerTabId, t]);
 
     const handleStartCatalogPlan = useCallback(async (planConfig: any, sheetSettings: any) => {
         if (!file) return;
-        const { runCatalogPlan } = await import('../lib/processHandlers');
-        await runCatalogPlan(buildProcessContext(), planConfig, sheetSettings);
-    }, [file, buildProcessContext]);
+        // Catalog chưa có RecipeOpId/runner. Cho phép chạy lúc đang ghi sẽ thay working file
+        // nhưng không tạo Step, khiến mọi bước sau phát lại trên sai nguồn.
+        if (recipeRecorder.isRecordingFor(recipeOwnerTabId)) {
+            toast.info(t('tabs.imposition:dang_xu_ly_file'));
+            return;
+        }
+        await runRecordedProcess(null, async () => {
+            const { runCatalogPlan } = await import('../lib/processHandlers');
+            return runCatalogPlan(buildProcessContext(null), planConfig, sheetSettings);
+        });
+    }, [file, buildProcessContext, recipeOwnerTabId, t]);
 
     // Khi ĐANG GHI: ép spawnNewTab=false để thao tác commit vào working file (chuỗi
     // tuyến tính) VÀ được ghi vào recipe. Mặc định spawnNewTab=true → nếu không ép,
     // thao tác mở tab mới, hook record bị bỏ qua (bug: recipe thiếu bước).
     const handleStartShuffle = async (settings: any) => {
         if (!file) return;
-        const eff = recipeRecorder.isRecording ? { ...settings, spawnNewTab: false } : settings;
-        if (!eff.spawnNewTab) recipeRecorder.noteOperation('shuffle', eff);
-        const { runShuffle } = await import('../lib/processHandlers');
-        await runShuffle(buildProcessContext(), eff);
+        const recordingThisTab = recipeRecorder.isRecordingFor(recipeOwnerTabId);
+        const eff = recordingThisTab ? { ...settings, spawnNewTab: false } : settings;
+        const recipeTicket = !eff.spawnNewTab && recordingThisTab
+            ? recipeRecorder.noteOperation('shuffle', eff, undefined, recipeOwnerTabId)
+            : null;
+        if (recordingThisTab && !recipeTicket) {
+            toast.info(t('tabs.imposition:dang_xu_ly_file'));
+            return;
+        }
+        await runRecordedProcess(recipeTicket, async () => {
+            const { runShuffle } = await import('../lib/processHandlers');
+            return runShuffle(buildProcessContext(recipeTicket), eff);
+        });
     };
 
     const handleStartResize = async (settings: any) => {
         if (!file) return;
-        const eff = recipeRecorder.isRecording ? { ...settings, spawnNewTab: false } : settings;
-        if (!eff.spawnNewTab) recipeRecorder.noteOperation('resize', eff);
-        const { runResize } = await import('../lib/processHandlers');
-        await runResize(buildProcessContext(), eff);
+        const recordingThisTab = recipeRecorder.isRecordingFor(recipeOwnerTabId);
+        const eff = recordingThisTab ? { ...settings, spawnNewTab: false } : settings;
+        const recipeTicket = !eff.spawnNewTab && recordingThisTab
+            ? recipeRecorder.noteOperation('resize', eff, undefined, recipeOwnerTabId)
+            : null;
+        if (recordingThisTab && !recipeTicket) {
+            toast.info(t('tabs.imposition:dang_xu_ly_file'));
+            return;
+        }
+        await runRecordedProcess(recipeTicket, async () => {
+            const { runResize } = await import('../lib/processHandlers');
+            return runResize(buildProcessContext(recipeTicket), eff);
+        });
     };
 
     const handleStartTrimShift = async (settings: any) => {
         if (!file) return;
-        const eff = recipeRecorder.isRecording ? { ...settings, spawnNewTab: false } : settings;
-        if (!eff.spawnNewTab) recipeRecorder.noteOperation('trim_shift', eff);
-        const { runTrimShift } = await import('../lib/processHandlers');
-        await runTrimShift(buildProcessContext(), eff);
+        const recordingThisTab = recipeRecorder.isRecordingFor(recipeOwnerTabId);
+        const eff = recordingThisTab ? { ...settings, spawnNewTab: false } : settings;
+        const recipeTicket = !eff.spawnNewTab && recordingThisTab
+            ? recipeRecorder.noteOperation('trim_shift', eff, undefined, recipeOwnerTabId)
+            : null;
+        if (recordingThisTab && !recipeTicket) {
+            toast.info(t('tabs.imposition:dang_xu_ly_file'));
+            return;
+        }
+        await runRecordedProcess(recipeTicket, async () => {
+            const { runTrimShift } = await import('../lib/processHandlers');
+            return runTrimShift(buildProcessContext(recipeTicket), eff);
+        });
     };
 
     const handleStartSplit = useCallback(async (settings: any) => {
         if (!file) return;
-        const eff = recipeRecorder.isRecording ? { ...settings, spawnNewTab: false } : settings;
-        if (!eff.spawnNewTab) recipeRecorder.noteOperation('split', eff);
-        const { runSplit } = await import('../lib/processHandlers');
-        await runSplit(buildProcessContext(), eff);
-    }, [file, buildProcessContext]);
+        const recordingThisTab = recipeRecorder.isRecordingFor(recipeOwnerTabId);
+        if (recordingThisTab && !isLinearRecipeSplitMode(settings.mode)) {
+            // Recipe chỉ có một working PDF; bộ nhiều output phải được chạy ngoài phiên ghi.
+            toast.info(t('tabs.imposition:split_nhieu_file_khong_the_ghi_quy_trinh', {
+                defaultValue: 'Tách nhiều file không thể ghi vào quy trình tuyến tính. Hãy dừng ghi rồi chạy tác vụ này riêng.',
+            }));
+            return;
+        }
+        const eff = recordingThisTab ? { ...settings, spawnNewTab: false } : settings;
+        const recipeTicket = !eff.spawnNewTab && recordingThisTab
+            ? recipeRecorder.noteOperation('split', eff, undefined, recipeOwnerTabId)
+            : null;
+        if (recordingThisTab && !recipeTicket) {
+            toast.info(t('tabs.imposition:dang_xu_ly_file'));
+            return;
+        }
+        await runRecordedProcess(recipeTicket, async () => {
+            const { runSplit } = await import('../lib/processHandlers');
+            return runSplit(buildProcessContext(recipeTicket), eff);
+        });
+    }, [file, buildProcessContext, recipeOwnerTabId, t]);
 
     const handleStartMerge = useCallback(async (settings: any) => {
         if (!file && settings.mode === 'insert_pages') return;
-        const eff = recipeRecorder.isRecording ? { ...settings, spawnNewTab: false } : settings;
-        if (!eff.spawnNewTab) {
+        const recordingThisTab = recipeRecorder.isRecordingFor(recipeOwnerTabId);
+        const eff = recordingThisTab ? { ...settings, spawnNewTab: false } : settings;
+        let recipeTicket: RecipeOperationTicket | null = null;
+        if (!eff.spawnNewTab && recordingThisTab) {
             // KHÔNG lưu blob file ngoài vào recipe (Property 7) — chỉ lưu cấu hình ghép.
             const { filesToMerge, oddFile, evenFile, ...mergeParams } = eff;
-            recipeRecorder.noteOperation('merge', mergeParams);
+            recipeTicket = recipeRecorder.noteOperation(
+                'merge',
+                mergeParams,
+                undefined,
+                recipeOwnerTabId,
+            );
+            if (!recipeTicket) {
+                toast.info(t('tabs.imposition:dang_xu_ly_file'));
+                return;
+            }
         }
-        const { runMerge } = await import('../lib/processHandlers');
-        await runMerge(buildProcessContext(), eff);
-    }, [file, buildProcessContext]);
+        await runRecordedProcess(recipeTicket, async () => {
+            const { runMerge } = await import('../lib/processHandlers');
+            return runMerge(buildProcessContext(recipeTicket), eff);
+        });
+    }, [file, buildProcessContext, recipeOwnerTabId, t]);
 
     // ─── Recipe playback (Task 9) ───
-    // Chuỗi working file CỤC BỘ trong 1 lần phát: getWorkingBytes/commitWorkingFile
-    // ghi đè để bước sau nhận output bước trước (tránh state `file` cũ trong closure).
+    // Chuỗi working file CỤC BỘ trong 1 lần phát. Path và bytes là hai revision
+    // loại trừ nhau để bước sau không đọc lại path của file lúc bắt đầu.
     const playRecipe = useCallback(async (recipe: Recipe) => {
         if (!file) { toast.error(t('tabs.imposition:hay_mo_mot_file_pdf_truoc_khi_phat_lai')); return; }
+        if (recipeRecorder.isRecordingFor(recipeOwnerTabId)) {
+            // Không cho hai chuỗi cùng sửa một working artifact của cùng tab.
+            toast.info(t('tabs.imposition:dang_xu_ly_file'));
+            return;
+        }
         const initialLicense = useAuthStore.getState();
         const denied = firstDeniedRecipeStep(
             recipe,
@@ -1748,11 +1879,62 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             toast.info(denied.error);
             return;
         }
-        const base = buildProcessContext();
-        let currentBytes: Uint8Array;
-        try { currentBytes = await base.getWorkingBytes(); }
-        catch { currentBytes = new Uint8Array(await getFileArrayBuffer(file)); }
-        let currentName = file.name;
+        setIsRecipePlaying(true);
+        try {
+        // Playback là luồng ngoài recorder: mọi commit/error đều mang `null` để không thể
+        // tiêu thụ pending thật của một phiên ghi đang tồn tại ở tab khác.
+        const base = buildProcessContext(null);
+        let initialPath: string | undefined;
+        try { initialPath = await base.getWorkingSourcePath?.(); }
+        catch { initialPath = undefined; }
+
+        let initialBytes: Uint8Array | undefined;
+        if (!initialPath) {
+            try { initialBytes = await base.getWorkingBytes(); }
+            catch { initialBytes = new Uint8Array(await getFileArrayBuffer(file)); }
+        }
+
+        // RECIPE (audit 2026-08-15 §PLAY.1-2): native output trả carrier rỗng
+        // kèm path thật. Controller giữ đúng nguồn chân lý và chỉ đọc path vào
+        // RAM khi runner kế tiếp thật sự cần bytes.
+        const workingArtifact = createWorkingArtifactController(
+            initialPath
+                ? {
+                    kind: 'path',
+                    name: file.name,
+                    mimeType: file.type || 'application/pdf',
+                    path: initialPath,
+                    size: file.size,
+                }
+                : {
+                    kind: 'bytes',
+                    name: file.name,
+                    mimeType: file.type || 'application/pdf',
+                    bytes: initialBytes!,
+                },
+            {
+                readPath: async (artifact) => {
+                    const pathFile = new File([], artifact.name, { type: artifact.mimeType });
+                    Object.defineProperty(pathFile, 'path', {
+                        value: artifact.path,
+                        configurable: true,
+                    });
+                    if (artifact.size !== undefined) {
+                        Object.defineProperty(pathFile, 'size', {
+                            value: artifact.size,
+                            configurable: true,
+                        });
+                    }
+                    return new Uint8Array(await getFileArrayBuffer(pathFile));
+                },
+                statPath: async (path) => {
+                    // Command native có deadline và đọc được path backend ngoài
+                    // capability plugin-fs; status không chắc chắn dùng sentinel an toàn.
+                    const result = await statNativeSystemFile(path);
+                    return result.status === 'available' ? result.size : undefined;
+                },
+            },
+        );
 
         const { runRecipe } = await import('../lib/recipe/PlaybackRunner');
         const { RECIPE_RUNNERS } = await import('../lib/recipe/recipeRunners');
@@ -1771,16 +1953,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         });
 
         const res = await runRecipe(recipe, {
-            buildContext: () => ({
-                ...base,
-                file: new File([currentBytes as any], currentName, { type: 'application/pdf' }),
-                getWorkingBytes: async () => currentBytes,
-                commitWorkingFile: async (blob: Blob, name: string) => {
-                    currentBytes = new Uint8Array(await blob.arrayBuffer());
-                    currentName = name;
-                    await commitWorkingFile(blob, name);
-                },
-            }) as any,
+            buildContext: () => createWorkingArtifactProcessContext(
+                base,
+                workingArtifact,
+                base.commitWorkingFile,
+            ),
             runners: RECIPE_RUNNERS,
             authorizeStep: (step) => {
                 const currentLicense = useAuthStore.getState();
@@ -1793,14 +1970,20 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             requestExternalInput,
             onProgress: ({ index, total, step }) => setProcessStatus(t('tabs.imposition:phat_lai_progress_step', { cur: index + 1, total, step: step.label })),
         });
-        setProcessStatus('');
-
-        if (res.ok) {
+        if (res.status === 'canceled') {
+            toast.info(t('shell:err_canceled'));
+        } else if (res.ok) {
             toast.success(t('tabs.imposition:phat_lai_xong', { n: res.completed }) + (res.skipped ? t('tabs.imposition:bo_qua_n_suffix', { n: res.skipped }) : '') + '.');
         } else {
             toast.error(t('tabs.imposition:dung_o_buoc_n', { n: (res.failedStep?.index ?? 0) + 1, err: res.failedStep?.error || t('tabs.imposition:loi') }));
         }
-    }, [file, buildProcessContext, commitWorkingFile]);
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : t('tabs.imposition:loi'));
+        } finally {
+            setProcessStatus('');
+            setIsRecipePlaying(false);
+        }
+    }, [file, buildProcessContext, recipeOwnerTabId, t]);
 
     const handleStartBooklet = useCallback((config: BookletSettings) => {
         // NOTE: For 'auto_100', sheet dimension will be dynamically resolved inside the Engine during Phase 2.
@@ -2955,8 +3138,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     onVdpBoxCreate={handleVdpBoxCreate}
                                     toolbarExtra={file ? (
                                         <RecipeRecordControl
+                                            tabId={recipeOwnerTabId}
                                             onOpenPanel={() => setShowRecipePanel(true)}
                                             sourcePageCount={viewerNumPages}
+                                            disabled={isRecipePlaying}
                                         />
                                     ) : undefined}
                                     toolbarExtraRight={file ? (
@@ -3114,8 +3299,20 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             isActive={isActive}
                                                             onBack={() => setActiveDashboardTool('none')}
                                                             onApplyResult={async (blob: Blob, name: string, path?: string) => {
-                                                                recipeRecorder.noteNonRecordable('datamerge');
-                                                                await commitWorkingFile(blob, name, path);
+                                                                const recipeTicket = recipeRecorder.noteNonRecordable(
+                                                                    'datamerge',
+                                                                    undefined,
+                                                                    recipeOwnerTabId,
+                                                                );
+                                                                if (recipeRecorder.isRecordingFor(recipeOwnerTabId) && !recipeTicket) {
+                                                                    toast.info(t('tabs.imposition:dang_xu_ly_file'));
+                                                                    return;
+                                                                }
+                                                                try {
+                                                                    await commitWorkingFile(blob, name, path, recipeTicket);
+                                                                } finally {
+                                                                    recipeRecorder.discardPending(recipeTicket);
+                                                                }
                                                                 setVdpFields([]);
                                                                 setSelectedVdpFieldIds([]);
                                                             }}
@@ -3141,8 +3338,20 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             isActive={isActive}
                                                             onBack={() => setActiveDashboardTool('none')}
                                                             onApplyResult={async (blob: Blob, name: string, path?: string) => {
-                                                                recipeRecorder.noteNonRecordable('numbering');
-                                                                await commitWorkingFile(blob, name, path);
+                                                                const recipeTicket = recipeRecorder.noteNonRecordable(
+                                                                    'numbering',
+                                                                    undefined,
+                                                                    recipeOwnerTabId,
+                                                                );
+                                                                if (recipeRecorder.isRecordingFor(recipeOwnerTabId) && !recipeTicket) {
+                                                                    toast.info(t('tabs.imposition:dang_xu_ly_file'));
+                                                                    return;
+                                                                }
+                                                                try {
+                                                                    await commitWorkingFile(blob, name, path, recipeTicket);
+                                                                } finally {
+                                                                    recipeRecorder.discardPending(recipeTicket);
+                                                                }
                                                                 setVdpFields([]);
                                                                 setSelectedVdpFieldIds([]);
                                                             }}
@@ -3168,8 +3377,20 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             isActive={isActive}
                                                             onBack={() => setActiveDashboardTool('none')}
                                                             onApplyResult={async (blob: Blob, name: string, path?: string) => {
-                                                                recipeRecorder.noteNonRecordable('cover_numbering');
-                                                                await commitWorkingFile(blob, name, path);
+                                                                const recipeTicket = recipeRecorder.noteNonRecordable(
+                                                                    'cover_numbering',
+                                                                    undefined,
+                                                                    recipeOwnerTabId,
+                                                                );
+                                                                if (recipeRecorder.isRecordingFor(recipeOwnerTabId) && !recipeTicket) {
+                                                                    toast.info(t('tabs.imposition:dang_xu_ly_file'));
+                                                                    return;
+                                                                }
+                                                                try {
+                                                                    await commitWorkingFile(blob, name, path, recipeTicket);
+                                                                } finally {
+                                                                    recipeRecorder.discardPending(recipeTicket);
+                                                                }
                                                                 setVdpFields([]);
                                                                 setSelectedVdpFieldIds([]);
                                                             }}

@@ -30,10 +30,15 @@ function baseDeps(over: Partial<PlaybackDeps> = {}): PlaybackDeps {
     };
 }
 
+const completed = () => ({ status: 'completed' } as const);
+
 describe('PlaybackRunner — thứ tự & tuyến tính (P2/P3/P4)', () => {
     it('gọi runner theo đúng thứ tự steps', async () => {
         const calls: string[] = [];
-        const mk = (id: string): RecipeRunner => async () => { calls.push(id); };
+        const mk = (id: string): RecipeRunner => async () => {
+            calls.push(id);
+            return completed();
+        };
         const recipe = createRecipe('R', [step('convertcolors'), step('booklet'), step('optimize')]);
         const res = await runRecipe(recipe, baseDeps({
             runners: { convertcolors: mk('convertcolors'), booklet: mk('booklet'), optimize: mk('optimize') },
@@ -48,7 +53,7 @@ describe('PlaybackRunner — thứ tự & tuyến tính (P2/P3/P4)', () => {
         const recipe = createRecipe('R', [step('booklet')]);
         await runRecipe(recipe, baseDeps({
             buildContext: () => makeCtx({ onSpawnTab: vi.fn() }),
-            runners: { booklet: async (ctx) => { seenSpawn = ctx.onSpawnTab; } },
+            runners: { booklet: async (ctx) => { seenSpawn = ctx.onSpawnTab; return completed(); } },
         }));
         expect(seenSpawn).toBeUndefined();
     });
@@ -59,8 +64,9 @@ describe('PlaybackRunner — thứ tự & tuyến tính (P2/P3/P4)', () => {
             events.push('start-A');
             await new Promise(r => setTimeout(r, 20));
             events.push('end-A');
+            return completed();
         };
-        const fast: RecipeRunner = async () => { events.push('start-B'); };
+        const fast: RecipeRunner = async () => { events.push('start-B'); return completed(); };
         const recipe = createRecipe('R', [step('booklet'), step('optimize')]);
         await runRecipe(recipe, baseDeps({ runners: { booklet: slow, optimize: fast } }));
         expect(events).toEqual(['start-A', 'end-A', 'start-B']);
@@ -70,7 +76,7 @@ describe('PlaybackRunner — thứ tự & tuyến tính (P2/P3/P4)', () => {
 describe('PlaybackRunner — lọc an toàn (P6/P7)', () => {
     it('bỏ qua step recordable=false + cảnh báo', async () => {
         const onWarn = vi.fn();
-        const runner = vi.fn(async () => {});
+        const runner = vi.fn(async () => completed());
         const recipe = createRecipe('R', [
             step('crop', { recordable: false }),
             step('booklet'),
@@ -83,7 +89,7 @@ describe('PlaybackRunner — lọc an toàn (P6/P7)', () => {
     });
 
     it('step cần input ngoài: gọi requestExternalInput; thiếu input → bỏ qua', async () => {
-        const runner = vi.fn(async () => {});
+        const runner = vi.fn(async () => completed());
         const recipe = createRecipe('R', [step('merge', { needsExternalInput: 'file' })]);
         const res = await runRecipe(recipe, baseDeps({
             runners: { merge: runner },
@@ -98,10 +104,39 @@ describe('PlaybackRunner — lọc an toàn (P6/P7)', () => {
         let seen: unknown = null;
         const recipe = createRecipe('R', [step('merge', { needsExternalInput: 'file' })]);
         await runRecipe(recipe, baseDeps({
-            runners: { merge: async (_c, _p, ext) => { seen = ext; } },
+            runners: { merge: async (_c, _p, ext) => { seen = ext; return completed(); } },
             requestExternalInput: async () => ({ files: [f] }),
         }));
         expect(seen).toEqual({ files: [f] });
+    });
+
+    it('input ngoài đọc lỗi thì trả error, không throw và không chạy runner', async () => {
+        const runner = vi.fn(async () => completed());
+        const recipe = createRecipe('R', [step('merge', { needsExternalInput: 'file' })]);
+
+        const res = await runRecipe(recipe, baseDeps({
+            runners: { merge: runner },
+            requestExternalInput: async () => { throw new Error('Không đọc được file ngoài'); },
+        }));
+
+        expect(res.status).toBe('error');
+        expect(res.failedStep).toMatchObject({ index: 0, error: 'Không đọc được file ngoài' });
+        expect(runner).not.toHaveBeenCalled();
+    });
+
+    it('hủy hộp chọn input ngoài trả canceled, không biến thành lỗi đỏ', async () => {
+        const runner = vi.fn(async () => completed());
+        const recipe = createRecipe('R', [step('merge', { needsExternalInput: 'file' })]);
+
+        const res = await runRecipe(recipe, baseDeps({
+            runners: { merge: runner },
+            requestExternalInput: async () => { throw new DOMException('Đã hủy', 'AbortError'); },
+        }));
+
+        expect(res.status).toBe('canceled');
+        expect(res.canceledStep?.index).toBe(0);
+        expect(res.failedStep).toBeUndefined();
+        expect(runner).not.toHaveBeenCalled();
     });
 
     it('opId không có runner → bỏ qua (unsupported_op)', async () => {
@@ -114,7 +149,7 @@ describe('PlaybackRunner — lọc an toàn (P6/P7)', () => {
 
 describe('PlaybackRunner — entitlement fail-closed', () => {
     it('kiểm toàn recipe trước mutation đầu tiên', async () => {
-        const runner = vi.fn(async () => {});
+        const runner = vi.fn(async () => completed());
         const recipe = createRecipe('R', [step('optimize'), step('booklet')]);
         const res = await runRecipe(recipe, baseDeps({
             runners: { optimize: runner, booklet: runner },
@@ -129,8 +164,8 @@ describe('PlaybackRunner — entitlement fail-closed', () => {
 
     it('kiểm lại trước từng runner nếu quyền đổi giữa chuỗi', async () => {
         let revoked = false;
-        const first = vi.fn(async () => { revoked = true; });
-        const second = vi.fn(async () => {});
+        const first = vi.fn(async () => { revoked = true; return completed(); });
+        const second = vi.fn(async () => completed());
         const recipe = createRecipe('R', [step('optimize'), step('booklet')]);
         let preflight = true;
         const res = await runRecipe(recipe, baseDeps({
@@ -156,7 +191,7 @@ describe('PlaybackRunner — dừng sạch khi lỗi (P8)', () => {
         const res = await runRecipe(recipe, baseDeps({
             runners: {
                 booklet: async () => { calls.push('booklet'); throw new Error('boom'); },
-                optimize: async () => { calls.push('optimize'); },
+                optimize: async () => { calls.push('optimize'); return completed(); },
             },
         }));
         expect(calls).toEqual(['booklet']);
@@ -170,8 +205,8 @@ describe('PlaybackRunner — dừng sạch khi lỗi (P8)', () => {
         const recipe = createRecipe('R', [step('booklet'), step('optimize')]);
         const res = await runRecipe(recipe, baseDeps({
             runners: {
-                booklet: async (ctx) => { calls.push('booklet'); ctx.setError('Lỗi xử lý'); },
-                optimize: async () => { calls.push('optimize'); },
+                booklet: async (ctx) => { calls.push('booklet'); ctx.setError('Lỗi xử lý'); return completed(); },
+                optimize: async () => { calls.push('optimize'); return completed(); },
             },
         }));
         expect(calls).toEqual(['booklet']);
@@ -182,10 +217,65 @@ describe('PlaybackRunner — dừng sạch khi lỗi (P8)', () => {
     it('setError("") (xóa lỗi) KHÔNG bị coi là thất bại', async () => {
         const recipe = createRecipe('R', [step('booklet')]);
         const res = await runRecipe(recipe, baseDeps({
-            runners: { booklet: async (ctx) => { ctx.setError(''); } },
+            runners: { booklet: async (ctx) => { ctx.setError(''); return completed(); } },
         }));
         expect(res.ok).toBe(true);
         expect(res.completed).toBe(1);
+    });
+
+    it('outcome canceled dừng ngay, không tăng completed và không chạy bước kế', async () => {
+        const calls: string[] = [];
+        const recipe = createRecipe('R', [step('booklet'), step('optimize')]);
+        const res = await runRecipe(recipe, baseDeps({
+            runners: {
+                booklet: async () => {
+                    calls.push('booklet');
+                    return { status: 'canceled' };
+                },
+                optimize: async () => {
+                    calls.push('optimize');
+                    return { status: 'completed' };
+                },
+            },
+        }));
+
+        expect(calls).toEqual(['booklet']);
+        expect(res.ok).toBe(false);
+        expect(res.status).toBe('canceled');
+        expect(res.completed).toBe(0);
+        expect(res.canceledStep?.index).toBe(0);
+        expect(res.failedStep).toBeUndefined();
+    });
+
+    it('outcome error dừng dù runner không gọi ctx.setError', async () => {
+        const next = vi.fn(async () => completed());
+        const recipe = createRecipe('R', [step('booklet'), step('optimize')]);
+
+        const res = await runRecipe(recipe, baseDeps({
+            runners: {
+                booklet: async () => ({ status: 'error', error: 'Hỏng artifact' }),
+                optimize: next,
+            },
+        }));
+
+        expect(res.status).toBe('error');
+        expect(res.completed).toBe(0);
+        expect(res.failedStep?.error).toBe('Hỏng artifact');
+        expect(next).not.toHaveBeenCalled();
+    });
+
+    it('AbortError được chuẩn hóa thành canceled, không thành lỗi đỏ', async () => {
+        const recipe = createRecipe('R', [step('booklet')]);
+
+        const res = await runRecipe(recipe, baseDeps({
+            runners: {
+                booklet: async () => { throw new DOMException('Đã hủy', 'AbortError'); },
+            },
+        }));
+
+        expect(res.status).toBe('canceled');
+        expect(res.failedStep).toBeUndefined();
+        expect(res.canceledStep?.index).toBe(0);
     });
 });
 
@@ -194,7 +284,7 @@ describe('PlaybackRunner — tiến trình', () => {
         const prog: number[] = [];
         const recipe = createRecipe('R', [step('booklet'), step('crop', { recordable: false }), step('optimize')]);
         await runRecipe(recipe, baseDeps({
-            runners: { booklet: async () => {}, optimize: async () => {} },
+            runners: { booklet: async () => completed(), optimize: async () => completed() },
             onProgress: ({ index, total }) => { prog.push(index); expect(total).toBe(3); },
         }));
         // crop (index 1) bị bỏ qua nên không báo progress

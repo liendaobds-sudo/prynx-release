@@ -63,10 +63,13 @@ async function getLicenseHeaders(url: string, method = 'GET'): Promise<Record<st
   const headers: Record<string, string> = {};
   try {
     const { useAuthStore } = await import('../stores/useAuthStore');
-    const licenseKey = useAuthStore.getState().licenseKey || '';
+    // SEC (feedback 2026-08-15 §UP.403): chụp key + token cùng một thời điểm để
+    // header, cache native và chữ ký HMAC luôn thuộc cùng một phiên license.
+    const authState = useAuthStore.getState();
+    const licenseKey = authState.licenseKey || '';
     headers['X-License-Key'] = licenseKey;
     // Token ngắn hạn do server ký — sidecar verify bằng public key (chống client tự phong hợp lệ).
-    const licenseToken = useAuthStore.getState().licenseToken || '';
+    const licenseToken = authState.licenseToken || '';
     if (licenseToken) headers['X-License-Token'] = licenseToken;
     
     // Quick check: skip Tauri IPC if not in Tauri environment
@@ -99,24 +102,24 @@ async function getLicenseHeaders(url: string, method = 'GET'): Promise<Record<st
       const signedHeaders = await invoke('sign_api_request', {
         urlPath,
         licenseKey,
+        licenseToken,
         method,
       }) as Record<string, string>;
       Object.assign(headers, signedHeaders);
     } catch (signErr) {
-      // sign_api_request fail thường do Rust cache (8h — security.rs) đã hết → re-register rồi thử lại.
-      // Nếu vẫn fail thì trả headers thiếu token → request sẽ bị 403 rõ ràng.
+      // sign_api_request fail thường do cache Rust hết hạn hoặc token vừa được làm mới
+      // nhưng cache native còn giữ binding cũ → re-register rồi thử lại đúng một lần.
+      // Nếu vẫn fail thì trả headers thiếu chữ ký → request sẽ bị 403 rõ ràng.
       console.debug('[API] Rust signing failed, attempting re-register:', signErr);
       try {
-        const { useAuthStore } = await import('../stores/useAuthStore');
-        const key = useAuthStore.getState().licenseKey || '';
-        if (key) {
+        if (licenseKey) {
           // Re-register key trong Rust cache
-          const token = useAuthStore.getState().licenseToken || '';
-          await invoke('register_validated_key', { licenseKey: key, token });
+          await invoke('register_validated_key', { licenseKey, token: licenseToken });
           // Thử ký lại
           const retryHeaders = await invoke('sign_api_request', {
             urlPath,
-            licenseKey: key,
+            licenseKey,
+            licenseToken,
             method,
           }) as Record<string, string>;
           Object.assign(headers, retryHeaders);
@@ -891,9 +894,74 @@ export function backendMergePdfsJob(
   return backendMergeManifestJob(files, [], { ...options, mode });
 }
 
-export async function backendSplitPdf(file: File, mode: string, config: unknown): Promise<Blob> {
+export interface PdfPathMetadata {
+  page_count: number;
+  pages?: Array<{
+    width_pt: number;
+    height_pt: number;
+    /** MediaBox vật lý mà engine Resize thực sự xử lý. */
+    media_width_pt?: number;
+    media_height_pt?: number;
+    rotation?: number;
+  }>;
+}
+
+/** Đọc metadata nhẹ từ native path, không materialize toàn bộ PDF trong WebView. */
+export async function getPdfPathMetadata(sourcePath: string): Promise<PdfPathMetadata> {
+  const res = await authenticatedFetch(`${API_BASE}/api/imposition/pdf-meta`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: sourcePath, summary_only: true }),
+  });
+  if (!res.ok) throw new Error('Không đọc được thông tin PDF: ' + await res.text());
+  const payload = await res.json() as Partial<PdfPathMetadata>;
+  if (!Number.isInteger(payload.page_count) || Number(payload.page_count) < 1) {
+    throw new Error('File PDF không có trang hợp lệ.');
+  }
+  return {
+    page_count: Number(payload.page_count),
+    pages: Array.isArray(payload.pages) ? payload.pages : [],
+  };
+}
+
+export interface BackendSplitPdfResult {
+  kind: 'pdf' | 'zip';
+  blob: Blob;
+  filename: string;
+}
+
+function splitResponseFilename(disposition: string, fallback: string): string {
+  const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  const plainName = disposition.match(/filename="?([^";]+)"?/i)?.[1];
+  let candidate = encodedName || plainName || fallback;
+  if (encodedName) {
+    try { candidate = decodeURIComponent(encodedName); }
+    catch { candidate = encodedName; }
+  }
+  // Không cho header từ server biến thành đường dẫn khi đưa vào Save dialog/File.
+  return candidate.split(/[\\/]/).pop()?.trim() || fallback;
+}
+
+function normalizeSplitFilenameExtension(
+  filename: string,
+  kind: BackendSplitPdfResult['kind'],
+  fallbackBase: string,
+): string {
+  const extension = kind === 'zip' ? '.zip' : '.pdf';
+  if (filename.toLowerCase().endsWith(extension)) return filename;
+  const stem = filename.replace(/\.[^./\\]+$/u, '').trim() || `${fallbackBase}_split`;
+  return `${stem}${extension}`;
+}
+
+export async function backendSplitPdf(
+  file: File,
+  mode: string,
+  config: unknown,
+  sourcePath?: string,
+): Promise<BackendSplitPdfResult> {
   const formData = new FormData();
-  formData.append('file', file);
+  if (sourcePath) formData.append('file_path', sourcePath);
+  else formData.append('file', file);
   formData.append('mode', mode);
   formData.append('config', JSON.stringify(config));
   
@@ -902,7 +970,24 @@ export async function backendSplitPdf(file: File, mode: string, config: unknown)
     body: formData,
   });
   if (!res.ok) throw new Error('Tách file thất bại: ' + await res.text()); // UIUX (audit 2026-07-27 §D-13)
-  return await res.blob();
+  const blob = await res.blob();
+  const contentType = (res.headers.get('content-type') || blob.type || '').toLowerCase();
+  const disposition = res.headers.get('content-disposition') || '';
+  const fallbackBase = file.name.replace(/\.pdf$/i, '') || 'split';
+  const headerFilename = splitResponseFilename(disposition, '');
+  const signalsZip = contentType.includes('zip') || /\.zip$/i.test(headerFilename);
+  const signalsPdf = contentType.includes('application/pdf');
+  if (!signalsZip && !signalsPdf) {
+    throw new Error('Backend Tách trả về định dạng không được hỗ trợ.');
+  }
+  // Fail-closed: chỉ cần một tín hiệu ZIP thì tuyệt đối không đưa Blob vào Viewer PDF.
+  const kind: BackendSplitPdfResult['kind'] = signalsZip ? 'zip' : 'pdf';
+  const rawFilename = splitResponseFilename(
+    disposition,
+    kind === 'zip' ? `${fallbackBase}_split.zip` : `${fallbackBase}_split.pdf`,
+  );
+  const filename = normalizeSplitFilenameExtension(rawFilename, kind, fallbackBase);
+  return { kind, blob, filename };
 }
 
 export interface ResizeTransparencyInspection {
@@ -1022,9 +1107,15 @@ export async function backendResizePages(
   return blob;
 }
 
-export async function backendShufflePages(file: File, action: string, mapping: number[] = []): Promise<Blob> {
+export async function backendShufflePages(
+  file: File,
+  action: string,
+  mapping: number[] = [],
+  sourcePath?: string,
+): Promise<Blob> {
   const formData = new FormData();
-  formData.append('file', file);
+  if (sourcePath) formData.append('file_path', sourcePath);
+  else formData.append('file', file);
   formData.append('action', action);
   formData.append('mapping', JSON.stringify(mapping));
   

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
-import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
+import { recipeRecorder, type RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
 
@@ -14,8 +14,14 @@ const I = {
 };
 
 interface Props {
+  tabId?: string;
   pdfFile: File | null;
-  onFileFixed?: (blob: Blob, name: string) => void;
+  onFileFixed?: (
+    blob: Blob,
+    name: string,
+    path?: string,
+    recipeTicket?: RecipeOperationTicket | null,
+  ) => void | Promise<void>;
 }
 
 const PRESETS = [
@@ -24,7 +30,7 @@ const PRESETS = [
   { key: 'heavy', icon: I.Heavy, label: 'Mạnh', desc: '≤0.25pt → 0.5pt', t: 0.25, r: 0.5 },
 ];
 
-export default function HairlinesTool({ pdfFile, onFileFixed }: Props) {
+export default function HairlinesTool({ tabId, pdfFile, onFileFixed }: Props) {
   const { t } = useTranslation();
   const [fileId, setFileId] = useState('');
   const [threshold, setThreshold] = useState(0.1);
@@ -62,9 +68,22 @@ export default function HairlinesTool({ pdfFile, onFileFixed }: Props) {
 
   const run = async () => {
     setRunning(true); setResult(null); setError('');
+    const shouldRecord = !!tabId && recipeRecorder.isRecordingFor(tabId);
+    const recipeTicket = shouldRecord
+      ? recipeRecorder.noteOperation(
+          'hairlines',
+          { threshold_pt: threshold, replace_pt: replaceWith },
+          undefined,
+          tabId,
+        )
+      : null;
+    if (shouldRecord && !recipeTicket) {
+      setError(t('tabs.imposition:dang_xu_ly_file'));
+      setRunning(false);
+      return;
+    }
     try {
       const fid = await ensureUploaded();
-      recipeRecorder.noteOperation('hairlines', { threshold_pt: threshold, replace_pt: replaceWith });
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/fix-hairlines`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_id: fid, threshold_pt: threshold, replace_pt: replaceWith }),
@@ -75,11 +94,13 @@ export default function HairlinesTool({ pdfFile, onFileFixed }: Props) {
         if (data.output_filename && onFileFixed) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
           expectedOutputNameRef.current = data.output_filename;
-          onFileFixed(await dl.blob(), data.output_filename);
+          await onFileFixed(await dl.blob(), data.output_filename, undefined, recipeTicket);
+        } else {
+          recipeRecorder.discardPending(recipeTicket);
         }
-      } else { recipeRecorder.discardPending(); setError(data.error || data.detail || t('preprocess.hairlines:that_bai')); }
-    } catch (e: any) { recipeRecorder.discardPending(); setError(e.message); }
-    setRunning(false);
+      } else { recipeRecorder.discardPending(recipeTicket); setError(data.error || data.detail || t('preprocess.hairlines:that_bai')); }
+    } catch (e: any) { recipeRecorder.discardPending(recipeTicket); setError(e.message); }
+    finally { setRunning(false); }
   };
 
   if (!pdfFile) return <div className="text-[11px] text-slate-400 text-center py-6">{t('preprocess.hairlines:vui_long_mo_file_pdf_truoc')}</div>;

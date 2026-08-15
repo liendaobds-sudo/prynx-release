@@ -7,6 +7,7 @@ import { toast } from '../ui/Toast';
 import StickerSheetPanel from './StickerSheetPanel';
 import StickerTool from './StickerTool';
 import { useStickerSheetStore, type StickerSourceMode } from './stickerSheetStore';
+import type { RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
 
 
 interface Props {
@@ -17,7 +18,12 @@ interface Props {
     pageOrder?: number[];
     isActive?: boolean;
     onOpenTool?: (tool: 'sticker_imposer' | 'cnc_imposer') => void;
-    onFileFixed: (blob: Blob, name: string, path?: string) => void | Promise<void>;
+    onFileFixed: (
+        blob: Blob,
+        name: string,
+        path?: string,
+        recipeTicket?: RecipeOperationTicket | null,
+    ) => void | Promise<void>;
 }
 
 const MODES: Array<{ id: StickerSourceMode; label: string; description: string }> = [
@@ -159,6 +165,7 @@ export default function StickerCutlineTool({
 
             {mode === 'existing' ? (
                 <StickerTool
+                    tabId={tabId}
                     pdfFile={pdfFile}
                     onFileFixed={onFileFixed}
                     onProcessingChange={setDirectProcessing}

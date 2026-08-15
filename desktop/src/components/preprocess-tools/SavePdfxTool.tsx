@@ -2,13 +2,19 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
-import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
+import { recipeRecorder, type RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
 
 interface Props {
+  tabId?: string;
   pdfFile: File | null;
-  onFileFixed?: (blob: Blob, name: string) => void;
+  onFileFixed?: (
+    blob: Blob,
+    name: string,
+    path?: string,
+    recipeTicket?: RecipeOperationTicket | null,
+  ) => void | Promise<void>;
 }
 
 interface CheckItem {
@@ -73,7 +79,7 @@ const CHECK_HELP: Record<string, CheckHelp> = {
   },
 };
 
-export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
+export default function SavePdfxTool({ tabId, pdfFile, onFileFixed }: Props) {
   const { t } = useTranslation();
   const [fileId, setFileId] = useState('');
   const [standard, setStandard] = useState<'x1a' | 'x4'>('x4');
@@ -127,9 +133,17 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
 
   const exportPdfx = async () => {
     setExporting(true); setStatus('');
+    const shouldRecord = !!tabId && recipeRecorder.isRecordingFor(tabId);
+    const recipeTicket = shouldRecord
+      ? recipeRecorder.noteOperation('pdfx', { standard }, undefined, tabId)
+      : null;
+    if (shouldRecord && !recipeTicket) {
+      setStatus(`❌ ${t('tabs.imposition:dang_xu_ly_file')}`);
+      setExporting(false);
+      return;
+    }
     try {
       const fid = await ensureUploaded();
-      recipeRecorder.noteOperation('pdfx', { standard });
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/export-pdfx`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_id: fid, standard }),
@@ -140,11 +154,13 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
         if (data.output_filename && onFileFixed) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
           expectedOutputNameRef.current = data.output_filename;
-          onFileFixed(await dl.blob(), data.output_filename);
+          await onFileFixed(await dl.blob(), data.output_filename, undefined, recipeTicket);
+        } else {
+          recipeRecorder.discardPending(recipeTicket);
         }
-      } else { recipeRecorder.discardPending(); setStatus(`❌ ${data.detail || t('preprocess.savePdfx:loi_xuat_pdf_x')}`); }
-    } catch (e: any) { recipeRecorder.discardPending(); setStatus(`❌ ${e.message}`); }
-    setExporting(false);
+      } else { recipeRecorder.discardPending(recipeTicket); setStatus(`❌ ${data.detail || t('preprocess.savePdfx:loi_xuat_pdf_x')}`); }
+    } catch (e: any) { recipeRecorder.discardPending(recipeTicket); setStatus(`❌ ${e.message}`); }
+    finally { setExporting(false); }
   };
 
   if (!pdfFile) return <div className="text-[11px] text-slate-400 text-center py-6">{t('preprocess.savePdfx:vui_long_mo_file_pdf_truoc')}</div>;

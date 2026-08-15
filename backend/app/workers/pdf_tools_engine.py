@@ -97,6 +97,56 @@ def merge_pdfs(file_paths: List[str], output_path: str, mode: str = 'merge_files
 #  2. SPLIT
 # =========================================================================
 
+
+def _normalize_split_ranges(ranges, max_page: int) -> List[Tuple[int, int]]:
+    """Chuẩn hóa đúng cú pháp chuỗi mà SplitTool gửi: ``1-4, 7, 10-``."""
+    normalized: List[Tuple[int, int]] = []
+
+    if isinstance(ranges, str):
+        if not ranges.strip():
+            return [(1, max_page)]
+        parts = [part.strip() for part in ranges.split(",") if part.strip()]
+        for part in parts:
+            try:
+                if "-" in part:
+                    start_text, end_text = (token.strip() for token in part.split("-", 1))
+                    start = int(start_text)
+                    end = int(end_text) if end_text else max_page
+                    if start >= 1 and end >= start:
+                        normalized.append((min(start, max_page), min(end, max_page)))
+                else:
+                    page = int(part)
+                    if 1 <= page <= max_page:
+                        normalized.append((page, page))
+            except (TypeError, ValueError):
+                continue
+        return normalized
+
+    if ranges is None:
+        return [(1, max_page)]
+
+    for item in ranges or []:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            continue
+        try:
+            start, end = int(item[0]), int(item[1])
+        except (TypeError, ValueError):
+            continue
+        if start >= 1 and end >= start:
+            normalized.append((min(start, max_page), min(end, max_page)))
+    return normalized
+
+
+def _preserve_split_catalog(src: pikepdf.Pdf, out: pikepdf.Pdf) -> None:
+    """Giữ catalog in/layer khi Split dựng một PDF mới từ các trang nguồn."""
+    for key in ('/OCProperties', '/OutputIntents'):
+        value = src.Root.get(key)
+        if value is None:
+            continue
+        foreign = value if value.is_indirect else src.make_indirect(value)
+        out.Root[pikepdf.Name(key)] = out.copy_foreign(foreign)
+
+
 def split_pdf(source_path: str, output_dir: str, mode: str = 'by_range',
               ranges: List[Tuple[int, int]] = None,
               pages_per_file: int = 1,
@@ -106,19 +156,26 @@ def split_pdf(source_path: str, output_dir: str, mode: str = 'by_range',
     os.makedirs(output_dir, exist_ok=True)
 
     with pikepdf.Pdf.open(source_path) as src:
-        if mode == 'by_range' and ranges:
-            for idx, (start, end) in enumerate(ranges):
+        if mode == 'by_range':
+            normalized_ranges = _normalize_split_ranges(ranges, len(src.pages))
+            if not normalized_ranges:
+                raise ValueError("Không có dải trang hợp lệ để tách.")
+            for idx, (start, end) in enumerate(normalized_ranges):
                 out = pikepdf.Pdf.new()
                 from_page = max(0, start - 1)
                 to_page = min(len(src.pages) - 1, end - 1)
                 for i in range(from_page, to_page + 1):
                     out.pages.append(src.pages[i])
-                fname = f"{base_name}_p{start}-{end}.pdf"
+                fname = f"{base_name}_{idx + 1:02d}_p{start}-{end}.pdf"
                 path = os.path.join(output_dir, fname)
+                _preserve_split_catalog(src, out)
                 save_pdf_compat(out, path)
                 results.append({"filename": fname, "path": path, "pages": to_page - from_page + 1})
 
         elif mode == 'by_count':
+            pages_per_file = int(pages_per_file)
+            if pages_per_file < 1:
+                raise ValueError("Số trang mỗi file phải lớn hơn 0.")
             total = len(src.pages)
             chunk_idx = 0
             for start in range(0, total, pages_per_file):
@@ -128,20 +185,35 @@ def split_pdf(source_path: str, output_dir: str, mode: str = 'by_range',
                     out.pages.append(src.pages[i])
                 fname = f"{base_name}_part{chunk_idx + 1}.pdf"
                 path = os.path.join(output_dir, fname)
+                _preserve_split_catalog(src, out)
                 save_pdf_compat(out, path)
                 results.append({"filename": fname, "path": path, "pages": end - start + 1})
                 chunk_idx += 1
 
-        elif mode == 'extract_pages' and page_list:
+        elif mode == 'extract_pages':
+            valid_pages = []
+            for page in page_list or []:
+                try:
+                    page_number = int(page)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= page_number <= len(src.pages):
+                    valid_pages.append(page_number)
+            if not valid_pages:
+                raise ValueError("Không có trang hợp lệ để trích xuất.")
             out = pikepdf.Pdf.new()
-            for pg in sorted(page_list):
+            # Thứ tự người dùng nhập cũng là thứ tự trang của file kết quả.
+            for pg in valid_pages:
                 idx = pg - 1
-                if 0 <= idx < len(src.pages):
-                    out.pages.append(src.pages[idx])
+                out.pages.append(src.pages[idx])
             fname = f"{base_name}_extracted.pdf"
             path = os.path.join(output_dir, fname)
+            _preserve_split_catalog(src, out)
             save_pdf_compat(out, path)
             results.append({"filename": fname, "path": path, "pages": len(out.pages)})
+
+        else:
+            raise ValueError(f"Chế độ tách không được hỗ trợ: {mode}")
 
     return results
 

@@ -40,6 +40,7 @@ import { PREPROCESS_ROUTER_TOOLS } from './preprocessRouterTools';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../../i18n';
 import { CropIcon } from '../../shared/ToolIcons';
+import type { RecipeOperationTicket } from '../../../lib/recipe/RecipeRecorder';
 
 // ─── Tool Header Definitions ────────────────────────────────────────────────
 const TOOL_HEADERS: Record<string, { icon: React.ReactNode; title: string; desc: string }> = {
@@ -92,7 +93,12 @@ interface PreprocessingRouterProps {
     onIssueSelect: (issue: any) => void;
     onOpenOutputPreview: () => void;
     onOpenTool?: (tool: string) => void;
-    onFileFixed?: (blob: Blob, name: string, path?: string) => void | Promise<void>;
+    onFileFixed?: (
+        blob: Blob,
+        name: string,
+        path?: string,
+        recipeTicket?: RecipeOperationTicket | null,
+    ) => void | Promise<void>;
     officeSourceFile?: File | null;
     officeSourceFiles?: File[];
     ensureCropFileId?: (signal?: AbortSignal) => Promise<string>;
@@ -233,23 +239,23 @@ export default function PreprocessingRouter({
             )}
 
             {activeTool === 'hairlines' && (
-                <HairlinesTool pdfFile={pdfFile} onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }} />
+                <HairlinesTool tabId={tabId} pdfFile={pdfFile} onFileFixed={(blob, name, path, ticket) => onFileFixed?.(blob, name, path, ticket)} />
             )}
 
             {activeTool === 'inkmanager' && (
-                <InkManagerTool pdfFile={pdfFile} onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }} />
+                <InkManagerTool tabId={tabId} pdfFile={pdfFile} onFileFixed={(blob, name, path, ticket) => onFileFixed?.(blob, name, path, ticket)} />
             )}
 
             {activeTool === 'convertcolors' && (
-                <ConvertColorsTool pdfFile={pdfFile} onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }} />
+                <ConvertColorsTool tabId={tabId} pdfFile={pdfFile} onFileFixed={(blob, name, path, ticket) => onFileFixed?.(blob, name, path, ticket)} />
             )}
 
             {activeTool === 'trapping' && (
-                <TrapPresetsTool pdfFile={pdfFile} onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }} />
+                <TrapPresetsTool tabId={tabId} pdfFile={pdfFile} onFileFixed={(blob, name, path, ticket) => onFileFixed?.(blob, name, path, ticket)} />
             )}
 
             {activeTool === 'pdfx' && (
-                <SavePdfxTool pdfFile={pdfFile} onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }} />
+                <SavePdfxTool tabId={tabId} pdfFile={pdfFile} onFileFixed={(blob, name, path, ticket) => onFileFixed?.(blob, name, path, ticket)} />
             )}
 
             {activeTool === 'ocr' && (
@@ -257,7 +263,7 @@ export default function PreprocessingRouter({
             )}
 
             {activeTool === 'optimize' && (
-                <OptimizeTool pdfFile={pdfFile} onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }} />
+                <OptimizeTool tabId={tabId} pdfFile={pdfFile} onFileFixed={(blob, name, path, ticket) => onFileFixed?.(blob, name, path, ticket)} />
             )}
 
             {activeTool === 'sticker' && (
@@ -272,7 +278,7 @@ export default function PreprocessingRouter({
                         pageOrder={viewerPageOrder}
                         isActive={isActive === true}
                         onOpenTool={onOpenTool}
-                        onFileFixed={(blob, name, path) => onFileFixed?.(blob, name, path)}
+                        onFileFixed={(blob, name, path, ticket) => onFileFixed?.(blob, name, path, ticket)}
                     />
                 </StickerToolErrorBoundary>
             )}

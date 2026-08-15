@@ -26,19 +26,16 @@ export function parseRanges(rangeStr: string, maxPage: number): [number, number]
     const parts = rangeStr.split(',').map(s => s.trim()).filter(Boolean);
 
     for (const part of parts) {
-        if (part.includes('-')) {
-            const [startStr, endStr] = part.split('-').map(s => s.trim());
-            const start = parseInt(startStr, 10);
-            const end = endStr ? parseInt(endStr, 10) : maxPage;
-            if (!isNaN(start) && !isNaN(end) && start >= 1 && end >= start) {
-                ranges.push([Math.min(start, maxPage), Math.min(end, maxPage)]);
-            }
-        } else {
-            const num = parseInt(part, 10);
-            if (!isNaN(num) && num >= 1 && num <= maxPage) {
-                ranges.push([num, num]);
-            }
-        }
+        const match = /^(\d+)(?:\s*-\s*(\d*))?$/.exec(part);
+        if (!match) continue;
+        const start = parseInt(match[1], 10);
+        const hasRange = match[2] !== undefined;
+        const end = hasRange
+            ? (match[2] ? parseInt(match[2], 10) : maxPage)
+            : start;
+        if (start < 1 || end < start) continue;
+        if (!hasRange && start > maxPage) continue;
+        ranges.push([Math.min(start, maxPage), Math.min(end, maxPage)]);
     }
 
     return ranges;
@@ -105,7 +102,7 @@ export async function splitPdf(
         }
 
         case 'by_count': {
-            const perFile = options.pagesPerFile || 1;
+            const perFile = Math.max(1, Math.trunc(Number(options.pagesPerFile) || 1));
             const numFiles = Math.ceil(totalPages / perFile);
             for (let i = 0; i < numFiles; i++) {
                 const start = i * perFile;

@@ -76,8 +76,12 @@ export default function SplitTool({ settings, onChange }: Props) {
                         <ToolNumberInput 
                             label=""
                             value={settings.pagesPerFile}
-                            onChange={val => onChange({ ...settings, pagesPerFile: val || 1 })}
+                            onChange={val => onChange({
+                                ...settings,
+                                pagesPerFile: Math.max(1, Math.trunc(val || 1)),
+                            })}
                             step={1}
+                            min={1}
                         />
                         <div className="text-[10px] text-slate-500 mt-2 leading-relaxed">
                             {t('preprocess.split:chia_tai_lieu_goc_thanh_nhieu_file_con')}

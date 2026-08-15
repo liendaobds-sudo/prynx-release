@@ -4,6 +4,11 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { authenticatedFetch, uploadPDF } from '../../lib/api';
+import {
+    recipeRecorder,
+    recipeRecorderStore,
+    type RecipeOperationTicket,
+} from '../../lib/recipe/RecipeRecorder';
 import StickerTool from './StickerTool';
 
 
@@ -78,6 +83,14 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
     beforeEach(() => {
         vi.clearAllMocks();
         window.localStorage.clear();
+        recipeRecorderStore.setState({
+            isRecording: false,
+            ownerTabId: null,
+            activeTabId: null,
+            sessionId: 0,
+            draftSteps: [],
+            pendingNote: null,
+        });
     });
 
     it('giữ đúng hai nhóm Đường cắt và Tràn lề của commit 89a9048', () => {
@@ -141,5 +154,38 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
         expect(screen.getByText('1. Đường cắt (Dieline)')).toBeTruthy();
         expect(screen.getByRole('button', { name: 'Thực thi' })).toBeTruthy();
         expect(screen.getByRole('status')).toBe(resultCard);
+    });
+
+    it('giữ đúng ticket của tab cho tới callback commit', async () => {
+        recipeRecorder.start('tab-a');
+        vi.mocked(uploadPDF).mockResolvedValue({ id: 'source-id' });
+        vi.mocked(authenticatedFetch).mockResolvedValue({
+            ok: true,
+            headers: new Headers(),
+            blob: vi.fn(async () => new Blob(['result'], { type: 'application/pdf' })),
+        } as unknown as Response);
+        let releaseCommit!: () => void;
+        const commitGate = new Promise<void>((resolve) => { releaseCommit = resolve; });
+        const onFileFixed = vi.fn((
+            _blob: Blob,
+            _name: string,
+            _path?: string,
+            _ticket?: RecipeOperationTicket | null,
+        ) => commitGate);
+
+        render(
+            <StickerTool
+                tabId="tab-a"
+                pdfFile={new File(['pdf'], 'tem.pdf', { type: 'application/pdf' })}
+                onFileFixed={onFileFixed}
+            />,
+        );
+        fireEvent.click(screen.getByRole('button', { name: 'Thực thi' }));
+
+        await waitFor(() => expect(onFileFixed).toHaveBeenCalledTimes(1));
+        expect(onFileFixed.mock.calls[0][3]).toMatchObject({ ownerTabId: 'tab-a' });
+
+        releaseCommit();
+        await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
     });
 });

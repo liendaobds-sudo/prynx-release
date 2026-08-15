@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
 import { ImpositionMode } from './pdfImposer';
-import { runProcessEngine, runResize, type ProcessContext } from './processHandlers';
+import {
+    runProcessEngine,
+    runResize,
+    runShuffle,
+    runSplit,
+    runTrimShift,
+    type ProcessContext,
+} from './processHandlers';
 import i18n from '../i18n';
 
 const api = vi.hoisted(() => ({
@@ -14,9 +21,15 @@ const api = vi.hoisted(() => ({
     getApiUrl: vi.fn(),
     authenticatedFetch: vi.fn(),
     backendResizePages: vi.fn(),
+    backendShufflePages: vi.fn(),
+    backendSplitPdf: vi.fn(),
+    getPdfPathMetadata: vi.fn(),
+    backendTrimShift: vi.fn(),
 }));
+const saveBlobMock = vi.hoisted(() => vi.fn());
 
 vi.mock('./api', () => api);
+vi.mock('./saveBlob', () => ({ saveBlob: saveBlobMock }));
 vi.mock('@tauri-apps/plugin-fs', () => ({
     stat: vi.fn().mockResolvedValue({ size: 4096 }),
 }));
@@ -315,6 +328,41 @@ describe('runProcessEngine N-Up native fast path', () => {
             }
         },
     );
+
+    it('trả canceled, không commit và không báo lỗi khi backend xác nhận đã hủy', async () => {
+        api.getNupJobStatus.mockResolvedValueOnce({
+            status: 'cancelled',
+            progress: '0/1',
+        });
+        const context: ProcessContext = {
+            file: new File(['source'], 'input.pdf', { type: 'application/pdf' }),
+            commitWorkingFile: vi.fn().mockResolvedValue(undefined),
+            setError: vi.fn(),
+            setIsProcessing: vi.fn(),
+            setProcessStatus: vi.fn(),
+            setReportMsg: vi.fn(),
+            setBatchOutput: vi.fn(),
+            getWorkingBytes: vi.fn(),
+            getWorkingSourcePath: vi.fn().mockResolvedValue('D:\\input.pdf'),
+        };
+
+        const outcome = await runProcessEngine(
+            context,
+            {
+                impositionMode: ImpositionMode.NUp,
+                imposerMode: 'guillotine',
+                sheetWidth: 320,
+                sheetHeight: 450,
+                bleed: 0,
+            } as unknown as import('./pdfImposer').ProcessingSettings,
+            false,
+        );
+
+        expect(outcome).toEqual({ status: 'canceled' });
+        expect(context.commitWorkingFile).not.toHaveBeenCalled();
+        expect(context.setError).toHaveBeenCalledTimes(1);
+        expect(context.setError).toHaveBeenCalledWith('');
+    });
 });
 
 
@@ -797,5 +845,561 @@ describe('runResize unified dynamic-background pipeline', () => {
 
         expect(api.backendResizePages.mock.calls[0][7]).toBe('white');
         expect(api.backendResizePages.mock.calls[0][8]).toBe('#ffffff');
+    });
+});
+
+describe('processHandlers — chỉ hoàn tất sau khi working file đã commit', () => {
+    function deferredCommitContext(bytes: Uint8Array) {
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        const context: ProcessContext = {
+            file: new File([bytes as BlobPart], 'input.pdf', { type: 'application/pdf' }),
+            commitWorkingFile: vi.fn(() => gate),
+            setError: vi.fn(),
+            setIsProcessing: vi.fn(),
+            setProcessStatus: vi.fn(),
+            setReportMsg: vi.fn(),
+            setBatchOutput: vi.fn(),
+            getWorkingBytes: vi.fn(async () => bytes),
+        };
+        return { context, release };
+    }
+
+    it('TrimShift chờ commit resolve rồi mới trả completed', async () => {
+        const doc = await PDFDocument.create();
+        doc.addPage([100, 100]);
+        const bytes = await doc.save();
+        api.backendTrimShift.mockResolvedValueOnce(
+            new Blob([bytes as BlobPart], { type: 'application/pdf' }),
+        );
+        const { context, release } = deferredCommitContext(bytes);
+
+        const pending = runTrimShift(context, {
+            unit: 'mm',
+            applyToStr: 'all',
+            spawnNewTab: false,
+        });
+        await vi.waitFor(() => expect(context.commitWorkingFile).toHaveBeenCalledOnce());
+        let settled = false;
+        void pending.then(() => { settled = true; });
+        await Promise.resolve();
+        expect(settled).toBe(false);
+
+        release();
+        await expect(pending).resolves.toEqual({ status: 'completed' });
+    });
+
+    it('Split nhỏ chờ commit resolve rồi mới trả completed', async () => {
+        const doc = await PDFDocument.create();
+        doc.addPage([100, 100]);
+        doc.addPage([100, 100]);
+        const bytes = await doc.save();
+        const { context, release } = deferredCommitContext(bytes);
+
+        const pending = runSplit(context, {
+            mode: 'extract_pages',
+            pageListStr: '1',
+            spawnNewTab: false,
+        });
+        await vi.waitFor(() => expect(context.commitWorkingFile).toHaveBeenCalledOnce());
+        let settled = false;
+        void pending.then(() => { settled = true; });
+        await Promise.resolve();
+        expect(settled).toBe(false);
+
+        release();
+        await expect(pending).resolves.toEqual({ status: 'completed' });
+    });
+
+    it('TrimShift chuẩn hóa AbortError thành canceled và không commit', async () => {
+        const doc = await PDFDocument.create();
+        doc.addPage([100, 100]);
+        const bytes = await doc.save();
+        api.backendTrimShift.mockRejectedValueOnce(
+            new DOMException('Đã hủy', 'AbortError'),
+        );
+        const context: ProcessContext = {
+            file: new File([bytes as BlobPart], 'input.pdf', { type: 'application/pdf' }),
+            commitWorkingFile: vi.fn(),
+            setError: vi.fn(),
+            setIsProcessing: vi.fn(),
+            setProcessStatus: vi.fn(),
+            setReportMsg: vi.fn(),
+            setBatchOutput: vi.fn(),
+            getWorkingBytes: vi.fn(async () => bytes),
+        };
+
+        const outcome = await runTrimShift(context, {
+            unit: 'mm',
+            applyToStr: 'all',
+            spawnNewTab: false,
+        });
+
+        expect(outcome).toEqual({ status: 'canceled' });
+        expect(context.commitWorkingFile).not.toHaveBeenCalled();
+        expect(context.setError).toHaveBeenCalledTimes(1);
+        expect(context.setError).toHaveBeenCalledWith('');
+    });
+});
+
+describe('processHandlers — native path PDF lớn không nạp vào WebView', () => {
+    const nativePath = 'D:\\jobs\\large.pdf';
+
+    function largePathContext(): ProcessContext {
+        const file = new File([], 'large.pdf', { type: 'application/pdf' });
+        Object.defineProperty(file, 'path', { value: nativePath, configurable: true });
+        Object.defineProperty(file, 'size', {
+            value: 500 * 1024 * 1024,
+            configurable: true,
+        });
+        return {
+            file,
+            commitWorkingFile: vi.fn().mockResolvedValue(undefined),
+            setError: vi.fn(),
+            setIsProcessing: vi.fn(),
+            setProcessStatus: vi.fn(),
+            setReportMsg: vi.fn(),
+            setBatchOutput: vi.fn(),
+            getWorkingBytes: vi.fn(async () => {
+                throw new Error('Không được đọc PDF path lớn vào V8');
+            }),
+            getWorkingSourcePath: vi.fn().mockResolvedValue(nativePath),
+        };
+    }
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        api.getPdfPathMetadata.mockResolvedValue({
+            page_count: 8,
+            pages: [{ width_pt: 1684, height_pt: 2384, rotation: 0 }],
+        });
+        api.backendResizePages.mockResolvedValue(
+            new Blob(['resized'], { type: 'application/pdf' }),
+        );
+        api.backendShufflePages.mockResolvedValue(
+            new Blob(['shuffled'], { type: 'application/pdf' }),
+        );
+        api.backendSplitPdf.mockResolvedValue(
+            {
+                kind: 'pdf',
+                filename: 'large_extracted.pdf',
+                blob: new Blob(['split'], { type: 'application/pdf' }),
+            },
+        );
+        saveBlobMock.mockResolvedValue({ kind: 'saved' });
+    });
+
+    it('Resize thường lấy metadata nhẹ rồi chuyển native path thẳng sang backend', async () => {
+        const context = largePathContext();
+
+        const outcome = await runResize(context, {
+            targetW: 210,
+            targetH: 297,
+            targetDpi: undefined,
+            pageSizeMode: 'fixed',
+            resizeMode: 'auto',
+            scaleMode: 'fit',
+            bgFillMode: 'white',
+            applyToStr: 'all',
+            spawnNewTab: false,
+        });
+
+        expect(outcome).toEqual({ status: 'completed' });
+        expect(context.getWorkingBytes).not.toHaveBeenCalled();
+        expect(api.getPdfPathMetadata).toHaveBeenCalledWith(nativePath);
+        expect(api.backendResizePages).toHaveBeenCalledWith(
+            context.file,
+            210,
+            297,
+            'fit',
+            'all',
+            300,
+            'auto',
+            'white',
+            '#ffffff',
+            nativePath,
+            'fixed',
+            false,
+        );
+    });
+
+    it('Shuffle reverse file lớn dùng native path mà không quét metadata', async () => {
+        const context = largePathContext();
+
+        const outcome = await runShuffle(context, {
+            presetId: 'special',
+            specialAction: 'reverse',
+            spawnNewTab: false,
+        });
+
+        expect(outcome).toEqual({ status: 'completed' });
+        expect(context.getWorkingBytes).not.toHaveBeenCalled();
+        expect(api.getPdfPathMetadata).not.toHaveBeenCalled();
+        expect(api.backendShufflePages).toHaveBeenCalledWith(
+            context.file,
+            'reverse',
+            [],
+            nativePath,
+        );
+    });
+
+    it('Shuffle tách lẻ/chẵn tạo hai output qua path mà không đọc input bytes', async () => {
+        const context = largePathContext();
+        context.onSpawnTab = vi.fn();
+
+        const outcome = await runShuffle(context, {
+            presetId: 'special',
+            specialAction: 'split_odd_even',
+            spawnNewTab: false,
+        });
+
+        expect(outcome).toEqual({ status: 'completed' });
+        expect(context.getWorkingBytes).not.toHaveBeenCalled();
+        expect(api.backendShufflePages).toHaveBeenNthCalledWith(
+            1,
+            context.file,
+            'custom',
+            [1, 3, 5, 7],
+            nativePath,
+        );
+        expect(api.backendShufflePages).toHaveBeenNthCalledWith(
+            2,
+            context.file,
+            'custom',
+            [2, 4, 6, 8],
+            nativePath,
+        );
+        expect(context.onSpawnTab).toHaveBeenCalledTimes(2);
+    });
+
+    it('metadata path lỗi thì fail-closed, tuyệt đối không fallback đọc bytes', async () => {
+        const context = largePathContext();
+        api.getPdfPathMetadata.mockRejectedValueOnce(new Error('metadata unavailable'));
+
+        const outcome = await runShuffle(context, {
+            presetId: 'custom',
+            rule: '1-N',
+            groupSize: 1,
+            spawnNewTab: false,
+        });
+
+        expect(outcome).toMatchObject({ status: 'error' });
+        expect(context.getWorkingBytes).not.toHaveBeenCalled();
+        expect(api.backendShufflePages).not.toHaveBeenCalled();
+    });
+
+    it('Resize path nhỏ nhưng DPI dương vẫn đi backend trước khi đọc bytes', async () => {
+        const context = largePathContext();
+        Object.defineProperty(context.file, 'size', {
+            value: 10 * 1024 * 1024,
+            configurable: true,
+        });
+
+        await runResize(context, {
+            targetW: 210,
+            targetH: 297,
+            targetDpi: 300,
+            pageSizeMode: 'fixed',
+            resizeMode: 'auto',
+            scaleMode: 'fit',
+            bgFillMode: 'white',
+            applyToStr: 'all',
+            spawnNewTab: false,
+        });
+
+        expect(context.getWorkingBytes).not.toHaveBeenCalled();
+        expect(api.backendResizePages.mock.calls[0][9]).toBe(nativePath);
+        expect(api.getPdfPathMetadata).not.toHaveBeenCalled();
+    });
+
+    it('Shuffle path nhỏ nhưng trên 1.000 trang vẫn không nạp bytes', async () => {
+        const context = largePathContext();
+        Object.defineProperty(context.file, 'size', {
+            value: 10 * 1024 * 1024,
+            configurable: true,
+        });
+        api.getPdfPathMetadata.mockResolvedValueOnce({ page_count: 1001, pages: [] });
+
+        await runShuffle(context, {
+            presetId: 'special',
+            specialAction: 'reverse',
+            spawnNewTab: false,
+        });
+
+        expect(context.getWorkingBytes).not.toHaveBeenCalled();
+        expect(api.backendShufflePages.mock.calls[0][3]).toBe(nativePath);
+    });
+
+    it('Split path nhỏ nhưng trên 1.000 trang vẫn không nạp bytes', async () => {
+        const context = largePathContext();
+        Object.defineProperty(context.file, 'size', {
+            value: 10 * 1024 * 1024,
+            configurable: true,
+        });
+        api.getPdfPathMetadata.mockResolvedValueOnce({ page_count: 1001, pages: [] });
+
+        await runSplit(context, {
+            mode: 'extract_pages',
+            pageListStr: '1',
+            spawnNewTab: false,
+        });
+
+        expect(context.getWorkingBytes).not.toHaveBeenCalled();
+        expect(api.backendSplitPdf.mock.calls[0][3]).toBe(nativePath);
+    });
+
+    it('Split chuyển native path thẳng sang backend mà không mở pdf-lib', async () => {
+        const context = largePathContext();
+
+        const outcome = await runSplit(context, {
+            mode: 'by_count',
+            pagesPerFile: 4,
+            spawnNewTab: false,
+        });
+
+        expect(outcome).toEqual({ status: 'completed' });
+        expect(context.getWorkingBytes).not.toHaveBeenCalled();
+        expect(api.backendSplitPdf).toHaveBeenCalledWith(
+            context.file,
+            'by_count',
+            expect.objectContaining({ pagesPerFile: 4 }),
+            nativePath,
+        );
+    });
+
+    it('Split nhiều output lưu ZIP, tuyệt đối không commit hoặc mở ZIP như PDF', async () => {
+        const context = largePathContext();
+        context.onSpawnTab = vi.fn();
+        const zipBlob = new Blob(['zip'], { type: 'application/zip' });
+        api.backendSplitPdf.mockResolvedValueOnce({
+            kind: 'zip',
+            filename: 'large_split.zip',
+            blob: zipBlob,
+        });
+
+        const outcome = await runSplit(context, {
+            mode: 'by_count',
+            pagesPerFile: 4,
+            spawnNewTab: true,
+        });
+
+        expect(outcome).toEqual({ status: 'completed' });
+        expect(saveBlobMock).toHaveBeenCalledWith(zipBlob, 'large_split.zip', {
+            title: expect.any(String),
+            filterName: 'ZIP',
+            extensions: ['zip'],
+        });
+        expect(context.commitWorkingFile).not.toHaveBeenCalled();
+        expect(context.onSpawnTab).not.toHaveBeenCalled();
+    });
+
+    it('Split nhỏ nhiều output không còn âm thầm chỉ commit file đầu', async () => {
+        const source = await PDFDocument.create();
+        source.addPage([100, 100]);
+        source.addPage([100, 100]);
+        const bytes = await source.save();
+        const context: ProcessContext = {
+            file: new File([bytes as BlobPart], 'small.pdf', { type: 'application/pdf' }),
+            commitWorkingFile: vi.fn().mockResolvedValue(undefined),
+            setError: vi.fn(),
+            setIsProcessing: vi.fn(),
+            setProcessStatus: vi.fn(),
+            setReportMsg: vi.fn(),
+            setBatchOutput: vi.fn(),
+            getWorkingBytes: vi.fn(async () => bytes),
+        };
+        const zipBlob = new Blob(['zip'], { type: 'application/zip' });
+        api.backendSplitPdf.mockResolvedValueOnce({
+            kind: 'zip',
+            filename: 'small_split.zip',
+            blob: zipBlob,
+        });
+
+        const outcome = await runSplit(context, {
+            mode: 'by_count',
+            pagesPerFile: 1,
+            spawnNewTab: false,
+        });
+
+        expect(outcome).toEqual({ status: 'completed' });
+        expect(api.backendSplitPdf).toHaveBeenCalledOnce();
+        expect(saveBlobMock).toHaveBeenCalledWith(zipBlob, 'small_split.zip', expect.any(Object));
+        expect(context.commitWorkingFile).not.toHaveBeenCalled();
+    });
+
+    it('Split native path nhỏ lưu nhiều output không đọc input vào WebView', async () => {
+        const context = largePathContext();
+        Object.defineProperty(context.file, 'size', {
+            value: 10 * 1024 * 1024,
+            configurable: true,
+        });
+        api.backendSplitPdf.mockResolvedValueOnce({
+            kind: 'zip',
+            filename: 'small_path_split.zip',
+            blob: new Blob(['zip'], { type: 'application/zip' }),
+        });
+
+        const outcome = await runSplit(context, {
+            mode: 'by_count',
+            pagesPerFile: 3.8,
+            spawnNewTab: false,
+        });
+
+        expect(outcome).toEqual({ status: 'completed' });
+        expect(context.getWorkingBytes).not.toHaveBeenCalled();
+        expect(api.getPdfPathMetadata).not.toHaveBeenCalled();
+        expect(api.backendSplitPdf).toHaveBeenCalledWith(
+            context.file,
+            'by_count',
+            expect.objectContaining({ pagesPerFile: 3 }),
+            nativePath,
+        );
+    });
+
+    it('Split nhỏ nhiều output vẫn mở đủ tab khi người dùng chọn mở tab mới', async () => {
+        const source = await PDFDocument.create();
+        source.addPage([100, 100]);
+        source.addPage([100, 100]);
+        const bytes = await source.save();
+        const context: ProcessContext = {
+            file: new File([bytes as BlobPart], 'small.pdf', { type: 'application/pdf' }),
+            onSpawnTab: vi.fn(),
+            commitWorkingFile: vi.fn().mockResolvedValue(undefined),
+            setError: vi.fn(),
+            setIsProcessing: vi.fn(),
+            setProcessStatus: vi.fn(),
+            setReportMsg: vi.fn(),
+            setBatchOutput: vi.fn(),
+            getWorkingBytes: vi.fn(async () => bytes),
+        };
+
+        const outcome = await runSplit(context, {
+            mode: 'by_count',
+            pagesPerFile: 1,
+            spawnNewTab: true,
+        });
+
+        expect(outcome).toEqual({ status: 'completed' });
+        expect(api.backendSplitPdf).not.toHaveBeenCalled();
+        expect(context.onSpawnTab).toHaveBeenCalledTimes(2);
+        expect(context.commitWorkingFile).not.toHaveBeenCalled();
+    });
+
+    it('hủy hộp thoại lưu ZIP trả canceled và không thay working file', async () => {
+        const context = largePathContext();
+        api.backendSplitPdf.mockResolvedValueOnce({
+            kind: 'zip',
+            filename: 'large_split.zip',
+            blob: new Blob(['zip'], { type: 'application/zip' }),
+        });
+        saveBlobMock.mockResolvedValueOnce({ kind: 'cancelled' });
+
+        const outcome = await runSplit(context, {
+            mode: 'by_count',
+            pagesPerFile: 4,
+            spawnNewTab: false,
+        });
+
+        expect(outcome).toEqual({ status: 'canceled' });
+        expect(context.commitWorkingFile).not.toHaveBeenCalled();
+    });
+
+    it('extract_pages nhận ZIP trái hợp đồng thì fail-closed, không lưu rồi đi tiếp', async () => {
+        const context = largePathContext();
+        api.backendSplitPdf.mockResolvedValueOnce({
+            kind: 'zip',
+            filename: 'unexpected.zip',
+            blob: new Blob(['zip'], { type: 'application/zip' }),
+        });
+
+        const outcome = await runSplit(context, {
+            mode: 'extract_pages',
+            pageListStr: '1',
+            spawnNewTab: false,
+        });
+
+        expect(outcome).toMatchObject({ status: 'error' });
+        expect(saveBlobMock).not.toHaveBeenCalled();
+        expect(context.commitWorkingFile).not.toHaveBeenCalled();
+        expect(context.setError).toHaveBeenLastCalledWith(expect.stringContaining('ZIP'));
+    });
+
+    it('carrier native path size=0 vẫn giữ Resize/Shuffle/Split ngoài V8', async () => {
+        api.getPdfPathMetadata.mockResolvedValue({
+            page_count: 8,
+            pages: [{
+                width_pt: 595.28,
+                height_pt: 841.89,
+                media_width_pt: 1684,
+                media_height_pt: 2384,
+                rotation: 0,
+            }],
+        } as any);
+        const unknownSize = () => {
+            const context = largePathContext();
+            Object.defineProperty(context.file, 'size', { value: 0, configurable: true });
+            return context;
+        };
+
+        const resize = unknownSize();
+        const resizeOutcome = await runResize(resize, {
+            targetW: 210,
+            targetH: 297,
+            targetDpi: undefined,
+            pageSizeMode: 'fixed',
+            resizeMode: 'auto',
+            scaleMode: 'fit',
+            bgFillMode: 'white',
+            applyToStr: 'all',
+            spawnNewTab: false,
+        });
+        expect(resizeOutcome).toEqual({ status: 'completed' });
+        expect(resize.getWorkingBytes).not.toHaveBeenCalled();
+        expect(api.backendResizePages.mock.calls.at(-1)?.[5]).toBe(300);
+
+        const shuffle = unknownSize();
+        const shuffleOutcome = await runShuffle(shuffle, {
+            presetId: 'special',
+            specialAction: 'reverse',
+            spawnNewTab: false,
+        });
+        expect(shuffleOutcome).toEqual({ status: 'completed' });
+        expect(shuffle.getWorkingBytes).not.toHaveBeenCalled();
+
+        const split = unknownSize();
+        const splitOutcome = await runSplit(split, {
+            mode: 'extract_pages',
+            pageListStr: '1',
+            spawnNewTab: false,
+        });
+        expect(splitOutcome).toEqual({ status: 'completed' });
+        expect(split.getWorkingBytes).not.toHaveBeenCalled();
+    });
+
+    it('tách lẻ/chẵn giao đồng thời hai job cho scheduler tự điều tiết', async () => {
+        const context = largePathContext();
+        context.onSpawnTab = vi.fn();
+        let releaseFirst!: (blob: Blob) => void;
+        const firstGate = new Promise<Blob>((resolve) => { releaseFirst = resolve; });
+        api.backendShufflePages
+            .mockImplementationOnce(() => firstGate)
+            .mockResolvedValueOnce(new Blob(['even'], { type: 'application/pdf' }));
+
+        const pending = runShuffle(context, {
+            presetId: 'special',
+            specialAction: 'split_odd_even',
+            spawnNewTab: false,
+        });
+        await vi.waitFor(() => expect(api.backendShufflePages).toHaveBeenCalled());
+
+        let assertionError: unknown;
+        try {
+            expect(api.backendShufflePages).toHaveBeenCalledTimes(2);
+        } catch (error) {
+            assertionError = error;
+        }
+        releaseFirst(new Blob(['odd'], { type: 'application/pdf' }));
+        await pending;
+        if (assertionError) throw assertionError;
     });
 });

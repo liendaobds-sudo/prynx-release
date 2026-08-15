@@ -1,15 +1,21 @@
 import { useState } from 'react';
 import { authenticatedFetch, getApiUrl, prepareFileForUpload } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
-import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
+import { recipeRecorder, type RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
 import { ToolSectionLabel, ToolCheckboxOption, ToolNumberInput, ToolInfo } from './ToolUI';
 import { useTranslation } from 'react-i18next';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { RichSelect } from '../imposition-tools/SharedUI';
 
 interface Props {
+    tabId?: string;
     pdfFile: File | null;
-    onFileFixed?: (blob: Blob, filename: string) => void;
+    onFileFixed?: (
+        blob: Blob,
+        filename: string,
+        path?: string,
+        recipeTicket?: RecipeOperationTicket | null,
+    ) => void | Promise<void>;
 }
 
 const PRESETS = [
@@ -26,7 +32,7 @@ function formatSize(bytes: number): string {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
+export default function OptimizeTool({ tabId, pdfFile, onFileFixed }: Props) {
   const { t } = useTranslation();
     const getWorkingFile = useWorkingPdf();
     const [preset, setPreset] = useState('ebook');
@@ -58,14 +64,24 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
         setResult(null);
         setProgress(t('preprocess.optimize:dang_chuan_bi_du_lieu'));
 
-        try {
-            const realFile = await prepareFileForUpload((await getWorkingFile()) || pdfFile);
-            recipeRecorder.noteOperation('optimize', {
+        const shouldRecord = !!tabId && recipeRecorder.isRecordingFor(tabId);
+        const recipeTicket = shouldRecord
+            ? recipeRecorder.noteOperation('optimize', {
                 preset,
                 image_dpi: imageDpi,
                 strip_metadata: stripMetadata,
                 grayscale,
-            });
+            }, undefined, tabId)
+            : null;
+        if (shouldRecord && !recipeTicket) {
+            setError(t('tabs.imposition:dang_xu_ly_file'));
+            setProgress('');
+            setIsProcessing(false);
+            return;
+        }
+
+        try {
+            const realFile = await prepareFileForUpload((await getWorkingFile()) || pdfFile);
             const formData = new FormData();
             formData.append('file', realFile, pdfFile.name);
             formData.append('preset', preset);
@@ -96,10 +112,12 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
 
             if (onFileFixed) {
                 const newName = `optimized_${pdfFile.name}`;
-                onFileFixed(blob, newName);
+                await onFileFixed(blob, newName, undefined, recipeTicket);
+            } else {
+                recipeRecorder.discardPending(recipeTicket);
             }
         } catch (e: any) {
-            recipeRecorder.discardPending();
+            recipeRecorder.discardPending(recipeTicket);
             setError(e.message || t('preprocess.optimize:da_xay_ra_loi_khong_xac_dinh'));
             setProgress('');
         } finally {

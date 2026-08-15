@@ -19,7 +19,8 @@
  *    các bước >i không chạy.
  */
 import type { Recipe, RecipeStep, RecipeOpId, RecipeExternalInput } from './recipeTypes';
-import type { ProcessContext } from '../processHandlers';
+import type { ProcessContext, ProcessOutcome } from '../processHandlers';
+import { isCanceled } from '../errorMessages';
 
 /** Giá trị input ngoài người dùng cung cấp khi phát lại (không lưu trong recipe). */
 export interface ExternalInputValue {
@@ -38,7 +39,7 @@ export type RecipeRunner = (
     ctx: ProcessContext,
     params: Record<string, unknown>,
     ext: ExternalInputValue | null,
-) => Promise<void>;
+) => Promise<ProcessOutcome>;
 
 export type RecipeRunnerRegistry = Partial<Record<RecipeOpId, RecipeRunner>>;
 
@@ -64,9 +65,11 @@ export interface PlaybackDeps {
 
 export interface PlaybackResult {
     ok: boolean;
+    status: 'completed' | 'canceled' | 'error';
     completed: number;
     skipped: number;
     skippedSteps: { index: number; step: RecipeStep; reason: PlaybackSkipReason }[];
+    canceledStep?: { index: number; step: RecipeStep };
     failedStep?: { index: number; step: RecipeStep; error: string };
 }
 
@@ -94,6 +97,7 @@ export async function runRecipe(recipe: Recipe, deps: PlaybackDeps): Promise<Pla
             if (accessError) {
                 return {
                     ok: false,
+                    status: 'error',
                     completed: 0,
                     skipped: 0,
                     skippedSteps: [],
@@ -115,7 +119,32 @@ export async function runRecipe(recipe: Recipe, deps: PlaybackDeps): Promise<Pla
         // P7 — input ngoài: phải re-prompt; thiếu → bỏ qua.
         let ext: ExternalInputValue | null = null;
         if (step.needsExternalInput) {
-            ext = (await deps.requestExternalInput?.(step, step.needsExternalInput)) ?? null;
+            try {
+                ext = (await deps.requestExternalInput?.(step, step.needsExternalInput)) ?? null;
+            } catch (error: any) {
+                if (error?.message === 'ABORT_BY_USER' || isCanceled(error)) {
+                    return {
+                        ok: false,
+                        status: 'canceled',
+                        completed,
+                        skipped: skippedSteps.length,
+                        skippedSteps,
+                        canceledStep: { index: i, step },
+                    };
+                }
+                return {
+                    ok: false,
+                    status: 'error',
+                    completed,
+                    skipped: skippedSteps.length,
+                    skippedSteps,
+                    failedStep: {
+                        index: i,
+                        step,
+                        error: error?.message || String(error),
+                    },
+                };
+            }
             if (!ext) {
                 skip(i, step, 'missing_input');
                 continue;
@@ -134,6 +163,7 @@ export async function runRecipe(recipe: Recipe, deps: PlaybackDeps): Promise<Pla
         if (accessError) {
             return {
                 ok: false,
+                status: 'error',
                 completed,
                 skipped: skippedSteps.length,
                 skippedSteps,
@@ -156,8 +186,31 @@ export async function runRecipe(recipe: Recipe, deps: PlaybackDeps): Promise<Pla
         };
 
         try {
-            await runner(ctx, step.params, ext); // P4 — await tuần tự
+            const outcome = await runner(ctx, step.params, ext); // P4 — await tuần tự
+            if (outcome.status === 'canceled') {
+                return {
+                    ok: false,
+                    status: 'canceled',
+                    completed,
+                    skipped: skippedSteps.length,
+                    skippedSteps,
+                    canceledStep: { index: i, step },
+                };
+            }
+            if (outcome.status === 'error' && !capturedError) {
+                capturedError = outcome.error;
+            }
         } catch (e: any) {
+            if (e?.message === 'ABORT_BY_USER' || isCanceled(e)) {
+                return {
+                    ok: false,
+                    status: 'canceled',
+                    completed,
+                    skipped: skippedSteps.length,
+                    skippedSteps,
+                    canceledStep: { index: i, step },
+                };
+            }
             capturedError = e?.message || String(e);
         }
 
@@ -165,6 +218,7 @@ export async function runRecipe(recipe: Recipe, deps: PlaybackDeps): Promise<Pla
             // P8 — dừng sạch: không chạy bước kế.
             return {
                 ok: false,
+                status: 'error',
                 completed,
                 skipped: skippedSteps.length,
                 skippedSteps,
@@ -175,5 +229,11 @@ export async function runRecipe(recipe: Recipe, deps: PlaybackDeps): Promise<Pla
         completed++;
     }
 
-    return { ok: true, completed, skipped: skippedSteps.length, skippedSteps };
+    return {
+        ok: true,
+        status: 'completed',
+        completed,
+        skipped: skippedSteps.length,
+        skippedSteps,
+    };
 }

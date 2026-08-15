@@ -38,6 +38,7 @@ from app.api.routes.combine_jobs import (
     validate_manifest_source_file as _validate_manifest_source_file,
 )
 from app.core.license_guard import require_license, require_feature, enforce_feature
+from app.core.imposition_file_access import validate_imposition_pdf_path
 from app.core.sticker_cutline_policy import resolve_sticker_corner_policy
 from app.core.upscale_policy import (
     icc_data_colorspace as _icc_data_colorspace,
@@ -578,7 +579,8 @@ async def merge_manifest_endpoint(
 
 @router.post("/split")
 async def split_pdf_endpoint(
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
+    file_path: str = Form(""),
     mode: str = Form("by_count"),
     config: str = Form("{}"),
     license_info: dict = Depends(require_license),
@@ -592,12 +594,22 @@ async def split_pdf_endpoint(
     """
     from app.workers.pdf_tools_engine import split_pdf
     
-    source_path = await save_upload(file)
+    path_arg = file_path.strip().strip('"') if isinstance(file_path, str) else ""
+    if path_arg:
+        source_path = validate_imposition_pdf_path(path_arg)
+        source_name = os.path.basename(source_path)
+        delete_source = False
+    elif file is not None:
+        source_path = await save_upload(file)
+        source_name = file.filename or "split.pdf"
+        delete_source = True
+    else:
+        raise HTTPException(status_code=400, detail="Thiếu file PDF cần tách.")
     cfg = json.loads(config)
     
     job_id = uuid.uuid4().hex[:8]
     output_dir = os.path.join(RESULTS_DIR, f"split_{job_id}")
-    base_name = file.filename.replace('.pdf', '') if file.filename else 'split'
+    base_name = source_name.replace('.pdf', '')
     
     zip_path = ""
     try:
@@ -634,8 +646,9 @@ async def split_pdf_endpoint(
         _cleanup_split_artifacts(zip_path, output_dir)
         raise_http(e, "Tách PDF thất bại")
     finally:
-        try: os.remove(source_path)
-        except OSError: pass
+        if delete_source:
+            try: os.remove(source_path)
+            except OSError: pass
 
 
 @router.post("/resize")
@@ -892,7 +905,8 @@ async def trim_shift_endpoint(
 
 @router.post("/shuffle")
 async def shuffle_pages_endpoint(
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
+    file_path: str = Form(""),
     action: str = Form("reverse"),
     mapping: str = Form("[]"),
     license_info: dict = Depends(require_license),
@@ -905,7 +919,17 @@ async def shuffle_pages_endpoint(
     """
     from app.workers.pdf_tools_engine import shuffle_pages
     
-    source_path = await save_upload(file)
+    path_arg = file_path.strip().strip('"') if isinstance(file_path, str) else ""
+    if path_arg:
+        source_path = validate_imposition_pdf_path(path_arg)
+        source_name = os.path.basename(source_path)
+        delete_source = False
+    elif file is not None:
+        source_path = await save_upload(file)
+        source_name = file.filename or "document.pdf"
+        delete_source = True
+    else:
+        raise HTTPException(status_code=400, detail="Thiếu file PDF cần xáo trộn.")
     job_id = uuid.uuid4().hex[:8]
     output_path = os.path.join(RESULTS_DIR, f"shuffled_{job_id}.pdf")
     
@@ -916,7 +940,7 @@ async def shuffle_pages_endpoint(
         await run_in_threadpool(_safe_watermark, output_path, license_info)
         return FileResponse(
             path=output_path,
-            filename=f"shuffled_{file.filename}",
+            filename=f"shuffled_{source_name}",
             media_type="application/pdf",
             background=BackgroundTask(_cleanup_file, output_path),
         )
@@ -924,8 +948,9 @@ async def shuffle_pages_endpoint(
         _cleanup_file(output_path)
         raise_http(e, "Sắp xếp lại trang thất bại")
     finally:
-        try: os.remove(source_path)
-        except OSError: pass
+        if delete_source:
+            try: os.remove(source_path)
+            except OSError: pass
 
 
 @router.post("/ocr-searchable")

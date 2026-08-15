@@ -133,6 +133,9 @@ describe('PdfSplitter — parseRanges', () => {
   it('clamp + bỏ phần không hợp lệ', () => {
     expect(parseRanges('3-99, 0, abc, 5', 10)).toEqual([[3, 10], [5, 5]]);
   });
+  it('không cắt cụt cú pháp dải lỗi thành một dải hợp lệ khác', () => {
+    expect(parseRanges('1-2-3, 1--2, 2-3', 10)).toEqual([[2, 3]]);
+  });
 });
 
 describe('PdfSplitter — splitPdf', () => {
@@ -144,6 +147,12 @@ describe('PdfSplitter — splitPdf', () => {
 
   it('by_count', async () => {
     const res = await splitPdf(await makePdf(8, 100), 'by_count', { pagesPerFile: 3 }, 'b');
+    const ws = await Promise.all(res.map((r) => widths(r.bytes)));
+    expect(ws).toEqual([[100, 101, 102], [103, 104, 105], [106, 107]]);
+  });
+
+  it('by_count chuẩn hóa số thập phân thành số trang nguyên', async () => {
+    const res = await splitPdf(await makePdf(8, 100), 'by_count', { pagesPerFile: 3.8 }, 'b');
     const ws = await Promise.all(res.map((r) => widths(r.bytes)));
     expect(ws).toEqual([[100, 101, 102], [103, 104, 105], [106, 107]]);
   });

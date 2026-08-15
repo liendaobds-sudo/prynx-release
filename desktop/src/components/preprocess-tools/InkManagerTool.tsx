@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
-import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
+import { recipeRecorder, type RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
 import { useTranslation } from 'react-i18next';
 import {
   useWorkspaceStore,
@@ -10,8 +10,14 @@ import {
 } from '../../stores/useWorkspaceStore';
 
 interface Props {
+  tabId?: string;
   pdfFile: File | null;
-  onFileFixed?: (blob: Blob, name: string) => void;
+  onFileFixed?: (
+    blob: Blob,
+    name: string,
+    path?: string,
+    recipeTicket?: RecipeOperationTicket | null,
+  ) => void | Promise<void>;
 }
 
 interface InkInfo {
@@ -22,7 +28,7 @@ interface InkInfo {
   page_count: number;
 }
 
-export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
+export default function InkManagerTool({ tabId, pdfFile, onFileFixed }: Props) {
   const { t } = useTranslation();
   const [inks, setInks] = useState<InkInfo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -86,9 +92,22 @@ export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
 
   const convertSpot = async (spotName?: string) => {
     setConverting(true); setStatus('');
+    const shouldRecord = !!tabId && recipeRecorder.isRecordingFor(tabId);
+    const recipeTicket = shouldRecord
+      ? recipeRecorder.noteOperation(
+          'spot_cmyk',
+          { spot_name: spotName || null },
+          undefined,
+          tabId,
+        )
+      : null;
+    if (shouldRecord && !recipeTicket) {
+      setStatus(`❌ ${t('tabs.imposition:dang_xu_ly_file')}`);
+      setConverting(false);
+      return;
+    }
     try {
       const fid = await ensureUploaded();
-      recipeRecorder.noteOperation('spot_cmyk', { spot_name: spotName || null });
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/convert-spot`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_id: fid, spot_name: spotName || null }),
@@ -98,11 +117,13 @@ export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
         setStatus(`✅ ${t('preprocess.inkManager:da_chuyen_x_cmyk', { x: spotName || t('preprocess.inkManager:tat_ca_spot') })}`);
         if (data.output_filename && onFileFixed) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
-          onFileFixed(await dl.blob(), data.output_filename);
+          await onFileFixed(await dl.blob(), data.output_filename, undefined, recipeTicket);
+        } else {
+          recipeRecorder.discardPending(recipeTicket);
         }
-      } else { recipeRecorder.discardPending(); setStatus(`❌ ${data.detail || t('preprocess.inkManager:loi')}`); }
-    } catch (e: any) { recipeRecorder.discardPending(); setStatus(`❌ ${e.message}`); }
-    setConverting(false);
+      } else { recipeRecorder.discardPending(recipeTicket); setStatus(`❌ ${data.detail || t('preprocess.inkManager:loi')}`); }
+    } catch (e: any) { recipeRecorder.discardPending(recipeTicket); setStatus(`❌ ${e.message}`); }
+    finally { setConverting(false); }
   };
 
   const processInks = inks.filter(i => i.type === 'process');

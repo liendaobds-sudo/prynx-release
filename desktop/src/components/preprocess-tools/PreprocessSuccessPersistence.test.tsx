@@ -79,7 +79,12 @@ describe('giu thong bao sau khi cap nhat PDF tren viewer', () => {
 
       fireEvent.click(screen.getByRole('button', { name: 'run' }));
       await waitFor(() => {
-        expect(onFileFixed).toHaveBeenCalledWith(expect.any(Blob), testCase.outputName);
+        expect(onFileFixed).toHaveBeenCalledWith(
+          expect.any(Blob),
+          testCase.outputName,
+          undefined,
+          null,
+        );
       });
 
       rerender(
