@@ -3,8 +3,11 @@ import { reduceWheelNav, createWheelNavState } from './wheelPageNav';
 import { toast } from '../../components/ui/Toast';
 import i18n from '../../i18n';
 import {
+    capturePageViewportAnchor,
     capturePagePointViewportAnchor,
+    restorePageViewportAnchor,
     restorePagePointViewportAnchor,
+    type PageViewportAnchor,
     type PagePointViewportAnchor,
 } from '../../lib/pageViewport';
 
@@ -86,6 +89,11 @@ export function useViewerZoom(props: UseViewerZoomProps) {
     const wheelNavStateRef = useRef(createWheelNavState());
     const lastZoomMouseRef = useRef<Omit<ViewerZoomTarget, 'ratio'> | null>(null);
     const zoomRafRef = useRef<number | null>(null);
+    // UIUX (feedback 2026-08-16 §VIEW.ZOOM-CENTER): điểm trên trang đang nằm ở TÂM khung
+    // nhìn, cập nhật liên tục theo cuộn/zoom. Nút +/- và menu zoom không có toạ độ con trỏ
+    // nên phải neo hình học theo tâm; công thức cũ theo gốc scroll kéo lệch về góc trên-trái
+    // khi trang được canh giữa (flex items-center) — đúng lỗi người dùng gặp ở tem AI.
+    const centerAnchorRef = useRef<{ pageId: string; anchor: PageViewportAnchor } | null>(null);
 
     // ═══ Fit Mode Helpers ═══
     const getScrollViewport = useCallback(() => {
@@ -252,6 +260,19 @@ export function useViewerZoom(props: UseViewerZoomProps) {
     }, [numPages]);
 
     // ═══ Zoom anchor (giữ điểm focus sau khi zoom) ═══
+    // Ghi lại điểm trang ở TÂM khung nhìn (trước khi zoom kế tiếp). Dùng cho nút +/-,
+    // menu và mọi zoom không có toạ độ con trỏ — neo hình học nên đúng cả khi trang
+    // được canh giữa, thay vì công thức theo gốc scroll kéo về góc trên-trái.
+    const trackCenterAnchor = useCallback(() => {
+        const el = internalScrollRef.current;
+        if (!el) return;
+        const pageId = `pdf-page-container-${activePageRef.current}`;
+        const page = renderedZoomPage(el, pageId);
+        if (!page) return;
+        const anchor = capturePageViewportAnchor(el, page);
+        if (anchor) centerAnchorRef.current = { pageId, anchor };
+    }, [internalScrollRef]);
+
     useLayoutEffect(() => {
         const el = internalScrollRef.current;
         if (!el) return;
@@ -259,31 +280,97 @@ export function useViewerZoom(props: UseViewerZoomProps) {
         if (!focal) {
             // Không có tâm con trỏ (nút +/- hoặc nhập %): neo về TÂM khung nhìn — chỉ khi đang
             // zoom thủ công (custom) và nội dung tràn (có gì để cuộn). Tránh phá fit-width/page.
-            if (fitMode !== 'custom') return;
+            if (fitMode !== 'custom') { trackCenterAnchor(); return; }
             const old = currentZoomRef.current; // zoom TRƯỚC (currentZoomRef cập nhật ở useEffect chạy SAU)
-            if (old <= 0 || Math.abs(zoom - old) < 1e-4) return;
+            if (old <= 0 || Math.abs(zoom - old) < 1e-4) { trackCenterAnchor(); return; }
             const scrollable = el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1;
-            if (!scrollable) return;
+            if (!scrollable) { trackCenterAnchor(); return; }
+            // Neo hình học theo điểm-tâm đã ghi TRƯỚC khi width trang đổi. Đúng cả với
+            // layout canh giữa; công thức theo gốc scroll cũ lệch −(offset canh giữa).
+            const centered = centerAnchorRef.current;
+            const centerPage = centered ? renderedZoomPage(el, centered.pageId) : null;
+            if (centered && centerPage && restorePageViewportAnchor(el, centerPage, centered.anchor)) {
+                trackCenterAnchor();
+                zoomTargetRef.current = null;
+                updateViewportRect();
+                return;
+            }
             focal = { mouseX: el.clientWidth / 2, mouseY: el.clientHeight / 2, ratio: zoom / old };
         }
-        const { mouseX, mouseY, ratio } = focal;
-        const page = focal.pageId && focal.pageAnchor
-            ? renderedZoomPage(el, focal.pageId)
-            : null;
-        const restoredFromPage = Boolean(
-            page
-            && focal.pageAnchor
-            && restorePagePointViewportAnchor(el, page, focal.pageAnchor),
-        );
-        if (!restoredFromPage) {
-            // Fallback cho khoảng xám không xác định được trang. Công thức theo scroll origin
-            // vẫn tốt hơn không neo gì, nhưng wheel trên trang luôn đi nhánh hình học phía trên.
-            el.scrollLeft = (el.scrollLeft + mouseX) * ratio - mouseX;
-            el.scrollTop = (el.scrollTop + mouseY) * ratio - mouseY;
-        }
+        // PERF/UIUX (feedback 2026-08-16 §VIEW.ZOOM-LATE): kích thước trang đổi TRỄ một
+        // frame so với lúc effect [zoom] chạy (đo được: pageW vẫn = cũ khi ratio đã đổi).
+        // Nếu chỉ neo một lần ở đây thì neo trên hình học CŨ → cuộn không đổi → trang co/nở
+        // từ gốc trên-trái. `pageAnchor`/điểm-tâm là bất biến theo kích thước nên chạy lại
+        // hàm neo ở frame kế (sau khi trang đã đổi kích thước) sẽ đặt đúng điểm dưới con trỏ.
+        const snapshot = focal;
+        const runAnchor = () => {
+            const page = snapshot.pageId && snapshot.pageAnchor
+                ? renderedZoomPage(el, snapshot.pageId)
+                : null;
+            const restoredFromPage = Boolean(
+                page
+                && snapshot.pageAnchor
+                && restorePagePointViewportAnchor(el, page, snapshot.pageAnchor),
+            );
+            if (!restoredFromPage) {
+                // Neo-theo-điểm thất bại → neo hình học theo điểm-tâm đã ghi; công thức theo
+                // gốc scroll chỉ là phương án chót (sai với layout canh giữa).
+                const centered = centerAnchorRef.current;
+                const centerPage = centered ? renderedZoomPage(el, centered.pageId) : null;
+                const centeredOk = Boolean(
+                    centered && centerPage
+                    && restorePageViewportAnchor(el, centerPage, centered.anchor),
+                );
+                if (!centeredOk) {
+                    el.scrollLeft = (el.scrollLeft + snapshot.mouseX) * snapshot.ratio - snapshot.mouseX;
+                    el.scrollTop = (el.scrollTop + snapshot.mouseY) * snapshot.ratio - snapshot.mouseY;
+                }
+            }
+            updateViewportRect();
+        };
         zoomTargetRef.current = null;
-        updateViewportRect();
-    }, [zoom, fitMode]);
+        runAnchor();
+        // Neo lại sau khi layout trang mới đã áp dụng (một, rồi hai frame cho chắc), rồi
+        // mới ghi lại điểm-tâm để lần zoom sau dùng đúng vị trí ĐÃ neo, không phải vị trí cũ.
+        requestAnimationFrame(() => {
+            runAnchor();
+            requestAnimationFrame(() => {
+                runAnchor();
+                if (import.meta.env.DEV) {
+                    const page = snapshot.pageId ? renderedZoomPage(el, snapshot.pageId) : null;
+                    const r = page?.getBoundingClientRect();
+                    // eslint-disable-next-line no-console
+                    console.warn(
+                        `[ZOOM final] pageW=${r?.width?.toFixed(0)} pageH=${r?.height?.toFixed(0)} `
+                        + `scrollLeft=${el.scrollLeft.toFixed(0)} scrollTop=${el.scrollTop.toFixed(0)} `
+                        + `scrollW=${el.scrollWidth} clientW=${el.clientWidth}`,
+                    );
+                }
+                trackCenterAnchor();
+            });
+        });
+    }, [zoom, fitMode, trackCenterAnchor]);
+
+    // Cập nhật điểm-tâm khi người dùng cuộn/pan để lần zoom bằng nút/menu kế tiếp neo
+    // đúng chỗ đang xem. Gom bằng rAF; bỏ qua trong lúc zoom tự điều chỉnh scroll.
+    useEffect(() => {
+        const el = internalScrollRef.current;
+        if (!el) return;
+        let raf: number | null = null;
+        const onScroll = () => {
+            if (isZoomingRef.current || raf !== null) return;
+            raf = requestAnimationFrame(() => {
+                raf = null;
+                if (!isZoomingRef.current) trackCenterAnchor();
+            });
+        };
+        el.addEventListener('scroll', onScroll, { passive: true });
+        trackCenterAnchor();
+        return () => {
+            el.removeEventListener('scroll', onScroll);
+            if (raf !== null) cancelAnimationFrame(raf);
+        };
+    }, [internalScrollRef, trackCenterAnchor, numPages, activePage]);
 
     // ═══ Wheel handler (Ctrl+Wheel zoom + page-fit scroll-to-page) ═══
     useEffect(() => {
@@ -336,7 +423,6 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                                 e.clientY,
                             )
                             : null;
-
                         isZoomingRef.current = true;
                         // Tích luỹ zoom mục tiêu, gom 1 lần/khung-hình bằng rAF rồi ZOOM THẲNG +
                         // neo điểm dưới con trỏ (useLayoutEffect [zoom]). KHÔNG dùng CSS transform

@@ -64,4 +64,40 @@ describe('page viewport anchor', () => {
         expect(scroller.scrollLeft).toBe(24);
         expect(scroller.scrollTop).toBe(80);
     });
+
+    // §VIEW.ZOOM-CENTER: zoom bằng nút +/- (không có toạ độ con trỏ) trên trang được
+    // canh giữa. Đây là ca người dùng gặp ở "Tách tem từ ảnh AI": trước khi sửa, code
+    // dùng công thức theo gốc scroll `(scrollLeft+mouseX)*ratio - mouseX` nên đường bế
+    // trôi về góc trên-trái. Neo hình học theo tâm giữ đúng điểm giữa dưới khung nhìn.
+    it('giữ điểm tâm ổn định khi zoom trang canh giữa bằng nút (không con trỏ)', () => {
+        const scroller = document.createElement('div');
+        const page = document.createElement('div');
+        Object.defineProperties(scroller, {
+            clientWidth: { value: 1000 },
+            clientHeight: { value: 1000 },
+        });
+        scroller.getBoundingClientRect = () => rect(0, 0, 1000, 1000);
+        // Trước zoom: trang 800px hẹp hơn khung → canh giữa, mép trái = 100.
+        page.getBoundingClientRect = () => rect(100, 100, 800, 800);
+        scroller.scrollLeft = 0;
+        scroller.scrollTop = 0;
+
+        const anchor = capturePageViewportAnchor(scroller, page);
+        expect(anchor).toEqual({ xRatio: 0.5, yRatio: 0.5 });
+
+        // Sau zoom ×2: trang 1600px rộng hơn khung → mép trái về 0 trong nội dung.
+        page.getBoundingClientRect = () => rect(0, 0, 1600, 1600);
+        expect(restorePageViewportAnchor(scroller, page, anchor!)).toBe(true);
+
+        // Neo hình học: tâm trang phải nằm đúng tâm khung nhìn (500,500).
+        expect(scroller.scrollLeft).toBe(300);
+        expect(scroller.scrollTop).toBe(300);
+        const pageCenterOnScreen = 0 - scroller.scrollLeft + 1600 * 0.5;
+        expect(pageCenterOnScreen).toBe(500);
+
+        // Công thức gốc-scroll cũ sẽ ra 500 → tâm trang lệch về 300, tức trôi trái 200px.
+        const legacyScrollLeft = (0 + 500) * 2 - 500;
+        expect(legacyScrollLeft).toBe(500);
+        expect(0 - legacyScrollLeft + 1600 * 0.5).toBe(300);
+    });
 });
