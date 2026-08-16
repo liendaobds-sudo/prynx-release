@@ -66,6 +66,26 @@ class StickerSheetError(RuntimeError):
     """Lỗi nghiệp vụ có thể chuyển thành thông báo ngắn cho người dùng."""
 
 
+def _is_background_model_memory_error(error: BaseException) -> bool:
+    """Nhận lỗi cấp phát ONNX/DirectML mà không phụ thuộc lớp exception của runtime."""
+    if isinstance(error, MemoryError):
+        return True
+    message = str(error).lower().replace("_", " ")
+    return any(marker in message for marker in (
+        "8007000e",
+        "not enough memory",
+        "out of memory",
+        "bfc arena",
+        "bfcarena",
+        "bad alloc",
+        "bad allocation",
+        "failed to allocate",
+        "unable to allocate",
+        "allocate buffer with requested bytes",
+        "paging file is too small",
+    ))
+
+
 @dataclass(frozen=True)
 class StickerInstance:
     id: int
@@ -766,7 +786,21 @@ def analyze_sticker_sheet(
 
     def run_uncached(runner: BackgroundRunner) -> StickerSheetAnalysis:
         model_started = time.perf_counter()
-        model_result = runner(source, model).convert("RGBA")
+        try:
+            model_result = runner(source, model).convert("RGBA")
+        except StickerSheetError:
+            raise
+        except Exception as exc:
+            if _is_background_model_memory_error(exc):
+                # UIUX (feedback 2026-08-16 §WHITE-SHEET.2): giữ stack trong log/exception
+                # chain nhưng không để tên lớp ONNX "RuntimeException" lọt ra giao diện.
+                logger.exception("Mô hình tách nền không còn đủ bộ nhớ để nhận diện tem")
+                raise StickerSheetError(
+                    "Máy không còn đủ bộ nhớ để nhận diện vùng tem. "
+                    "File gốc vẫn được giữ; hãy đóng bớt ứng dụng hoặc khởi động lại "
+                    "PrynX rồi thử lại."
+                ) from exc
+            raise
         model_seconds = time.perf_counter() - model_started
         if model_result.size != source.size:
             raise StickerSheetError("Mask AI không khớp kích thước ảnh nguồn.")

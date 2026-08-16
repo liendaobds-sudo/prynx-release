@@ -24,6 +24,7 @@ from app.workers.sticker_engine import (
     _fit_alpha_bezier_paths_core,
     build_bezier_segments_path_stream,
     build_alpha_cutline_geometry,
+    should_presmooth_cutline_alpha,
 )
 from app.workers.cutline_machine_path import (
     analyze_machine_path,
@@ -235,6 +236,20 @@ def test_do_muot_doi_quy_dao_va_khong_sinh_lenh_dao_ngan_gay_khuc() -> None:
         assert metrics.disconnected_join_count == 0
         assert metrics.discontinuous_join_count == 0
         assert metrics.short_segment_count == 0
+
+
+def test_path_groups_chuyen_ndarray_thanh_so_json_truoc_khi_cache() -> None:
+    """Fallback thích nghi có thể trả ndarray; cache preview chỉ nhận số thuần."""
+    polygon = Polygon([(0, 0), (20, 0), (20, 10), (0, 10), (0, 0)])
+    numpy_ring = np.asarray(
+        sticker_engine_module._linear_bezier_ring(polygon.exterior.coords),
+        dtype=np.float64,
+    )
+
+    groups = sticker_engine_module._group_alpha_paths_like(polygon, [numpy_ring])
+
+    json.dumps(groups, allow_nan=False)
+    assert isinstance(groups[0]["exterior"][0][0][0], float)
 
 
 def test_tang_bo_cong_giam_nhay_do_cong_va_van_an_toan_may() -> None:
@@ -759,3 +774,426 @@ def test_png_pdf_tam_nen_nhanh_nhung_png_zip_van_toi_uu(tmp_path, monkeypatch) -
     assert "compress_level" not in save_options[1]
     with Image.open(pdf_paths[0]) as pdf_png, Image.open(zip_paths[0]) as zip_png:
         assert np.array_equal(np.asarray(pdf_png), np.asarray(zip_png))
+
+
+# ---------------------------------------------------------------------------
+# §CUTJAG.1 — khử răng cưa Alpha trước marching-squares, cổng theo nguồn biên
+# ---------------------------------------------------------------------------
+
+
+def _jagged_circle_mask(*, dpi: float = 300.0, speck: bool = False) -> np.ndarray:
+    """Tem tròn với biên nhiễu ±1 px từng pixel, giống mask mô hình AI.
+
+    Mask của mô hình gần như nhị phân (đo trên ảnh nhiều tem thật: chỉ 2,06% pixel
+    là trung gian) nên biên chỉ còn bậc thang pixel cộng nhiễu. Nhiễu ở đây là
+    nhiễu TỪNG PIXEL có seed cố định, không phải sóng tuần hoàn — sóng tuần hoàn bị
+    fitter làm mượt sẵn nên không tái tạo được lỗi người dùng gặp.
+    """
+    scale = dpi / 25.4
+    size = round(40.0 * scale)
+    center = size / 2.0
+    radius = 15.0 * scale
+    yy, xx = np.mgrid[0:size, 0:size]
+    distance = np.hypot(xx - center, yy - center)
+    generator = np.random.default_rng(20260816)
+    noise = generator.uniform(-1.0, 1.0, size=(size, size))
+    mask = np.where(distance <= radius + noise, 255, 0).astype(np.uint8)
+    if speck:
+        # "Rác nhận diện": vệt 2 px rời khỏi thân tem, dưới ngưỡng chi tiết 1 mm².
+        offset = round(radius) + round(4.0 * scale)
+        mask[
+            round(center) - 1:round(center) + 1,
+            round(center) + offset:round(center) + offset + 2,
+        ] = 255
+    return mask
+
+
+def _contour_turn_variation(mask: np.ndarray) -> float:
+    """Tổng biến thiên góc quay / 360 của biên mask. Vòng tròn mượt ≈ 1,0."""
+    from skimage import measure
+
+    contours = measure.find_contours(
+        np.pad(mask.astype(np.float32), 1, mode="constant"),
+        127.5,
+    )
+    assert contours
+    points = max(contours, key=len)
+    total = 0.0
+    count = len(points)
+    for index in range(count):
+        first = points[index] - points[index - 1]
+        second = points[(index + 1) % count] - points[index]
+        norm_first = float(np.hypot(*first))
+        norm_second = float(np.hypot(*second))
+        if norm_first < 1e-9 or norm_second < 1e-9:
+            continue
+        cosine = float(np.clip(
+            np.dot(first, second) / (norm_first * norm_second),
+            -1.0,
+            1.0,
+        ))
+        total += math.degrees(math.acos(cosine))
+    return total / 360.0
+
+
+def test_khu_rang_cua_alpha_lam_muot_bien_mask_ai() -> None:
+    """Bộ khử răng cưa phải hạ hẳn dao động biên, không chỉ dịch vài pixel."""
+    mask = _jagged_circle_mask()
+    muot = sticker_engine_module._presmooth_cutline_alpha(mask, dpi_x=300.0, dpi_y=300.0)
+
+    thang_do = _contour_turn_variation(mask)
+    muot_do = _contour_turn_variation(muot)
+
+    # Số đo trên mask AI thật của người dùng: góc gấp trung bình 15,7° → 3,7°.
+    # Ngưỡng để dư biên an toàn cho khác biệt nền tảng.
+    assert thang_do > 4.0
+    assert muot_do < thang_do * 0.5
+
+
+def test_khu_rang_cua_khong_lam_lech_silhouette_qua_mot_pixel() -> None:
+    """Đây là bộ khử nhiễu dưới một pixel, không phải phép bo hình."""
+    mask = _jagged_circle_mask()
+    muot = sticker_engine_module._presmooth_cutline_alpha(mask, dpi_x=300.0, dpi_y=300.0)
+
+    giao = np.count_nonzero((mask >= 128) & (muot >= 128))
+    hop = np.count_nonzero((mask >= 128) | (muot >= 128))
+    assert giao / max(1, hop) > 0.99
+
+
+def test_khu_rang_cua_bo_luon_rac_nhan_dien_nho() -> None:
+    """Vệt rác 2 px cạnh tem phải biến mất, đúng như đo trên file thật (15 → 1)."""
+    thang = build_alpha_cutline_geometry(
+        _jagged_circle_mask(speck=True),
+        dpi=300,
+        dpi_y=300,
+        cutline_smoothness=50,
+        cutline_fidelity=50,
+        curve_tension=50,
+        min_detail_area_mm2=1.0,
+    )
+    muot = build_alpha_cutline_geometry(
+        _jagged_circle_mask(speck=True),
+        dpi=300,
+        dpi_y=300,
+        cutline_smoothness=50,
+        cutline_fidelity=50,
+        curve_tension=50,
+        min_detail_area_mm2=1.0,
+        presmooth_alpha=True,
+    )
+
+    assert thang is not None and muot is not None
+    assert int(thang["quality"]["dropped_component_count"]) >= 1
+    assert int(muot["quality"]["dropped_component_count"]) == 0
+
+
+def test_khu_rang_cua_tat_mac_dinh_de_giu_goc_that() -> None:
+    """Mặc định TẮT: mask sạch có góc thật không được đi qua bộ làm mượt.
+
+    Đo được: với fixture `notch`, Gaussian 1,2 px làm `protected_corner_count`
+    rơi 11 → 0. Không bộ lọc dùng chung nào vừa giữ góc vừa khử răng cưa
+    (median 3/5, morph open+close, bilateral đều đã thử), nên cổng theo nguồn biên.
+    """
+    tat = build_alpha_cutline_geometry(
+        _sharp_mask("notch"),
+        dpi=300,
+        dpi_y=300,
+        cutline_smoothness=50,
+        cutline_fidelity=50,
+        curve_tension=50,
+        min_detail_area_mm2=0,
+    )
+    bat = build_alpha_cutline_geometry(
+        _sharp_mask("notch"),
+        dpi=300,
+        dpi_y=300,
+        cutline_smoothness=50,
+        cutline_fidelity=50,
+        curve_tension=50,
+        min_detail_area_mm2=0,
+        presmooth_alpha=True,
+    )
+
+    assert tat is not None and bat is not None
+    assert int(tat["quality"]["protected_corner_count"]) >= 9
+    assert int(bat["quality"]["protected_corner_count"]) < int(
+        tat["quality"]["protected_corner_count"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("boundary_source", "mong_doi"),
+    (
+        ("ai", True),
+        ("simple-bg", True),
+        ("vector", False),
+        ("existing-cut", False),
+        ("alpha", False),
+        (None, False),
+        ("", False),
+    ),
+)
+def test_cong_khu_rang_cua_chi_mo_cho_mask_tu_diem_anh(
+    boundary_source: object,
+    mong_doi: bool,
+) -> None:
+    assert should_presmooth_cutline_alpha(boundary_source) is mong_doi
+
+
+# ---------------------------------------------------------------------------
+# §CUTHOOK.1 — đo gai/móc trên quỹ đạo được vẽ ra, không chỉ tại anchor
+# ---------------------------------------------------------------------------
+
+
+def _hook_cubic_path() -> list[tuple[tuple[float, float], ...]]:
+    """Path đóng có một cusp nằm HẲN BÊN TRONG một cubic.
+
+    Đoạn giữa có `p1`/`p2` ngược chiều nhau nên đạo hàm theo x triệt tiêu tại
+    t ≈ 0,211 trong khi đạo hàm theo y chỉ còn ~0,008: vận tốc gần như dừng rồi đảo
+    hướng — đúng dạng móc mà người dùng gặp. Tiếp tuyến tại hai đầu đoạn vẫn là
+    (1, 0), nên `maximum_join_angle_degrees` (chỉ đo tại anchor) không thấy gì.
+    """
+    return [
+        ((-20.0, 0.0), (-13.0, 0.0), (-7.0, 0.0), (0.0, 0.0)),
+        ((0.0, 0.0), (12.0, 0.0), (-12.0, 0.02), (0.0, 0.04)),
+        ((0.0, 0.04), (7.0, 0.04), (-13.0, 0.0), (-20.0, 0.0)),
+    ]
+
+
+def _clean_cubic_path() -> list[tuple[tuple[float, float], ...]]:
+    """Đường tròn xấp xỉ bằng bốn cubic — mốc đối chứng âm, không có cusp."""
+    radius = 30.0
+    handle = radius * 0.5523
+    return [
+        ((radius, 0.0), (radius, handle), (handle, radius), (0.0, radius)),
+        ((0.0, radius), (-handle, radius), (-radius, handle), (-radius, 0.0)),
+        ((-radius, 0.0), (-radius, -handle), (-handle, -radius), (0.0, -radius)),
+        ((0.0, -radius), (handle, -radius), (radius, -handle), (radius, 0.0)),
+    ]
+
+
+def test_phep_do_quy_dao_bat_duoc_cusp_ben_trong_cubic() -> None:
+    summary = sticker_engine_module._alpha_live_machine_path_summary(
+        _hook_cubic_path(),
+        mm_to_pts=_PT_PER_MM,
+    )
+    assert summary is not None
+
+    cusp_points = summary["trajectory_cusp_points"]
+    assert len(cusp_points) >= 1
+    assert float(summary["maximum_trajectory_turn_degrees"]) > 120.0
+
+    # Bằng chứng phép đo tại anchor mù: có cusp nằm HẲN trong lòng cubic, cách mọi
+    # anchor một khoảng thật. Path này cũng có khớp gãy tại anchor, nên chỉ cần một
+    # cusp nội bộ là đủ chứng minh vùng mà `maximum_join_angle_degrees` không phủ.
+    anchors = [segment[3] for segment in _hook_cubic_path()]
+    assert any(
+        all(
+            math.hypot(point[0] - anchor[0], point[1] - anchor[1]) > 0.5
+            for anchor in anchors
+        )
+        for point in cusp_points
+    )
+
+    # Nêm hẹp: hai điểm cách đỉnh 0,35 mm theo cung gần như trùng nhau.
+    assert float(summary["minimum_wedge_width_mm"]) < 0.30
+
+
+def test_phep_do_quy_dao_khong_bao_dong_gia_tren_duong_muot() -> None:
+    summary = sticker_engine_module._alpha_live_machine_path_summary(
+        _clean_cubic_path(),
+        mm_to_pts=_PT_PER_MM,
+    )
+    assert summary is not None
+    assert summary["trajectory_cusp_points"] == []
+    assert summary["minimum_wedge_width_mm"] is None
+    assert float(summary["maximum_trajectory_turn_degrees"]) < 20.0
+
+
+def test_gom_dai_mau_lien_nhau_thanh_mot_cusp() -> None:
+    """Một cái móc trải 1–3 mẫu; không gom thì đếm sai và so khớp góc chạy thừa."""
+    turns = np.zeros(20, dtype=np.float64)
+    turns[[4, 5, 6]] = (70.0, 175.0, 80.0)
+    turns[12] = 130.0
+    # Dải bắc qua chỗ nối của polyline đóng.
+    turns[[19, 0]] = (90.0, 140.0)
+
+    collapsed = sticker_engine_module._collapse_cusp_runs(
+        np.flatnonzero(turns > 60.0),
+        turns,
+        20,
+    )
+
+    assert sorted(int(value) for value in collapsed) == [0, 5, 12]
+
+
+def test_chat_luong_cuoi_phat_ra_so_do_quy_dao() -> None:
+    """Bốn field mới phải có mặt trong `quality`, kể cả khi đường sạch."""
+    result = build_alpha_cutline_geometry(
+        _sharp_mask("star"),
+        dpi=300,
+        dpi_y=300,
+        cutline_smoothness=50,
+        cutline_fidelity=50,
+        curve_tension=50,
+        min_detail_area_mm2=0,
+    )
+
+    assert result is not None
+    quality = result["quality"]
+    for key in (
+        "trajectory_cusp_count",
+        "protected_cusp_count",
+        "unprotected_cusp_count",
+        "maximum_trajectory_turn_degrees",
+        "minimum_wedge_width_mm",
+    ):
+        assert key in quality
+    # Đầu nhọn của hình sao LÀ cusp thật và có trên reference, nên phải được bảo vệ,
+    # không được biến thành gai chưa khớp — đây là ca dễ báo động giả nhất.
+    assert int(quality["unprotected_cusp_count"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# §CUTJAG.2 — van an toàn cho mask mảnh
+# ---------------------------------------------------------------------------
+
+
+def test_khu_rang_cua_bo_qua_mask_mong_nhu_soi() -> None:
+    """Mask hairline không được biến thành rỗng.
+
+    Đo được trên `test/1785209372799_..._a00b34db...jpg`: nhận diện AI sinh "tem" là
+    dải cao 8 px, rộng 1315 px, Alpha đỉnh 235. Gaussian làm dải đó rơi xuống 0 px và
+    `prepare_alpha_cutline_geometry` trả None → preview 422.
+    """
+    soi = np.zeros((8, 400), dtype=np.uint8)
+    soi[4, 20:380] = 235
+
+    ket_qua = sticker_engine_module._presmooth_cutline_alpha(
+        soi,
+        dpi_x=300.0,
+        dpi_y=300.0,
+    )
+
+    # Van an toàn phải trả nguyên mask, không phải trả một mask rỗng.
+    assert np.array_equal(ket_qua, soi)
+    assert int(np.count_nonzero(ket_qua >= 128)) == int(
+        np.count_nonzero(soi >= 128)
+    )
+
+    prepared = sticker_engine_module.prepare_alpha_cutline_geometry(
+        soi,
+        dpi=300,
+        dpi_y=300,
+        min_detail_area_mm2=1.0,
+        presmooth_alpha=True,
+    )
+    assert prepared is not None
+
+
+def test_khu_rang_cua_van_chay_tren_mask_day_binh_thuong() -> None:
+    """Đối chứng âm: van §CUTJAG.2 không được chặn oan tem thật."""
+    mask = _jagged_circle_mask()
+    ket_qua = sticker_engine_module._presmooth_cutline_alpha(
+        mask,
+        dpi_x=300.0,
+        dpi_y=300.0,
+    )
+    assert not np.array_equal(ket_qua, mask)
+
+
+# ---------------------------------------------------------------------------
+# §CUTJAG.3 — thanh kéo "Khử răng cưa" của công cụ Bù xén
+# ---------------------------------------------------------------------------
+
+
+def test_thanh_khu_rang_cua_mac_dinh_tat_giu_nguyen_mask() -> None:
+    """0 phải trả nguyên mask: mọi caller cũ không đổi kết quả một byte nào."""
+    mask = _jagged_circle_mask()
+    for amount in (0, 0.0, None, "khong-phai-so", float("nan")):
+        assert np.array_equal(
+            sticker_engine_module.denoise_cutline_mask(
+                mask,
+                amount=amount,
+                px_per_mm=300.0 / 25.4,
+            ),
+            mask,
+        )
+
+
+def test_thanh_khu_rang_cua_keo_cao_thi_muot_hon() -> None:
+    """Kéo cao phải mượt hơn kéo thấp — đơn điệu, không phải núm giả."""
+    mask = _jagged_circle_mask()
+    px_per_mm = 300.0 / 25.4
+
+    do_gon = [
+        _contour_turn_variation(
+            sticker_engine_module.denoise_cutline_mask(
+                mask,
+                amount=amount,
+                px_per_mm=px_per_mm,
+            )
+        )
+        for amount in (0, 30, 60, 100)
+    ]
+
+    assert do_gon == sorted(do_gon, reverse=True)
+    assert do_gon[-1] < do_gon[0] * 0.5
+
+
+def test_thanh_khu_rang_cua_bi_kep_theo_mm_khi_dpi_thap() -> None:
+    """Ở DPI thấp một pixel đã lớn hơn ngân sách mm nên thanh kéo phải tự tắt.
+
+    Nếu không kẹp, kéo 100 ở 72 DPI tương đương 0,88 mm — bào mất chi tiết thật.
+    """
+    mask = _jagged_circle_mask()
+    assert np.array_equal(
+        sticker_engine_module.denoise_cutline_mask(
+            mask,
+            amount=100,
+            px_per_mm=25.0 / 25.4,
+        ),
+        mask,
+    )
+
+
+def test_thanh_khu_rang_cua_dung_chung_van_mask_mong() -> None:
+    """Thanh kéo cũng phải chịu van §CUTJAG.2, không được bào mask thành rỗng."""
+    soi = np.zeros((8, 400), dtype=np.uint8)
+    soi[4, 20:380] = 235
+
+    ket_qua = sticker_engine_module.denoise_cutline_mask(
+        soi,
+        amount=100,
+        px_per_mm=300.0 / 25.4,
+    )
+
+    assert np.array_equal(ket_qua, soi)
+
+
+def test_thanh_khu_rang_cua_thang_cong_tu_dong() -> None:
+    """`cutline_denoise` > 0 phải thắng cổng tự động theo nguồn biên."""
+    mask = _jagged_circle_mask()
+
+    def silhouette(**extra):
+        prepared = sticker_engine_module.prepare_alpha_cutline_geometry(
+            mask,
+            dpi=300,
+            dpi_y=300,
+            min_detail_area_mm2=1.0,
+            presmooth_alpha=True,
+            **extra,
+        )
+        assert prepared is not None
+        return prepared["base_geometry"]
+
+    tu_dong = silhouette()
+    thanh_keo = silhouette(cutline_denoise=100)
+    tat_han = silhouette(cutline_denoise=0)
+
+    # Kéo 0 nghĩa là "để cổng tự động lo", nên phải trùng nhánh tự động.
+    assert abs(tat_han.area - tu_dong.area) < 1e-9
+    # Kéo 100 (2,5 px) mượt hơn cổng tự động (1,2 px) → silhouette khác đo được.
+    assert abs(thanh_keo.area - tu_dong.area) / tu_dong.area > 1e-4
+    # Nhưng vẫn là khử nhiễu, không phải bo hình: lệch diện tích dưới 2%.
+    assert abs(thanh_keo.area - tu_dong.area) / tu_dong.area < 0.02

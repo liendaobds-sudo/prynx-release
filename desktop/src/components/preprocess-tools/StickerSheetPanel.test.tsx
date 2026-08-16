@@ -81,8 +81,8 @@ describe('StickerSheetPanel', () => {
     it('hiển thị số tem và chuyển công cụ mà không bày nút rà soát mơ hồ', () => {
         render(<StickerSheetPanel tabId="tab" />);
         expect(screen.getByText(/Đã nhận diện/).textContent).toContain('Đã nhận diện 2 tem');
-        expect(screen.getByText('Cần kiểm tra đường cắt')).toBeTruthy();
-        expect(screen.getByText('Độ tin cậy 98%')).toBeTruthy();
+        expect(screen.queryByText('Cần kiểm tra đường cắt')).toBeNull();
+        expect(screen.queryByText(/Độ tin cậy/)).toBeNull();
         expect(screen.queryByText(/BiRefNet|OpenCV/i)).toBeNull();
         expect(screen.queryByRole('button', { name: 'Điểm cần kiểm tra tiếp theo' })).toBeNull();
         expect(screen.queryByRole('button', { name: 'Hoàn tác' })).toBeNull();
@@ -92,7 +92,7 @@ describe('StickerSheetPanel', () => {
         expect(useStickerSheetStore.getState().getTab('tab').activeTool).toBe('restore');
     });
 
-    it('chuyển warning nguồn thành hướng dẫn nghiệp vụ và giữ mức tin cậy', () => {
+    it('nguồn vector vẫn giữ thanh chỉnh đường bế và không hiện cảnh báo kỹ thuật', () => {
         const current = useStickerSheetStore.getState().getTab('tab');
         if (!current.manifest) throw new Error('Thiếu fixture manifest');
         useStickerSheetStore.setState({
@@ -102,6 +102,7 @@ describe('StickerSheetPanel', () => {
                     manifest: {
                         ...current.manifest,
                         boundary_source: 'vector',
+                        refinement_available: false,
                         strategy_confidence: 0.72,
                         needs_review: true,
                         instances: current.manifest.instances.slice(0, 1),
@@ -118,12 +119,15 @@ describe('StickerSheetPanel', () => {
         render(<StickerSheetPanel tabId="tab" />);
 
         expect(screen.getByText(/Đã nhận diện/).textContent).toContain('Đã nhận diện 1 tem');
-        expect(screen.getByText('Độ tin cậy 72%')).toBeTruthy();
-        expect(screen.getByText(/Đã phát hiện tem tròn bên trong nền ảnh vuông/)).toBeTruthy();
-        expect(screen.getByText(/Vùng tem được suy ra từ nội dung vector/)).toBeTruthy();
-        expect(screen.getByText('⚠ Chỉ nhận diện được một tem trong nguồn.')).toBeTruthy();
-        expect(screen.getByText(/Hãy soi đường màu tím/)).toBeTruthy();
-        expect(screen.getByText(/Độ tin cậy chưa cao/)).toBeTruthy();
+        expect(screen.queryByText('Cần kiểm tra đường cắt')).toBeNull();
+        expect(screen.queryByText(/Độ tin cậy/)).toBeNull();
+        expect(screen.queryByText(/Đã phát hiện tem tròn bên trong nền ảnh vuông/)).toBeNull();
+        expect(screen.queryByText(/Vùng tem được suy ra từ nội dung vector/)).toBeNull();
+        expect(screen.queryByText(/Chỉ nhận diện được một tem trong nguồn/)).toBeNull();
+        expect(screen.getByRole('slider', { name: 'Mức bám sát hình gốc' })).toBeTruthy();
+        expect(screen.getByRole('slider', { name: 'Độ bo cong đường bế' })).toBeTruthy();
+        expect(screen.getByRole('slider', { name: 'Mức lọc chi tiết rời' })).toBeTruthy();
+        expect(screen.queryByText('Khử bóng')).toBeNull();
     });
 
     it('gom cả nút xuất vào cùng khung thiết lập sau khi vùng tem sẵn sàng', async () => {

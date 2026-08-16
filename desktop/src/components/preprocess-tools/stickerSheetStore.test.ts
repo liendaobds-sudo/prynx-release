@@ -381,6 +381,29 @@ describe('stickerSheetStore — state machine nguồn tem theo tab', () => {
         });
     });
 
+    it('dựng preview đường bế ngay cho nguồn vector, không hiển thị biên mask pixel', async () => {
+        const sessionId = 'v'.repeat(32);
+        const payload = detection(sessionId);
+        payload.manifest.boundary_source = 'vector';
+        payload.manifest.vector_geometry_ref = {
+            kind: 'pdf-vector-source',
+            exact_shapes: [{ instance_id: 1, kind: 'circle' }],
+        };
+        vi.mocked(inspectStickerSource).mockResolvedValue(inspection(sessionId));
+        vi.mocked(detectStickerSource).mockResolvedValue(payload);
+
+        useStickerSheetStore.getState().selectSource(
+            'tab-vector-preview',
+            new File(['pdf'], 'sheet.pdf', { type: 'application/pdf' }),
+        );
+        await useStickerSheetStore.getState().detectStickers('tab-vector-preview', 'auto');
+
+        await vi.waitFor(() => expect(previewStickerCutline).toHaveBeenCalledTimes(1));
+        await vi.waitFor(() => expect(
+            useStickerSheetStore.getState().getTab('tab-vector-preview').isCutlinePreviewing,
+        ).toBe(false));
+    });
+
     it('không dựng lại CutContour khi chỉ đổi màu, cách tách trang hoặc tràn lề không dời dao', async () => {
         const sessionId = '8'.repeat(32);
         vi.mocked(inspectStickerSource).mockResolvedValue(inspection(sessionId));

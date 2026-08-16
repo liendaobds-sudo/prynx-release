@@ -39,6 +39,14 @@ vi.mock('react-i18next', () => ({
             'preprocess.sticker:bo_nen_trang_2': 'Giữ nền trắng',
             'preprocess.sticker:tom_tat_hinh_hoc_bu_xen': 'Tóm tắt hình học bù xén',
             'preprocess.sticker:mau_nen_bu_xen': 'Màu nền bù xén',
+            // AUDIT (2026-08-16 §BX.F18): các chuỗi này trước đây hardcode trong JSX,
+            // nay đã qua i18n nên mock phải khai báo cùng nội dung để test vẫn kiểm
+            // đúng bố cục người dùng thấy.
+            'preprocess.sticker:crop_trang_theo_tem': 'Crop trang theo tem',
+            'preprocess.sticker:chon_sticker_can_bu_xen': 'Chọn sticker cần bù xén',
+            'preprocess.sticker:bat_dau_chon': 'Bắt đầu chọn',
+            'preprocess.sticker:chon_lai': 'Chọn lại',
+            'preprocess.sticker:xong_chon': 'Xong chọn',
             'preprocess.common:run': 'Thực thi',
             'preprocess.sticker:da_tao_bu_xen_thanh_cong': 'Đã tạo bù xén thành công!',
             'preprocess.sticker:buoc_tiep_theo_chon_kieu_dan_trang': 'Bước tiếp theo: Chọn kiểu dàn trang (Imposition)',

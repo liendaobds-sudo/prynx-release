@@ -298,6 +298,22 @@ def test_rejects_empty_mask():
         analyze_sticker_sheet(Image.new("RGB", (100, 80)), model_runner=empty)
 
 
+def test_model_memory_error_is_reported_without_runtime_exception_name():
+    def out_of_memory(_image: Image.Image, _model: str) -> Image.Image:
+        raise RuntimeError(
+            "BFCArena failed to allocate buffer with requested bytes of 822083584"
+        )
+
+    with pytest.raises(StickerSheetError) as captured:
+        analyze_sticker_sheet(
+            Image.new("RGB", (100, 80)),
+            model_runner=out_of_memory,
+        )
+
+    assert "không còn đủ bộ nhớ" in str(captured.value)
+    assert "RuntimeException" not in str(captured.value)
+
+
 @pytest.mark.parametrize("threshold", [0, 255])
 def test_rejects_invalid_alpha_threshold(threshold: int):
     with pytest.raises(StickerSheetError, match="Ngưỡng Alpha"):

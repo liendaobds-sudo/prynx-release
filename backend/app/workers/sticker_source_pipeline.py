@@ -1,13 +1,14 @@
 """Điều phối nhận diện tem từ một session nguồn đã inspect.
 
-Thứ tự tự động: CutContour thật → vector → Alpha sạch → nền đơn giản → AI. Mọi
-nhánh đều trả cùng ``StickerSheetAnalysis`` để workspace review dùng chung.
+Thứ tự tự động: CutContour thật → Alpha/clip render sạch → vector → nền đơn giản
+→ AI. Mọi nhánh đều trả cùng ``StickerSheetAnalysis`` để workspace review dùng chung.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from io import BytesIO
+import logging
 import math
 from pathlib import Path
 import time
@@ -19,7 +20,12 @@ import pikepdf
 from PIL import Image, ImageCms, ImageOps
 
 from app.core.pdfium_lock import pdfium_guard
-from app.core.sticker_background import detect_background, has_meaningful_alpha
+from app.core.sticker_background import (
+    BackgroundInfo,
+    detect_background,
+    foreground_from_flat_background,
+    has_meaningful_alpha,
+)
 from app.core.sticker_sheet_session import StickerSheetSession
 from app.core.system_memory import read_memory_status_mb
 from app.workers.cut_export.cut_layer_extractor import extract_cut_contours
@@ -50,19 +56,68 @@ StickerDetectionStrategy = Literal[
     "ai",
 ]
 
+logger = logging.getLogger(__name__)
+
 _PDF_ANALYSIS_DPI = 300.0
 _PDF_ANALYSIS_MAX_EDGE_LOW_RAM_PX = 3000
 _PDF_ANALYSIS_MAX_EDGE_MID_RAM_PX = 6000
+# PERF (audit 2026-08-16 §BX.P01): máy ≥16 GB trước đây KHÔNG có trần nào, nên tờ khổ
+# lớn (1600 mm @300 DPI ≈ 18 900 px cạnh) nở buffer toàn khung không giới hạn ngay bên
+# trong khóa PDFium toàn process.
+#
+# KHÔNG dùng trần px cứng ở đây: nguyên tắc của dự án là máy mạnh chạy hết công suất, và
+# hạ DPI phân tích âm thầm sẽ đổi chất lượng nhận biên. Thay vào đó chặn theo RAM CÒN
+# TRỐNG, cùng cách `_plan_background_work_size` đang làm: máy nào còn bộ nhớ thì vẫn giữ
+# đủ 300 DPI, chỉ khi ảnh phân tích vượt ngân sách mới hạ và có log.
+#
+# Chi phí thực đo theo cấu trúc hàm render: bitmap PDFium (4 B/px) + `to_pil().copy()`
+# (4 B/px) + bản RGBA cho pipeline (4 B/px), cộng biên an toàn cho bước phân tích phía sau.
+_PDF_ANALYSIS_BYTES_PER_PX = 20.0
+_PDF_ANALYSIS_RAM_FRACTION = 0.55
 _AUTO_BACKGROUND_CONFIDENCE_MIN = 0.60
 _AUTO_FRAGMENT_MIN_INSTANCES = 6
 _AUTO_FRAGMENT_MIN_NESTED = 3
 _AUTO_FRAGMENT_NESTED_RATIO = 0.18
-_ROUND_RECTANGULARITY_MIN = 0.94
-_ROUND_MAX_ASPECT_RATIO = 1.15
-_ROUND_MIN_EDGE_PX = 64
-_ROUND_CENTER_ERROR_MAX = 0.08
-_ROUND_RADIUS_ERROR_MAX = 0.12
-_ROUND_EDGE_SUPPORT_MIN = 0.55
+_AUTO_WHITE_CONTAINER_MIN_PAGE_RATIO = 0.01
+_AUTO_WHITE_CONTAINER_MIN_EDGE_RATIO = 0.08
+_AUTO_WHITE_CONTAINER_NESTED_RATIO = 0.90
+_AUTO_WHITE_CONTAINER_LARGER_RATIO = 1.05
+_AUTO_WHITE_STRICT_OVERLAP_RATIO = 0.45
+_AUTO_WHITE_BODY_RETAINED_RATIO_MIN = 0.65
+_AUTO_WHITE_SHADOW_LUMA_MIN = 96
+_AUTO_WHITE_SHADOW_LUMA_MAX = 248
+_AUTO_WHITE_SHADOW_BACKGROUND_GAP = 5
+_AUTO_WHITE_SHADOW_CHROMA_MAX = 20
+# QUALITY (feedback 2026-08-16 §WHITE-SHADOW.1): bóng MỀM có đuôi gradient sáng hơn
+# `shadow_luma_max` nhưng vẫn tối hơn nền, nên nó không bị bóc mà cũng không phải nền —
+# vành đó dính lại vào thân tem và silhouette phình theo gradient. Luồng AI đã xử lý
+# đúng việc này từ lâu bằng một bước nới 1 pixel qua đuôi gradient
+# (`sticker_sheet_engine._SHADOW_EXPAND_LUMA_MAX`); nhánh phục hồi trắng thiếu bước đó.
+_AUTO_WHITE_SHADOW_EXPAND_LUMA_MAX = 252
+_AUTO_WHITE_SHADOW_EXPAND_CHROMA_MAX = 20
+# QUALITY (feedback 2026-08-16 §WHITE-SHADOW.2): 0,70 quá lỏng cho một nhánh ĐƯỢC PHÉP
+# ghi lại silhouette. Luồng AI đòi 0,88 kèm mức cải thiện tối thiểu, và chính hai con số
+# đó mới phân biệt được viền trắng thật với bóng nhạt. Không đạt thì trả None để auto rơi
+# về AI — đúng hành vi trước khi nhánh này ra đời.
+_AUTO_WHITE_BOUNDARY_RATIO_MIN = 0.88
+_AUTO_WHITE_BOUNDARY_GAIN_MIN = 0.08
+# QUALITY (feedback 2026-08-16 §WHITE-SHADOW.3): phân biệt bóng CỨNG (mảng xám phẳng,
+# mép dứt khoát — nhánh xác định xử lý đúng) với bóng MỀM (gradient tắt dần — đuôi của nó
+# lẫn vào viền trắng và halo JPEG, nhánh xác định xử lý sai). Đo trên chính dải bóng dính
+# biên: tỉ lệ pixel nằm ở đoạn SÁNG NHẤT của dải.
+#
+# Số đo thật trên hai fixture (`scratch/probe_white_soft_shadow.py`, span 8):
+#     bóng cứng  0,0018     bóng mềm  0,2243
+# Ngưỡng 0,10 nằm giữa và cách cả hai rất xa, nên không phải con số chỉnh tay mò.
+_AUTO_WHITE_SHADOW_SOFT_TAIL_LUMA_SPAN = 8
+_AUTO_WHITE_SHADOW_SOFT_TAIL_RATIO_MAX = 0.10
+_EXACT_VECTOR_SHAPE_KINDS = frozenset({
+    "circle",
+    "ellipse",
+    "rounded_rect",
+    "rect",
+    "triangle",
+})
 
 
 class StickerSourcePipelineError(ValueError):
@@ -275,7 +330,7 @@ def _render_pdf_page(
                 )
                 if raster_scale_limit is not None:
                     scale = min(scale, raster_scale_limit)
-                total_ram_mb, _available_ram_mb = read_memory_status_mb()
+                total_ram_mb, available_ram_mb = read_memory_status_mb()
                 if total_ram_mb is not None and total_ram_mb < 8 * 1024:
                     max_edge_px: int | None = _PDF_ANALYSIS_MAX_EDGE_LOW_RAM_PX
                 elif total_ram_mb is not None and total_ram_mb < 16 * 1024:
@@ -286,19 +341,41 @@ def _render_pdf_page(
                     max_edge_px = None
                 if max_edge_px is not None:
                     scale = min(scale, max_edge_px / max(logical_width, logical_height))
+                # PERF (audit 2026-08-16 §BX.P01): van cuối theo RAM còn trống, áp cho MỌI
+                # tier. Máy còn bộ nhớ thì không bị hạ gì; máy đang cạn RAM mới hạ và log.
+                if available_ram_mb is not None and available_ram_mb > 0:
+                    budget_px = (
+                        available_ram_mb * _PDF_ANALYSIS_RAM_FRACTION
+                        * 1024.0 * 1024.0 / _PDF_ANALYSIS_BYTES_PER_PX
+                    )
+                    planned_px = (logical_width * scale) * (logical_height * scale)
+                    if budget_px > 0 and planned_px > budget_px:
+                        ram_scale = scale * (budget_px / planned_px) ** 0.5
+                        logger.info(
+                            "[STICKER] hạ ảnh phân tích theo RAM còn trống: scale %.4f→%.4f "
+                            "(cần %.0f Mpx, ngân sách %.0f Mpx, còn trống %.0f MB)",
+                            scale, ram_scale, planned_px / 1e6, budget_px / 1e6,
+                            available_ram_mb,
+                        )
+                        scale = ram_scale
                 bitmap = page.render(
                     scale=scale,
                     rev_byteorder=True,
                     fill_color=(255, 255, 255, 0),
                 )
                 try:
-                    image = bitmap.to_pil().convert("RGBA").copy()
+                    # PERF (audit 2026-08-16 §BX.P01): chỉ copy MỘT lần trong vùng khóa
+                    # (bitmap chết khi ra khỏi guard). `convert("RGBA")` là việc CPU thuần
+                    # của PIL, không chạm PDFium → làm ngoài khóa để không giữ khóa toàn
+                    # process qua thêm một lần cấp phát toàn khung.
+                    raw_image = bitmap.to_pil().copy()
                 finally:
                     bitmap.close()
             finally:
                 page.close()
         finally:
             document.close()
+    image = raw_image if raw_image.mode == "RGBA" else raw_image.convert("RGBA")
     dpi_x = image.width / max(physical_size_mm[0], 1e-9) * 25.4
     dpi_y = image.height / max(physical_size_mm[1], 1e-9) * 25.4
     return image, (dpi_x, dpi_y)
@@ -384,6 +461,8 @@ def build_legacy_single_page_approved_contour(
     cutline_smoothness: float = 50.0,
     cutline_fidelity: float = 50.0,
     curve_tension: float = 50.0,
+    # §CUTJAG.3: thanh "Khử răng cưa" 0–100; 0 giữ nguyên hành vi cũ.
+    cutline_denoise: float = 0.0,
     min_detail_area_mm2: float = 1.0,
 ) -> LegacyApprovedContour | None:
     """Dùng cùng Alpha/path của chế độ AI cho đúng một tem raster trong PDF.
@@ -400,6 +479,7 @@ def build_legacy_single_page_approved_contour(
         UnsafeCutlineGeometryError,
         _infer_full_page_image_pixel_mm,
         build_alpha_cutline_geometry,
+        should_presmooth_cutline_alpha,
     )
     from app.workers.sticker_source_inspector import inspect_sticker_source
 
@@ -461,6 +541,10 @@ def build_legacy_single_page_approved_contour(
             cutline_fidelity=cutline_fidelity,
             curve_tension=curve_tension,
             min_detail_area_mm2=min_detail_area_mm2,
+            # §CUTJAG.3: thanh kéo thắng cổng tự động; để 0 thì vẫn dùng cổng tự
+            # động theo nguồn biên (mask AI là mask nhị phân hoá từ điểm ảnh).
+            cutline_denoise=cutline_denoise,
+            presmooth_alpha=should_presmooth_cutline_alpha("ai"),
         )
     except UnsafeCutlineGeometryError as exc:
         raise StickerSourcePipelineError(str(exc)) from exc
@@ -569,6 +653,7 @@ def _background_detection(
     model: StickerSheetModel,
     alpha_threshold: int,
     boundary_source: str,
+    dpi: tuple[float, float] | None = None,
     minimum_confidence: float = 0.0,
 ) -> StickerSourceDetection | None:
     # OpenCV floodFill cần mảng writable; np.asarray(PIL) có thể trả view chỉ đọc.
@@ -594,6 +679,7 @@ def _background_detection(
     except StickerSourcePipelineError:
         # Mask deterministic không còn component hợp lệ thì auto phải đi tiếp tới AI.
         return None
+    recovered_white_body = False
     if (
         boundary_source == "simple-bg"
         and minimum_confidence > 0.0
@@ -603,16 +689,26 @@ def _background_detection(
         # gần-trắng làm phép so màu chỉ giữ chữ/viền/bóng, rồi báo hàng chục
         # "tem" nằm lồng trong cùng một bbox. Confidence màu nền vẫn rất cao,
         # nên phải có guard topology riêng để auto chuyển sang AI.
-        return None
-    round_refined_count = 0
-    if boundary_source == "vector":
-        analysis, round_refined_count = _refine_dominant_round_components(
+        recovered = _recover_fragmented_near_white_sheet(
             source_image,
+            background,
             analysis,
             model=model,
             alpha_threshold=alpha_threshold,
         )
+        if recovered is None:
+            return None
+        analysis = recovered
+        recovered_white_body = True
+    exact_shapes: tuple[dict[str, object], ...] = ()
+    if boundary_source == "vector":
+        # QUALITY (feedback 2026-08-16 §XEPTEM.ALPHA): hình chuẩn chỉ được suy ra
+        # từ silhouette đã chấp nhận. Cạnh RGB nằm BÊN TRONG artwork không có quyền
+        # thay mask thành hình tròn vì sẽ cắt mất banner/tai/chi tiết nhô ra.
+        exact_shapes = _detect_exact_vector_shapes(analysis, dpi=dpi)
     confidence = background.confidence if boundary_source == "simple-bg" else min(0.72, background.confidence)
+    if recovered_white_body:
+        confidence = min(confidence, 0.84)
     return StickerSourceDetection(
         analysis=analysis,
         source_image=source_image,
@@ -621,192 +717,126 @@ def _background_detection(
         needs_review=True,
         dpi=None,
         source_page=1,
-        vector_geometry_ref=None,
-        warnings=("round-sticker-contour-inferred",) if round_refined_count > 0 else (),
+        vector_geometry_ref=(
+            {"exact_shapes": list(exact_shapes)}
+            if exact_shapes
+            else None
+        ),
+        warnings=(
+            ("round-sticker-contour-inferred",)
+            if any(shape.get("kind") in {"circle", "ellipse"} for shape in exact_shapes)
+            else ()
+        ),
     )
 
 
-def _round_detector_max_edge_px() -> int | None:
-    total_ram_mb, _available_ram_mb = read_memory_status_mb()
-    # PERF (audit 2026-08-15 §XEPTEM.4): chỉ chuẩn hóa ảnh Hough trên máy yếu;
-    # máy >=16 GB hoặc không đọc được RAM giữ nguyên lưới render đầy đủ.
-    if total_ram_mb is not None and total_ram_mb < 8 * 1024:
-        return 512
-    if total_ram_mb is not None and total_ram_mb < 16 * 1024:
-        return 1024
-    return None
+def _serialize_geometry_value(value: object) -> object:
+    """Đưa metadata numpy về kiểu JSON nguyên thủy trước khi ghi manifest."""
+    if isinstance(value, dict):
+        return {str(key): _serialize_geometry_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_geometry_value(item) for item in value]
+    if isinstance(value, np.ndarray):
+        return _serialize_geometry_value(value.tolist())
+    if isinstance(value, (np.floating, np.integer)):
+        return value.item()
+    return value
 
 
-def _circle_edge_support(
-    edges: np.ndarray,
-    center_x: float,
-    center_y: float,
-    radius: float,
-) -> float:
-    angles = np.linspace(0.0, 2.0 * np.pi, 360, endpoint=False)
-    cosines = np.cos(angles)
-    sines = np.sin(angles)
-    supported = np.zeros(angles.shape, dtype=bool)
-    for delta in range(-3, 4):
-        xs = np.rint(center_x + (radius + delta) * cosines).astype(np.int32)
-        ys = np.rint(center_y + (radius + delta) * sines).astype(np.int32)
-        valid = (
-            (xs >= 0)
-            & (xs < edges.shape[1])
-            & (ys >= 0)
-            & (ys < edges.shape[0])
-        )
-        supported[valid] |= edges[ys[valid], xs[valid]] > 0
-    return float(np.mean(supported))
-
-
-def _dominant_centered_circle(
-    source_rgb: np.ndarray,
-    instance: StickerInstance,
-    *,
-    max_edge_px: int | None,
-) -> tuple[float, float, float] | None:
-    min_edge = min(instance.width, instance.height)
-    if min_edge < _ROUND_MIN_EDGE_PX:
-        return None
-    rectangularity = instance.area_px / max(1.0, float(instance.width * instance.height))
-    aspect_ratio = max(instance.width, instance.height) / max(1.0, float(min_edge))
-    if (
-        rectangularity < _ROUND_RECTANGULARITY_MIN
-        or aspect_ratio > _ROUND_MAX_ASPECT_RATIO
-    ):
-        return None
-
-    padding = max(16, round(max(instance.width, instance.height) * 0.08))
-    left = max(0, instance.x - padding)
-    top = max(0, instance.y - padding)
-    right = min(source_rgb.shape[1], instance.x + instance.width + padding)
-    bottom = min(source_rgb.shape[0], instance.y + instance.height + padding)
-    crop = np.ascontiguousarray(source_rgb[top:bottom, left:right, :3])
-    if crop.size == 0:
-        return None
-
-    scale = 1.0
-    if max_edge_px is not None and max(crop.shape[:2]) > max_edge_px:
-        scale = max_edge_px / float(max(crop.shape[:2]))
-        crop = cv2.resize(
-            crop,
-            None,
-            fx=scale,
-            fy=scale,
-            interpolation=cv2.INTER_AREA,
-        )
-    gray = cv2.GaussianBlur(cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY), (7, 7), 1.5)
-    edges = cv2.Canny(gray, 60, 160)
-    expected_x = (instance.x + instance.width / 2.0 - left) * scale
-    expected_y = (instance.y + instance.height / 2.0 - top) * scale
-    expected_radius = min_edge / 2.0 * scale
-    try:
-        circles = cv2.HoughCircles(
-            gray,
-            cv2.HOUGH_GRADIENT,
-            dp=1.1,
-            minDist=max(12, round(expected_radius * 0.08)),
-            param1=120,
-            param2=35,
-            minRadius=max(4, round(expected_radius * 0.86)),
-            maxRadius=max(5, round(expected_radius * 1.04)),
-        )
-    except cv2.error:
-        return None
-    if circles is None:
-        return None
-
-    best: tuple[float, float, float, float] | None = None
-    for center_x, center_y, radius in circles[0]:
-        center_error = float(
-            np.hypot(center_x - expected_x, center_y - expected_y) / expected_radius
-        )
-        radius_error = float(abs(radius - expected_radius) / expected_radius)
-        if (
-            center_error > _ROUND_CENTER_ERROR_MAX
-            or radius_error > _ROUND_RADIUS_ERROR_MAX
-        ):
-            continue
-        edge_support = _circle_edge_support(edges, center_x, center_y, radius)
-        if edge_support < _ROUND_EDGE_SUPPORT_MIN:
-            continue
-        score = edge_support - center_error - radius_error
-        if best is None or score > best[0]:
-            best = (score, float(center_x), float(center_y), float(radius))
-    if best is None:
-        return None
-
-    _score, center_x, center_y, radius = best
-    return (
-        left + center_x / scale,
-        top + center_y / scale,
-        radius / scale,
-    )
-
-
-def _refine_dominant_round_components(
-    source_image: Image.Image,
+def _detect_exact_vector_shapes(
     analysis: StickerSheetAnalysis,
     *,
-    model: StickerSheetModel,
-    alpha_threshold: int,
-) -> tuple[StickerSheetAnalysis, int]:
-    """Đổi riêng nền vuông có vòng tròn chủ đạo thành mask tròn, giữ nguyên ID."""
-    source_rgb = np.asarray(source_image.convert("RGB"), dtype=np.uint8)
-    refined_alpha = np.asarray(analysis.alpha, dtype=np.uint8).copy()
-    refined_count = 0
-    max_edge_px = _round_detector_max_edge_px()
-    for instance in analysis.instances:
-        circle = _dominant_centered_circle(
-            source_rgb,
-            instance,
-            max_edge_px=max_edge_px,
-        )
-        if circle is None:
-            continue
-        center_x, center_y, radius = circle
-        circle_alpha = np.zeros(refined_alpha.shape, dtype=np.uint8)
-        cv2.circle(
-            circle_alpha,
-            (round(center_x), round(center_y)),
-            max(1, round(radius)),
-            255,
-            thickness=-1,
-            lineType=cv2.LINE_AA,
-        )
-        other_instances = (analysis.labels > 0) & (analysis.labels != instance.id)
-        if np.any((circle_alpha >= alpha_threshold) & other_instances):
-            continue
-        refined_alpha[analysis.labels == instance.id] = 0
-        refined_alpha = np.maximum(refined_alpha, circle_alpha)
-        refined_count += 1
+    dpi: tuple[float, float] | None,
+) -> tuple[dict[str, object], ...]:
+    """Nhận hình chuẩn từ contour của từng mask, không đọc các cạnh trang trí RGB.
 
-    if refined_count == 0:
-        return analysis, 0
+    `auto_safe` của luồng Sticker cũ đã có các guard residual/defect/diện tích. Dùng
+    cùng classifier ở đây giúp hai tab có chung quyết định hình học, đồng thời giữ
+    nguyên mask gốc để không biến một artwork chữ nhật thành hình tròn chỉ vì bên
+    trong nó có một vòng tròn trang trí.
+    """
+    if dpi is None or analysis.labels.ndim != 2:
+        return ()
     try:
-        refined = _analysis_from_alpha(
-            source_image,
-            refined_alpha,
-            model=model,
-            alpha_threshold=alpha_threshold,
+        dpi_x, dpi_y = float(dpi[0]), float(dpi[1])
+    except (TypeError, ValueError, IndexError):
+        return ()
+    if (
+        not math.isfinite(dpi_x)
+        or not math.isfinite(dpi_y)
+        or dpi_x <= 0
+        or dpi_y <= 0
+    ):
+        return ()
+
+    from app.workers.sticker_cut_reconstruct import PT_PER_MM, reconstruct_cut_coords
+
+    point_per_pixel_x = 72.0 / dpi_x
+    point_per_pixel_y = 72.0 / dpi_y
+    source_pixel_mm = max(point_per_pixel_x, point_per_pixel_y) / (72.0 / 25.4)
+    exact_shapes: list[dict[str, object]] = []
+    labels = np.asarray(analysis.labels)
+    for instance in analysis.instances:
+        # PERF (audit 2026-08-16 §CUTLINE-GEOMETRY): dò trong ROI của từng tem;
+        # không tạo/quét một mask toàn trang lặp lại cho mỗi component.
+        left = max(0, int(instance.x))
+        top = max(0, int(instance.y))
+        right = min(labels.shape[1], left + int(instance.width))
+        bottom = min(labels.shape[0], top + int(instance.height))
+        if right <= left or bottom <= top:
+            continue
+        component = np.ascontiguousarray(
+            (labels[top:bottom, left:right] == instance.id).astype(np.uint8) * 255
         )
-    except StickerSourcePipelineError:
-        return analysis, 0
-    if len(refined.instances) != len(analysis.instances):
-        return analysis, 0
-    for before, after in zip(analysis.instances, refined.instances):
-        before_center = (before.x + before.width / 2.0, before.y + before.height / 2.0)
-        after_center = (after.x + after.width / 2.0, after.y + after.height / 2.0)
-        center_shift = float(np.hypot(
-            before_center[0] - after_center[0],
-            before_center[1] - after_center[1],
-        ))
-        if center_shift > max(before.width, before.height) * 0.12:
-            return analysis, 0
-    refined.warnings = list(analysis.warnings)
-    refined.postprocess_seconds += analysis.postprocess_seconds
-    return refined, refined_count
+        contours, hierarchy = cv2.findContours(
+            component,
+            cv2.RETR_CCOMP,
+            cv2.CHAIN_APPROX_NONE,
+        )
+        if not contours or hierarchy is None:
+            continue
+        external_indices = [
+            index for index, relation in enumerate(hierarchy[0])
+            if int(relation[3]) < 0
+        ]
+        if len(external_indices) != 1:
+            continue
+        outer_index = max(external_indices, key=lambda index: cv2.contourArea(contours[index]))
+        # Có lỗ/đảo alpha thì không thể mô tả bằng một hình chuẩn đơn; giữ contour.
+        if int(hierarchy[0][outer_index][2]) >= 0:
+            continue
+        points = contours[outer_index].reshape(-1, 2).astype(np.float64)
+        if len(points) < 5:
+            continue
+        points[:, 0] = (points[:, 0] + left) * point_per_pixel_x
+        points[:, 1] = (points[:, 1] + top) * point_per_pixel_y
+        coords, metadata = reconstruct_cut_coords(
+            points,
+            "auto_safe",
+            px_per_mm=PT_PER_MM,
+            source_pixel_mm=source_pixel_mm,
+        )
+        kind = metadata.get("kind")
+        if (
+            coords is None
+            or not metadata.get("reconstructed")
+            or kind not in _EXACT_VECTOR_SHAPE_KINDS
+        ):
+            continue
+        shape_record: dict[str, object] = {
+            "instance_id": int(instance.id),
+            "kind": str(kind),
+            "coordinate_unit": "pt",
+            "params": _serialize_geometry_value(metadata.get("params") or {}),
+            "residual_mm": float(metadata.get("residual_mm", 0.0)),
+            "defect_mm": float(metadata.get("defect_mm", 0.0)),
+        }
+        # Hình tròn/elip đã đủ tham số để dựng bằng bốn cung cubic; chỉ polygon
+        # cần giữ đỉnh để áp offset mà không làm phình manifest theo 96 mẫu cung.
+        if kind not in {"circle", "ellipse"}:
+            shape_record["coords"] = _serialize_geometry_value(coords)
+        exact_shapes.append(shape_record)
+    return tuple(exact_shapes)
 
 
 def _looks_like_fragmented_sticker_sheet(analysis: StickerSheetAnalysis) -> bool:
@@ -837,6 +867,351 @@ def _looks_like_fragmented_sticker_sheet(analysis: StickerSheetAnalysis) -> bool
         int(np.ceil(count * _AUTO_FRAGMENT_NESTED_RATIO)),
     )
     return nested >= required
+
+
+def _bbox_intersection_area(
+    first: tuple[int, int, int, int],
+    second: tuple[int, int, int, int],
+) -> int:
+    left = max(int(first[0]), int(second[0]))
+    top = max(int(first[1]), int(second[1]))
+    right = min(int(first[0] + first[2]), int(second[0] + second[2]))
+    bottom = min(int(first[1] + first[3]), int(second[1] + second[3]))
+    return max(0, right - left) * max(0, bottom - top)
+
+
+def _fragment_container_instances(
+    analysis: StickerSheetAnalysis,
+) -> list[StickerInstance]:
+    """Lấy vỏ ngoài đủ lớn, bỏ chữ/chi tiết nằm lồng trong cùng một tem."""
+    page_area = max(1, int(analysis.width) * int(analysis.height))
+    minimum_bbox_area = page_area * _AUTO_WHITE_CONTAINER_MIN_PAGE_RATIO
+    minimum_width = analysis.width * _AUTO_WHITE_CONTAINER_MIN_EDGE_RATIO
+    minimum_height = analysis.height * _AUTO_WHITE_CONTAINER_MIN_EDGE_RATIO
+    candidates = [
+        instance
+        for instance in analysis.instances
+        if instance.width * instance.height >= minimum_bbox_area
+        and instance.width >= minimum_width
+        and instance.height >= minimum_height
+    ]
+    candidates.sort(key=lambda item: item.width * item.height, reverse=True)
+
+    containers: list[StickerInstance] = []
+    for candidate in candidates:
+        candidate_area = max(1, candidate.width * candidate.height)
+        nested = False
+        for larger in containers:
+            larger_area = larger.width * larger.height
+            if larger_area < candidate_area * _AUTO_WHITE_CONTAINER_LARGER_RATIO:
+                continue
+            covered = _bbox_intersection_area(candidate.bbox, larger.bbox)
+            if covered / candidate_area >= _AUTO_WHITE_CONTAINER_NESTED_RATIO:
+                nested = True
+                break
+        if not nested:
+            containers.append(candidate)
+    return containers
+
+
+def _recover_white_body_component(
+    source_rgb: np.ndarray,
+    strict_labels: np.ndarray,
+    record: dict[str, int],
+    *,
+    background_luma: int,
+) -> np.ndarray | None:
+    """Bóc dải bóng xám nối biên rồi lấp phần artwork bên trong một vỏ tem trắng."""
+    x = int(record["x"])
+    y = int(record["y"])
+    width = int(record["width"])
+    height = int(record["height"])
+    raw_id = int(record["raw_id"])
+    roi = np.s_[y:y + height, x:x + width]
+    component = strict_labels[roi] == raw_id
+    component_area = int(np.count_nonzero(component))
+    if component_area < MIN_COMPONENT_AREA_PX:
+        return None
+
+    rgb = source_rgb[y:y + height, x:x + width, :3]
+    luma = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    rgb_i16 = rgb.astype(np.int16, copy=False)
+    chroma = rgb_i16.max(axis=2) - rgb_i16.min(axis=2)
+    component_u8 = component.astype(np.uint8)
+    boundary = component & (
+        cv2.erode(component_u8, np.ones((3, 3), dtype=np.uint8)) == 0
+    )
+    shadow_luma_max = min(
+        _AUTO_WHITE_SHADOW_LUMA_MAX,
+        max(
+            _AUTO_WHITE_SHADOW_LUMA_MIN,
+            int(background_luma) - _AUTO_WHITE_SHADOW_BACKGROUND_GAP,
+        ),
+    )
+    neutral_shadow = (
+        component
+        & (luma >= _AUTO_WHITE_SHADOW_LUMA_MIN)
+        & (luma <= shadow_luma_max)
+        & (chroma <= _AUTO_WHITE_SHADOW_CHROMA_MAX)
+    )
+    shadow_count, shadow_labels = cv2.connectedComponents(
+        neutral_shadow.astype(np.uint8),
+        connectivity=8,
+    )
+    if shadow_count > 1:
+        attached_ids = np.unique(shadow_labels[boundary & neutral_shadow])
+        attached_ids = attached_ids[attached_ids > 0]
+        attached_shadow = np.isin(shadow_labels, attached_ids)
+    else:
+        attached_shadow = np.zeros(component.shape, dtype=bool)
+
+    # §WHITE-SHADOW.3: bóng MỀM thì dừng ở đây, nhường cho AI. Đuôi gradient của nó lẫn
+    # vào viền trắng và halo JPEG, nên mọi phép bóc/lấp bên dưới đều cho silhouette phình
+    # ra ngoài viền trắng với biên chạy theo nhiễu — đúng lỗi người dùng báo 2026-08-16.
+    shadow_luma_values = luma[attached_shadow]
+    if shadow_luma_values.size:
+        soft_tail_ratio = float(np.count_nonzero(
+            shadow_luma_values
+            > shadow_luma_max - _AUTO_WHITE_SHADOW_SOFT_TAIL_LUMA_SPAN
+        )) / float(shadow_luma_values.size)
+        if soft_tail_ratio > _AUTO_WHITE_SHADOW_SOFT_TAIL_RATIO_MAX:
+            logger.info(
+                "[STICKER] bỏ phục hồi thân tem trắng: bóng mềm (đuôi gradient %.1f%% "
+                "> %.0f%%) — chuyển sang nhận diện AI",
+                soft_tail_ratio * 100.0,
+                _AUTO_WHITE_SHADOW_SOFT_TAIL_RATIO_MAX * 100.0,
+            )
+            return None
+
+    # §WHITE-SHADOW.1: nới đúng MỘT pixel qua đuôi gradient bóng, chỉ tại chỗ đã dính
+    # bóng. Dải sáng hơn 252 hoặc có sắc màu là điểm dừng nên không xuyên qua viền trắng
+    # thật lẫn đường viền màu — cùng ràng buộc mà bộ khử bóng của luồng AI đang dùng.
+    if attached_shadow.any():
+        expanded = cv2.dilate(
+            attached_shadow.astype(np.uint8),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+            iterations=1,
+        ) > 0
+        attached_shadow = attached_shadow | (
+            expanded
+            & component
+            & (luma <= _AUTO_WHITE_SHADOW_EXPAND_LUMA_MAX)
+            & (chroma <= _AUTO_WHITE_SHADOW_EXPAND_CHROMA_MAX)
+        )
+    removed_shadow = bool(attached_shadow.any())
+
+    boundary_luma_min = max(225, min(255, int(background_luma) - 2))
+
+    def _rim_white_ratio(mask: np.ndarray) -> float | None:
+        """Tỉ lệ vành ngoài (2 px) của `mask` là trắng thật, theo đúng một tiêu chí."""
+        mask_u8 = (mask > 0).astype(np.uint8) * 255
+        eroded = cv2.erode(
+            mask_u8,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+            iterations=1,
+        )
+        rim = (mask_u8 > 0) & (eroded == 0)
+        colors = rgb[rim]
+        if colors.size == 0:
+            return None
+        minimum = colors.min(axis=1)
+        return float(np.count_nonzero(
+            (minimum >= boundary_luma_min)
+            & ((colors.max(axis=1) - minimum) <= 25)
+        )) / float(len(colors))
+
+    # Đo TRƯỚC khi bóc để biết việc bóc bóng có thật sự làm mép sạch hơn hay không.
+    before_white = _rim_white_ratio(component)
+
+    body_seed = (component & ~attached_shadow).astype(np.uint8)
+    count, seed_labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        body_seed,
+        connectivity=8,
+    )
+    if count <= 1:
+        return None
+    main_id = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    retained_area = int(stats[main_id, cv2.CC_STAT_AREA])
+    if retained_area / component_area < _AUTO_WHITE_BODY_RETAINED_RATIO_MIN:
+        return None
+
+    seed = np.where(seed_labels == main_id, 255, 0).astype(np.uint8)
+    contours, _hierarchy = cv2.findContours(
+        seed,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_NONE,
+    )
+    if not contours:
+        return None
+    contour = max(contours, key=cv2.contourArea)
+    body = np.zeros(component.shape, dtype=np.uint8)
+    cv2.fillPoly(body, [contour], 255, lineType=cv2.LINE_8)
+
+    inner = cv2.erode(
+        body,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        iterations=1,
+    )
+    body_boundary = (body > 0) & (inner == 0)
+    boundary_colors = rgb[body_boundary]
+    if boundary_colors.size == 0:
+        return None
+    boundary_minimum = boundary_colors.min(axis=1)
+    boundary_chroma = boundary_colors.max(axis=1) - boundary_minimum
+    white_boundary = (boundary_minimum >= boundary_luma_min) & (boundary_chroma <= 25)
+    after_white = float(np.count_nonzero(white_boundary)) / float(len(boundary_colors))
+    if after_white < _AUTO_WHITE_BOUNDARY_RATIO_MIN:
+        return None
+
+    # §WHITE-SHADOW.2: bóc bóng mà mép KHÔNG sạch hơn rõ rệt nghĩa là thứ vừa bóc không
+    # phải bóng, hoặc bóng còn nguyên đuôi. Chỉ đòi mức cải thiện khi thực sự đã bóc —
+    # tem viền trắng không có bóng thì `before` đã cao sẵn và không có gì để cải thiện.
+    if removed_shadow and before_white is not None:
+        if after_white - before_white < _AUTO_WHITE_BOUNDARY_GAIN_MIN:
+            return None
+
+    return body
+
+
+def _recover_fragmented_near_white_sheet(
+    source_image: Image.Image,
+    background: BackgroundInfo,
+    fragmented_analysis: StickerSheetAnalysis,
+    *,
+    model: StickerSheetModel,
+    alpha_threshold: int,
+) -> StickerSheetAnalysis | None:
+    """Phục hồi thân tem trắng bị phép so màu nền xé thành viền/chữ rời.
+
+    QUALITY (feedback 2026-08-16 §WHITE-SHEET.1): đây là nhánh có bằng chứng chặt,
+    không phải phép ép bbox. Mask dung sai thấp chỉ dùng để khép đúng thân trắng; vỏ lớn
+    từ lần dò đầu tiên giữ vai trò ánh xạ một-một và mọi ca mơ hồ đều quay lại AI.
+    """
+    if (
+        not background.is_flat
+        or not background.is_near_white
+        or background.corner_p95 is None
+        or not math.isfinite(float(background.corner_p95))
+    ):
+        return None
+    containers = _fragment_container_instances(fragmented_analysis)
+    if len(containers) < 2:
+        return None
+
+    strict_tolerance = max(1, int(round(float(background.corner_p95))))
+    if strict_tolerance >= int(background.tolerance):
+        return None
+    source_rgb = np.array(source_image.convert("RGB"), dtype=np.uint8, copy=True)
+    strict_mask = foreground_from_flat_background(
+        source_rgb,
+        background.color,
+        strict_tolerance,
+    )
+    if strict_mask is None:
+        return None
+    min_area = max(
+        MIN_COMPONENT_AREA_PX,
+        int(strict_mask.size * MIN_COMPONENT_AREA_RATIO),
+    )
+    records, strict_labels = _component_records(strict_mask, min_area)
+    if len(records) < len(containers):
+        return None
+    records_by_id = {int(record["raw_id"]): record for record in records}
+    used_raw_ids: set[int] = set()
+    mappings: list[tuple[StickerInstance, dict[str, int]]] = []
+    for container in containers:
+        margin = max(8, int(round(min(container.width, container.height) * 0.05)))
+        left = max(0, container.x - margin)
+        top = max(0, container.y - margin)
+        right = min(strict_labels.shape[1], container.x + container.width + margin)
+        bottom = min(strict_labels.shape[0], container.y + container.height + margin)
+        values = strict_labels[top:bottom, left:right].reshape(-1)
+        values = values[values > 0]
+        if values.size == 0:
+            return None
+        raw_ids, counts = np.unique(values, return_counts=True)
+        chosen_id = int(raw_ids[int(np.argmax(counts))])
+        if chosen_id in used_raw_ids or chosen_id not in records_by_id:
+            return None
+
+        candidate_roi = strict_labels[
+            container.y:container.y + container.height,
+            container.x:container.x + container.width,
+        ]
+        overlap = int(np.count_nonzero(candidate_roi == chosen_id))
+        candidate_area = max(1, container.width * container.height)
+        if overlap / candidate_area < _AUTO_WHITE_STRICT_OVERLAP_RATIO:
+            return None
+        used_raw_ids.add(chosen_id)
+        mappings.append((container, records_by_id[chosen_id]))
+
+    background_pixel = np.asarray([[background.color]], dtype=np.uint8)
+    background_luma = int(cv2.cvtColor(background_pixel, cv2.COLOR_RGB2GRAY)[0, 0])
+    recovered_mask = np.zeros(strict_mask.shape, dtype=np.uint8)
+    for container, record in mappings:
+        body = _recover_white_body_component(
+            source_rgb,
+            strict_labels,
+            record,
+            background_luma=background_luma,
+        )
+        if body is None:
+            return None
+        x = int(record["x"])
+        y = int(record["y"])
+        width = int(record["width"])
+        height = int(record["height"])
+        body_points = cv2.findNonZero((body > 0).astype(np.uint8))
+        if body_points is None:
+            return None
+        body_x, body_y, body_width, body_height = cv2.boundingRect(body_points)
+        body_left = x + body_x
+        body_top = y + body_y
+        body_right = body_left + body_width
+        body_bottom = body_top + body_height
+        containment_margin = max(
+            8,
+            int(round(min(container.width, container.height) * 0.50)),
+        )
+        if (
+            body_left < container.x - containment_margin
+            or body_top < container.y - containment_margin
+            or body_right > container.x + container.width + containment_margin
+            or body_bottom > container.y + container.height + containment_margin
+        ):
+            return None
+        overlap_left = max(container.x, x) - x
+        overlap_top = max(container.y, y) - y
+        overlap_right = min(container.x + container.width, x + width) - x
+        overlap_bottom = min(container.y + container.height, y + height) - y
+        if overlap_right <= overlap_left or overlap_bottom <= overlap_top:
+            return None
+        recovered_overlap = int(np.count_nonzero(
+            body[overlap_top:overlap_bottom, overlap_left:overlap_right],
+        ))
+        container_area = max(1, container.width * container.height)
+        if recovered_overlap / container_area < _AUTO_WHITE_STRICT_OVERLAP_RATIO:
+            return None
+        target = recovered_mask[y:y + height, x:x + width]
+        if np.any((target > 0) & (body > 0)):
+            return None
+        target[body > 0] = 255
+
+    try:
+        recovered = _analysis_from_alpha(
+            source_image,
+            recovered_mask,
+            model=model,
+            alpha_threshold=alpha_threshold,
+        )
+    except StickerSourcePipelineError:
+        return None
+    if (
+        len(recovered.instances) != len(containers)
+        or _looks_like_fragmented_sticker_sheet(recovered)
+    ):
+        return None
+    return recovered
 
 
 def detect_sticker_source(
@@ -893,6 +1268,7 @@ def detect_sticker_source(
                 model=model,
                 alpha_threshold=alpha_threshold,
                 boundary_source="simple-bg",
+                dpi=dpi,
                 minimum_confidence=(
                     _AUTO_BACKGROUND_CONFIDENCE_MIN if strategy == "auto" else 0.0
                 ),
@@ -968,26 +1344,69 @@ def detect_sticker_source(
     if strategy == "existing-cut":
         raise StickerSourcePipelineError("Trang đã chọn không có CutContour.")
 
+    rendered_alpha = np.asarray(source_image.getchannel("A"), dtype=np.uint8)
+    if (
+        strategy in ("auto", "vector")
+        and has_vector
+        and has_meaningful_alpha(rendered_alpha, alpha_threshold)
+    ):
+        # QUALITY (feedback 2026-08-16 §XEPTEM.ALPHA): PDF vector/raster hỗn hợp
+        # có thể cắt ảnh bằng clipping path hoặc SMask. Alpha SAU KHI render chính
+        # là silhouette hợp thành của trang; đổi RGBA sang RGB trước sẽ làm lộ lại
+        # pixel ảnh bị clip, biến tem có banner thành khung vuông rồi ép tròn sai.
+        analysis = _analysis_from_alpha(
+            source_image,
+            rendered_alpha,
+            model=model,
+            alpha_threshold=alpha_threshold,
+        )
+        exact_shapes = _detect_exact_vector_shapes(analysis, dpi=dpi)
+        vector_geometry_ref: dict[str, object] = {
+            "kind": "pdf-vector-source",
+            "source_page": page_number,
+            "preserve_original": True,
+            "silhouette_source": "rendered-alpha",
+        }
+        if exact_shapes:
+            vector_geometry_ref["exact_shapes"] = list(exact_shapes)
+        return StickerSourceDetection(
+            analysis=analysis,
+            source_image=source_image,
+            boundary_source="vector",
+            strategy_confidence=0.96,
+            needs_review=True,
+            dpi=dpi,
+            source_page=page_number,
+            vector_geometry_ref=vector_geometry_ref,
+            warnings=("vector-mask-raster-preview",),
+        )
+
     if strategy in ("auto", "vector") and has_vector:
         detected = _background_detection(
             source_image,
             model=model,
             alpha_threshold=alpha_threshold,
             boundary_source="vector",
+            dpi=dpi,
             minimum_confidence=(
                 _AUTO_BACKGROUND_CONFIDENCE_MIN if strategy == "auto" else 0.0
             ),
         )
         if detected is not None:
+            detected_ref = detected.vector_geometry_ref or {}
+            vector_geometry_ref: dict[str, object] = {
+                "kind": "pdf-vector-source",
+                "source_page": page_number,
+                "preserve_original": True,
+            }
+            exact_shapes = detected_ref.get("exact_shapes")
+            if isinstance(exact_shapes, list) and exact_shapes:
+                vector_geometry_ref["exact_shapes"] = exact_shapes
             return replace(
                 detected,
                 dpi=dpi,
                 source_page=page_number,
-                vector_geometry_ref={
-                    "kind": "pdf-vector-source",
-                    "source_page": page_number,
-                    "preserve_original": True,
-                },
+                vector_geometry_ref=vector_geometry_ref,
                 warnings=tuple(dict.fromkeys((
                     *detected.warnings,
                     "vector-mask-raster-preview",
@@ -996,7 +1415,6 @@ def detect_sticker_source(
         if strategy == "vector":
             raise StickerSourcePipelineError("Không suy ra được silhouette vector đáng tin cậy.")
 
-    rendered_alpha = np.asarray(source_image.getchannel("A"), dtype=np.uint8)
     if (
         strategy in ("auto", "alpha")
         and has_alpha
@@ -1028,6 +1446,7 @@ def detect_sticker_source(
             model=model,
             alpha_threshold=alpha_threshold,
             boundary_source="simple-bg",
+            dpi=dpi,
             minimum_confidence=(
                 _AUTO_BACKGROUND_CONFIDENCE_MIN if strategy == "auto" else 0.0
             ),

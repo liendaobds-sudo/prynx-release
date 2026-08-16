@@ -8,7 +8,7 @@ import time
 
 import numpy as np
 import pikepdf
-from PIL import Image
+from PIL import Image, ImageDraw
 import pytest
 
 from app.core import sticker_sheet_session as session_store
@@ -21,6 +21,7 @@ from app.core.sticker_sheet_session import (
     promote_source_session,
 )
 from app.workers.sticker_source_inspector import inspect_sticker_source
+from app.workers.sticker_cutline_preview import build_sticker_cutline_preview
 from app.workers.cut_export.cut_layer_extractor import CutContour, ExtractResult
 from app.workers.sticker_source_pipeline import (
     _cut_contour_alpha,
@@ -66,6 +67,104 @@ def _two_sticker_image(*, alpha: bool) -> Image.Image:
     image.paste((220, 40, 80, 255), (12, 15, 65, 80))
     image.paste((40, 120, 220, 255), (92, 20, 148, 82))
     return image
+
+
+def _save_near_white_fragmented_sheet(path: Path) -> list[tuple[int, int, int, int]]:
+    """Tạo tờ tem trắng trên nền 253 giống ca JPEG thật: dò thường chỉ còn bóng/chữ."""
+    image = Image.new("RGB", (640, 440), (253, 253, 253))
+    draw = ImageDraw.Draw(image)
+    bodies: list[tuple[int, int, int, int]] = []
+    for row in range(2):
+        for column in range(3):
+            left = 24 + column * 205
+            top = 24 + row * 205
+            right = left + 165
+            bottom = top + 155
+            bodies.append((left, top, right, bottom))
+
+            draw.rounded_rectangle(
+                (left + 5, top + 6, right + 5, bottom + 6),
+                radius=22,
+                fill=(205, 205, 205),
+            )
+            draw.ellipse(
+                (right - 20, top + 48, right + 18, top + 88),
+                fill=(205, 205, 205),
+            )
+            draw.rounded_rectangle(
+                (left, top, right, bottom),
+                radius=22,
+                fill=(255, 255, 255),
+            )
+            draw.ellipse(
+                (right - 25, top + 42, right + 13, top + 82),
+                fill=(255, 255, 255),
+            )
+            draw.rounded_rectangle(
+                (left + 24, top + 28, left + 68, top + 72),
+                radius=8,
+                fill=(220, 45, 90),
+            )
+            draw.ellipse(
+                (left + 78, top + 30, left + 122, top + 74),
+                fill=(40, 120, 220),
+            )
+            draw.rounded_rectangle(
+                (left + 35, top + 91, left + 132, top + 124),
+                radius=7,
+                fill=(245, 158, 18),
+            )
+    image.save(path, format="JPEG", quality=95, subsampling=0)
+    return bodies
+
+
+def _save_near_white_soft_shadow_sheet(path: Path) -> list[tuple[int, int, int, int]]:
+    """Tem viền trắng + bóng MỀM trên tờ gần trắng — ca người dùng báo 2026-08-16.
+
+    Khác `_save_near_white_fragmented_sheet` đúng một điểm: bóng không phải một mảng xám
+    phẳng 205 mà là gradient tắt dần, nên có một vành luma 249–252 nằm sát viền trắng.
+    Vành đó tối hơn nền (không bị trừ làm nền) nhưng sáng hơn ngưỡng bóng (không bị bóc)
+    → nhánh phục hồi xác định không được phép tin, phải nhường cho AI.
+    """
+    image = Image.new("RGB", (640, 440), (253, 253, 253))
+    draw = ImageDraw.Draw(image)
+    bodies: list[tuple[int, int, int, int]] = []
+    for row in range(2):
+        for column in range(3):
+            left = 24 + column * 205
+            top = 24 + row * 205
+            right = left + 165
+            bottom = top + 155
+            bodies.append((left, top, right, bottom))
+
+            # Gradient bóng: vòng ngoài cùng sáng 252 rồi tối dần vào 205.
+            for step in range(10, -1, -1):
+                level = 205 + int(round((252 - 205) * (step / 10.0)))
+                grow = step
+                draw.rounded_rectangle(
+                    (
+                        left + 5 - grow,
+                        top + 6 - grow,
+                        right + 5 + grow,
+                        bottom + 6 + grow,
+                    ),
+                    radius=22 + grow,
+                    fill=(level, level, level),
+                )
+            draw.rounded_rectangle(
+                (left, top, right, bottom), radius=22, fill=(255, 255, 255),
+            )
+            draw.rounded_rectangle(
+                (left + 24, top + 28, left + 68, top + 72), radius=8, fill=(220, 45, 90),
+            )
+            draw.ellipse(
+                (left + 78, top + 30, left + 122, top + 74), fill=(40, 120, 220),
+            )
+            draw.rounded_rectangle(
+                (left + 35, top + 91, left + 132, top + 124), radius=7, fill=(245, 158, 18),
+            )
+    image.save(path, format="JPEG", quality=95, subsampling=0)
+    return bodies
 
 
 def _save_pdf(path: Path, size: tuple[float, float], *, user_unit: float = 1.0) -> None:
@@ -162,6 +261,7 @@ def _save_multi_artwork_vector_pdf(
     path: Path,
     *,
     round_indices: frozenset[int] = frozenset(),
+    decorative_circle_indices: frozenset[int] = frozenset(),
 ) -> None:
     """Tạo một tờ PDF vector nền trắng có năm artwork tách rời, không CutContour."""
     document = pikepdf.Pdf.new()
@@ -175,22 +275,67 @@ def _save_multi_artwork_vector_pdf(
         (375, 55, 120, 105, "0.48 0.18 0.78"),
     )
     commands = ["1 1 1 rg 0 0 600 400 re f"]
-    commands.extend(
-        f"{color} rg {x} {y} {width} {height} re f"
-        for x, y, width, height, color in rectangles
-    )
     for index, (x, y, width, height, _color) in enumerate(rectangles, start=1):
-        if index not in round_indices:
-            continue
-        commands.append(
-            "1 1 1 RG 3 w "
-            + _pdf_circle_path(
-                x + width / 2.0,
-                y + height / 2.0,
-                min(width, height) * 0.47,
+        color = rectangles[index - 1][4]
+        if index in round_indices:
+            commands.append(
+                f"{color} rg "
+                + _pdf_circle_path(
+                    x + width / 2.0,
+                    y + height / 2.0,
+                    min(width, height) * 0.47,
+                )
+                + " f"
             )
-            + " S"
+        else:
+            commands.append(f"{color} rg {x} {y} {width} {height} re f")
+            if index in decorative_circle_indices:
+                commands.append(
+                    "1 1 1 RG 3 w "
+                    + _pdf_circle_path(
+                        x + width / 2.0,
+                        y + height / 2.0,
+                        min(width, height) * 0.40,
+                    )
+                    + " S"
+                )
+    page.obj["/Resources"] = pikepdf.Dictionary()
+    page.obj["/Contents"] = document.make_stream(
+        ("\n".join(commands) + "\n").encode("ascii")
+    )
+    document.save(path)
+    document.close()
+
+
+def _save_vector_pdf_with_alpha_silhouettes(path: Path) -> None:
+    """Tạo năm tem vector trên nền trong suốt, gồm ba tem tròn có banner nhô."""
+    document = pikepdf.Pdf.new()
+    page = document.add_blank_page(page_size=(600, 400))
+    shapes = (
+        (35, 245, 120, 105, "0.86 0.12 0.18", False),
+        (175, 245, 120, 105, "0.12 0.42 0.86", True),
+        (315, 245, 120, 105, "0.12 0.68 0.42", True),
+        (105, 55, 120, 105, "0.88 0.56 0.08", True),
+        (375, 55, 120, 105, "0.48 0.18 0.78", False),
+    )
+    commands: list[str] = []
+    for x, y, width, height, color, has_banner in shapes:
+        radius = min(width, height) * 0.43
+        center_x = x + width / 2.0
+        center_y = y + height * 0.57
+        commands.append(
+            f"{color} rg " + _pdf_circle_path(center_x, center_y, radius) + " f"
         )
+        if has_banner:
+            # Banner chồng vào đáy vòng tròn và nhô sang hai bên. Đây là oracle
+            # của tem 1A2: vòng tròn chỉ là thân chính, không phải đường dao cuối.
+            commands.append(
+                f"{color} rg "
+                f"{x} {y + 7} m "
+                f"{x + width} {y + 7} l "
+                f"{x + width - 15} {y + 34} l "
+                f"{x + 15} {y + 34} l h f"
+            )
     page.obj["/Resources"] = pikepdf.Dictionary()
     page.obj["/Contents"] = document.make_stream(
         ("\n".join(commands) + "\n").encode("ascii")
@@ -236,6 +381,70 @@ def test_auto_uses_simple_background_without_ai_and_keeps_topology(tmp_path, mon
     ]
 
 
+def test_auto_recovers_near_white_sticker_bodies_without_ai(tmp_path, monkeypatch):
+    """Thân tem và nền cùng gần trắng phải còn sáu silhouette, không thành bóng/chữ rời."""
+    source = tmp_path / "near-white-sticker-sheet.jpg"
+    bodies = _save_near_white_fragmented_sheet(source)
+    session = _create_session(source)
+    monkeypatch.setattr(
+        "app.workers.sticker_source_pipeline.analyze_sticker_sheet",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Ca nền gần trắng có đủ bằng chứng không được gọi AI")
+        ),
+    )
+
+    detected = detect_sticker_source(session, strategy="auto")
+
+    assert detected.boundary_source == "simple-bg"
+    assert detected.strategy_confidence <= 0.84
+    assert detected.analysis.model_seconds == 0
+    assert len(detected.analysis.instances) == len(bodies) == 6
+    for instance, expected in zip(detected.analysis.instances, bodies, strict=True):
+        left, top, right, bottom = expected
+        assert abs(instance.x - left) <= 2
+        assert abs(instance.y - top) <= 2
+        # JPEG tạo một vài pixel ringing quanh mép; khóa topology thay vì khóa tuyệt đối từng pixel.
+        assert abs(instance.width - (right - left + 14)) <= 10
+        assert abs(instance.height - (bottom - top)) <= 10
+        component = detected.analysis.labels == instance.id
+        assert not component[instance.y, instance.x]
+        assert instance.area_px / (instance.width * instance.height) >= 0.75
+
+    promoted = promote_source_session(
+        session.session_id,
+        analysis=detected.analysis,
+        analysis_source=detected.source_image,
+        boundary_source=detected.boundary_source,
+        strategy_confidence=detected.strategy_confidence,
+        needs_review=detected.needs_review,
+        dpi=detected.dpi,
+        source_page=detected.source_page,
+        vector_geometry_ref=detected.vector_geometry_ref,
+        warnings=list(detected.warnings),
+    )
+    if promoted is None:
+        raise AssertionError("Thiếu session để dựng preview tem nền gần trắng")
+    preview = build_sticker_cutline_preview(
+        promoted,
+        page_number=1,
+        base_revision=1,
+        edits=[],
+        dpi=300,
+        dpi_y=300,
+        offset_mm=0,
+        bleed_mm=0,
+        cut_mode="original",
+        corner_style="preserve",
+        fill_holes=True,
+        cutline_smoothness=50,
+        cutline_fidelity=50,
+        curve_tension=50,
+        min_detail_area_mm2=1,
+    )
+    assert len(preview["paths"]) == 6
+    assert all(int(path["segment_count"]) > 4 for path in preview["paths"])
+
+
 def test_auto_splits_multi_artwork_vector_pdf_without_ai(tmp_path, monkeypatch):
     """PDF nhiều artwork kiểu Corel phải tách đủ vùng bằng auto, không gọi model AI."""
     source = tmp_path / "multi-artwork.pdf"
@@ -276,6 +485,114 @@ def test_auto_splits_multi_artwork_vector_pdf_without_ai(tmp_path, monkeypatch):
         "round-sticker-contour-inferred",
         "vector-mask-raster-preview",
     )
+
+
+def test_vector_rendered_alpha_keeps_banner_and_only_exact_true_circles(tmp_path, monkeypatch):
+    """Alpha render là silhouette; vòng tròn có banner không được ép thành circle."""
+    source = tmp_path / "alpha-silhouettes.pdf"
+    _save_vector_pdf_with_alpha_silhouettes(source)
+    session = _create_session(source)
+    monkeypatch.setattr(
+        "app.workers.sticker_source_pipeline.read_memory_status_mb",
+        lambda: (32 * 1024, 16 * 1024),
+    )
+
+    detected = detect_sticker_source(session, strategy="auto")
+
+    exact_shapes = (detected.vector_geometry_ref or {}).get("exact_shapes")
+    assert isinstance(exact_shapes, list)
+    shape_kinds = {
+        int(shape["instance_id"]): shape.get("kind")
+        for shape in exact_shapes
+    }
+    assert (detected.vector_geometry_ref or {}).get("silhouette_source") == "rendered-alpha"
+    assert shape_kinds == {1: "circle", 5: "circle"}
+
+    for instance_id in (2, 3, 4):
+        instance = detected.analysis.instances[instance_id - 1]
+        component = (
+            detected.analysis.labels[
+                instance.y:instance.y + instance.height,
+                instance.x:instance.x + instance.width,
+            ]
+            == instance_id
+        )
+        lower = component[round(instance.height * 0.68):, :]
+        side_width = max(1, round(instance.width * 0.16))
+        assert np.count_nonzero(lower[:, :side_width]) > side_width
+        assert np.count_nonzero(lower[:, -side_width:]) > side_width
+
+    promoted = promote_source_session(
+        session.session_id,
+        analysis=detected.analysis,
+        analysis_source=detected.source_image,
+        boundary_source=detected.boundary_source,
+        strategy_confidence=detected.strategy_confidence,
+        needs_review=detected.needs_review,
+        dpi=detected.dpi,
+        source_page=detected.source_page,
+        vector_geometry_ref=detected.vector_geometry_ref,
+        warnings=list(detected.warnings),
+    )
+    if promoted is None or detected.dpi is None:
+        raise AssertionError("Thiếu session hoặc DPI để dựng preview")
+
+    preview = build_sticker_cutline_preview(
+        promoted,
+        page_number=1,
+        base_revision=1,
+        edits=[],
+        dpi=detected.dpi[0],
+        dpi_y=detected.dpi[1],
+        offset_mm=0,
+        bleed_mm=0,
+        cut_mode="original",
+        corner_style="preserve",
+        fill_holes=True,
+        cutline_smoothness=50,
+        cutline_fidelity=50,
+        curve_tension=50,
+        min_detail_area_mm2=1,
+    )
+
+    path_by_id = {int(path["instance_id"]): path for path in preview["paths"]}
+    assert all(path_by_id[instance_id]["segment_count"] == 4 for instance_id in (1, 5))
+    assert all(
+        path_by_id[instance_id]["quality"]["fit_mode"] == "exact-geometry"
+        for instance_id in (1, 5)
+    )
+    assert all(path_by_id[instance_id]["segment_count"] > 4 for instance_id in (2, 3, 4))
+    assert all(
+        path_by_id[instance_id]["quality"]["fit_mode"] != "exact-geometry"
+        for instance_id in (2, 3, 4)
+    )
+
+
+def test_vector_exact_geometry_ignores_decorative_inner_circle(tmp_path, monkeypatch):
+    """Vòng tròn trong artwork chữ nhật không được biến thành dao tròn."""
+    source = tmp_path / "decorative-circle.pdf"
+    _save_multi_artwork_vector_pdf(
+        source,
+        round_indices=frozenset({1, 5}),
+        decorative_circle_indices=frozenset({2, 3, 4}),
+    )
+    session = _create_session(source)
+    monkeypatch.setattr(
+        "app.workers.sticker_source_pipeline.read_memory_status_mb",
+        lambda: (32 * 1024, 16 * 1024),
+    )
+
+    detected = detect_sticker_source(session, strategy="auto")
+
+    exact_shapes = (detected.vector_geometry_ref or {}).get("exact_shapes")
+    assert isinstance(exact_shapes, list)
+    shape_kinds = {
+        int(shape["instance_id"]): shape.get("kind")
+        for shape in exact_shapes
+    }
+    assert shape_kinds[1] == "circle"
+    assert shape_kinds[5] == "circle"
+    assert all(shape_kinds[index] == "rect" for index in (2, 3, 4))
 
 
 def test_auto_falls_back_to_ai_only_when_deterministic_background_fails(tmp_path, monkeypatch):
@@ -499,6 +816,39 @@ def test_cau_noi_legacy_khong_chay_ai_voi_bien_pdf_that(
     )
 
     assert approved is None
+
+
+def test_auto_nhuong_ai_khi_tem_vien_trang_co_bong_mem(tmp_path, monkeypatch):
+    """§WHITE-SHADOW: viền trắng + bóng mềm phải đi AI, không tự phục hồi silhouette.
+
+    Hồi quy cho lỗi người dùng báo 2026-08-16: nhánh phục hồi xác định hút cả đuôi
+    gradient bóng (và halo JPEG) vào thân tem, cho ra silhouette phình, biên lởm chởm và
+    mảnh rác. Nhánh tem KHÔNG viền trắng vẫn đi đúng đường cũ nên không nằm trong ca này.
+    """
+    source = tmp_path / "near-white-soft-shadow.jpg"
+    bodies = _save_near_white_soft_shadow_sheet(source)
+    session = _create_session(source)
+    calls: list[str] = []
+
+    def fake_ai(image: Image.Image, _model: str) -> Image.Image:
+        calls.append("ai")
+        rgba = image.convert("RGBA")
+        alpha = Image.new("L", image.size, 0)
+        for left, top, right, bottom in bodies:
+            alpha.paste(255, (left, top, right, bottom))
+        rgba.putalpha(alpha)
+        return rgba
+
+    monkeypatch.setattr("app.workers.sticker_sheet_engine._run_background_model", fake_ai)
+
+    detected = detect_sticker_source(session, strategy="auto")
+
+    assert calls == ["ai"], (
+        "Bóng mềm sát viền trắng không đủ bằng chứng cho nhánh xác định; "
+        "phải nhường cho AI như hành vi trước 2026-08-16."
+    )
+    assert detected.boundary_source == "ai"
+    assert len(detected.analysis.instances) == len(bodies) == 6
 
 
 def test_auto_rejects_nested_simple_background_fragments_and_uses_ai(tmp_path, monkeypatch):

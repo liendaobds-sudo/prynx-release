@@ -68,6 +68,8 @@ export interface StickerCutlineTuning {
     fidelity: number;
     tension: number;
     minDetailAreaMm2: number;
+    /** §CUTJAG.3 — thanh "Khử răng cưa" 0–100. */
+    cutlineDenoise: number;
 }
 
 export interface StickerSheetPageState {
@@ -88,6 +90,7 @@ export interface StickerSheetPageState {
     cutlineFidelity: number;
     curveTension: number;
     minDetailAreaMm2: number;
+    cutlineDenoise: number;
     outputDpi: number;
     outputDpiY: number;
     preserveExistingCut: boolean;
@@ -125,6 +128,7 @@ export interface StickerSheetTabState {
     cutlineFidelity: number;
     curveTension: number;
     minDetailAreaMm2: number;
+    cutlineDenoise: number;
     outputDpi: number;
     outputDpiY: number;
     outputSettings: StickerOutputSettings;
@@ -251,6 +255,9 @@ function defaultPageState(status: StickerSheetStatus = 'idle'): StickerSheetPage
         cutlineFidelity: 50,
         curveTension: 50,
         minDetailAreaMm2: 1,
+        // §CUTJAG.3: 50 → sigma 1,25 px ở 300 DPI, đúng mức đã đo ở §CUTJAG.1
+        // (biên mask AI: góc gấp trung bình 13–21° → 4,1–6,7°, IoU vẫn > 0,997).
+        cutlineDenoise: 50,
         outputDpi: 72,
         outputDpiY: 72,
         preserveExistingCut: true,
@@ -290,6 +297,7 @@ function defaultTabState(): StickerSheetTabState {
         cutlineFidelity: 50,
         curveTension: 50,
         minDetailAreaMm2: 1,
+        cutlineDenoise: 50,
         // SIZE (audit 2026-08-05 §AI2.SIZE1): ảnh không metadata DPI phải dùng
         // cùng quy ước 72 DPI của cửa mở ảnh, tránh thu nhỏ kết quả 4,1667 lần.
         outputDpi: 72,
@@ -327,6 +335,7 @@ function pageState(tab: StickerSheetTabState, pageNumber: number): StickerSheetP
             cutlineFidelity: tab.cutlineFidelity,
             curveTension: tab.curveTension,
             minDetailAreaMm2: tab.minDetailAreaMm2,
+            cutlineDenoise: tab.cutlineDenoise,
             outputDpi: tab.outputDpi,
             outputDpiY: tab.outputDpiY,
             preserveExistingCut: tab.preserveExistingCut,
@@ -849,6 +858,11 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             const previewUrl = URL.createObjectURL(payload.previewBlob);
             const labelsUrl = URL.createObjectURL(payload.labelsBlob);
             const uncertaintyUrl = URL.createObjectURL(payload.uncertaintyBlob);
+            // UIUX (feedback 2026-08-16): mọi nguồn chưa có CutContour thật đều
+            // phải dựng preview đường bế ngay sau nhận diện. Vector chuẩn có thể
+            // đi exact-geometry; nguồn còn lại dùng fitter Bézier, không để viewer
+            // rơi về biên mask pixel trong lúc người dùng chờ.
+            const needsGeneratedCutline = payload.manifest.boundary_source !== 'existing-cut';
             set(state => {
                 const latest = state.tabs[tabId];
                 if (
@@ -879,14 +893,14 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                             alphaThreshold: payload.manifest.alpha_threshold ?? 128,
                             shadowCleanup: payload.manifest.shadow_cleanup ?? 'auto',
                             isRefining: false,
-                            isCutlinePreviewing: payload.manifest.boundary_source === 'ai',
+                             isCutlinePreviewing: needsGeneratedCutline,
                             cutlinePreview: null,
                             error: '',
                         })),
                     },
                 };
             });
-            if (payload.manifest.boundary_source === 'ai') {
+            if (needsGeneratedCutline) {
                 scheduleCurrentCutlinePreview(tabId, pageNumber, 0);
             }
         } catch (error) {
@@ -1021,11 +1035,16 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                 tuning.minDetailAreaMm2 ?? activePage.minDetailAreaMm2,
             )),
         );
+        const cutlineDenoise = Math.max(
+            0,
+            Math.min(100, Number(tuning.cutlineDenoise ?? activePage.cutlineDenoise)),
+        );
         if (
             cutlineSmoothness === activePage.cutlineSmoothness
             && cutlineFidelity === activePage.cutlineFidelity
             && curveTension === activePage.curveTension
             && minDetailAreaMm2 === activePage.minDetailAreaMm2
+            && cutlineDenoise === activePage.cutlineDenoise
         ) return;
         set(state => {
             const current = state.tabs[tabId];
@@ -1039,6 +1058,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                         cutlineFidelity,
                         curveTension,
                         minDetailAreaMm2,
+                        cutlineDenoise,
                         isCutlinePreviewing: true,
                         error: '',
                     })),
@@ -1608,6 +1628,7 @@ type StickerCutlinePreviewRequest = {
     cutlineFidelity: number;
     curveTension: number;
     minDetailAreaMm2: number;
+    cutlineDenoise: number;
 };
 
 function cutlineRequestKey(tabId: string, pageNumber: number): string {
@@ -1655,6 +1676,7 @@ function scheduleCurrentCutlinePreview(
         cutlineFidelity: page.cutlineFidelity,
         curveTension: page.curveTension,
         minDetailAreaMm2: page.minDetailAreaMm2,
+        cutlineDenoise: page.cutlineDenoise,
     };
     const key = cutlineRequestKey(tabId, pageNumber);
     CUTLINE_DESIRED.set(key, request);
@@ -1708,6 +1730,7 @@ async function runCutlinePreview(tabId: string, pageNumber: number): Promise<voi
             cutlineFidelity: requested.cutlineFidelity,
             curveTension: requested.curveTension,
             minDetailAreaMm2: requested.minDetailAreaMm2,
+            cutlineDenoise: requested.cutlineDenoise,
         });
         const queued = CUTLINE_DESIRED.has(key);
         useStickerSheetStore.setState(state => {

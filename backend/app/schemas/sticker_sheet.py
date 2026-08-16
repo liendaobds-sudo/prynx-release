@@ -230,6 +230,9 @@ class StickerCutlinePreviewRequest(BaseModel):
     cutline_fidelity: float = Field(default=50.0, ge=0.0, le=100.0)
     curve_tension: float = Field(default=50.0, ge=0.0, le=100.0)
     min_detail_area_mm2: float = Field(default=1.0, ge=0.0, le=25.0)
+    # §CUTJAG.3: thanh "Khử răng cưa". `None` = để cổng tự động theo nguồn biên quyết
+    # định (hành vi Lô J); 0 = tắt hẳn; > 0 = mức người dùng chọn.
+    cutline_denoise: float | None = Field(default=None, ge=0.0, le=100.0)
 
 
 class StickerCutlineQualityResponse(BaseModel):
@@ -246,6 +249,16 @@ class StickerCutlineQualityResponse(BaseModel):
     maximum_join_angle_degrees: float | None = Field(default=None, ge=0.0, le=180.0)
     effective_deviation_mm: float | None = Field(default=None, ge=0.0)
     fit_mode: str = "unknown"
+    # §CUTHOOK.1: gai/móc nằm bên trong một cubic nên `maximum_join_angle_degrees`
+    # (chỉ đo tiếp tuyến tại anchor) không thấy. Bốn field dưới đo trên quỹ đạo được
+    # lấy mẫu dày, hiện chỉ để báo cáo — chưa tham gia quyết định `machine_safe`.
+    trajectory_cusp_count: int = Field(default=0, ge=0)
+    unprotected_cusp_count: int = Field(default=0, ge=0)
+    maximum_trajectory_turn_degrees: float | None = Field(
+        default=None, ge=0.0, le=180.0
+    )
+    minimum_wedge_width_mm: float | None = Field(default=None, ge=0.0)
+    cutline_hook_tolerated: bool = False
 
 
 class StickerCutlinePreviewPathResponse(BaseModel):

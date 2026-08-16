@@ -292,7 +292,9 @@ async def detect_sticker_source_endpoint(
         logger.error("Nhận diện nguồn tem thất bại", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Không nhận diện được vùng tem ({type(exc).__name__}).",
+            # UIUX (feedback 2026-08-16 §WHITE-SHEET.2): tên lớp Python/ONNX chỉ
+            # thuộc log chẩn đoán, không phải hướng dẫn có ích cho người dùng.
+            detail="Không nhận diện được vùng tem. File gốc vẫn được giữ; hãy thử lại.",
         ) from exc
     if promoted is None:
         abort_source_detection(session_id, page_number=request.page_number)
@@ -401,6 +403,7 @@ async def preview_sticker_cutline_endpoint(
             cutline_fidelity=request.cutline_fidelity,
             curve_tension=request.curve_tension,
             min_detail_area_mm2=request.min_detail_area_mm2,
+            cutline_denoise=request.cutline_denoise,
         )
     except StickerSheetSessionConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

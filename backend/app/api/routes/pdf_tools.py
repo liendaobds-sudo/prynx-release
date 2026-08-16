@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
 from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
+from app.core.heavy_job_scheduler import run_scheduled_in_threadpool
 from app.schemas.pdf_tools import (
     EncryptionStatusResponse,
     MetadataReadResponse,
@@ -60,6 +61,12 @@ router.include_router(combine_jobs_router)
 # PERF (audit 2026-07-29 §C.3): trần = 1 là CỐ Ý — `sticker_engine` đã tự chọn số worker
 # theo RAM+CPU (`_auto_sticker_hw_profile`, tới 6 process trên máy ≥64GB). Trần job >1 sẽ
 # nhân đôi con số đó và phá luôn ngân sách RAM mà profile kia vừa tính.
+#
+# PERF (audit 2026-08-16 §BX.P03): trần này ĐÃ CHUYỂN sang `heavy_job_scheduler` dưới
+# `kind="sticker"`. Semaphore cũ acquire bên trong threadpool nên job tem xếp hàng vẫn
+# giữ suất heavy toàn cục (đo được 3/3 suất khi chỉ 1 job chạy) và chặn oan mọi endpoint
+# pdf-tools khác. Hai biến dưới đây giữ lại CHỈ để tương thích ngược cho test/công cụ cũ
+# đọc chúng; đường chạy thật không còn dùng.
 _MAX_CONCURRENT_STICKER = max(
     1, int(os.environ.get("PRYNX_MAX_STICKER_JOBS", "1") or "1")
 )
@@ -101,7 +108,11 @@ def _plan_background_work_size(width: int, height: int) -> tuple[tuple[int, int]
 
 @contextmanager
 def _sticker_job_slot(job_id: str = ""):
-    """Acquire slot; job vượt mức chờ tới lượt (xếp hàng), không spawn song song."""
+    """DEPRECATED — trần job tem nay do `heavy_job_scheduler` (`kind="sticker"`) giữ.
+
+    Giữ lại để test/công cụ cũ import được. Vẫn lấy semaphore cũ nên nếu có đường gọi
+    nào còn dùng thì hành vi không đổi; đường chạy production đã bỏ (§BX.P03).
+    """
     waited = time.perf_counter()
     _STICKER_JOB_SEMAPHORE.acquire()
     wait_s = time.perf_counter() - waited
@@ -114,6 +125,56 @@ def _sticker_job_slot(job_id: str = ""):
         yield
     finally:
         _STICKER_JOB_SEMAPHORE.release()
+
+def _sticker_float_param(
+    form, field: str, *, default: float, low: float, high: float
+) -> float:
+    """Đọc tham số mm của bù xén: chặn rỗng/chữ/inf/nan rồi kẹp về khoảng cho phép.
+
+    AUDIT (2026-08-16 §BX.F06). Sai kiểu là lỗi của client (UI đã clamp sẵn), nên
+    trả 400 với thông báo người dùng làm được thay vì 500 trần hoặc âm thầm nhận
+    `inf`/`nan` — hai giá trị đó đi tới `compute_cut_bleed_offsets` sẽ tạo page box
+    vô nghĩa và file xuất không mở được.
+    """
+    raw = form.get(field)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Giá trị '{field}' không phải là số. Hãy nhập lại thông số bù xén.",
+        ) from None
+    if not math.isfinite(value):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Giá trị '{field}' không hợp lệ. Hãy nhập lại thông số bù xén.",
+        )
+    return max(low, min(high, value))
+
+
+# Header phản hồi phải nhỏ: h11/WebView2 có trần kích thước header, và một file
+# nhiều trăm trang từng sinh JSON `pages` hàng chục KB (AUDIT 2026-08-16 §BX.F11).
+_STICKER_HEADER_MAX_CHARS = 3000
+
+
+def _set_sticker_json_header(headers: dict, name: str, payload) -> None:
+    """Chỉ gắn header JSON khi còn nhỏ; quá lớn thì bỏ thay vì làm vỡ cả response."""
+    import json as _header_json
+
+    try:
+        encoded = _header_json.dumps(payload)
+    except (TypeError, ValueError):
+        return
+    if len(encoded) <= _STICKER_HEADER_MAX_CHARS:
+        headers[name] = encoded
+    else:
+        logger.info(
+            "[STICKER] bỏ header %s vì quá lớn (%d ký tự) — frontend không dùng field này",
+            name, len(encoded),
+        )
+
 
 def _log_sticker_response_complete(started: float, job_id: str, output_path: str) -> None:
     try:
@@ -1386,9 +1447,15 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
         raise HTTPException(status_code=400, detail=f"File rỗng (0 bytes). Vui lòng chọn một file PDF hợp lệ có chứa dữ liệu.")
 
     cut_mode = form.get("cut_mode", "original")
-    offset_mm = float(form.get("offset_mm", 0.0))
-    corner_style = form.get("corner_style", "round")
-    bleed_mm = float(form.get("bleed_mm", 0.0))
+    # AUDIT (2026-08-16 §BX.F06): hai tham số hình học quan trọng nhất trước đây là
+    # hai tham số DUY NHẤT không validate — `float("abc")` ném ValueError ngoài try
+    # → 500 trần, còn `float("1e309")`/`"NaN"` lọt vào engine thành inf/nan và làm
+    # hỏng page box. Dùng cùng khuôn với `edge_sample_inset_mm` bên dưới.
+    offset_mm = _sticker_float_param(form, "offset_mm", default=0.0, low=-50.0, high=50.0)
+    # AUDIT (2026-08-16 §BX.F08): default phải khớp UI + recipe (`preserve`). Default
+    # `round` cũ khiến client thiếu field nhận khuôn BỊ BO GÓC thay vì giữ nguyên góc.
+    corner_style = form.get("corner_style", "preserve")
+    bleed_mm = _sticker_float_param(form, "bleed_mm", default=0.0, low=0.0, high=50.0)
     fill_holes = form.get("fill_holes", "true")
     remove_white_bg = form.get("remove_white_bg", "false")
     draw_cut_contour = form.get("draw_cut_contour", "true")
@@ -1478,10 +1545,15 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                 detail=f"Selection object không hợp lệ: {exc}",
             )
 
-    try:
-        edge_bite_mm = float(form.get("edge_bite_mm", 0.0))
-    except (ValueError, TypeError):
-        edge_bite_mm = 0.0
+    # AUDIT (2026-08-16 §BX.F06): clamp cùng khoảng với UI (0–5 mm) + chặn inf/nan.
+    # Trước đây chỉ bắt ValueError, nên `'inf'` vẫn đi tiếp và clip artwork vô hạn.
+    edge_bite_mm = _sticker_float_param(form, "edge_bite_mm", default=0.0, low=0.0, high=10.0)
+
+    # UIUX (feedback 2026-08-16 §CUTJAG.3): thanh "Khử răng cưa" 0–100. Default 0 để
+    # client cũ không đổi kết quả; giao diện tự đặt mức khởi điểm riêng.
+    cutline_denoise = _sticker_float_param(
+        form, "cutline_denoise", default=0.0, low=0.0, high=100.0
+    )
 
     # Resize chỉ dịch điểm lấy màu vào trong; không dùng tham số này để clip artwork.
     try:
@@ -1520,81 +1592,87 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             solid_bleed_color = (255, 255, 255)
                 
         def _run_sticker_job():
-            """Chạy toàn bộ phần đồng bộ ngoài event loop, kể cả lúc chờ slot."""
-            # PERF (audit 2026-08-05 §PERF.1): đẩy toàn bộ job khỏi event loop;
-            # scheduler giữ admission, semaphore riêng vẫn giới hạn một job Sticker.
+            """Chạy toàn bộ phần đồng bộ ngoài event loop.
+
+            PERF (audit 2026-08-05 §PERF.1): đẩy toàn bộ job khỏi event loop.
+            PERF (audit 2026-08-16 §BX.P03): trần "1 job tem" nay do admission
+            ``kind="sticker"`` của `heavy_job_scheduler` giữ — nó lấy gate riêng TRƯỚC
+            suất heavy toàn cục và chờ ở tầng async, nên job tem xếp hàng không còn giữ
+            suất toàn cục và không còn chặn oan merge/split/resize/optimize/OCR.
+            Hàm này vì thế không tự khóa gì nữa.
+            """
             engine = StickerEngine(dpi=300)
             engine_started = time.perf_counter()
-            with _sticker_job_slot(job_id):
-                approved_contour_overrides = None
-                use_single_ai_contour = (
-                    do_remove_bg
-                    and not do_rectangle_mode
-                    and cut_mode != "none"
-                    and selected_objects_by_page is None
-                    and shape_mode in {"auto_safe", "contour"}
+            approved_contour_overrides = None
+            use_single_ai_contour = (
+                do_remove_bg
+                and not do_rectangle_mode
+                and cut_mode != "none"
+                and selected_objects_by_page is None
+                and shape_mode in {"auto_safe", "contour"}
+            )
+            if use_single_ai_contour:
+                from app.workers.sticker_source_inspector import (
+                    StickerSourceInspectionError,
                 )
-                if use_single_ai_contour:
-                    from app.workers.sticker_source_inspector import (
-                        StickerSourceInspectionError,
-                    )
-                    from app.workers.sticker_source_pipeline import (
-                        StickerSourcePipelineError,
-                        build_legacy_single_page_approved_contour,
-                    )
+                from app.workers.sticker_source_pipeline import (
+                    StickerSourcePipelineError,
+                    build_legacy_single_page_approved_contour,
+                )
 
-                    try:
-                        approved = build_legacy_single_page_approved_contour(
-                            source_path,
-                            cut_mode=cut_mode,
-                            offset_mm=offset_mm,
-                            bleed_mm=bleed_mm,
-                            corner_style=corner_style,
-                            fill_holes=do_fill_holes,
-                        )
-                    except (
-                        StickerSourceInspectionError,
-                        StickerSourcePipelineError,
-                    ) as exc:
-                        raise HTTPException(status_code=422, detail=str(exc)) from exc
-                    if approved is not None:
-                        approved_contour_overrides = {
-                            0: {
-                                "alpha": approved.alpha,
-                                "dpi": approved.dpi,
-                                "source_pixel_mm": approved.source_pixel_mm,
-                                "boundary_source": approved.boundary_source,
-                                "path_groups": approved.path_groups,
-                            }
+                try:
+                    approved = build_legacy_single_page_approved_contour(
+                        source_path,
+                        cut_mode=cut_mode,
+                        offset_mm=offset_mm,
+                        bleed_mm=bleed_mm,
+                        corner_style=corner_style,
+                        fill_holes=do_fill_holes,
+                    )
+                except (
+                    StickerSourceInspectionError,
+                    StickerSourcePipelineError,
+                ) as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+                if approved is not None:
+                    approved_contour_overrides = {
+                        0: {
+                            "alpha": approved.alpha,
+                            "dpi": approved.dpi,
+                            "source_pixel_mm": approved.source_pixel_mm,
+                            "boundary_source": approved.boundary_source,
+                            "path_groups": approved.path_groups,
                         }
-                        logger.info(
-                            "[STICKER] page=1 dùng contour %s đã duyệt; "
-                            "giữ nguyên PDF gốc, không tách nhiều tem",
-                            approved.boundary_source,
-                        )
-                success, meta = engine.process_pdf(
-                    input_path=source_path,
-                    output_path=output_path,
-                    cut_mode=cut_mode,
-                    offset_mm=offset_mm,
-                    corner_style=corner_style,
-                    bleed_mm=bleed_mm,
-                    fill_holes=do_fill_holes,
-                    remove_white_bg=do_remove_bg,
-                    bleed_color_type=bleed_color_type,
-                    solid_bleed_color=solid_bleed_color,
-                    draw_cut_contour=do_draw_cut_contour,
-                    rectangle_mode=do_rectangle_mode,
-                    edge_bite_mm=edge_bite_mm,
-                    edge_sample_inset_mm=edge_sample_inset_mm,
-                    cut_first_page_only=do_cut_first_page_only,
-                    shape_mode=shape_mode,
-                    bleed_sides=bleed_sides_raw,
-                    selected_objects_by_page=selected_objects_by_page,
-                    process_pages=process_pages,
-                    alpha_corner_policy=adaptive_corner_policy,
-                    approved_contour_overrides=approved_contour_overrides,
-                )
+                    }
+                    logger.info(
+                        "[STICKER] page=1 dùng contour %s đã duyệt; "
+                        "giữ nguyên PDF gốc, không tách nhiều tem",
+                        approved.boundary_source,
+                    )
+            success, meta = engine.process_pdf(
+                input_path=source_path,
+                output_path=output_path,
+                cut_mode=cut_mode,
+                offset_mm=offset_mm,
+                corner_style=corner_style,
+                bleed_mm=bleed_mm,
+                fill_holes=do_fill_holes,
+                remove_white_bg=do_remove_bg,
+                bleed_color_type=bleed_color_type,
+                solid_bleed_color=solid_bleed_color,
+                draw_cut_contour=do_draw_cut_contour,
+                rectangle_mode=do_rectangle_mode,
+                edge_bite_mm=edge_bite_mm,
+                edge_sample_inset_mm=edge_sample_inset_mm,
+                cut_first_page_only=do_cut_first_page_only,
+                shape_mode=shape_mode,
+                bleed_sides=bleed_sides_raw,
+                selected_objects_by_page=selected_objects_by_page,
+                process_pages=process_pages,
+                alpha_corner_policy=adaptive_corner_policy,
+                approved_contour_overrides=approved_contour_overrides,
+                cutline_denoise=cutline_denoise,
+            )
             engine_seconds = time.perf_counter() - engine_started
             if not success or not os.path.exists(output_path):
                 # success=False kèm meta['error'] = lỗi nghiệp vụ (vd không dò được hình)
@@ -1641,7 +1719,11 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             _safe_watermark(output_path, license_info)
             return meta, engine_seconds
 
-        meta, engine_seconds = await run_in_threadpool(_run_sticker_job)
+        # PERF (audit 2026-08-16 §BX.P03): dùng `kind="sticker"` để job tem chờ ở gate
+        # riêng TRƯỚC khi nhận suất heavy toàn cục, thay cho semaphore chặn trong thread.
+        meta, engine_seconds = await run_scheduled_in_threadpool(
+            "sticker", _run_sticker_job
+        )
 
         headers = {
             "X-Sticker-Output-Path": os.path.abspath(output_path),
@@ -1652,8 +1734,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             headers["X-Sticker-Width-MM"] = str(meta["width_mm"])
             headers["X-Sticker-Height-MM"] = str(meta["height_mm"])
             if "boxes" in meta:
-                import json
-                headers["X-Sticker-Boxes"] = json.dumps(meta["boxes"])
+                _set_sticker_json_header(headers, "X-Sticker-Boxes", meta["boxes"])
             if "shape_type" in meta:
                 headers["X-Sticker-Shape-Type"] = meta["shape_type"]
             if "shape_params" in meta:
@@ -1665,12 +1746,16 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             if meta.get("cut_confidence") is not None:
                 headers["X-Sticker-Cut-Confidence"] = str(meta["cut_confidence"])
             if "pages" in meta:
-                import json
-                headers["X-Sticker-Pages"] = json.dumps(meta["pages"])
+                _set_sticker_json_header(headers, "X-Sticker-Pages", meta["pages"])
         if isinstance(meta, dict) and meta.get("warning"):
             import urllib.parse
             # Header value phải ASCII → percent-encode để giữ được tiếng Việt.
-            headers["X-Sticker-Warning"] = urllib.parse.quote(meta["warning"])
+            # Cắt trước khi encode: tiếng Việt percent-encode phình ~3× nên cảnh báo
+            # liệt kê hàng trăm số trang từng đủ sức làm vỡ trần header (§BX.F11).
+            warning_text = str(meta["warning"])
+            if len(warning_text) > 600:
+                warning_text = warning_text[:600].rstrip() + "…"
+            headers["X-Sticker-Warning"] = urllib.parse.quote(warning_text)
             
         logger.info(
             "[STICKER_TIMING] output_ready job=%s engine_s=%.3f ready_s=%.3f "

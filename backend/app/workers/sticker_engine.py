@@ -6,6 +6,7 @@ import pypdfium2.raw as pdfium_c
 import pikepdf
 import io
 import os
+import tempfile
 import zlib
 import math
 import time
@@ -246,6 +247,38 @@ _BG_MASK_FEATHER_KERNEL_MAX = 9
 # đường cắt của các ca đang chạy đúng.
 _MIN_CONTOUR_AREA_MM2 = 1.0
 _PT_PER_MM = 72.0 / 25.4
+
+# QUALITY (feedback 2026-08-16 §CUTJAG.1): mask của mô hình AI gần như nhị phân
+# (đo trên ảnh nhiều tem của người dùng: chỉ 2,06% pixel là trung gian), nên
+# marching-squares chạy trực tiếp trên nó chỉ trả về bậc thang pixel. Đo trên 4 tem
+# đầu của ảnh đó: tỉ lệ ĐẢO DẤU độ cong dọc biên là 0,67–0,78 và góc gấp trung bình
+# 13–21° — tức đường bế đổi chiều cong gần như mỗi điểm, đúng cảm nhận "răng cưa".
+# Làm mượt Alpha bằng Gaussian TRƯỚC khi lấy contour hạ hai số đó xuống 0,24–0,30 và
+# 4,1–6,7°, trong khi IoU silhouette trước/sau vẫn 0,9979–0,9989 (lệch dưới một pixel).
+# Sigma bị chặn hai lớp: theo pixel (chống làm tròn góc thật) và theo mm (để máy in
+# DPI thấp không bị bào mất chi tiết) — 0,12 mm nhỏ hơn một bậc so với dung sai bế.
+_CUTLINE_ALPHA_PRESMOOTH_SIGMA_PX_MAX = 1.2
+_CUTLINE_ALPHA_PRESMOOTH_SIGMA_PX_MIN = 0.35
+_CUTLINE_ALPHA_PRESMOOTH_MAX_MM = 0.12
+# Van an toàn cho mask mảnh — xem §CUTJAG.2 trong `_presmooth_cutline_alpha`.
+_CUTLINE_PRESMOOTH_MIN_AREA_KEPT = 0.90
+
+# Bộ làm mượt này CHỈ dành cho mask dò từ điểm ảnh. Đo trên fixture góc thật
+# (`tests/test_sticker_cutline_tuning.py::_sharp_mask`): với mask "notch" đã sạch,
+# Gaussian 1,2 px làm `protected_corner_count` rơi 11 → 0, tức bào mất góc thật.
+# Đã thử median 3/5, morph open+close, bilateral để có bộ lọc dùng chung: median 3
+# và morph giữ đủ góc (11) nhưng gần như không giảm răng cưa (0,567 so với 0,571);
+# bilateral giữ góc nhưng còn làm xấu hơn (0,619). Không có bộ lọc nào thắng cả hai
+# mặt, nên cổng theo NGUỒN BIÊN: mask từ mô hình AI và mask dò nền phẳng là hai
+# nguồn nhị phân hoá từ điểm ảnh; vector/CutContour/Alpha sạch giữ nguyên.
+_CUTLINE_PRESMOOTH_BOUNDARY_SOURCES = frozenset({"ai", "simple-bg"})
+
+
+def should_presmooth_cutline_alpha(boundary_source: object) -> bool:
+    """Chỉ làm mượt Alpha khi biên được nhị phân hoá từ điểm ảnh."""
+    if not isinstance(boundary_source, str):
+        return False
+    return boundary_source.strip().lower() in _CUTLINE_PRESMOOTH_BOUNDARY_SOURCES
 
 # UIUX/QUALITY (audit 2026-08-09 §PV.3): các thanh tinh chỉnh CutContour dùng
 # thang 0–100, nhưng giá trị 50 PHẢI giữ nguyên profile đã kiểm chứng trước đây.
@@ -838,6 +871,41 @@ _CUTLINE_TRUE_CORNER_TURN_DEGREES = 36.0
 _CUTLINE_TRUE_CORNER_BASE_WINDOW_MM = 0.50
 _CUTLINE_TRUE_CORNER_PIXEL_WINDOW = 2.50
 _CUTLINE_TRUE_CORNER_PIXEL_SUPPORT = 2.00
+
+# QUALITY (feedback 2026-08-16 §CUTHOOK.1): `maximum_join_angle_degrees` chỉ đo độ
+# liên tục tiếp tuyến TẠI ANCHOR, nên gai/móc nằm BÊN TRONG một cubic là vô hình với
+# nó. Đo được trên `test/1785209372799_..._a00b34db...jpg`: contour của mask và
+# `ideal_geometry` sạch (góc quay xấu nhất 90–112°, 0 gai) nhưng path sau fitter quặt
+# 158–179,9° với 1–67 gai mỗi tem, mà engine vẫn báo `maximum_join_angle_degrees`
+# ≈ 1,2e-06 và `machine_safe = true`. Vì vậy phải đo trên QUỸ ĐẠO ĐƯỢC LẤY MẪU.
+#
+# 60° cho một bước lấy mẫu (~0,014 mm ở 300 DPI) tương đương bán kính cong ~0,013 mm —
+# không một chi tiết bế thật nào cong tới mức đó, nên vượt ngưỡng này là cusp.
+# Cusp KHÔNG tự động là lỗi: đầu nhọn của tem hình sao cũng là cusp. Phân biệt bằng
+# cách đối chiếu với góc thật trên reference, dùng đúng bộ so khớp đã có cho anchor —
+# cusp có trên reference thì được bảo vệ, cusp do fitter tự sinh thì bị loại.
+_CUTLINE_TRAJECTORY_CUSP_DEGREES = 60.0
+# Nhịp đo bề rộng nêm: lấy hai điểm cách đỉnh 0,35 mm theo chiều dài cung rồi đo dây
+# cung giữa chúng. Số đo trung lập, không phải ngưỡng chặn. Đo được: nêm do fitter
+# sinh ra rộng 0,04–0,15 mm, còn khe lõm thật của tem rộng 10,3–12,8 mm — cách nhau
+# hai bậc độ lớn, nên số này đủ để xếp hạng ứng viên.
+_CUTLINE_WEDGE_PROBE_SPAN_MM = 0.35
+# PERF §CUTHOOK.2: khi đã có ứng viên dùng được (chỉ vướng gai) thì việc tìm ứng viên
+# sạch hơn là TÙY CHỌN, không phải điều kiện đúng/sai — nên nó phải chịu hạn mức thời
+# gian của live preview. Đo trên 4 ảnh test: tem bình thường tốn 0,2–0,6 s cho cả chuỗi
+# ứng viên, còn ca nhận diện lỗi (một blob phủ cả trang, ring 11 425 điểm) tốn 2,7–2,9 s
+# cho MỖI fitter fallback và đẩy cả trang lên 16–50 s. 1,0 s nằm giữa: tem bình thường
+# không bao giờ chạm hạn mức, ca bệnh lý dừng sau fitter đầu tiên.
+# Đây là hạn mức ĐỘ TRỄ, không phải cap theo cấu hình máy: máy mạnh vẫn chạy hết chuỗi
+# vì nó làm xong trước hạn.
+_CUTLINE_HOOK_SEARCH_BUDGET_SECONDS = 1.0
+
+# UIUX (feedback 2026-08-16 §CUTJAG.3): thanh "Khử răng cưa" của công cụ Bù xén.
+# 0 = tắt (giữ đúng hành vi cũ, không đổi một byte artifact nào), 100 = 2,5 px.
+# Vẫn kẹp theo mm để máy in DPI thấp không bị bào mất chi tiết: 2,5 px ở 300 DPI là
+# 0,21 mm, còn ở 72 DPI thì trần mm cắt xuống chỉ còn ~1 px.
+_CUTLINE_DENOISE_SIGMA_PX_MAX = 2.5
+_CUTLINE_DENOISE_MAX_MM = 0.30
 # QUALITY (feedback 2026-08-10 §ROUND-PATH.1): bước ghi PDF không được làm
 # quỹ đạo ``Theo hình gốc`` trôi thêm chỉ vì đổi polyline thành cubic. 0,12 mm
 # nhỏ hơn sai số một pixel ở 300 DPI và đủ chặt để mắt không thấy đường bế nở.
@@ -3746,6 +3814,28 @@ def _paths_for_alpha_geometry(geometry, *, tension: float | None = None):
 
 
 def _group_alpha_paths_like(reference_geometry, paths):
+    def normalize_ring(ring):
+        """Khóa hợp đồng path về số Python để cache/API không mang ndarray."""
+        normalized = []
+        try:
+            for segment in ring:
+                if len(segment) != 4:
+                    return None
+                points = tuple(
+                    (float(point[0]), float(point[1]))
+                    for point in segment
+                )
+                if not all(
+                    math.isfinite(value)
+                    for point in points
+                    for value in point
+                ):
+                    return None
+                normalized.append(points)
+        except (IndexError, TypeError, ValueError, OverflowError):
+            return None
+        return normalized
+
     parts, _return_multi = _alpha_polygon_parts(reference_geometry)
     cursor = 0
     groups = []
@@ -3754,9 +3844,12 @@ def _group_alpha_paths_like(reference_geometry, paths):
         ring_paths = paths[cursor:cursor + ring_count]
         if len(ring_paths) != ring_count:
             return []
+        normalized_rings = [normalize_ring(ring) for ring in ring_paths]
+        if any(ring is None or not ring for ring in normalized_rings):
+            return []
         groups.append({
-            "exterior": ring_paths[0],
-            "interiors": ring_paths[1:],
+            "exterior": normalized_rings[0],
+            "interiors": normalized_rings[1:],
         })
         cursor += ring_count
     return groups if cursor == len(paths) else []
@@ -3909,6 +4002,10 @@ def _alpha_live_machine_path_summary(path, *, mm_to_pts: float):
     sharp_join_indices = np.flatnonzero(
         valid_joins & (angles > _CUTLINE_FINAL_SMOOTH_JOIN_DEGREES)
     )
+    trajectory = _alpha_trajectory_cusp_summary(
+        samples.reshape(-1, 2),
+        mm_to_pts=mm_to_pts,
+    )
     return {
         "segment_count": int(len(points)),
         "short_segment_count": int(np.count_nonzero(
@@ -3924,6 +4021,116 @@ def _alpha_live_machine_path_summary(path, *, mm_to_pts: float):
         "sharp_join_points": [
             (float(points[index, 3, 0]), float(points[index, 3, 1]))
             for index in sharp_join_indices
+        ],
+        **trajectory,
+    }
+
+
+def _collapse_cusp_runs(
+    indices: np.ndarray,
+    turns: np.ndarray,
+    count: int,
+) -> np.ndarray:
+    """Gom các mẫu liền nhau vượt ngưỡng thành một cusp, giữ mẫu gắt nhất."""
+    if indices.size == 0:
+        return indices
+    breaks = np.flatnonzero(np.diff(indices) > 1) + 1
+    groups = np.split(indices, breaks)
+    # Polyline đóng: dải cuối và dải đầu có thể là cùng một cusp bắc qua chỗ nối.
+    if (
+        len(groups) > 1
+        and int(groups[0][0]) == 0
+        and int(groups[-1][-1]) == count - 1
+    ):
+        groups[0] = np.concatenate((groups[-1], groups[0]))
+        groups.pop()
+    return np.asarray(
+        [int(group[int(np.argmax(turns[group]))]) for group in groups],
+        dtype=np.intp,
+    )
+
+
+def _alpha_trajectory_cusp_summary(
+    trajectory: np.ndarray,
+    *,
+    mm_to_pts: float,
+) -> dict[str, object]:
+    """Đo cusp trên quỹ đạo ĐƯỢC VẼ RA, không chỉ tại anchor (§CUTHOOK.1).
+
+    `trajectory` là polyline đóng đã lấy mẫu dày từ chuỗi cubic. Trả về số đo trung
+    lập; việc quyết định cusp nào hợp lệ do tầng chất lượng đối chiếu reference.
+    """
+    empty: dict[str, object] = {
+        "maximum_trajectory_turn_degrees": None,
+        "minimum_wedge_width_mm": None,
+        "trajectory_cusp_points": [],
+    }
+    count = len(trajectory)
+    if count < 8:
+        return empty
+
+    edges = np.roll(trajectory, -1, axis=0) - trajectory
+    edge_lengths = np.linalg.norm(edges, axis=1)
+    alive = edge_lengths > 1e-12
+    if np.count_nonzero(alive) < 4:
+        return empty
+
+    # Góc quay tại đỉnh i nằm giữa cạnh (i-1 → i) và cạnh (i → i+1).
+    incoming = np.roll(edges, 1, axis=0)
+    incoming_lengths = np.roll(edge_lengths, 1)
+    usable = alive & (incoming_lengths > 1e-12)
+    turns = np.zeros(count, dtype=np.float64)
+    if np.any(usable):
+        cosines = np.sum(incoming[usable] * edges[usable], axis=1) / (
+            incoming_lengths[usable] * edge_lengths[usable]
+        )
+        turns[usable] = np.degrees(np.arccos(np.clip(cosines, -1.0, 1.0)))
+
+    raw_indices = np.flatnonzero(usable & (turns > _CUTLINE_TRAJECTORY_CUSP_DEGREES))
+    maximum_turn = float(np.max(turns[usable])) if np.any(usable) else None
+    # Một cái móc thường trải 1–3 mẫu liền nhau. Gom mỗi dải liền thành MỘT cusp,
+    # lấy đỉnh gắt nhất làm đại diện: nếu không gom thì đếm sai (đo được 101 "cusp"
+    # cho cùng một vùng) và bộ so khớp góc thật phải chạy trên số điểm gấp nhiều lần.
+    cusp_indices = _collapse_cusp_runs(raw_indices, turns, count)
+    if cusp_indices.size == 0:
+        return {
+            "maximum_trajectory_turn_degrees": maximum_turn,
+            "minimum_wedge_width_mm": None,
+            "trajectory_cusp_points": [],
+        }
+
+    # Bề rộng nêm: dây cung giữa hai điểm cách đỉnh đúng `span` theo chiều dài cung.
+    # Đi thẳng cho ~2·span, góc 90° cho ~1,41·span, còn móc quặt ngược cho ~0.
+    span_pts = _CUTLINE_WEDGE_PROBE_SPAN_MM * mm_to_pts
+    cumulative = np.concatenate(([0.0], np.cumsum(edge_lengths)))
+    total_length = float(cumulative[-1])
+    wedge_widths: list[float] = []
+    if total_length > 2.0 * span_pts:
+        positions = cumulative[cusp_indices]
+        before = np.searchsorted(
+            cumulative[:-1],
+            np.mod(positions - span_pts, total_length),
+            side="right",
+        ) - 1
+        after = np.searchsorted(
+            cumulative[:-1],
+            np.mod(positions + span_pts, total_length),
+            side="right",
+        ) - 1
+        before = np.clip(before, 0, count - 1)
+        after = np.clip(after, 0, count - 1)
+        wedge_widths = (
+            np.linalg.norm(trajectory[after] - trajectory[before], axis=1) / mm_to_pts
+        ).tolist()
+
+    return {
+        "maximum_trajectory_turn_degrees": maximum_turn,
+        "minimum_wedge_width_mm": (
+            float(min(wedge_widths)) if wedge_widths else None
+        ),
+        "trajectory_cusp_points": [
+            (float(trajectory[index, 0]), float(trajectory[index, 1]))
+            for index in cusp_indices
         ],
     }
 
@@ -4091,8 +4298,15 @@ def _alpha_final_cutline_quality(
     mm_to_pts: float,
     source_pixel_mm: float | None,
     fit_mode: str,
+    corner_cache: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    """Cổng chất lượng duy nhất áp cho live, retension và mọi fallback."""
+    """Cổng chất lượng duy nhất áp cho live, retension và mọi fallback.
+
+    `corner_cache` là dict rỗng do caller cấp và dùng lại cho MỌI ứng viên của cùng
+    một tem. Bộ dò góc thật đa thang chỉ phụ thuộc `reference_geometry` — vốn bất
+    biến suốt chuỗi ứng viên — nên chạy lại cho từng ứng viên là công thừa. PERF
+    (feedback 2026-08-16 §CUTHOOK.2): không cache thì một tem nhiều cusp mất 16–68 s.
+    """
     summaries = [
         _alpha_live_machine_path_summary(path, mm_to_pts=mm_to_pts)
         for path in paths
@@ -4104,20 +4318,39 @@ def _alpha_final_cutline_quality(
         for summary in valid_summaries
         for point in summary["sharp_join_points"]
     ]
+    # §CUTHOOK.1: cusp bên trong cubic cũng phải qua đúng bộ so khớp góc thật.
+    trajectory_cusp_points = [
+        point
+        for summary in valid_summaries
+        for point in summary.get("trajectory_cusp_points", ())
+    ]
     protected_corner_count = 0
-    if sharp_join_points:
+    protected_cusp_count = 0
+    if sharp_join_points or trajectory_cusp_points:
         # PERF (audit 2026-08-10 §CUTSMOOTH.5): đường C2 phổ biến không có khớp
         # gãy nên không cần chạy bộ dò góc đa thang trên reference hàng nghìn điểm.
-        corner_points, match_radius_pts = _alpha_reference_corner_points(
-            reference_geometry,
-            mm_to_pts=mm_to_pts,
-            source_pixel_mm=source_pixel_mm,
-        )
-        protected_corner_count = _match_protected_corner_count(
-            sharp_join_points,
-            corner_points,
-            match_radius_pts,
-        )
+        cached = corner_cache.get("reference_corners") if corner_cache is not None else None
+        if cached is None:
+            cached = _alpha_reference_corner_points(
+                reference_geometry,
+                mm_to_pts=mm_to_pts,
+                source_pixel_mm=source_pixel_mm,
+            )
+            if corner_cache is not None:
+                corner_cache["reference_corners"] = cached
+        corner_points, match_radius_pts = cached
+        if sharp_join_points:
+            protected_corner_count = _match_protected_corner_count(
+                sharp_join_points,
+                corner_points,
+                match_radius_pts,
+            )
+        if trajectory_cusp_points:
+            protected_cusp_count = _match_protected_corner_count(
+                trajectory_cusp_points,
+                corner_points,
+                match_radius_pts,
+            )
     short_segment_count = sum(
         int(summary["short_segment_count"]) for summary in valid_summaries
     )
@@ -4132,6 +4365,16 @@ def _alpha_final_cutline_quality(
         float(summary["maximum_join_angle_degrees"])
         for summary in valid_summaries
         if summary["maximum_join_angle_degrees"] is not None
+    ]
+    maximum_trajectory_turns = [
+        float(summary["maximum_trajectory_turn_degrees"])
+        for summary in valid_summaries
+        if summary.get("maximum_trajectory_turn_degrees") is not None
+    ]
+    minimum_wedge_widths = [
+        float(summary["minimum_wedge_width_mm"])
+        for summary in valid_summaries
+        if summary.get("minimum_wedge_width_mm") is not None
     ]
 
     geometry_safe = bool(
@@ -4184,6 +4427,13 @@ def _alpha_final_cutline_quality(
         "maximum_join_angle_degrees": max(maximum_angles, default=None),
         "effective_deviation_mm": effective_deviation_mm,
         "fit_mode": fit_mode,
+        # §CUTHOOK.1 bước 1 — số đo trên quỹ đạo thật. Chưa vào `machine_safe`:
+        # bước 3 (chặn xuất khi mọi ứng viên đều có gai) cần duyệt riêng.
+        "trajectory_cusp_count": len(trajectory_cusp_points),
+        "protected_cusp_count": protected_cusp_count,
+        "unprotected_cusp_count": len(trajectory_cusp_points) - protected_cusp_count,
+        "maximum_trajectory_turn_degrees": max(maximum_trajectory_turns, default=None),
+        "minimum_wedge_width_mm": min(minimum_wedge_widths, default=None),
     }
 
 
@@ -4452,6 +4702,119 @@ def _fit_alpha_live_tuned_paths(
     return None
 
 
+def denoise_cutline_mask(
+    mask: np.ndarray,
+    *,
+    amount: float | int | None,
+    px_per_mm: float,
+) -> np.ndarray:
+    """Khử răng cưa mask theo thanh kéo người dùng, trước khi lấy contour.
+
+    `amount` là 0–100 từ giao diện; 0 trả nguyên mask nên mặc định không đổi hành vi.
+    Dùng chung van an toàn §CUTJAG.2: mask mảnh (dải hairline do nhận diện lỗi) thì
+    bỏ qua thay vì bị bào thành rỗng.
+    """
+    try:
+        resolved = float(amount if amount is not None else 0.0)
+    except (TypeError, ValueError):
+        return mask
+    if not math.isfinite(resolved) or resolved <= 0.0:
+        return mask
+    resolved = min(100.0, resolved)
+    if not math.isfinite(px_per_mm) or px_per_mm <= 0:
+        return mask
+
+    sigma = min(
+        _CUTLINE_DENOISE_SIGMA_PX_MAX * resolved / 100.0,
+        _CUTLINE_DENOISE_MAX_MM * px_per_mm,
+    )
+    if sigma < 0.30 or min(mask.shape[:2]) < 5:
+        return mask
+    smoothed = cv2.GaussianBlur(
+        mask,
+        (0, 0),
+        sigmaX=sigma,
+        sigmaY=sigma,
+        borderType=cv2.BORDER_REPLICATE,
+    )
+    before = int(np.count_nonzero(mask >= 128))
+    after = int(np.count_nonzero(smoothed >= 128))
+    if before > 0 and after < before * _CUTLINE_PRESMOOTH_MIN_AREA_KEPT:
+        logger.info(
+            "Bỏ khử răng cưa (thanh kéo %.0f): mask quá mảnh (%d → %d pixel).",
+            resolved,
+            before,
+            after,
+        )
+        return mask
+    logger.info(
+        "Khử răng cưa đường cắt: thanh kéo %.0f → sigma %.2f px (%.3f mm).",
+        resolved,
+        sigma,
+        sigma / px_per_mm,
+    )
+    return smoothed
+
+
+def _presmooth_cutline_alpha(
+    mask: np.ndarray,
+    *,
+    dpi_x: float,
+    dpi_y: float,
+) -> np.ndarray:
+    """Khử răng cưa cấp pixel của Alpha trước khi lấy contour đường bế.
+
+    Không phải thanh tinh chỉnh của người dùng: đây là bộ khử nhiễu dưới một pixel,
+    cố định theo mm nên không nằm trong `geometry_key` của live preview. Sigma theo
+    từng trục vì tem có thể được render DPI khác nhau theo chiều ngang/dọc.
+    """
+    sigma_x = min(
+        _CUTLINE_ALPHA_PRESMOOTH_SIGMA_PX_MAX,
+        _CUTLINE_ALPHA_PRESMOOTH_MAX_MM * dpi_x / 25.4,
+    )
+    sigma_y = min(
+        _CUTLINE_ALPHA_PRESMOOTH_SIGMA_PX_MAX,
+        _CUTLINE_ALPHA_PRESMOOTH_MAX_MM * dpi_y / 25.4,
+    )
+    if (
+        sigma_x < _CUTLINE_ALPHA_PRESMOOTH_SIGMA_PX_MIN
+        and sigma_y < _CUTLINE_ALPHA_PRESMOOTH_SIGMA_PX_MIN
+    ):
+        # DPI quá thấp: một pixel đã lớn hơn ngân sách 0,12 mm, làm mượt sẽ ăn vào
+        # chi tiết thật thay vì khử nhiễu.
+        return mask
+    if min(mask.shape) < 5:
+        return mask
+    smoothed = cv2.GaussianBlur(
+        mask,
+        (0, 0),
+        sigmaX=max(sigma_x, 1e-3),
+        sigmaY=max(sigma_y, 1e-3),
+        # REPLICATE giữ nguyên tem chạm sát khung ảnh; BORDER_CONSTANT sẽ bào mất
+        # đúng cạnh đó vì crop của caller không còn chỗ đệm.
+        borderType=cv2.BORDER_REPLICATE,
+    )
+
+    # QUALITY (feedback 2026-08-16 §CUTJAG.2): bộ này chỉ được phép khử nhiễu dưới
+    # một pixel. Với mask MẢNH nó phá hình: đo được trên
+    # `test/1785209372799_..._a00b34db...jpg` — nhận diện AI sinh vài "tem" là dải
+    # hairline (cao 8 px, rộng 1315 px, Alpha đỉnh chỉ 235), Gaussian làm dải đó rơi
+    # xuống 0 px và `prepare_alpha_cutline_geometry` trả None → preview 422.
+    # Van an toàn: mất quá 10% diện tích silhouette thì đây là mask sai loại cho bộ
+    # lọc này, trả nguyên mask. Tem thật đo được giữ 99,79–99,89% nên van không bao
+    # giờ chạm vào ca đang chạy đúng.
+    before = int(np.count_nonzero(mask >= 128))
+    after = int(np.count_nonzero(smoothed >= 128))
+    if before > 0 and after < before * _CUTLINE_PRESMOOTH_MIN_AREA_KEPT:
+        logger.debug(
+            "Bỏ khử răng cưa Alpha: mask quá mảnh (%d → %d pixel silhouette).",
+            before,
+            after,
+        )
+        return mask
+    return smoothed
+
+
 def prepare_alpha_cutline_geometry(
     alpha_mask: np.ndarray,
     *,
@@ -4463,6 +4826,8 @@ def prepare_alpha_cutline_geometry(
     corner_style: str = "preserve",
     fill_holes: bool = True,
     min_detail_area_mm2: float = _MIN_CONTOUR_AREA_MM2,
+    presmooth_alpha: bool = False,
+    cutline_denoise: float | int = 0.0,
 ) -> dict[str, object] | None:
     """Chuẩn bị silhouette/offset dùng chung cho nhiều lần fit Bézier.
 
@@ -4495,6 +4860,22 @@ def prepare_alpha_cutline_geometry(
         }
 
     from skimage import measure
+
+    # §CUTJAG.1/3: làm mượt Alpha trước marching-squares. Đặt ở đây (không đặt trong
+    # fitter) để mọi guard sai lệch ở hạ nguồn đều tham chiếu CÙNG một silhouette.
+    # Thanh kéo của người dùng THẮNG cổng tự động; để 0 thì dùng cổng tự động.
+    try:
+        denoise_amount = float(cutline_denoise or 0.0)
+    except (TypeError, ValueError):
+        denoise_amount = 0.0
+    if math.isfinite(denoise_amount) and denoise_amount > 0.0:
+        mask = denoise_cutline_mask(
+            mask,
+            amount=denoise_amount,
+            px_per_mm=min(dpi_x, dpi_y_resolved) / 25.4,
+        )
+    elif presmooth_alpha:
+        mask = _presmooth_cutline_alpha(mask, dpi_x=dpi_x, dpi_y=dpi_y_resolved)
 
     contours = measure.find_contours(
         np.pad(mask, pad_width=1, mode="constant", constant_values=0),
@@ -4640,6 +5021,15 @@ def fit_prepared_alpha_cutline_geometry(
         return None
 
     rejected_qualities: list[dict[str, object]] = []
+    # §CUTHOOK.1 bước 2: ứng viên có gai do fitter tự sinh bị đẩy xuống cuối hàng,
+    # KHÔNG bị loại hẳn. Nhờ vậy `live-bezier` có móc sẽ nhường cho fallback fit trên
+    # reference (không thể sinh cusp mới), còn nếu mọi ứng viên đều có gai thì hành vi
+    # giữ nguyên như trước — chưa xuất hiện lỗi 422 mới. Chặn hẳn là bước 3.
+    hooked_candidates: list[dict[str, object]] = []
+    hook_search_started: list[float] = []
+    # PERF §CUTHOOK.2: `ideal_geometry` bất biến suốt chuỗi ứng viên nên bộ dò góc
+    # thật chỉ cần chạy một lần cho cả tem.
+    corner_cache: dict[str, object] = {}
 
     def accept_candidate(fitted, fit_mode: str):
         if fitted is None:
@@ -4654,6 +5044,7 @@ def fit_prepared_alpha_cutline_geometry(
             mm_to_pts=_PT_PER_MM,
             source_pixel_mm=source_pixel_mm,
             fit_mode=fit_mode,
+            corner_cache=corner_cache,
         )
         quality["dropped_component_count"] = int(
             prepared.get("dropped_contours", 0)
@@ -4691,7 +5082,7 @@ def fit_prepared_alpha_cutline_geometry(
         if not path_groups:
             rejected_qualities.append({**quality, "machine_safe": False})
             return None
-        return {
+        candidate = {
             "geometry": fitted_geometry,
             "path_groups": path_groups,
             "paths": paths,
@@ -4700,6 +5091,43 @@ def fit_prepared_alpha_cutline_geometry(
             "fit_mode": fit_mode,
             "quality": quality,
         }
+        if int(quality.get("unprotected_cusp_count", 0)) > 0:
+            if not hooked_candidates:
+                hook_search_started.append(time.perf_counter())
+            hooked_candidates.append(candidate)
+            return None
+        return candidate
+
+    def best_hooked_candidate():
+        """Ứng viên ít gai nhất, nêm rộng nhất — dùng khi không có ứng viên sạch."""
+        if not hooked_candidates:
+            return None
+        best = min(
+            hooked_candidates,
+            key=lambda candidate: (
+                int(candidate["quality"].get("unprotected_cusp_count", 0)),
+                -float(candidate["quality"].get("minimum_wedge_width_mm") or 0.0),
+                int(candidate["quality"].get("segment_count", 0)),
+            ),
+        )
+        best["quality"]["cutline_hook_tolerated"] = True
+        logger.info(
+            "Đường bế còn %d gai chưa khớp góc thật (nêm hẹp nhất %s mm, chế độ %s); "
+            "đã chọn ứng viên ít gai nhất.",
+            int(best["quality"].get("unprotected_cusp_count", 0)),
+            best["quality"].get("minimum_wedge_width_mm"),
+            best["fit_mode"],
+        )
+        return best
+
+    def hook_search_exhausted() -> bool:
+        """Hết hạn mức tìm ứng viên sạch gai, trong khi đã có ứng viên dùng được."""
+        if not hook_search_started:
+            return False
+        return (
+            time.perf_counter() - hook_search_started[0]
+            > _CUTLINE_HOOK_SEARCH_BUDGET_SECONDS
+        )
 
     # QUALITY (audit 2026-08-10 §CUTSMOOTH.1): cả kết quả live sau retension
     # cũng phải qua oracle cuối; không dựa vào việc ứng viên trước retension đã đạt.
@@ -4718,6 +5146,9 @@ def fit_prepared_alpha_cutline_geometry(
     )
     if live_result is not None:
         return live_result
+
+    if hook_search_exhausted():
+        return best_hooked_candidate()
 
     # QUALITY (audit 2026-08-10 §CUTSMOOTH.2): fallback này fit trên reference
     # bất biến, khóa đúng góc sao/notch và vẫn có guard topology/Hausdorff theo mm.
@@ -4738,6 +5169,9 @@ def fit_prepared_alpha_cutline_geometry(
     preserved_result = accept_candidate(preserved, "corner-preserving-fallback")
     if preserved_result is not None:
         return preserved_result
+
+    if hook_search_exhausted():
+        return best_hooked_candidate()
 
     # QUALITY (audit 2026-08-10 §CUTSMOOTH.2): offset miter có thể sinh thêm
     # điểm chia kỹ thuật quanh góc thật. Với một component, thử fitter thích nghi
@@ -4763,6 +5197,9 @@ def fit_prepared_alpha_cutline_geometry(
     )
     if adaptive_result is not None:
         return adaptive_result
+
+    if hook_search_exhausted():
+        return best_hooked_candidate()
 
     # Giữ fallback cũ như ứng viên cuối cho contour cong đơn giản, nhưng tuyệt đối
     # không còn quyền đi tắt qua oracle như trước đây.
@@ -4803,6 +5240,13 @@ def fit_prepared_alpha_cutline_geometry(
     fallback_result = accept_candidate(legacy_fallback, "guarded-fallback")
     if fallback_result is not None:
         return fallback_result
+
+    # §CUTHOOK.1 bước 2: không ứng viên nào sạch gai. Trả về ứng viên ÍT gai nhất,
+    # kèm cờ `cutline_hook_tolerated` để giao diện/log thấy được. Chưa ném lỗi ở đây —
+    # biến ca này thành 422 là bước 3, cần duyệt riêng.
+    hooked_result = best_hooked_candidate()
+    if hooked_result is not None:
+        return hooked_result
 
     best_quality = min(
         rejected_qualities,
@@ -4850,6 +5294,8 @@ def build_alpha_cutline_geometry(
     cutline_fidelity: float | int | None = _CUTLINE_TUNING_DEFAULT,
     curve_tension: float | int | None = _CUTLINE_TUNING_DEFAULT,
     min_detail_area_mm2: float = _MIN_CONTOUR_AREA_MM2,
+    presmooth_alpha: bool = False,
+    cutline_denoise: float | int = 0.0,
 ):
     """Tạo geometry CutContour trực tiếp từ Alpha nguồn cho preview và export.
 
@@ -4866,6 +5312,8 @@ def build_alpha_cutline_geometry(
         corner_style=corner_style,
         fill_holes=fill_holes,
         min_detail_area_mm2=min_detail_area_mm2,
+        presmooth_alpha=presmooth_alpha,
+        cutline_denoise=cutline_denoise,
     )
     if prepared is None:
         return None
@@ -6789,6 +7237,16 @@ def _rectangle_vector_bleed_commands(
 # tự tại chỗ (không spawn) để không chậm hơn.
 _STICKER_PARALLEL_MIN_PAGES = 6
 
+# Trần raster dùng CHUNG cho vòng lặp trang và cho hàm ước lượng RAM/worker. Hai chỗ
+# lệch nhau thì ước lượng RAM sai ngay (audit 2026-08-16 §BX.P12).
+_STICKER_MAX_LONG_PX = 6000
+_STICKER_MAX_MEGAPIXELS = 28_000_000
+
+# Tờ lớn tốn nhiều giây mỗi trang nên overhead spawn (~2–3s/worker) được bù ngay từ
+# 2–3 trang. Ngưỡng 6 trang chỉ đúng cho trang cỡ tem/A4 (audit 2026-08-16 §BX.P08).
+_STICKER_LARGE_PAGE_PT2 = 500_000.0  # ≈ 700×700 pt ≈ 247×247 mm
+_STICKER_PARALLEL_MIN_PAGES_LARGE = 2
+
 # Sau khi pool crash (OOM), giữ chế độ tuần tự một lúc để in liên tục không
 # lặp crash→fallback mỗi file (lãng phí thời gian + RAM).
 # TTL auto theo cấu hình máy; override: STICKER_STICKY_SEQ_SEC (0 = tắt sticky).
@@ -6862,7 +7320,11 @@ def _auto_sticker_hw_profile(
     if ram < 8 * 1024:
         workers, sticky, tier = 1, 900.0, "low"
     elif ram < 16 * 1024:
-        workers, sticky, tier = min(cpu_workers, 2), 600.0, "mid"
+        # PERF (audit 2026-08-16 §BX.P06): bảng RAM chuẩn của dự án cho tier 8–16GB là
+        # `min(cores, 4)`, không phải 2. Máy 12GB/8 nhân trước đây chỉ được 2 worker →
+        # gần 2× thời gian, cùng dạng hồi quy §3.14 nhưng ở tier khác. `_cap_sticker_workers`
+        # vẫn hạ tiếp theo RAM còn trống thật, nên đây là trần trên chứ không phải cam kết.
+        workers, sticky, tier = min(cpu_workers, 4), 600.0, "mid"
     else:
         # PERF (audit 2026-08-05 §ALPHA.P1): máy mạnh không bị cap theo bảng
         # cứng. Fitter Alpha chủ yếu chạy một luồng Python/GEOS mỗi process;
@@ -6959,23 +7421,30 @@ def _estimate_worker_ram_mb(
     w = page_w_pt * scale
     h = page_h_pt * scale
     long_px = max(w, h)
-    if long_px > 6000:
-        s = 6000.0 / long_px
+    if long_px > _STICKER_MAX_LONG_PX:
+        s = float(_STICKER_MAX_LONG_PX) / long_px
         w, h = w * s, h * s
     mp = w * h
-    if mp > 40_000_000:
-        s = (40_000_000 / mp) ** 0.5
+    if mp > _STICKER_MAX_MEGAPIXELS:
+        s = (_STICKER_MAX_MEGAPIXELS / mp) ** 0.5
         w, h = w * s, h * s
     # ~10 byte/px peak (RGBA + mask + bleed buffers) + overhead process Windows.
     raster_mb = (w * h * 10.0) / (1024.0 * 1024.0)
     return max(200.0, raster_mb + 280.0)
 
 
-def _n_pages_should_parallelize(n_pages: int) -> bool:
+def _n_pages_should_parallelize(
+    n_pages: int, *, page_area_pt2: float | None = None
+) -> bool:
     """True nếu nên fan-out song song (đủ nhiều trang để bù overhead spawn).
 
     STICKER_FORCE_SEQUENTIAL=1 → luôn tắt pool (debug OOM / crash worker).
     Sticky sequential sau pool crash → tắt tạm để in liên tục ổn định.
+
+    PERF (audit 2026-08-16 §BX.P08): ngưỡng 6 trang được tính cho trang cỡ tem/A4
+    (~2s/trang). Tờ lớn tốn nhiều giây mỗi trang nên trên máy tier ``full`` chỉ cần
+    2 trang là đã bù được overhead spawn. Máy yếu vẫn giữ ngưỡng 6 — thêm process
+    trên máy 8GB là đường vào swap, không phải tăng tốc.
     """
     if os.environ.get("STICKER_FORCE_SEQUENTIAL", "").lower() in ("1", "true", "yes"):
         return False
@@ -6986,7 +7455,15 @@ def _n_pages_should_parallelize(n_pages: int) -> bool:
             left, n_pages,
         )
         return False
-    return n_pages >= _STICKER_PARALLEL_MIN_PAGES
+    threshold = _STICKER_PARALLEL_MIN_PAGES
+    if (
+        page_area_pt2 is not None
+        and page_area_pt2 >= _STICKER_LARGE_PAGE_PT2
+        and get_sticker_hw_profile().get("tier") == "full"
+        and get_sticker_hw_profile().get("max_workers", 1) > 1
+    ):
+        threshold = _STICKER_PARALLEL_MIN_PAGES_LARGE
+    return n_pages >= threshold
 
 
 def _is_process_pool_crash(exc: BaseException) -> bool:
@@ -7104,6 +7581,7 @@ def _process_sticker_chunk(args: dict):
             alpha_source_pixel_mm=args.get("alpha_source_pixel_mm"),
             alpha_source_mode=args.get("alpha_source_mode", False),
             cutline_smoothness=args.get("cutline_smoothness", 50),
+            cutline_denoise=args.get("cutline_denoise", 0),
             cutline_fidelity=args.get("cutline_fidelity", 50),
             curve_tension=args.get("curve_tension", 50),
             min_detail_area_mm2=args.get(
@@ -7166,6 +7644,8 @@ class StickerEngine:
         cutline_smoothness: float | int = _CUTLINE_TUNING_DEFAULT,
         cutline_fidelity: float | int = _CUTLINE_TUNING_DEFAULT,
         curve_tension: float | int = _CUTLINE_TUNING_DEFAULT,
+        # §CUTJAG.3: 0 = tắt để mọi caller cũ giữ nguyên kết quả từng byte.
+        cutline_denoise: float | int = 0.0,
         min_detail_area_mm2: float = _MIN_CONTOUR_AREA_MM2,
         alpha_path_overrides: dict[int, dict] | None = None,
         approved_contour_overrides: dict[int, dict] | None = None,
@@ -7347,11 +7827,28 @@ class StickerEngine:
             # chia dải trang liền kề cho nhiều tiến trình con, mỗi con tự mở lại file
             # + xử lý chunk + trả file PDF, rồi merge ở đây. Overhead spawn Windows
             # ~2-3s/worker nên file nhỏ (< ngưỡng) chạy tuần tự tại chỗ (rơi xuống dưới).
+            # PERF (audit 2026-08-16 §BX.P08): diện tích trang đầu chỉ để CHỌN NGƯỠNG
+            # song song (tờ lớn thì 2 trang đã đáng spawn). Ngân sách RAM/worker vẫn được
+            # `_process_parallel` đo lại theo trang lớn nhất, không tin con số này.
+            first_page_area_pt2: float | None = None
+            if _page_subset is None and pdfium_page_count > 0:
+                try:
+                    with pdfium_guard():
+                        _probe_first = doc_in_pdfium[0]
+                        try:
+                            _pw, _ph = _probe_first.get_size()
+                        finally:
+                            _probe_first.close()
+                    first_page_area_pt2 = float(_pw) * float(_ph)
+                except Exception:
+                    first_page_area_pt2 = None
             if (
                 _page_subset is None
                 and not selection_mode
                 and process_page_indexes is None
-                and _n_pages_should_parallelize(pdfium_page_count)
+                and _n_pages_should_parallelize(
+                    pdfium_page_count, page_area_pt2=first_page_area_pt2
+                )
             ):
                 n_pages_probe = pdfium_page_count
                 try:
@@ -7476,8 +7973,12 @@ class StickerEngine:
                 # ── Chặn OOM: giới hạn độ phân giải raster theo kích thước trang ──
                 # Khổ tem nhỏ vẫn render full DPI; sheet lớn (SRA3+) tự hạ scale để
                 # cạnh dài ≲ MAX_LONG_PX và tổng ≲ MAX_MEGAPIXELS, tránh treo/hết RAM.
-                MAX_LONG_PX = 6000
-                MAX_MEGAPIXELS = 40_000_000
+                MAX_LONG_PX = _STICKER_MAX_LONG_PX
+                # PERF (audit 2026-08-16 §BX.P12): 40M từng là NHÁNH CHẾT — cạnh dài đã
+                # kẹp 6000px nên tổng luôn ≤36M với mọi tỉ lệ trang, tức trần cũ chưa từng
+                # ràng buộc. Hằng số dùng chung với `_estimate_worker_ram_mb` để ước lượng
+                # RAM/worker không lệch khỏi kích thước raster thật.
+                MAX_MEGAPIXELS = _STICKER_MAX_MEGAPIXELS
                 base_scale = self.dpi / 72.0
                 try:
                     with pdfium_guard():
@@ -7508,8 +8009,15 @@ class StickerEngine:
                     source_pixel_mm_page = _infer_full_page_image_pixel_mm(page_in_pike)
                 except Exception:
                     source_pixel_mm_page = None
-                if shrink < 1.0 and self.debug:
-                    logger.warning(">>> DPI CAP page %d: scale %.4f→%.4f (page %.0fx%.0f pt)", page_idx, base_scale, self.scale, pw_pt, ph_pt)
+                if shrink < 1.0:
+                    # PERF (audit 2026-08-16 §BX.P05): trước đây chỉ log khi self.debug,
+                    # nên trên bản phát hành không ai biết tờ lớn đang bị hạ về ~95–152 DPI.
+                    # DPI thực của đường cắt là thông tin nghiệp vụ, phải có trong log.
+                    logger.info(
+                        "[STICKER] DPI cap page %d: %.0f→%.0f DPI (scale %.4f→%.4f, trang %.0fx%.0f pt)",
+                        page_idx + 1, float(self.dpi), self.dpi * shrink,
+                        base_scale, self.scale, pw_pt, ph_pt,
+                    )
 
                 if use_vector_rectangle_bleed:
                     # Geometry is the page rectangle and bleed is drawn from the
@@ -7804,6 +8312,17 @@ class StickerEngine:
                             contour_pixel_to_pt = (
                                 source_pixel_mm_page * _PT_PER_MM
                             )
+                    # §CUTJAG.3: thanh "Khử răng cưa" áp ĐÚNG ở đây — mask đi vào
+                    # marching-squares. Không ghi đè `aa_mask` vì nó còn là nguồn màu
+                    # cho bù xén (§BG.4, đo thấy ghi đè lệch tới −5,4% diện tích).
+                    contour_mask = denoise_cutline_mask(
+                        contour_mask,
+                        amount=cutline_denoise,
+                        # `contour_mask` có thể đã được quy về lưới pixel NGUỒN ở trên,
+                        # nên mật độ phải suy từ `contour_pixel_to_pt`, không dùng
+                        # `px_per_mm` của khung render.
+                        px_per_mm=_PT_PER_MM / max(1e-9, contour_pixel_to_pt),
+                    )
                     aa_mask_padded = np.pad(contour_mask, pad_width=1, mode='constant', constant_values=0)
 
                     debug_step = f"Find Contours Page {page_idx}"
@@ -9388,30 +9907,54 @@ class StickerEngine:
                 try: doc_out.close()
                 except Exception: pass
 
-    def _run_sticker_chunks(self, args_list, n_workers: int, use_pool: bool):
+    def _run_sticker_chunks(
+        self, args_list, n_workers: int, use_pool: bool, spill_dir: str | None = None
+    ):
         """Chạy các chunk sticker: in-process tuần tự hoặc ProcessPool.
 
         Trả list (chunk_idx, result) — không sort. Khi pool chết (OOM/native)
         ném BrokenProcessPool / exception có "terminated abruptly".
+
+        PERF (audit 2026-08-16 §BX.P04): với ``spill_dir``, `chunk_pdf_bytes` của mỗi
+        chunk được GHI RA FILE ngay khi nhận và bytes được nhả, nên phần tử đầu của
+        result là ĐƯỜNG DẪN thay vì bytes. Trước đây parent gom mọi chunk vào list rồi
+        mới merge → peak RAM cha ≈ tổng dung lượng output, đúng lúc worker vừa nhả RAM
+        (đo bằng tracemalloc: 5 chunk × ~3 MB giữ đủ 5 lần). Không truyền ``spill_dir``
+        thì giữ nguyên hợp đồng bytes cũ.
         """
         import gc
+
+        def _spill(entry):
+            """Đổi bytes của một chunk thành file tạm, giữ nguyên phần meta."""
+            if spill_dir is None:
+                return entry
+            chunk_idx, payload = entry
+            chunk_bytes, metas, no_dieline, any_die = payload
+            if not isinstance(chunk_bytes, (bytes, bytearray)):
+                return entry
+            chunk_path = os.path.join(spill_dir, f"sticker_chunk_{chunk_idx:04d}.pdf")
+            with open(chunk_path, "wb") as chunk_file:
+                chunk_file.write(chunk_bytes)
+            # Nhả bytes NGAY: đây là mục đích của cả cơ chế spill.
+            del chunk_bytes
+            return chunk_idx, (chunk_path, metas, no_dieline, any_die)
 
         if len(args_list) == 1 or not use_pool or n_workers <= 1:
             mode = "in-process"
             logger.info(
-                "[STICKER] run chunks mode=%s count=%d workers=%d",
-                mode, len(args_list), n_workers,
+                "[STICKER] run chunks mode=%s count=%d workers=%d spill=%s",
+                mode, len(args_list), n_workers, spill_dir is not None,
             )
             results = []
             for a in args_list:
-                results.append(_process_sticker_chunk(a))
+                results.append(_spill(_process_sticker_chunk(a)))
                 # In liên tục nhiều trang: nhả buffer cv2/numpy giữa chunk.
                 gc.collect()
             return results
 
         logger.info(
-            "[STICKER] run chunks mode=pool count=%d workers=%d",
-            len(args_list), n_workers,
+            "[STICKER] run chunks mode=pool count=%d workers=%d spill=%s",
+            len(args_list), n_workers, spill_dir is not None,
         )
         results = []
         with ProcessPoolExecutor(max_workers=n_workers) as pool:
@@ -9421,7 +9964,7 @@ class StickerEngine:
             for fut in as_completed(future_map):
                 a = future_map[fut]
                 try:
-                    results.append(fut.result())
+                    results.append(_spill(fut.result()))
                 except Exception as e:
                     # Python exception từ worker (không phải process kill).
                     logger.error(
@@ -9457,15 +10000,23 @@ class StickerEngine:
         with pdfium_guard():
             _probe = pdfium.PdfDocument(input_path)
             n_pages = len(_probe)
-            # Probe kích thước trang đầu (gợi ý RAM/trang); không fail nếu PDF lạ.
+            # PERF (audit 2026-08-16 §BX.P07): ước lượng RAM/worker phải theo trang LỚN
+            # NHẤT, không phải trang đầu. File "bìa nhỏ + ruột tờ lớn" từng khiến ước
+            # lượng thấp → mở quá nhiều worker → pool crash → sticky tuần tự làm job sau
+            # chậm dù máy khỏe. Chỉ probe 32 trang đầu để bước đo này không thành điểm nóng.
             page0_w = page0_h = 0.0
             try:
-                if n_pages > 0:
-                    _page0 = _probe[0]
+                probe_limit = min(n_pages, 32)
+                max_area = -1.0
+                for probe_idx in range(probe_limit):
+                    _probe_page = _probe[probe_idx]
                     try:
-                        page0_w, page0_h = _page0.get_size()
+                        pw, ph = _probe_page.get_size()
                     finally:
-                        _page0.close()
+                        _probe_page.close()
+                    area = float(pw) * float(ph)
+                    if area > max_area:
+                        max_area, page0_w, page0_h = area, float(pw), float(ph)
             except Exception:
                 pass
             _probe.close()
@@ -9483,7 +10034,14 @@ class StickerEngine:
             and kw.get("bleed_color_type") == "image"
             and float(kw.get("bleed_mm") or 0) > 0
         )
-        n_workers = max(1, min(available, env_cap, n_pages))
+        # PERF (audit 2026-08-16 §BX.P11): escape hatch phải thắng auto-detect cả hai
+        # chiều. `min(available, ...)` cũ kẹp env bởi `cpu-1` nên chỉ giảm được, không nới
+        # — lệch nguyên tắc "env luôn thắng" của `prynx-performance`. `_cap_sticker_workers`
+        # cũng đã tôn trọng env theo đúng cách này. Vẫn kẹp theo số trang: nhiều worker hơn
+        # số chunk là spawn process không có việc.
+        env_explicit = _env_int_or_none("STICKER_MAX_WORKERS") is not None
+        n_workers = max(1, min(env_cap, n_pages) if env_explicit
+                        else min(available, env_cap, n_pages))
         n_workers = _cap_sticker_workers(
             n_workers, n_pages, input_path,
             page_w_pt=page0_w, page_h_pt=page0_h, dpi=self.dpi,
@@ -9540,6 +10098,7 @@ class StickerEngine:
                 "alpha_source_pixel_mm": kw.get("alpha_source_pixel_mm"),
                 "alpha_source_mode": kw.get("alpha_source_mode", False),
                 "cutline_smoothness": kw.get("cutline_smoothness", 50),
+                "cutline_denoise": kw.get("cutline_denoise", 0),
                 "cutline_fidelity": kw.get("cutline_fidelity", 50),
                 "curve_tension": kw.get("curve_tension", 50),
                 "min_detail_area_mm2": kw.get(
@@ -9558,8 +10117,14 @@ class StickerEngine:
         workers_started = time.perf_counter()
         use_pool = len(args_list) > 1 and n_workers > 1
         used_pool = False
+        # PERF (audit 2026-08-16 §BX.P04): chunk nhận về được ghi ra đây ngay và bytes
+        # được nhả, thay vì gom cả bộ trong RAM process cha.
+        chunk_spill = tempfile.TemporaryDirectory(prefix="prynx_sticker_chunks_")
+        chunk_spill_dir = chunk_spill.name
         try:
-            results = self._run_sticker_chunks(args_list, n_workers, use_pool=use_pool)
+            results = self._run_sticker_chunks(
+                args_list, n_workers, use_pool=use_pool, spill_dir=chunk_spill_dir
+            )
             used_pool = use_pool
         except Exception as pool_err:
             if use_pool and _is_process_pool_crash(pool_err):
@@ -9582,6 +10147,7 @@ class StickerEngine:
                             args_list,
                             n_workers=retry_workers,
                             use_pool=True,
+                            spill_dir=chunk_spill_dir,
                         )
                         used_pool = True
                         logger.info(
@@ -9609,6 +10175,7 @@ class StickerEngine:
                         # Peak RAM thấp hơn: một chunk một lúc trong process cha.
                         results = self._run_sticker_chunks(
                             args_list, n_workers=1, use_pool=False,
+                            spill_dir=chunk_spill_dir,
                         )
                     except Exception as seq_err:
                         logger.error(
@@ -9640,16 +10207,24 @@ class StickerEngine:
         pages_no_dieline = []
         any_dieline_found = False
         final_doc = None
+        # Handle chunk phải sống tới sau `save` (pikepdf giữ tham chiếu foreign object),
+        # nhưng phải được đóng tường minh SAU ĐÓ — trên Windows còn handle mở thì không
+        # xoá được file tạm (§BX.P04).
+        chunk_docs: list[pikepdf.Pdf] = []
         try:
-            for _ci, (chunk_bytes, metas, no_dieline, any_die) in results:
+            for _ci, (chunk_source, metas, no_dieline, any_die) in results:
                 all_pages_meta.extend(metas)
                 pages_no_dieline.extend(no_dieline)
                 any_dieline_found = any_dieline_found or any_die
-                src = pikepdf.Pdf.open(io.BytesIO(chunk_bytes))
+                # `spill_dir` trả đường dẫn; hợp đồng bytes cũ vẫn được nhận.
+                src = pikepdf.Pdf.open(
+                    chunk_source if isinstance(chunk_source, str)
+                    else io.BytesIO(chunk_source)
+                )
+                chunk_docs.append(src)
                 if final_doc is None:
                     final_doc = pikepdf.Pdf.new()
                 final_doc.pages.extend(src.pages)
-                # KHÔNG close src trước khi save: pikepdf giữ tham chiếu foreign object.
 
             with pikepdf.Pdf.open(input_path) as source_catalog:
                 _copy_output_intents(source_catalog, final_doc)
@@ -9682,6 +10257,12 @@ class StickerEngine:
             if final_doc is not None:
                 try: final_doc.close()
                 except Exception: pass
+            # Đóng handle chunk TRƯỚC khi xoá thư mục tạm (Windows không xoá file đang mở).
+            for chunk_doc in chunk_docs:
+                try: chunk_doc.close()
+                except Exception: pass
+            chunk_docs.clear()
+            chunk_spill.cleanup()
 
         # Tái tạo final_meta/error/warning Y HỆT nhánh tuần tự.
         final_meta = {}

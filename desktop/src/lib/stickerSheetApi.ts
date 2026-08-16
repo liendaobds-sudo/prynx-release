@@ -326,6 +326,8 @@ export async function previewStickerCutline(
         cutlineFidelity: number;
         curveTension: number;
         minDetailAreaMm2: number;
+        /** §CUTJAG.3 — thanh "Khử răng cưa" 0–100. */
+        cutlineDenoise: number;
     },
 ): Promise<StickerCutlinePreview> {
     const response = await authenticatedFetch(
@@ -348,6 +350,7 @@ export async function previewStickerCutline(
                 cutline_fidelity: options.cutlineFidelity,
                 curve_tension: options.curveTension,
                 min_detail_area_mm2: options.minDetailAreaMm2,
+                cutline_denoise: options.cutlineDenoise,
             }),
         },
     );

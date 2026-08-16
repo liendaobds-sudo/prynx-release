@@ -35,3 +35,191 @@ export function normalizeStickerBleedColorType(
     // trajectory được giữ lại vì backend tự nhận tem chữ nhật và fallback an toàn.
     return productType === 'sticker' && bleedColorType === 'mirror' ? 'image' : bleedColorType;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hợp đồng payload dùng chung — AUDIT (2026-08-16 §BX.F01/F02/F07/F13)
+//
+// Trước đợt này có BA công thức khác nhau cho cùng một thao tác: `StickerTool`
+// lúc chạy tay, `StickerTool` lúc ghi recipe, và `recipeRunners` lúc phát lại.
+// Với mặc định `cornerStyle='preserve'` thì chạy tay gửi `auto_safe` còn phát lại
+// gửi `contour` → khuôn bế phát lại KHÁC bản người dùng đã duyệt. Mọi nơi phải
+// gọi các hàm thuần dưới đây, không tự viết lại điều kiện.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type StickerProductType = 'sticker' | 'rectangle';
+
+/** Cạnh nào được bù xén (chỉ có nghĩa với Xén vuông góc). */
+export type StickerBleedSideKey = 'top' | 'right' | 'bottom' | 'left';
+export const STICKER_BLEED_SIDE_KEYS: readonly StickerBleedSideKey[] = ['top', 'right', 'bottom', 'left'];
+
+/** Giới hạn PHẢI trùng với `min`/`max` của các ô nhập trong StickerTool. */
+export const STICKER_PARAM_LIMITS = {
+    bleedMm: { min: 0, max: 10 },
+    offsetMm: { min: -10, max: 10 },
+    edgeBiteMm: { min: 0, max: 5 },
+} as const;
+
+/** Ép về số hữu hạn trong khoảng cho phép. Recipe sửa tay / build cũ có thể mang NaN. */
+export function clampStickerMm(
+    value: unknown,
+    limit: { min: number; max: number },
+    fallback = 0,
+): number {
+    const numeric = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(numeric)) return fallback;
+    return Math.min(limit.max, Math.max(limit.min, numeric));
+}
+
+/**
+ * Hình học đường cắt gửi xuống backend.
+ *
+ * `alpha` luôn `contour` (biên trong suốt không được ép về hình chuẩn).
+ * QUALITY (audit 2026-08-07 §NOODLE.2): "Giữ góc" chỉ chọn cách xuất góc của
+ * contour custom, KHÔNG được âm thầm tắt nhận dạng hình chuẩn — chỉ van an toàn
+ * `forceContour` của người dùng mới ép `contour`.
+ */
+export function resolveStickerShapeMode(input: {
+    productType: StickerProductType;
+    cutMode: string;
+    forceContour?: boolean;
+}): 'contour' | 'auto_safe' {
+    if (input.productType !== 'sticker') return 'contour';
+    if (input.cutMode === 'alpha') return 'contour';
+    return input.forceContour ? 'contour' : 'auto_safe';
+}
+
+/**
+ * "Độ lẹm mép" chỉ có ô nhập với ba kiểu màu lấy từ ảnh. Ô ẩn mà vẫn gửi giá trị cũ
+ * thì engine vẫn clip artwork → mất nội dung sát mép mà không chỗ nào nói ra
+ * (AUDIT 2026-08-16 §BX.F02).
+ */
+export const STICKER_EDGE_BITE_COLOR_TYPES: readonly string[] = ['image', 'trajectory', 'inpaint'];
+
+export function resolveStickerEdgeBiteMm(input: {
+    productType: StickerProductType;
+    bleedColorType: string;
+    edgeBiteMm: unknown;
+}): number {
+    if (input.productType !== 'rectangle') return 0;
+    if (!STICKER_EDGE_BITE_COLOR_TYPES.includes(input.bleedColorType)) return 0;
+    return clampStickerMm(input.edgeBiteMm, STICKER_PARAM_LIMITS.edgeBiteMm);
+}
+
+/** Kiểu góc gửi xuống backend. `alpha` phải giữ nguyên góc để không bo mất mép mềm. */
+export function resolveStickerCornerStyle(input: {
+    productType: StickerProductType;
+    cutMode: string;
+    cornerStyle: string;
+}): string {
+    if (input.productType === 'rectangle') return 'miter';
+    if (input.cutMode === 'alpha') return 'preserve';
+    return input.cornerStyle || 'preserve';
+}
+
+/** "Bỏ nền trắng" vô nghĩa khi đã có kênh alpha thật, và không dùng ở Xén vuông góc. */
+export function resolveStickerRemoveWhiteBg(input: {
+    productType: StickerProductType;
+    cutMode: string;
+    removeWhiteBg: boolean;
+}): boolean {
+    if (input.productType === 'rectangle') return false;
+    if (input.cutMode === 'alpha') return false;
+    return !!input.removeWhiteBg;
+}
+
+/** Payload backend: danh sách cạnh ĐANG bật. Thiếu field = nở đều 4 cạnh. */
+export function stickerBleedSidesToParam(
+    sides: Partial<Record<StickerBleedSideKey, boolean>> | undefined,
+): string {
+    const active = STICKER_BLEED_SIDE_KEYS.filter(side => sides?.[side] !== false);
+    // Không bao giờ gửi rỗng: UI đã chặn trạng thái 0 cạnh, muốn tắt bù xén thì đặt
+    // Bù xén = 0. Rơi vào đây nghĩa là dữ liệu hỏng → nở đều như mặc định cũ.
+    return (active.length > 0 ? active : STICKER_BLEED_SIDE_KEYS).join(',');
+}
+
+export interface StickerDielineFormInput {
+    productType: StickerProductType;
+    cutMode: string;
+    offsetMm: unknown;
+    cornerStyle: string;
+    fillHoles: boolean;
+    bleedMm: unknown;
+    removeWhiteBg: boolean;
+    bleedColorType: string;
+    bleedColorHex: string;
+    edgeBiteMm: unknown;
+    cutFirstPageOnly: boolean;
+    cropToSticker: boolean;
+    bleedSides?: Partial<Record<StickerBleedSideKey, boolean>>;
+    forceContour?: boolean;
+    /**
+     * Thanh "Khử răng cưa" 0–100 (§CUTJAG.3). Recipe cũ không có field này nên
+     * `undefined` phải giữ đúng hành vi cũ: 0 = tắt.
+     */
+    cutlineDenoise?: unknown;
+}
+
+/** Kẹp thanh khử răng cưa về 0–100; giá trị lạ hoặc thiếu trả 0 (tắt). */
+export function resolveStickerCutlineDenoise(value: unknown): number {
+    const resolved = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(resolved)) return 0;
+    return Math.round(Math.max(0, Math.min(100, resolved)));
+}
+
+/**
+ * Dựng đủ các field hình học của `POST /pdf-tools/sticker-dieline`.
+ *
+ * KHÔNG gắn `file_id`/`file_path`/`selection_json` — caller tự thêm vì mỗi luồng
+ * lấy nguồn khác nhau. Trả về map để caller nạp vào `FormData` và cũng để test so
+ * sánh payload chạy tay với payload phát lại recipe.
+ */
+export function buildStickerDielineFields(
+    input: StickerDielineFormInput,
+): Record<string, string> {
+    const isRectangle = input.productType === 'rectangle';
+    const cutMode = isRectangle ? 'none' : (input.cutMode || 'original');
+    const shapeMode = resolveStickerShapeMode({
+        productType: input.productType,
+        cutMode: input.cutMode,
+        forceContour: input.forceContour,
+    });
+    return {
+        cut_mode: cutMode,
+        offset_mm: isRectangle
+            ? '0'
+            : String(clampStickerMm(input.offsetMm, STICKER_PARAM_LIMITS.offsetMm)),
+        corner_style: resolveStickerCornerStyle({
+            productType: input.productType,
+            cutMode: input.cutMode,
+            cornerStyle: input.cornerStyle,
+        }),
+        bleed_mm: String(clampStickerMm(input.bleedMm, STICKER_PARAM_LIMITS.bleedMm)),
+        fill_holes: isRectangle ? 'true' : (input.fillHoles ? 'true' : 'false'),
+        remove_white_bg: resolveStickerRemoveWhiteBg({
+            productType: input.productType,
+            cutMode: input.cutMode,
+            removeWhiteBg: input.removeWhiteBg,
+        }) ? 'true' : 'false',
+        draw_cut_contour: isRectangle ? 'false' : (cutMode !== 'none' ? 'true' : 'false'),
+        bleed_color_type: normalizeStickerBleedColorType(input.bleedColorType, input.productType),
+        bleed_color_hex: input.bleedColorHex || '#FFFFFF',
+        edge_bite_mm: String(resolveStickerEdgeBiteMm({
+            productType: input.productType,
+            bleedColorType: input.bleedColorType,
+            edgeBiteMm: input.edgeBiteMm,
+        })),
+        // Bế tem nhãn bù xén quanh đường contour nên "trên/dưới/trái/phải" không có
+        // nghĩa hình học ở đó → luôn "all" để backend nở đều như build cũ.
+        bleed_sides: isRectangle ? stickerBleedSidesToParam(input.bleedSides) : 'all',
+        cut_first_page_only: (!isRectangle && input.cutFirstPageOnly) ? 'true' : 'false',
+        crop_to_sticker: shouldCropStickerPage(input.productType, input.cutMode, input.cropToSticker)
+            ? 'true'
+            : 'false',
+        shape_mode: shapeMode,
+        rectangle_mode: isRectangle ? 'true' : 'false',
+        // §CUTJAG.3: Xén vuông góc không dò contour nên thanh khử răng cưa vô nghĩa.
+        cutline_denoise: (isRectangle || cutMode === 'none')
+            ? '0'
+            : String(resolveStickerCutlineDenoise(input.cutlineDenoise)),
+    };
+}

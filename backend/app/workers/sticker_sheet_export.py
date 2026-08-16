@@ -26,6 +26,7 @@ from app.workers.sticker_engine import (
     StickerEngine,
     UnsafeCutlineGeometryError,
     build_alpha_cutline_geometry,
+    should_presmooth_cutline_alpha,
     compute_cut_bleed_offsets,
 )
 from app.workers.sticker_page_canvas import restore_sticker_page_canvas
@@ -571,6 +572,91 @@ def _page_session_view(
     )
 
 
+def _cutline_overrides_with_preview_fallback(
+    session: StickerSheetSession,
+    page: StickerSheetPageState,
+    *,
+    page_number: int,
+    revision: int,
+    edits: list[dict[str, object]],
+    instance_ids: list[int],
+    crop_to_sticker: bool,
+    dpi: float,
+    dpi_y: float,
+    offset_mm: float,
+    bleed_mm: float,
+    cut_mode: str,
+    corner_style: str,
+    fill_holes: bool,
+    cutline_smoothness: float,
+    cutline_fidelity: float,
+    curve_tension: float,
+    min_detail_area_mm2: float,
+) -> list[dict[str, object]] | None:
+    """Bảo đảm export trực tiếp cũng dùng đúng preview exact-geometry.
+
+    Frontend thường tạo cache trước khi bật nút xuất. API vẫn phải an toàn khi bị
+    gọi trực tiếp hoặc cache bị dọn; khi đó dựng cùng preview worker một lần rồi
+    đọc lại cache, tránh âm thầm fit lại từ PNG điểm ảnh.
+    """
+    cache_key = _cutline_export_cache_key(
+        page_number=page_number,
+        revision=revision,
+        edits=edits,
+        dpi=dpi,
+        dpi_y=dpi_y,
+        offset_mm=offset_mm,
+        bleed_mm=bleed_mm,
+        cut_mode=cut_mode,
+        corner_style=corner_style,
+        fill_holes=fill_holes,
+        cutline_smoothness=cutline_smoothness,
+        cutline_fidelity=cutline_fidelity,
+        curve_tension=curve_tension,
+        min_detail_area_mm2=min_detail_area_mm2,
+    )
+    overrides = _cutline_overrides_from_preview_cache(
+        page,
+        cache_key=cache_key,
+        instance_ids=instance_ids,
+        crop_to_sticker=crop_to_sticker,
+        dpi=dpi,
+        dpi_y=dpi_y,
+    )
+    if overrides is not None:
+        return overrides
+
+    # Import trễ để giữ module phụ thuộc hai chiều ở mức runtime, không tạo vòng
+    # import khi endpoint preview nạp các helper export dùng chung.
+    from app.workers.sticker_cutline_preview import build_sticker_cutline_preview
+
+    build_sticker_cutline_preview(
+        _page_session_view(session, page),
+        page_number=page_number,
+        base_revision=revision,
+        edits=edits,
+        dpi=dpi,
+        dpi_y=dpi_y,
+        offset_mm=offset_mm,
+        bleed_mm=bleed_mm,
+        cut_mode=cut_mode,
+        corner_style=corner_style,
+        fill_holes=fill_holes,
+        cutline_smoothness=cutline_smoothness,
+        cutline_fidelity=cutline_fidelity,
+        curve_tension=curve_tension,
+        min_detail_area_mm2=min_detail_area_mm2,
+    )
+    return _cutline_overrides_from_preview_cache(
+        page,
+        cache_key=cache_key,
+        instance_ids=instance_ids,
+        crop_to_sticker=crop_to_sticker,
+        dpi=dpi,
+        dpi_y=dpi_y,
+    )
+
+
 def _build_cutline_pdf_from_pngs(
     png_paths: list[Path],
     work_dir: Path,
@@ -591,6 +677,7 @@ def _build_cutline_pdf_from_pngs(
     cutline_fidelity: float = 50.0,
     curve_tension: float = 50.0,
     min_detail_area_mm2: float = 1.0,
+    presmooth_alpha: bool = False,
     alpha_path_override_sequence: list[dict[str, object] | None] | None = None,
 ) -> Path:
     source_pdf = work_dir / f"tem_alpha_{uuid.uuid4().hex[:8]}.pdf"
@@ -644,6 +731,7 @@ def _build_cutline_pdf_from_pngs(
                     cutline_fidelity=cutline_fidelity,
                     curve_tension=curve_tension,
                     min_detail_area_mm2=min_detail_area_mm2,
+                    presmooth_alpha=presmooth_alpha,
                 )
             except UnsafeCutlineGeometryError as exc:
                 raise StickerSheetExportError(str(exc)) from exc
@@ -791,7 +879,7 @@ def export_sticker_sheet_document(
             segment_paths: list[Path] = []
             segment_overrides: list[dict[str, object] | None] = []
             segment_key: tuple[
-                str, float, float, float, float, float, float,
+                str, float, float, float, float, float, float, bool,
             ] | None = None
             sticker_count = 0
 
@@ -807,6 +895,7 @@ def export_sticker_sheet_document(
                     segment_fidelity,
                     segment_tension,
                     segment_min_detail,
+                    segment_presmooth,
                 ) = segment_key
                 fragments.append(_build_cutline_pdf_from_pngs(
                     segment_paths,
@@ -827,6 +916,7 @@ def export_sticker_sheet_document(
                     cutline_fidelity=segment_fidelity,
                     curve_tension=segment_tension,
                     min_detail_area_mm2=segment_min_detail,
+                    presmooth_alpha=segment_presmooth,
                     alpha_path_override_sequence=segment_overrides,
                 ))
                 segment_paths = []
@@ -901,30 +991,28 @@ def export_sticker_sheet_document(
                 instance_ids = sorted(
                     int(value) for value in np.unique(labels) if int(value) > 0
                 )
-                cache_key = _cutline_export_cache_key(
-                    page_number=page_number,
-                    revision=int(page.manifest.get("mask_revision", 0)),
-                    edits=edits,
-                    dpi=page_dpi,
-                    dpi_y=page_dpi_y,
-                    offset_mm=offset_mm,
-                    bleed_mm=bleed_mm,
-                    cut_mode=cut_mode,
-                    corner_style=corner_style,
-                    fill_holes=fill_holes,
-                    cutline_smoothness=page_smoothness,
-                    cutline_fidelity=page_fidelity,
-                    curve_tension=page_tension,
-                    min_detail_area_mm2=page_min_detail,
-                )
-                page_overrides = _cutline_overrides_from_preview_cache(
-                    page,
-                    cache_key=cache_key,
-                    instance_ids=instance_ids,
-                    crop_to_sticker=crop_to_sticker,
-                    dpi=page_dpi,
-                    dpi_y=page_dpi_y,
-                )
+                page_overrides = None
+                if cut_mode != "none" and draw_cut_contour:
+                    page_overrides = _cutline_overrides_with_preview_fallback(
+                        session,
+                        page,
+                        page_number=page_number,
+                        revision=int(page.manifest.get("mask_revision", 0)),
+                        edits=edits,
+                        instance_ids=instance_ids,
+                        crop_to_sticker=crop_to_sticker,
+                        dpi=page_dpi,
+                        dpi_y=page_dpi_y,
+                        offset_mm=offset_mm,
+                        bleed_mm=bleed_mm,
+                        cut_mode=cut_mode,
+                        corner_style=corner_style,
+                        fill_holes=fill_holes,
+                        cutline_smoothness=page_smoothness,
+                        cutline_fidelity=page_fidelity,
+                        curve_tension=page_tension,
+                        min_detail_area_mm2=page_min_detail,
+                    )
                 if page_overrides is None or len(page_overrides) != len(png_paths):
                     page_overrides = [None] * len(png_paths)
                 key = (
@@ -935,6 +1023,9 @@ def export_sticker_sheet_document(
                     page_fidelity,
                     page_tension,
                     page_min_detail,
+                    # §CUTJAG.1: nguồn biên quyết định có khử răng cưa Alpha hay
+                    # không, nên hai trang khác nguồn KHÔNG được gộp cùng segment.
+                    should_presmooth_cutline_alpha(page.boundary_source),
                 )
                 if segment_key is not None and segment_key != key:
                     flush_raster_segment()
@@ -1066,11 +1157,17 @@ def export_sticker_sheet(
         alpha_path_overrides: dict[int, dict] = {}
         preview_override_sequence: list[dict[str, object]] | None = None
         page = session.pages.get(session.legacy_active_page)
-        if page is not None:
-            cache_key = _cutline_export_cache_key(
+        if page is not None and cut_mode != "none" and draw_cut_contour:
+            preview_override_sequence = _cutline_overrides_with_preview_fallback(
+                session,
+                page,
                 page_number=page.page_number,
                 revision=int(page.manifest.get("mask_revision", 0)),
                 edits=edits,
+                instance_ids=sorted(
+                    int(value) for value in np.unique(labels) if int(value) > 0
+                ),
+                crop_to_sticker=crop_to_sticker,
                 dpi=dpi,
                 dpi_y=resolved_dpi_y,
                 offset_mm=offset_mm,
@@ -1082,16 +1179,6 @@ def export_sticker_sheet(
                 cutline_fidelity=cutline_fidelity,
                 curve_tension=curve_tension,
                 min_detail_area_mm2=min_detail_area_mm2,
-            )
-            preview_override_sequence = _cutline_overrides_from_preview_cache(
-                page,
-                cache_key=cache_key,
-                instance_ids=sorted(
-                    int(value) for value in np.unique(labels) if int(value) > 0
-                ),
-                crop_to_sticker=crop_to_sticker,
-                dpi=dpi,
-                dpi_y=resolved_dpi_y,
             )
             if (
                 preview_override_sequence is not None
@@ -1132,6 +1219,9 @@ def export_sticker_sheet(
                         cutline_fidelity=cutline_fidelity,
                         curve_tension=curve_tension,
                         min_detail_area_mm2=min_detail_area_mm2,
+                        presmooth_alpha=should_presmooth_cutline_alpha(
+                            page.boundary_source if page is not None else None
+                        ),
                     )
                 except UnsafeCutlineGeometryError as exc:
                     raise StickerSheetExportError(str(exc)) from exc

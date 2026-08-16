@@ -1,4 +1,4 @@
-"""Tests cho song song sticker: detect pool crash, cap worker, fallback tuần tự."""
+﻿"""Tests cho song song sticker: detect pool crash, cap worker, fallback tuần tự."""
 import os
 import sys
 from concurrent.futures.process import BrokenProcessPool
@@ -59,7 +59,10 @@ def test_n_pages_should_parallelize_sticky_after_crash(monkeypatch):
     "ram_gb,cpu,want_workers,want_sticky_max",
     [
         (4, 4, 1, 900),
-        (12, 8, 2, 600),
+        # PERF (audit 2026-08-16 §BX.P06): tier 8–16GB theo bảng RAM chuẩn của dự án là
+        # min(cores, 4), không phải 2. `_cap_sticker_workers` vẫn hạ tiếp theo RAM trống.
+        (12, 8, 4, 600),
+        (12, 3, 2, 600),
         (24, 8, 7, 0),
         (24, 4, 3, 0),
         (48, 16, 15, 0),
@@ -215,7 +218,7 @@ def test_process_parallel_falls_back_on_pool_crash(tmp_path, monkeypatch):
     call_modes = []
     captured_sample_insets = []
 
-    def fake_run(args_list, n_workers, use_pool):
+    def fake_run(args_list, n_workers, use_pool, spill_dir=None):
         captured_sample_insets.extend(
             args.get("edge_sample_inset_mm") for args in args_list
         )
@@ -282,7 +285,7 @@ def test_process_parallel_retries_smaller_pool_before_sequential(tmp_path, monke
     engine = se.StickerEngine(dpi=72)
     calls = []
 
-    def fail_once_then_succeed(args_list, n_workers, use_pool):
+    def fail_once_then_succeed(args_list, n_workers, use_pool, spill_dir=None):
         calls.append((n_workers, use_pool))
         if len(calls) == 1:
             raise BrokenProcessPool("terminated abruptly")
@@ -340,7 +343,7 @@ def test_process_parallel_raises_clear_error_if_fallback_also_fails(tmp_path, mo
 
     engine = se.StickerEngine(dpi=72)
 
-    def always_fail(args_list, n_workers, use_pool):
+    def always_fail(args_list, n_workers, use_pool, spill_dir=None):
         if use_pool:
             raise BrokenProcessPool("terminated abruptly")
         raise RuntimeError("page rasterize boom")

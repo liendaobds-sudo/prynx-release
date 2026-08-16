@@ -119,22 +119,19 @@ def _multi_artwork_vector_pdf_bytes() -> bytes:
         (375, 55, 120, 105, "0.48 0.18 0.78"),
     )
     commands = ["1 1 1 rg 0 0 600 400 re f"]
-    commands.extend(
-        f"{color} rg {x} {y} {width} {height} re f"
-        for x, y, width, height, color in rectangles
-    )
-    for index, (x, y, width, height, _color) in enumerate(rectangles, start=1):
-        if index not in {1, 3, 5}:
-            continue
-        commands.append(
-            "1 1 1 RG 3 w "
-            + _pdf_circle_path(
-                x + width / 2.0,
-                y + height / 2.0,
-                min(width, height) * 0.47,
+    for index, (x, y, width, height, color) in enumerate(rectangles, start=1):
+        if index in {1, 3, 5}:
+            commands.append(
+                f"{color} rg "
+                + _pdf_circle_path(
+                    x + width / 2.0,
+                    y + height / 2.0,
+                    min(width, height) * 0.47,
+                )
+                + " f"
             )
-            + " S"
-        )
+        else:
+            commands.append(f"{color} rg {x} {y} {width} {height} re f")
     page.obj["/Resources"] = pikepdf.Dictionary()
     page.obj["/Contents"] = document.make_stream(
         ("\n".join(commands) + "\n").encode("ascii")
@@ -566,6 +563,17 @@ def test_auto_multi_artwork_pdf_detects_confirms_and_exports_five_stickers(
         assert fill_ratios[2] < 0.86
         assert fill_ratios[3] > 0.94
         assert fill_ratios[4] < 0.86
+        exact_shapes = manifest["vector_geometry_ref"]["exact_shapes"]
+        assert {
+            int(shape["instance_id"]): shape["kind"]
+            for shape in exact_shapes
+        } == {
+            1: "circle",
+            2: "rect",
+            3: "circle",
+            4: "rect",
+            5: "circle",
+        }
         assert "round-sticker-contour-inferred" in manifest["warnings"]
         assert "vector-mask-raster-preview" in manifest["warnings"]
 
@@ -599,6 +607,7 @@ def test_auto_multi_artwork_pdf_detects_confirms_and_exports_five_stickers(
             else:
                 content = streams.read_bytes()
             assert b"/CutContour CS" in content
+            assert content.count(b" c\n") == 4
 
 
 def test_detect_refine_assets_and_confirm_are_qualified_by_source_page():

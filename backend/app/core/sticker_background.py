@@ -90,6 +90,9 @@ class BackgroundInfo:
     confidence: float
     is_near_white: bool
     is_flat: bool = True
+    # QUALITY (feedback 2026-08-16 §WHITE-SHEET.1): giữ độ nhiễu góc thật để nhánh
+    # phục hồi tem trắng không phải suy ngược từ confidence đã bị kẹp.
+    corner_p95: float | None = None
 
 
 def foreground_ratio(mask: Optional[np.ndarray]) -> float:
@@ -150,6 +153,28 @@ def _foreground_from_flat_background(
         return None
     background = np.isin(labels, list(border_labels))
     return (~background).astype(np.uint8) * 255
+
+
+def foreground_from_flat_background(
+    img_rgb: np.ndarray,
+    background_rgb: np.ndarray | tuple[int, int, int],
+    tolerance: int,
+) -> Optional[np.ndarray]:
+    """Tách nền phẳng với dung sai do caller đã đo và vẫn chỉ xóa vùng nối biên.
+
+    Hàm công khai này dành cho nhánh phục hồi có guard riêng. Nó không tự nới dung sai và
+    không thay hợp đồng thận trọng của :func:`detect_background`.
+    """
+    if img_rgb is None or img_rgb.ndim != 3 or img_rgb.shape[2] < 3:
+        return None
+    color = np.asarray(background_rgb, dtype=np.int16).reshape(-1)
+    if color.size < 3:
+        return None
+    return _foreground_from_flat_background(
+        img_rgb[:, :, :3].astype(np.int16, copy=False),
+        color[:3],
+        max(0, int(tolerance)),
+    )
 
 
 def _border_gradient_p95(img_rgb: np.ndarray) -> float:
@@ -278,6 +303,7 @@ def detect_background(img_rgb: np.ndarray) -> Optional[BackgroundInfo]:
                 confidence=confidence,
                 is_near_white=min(color) >= 240,
                 is_flat=True,
+                corner_p95=corner_p95,
             )
 
     # QUALITY (audit 2026-08-06 §BG.3): nền không phẳng (gradient/hoạ tiết), hoặc
@@ -292,4 +318,5 @@ def detect_background(img_rgb: np.ndarray) -> Optional[BackgroundInfo]:
         confidence=_FLOOD_CONFIDENCE,
         is_near_white=False,
         is_flat=False,
+        corner_p95=corner_p95,
     )

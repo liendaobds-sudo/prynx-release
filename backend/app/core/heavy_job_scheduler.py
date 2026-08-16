@@ -75,6 +75,35 @@ _WHOLE_MACHINE_SLOTS = threading.BoundedSemaphore(1)
 _SERIAL_KINDS = frozenset({"office"})
 _SERIAL_SLOTS = threading.BoundedSemaphore(1)
 
+# Bù xén / tạo đường cắt tem (PERF audit 2026-08-16 §BX.P03).
+#
+# `sticker_engine` tự trải tới `cpu-1` process theo RAM (`_auto_sticker_hw_profile`), nên
+# trần 1 job tem là CỐ Ý: job thứ hai sẽ nhân đôi ngân sách RAM mà profile kia vừa tính.
+#
+# Trước bản sửa, trần đó là một `threading.BoundedSemaphore` acquire BÊN TRONG threadpool
+# của route, tức job tem xếp hàng đã nhận suất heavy toàn cục rồi mới chặn nhau. Đo được:
+# 3 request tem → 3/3 suất toàn cục bị giữ dù chỉ 1 job chạy, làm merge/split/resize/
+# optimize/OCR chờ oan (`tests/test_sticker_admission.py`). Đưa trần về đây để nó được lấy
+# TRƯỚC suất toàn cục theo đúng thứ tự khóa cố định, và chờ ở tầng async.
+#
+# Override: PRYNX_MAX_STICKER_JOBS.
+_STICKER_KINDS = frozenset({"sticker"})
+
+
+def _default_sticker_slots() -> int:
+    raw = os.environ.get("PRYNX_MAX_STICKER_JOBS", "")
+    if raw:
+        try:
+            forced = int(raw)
+        except (TypeError, ValueError):
+            forced = 0
+        if forced > 0:
+            return forced
+    return 1
+
+
+_STICKER_SLOTS = threading.BoundedSemaphore(_default_sticker_slots())
+
 
 def _kind_gate(kind: str) -> "threading.BoundedSemaphore | None":
     """Trần phụ theo loại việc, `None` nếu loại đó chỉ chịu trần toàn cục."""
@@ -82,6 +111,8 @@ def _kind_gate(kind: str) -> "threading.BoundedSemaphore | None":
         return _WHOLE_MACHINE_SLOTS
     if kind in _SERIAL_KINDS:
         return _SERIAL_SLOTS
+    if kind in _STICKER_KINDS:
+        return _STICKER_SLOTS
     return None
 
 

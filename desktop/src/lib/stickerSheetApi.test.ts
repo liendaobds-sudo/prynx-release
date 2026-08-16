@@ -191,6 +191,7 @@ describe('stickerSheetApi — hợp đồng theo trang', () => {
             cutlineFidelity: 84,
             curveTension: 36,
             minDetailAreaMm2: 1.4,
+            cutlineDenoise: 65,
         });
 
         const init = apiMocks.authenticatedFetch.mock.calls[0][1] as RequestInit;
@@ -204,6 +205,8 @@ describe('stickerSheetApi — hợp đồng theo trang', () => {
             cutline_fidelity: 84,
             curve_tension: 36,
             min_detail_area_mm2: 1.4,
+            // §CUTJAG.3: thanh khử răng cưa phải xuống tới payload, không bị bỏ rơi.
+            cutline_denoise: 65,
             edits: [{
                 kind: 'stroke', id: 'stroke-1', tool: 'erase', instance_id: 1,
             }],

@@ -21,30 +21,6 @@ const TOOL_OPTIONS: Array<{ id: StickerMaskTool; label: string; hint: string }> 
     { id: 'merge', label: 'Gộp với tem', hint: 'Chọn chi tiết rời, sau đó chọn tem chính.' },
 ];
 
-// UIUX (audit 2026-08-15 §XEPTEM.2): warning từ pipeline phải được chuyển thành
-// ngôn ngữ nghiệp vụ trước khi đưa lên panel; mã nội bộ không đủ rõ để thợ in
-// quyết định có cần soi lại đường bế hay không.
-const STICKER_WARNING_LABELS: Record<string, string> = {
-    'round-sticker-contour-inferred': 'Đã phát hiện tem tròn bên trong nền ảnh vuông; hãy kiểm tra đường tròn màu tím.',
-    'vector-mask-raster-preview': 'Vùng tem được suy ra từ nội dung vector; hãy kiểm tra đường bế trước khi xuất.',
-    'pdf-raster-review': 'Trang PDF chưa có biên cắt sẵn; vùng tem được suy ra từ ảnh, hãy kiểm tra đường bế.',
-    'pdf-soft-mask-review': 'PDF có lớp trong suốt; hãy kiểm tra lại đường bế trước khi xuất.',
-    'mixed-boundary-sources': 'Một số trang có đường cắt sẵn, một số trang chưa có; hãy kiểm tra từng trang.',
-    'multi-page-source': 'File có nhiều trang; hãy kiểm tra thứ tự và số tem của từng trang.',
-    'missing-dpi': 'File không có DPI; hãy xác nhận kích thước vật lý trước khi xuất.',
-    'non-square-dpi': 'DPI ngang và dọc khác nhau; kích thước tem có thể không đồng đều theo hai chiều.',
-    'color-converted-to-srgb': 'Ảnh đã được chuyển về sRGB để nhận diện; hãy kiểm tra lại màu trước khi in.',
-    'icc-profile-discarded': 'Không đọc được hồ sơ màu của ảnh; hãy kiểm tra lại màu trước khi in.',
-};
-
-function stickerWarningLabel(warning: string): string {
-    const cutScanPage = /^cut-scan-failed-page-(\d+)$/.exec(warning)?.[1];
-    if (cutScanPage) {
-        return `Không đọc được đường cắt có sẵn ở trang ${cutScanPage}; hãy kiểm tra trang này.`;
-    }
-    return STICKER_WARNING_LABELS[warning] || warning;
-}
-
 function cutlineRoundRadiusMm(roundness: number, dpiX: number, dpiY: number): number {
     const safeDpi = Math.max(1, Math.min(dpiX, dpiY));
     const sourcePixelMm = 25.4 / safeDpi;
@@ -136,9 +112,11 @@ export default function StickerSheetPanel({
         && manifest.refinement_available === true
         && state.status === 'mask-review',
     );
+    // UIUX (feedback 2026-08-16): ba thanh này chỉnh Bézier đầu ra chung, không
+    // phụ thuộc nguồn mask là AI hay vector; chỉ Khử bóng mới cần dữ liệu AI.
     const canTuneCutline = Boolean(
         manifest
-        && manifest.boundary_source === 'ai'
+        && manifest.boundary_source !== 'existing-cut'
         && state.status === 'mask-review',
     );
     const roundRadiusMm = cutlineRoundRadiusMm(
@@ -170,15 +148,6 @@ export default function StickerSheetPanel({
     const allPagesExportable = exportablePageCount === exportPageCount;
     const canDetectActivePage = ['source-ready', 'error'].includes(state.status);
     const canDetectAllPages = pageCount > 1 && pendingPageCount > 0;
-    const confidencePercent = manifest
-        ? Math.round(Math.max(0, Math.min(1, manifest.strategy_confidence)) * 100)
-        : 0;
-    const hasLowConfidence = Boolean(manifest && manifest.strategy_confidence < 0.75);
-    const recognitionNeedsReview = Boolean(
-        manifest
-        && (manifest.needs_review || manifest.warnings.length > 0 || hasLowConfidence),
-    );
-
     useEffect(() => {
         // UIUX (feedback 2026-08-12 §AI.COMPACT1): sau khi xác nhận hoặc đang xuất,
         // thu cả thiết lập lẫn thao tác xuất; người dùng có thể xổ ra để xem lại.
@@ -299,72 +268,59 @@ export default function StickerSheetPanel({
                         </div>
                     </div>
 
-                    <div
-                        role="note"
-                        aria-label={tv('Tình trạng nhận diện vùng tem')}
-                        className={`rounded-lg border p-3 text-[11px] ${recognitionNeedsReview
-                            ? 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-200'
-                            : 'border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-800 dark:bg-sky-950/20 dark:text-sky-200'
-                        }`}
-                    >
-                        <div className="flex items-center justify-between gap-2 font-bold">
-                            <span>
-                                {recognitionNeedsReview
-                                    ? tv('Cần kiểm tra đường cắt')
-                                    : tv('Đường cắt đã được xác định')}
-                            </span>
-                            <span className="shrink-0">{tv('Độ tin cậy')} {confidencePercent}%</span>
-                        </div>
-                        {recognitionNeedsReview && (
-                            <p className="mt-1 leading-relaxed">
-                                {tv('Hãy soi đường màu tím trên từng tem trước khi xuất file.')}
-                            </p>
-                        )}
-                        {hasLowConfidence && (
-                            <p className="mt-1 leading-relaxed">
-                                {tv('Độ tin cậy chưa cao; hãy kiểm tra đủ số tem và biên của từng tem.')}
-                            </p>
-                        )}
-                        {manifest.warnings.length > 0 && (
-                            <ul className="mt-1 space-y-0.5 leading-relaxed">
-                                {manifest.warnings.map(warning => (
-                                    <li key={warning}>⚠ {tv(stickerWarningLabel(warning))}</li>
-                                ))}
-                            </ul>
-                        )}
-                    </div>
-
-                    {manifest.refinement_available === true && canTuneCutline && (
+                    {canTuneCutline && (
                         <div className="rounded-xl border border-violet-200 bg-violet-50/70 p-3 dark:border-violet-800 dark:bg-violet-950/20">
                             <ToolSectionLabel>{tv('Xem và chỉnh đường bế', 'preprocess.stickerSheet')}</ToolSectionLabel>
-                            <div className="mb-3">
-                                <div className="mb-1.5 text-[11px] font-semibold text-slate-700 dark:text-zinc-200">
-                                    {tv('Khử bóng')}
+                            {canRefinePreview && (
+                                <div className="mb-3">
+                                    <div className="mb-1.5 text-[11px] font-semibold text-slate-700 dark:text-zinc-200">
+                                        {tv('Khử bóng')}
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-1.5">
+                                        {([
+                                            ['off', 'Giữ nguyên'],
+                                            ['auto', 'Tự động'],
+                                        ] as const).map(([value, label]) => (
+                                            <button
+                                                key={value}
+                                                type="button"
+                                                aria-pressed={state.shadowCleanup === value}
+                                                onClick={() => actions.setMaskTuning(tabId, { shadowCleanup: value })}
+                                                className={`h-9 rounded-lg border text-[11px] font-bold transition-colors ${
+                                                    state.shadowCleanup === value
+                                                        ? 'border-violet-500 bg-white text-violet-700 shadow-sm dark:bg-zinc-900 dark:text-violet-300'
+                                                        : 'border-violet-200 bg-violet-50 text-slate-600 dark:border-violet-900 dark:bg-violet-950/20 dark:text-zinc-300'
+                                                }`}
+                                            >
+                                                {tv(label)}
+                                            </button>
+                                        ))}
+                                    </div>
                                 </div>
-                                <div className="grid grid-cols-2 gap-1.5">
-                                    {([
-                                        ['off', 'Giữ nguyên'],
-                                        ['auto', 'Tự động'],
-                                    ] as const).map(([value, label]) => (
-                                        <button
-                                            key={value}
-                                            type="button"
-                                            aria-pressed={state.shadowCleanup === value}
-                                            onClick={() => actions.setMaskTuning(tabId, { shadowCleanup: value })}
-                                            disabled={!canRefinePreview}
-                                            className={`h-9 rounded-lg border text-[11px] font-bold transition-colors disabled:opacity-50 ${
-                                                state.shadowCleanup === value
-                                                    ? 'border-violet-500 bg-white text-violet-700 shadow-sm dark:bg-zinc-900 dark:text-violet-300'
-                                                    : 'border-violet-200 bg-violet-50 text-slate-600 dark:border-violet-900 dark:bg-violet-950/20 dark:text-zinc-300'
-                                            }`}
-                                        >
-                                            {tv(label)}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
+                            )}
 
                             <div className="space-y-3">
+                                {/* §CUTJAG.3: mask của mô hình gần như nhị phân (đo được:
+                                    chỉ 2,06% pixel trung gian) nên marching-squares chỉ
+                                    trả về bậc thang pixel. Thanh này làm mượt mask TRƯỚC
+                                    khi dựng đường bế — đứng đầu nhóm vì nó tác động lên
+                                    đầu vào của ba thanh còn lại. */}
+                                <CutlineSlider
+                                    label="Khử răng cưa"
+                                    ariaLabel="Mức khử răng cưa đường bế"
+                                    value={state.cutlineDenoise}
+                                    step={5}
+                                    valueLabel={state.cutlineDenoise === 0
+                                        ? tv('Tắt', 'preprocess.stickerSheet')
+                                        : `${Math.round(state.cutlineDenoise)}%`}
+                                    lowLabel="Giữ nguyên biên"
+                                    highLabel="Mượt hơn"
+                                    disabled={!canTuneCutline}
+                                    onChange={cutlineDenoise => actions.setCutlineTuning(
+                                        tabId,
+                                        { cutlineDenoise },
+                                    )}
+                                />
                                 <CutlineSlider
                                     label="Bám sát hình gốc"
                                     ariaLabel="Mức bám sát hình gốc"

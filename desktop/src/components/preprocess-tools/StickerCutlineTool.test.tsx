@@ -125,14 +125,20 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
             />,
         );
 
-        expect((screen.getByRole('button', { name: 'PDF/PNG đã có biên' }) as HTMLButtonElement).getAttribute('aria-pressed')).toBe('true');
-        expect((screen.getByRole('button', { name: 'Ảnh AI nhiều tem' }) as HTMLButtonElement).getAttribute('aria-pressed')).toBe('false');
+        const existingButton = screen.getByRole('button', { name: 'PDF/PNG đã có biên' }) as HTMLButtonElement;
+        expect(existingButton.getAttribute('aria-pressed')).toBe('true');
+        expect((screen.getByRole('button', { name: 'Tách nhiều tem' }) as HTMLButtonElement).getAttribute('aria-pressed')).toBe('false');
+        const existingTooltip = document.getElementById(existingButton.getAttribute('aria-describedby') || '');
+        expect(existingTooltip?.getAttribute('role')).toBe('tooltip');
+        expect(existingTooltip?.textContent).toContain(
+            'Không cần file có sẵn CutContour; bạn vẫn bù xén và tạo đường cắt bằng giao diện cũ.',
+        );
         await waitFor(() => expect(screen.getByText('direct-engine:current.pdf')).toBeTruthy());
         expect(inspectStickerSource).not.toHaveBeenCalled();
         expect(detectStickerSource).not.toHaveBeenCalled();
     });
 
-    it('chỉ mở pipeline AI sau khi người dùng chọn Ảnh AI nhiều tem', async () => {
+    it('chỉ mở pipeline AI sau khi người dùng chọn Tách nhiều tem', async () => {
         const image = new File(['image'], 'current.png', { type: 'image/png' });
         const pdf = new File(['pdf'], 'current.pdf', { type: 'application/pdf' });
         render(
@@ -147,7 +153,15 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
 
         await waitFor(() => expect(screen.getByText('direct-engine:current.pdf')).toBeTruthy());
         expect(inspectStickerSource).not.toHaveBeenCalled();
-        fireEvent.click(screen.getByRole('button', { name: 'Ảnh AI nhiều tem' }));
+        const multiStickerButton = screen.getByRole('button', { name: 'Tách nhiều tem' });
+        fireEvent.click(multiStickerButton);
+        const multiStickerTooltip = document.getElementById(
+            multiStickerButton.getAttribute('aria-describedby') || '',
+        );
+        expect(multiStickerTooltip?.getAttribute('role')).toBe('tooltip');
+        expect(multiStickerTooltip?.textContent).toContain(
+            'Dùng khi một trang chứa nhiều tem nhưng chưa có biên riêng rõ ràng.',
+        );
         expect(screen.getByRole('button', { name: 'Nhận diện trang hiện tại' })).toBeTruthy();
         expect(screen.queryByRole('group', { name: 'Thiết lập đường bế tem' })).toBeNull();
         expect(inspectStickerSource).not.toHaveBeenCalled();
@@ -171,7 +185,7 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
             />,
         );
 
-        fireEvent.click(screen.getByRole('button', { name: 'Ảnh AI nhiều tem' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Tách nhiều tem' }));
         fireEvent.click(screen.getByRole('button', { name: 'Nhận diện trang hiện tại' }));
         await waitFor(() => expect(
             useStickerSheetStore.getState().getTab('review-tab').status,
@@ -237,7 +251,7 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
             />,
         );
 
-        fireEvent.click(screen.getByRole('button', { name: 'Ảnh AI nhiều tem' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Tách nhiều tem' }));
         await waitFor(() => expect(screen.getByRole('button', { name: 'Nhận diện trang hiện tại' })).toBeTruthy());
         expect(screen.queryByRole('button', { name: 'Chọn ảnh khác' })).toBeNull();
         expect(screen.queryByRole('button', { name: 'source.png' })).toBeNull();
@@ -328,7 +342,7 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
         );
         await waitFor(() => expect(screen.getByText('direct-engine:current.pdf')).toBeTruthy());
         fireEvent.click(screen.getByRole('button', { name: 'start-direct' }));
-        const aiButton = screen.getByRole('button', { name: 'Ảnh AI nhiều tem' }) as HTMLButtonElement;
+        const aiButton = screen.getByRole('button', { name: 'Tách nhiều tem' }) as HTMLButtonElement;
         expect(aiButton.disabled).toBe(true);
         fireEvent.click(aiButton);
         expect(screen.getByText('direct-engine:current.pdf')).toBeTruthy();
@@ -376,7 +390,7 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
                 onFileFixed={onFileFixed}
             />,
         );
-        fireEvent.click(screen.getByRole('button', { name: 'Ảnh AI nhiều tem' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Tách nhiều tem' }));
         fireEvent.click(screen.getByRole('button', { name: /Thiết lập bù xén/ }));
         const exportButton = screen.getByRole('button', { name: 'Tạo PDF có đường cắt' }) as HTMLButtonElement;
         await waitFor(() => expect(exportButton.disabled).toBe(false));

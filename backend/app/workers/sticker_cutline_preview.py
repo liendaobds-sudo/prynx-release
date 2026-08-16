@@ -13,11 +13,18 @@ import numpy as np
 from PIL import Image
 
 from app.core.system_memory import plan_worker_count
-from app.core.sticker_sheet_session import StickerSheetSession, StickerSheetSessionConflict
+from app.core.sticker_sheet_session import (
+    StickerSheetPageState,
+    StickerSheetSession,
+    StickerSheetSessionConflict,
+)
 from app.workers.sticker_engine import (
+    ALPHA_CONTOUR_INSET_MM,
     UnsafeCutlineGeometryError,
+    compute_cut_bleed_offsets,
     fit_prepared_alpha_cutline_geometry,
     prepare_alpha_cutline_geometry,
+    should_presmooth_cutline_alpha,
 )
 from app.workers.sticker_sheet_export import (
     STICKER_PAGE_PADDING_MM,
@@ -70,6 +77,336 @@ def _number(value: float) -> str:
     return f"{rounded:.4f}".rstrip("0").rstrip(".") or "0"
 
 
+_EXACT_ELLIPSE_KAPPA = 0.5522847498307936
+
+
+def _exact_offset_points(
+    *,
+    cut_mode: str,
+    offset_mm: float,
+    bleed_mm: float,
+) -> float | None:
+    """Tính một lần vị trí dao từ đúng policy đang dùng cho contour raster."""
+    if str(cut_mode or "original").strip().lower() == "none":
+        return None
+    try:
+        offset_value = float(offset_mm)
+        bleed_value = float(bleed_mm)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(offset_value) or not math.isfinite(bleed_value):
+        return None
+    effective_offset_mm = offset_value - (
+        ALPHA_CONTOUR_INSET_MM if cut_mode == "alpha" else 0.0
+    )
+    total_offset_pts, _outer_offset_pts = compute_cut_bleed_offsets(
+        str(cut_mode or "original").strip().lower(),
+        max(0.0, bleed_value) * 72.0 / 25.4,
+        effective_offset_mm * 72.0 / 25.4,
+    )
+    return float(total_offset_pts)
+
+
+def _shape_coordinate_unit(shape: dict[str, object]) -> str:
+    unit = str(shape.get("coordinate_unit", "px")).strip().lower()
+    return "pt" if unit == "pt" else "px"
+
+
+def _global_shape_point_to_local(
+    point: object,
+    *,
+    unit: str,
+    left_px: int,
+    top_px: int,
+    dpi_x: float,
+    dpi_y: float,
+) -> tuple[float, float] | None:
+    if not isinstance(point, (list, tuple)) or len(point) != 2:
+        return None
+    try:
+        x, y = float(point[0]), float(point[1])
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not all(math.isfinite(value) for value in (x, y)):
+        return None
+    if unit == "pt":
+        local = (
+            x - float(left_px) * 72.0 / dpi_x,
+            y - float(top_px) * 72.0 / dpi_y,
+        )
+    else:
+        local = (
+            (x - float(left_px)) * 72.0 / dpi_x,
+            (y - float(top_px)) * 72.0 / dpi_y,
+        )
+    return local if all(math.isfinite(value) for value in local) else None
+
+
+def _local_shape_params(
+    shape: dict[str, object],
+    *,
+    left_px: int,
+    top_px: int,
+    dpi_x: float,
+    dpi_y: float,
+) -> dict[str, float] | None:
+    raw_params = shape.get("params")
+    params = raw_params if isinstance(raw_params, dict) else {}
+    unit = _shape_coordinate_unit(shape)
+    try:
+        if unit == "pt":
+            cx = float(params["cx"])
+            cy = float(params["cy"])
+            local_cx = cx - float(left_px) * 72.0 / dpi_x
+            local_cy = cy - float(top_px) * 72.0 / dpi_y
+            result = {"cx": local_cx, "cy": local_cy}
+            for key in ("r", "a", "b", "w", "h", "angle"):
+                if key in params:
+                    result[key] = float(params[key])
+            return result
+        # Tương thích manifest tạm của bản thử nghiệm trước khi schema point được chốt.
+        if "center_x_px" in shape:
+            result = {
+                "cx": (float(shape["center_x_px"]) - left_px) * 72.0 / dpi_x,
+                "cy": (float(shape["center_y_px"]) - top_px) * 72.0 / dpi_y,
+                "r": float(shape["radius_px"]) * 72.0 / dpi_x,
+                "radius_y": float(shape["radius_px"]) * 72.0 / dpi_y,
+            }
+            return result
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    return None
+
+
+def _rotated_point(
+    cx: float,
+    cy: float,
+    x: float,
+    y: float,
+    angle_degrees: float,
+) -> tuple[float, float]:
+    angle = math.radians(angle_degrees)
+    cosine = math.cos(angle)
+    sine = math.sin(angle)
+    return (
+        cx + x * cosine - y * sine,
+        cy + x * sine + y * cosine,
+    )
+
+
+def _ellipse_path_segments(
+    *,
+    cx: float,
+    cy: float,
+    radius_x: float,
+    radius_y: float,
+    angle_degrees: float = 0.0,
+) -> list[tuple[tuple[float, float], ...]] | None:
+    if min(radius_x, radius_y) <= 0 or not all(math.isfinite(value) for value in (
+        cx, cy, radius_x, radius_y, angle_degrees,
+    )):
+        return None
+
+    def point(x: float, y: float) -> tuple[float, float]:
+        return _rotated_point(cx, cy, x, y, angle_degrees)
+
+    def tangent(x: float, y: float) -> tuple[float, float]:
+        return _rotated_point(0.0, 0.0, x, y, angle_degrees)
+
+    segments: list[tuple[tuple[float, float], ...]] = []
+    for quadrant in range(4):
+        start_angle = quadrant * math.pi / 2.0
+        end_angle = start_angle + math.pi / 2.0
+        start = point(radius_x * math.cos(start_angle), radius_y * math.sin(start_angle))
+        end = point(radius_x * math.cos(end_angle), radius_y * math.sin(end_angle))
+        start_tangent = tangent(
+            -radius_x * math.sin(start_angle) * _EXACT_ELLIPSE_KAPPA,
+            radius_y * math.cos(start_angle) * _EXACT_ELLIPSE_KAPPA,
+        )
+        end_tangent = tangent(
+            -radius_x * math.sin(end_angle) * _EXACT_ELLIPSE_KAPPA,
+            radius_y * math.cos(end_angle) * _EXACT_ELLIPSE_KAPPA,
+        )
+        segments.append((
+            start,
+            (start[0] + start_tangent[0], start[1] + start_tangent[1]),
+            (end[0] - end_tangent[0], end[1] - end_tangent[1]),
+            end,
+        ))
+    return segments
+
+
+def _line_path_segments(points: list[tuple[float, float]]) -> list[tuple[tuple[float, float], ...]]:
+    if len(points) < 3:
+        return []
+    return [
+        (start, start, end, end)
+        for index, start in enumerate(points)
+        for end in [points[(index + 1) % len(points)]]
+    ]
+
+
+def _polygon_shape_path_groups(
+    shape: dict[str, object],
+    *,
+    left_px: int,
+    top_px: int,
+    dpi: float,
+    dpi_y: float,
+    total_offset_pts: float,
+    corner_style: str,
+) -> list[dict[str, object]] | None:
+    raw_coords = shape.get("coords")
+    if not isinstance(raw_coords, (list, tuple)):
+        return None
+    unit = _shape_coordinate_unit(shape)
+    dpi_x = float(dpi)
+    dpi_y_resolved = float(dpi_y)
+    points = []
+    for raw_point in raw_coords:
+        point = _global_shape_point_to_local(
+            raw_point,
+            unit=unit,
+            left_px=left_px,
+            top_px=top_px,
+            dpi_x=dpi_x,
+            dpi_y=dpi_y_resolved,
+        )
+        if point is None:
+            return None
+        points.append(point)
+    if len(points) < 3:
+        return None
+    if abs(total_offset_pts) > 1e-9:
+        try:
+            from shapely.geometry import MultiPolygon, Polygon
+
+            polygon = Polygon(points)
+            if polygon.is_empty or not polygon.is_valid:
+                polygon = polygon.buffer(0)
+            join_style = 1 if str(corner_style).strip().lower() == "round" else 2
+            polygon = polygon.buffer(total_offset_pts, join_style=join_style)
+            if polygon.is_empty:
+                return None
+            if isinstance(polygon, MultiPolygon):
+                polygon = max(polygon.geoms, key=lambda item: item.area)
+            points = [(float(x), float(y)) for x, y in polygon.exterior.coords[:-1]]
+        except (ImportError, ValueError, TypeError):
+            return None
+    segments = _line_path_segments(points)
+    return [{"exterior": segments, "interiors": []}] if segments else None
+
+
+def _exact_shape_path_groups(
+    shape: dict[str, object],
+    *,
+    left_px: int,
+    top_px: int,
+    dpi: float,
+    dpi_y: float,
+    cut_mode: str,
+    offset_mm: float,
+    bleed_mm: float,
+    corner_style: str,
+) -> list[dict[str, object]] | None:
+    """Dựng đường bế từ hình chuẩn, không quay lại contour pixel."""
+    total_offset_pts = _exact_offset_points(
+        cut_mode=cut_mode,
+        offset_mm=offset_mm,
+        bleed_mm=bleed_mm,
+    )
+    if total_offset_pts is None:
+        return [] if str(cut_mode or "").strip().lower() == "none" else None
+    try:
+        dpi_x = float(dpi)
+        dpi_y_resolved = float(dpi_y)
+    except (TypeError, ValueError):
+        return None
+    if min(dpi_x, dpi_y_resolved) <= 0 or not all(
+        math.isfinite(value) for value in (dpi_x, dpi_y_resolved, total_offset_pts)
+    ):
+        return None
+    kind = str(shape.get("kind", "")).strip().lower()
+    if kind in {"circle", "ellipse"}:
+        params = _local_shape_params(
+            shape,
+            left_px=left_px,
+            top_px=top_px,
+            dpi_x=dpi_x,
+            dpi_y=dpi_y_resolved,
+        )
+        if params is None:
+            return None
+        try:
+            if kind == "circle":
+                radius_x = float(params.get("r", 0.0)) + total_offset_pts
+                radius_y = float(params.get("radius_y", params.get("r", 0.0))) + total_offset_pts
+                angle = 0.0
+            else:
+                radius_x = float(params["a"]) + total_offset_pts
+                radius_y = float(params["b"]) + total_offset_pts
+                angle = float(params.get("angle", 0.0))
+            segments = _ellipse_path_segments(
+                cx=float(params["cx"]),
+                cy=float(params["cy"]),
+                radius_x=radius_x,
+                radius_y=radius_y,
+                angle_degrees=angle,
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+        return [{"exterior": segments, "interiors": []}] if segments else None
+    if kind == "rounded_rect":
+        # Rounded-rect có thể dùng polygon exact ở mọi DPI; fallback này vẫn bỏ hẳn
+        # marching-squares nên không còn bậc thang của mask.
+        return _polygon_shape_path_groups(
+            shape,
+            left_px=left_px,
+            top_px=top_px,
+            dpi=dpi_x,
+            dpi_y=dpi_y_resolved,
+            total_offset_pts=total_offset_pts,
+            corner_style=corner_style,
+        )
+    if kind in {"rect", "triangle"}:
+        return _polygon_shape_path_groups(
+            shape,
+            left_px=left_px,
+            top_px=top_px,
+            dpi=dpi_x,
+            dpi_y=dpi_y_resolved,
+            total_offset_pts=total_offset_pts,
+            corner_style=corner_style,
+        )
+    return None
+
+
+def _exact_shapes_by_instance(
+    page: StickerSheetPageState,
+    edits: list[dict[str, object]],
+) -> dict[int, dict[str, object]]:
+    """Lấy hình học chuẩn; sau khi sửa mask thì quay về fit theo mask."""
+    if edits:
+        return {}
+    reference = page.manifest.get("vector_geometry_ref")
+    if not isinstance(reference, dict):
+        return {}
+    raw_shapes = reference.get("exact_shapes")
+    if not isinstance(raw_shapes, list):
+        return {}
+    shapes: dict[int, dict[str, object]] = {}
+    for raw_shape in raw_shapes:
+        if not isinstance(raw_shape, dict):
+            continue
+        try:
+            instance_id = int(raw_shape["instance_id"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if raw_shape.get("kind") in {"circle", "ellipse", "rounded_rect", "rect", "triangle"}:
+            shapes[instance_id] = raw_shape
+    return shapes
+
+
 def _ring_svg_path(
     segments,
     *,
@@ -119,6 +456,11 @@ def _aggregate_cutline_quality(items: list[dict[str, object]]) -> dict[str, obje
             "maximum_join_angle_degrees": None,
             "effective_deviation_mm": 0.0,
             "fit_mode": "disabled",
+            "trajectory_cusp_count": 0,
+            "unprotected_cusp_count": 0,
+            "maximum_trajectory_turn_degrees": None,
+            "minimum_wedge_width_mm": None,
+            "cutline_hook_tolerated": False,
         }
     modes = {str(item.get("fit_mode", "unknown")) for item in items}
     minimum_lengths = [
@@ -135,6 +477,17 @@ def _aggregate_cutline_quality(items: list[dict[str, object]]) -> dict[str, obje
         float(item["effective_deviation_mm"])
         for item in items
         if item.get("effective_deviation_mm") is not None
+    ]
+    # §CUTHOOK.1: góc quay lấy MAX (xấu nhất), bề rộng nêm lấy MIN (hẹp nhất).
+    trajectory_turns = [
+        float(item["maximum_trajectory_turn_degrees"])
+        for item in items
+        if item.get("maximum_trajectory_turn_degrees") is not None
+    ]
+    wedge_widths = [
+        float(item["minimum_wedge_width_mm"])
+        for item in items
+        if item.get("minimum_wedge_width_mm") is not None
     ]
     return {
         "machine_safe": all(bool(item.get("machine_safe")) for item in items),
@@ -158,6 +511,17 @@ def _aggregate_cutline_quality(items: list[dict[str, object]]) -> dict[str, obje
         "maximum_join_angle_degrees": max(maximum_angles, default=None),
         "effective_deviation_mm": max(deviations, default=None),
         "fit_mode": next(iter(modes)) if len(modes) == 1 else "mixed",
+        "trajectory_cusp_count": sum(
+            int(item.get("trajectory_cusp_count", 0)) for item in items
+        ),
+        "unprotected_cusp_count": sum(
+            int(item.get("unprotected_cusp_count", 0)) for item in items
+        ),
+        "maximum_trajectory_turn_degrees": max(trajectory_turns, default=None),
+        "minimum_wedge_width_mm": min(wedge_widths, default=None),
+        "cutline_hook_tolerated": any(
+            bool(item.get("cutline_hook_tolerated")) for item in items
+        ),
     }
 
 
@@ -178,6 +542,8 @@ def build_sticker_cutline_preview(
     cutline_fidelity: float,
     curve_tension: float,
     min_detail_area_mm2: float,
+    # §CUTJAG.3: None = để cổng tự động theo nguồn biên quyết định.
+    cutline_denoise: float | None = None,
 ) -> dict[str, object]:
     """Trả SVG path theo hệ preview; không ghi hay thay revision của session."""
     page = session.pages.get(page_number)
@@ -215,6 +581,21 @@ def build_sticker_cutline_preview(
 
         preview_width = int(page.preview_width_px)
         preview_height = int(page.preview_height_px)
+        exact_shapes = _exact_shapes_by_instance(page, edits)
+        # QUALITY (feedback 2026-08-16 §CUTJAG.1): mask AI/dò nền là mask nhị phân
+        # hoá từ điểm ảnh nên cần khử răng cưa dưới một pixel trước khi lấy contour.
+        presmooth_alpha = should_presmooth_cutline_alpha(page.boundary_source)
+        # §CUTJAG.3: thanh kéo thắng cổng tự động. Người dùng kéo về 0 nghĩa là TẮT
+        # hẳn, nên phải phân biệt `0.0` với "không gửi field" (`None`).
+        denoise_amount = 0.0
+        if cutline_denoise is None:
+            denoise_amount = 0.0
+        else:
+            try:
+                denoise_amount = max(0.0, min(100.0, float(cutline_denoise)))
+            except (TypeError, ValueError):
+                denoise_amount = 0.0
+            presmooth_alpha = False
         geometry_key_payload = {
             "page": page_number,
             "revision": revision,
@@ -227,6 +608,9 @@ def build_sticker_cutline_preview(
             "corner_style": corner_style,
             "fill_holes": fill_holes,
             "min_detail_area_mm2": min_detail_area_mm2,
+            "exact_shapes": exact_shapes,
+            "presmooth_alpha": presmooth_alpha,
+            "cutline_denoise": denoise_amount,
         }
         geometry_key = hashlib.sha256(json.dumps(
             geometry_key_payload,
@@ -276,13 +660,19 @@ def build_sticker_cutline_preview(
                     analysis_height,
                     int(ys.max()) + padding_y + 1,
                 )
+                exact_shape = exact_shapes.get(instance_id)
+                if exact_shape is not None:
+                    prepare_jobs.append((instance_id, left, top, None, exact_shape))
+                    continue
                 local_mask = labels[top:bottom, left:right] == instance_id
                 alpha = rgba[top:bottom, left:right, 3].copy()
                 alpha[~local_mask] = 0
-                prepare_jobs.append((instance_id, left, top, alpha))
+                prepare_jobs.append((instance_id, left, top, alpha, None))
 
             def prepare_instance(item):
-                instance_id, left, top, alpha = item
+                instance_id, left, top, alpha, exact_shape = item
+                if exact_shape is not None:
+                    return instance_id, left, top, {"exact_shape": exact_shape}
                 prepared = prepare_alpha_cutline_geometry(
                     alpha,
                     dpi=dpi_x,
@@ -293,6 +683,8 @@ def build_sticker_cutline_preview(
                     corner_style=corner_style,
                     fill_holes=fill_holes,
                     min_detail_area_mm2=min_detail_area_mm2,
+                    presmooth_alpha=presmooth_alpha,
+                    cutline_denoise=denoise_amount,
                 )
                 if prepared is None:
                     raise StickerSheetExportError(
@@ -319,23 +711,62 @@ def build_sticker_cutline_preview(
         scale_y = preview_height / max(1, analysis_height)
         def fit_instance(item):
             instance_id, left, top, prepared = item
-            try:
-                cutline = fit_prepared_alpha_cutline_geometry(
-                    prepared,
-                    cutline_smoothness=cutline_smoothness,
-                    cutline_fidelity=cutline_fidelity,
-                    curve_tension=curve_tension,
+            exact_shape = prepared.get("exact_shape")
+            if isinstance(exact_shape, dict):
+                path_groups = _exact_shape_path_groups(
+                    exact_shape,
+                    left_px=left,
+                    top_px=top,
+                    dpi=dpi_x,
+                    dpi_y=dpi_y_resolved,
+                    cut_mode=cut_mode,
+                    offset_mm=offset_mm,
+                    bleed_mm=bleed_mm,
+                    corner_style=corner_style,
                 )
-            except UnsafeCutlineGeometryError as exc:
-                # QUALITY (audit 2026-08-10 §CUTSMOOTH.4): đổi lỗi hình học thành
-                # lỗi nghiệp vụ 422, không để route báo 500 khó hiểu.
-                raise StickerSheetExportError(
-                    f"Tem {instance_id}: {exc}"
-                ) from exc
-            if cutline is None:
-                raise StickerSheetExportError(
-                    f"Không tạo được đường bế xem trước cho tem {instance_id}."
+                if path_groups is None:
+                    raise StickerSheetExportError(
+                        f"Không tạo được đường bế hình học cho tem {instance_id}."
+                    )
+                exact_segment_count = sum(
+                    len(ring)
+                    for group in path_groups
+                    for ring in [group["exterior"], *(group.get("interiors") or [])]
                 )
+                cutline = {
+                    "path_groups": path_groups,
+                    "quality": {
+                        "machine_safe": True,
+                        "segment_count": exact_segment_count,
+                        "short_segment_count": 0,
+                        "disconnected_join_count": 0,
+                        "unprotected_join_count": 0,
+                        "protected_corner_count": 0,
+                        "dropped_component_count": 0,
+                        "minimum_segment_length_mm": None,
+                        "maximum_join_angle_degrees": 0.0,
+                        "effective_deviation_mm": 0.0,
+                        "fit_mode": "disabled" if not path_groups else "exact-geometry",
+                    },
+                }
+            else:
+                try:
+                    cutline = fit_prepared_alpha_cutline_geometry(
+                        prepared,
+                        cutline_smoothness=cutline_smoothness,
+                        cutline_fidelity=cutline_fidelity,
+                        curve_tension=curve_tension,
+                    )
+                except UnsafeCutlineGeometryError as exc:
+                    # QUALITY (audit 2026-08-10 §CUTSMOOTH.4): đổi lỗi hình học thành
+                    # lỗi nghiệp vụ 422, không để route báo 500 khó hiểu.
+                    raise StickerSheetExportError(
+                        f"Tem {instance_id}: {exc}"
+                    ) from exc
+                if cutline is None:
+                    raise StickerSheetExportError(
+                        f"Không tạo được đường bế xem trước cho tem {instance_id}."
+                    )
             path_groups = cutline["path_groups"]
             if not path_groups:
                 return None
