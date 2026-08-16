@@ -4,7 +4,7 @@
  * Spec: .kiro/specs/recipe-record-playback (Task 8).
  * Tự chứa: đọc recorder store, lưu qua recipeStore. Không phụ thuộc ImpositionTab.
  */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Circle, Square, ListVideo, X } from 'lucide-react';
 import { useRecipeRecorder, recipeRecorder } from '../../lib/recipe/RecipeRecorder';
@@ -123,10 +123,16 @@ function SaveRecipeDialog({ steps, sourcePageCount, onClose }: {
     const [name, setName] = useState('');
     const [description, setDescription] = useState('');
     const [saving, setSaving] = useState(false);
+    // RECIPE (audit 2026-08-17 §STORE.10): Enter có thể kích hoạt handleSave nhiều lần
+    // TRƯỚC khi state `saving` kịp cập nhật (nút disable không chặn phím Enter ở input).
+    // Ref guard chặn double-invoke → không tạo hai recipe trùng nội dung, id khác nhau.
+    const savingRef = useRef(false);
 
     const handleSave = async () => {
+        if (savingRef.current) return;
         const trimmed = name.trim();
         if (!trimmed) { toast.error(t('recipe.recipeRecordControl:vui_long_nhap_ten_quy_trinh')); return; }
+        savingRef.current = true;
         setSaving(true);
         try {
             const recipe = createRecipe(trimmed, steps, {
@@ -140,6 +146,7 @@ function SaveRecipeDialog({ steps, sourcePageCount, onClose }: {
             toast.error(t('recipe.recipe:luu_that_bai', { msg: e?.message || e }));
         } finally {
             setSaving(false);
+            savingRef.current = false;
         }
     };
 

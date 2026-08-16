@@ -111,14 +111,16 @@ export async function saveRecipe(recipe: Recipe): Promise<void> {
     if (dir && tauriFs) {
         const filePath = `${dir}/${toSave.id}.json`;
         const json = JSON.stringify(toSave, null, 2);
-        // Ghi NGUYÊN TỬ (temp+rename) chống hỏng file recipe nếu crash giữa lúc ghi đè.
-        try {
-            const { invoke } = await import('@tauri-apps/api/core');
-            await invoke('write_file_atomic', { path: filePath, contents: new TextEncoder().encode(json) });
-            return;
-        } catch {
-            try { await tauriFs.writeTextFile(filePath, json); return; } catch { /* → localStorage */ }
-        }
+        // RECIPE (audit 2026-08-17 §STORE.2): trên desktop, đĩa là nguồn DUY NHẤT.
+        // Ghi NGUYÊN TỬ (temp+rename). Lỗi phải NÉM ra để UI không báo "đã lưu" giả —
+        // trước đây rơi âm thầm sang localStorage rồi lần load sau đọc đĩa → recipe biến
+        // mất. Không còn fallback writeTextFile (cũng thiếu quyền, là code chết).
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('write_file_atomic', {
+            path: filePath,
+            contents: new TextEncoder().encode(json),
+        });
+        return;
     }
     const all = lsRead();
     const idx = all.findIndex(r => r.id === toSave.id);
@@ -126,15 +128,17 @@ export async function saveRecipe(recipe: Recipe): Promise<void> {
     lsWrite(all);
 }
 
-/** Xóa recipe theo id. */
+/** Xóa recipe theo id. Fail-loud: ném lỗi nếu xóa thất bại. */
 export async function deleteRecipe(id: string): Promise<void> {
     await initTauri();
     const dir = await getRecipesDir();
     if (dir && tauriFs) {
-        try {
-            await tauriFs.remove(`${dir}/${id}.json`);
-            return;
-        } catch { /* fallback */ }
+        // RECIPE (audit 2026-08-17 §STORE.1): capability không có fs:allow-remove nên
+        // tauriFs.remove bị ACL chặn (im lặng). Dùng lệnh Rust scoped `delete_file_scoped`
+        // — lỗi được NÉM ra để UI không báo "đã xóa" giả rồi recipe hiện lại lần refresh.
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('delete_file_scoped', { path: `${dir}/${id}.json` });
+        return;
     }
     lsWrite(lsRead().filter(r => r.id !== id));
 }

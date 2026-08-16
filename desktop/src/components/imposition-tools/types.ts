@@ -472,12 +472,14 @@ export interface ImposerDashboardProps {
     initialFeature?: string;
     lockedMode?: 'booklet' | 'nup' | 'sticker_imposer' | 'cnc_imposer';
     onBleedUpdate?: (show: boolean, mm: number) => void;
+    // RECIPE (audit 2026-08-17 §REC.4R): trả `false` khi commit bị chặn (đang ghi
+    // quy trình mà thao tác chưa nối vé) để tool KHÔNG bật cờ thành công giả.
     onFileFixed?: (
         blob: Blob,
         name: string,
         path?: string,
         recipeTicket?: RecipeOperationTicket | null,
-    ) => void | Promise<void>;
+    ) => void | boolean | Promise<void | boolean>;
     systemMergeFiles?: File[];
     /** Office file → PDF (Word/Excel path-stub File). */
     officeSourceFile?: File | null;

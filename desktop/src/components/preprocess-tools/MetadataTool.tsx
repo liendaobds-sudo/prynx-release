@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 
 interface Props {
     pdfFile: File | null;
-    onFileFixed?: (blob: Blob, filename: string) => void;
+    onFileFixed?: (blob: Blob, filename: string) => void | boolean | Promise<void | boolean>;
 }
 
 const FIELDS = ['Title', 'Author', 'Subject', 'Keywords', 'Creator', 'Producer'] as const;
@@ -114,13 +114,19 @@ export default function MetadataTool({ pdfFile, onFileFixed }: Props) {
                 throw new Error(errData?.detail || t('preprocess.metadata:loi_server', { status: res.status }));
             }
             const blob = await res.blob();
-            setSuccess(clearAll ? t('preprocess.metadata:xoa_thanh_cong') : t('preprocess.metadata:luu_thanh_cong'));
-            if (clearAll) setFields({ ...EMPTY });
             if (onFileFixed) {
+                // RECIPE (audit 2026-08-17 §REC.4R): commit bị chặn → không báo thành công
+                // và không đổi field/expected name để lần đọc lại không hiểu nhầm.
                 const outputName = `metadata_${pdfFile.name}`;
                 expectedOutputNameRef.current = outputName;
-                onFileFixed(blob, outputName);
+                const committed = await onFileFixed(blob, outputName);
+                if (committed === false) {
+                    expectedOutputNameRef.current = null;
+                    return;
+                }
             }
+            setSuccess(clearAll ? t('preprocess.metadata:xoa_thanh_cong') : t('preprocess.metadata:luu_thanh_cong'));
+            if (clearAll) setFields({ ...EMPTY });
         } catch (e: any) {
             setError(e.message || t('preprocess.metadata:loi_khong_xac_dinh'));
         } finally {

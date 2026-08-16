@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
@@ -15,8 +15,9 @@ import {
     BLEED_COLOR_MODES_STICKER,
     CUT_MODES_RICH,
     DEFAULT_CROP_TO_STICKER,
+    buildStickerDielineFields,
     normalizeStickerBleedColorType,
-    shouldCropStickerPage,
+    resolveStickerShapeMode,
 } from './stickerToolPolicy';
 import { findToolByUniqueKey } from '../../lib/toolRegistry';
 import { useToolActivationGuard } from '../../hooks/useToolActivationGuard';
@@ -29,7 +30,7 @@ interface Props {
         filename: string,
         path?: string,
         recipeTicket?: RecipeOperationTicket | null,
-    ) => void | Promise<void>;
+    ) => void | boolean | Promise<void | boolean>;
     onProcessingChange?: (processing: boolean) => void;
     preferPdfFile?: boolean;
     productType?: 'sticker' | 'rectangle';
@@ -95,13 +96,18 @@ const STICKER_PREFERENCE_KEYS = [
     'productType', 'cutMode', 'offsetMm', 'cornerStyle', 'fillHoles', 'bleedMm',
     'removeWhiteBg', 'trimWhiteEdge', 'bleedColorType', 'bleedColorHex',
     'edgeBiteMm', 'edgeBiteVersion', 'cutFirstPageOnly', 'cropToSticker', 'bleedSides',
+    'cutlineDenoise',
 ] as const;
-let warnedAboutStickerStorage = false;
+// AUDIT (2026-08-16 §BX.F15): trước đây là `let` toàn cục nên tab thứ hai không bao giờ
+// log được cảnh báo storage — vi phạm bất biến "không dùng cờ boolean toàn cục" trong
+// `prynx-architecture`. Chỉ dùng để chống spam log, nên WeakRef-free Set là đủ.
+const warnedStickerStorageMessages = new Set<string>();
 
 function warnStickerStorage(error: unknown) {
-    if (warnedAboutStickerStorage) return;
-    warnedAboutStickerStorage = true;
-    console.warn('[StickerTool] Saved preferences are unavailable; using safe defaults.', error);
+    const key = error instanceof Error ? error.name : String(error);
+    if (warnedStickerStorageMessages.has(key)) return;
+    warnedStickerStorageMessages.add(key);
+    console.warn('[StickerTool] Không đọc được thiết lập đã lưu; dùng giá trị mặc định an toàn.', error);
 }
 
 function getStickerStorage(): Storage | null {
@@ -197,11 +203,6 @@ function readStickerBleedSides(): BleedSides {
     return resolved;
 }
 
-// Payload backend: danh sách cạnh ĐANG bật. Thiếu field = nở đều 4 cạnh.
-function bleedSidesToParam(sides: BleedSides): string {
-    return BLEED_SIDE_KEYS.filter(side => sides[side]).join(',') || 'none';
-}
-
 function writeStickerPreference(key: string, value: unknown): void {
     try {
         getStickerStorage()?.setItem(`${STICKER_STORAGE_PREFIX}${key}`, JSON.stringify(value));
@@ -256,7 +257,12 @@ export default function StickerTool({
     const setTaskMode = useImposerSettingsStore(s => s.setTaskMode);
     const openImpositionTool = (toolKey: 'booklet' | 'nup' | 'sticker_imposer') => {
         const definition = findToolByUniqueKey(toolKey);
-        if (!definition) return;
+        if (!definition) {
+            // AUDIT (2026-08-16 §BX.F16): tool bị tắt trong registry thì trước đây nút
+            // không làm gì và không nói gì, người dùng bấm lại nhiều lần. Nói ra lý do.
+            setError(t('preprocess.sticker:cong_cu_chua_kha_dung'));
+            return;
+        }
         // SEC/UIUX (audit 2026-08-04 §UI.01): chuyển nội bộ sau khi bù xén phải
         // đi cùng guard như Home/menu; không ghi thẳng tool Pro vào store.
         requestToolActivation(definition, () => {
@@ -295,6 +301,8 @@ export default function StickerTool({
     const [forceContour, setForceContour] = useState<boolean>(false);
     // Tên hình backend đã nhận (đọc từ header X-Sticker-Cut-Kind) → hiện làm van an toàn.
     const [detectedCutKind, setDetectedCutKind] = useState<string | null>(null);
+    // Độ tin cậy nhận dạng hình (0–1) từ header X-Sticker-Cut-Confidence. null = không có.
+    const [detectedCutConfidence, setDetectedCutConfidence] = useState<number | null>(null);
     const [useObjectSelection, setUseObjectSelection] = useState(true);
     const activeObjectSelection = (
         productType === 'sticker'
@@ -320,7 +328,18 @@ export default function StickerTool({
         const saved = readStickerEnum('bleedColorType', 'image', ['mirror', 'image', 'trajectory', 'inpaint', 'solid']);
         return normalizeStickerBleedColorType(saved, productType);
     });
-    const [bleedColorHex, setBleedColorHex] = useState(readStickerColor);
+    // AUDIT (2026-08-16 §BX.F09): normalize NGAY lúc khởi tạo, không chỉ trong handler
+    // đổi kiểu màu. Storage cũ có thể giữ `solid` + hex RGB: khung CMYK hiện 0,0,0,0
+    // nhưng payload gửi #FFFFFF → backend đi nhánh DeviceRGB trong bài CMYK.
+    const [bleedColorHex, setBleedColorHex] = useState(() => {
+        const saved = readStickerColor();
+        const savedType = normalizeStickerBleedColorType(
+            readStickerEnum('bleedColorType', 'image', ['mirror', 'image', 'trajectory', 'inpaint', 'solid']),
+            controlledProductType ?? readStickerEnum('productType', 'sticker', ['sticker', 'rectangle']) as 'sticker' | 'rectangle',
+        );
+        if (savedType === 'solid' && saved.split(',').length !== 4) return '0,0,0,0';
+        return saved;
+    });
     // "Lẹm mép" (rectangle): hút màu sâu vào trong để doa viền trắng mảnh của file không tràn lề.
     // Con dao 2 lưỡi — lẹm quá ăn vào nội dung sát mép → default nhỏ, cho chỉnh/tắt (0).
     const [edgeBiteMm, setEdgeBiteMm] = useState<number>(getSavedEdgeBite);
@@ -329,6 +348,14 @@ export default function StickerTool({
     // hộp, gáy sách — bù thêm cạnh đó là lệch khổ thành phẩm.
     const [bleedSides, setBleedSides] = useState<BleedSides>(readStickerBleedSides);
     const activeBleedSideCount = BLEED_SIDE_KEYS.filter(side => bleedSides[side]).length;
+    // "Khử răng cưa" (§CUTJAG.3): mask nhận diện gần như nhị phân nên marching-squares
+    // chỉ trả về bậc thang pixel. Đo trên ảnh nhiều tem thật: góc gấp trung bình dọc
+    // biên 13–21°, sau khi làm mượt còn 4,1–6,7°, sai lệch silhouette dưới một pixel.
+    // Mức khởi điểm 30 (≈1,2 px ở 300 DPI) là mức đã đo; backend mặc định 0 để client
+    // cũ và recipe cũ không đổi kết quả.
+    const [cutlineDenoise, setCutlineDenoise] = useState<number>(
+        () => readStickerNumber('cutlineDenoise', 30, 0, 100),
+    );
 
     const toggleBleedSide = (side: BleedSideKey) => {
         setBleedSides(prev => {
@@ -367,7 +394,8 @@ export default function StickerTool({
         writeStickerPreference('cutFirstPageOnly', cutFirstPageOnly);
         writeStickerPreference('cropToSticker', cropToSticker);
         writeStickerPreference('bleedSides', bleedSides);
-    }, [productType, cutMode, offsetMm, cornerStyle, fillHoles, bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm, cutFirstPageOnly, cropToSticker, bleedSides]);
+        writeStickerPreference('cutlineDenoise', cutlineDenoise);
+    }, [productType, cutMode, offsetMm, cornerStyle, fillHoles, bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm, cutFirstPageOnly, cropToSticker, bleedSides, cutlineDenoise]);
     
     // Process state
     const [isProcessing, setIsProcessing] = useState(false);
@@ -379,7 +407,22 @@ export default function StickerTool({
     const [settingsOpen, setSettingsOpen] = useState(true);
     const settingsPanelId = React.useId();
 
-    const runVectorMirror = async () => {
+    // AUDIT (2026-08-16 §BX.F05): job bù xén là việc nặng nhất của công cụ. Trước đây
+    // không có đường huỷ nào: bấm sai phải chờ hết, đóng tab thì response về vẫn setState
+    // và vẫn commit file vào tài liệu đã đóng. `abortRef` cho phép huỷ khi unmount và khi
+    // người dùng bấm chạy lượt mới.
+    const abortRef = useRef<AbortController | null>(null);
+    const isMountedRef = useRef(true);
+    useEffect(() => {
+        isMountedRef.current = true;
+        return () => {
+            isMountedRef.current = false;
+            abortRef.current?.abort();
+            abortRef.current = null;
+        };
+    }, []);
+
+    const runVectorMirror = async (signal?: AbortSignal) => {
         // Step 1: Upload
         const uploadRes = await uploadPDF(
             preferPdfFile ? pdfFile! : ((await getWorkingFile()) || pdfFile!),
@@ -390,6 +433,7 @@ export default function StickerTool({
         // bù xén vì vùng trắng sát mép có thể là một phần hợp lệ của thiết kế.
         const bleedRes = await authenticatedFetch(`${getApiUrl()}/preflight/mirror-bleed`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
+            signal,
             body: JSON.stringify({
                 file_id: currentFid,
                 bleed_mm: bleedMm,
@@ -397,15 +441,25 @@ export default function StickerTool({
                 bleed_sides: BLEED_SIDE_KEYS.filter(side => bleedSides[side]),
             }),
         });
-        const bleedData = await bleedRes.json();
-        if (!bleedData.success) throw new Error(bleedData.detail || t('preprocess.sticker:loi_tao_bu_xen_vector'));
-        
+        // AUDIT (2026-08-16 §BX.F04): sidecar chết trả HTML → `json()` reject và message
+        // kỹ thuật lọt lên UI. Bọc lại rồi tự dựng thông báo người dùng làm được.
+        const bleedData = await bleedRes.json().catch(() => null);
+        if (!bleedRes.ok || !bleedData?.success || !bleedData?.output_filename) {
+            throw new Error(bleedData?.detail || t('preprocess.sticker:loi_tao_bu_xen_vector'));
+        }
+
         // Final Output
-        const finalRes = await authenticatedFetch(`${getApiUrl()}/preflight/download/${bleedData.output_filename}`);
+        const finalRes = await authenticatedFetch(
+            `${getApiUrl()}/preflight/download/${bleedData.output_filename}`,
+            { signal },
+        );
+        // AUDIT (2026-08-16 §BX.F03): thiếu guard này thì 404/400 (file kết quả đã hết
+        // hạn) trả JSON lỗi, blob đó được commit như PDF và THAY THẾ tài liệu đang mở.
+        if (!finalRes.ok) throw new Error(t('preprocess.sticker:loi_tao_bu_xen_vector'));
         return await finalRes.blob();
     };
 
-    const runOpenCVBleed = async (overrides?: CutlineRunOverrides) => {
+    const runOpenCVBleed = async (overrides?: CutlineRunOverrides, signal?: AbortSignal) => {
         const requestedCornerStyle = overrides?.cornerStyle ?? cornerStyle;
         const requestedForceContour = overrides?.forceContour ?? forceContour;
         const targetFile = preferPdfFile
@@ -427,38 +481,29 @@ export default function StickerTool({
         const formData = new FormData();
         if (localPath) formData.append('file_path', localPath);
         else formData.append('file_id', String(uploadRes!.id));
-        formData.append('cut_mode', productType === 'rectangle' ? 'none' : cutMode);
-        formData.append('offset_mm', productType === 'rectangle' ? '0' : String(offsetMm));
-        formData.append('corner_style', productType === 'rectangle' ? 'miter' : (cutMode === 'alpha' ? 'preserve' : requestedCornerStyle));
-        formData.append('bleed_mm', String(bleedMm));
-        formData.append('fill_holes', productType === 'rectangle' ? 'true' : (fillHoles ? 'true' : 'false'));
-        formData.append('remove_white_bg', productType === 'rectangle' || cutMode === 'alpha' ? 'false' : (removeWhiteBg ? 'true' : 'false'));
-        formData.append('draw_cut_contour', productType === 'rectangle' ? 'false' : (cutMode !== 'none' ? 'true' : 'false'));
-        formData.append('bleed_color_type', bleedColorType); // image | trajectory | inpaint | solid
-        formData.append('bleed_color_hex', bleedColorHex);
-        // Lẹm mép CHỈ tab Xén vuông (không có “Bỏ nền trắng” dò mask).
-        // Tab Bế tem: một nút “Bỏ nền trắng” + sample viền (shell/AA) — không thêm ô lẹm.
-        formData.append('edge_bite_mm', productType === 'rectangle' ? String(edgeBiteMm) : '0');
-        // Chọn cạnh bù xén CHỈ có nghĩa với Xén vuông góc; Bế tem nhãn bù quanh
-        // đường contour nên luôn gửi "all" để backend nở đều như trước.
-        formData.append('bleed_sides', productType === 'rectangle' ? bleedSidesToParam(bleedSides) : 'all');
-        // "Tạo đường cắt cho trang đầu": chỉ tab Bế tem nhãn. Trang 1 mang khuôn
-        // CutContour, trang 2+ chỉ bù xén → bước đệm cho Bình tem bế/CNC đồng nhất.
-        formData.append('cut_first_page_only', productType === 'sticker' && cutFirstPageOnly ? 'true' : 'false');
-        formData.append('crop_to_sticker', shouldCropStickerPage(productType, cutMode, cropToSticker) ? 'true' : 'false');
-        formData.append(
-            'shape_mode',
-            productType === 'sticker'
-                ? (cutMode === 'alpha'
-                    ? 'contour'
-                    // QUALITY (audit 2026-08-07 §NOODLE.2): "Giữ góc" chỉ
-                    // chọn cách xuất góc của contour custom; không được âm thầm
-                    // tắt nhận dạng hình chuẩn. Chỉ van an toàn của user mới ép contour.
-                    : (requestedForceContour ? 'contour' : 'auto_safe'))
-                : 'contour',
-        );
-        if (productType === 'rectangle') {
-            formData.append('rectangle_mode', 'true');
+        // AUDIT (2026-08-16 §BX.F01/F02): mọi field hình học đi qua MỘT builder thuần
+        // dùng chung với recipe playback. Trước đây ba nơi tự dựng payload nên recipe
+        // phát lại ra khuôn bế khác bản đã duyệt, và "Độ lẹm mép" vẫn được gửi khi ô
+        // nhập đã ẩn (kiểu màu trơn) → clip mất nội dung sát mép.
+        const dielineFields = buildStickerDielineFields({
+            productType,
+            cutMode,
+            offsetMm,
+            cornerStyle: requestedCornerStyle,
+            fillHoles,
+            bleedMm,
+            removeWhiteBg,
+            bleedColorType,
+            bleedColorHex,
+            edgeBiteMm,
+            cutFirstPageOnly,
+            cropToSticker,
+            bleedSides,
+            forceContour: requestedForceContour,
+            cutlineDenoise,
+        });
+        for (const [field, value] of Object.entries(dielineFields)) {
+            formData.append(field, value);
         }
         if (activeObjectSelection) {
             formData.append('selection_json', JSON.stringify({
@@ -472,6 +517,7 @@ export default function StickerTool({
         const response = await authenticatedFetch(`${getApiUrl()}/pdf-tools/sticker-dieline`, {
             method: 'POST',
             body: formData,
+            signal,
         });
 
         if (!response.ok) {
@@ -482,12 +528,22 @@ export default function StickerTool({
         if (productType === 'sticker') {
             const shapeType = response.headers.get('X-Sticker-Shape-Type');
             const shapeParams = response.headers.get('X-Sticker-Shape-Params');
-            setDetectedShapeType(shapeType);
-            setDetectedShapeParams(shapeParams);
+            // AUDIT (2026-08-16 §BX.F10): backend chỉ phát hai header này khi meta có
+            // width_mm/height_mm (multi-page và selection mode thì không). Ghi `null`
+            // vào store sẽ XOÁ hình đã dò được trước đó → panel Bình tem bế rơi về
+            // RECTANGLE cho tem tròn. Chỉ ghi khi thực sự nhận được giá trị.
+            if (shapeType) setDetectedShapeType(shapeType);
+            if (shapeParams) setDetectedShapeParams(shapeParams);
             // Hình học đường cắt máy tự nhận (van an toàn thay dropdown đã ẩn):
             // có kind → tên hình; không có (die phức tạp / forceContour) → 'contour'.
             const cutKind = response.headers.get('X-Sticker-Cut-Kind');
             setDetectedCutKind(cutKind || ((requestedCornerStyle === 'preserve' || requestedForceContour) ? 'contour' : null));
+            // AUDIT (2026-08-16 §BX.F12): backend đã phát độ tin cậy nhận dạng nhưng UI bỏ
+            // qua, nên hình nhận ở sát ngưỡng trông y như hình chắc chắn. Hiện số này để
+            // người dùng biết khi nào nên bấm "Hình cắt sai?".
+            const confidenceRaw = response.headers.get('X-Sticker-Cut-Confidence');
+            const confidence = confidenceRaw === null ? Number.NaN : Number(confidenceRaw);
+            setDetectedCutConfidence(Number.isFinite(confidence) ? confidence : null);
         }
 
         // Cảnh báo nghiệp vụ (vd một số trang không dò được hình) — header được
@@ -505,6 +561,13 @@ export default function StickerTool({
         if (!pdfFile) return;
         const requestedCornerStyle = overrides?.cornerStyle ?? cornerStyle;
         const requestedForceContour = overrides?.forceContour ?? forceContour;
+
+        // AUDIT (2026-08-16 §BX.F05): lượt mới huỷ lượt cũ. Trước đây bấm hai lần (hoặc
+        // bấm "Hình cắt sai?" khi lượt đầu chưa xong) sinh hai job PDFium song song.
+        abortRef.current?.abort();
+        const controller = new AbortController();
+        abortRef.current = controller;
+        const { signal } = controller;
 
         setIsSuccess(false);
         setIsProcessing(true);
@@ -526,9 +589,16 @@ export default function StickerTool({
             ? recipeRecorder.noteOperation('sticker_dieline', {
                 productType, cutMode, offsetMm, cornerStyle: requestedCornerStyle, fillHoles,
                 bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm,
+                cutlineDenoise,
                 cutFirstPageOnly, cropToSticker,
                 bleedSides: { ...bleedSides },
-                shapeMode: (requestedCornerStyle === 'preserve' || requestedForceContour) ? 'contour' : 'auto_safe',
+                // AUDIT (2026-08-16 §BX.F01): ghi ĐÚNG giá trị vừa gửi. Công thức cũ
+                // (`preserve → contour`) khiến recipe phát lại ép giữ mép ảnh trong khi
+                // lần chạy tay lại nhận dạng hình chuẩn.
+                forceContour: requestedForceContour,
+                shapeMode: resolveStickerShapeMode({
+                    productType, cutMode, forceContour: requestedForceContour,
+                }),
             }, undefined, tabId)
             : null;
         if (recordingThisTab && !recipeTicket) {
@@ -543,11 +613,17 @@ export default function StickerTool({
             let resultPath: string | undefined;
 
             if (productType === 'rectangle' && bleedColorType === 'mirror') {
-                resultBlob = await runVectorMirror();
+                resultBlob = await runVectorMirror(signal);
             } else {
-                const result = await runOpenCVBleed(overrides);
+                const result = await runOpenCVBleed(overrides, signal);
                 resultBlob = result.blob;
                 resultPath = result.path;
+            }
+
+            // Tab đã đóng / job đã bị huỷ: không commit file vào tài liệu không còn chủ.
+            if (signal.aborted || !isMountedRef.current) {
+                recipeRecorder.discardPending(recipeTicket);
+                return;
             }
 
             if (onFileFixed) {
@@ -566,6 +642,10 @@ export default function StickerTool({
             }
         } catch (error: unknown) {
             recipeRecorder.discardPending(recipeTicket);
+            // Huỷ chủ động (đóng tab / bấm lượt mới) không phải lỗi để báo cho người dùng.
+            const aborted = signal.aborted
+                || (error instanceof DOMException && error.name === 'AbortError');
+            if (aborted || !isMountedRef.current) return;
             setSettingsOpen(true);
             setError(
                 error instanceof Error && error.message
@@ -573,8 +653,15 @@ export default function StickerTool({
                     : t('preprocess.sticker:da_xay_ra_loi_khong_xac_dinh'),
             );
         } finally {
-            setIsProcessing(false);
-            onProcessingChange?.(false);
+            // Chỉ lượt đang sở hữu controller mới được tắt trạng thái đang chạy — lượt cũ
+            // vừa bị huỷ không được tắt spinner của lượt mới.
+            if (abortRef.current === controller) {
+                abortRef.current = null;
+                if (isMountedRef.current) {
+                    setIsProcessing(false);
+                    onProcessingChange?.(false);
+                }
+            }
         }
     };
 
@@ -665,12 +752,12 @@ export default function StickerTool({
                         <div className="flex items-center justify-between gap-2">
                             <div className="flex min-w-0 items-center gap-1.5">
                                 <span className="text-[11px] font-bold text-slate-700 dark:text-zinc-200">
-                                    Chọn sticker cần bù xén
+                                    {t('preprocess.sticker:chon_sticker_can_bu_xen')}
                                 </span>
                                 <span
                                     role="note"
                                     tabIndex={0}
-                                    aria-label="Chọn sticker trực tiếp trên trang. Bấm “Bắt đầu chọn”, rồi chọn các sticker cần xử lý trên cùng một trang; panel này luôn được giữ nguyên. Khi đã chọn, chỉ các đối tượng được tick mới được bù xén/đường cắt — bỏ tick để xử lý toàn trang."
+                                    aria-label={`${t('preprocess.sticker:chon_sticker_tro_giup')} ${t('preprocess.sticker:chon_sticker_tro_giup_2')}`}
                                     className="relative group/help flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-slate-300 bg-white text-[10px] font-bold leading-none text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:border-zinc-600 dark:bg-zinc-950 dark:text-zinc-500 dark:hover:bg-zinc-800 dark:hover:text-zinc-300 cursor-help"
                                 >
                                     ?
@@ -678,8 +765,8 @@ export default function StickerTool({
                                         role="tooltip"
                                         className="pointer-events-none absolute bottom-full left-1/2 z-[100] mb-2 w-max max-w-[280px] -translate-x-1/2 rounded-lg bg-slate-800 px-3 py-2.5 text-left text-[12px] font-normal leading-relaxed text-white opacity-0 shadow-xl transition-all invisible group-hover/help:visible group-hover/help:opacity-100 group-focus-within/help:visible group-focus-within/help:opacity-100 dark:bg-zinc-700 whitespace-normal break-words"
                                     >
-                                        Chọn sticker trực tiếp trên trang. Bấm “Bắt đầu chọn”, rồi chọn các sticker cần xử lý trên cùng một trang; panel này luôn được giữ nguyên.
-                                        Khi đã chọn, chỉ các đối tượng được tick mới được bù xén/đường cắt — bỏ tick để xử lý toàn trang.
+                                        {t('preprocess.sticker:chon_sticker_tro_giup')}{' '}
+                                        {t('preprocess.sticker:chon_sticker_tro_giup_2')}
                                         <span
                                             aria-hidden="true"
                                             className="absolute top-full left-1/2 -mt-1 h-2 w-2 -translate-x-1/2 rotate-45 bg-slate-800 dark:bg-zinc-700"
@@ -704,7 +791,11 @@ export default function StickerTool({
                                         : 'border-emerald-500 bg-white text-emerald-700 hover:bg-emerald-50 dark:bg-zinc-950 dark:text-emerald-300'
                                 }`}
                             >
-                                {isObjectEditMode ? 'Xong chọn' : (objectSelectionContext?.objectIds.length ? 'Chọn lại' : 'Bắt đầu chọn')}
+                                {isObjectEditMode
+                                    ? t('preprocess.sticker:xong_chon')
+                                    : (objectSelectionContext?.objectIds.length
+                                        ? t('preprocess.sticker:chon_lai')
+                                        : t('preprocess.sticker:bat_dau_chon'))}
                             </button>
                         </div>
                     </div>
@@ -724,8 +815,10 @@ export default function StickerTool({
                                 className="h-4 w-4 shrink-0 accent-teal-600"
                             />
                             <span className="min-w-0 flex-1 text-[11px] font-bold leading-tight">
-                                Chỉ xử lý {objectSelectionContext.objectIds.length} đối tượng đã chọn
-                                {' · '}trang {objectSelectionContext.pageIndex + 1}
+                                {t('preprocess.sticker:chi_xu_ly_doi_tuong_da_chon', {
+                                    count: objectSelectionContext.objectIds.length,
+                                    page: objectSelectionContext.pageIndex + 1,
+                                })}
                             </span>
                             <span
                                 role="note"
@@ -858,8 +951,8 @@ export default function StickerTool({
                                         <ToolCheckboxOption
                                             selected={cropToSticker}
                                             onClick={() => setCropToSticker(value => !value)}
-                                            label="Crop trang theo tem"
-                                            desc="Thu khổ trang sát đường bế và phần bù xén; TrimBox giữ đúng kích thước thật của tem. Bỏ tick để giữ nguyên khổ trang nguồn."
+                                            label={t('preprocess.sticker:crop_trang_theo_tem')}
+                                            desc={t('preprocess.sticker:crop_trang_theo_tem_desc')}
                                         />
                                     </div>
                                 )}
@@ -1001,6 +1094,44 @@ export default function StickerTool({
                                 />
                             )}
                         </div>
+
+                        {/* Khử răng cưa (§CUTJAG.3): chỉ có nghĩa khi thực sự dò đường
+                            cắt. Xén vuông góc lấy khuôn từ khổ trang nên không dò contour. */}
+                        {productType !== 'rectangle' && cutMode !== 'none' && (
+                            <div className="mb-4">
+                                <div className="flex items-center justify-between gap-2 mb-1.5">
+                                    <label
+                                        htmlFor="sticker-cutline-denoise"
+                                        className="text-xs font-bold text-slate-700 dark:text-zinc-300"
+                                    >
+                                        {t('preprocess.sticker:khu_rang_cua')}
+                                    </label>
+                                    <span className="text-xs font-bold text-teal-600 dark:text-teal-400 tabular-nums">
+                                        {cutlineDenoise === 0
+                                            ? t('preprocess.sticker:khu_rang_cua_tat')
+                                            : `${cutlineDenoise}%`}
+                                    </span>
+                                </div>
+                                <input
+                                    id="sticker-cutline-denoise"
+                                    type="range"
+                                    min={0}
+                                    max={100}
+                                    step={5}
+                                    value={cutlineDenoise}
+                                    onChange={(event) => setCutlineDenoise(Number(event.target.value))}
+                                    disabled={isProcessing}
+                                    aria-describedby="sticker-cutline-denoise-desc"
+                                    className="w-full accent-teal-600 dark:accent-teal-400 disabled:opacity-50"
+                                />
+                                <p
+                                    id="sticker-cutline-denoise-desc"
+                                    className="mt-1 text-[10.5px] leading-snug text-slate-500 dark:text-zinc-400"
+                                >
+                                    {t('preprocess.sticker:khu_rang_cua_desc')}
+                                </p>
+                            </div>
+                        )}
 
                         {/* Cạnh bù xén: bài đã có sẵn lề một phía (tem cắt cuộn, mép dán
                             hộp, gáy sách) thì bù thêm cạnh đó là lệch khổ thành phẩm.
@@ -1159,15 +1290,27 @@ export default function StickerTool({
                             <span className="text-[11px] text-slate-600 dark:text-zinc-300">
                                 {t('preprocess.sticker:duong_cat_da_nhan')}{' '}
                                 <strong>{t(`preprocess.sticker:cut_kind_${detectedCutKind}`)}</strong>
+                                {/* Độ tin cậy thấp = biên thật lệch nhiều so với hình chuẩn
+                                    đã ép; hiện ngay cạnh tên hình để người dùng cân nhắc. */}
+                                {detectedCutConfidence !== null && detectedCutKind !== 'contour' && (
+                                    <span className={`ml-1.5 text-[10.5px] font-semibold ${
+                                        detectedCutConfidence < 0.5
+                                            ? 'text-amber-600 dark:text-amber-400'
+                                            : 'text-slate-400 dark:text-zinc-500'
+                                    }`}>
+                                        ({Math.round(detectedCutConfidence * 100)}%)
+                                    </span>
+                                )}
                             </span>
                             {!forceContour && detectedCutKind !== 'contour' && (
                                 <button
+                                    disabled={isProcessing}
                                     onClick={() => {
                                         setCornerStyle('preserve');
                                         setForceContour(true);
                                         void handleRun({ cornerStyle: 'preserve', forceContour: true });
                                     }}
-                                    className="text-[10.5px] font-bold text-amber-600 dark:text-amber-400 hover:underline shrink-0"
+                                    className="text-[10.5px] font-bold text-amber-600 dark:text-amber-400 hover:underline shrink-0 disabled:opacity-50 disabled:cursor-not-allowed disabled:no-underline"
                                 >
                                     {t('preprocess.sticker:hinh_cat_sai_giu_mep_anh')}
                                 </button>

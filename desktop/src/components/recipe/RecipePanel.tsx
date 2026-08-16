@@ -42,6 +42,7 @@ const PARAM_LABELS: Record<string, string> = {
     cornerStyle: 'Kiểu góc', fillHoles: 'Lấp lỗ thủng', bleedMm: 'Bù xén (mm)',
     removeWhiteBg: 'Bỏ nền trắng', trimWhiteEdge: 'Thiết lập cũ (đã vô hiệu)',
     bleedColorType: 'Kiểu màu bù xén', bleedColorHex: 'Màu bù xén', edgeBiteMm: 'Ăn mép (mm)',
+    cutlineDenoise: 'Khử răng cưa (%)',
     // Bình bài
     sheetWidth: 'Rộng tờ in (mm)', sheetHeight: 'Cao tờ in (mm)', cols: 'Số cột', rows: 'Số hàng',
     bleed: 'Bù xén (mm)', gapX: 'Cách ngang (mm)', gapY: 'Cách dọc (mm)',
@@ -67,6 +68,9 @@ function ParamField({ name, value, onChange }: { name: string; value: unknown; o
   const { t } = useTranslation();
     const [jsonText, setJsonText] = useState('');
     const [jsonErr, setJsonErr] = useState(false);
+    // RECIPE (audit 2026-08-17 §STORE.5): buffer chuỗi cho ô số để gõ được số âm/thập
+    // phân và xóa trắng mà KHÔNG bị ép về 0 rồi lưu ngay mỗi phím. null = chưa gõ dở.
+    const [numText, setNumText] = useState<string | null>(null);
 
     if (typeof value === 'boolean') {
         return (
@@ -77,11 +81,29 @@ function ParamField({ name, value, onChange }: { name: string; value: unknown; o
         );
     }
     if (typeof value === 'number') {
+        const display = numText ?? String(value);
         return (
             <label className="flex items-center gap-2 text-[11px]">
                 <span className="font-mono text-slate-500 dark:text-zinc-400 w-28 truncate" title={name}>{paramLabel(name)}</span>
-                <input type="number" value={value}
-                    onChange={e => onChange(e.target.value === '' ? 0 : Number(e.target.value))}
+                <input
+                    type="text"
+                    inputMode="decimal"
+                    value={display}
+                    onChange={e => {
+                        const raw = e.target.value;
+                        setNumText(raw);
+                        // Chỉ commit khi là số hữu hạn; '', '-', '0.', '-0.' KHÔNG ép 0.
+                        const n = Number(raw);
+                        if (raw.trim() !== '' && Number.isFinite(n)) onChange(n);
+                    }}
+                    onBlur={() => {
+                        const n = Number(numText);
+                        // Rời ô mà chuỗi rỗng/không hợp lệ → giữ nguyên giá trị cũ, không hóa 0.
+                        if (numText !== null && numText.trim() !== '' && Number.isFinite(n)) {
+                            onChange(n);
+                        }
+                        setNumText(null);
+                    }}
                     className="flex-1 h-6 px-1.5 rounded border border-slate-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-slate-800 dark:text-zinc-100 text-right" />
             </label>
         );
@@ -175,15 +197,26 @@ export default function RecipePanel({ open, onClose, onPlay, sourcePageCount, ha
     const handleDelete = async (r: Recipe) => {
         const ok = await confirmDialog({ message: `Xóa quy trình "${r.name}"?`, danger: true });
         if (!ok) return;
-        await deleteRecipe(r.id);
-        toast.success(t('recipe.recipe:da_xoa_quy_trinh'));
+        // RECIPE (audit 2026-08-17 §STORE.1): deleteRecipe fail-loud → chỉ báo thành
+        // công khi xóa thật sự xảy ra; lỗi thì báo đúng và vẫn refresh để phản ánh đĩa.
+        try {
+            await deleteRecipe(r.id);
+            toast.success(t('recipe.recipe:da_xoa_quy_trinh'));
+        } catch {
+            toast.error(t('recipe.recipe:xoa_that_bai'));
+        }
         refresh();
     };
 
     const handleRename = async (r: Recipe) => {
         const trimmed = editName.trim();
         if (!trimmed) { setEditingId(null); return; }
-        await saveRecipe({ ...r, name: trimmed });
+        // §STORE.2: saveRecipe fail-loud → báo lỗi nếu ghi đĩa thất bại thay vì im lặng.
+        try {
+            await saveRecipe({ ...r, name: trimmed });
+        } catch {
+            toast.error(t('recipe.recipe:luu_thay_doi_that_bai'));
+        }
         setEditingId(null);
         refresh();
     };

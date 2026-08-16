@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 
 import { tv } from '../../i18n';
 import { stickerSourceOwnerFromHistory } from '../stickerSheetTabSelector';
@@ -23,19 +23,21 @@ interface Props {
         name: string,
         path?: string,
         recipeTicket?: RecipeOperationTicket | null,
-    ) => void | Promise<void>;
+    ) => void | boolean | Promise<void | boolean>;
 }
 
+// UIUX (feedback 2026-08-15): gọi tên theo việc người dùng cần làm và giải thích
+// ngay trên từng chế độ; không đưa thuật ngữ AI vào tên tab.
 const MODES: Array<{ id: StickerSourceMode; label: string; description: string }> = [
     {
         id: 'existing',
         label: 'PDF/PNG đã có biên',
-        description: 'Bù xén hoặc tạo đường cắt trực tiếp với đầy đủ tùy chọn cũ.',
+        description: 'Dùng khi file đã có biên tem rõ (mép trang, nền trong suốt hoặc đối tượng có thể chọn). Không cần file có sẵn CutContour; bạn vẫn bù xén và tạo đường cắt bằng giao diện cũ.',
     },
     {
         id: 'ai-sheet',
-        label: 'Ảnh AI nhiều tem',
-        description: 'Chỉ dùng khi cần tách nhiều tem, loại bóng hoặc sửa vùng tem.',
+        label: 'Tách nhiều tem',
+        description: 'Dùng khi một trang chứa nhiều tem nhưng chưa có biên riêng rõ ràng. Hệ thống sẽ tách thành từng tem riêng, hiển thị đường cắt màu tím để bạn kiểm tra và chỉnh sửa trước khi xuất.',
     },
 ];
 
@@ -53,6 +55,7 @@ export default function StickerCutlineTool({
     const actionsRef = useRef(useStickerSheetStore.getState());
     const actions = actionsRef.current;
     const mode = tab?.mode || 'existing';
+    const modeHelpId = useId();
     const [directProcessing, setDirectProcessing] = useState(false);
     const [completedExport, setCompletedExport] = useState<{
         filename: string;
@@ -103,7 +106,14 @@ export default function StickerCutlineTool({
         if (!result) return;
         exportedFilenameRef.current = result.filename;
         try {
-            await onFileFixed(result.blob, result.filename, result.outputPath);
+            // RECIPE (audit 2026-08-17 §REC.4S): "Tách nhiều tem" chưa nối vé nên khi
+            // đang ghi quy trình commit bị chặn (trả false) — KHÔNG hiện thẻ/toast
+            // hoàn tất vì tài liệu đang mở không đổi và Recipe không có Step.
+            const committed = await onFileFixed(result.blob, result.filename, result.outputPath);
+            if (committed === false) {
+                exportedFilenameRef.current = null;
+                return;
+            }
             setCompletedExport({
                 filename: result.filename,
                 stickerCount: result.stickerCount,
@@ -139,28 +149,50 @@ export default function StickerCutlineTool({
     return (
         <div className="flex flex-col gap-4">
             <div className="grid grid-cols-2 gap-1 rounded-xl border border-slate-200 bg-slate-100 p-1 dark:border-zinc-700 dark:bg-zinc-800/60">
-                {MODES.map(option => (
-                    <button
-                        key={option.id}
-                        type="button"
-                        title={tv(option.description)}
-                        disabled={workflowBusy}
-                        aria-pressed={mode === option.id}
-                        onClick={() => {
-                            if (workflowBusy || option.id === mode) return;
-                            exportedFilenameRef.current = null;
-                            setCompletedExport(null);
-                            actions.setMode(tabId, option.id);
-                        }}
-                        className={`min-h-11 rounded-lg px-2 text-[10px] font-bold leading-tight transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                            mode === option.id
-                                ? 'bg-white text-violet-700 shadow-sm dark:bg-zinc-900 dark:text-violet-300'
-                                : 'text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200'
-                        }`}
-                    >
-                        {tv(option.label)}
-                    </button>
-                ))}
+                {MODES.map(option => {
+                    const tooltipId = `${modeHelpId}-${option.id}`;
+                    return (
+                        <div key={option.id} className="group/mode-help relative min-w-0">
+                            <button
+                                type="button"
+                                disabled={workflowBusy}
+                                aria-label={tv(option.label, 'preprocess.stickerSheet')}
+                                aria-pressed={mode === option.id}
+                                aria-describedby={tooltipId}
+                                onClick={() => {
+                                    if (workflowBusy || option.id === mode) return;
+                                    exportedFilenameRef.current = null;
+                                    setCompletedExport(null);
+                                    actions.setMode(tabId, option.id);
+                                }}
+                                className={`min-h-11 w-full rounded-lg px-2 text-[10px] font-bold leading-tight transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                                    mode === option.id
+                                        ? 'bg-white text-violet-700 shadow-sm dark:bg-zinc-900 dark:text-violet-300'
+                                        : 'text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200'
+                                }`}
+                            >
+                                <span className="inline-flex items-center justify-center gap-1">
+                                    {tv(option.label, 'preprocess.stickerSheet')}
+                                    <span
+                                        aria-hidden="true"
+                                        className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border border-current text-[9px] font-extrabold opacity-70"
+                                    >
+                                        ?
+                                    </span>
+                                </span>
+                            </button>
+                            <span
+                                id={tooltipId}
+                                role="tooltip"
+                                className={`pointer-events-none invisible absolute top-full z-[120] mt-2 w-[260px] max-w-[calc(100vw-2rem)] rounded-lg bg-slate-800 px-3 py-2.5 text-left text-[11px] font-normal normal-case leading-relaxed tracking-normal text-white opacity-0 shadow-xl transition-all group-hover/mode-help:visible group-hover/mode-help:opacity-100 group-focus-within/mode-help:visible group-focus-within/mode-help:opacity-100 dark:bg-zinc-700 ${
+                                    option.id === 'existing' ? 'left-0' : 'right-0'
+                                }`}
+                            >
+                                {tv(option.description, 'preprocess.stickerSheet')}
+                            </span>
+                        </div>
+                    );
+                })}
             </div>
 
             {mode === 'existing' ? (

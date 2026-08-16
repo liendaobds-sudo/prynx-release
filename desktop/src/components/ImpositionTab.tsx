@@ -25,6 +25,7 @@ import { disposeImposerPersistScope } from './imposition-tools/store/persist';
 import { generateBindingMap } from '../lib/imposerEngine/VirtualMap';
 import { getApiUrl, uploadPDF, authenticatedFetch } from '../lib/api';
 import { recipeRecorder, type RecipeOperationTicket } from '../lib/recipe/RecipeRecorder';
+import { shouldBlockUnrecordedCommit } from '../lib/recipe/unrecordedCommit';
 import { isOutputFile, isImposedOutputFile } from '../lib/constants';
 import { writeSnapshot, deleteSnapshot } from '../lib/recovery';
 import { getFileArrayBuffer, detectColorSpace, stripBytesIfOnDisk } from '../lib/utils';
@@ -37,7 +38,12 @@ import RecipePanel from './recipe/RecipePanel';
 import { toast } from './ui/Toast';
 // UIUX (audit 2026-07-27 §B-20 + §B-23): phím tắt dialog + dịch lỗi kỹ thuật
 import DialogKeys from './ui/DialogKeys';
-import { isLinearRecipeSplitMode, type Recipe } from '../lib/recipe/recipeTypes';
+import {
+    hasDocumentBoundPageState,
+    isLinearRecipeMergeMode,
+    isLinearRecipeSplitMode,
+    type Recipe,
+} from '../lib/recipe/recipeTypes';
 import { sanitizeRecipeImpositionParams } from '../lib/recipe/recipeImpositionParams';
 import { firstDeniedRecipeStep, recipeStepAccessError } from '../lib/recipe/recipeEntitlements';
 import {
@@ -1098,6 +1104,30 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         stickerSheetSourceVisible,
         t,
     ]);
+
+    /**
+     * RECIPE (audit 2026-08-16 §REC.4): cửa commit cho MỌI tool truyền qua
+     * `onFileFixed`. Tool đã nối hợp đồng ghi thì đi kèm vé và chạy như cũ; tool
+     * chưa nối mà tab đang ghi thì bị CHẶN kèm lý do, không được âm thầm không
+     * làm gì rồi vẫn bật cờ thành công (những tool này gọi `onFileFixed` không
+     * await nên exception của `commitWorkingFile` không tới được try/catch của họ).
+     */
+    const commitToolWorkingFile = useCallback(async (
+        newBlob: Blob,
+        newName: string,
+        existingPath?: string,
+        recipeTicket?: RecipeOperationTicket | null,
+    ): Promise<boolean> => {
+        // RECIPE (audit 2026-08-17 §REC.4R): trả kết quả để tool biết commit CÓ xảy ra
+        // hay bị chặn. Trước đây trả Promise<void> đã resolve nên tool hiểu "bị chặn"
+        // là "đã thành công" và vẫn bật cờ thành công. `false` = đã chặn, chưa commit.
+        if (shouldBlockUnrecordedCommit(recipeOwnerTabId, recipeTicket)) {
+            toast.info(t('tabs.imposition:thao_tac_chua_ghi_duoc_vao_quy_trinh'));
+            return false;
+        }
+        await commitWorkingFile(newBlob, newName, existingPath, recipeTicket ?? null);
+        return true;
+    }, [commitWorkingFile, recipeOwnerTabId, t]);
     const ensureCropFileId = useCallback(async (signal?: AbortSignal) => {
         if (!file) throw new Error(t('misc.acrobatViewer:chua_co_file_de_cat_kho'));
         // PAGEBOX (audit 2026-08-04 §W1.PB5): Crop phải đọc đúng artifact người
@@ -1110,12 +1140,18 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     }, [file, getCropWorkingFile, setSelectionFileId, t]);
 
     const handleCropApplied = useCallback(async (blob: Blob, filename: string, openInNewTab: boolean) => {
+        // RECIPE (audit 2026-08-16 §REC.4): Cắt khổ theo toạ độ không phát lại được.
+        // Chặn TRƯỚC khi dọn selection để người dùng giữ nguyên vùng vừa vẽ.
+        if (!openInNewTab && shouldBlockUnrecordedCommit(recipeOwnerTabId)) {
+            toast.info(t('tabs.imposition:thao_tac_chua_ghi_duoc_vao_quy_trinh'));
+            return;
+        }
         if (openInNewTab && onSpawnTab) {
             const resultFile = new File([blob], filename, { type: 'application/pdf' });
             Object.defineProperty(resultFile, 'isGenerated', { value: true });
             onSpawnTab(resultFile, { focusFeature: 'crop' });
         } else {
-            await commitWorkingFile(blob, filename);
+            await commitToolWorkingFile(blob, filename);
             setViewerPageInstanceIds(undefined);
         }
 
@@ -1124,7 +1160,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setActiveDashboardTool('crop');
         if (sidebarWidth < 280) setSidebarWidth(390);
         setIsSidebarOpen(true);
-    }, [onSpawnTab, commitWorkingFile, setViewerPageInstanceIds, commitCropSelection, setIsCropMode, setActiveDashboardTool, sidebarWidth, setSidebarWidth, setIsSidebarOpen]);
+    }, [onSpawnTab, commitToolWorkingFile, recipeOwnerTabId, t, setViewerPageInstanceIds, commitCropSelection, setIsCropMode, setActiveDashboardTool, sidebarWidth, setSidebarWidth, setIsSidebarOpen]);
 
     const handleCropClose = useCallback(() => {
         setIsCropMode(false);
@@ -1262,6 +1298,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             setError(t('tabs.imposition:loi_chua_co_object_nao_duoc_chon'));
             return;
         }
+        // RECIPE (audit 2026-08-16 §REC.4): xóa đối tượng theo bbox/xref là thao tác
+        // gắn với đúng file này. Chặn ngay đầu vào để không upload/xử lý vô ích.
+        if (shouldBlockUnrecordedCommit(recipeOwnerTabId)) {
+            setError(t('tabs.imposition:thao_tac_chua_ghi_duoc_vao_quy_trinh'));
+            return;
+        }
 
         // alert(`Bắt đầu xóa ${objs.length} object trên trang ${pageNum}...`);
         setIsProcessing(true);
@@ -1288,7 +1330,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 const pdfRes = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
                 if (pdfRes.ok) {
                     const blob = await pdfRes.blob();
-                    commitWorkingFile(blob, data.output_filename);
+                    await commitToolWorkingFile(blob, data.output_filename);
                 } else {
                     setError(t('tabs.imposition:loi_tai_file_moi'));
                 }
@@ -1300,7 +1342,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         } finally {
             setIsProcessing(false);
         }
-    }, [selectionFileId, commitWorkingFile]);
+    }, [selectionFileId, commitToolWorkingFile, recipeOwnerTabId, setError, setIsProcessing, setProcessStatus, t]);
 
     // ─── Edit PDF Object: ĐƯỜNG COMMIT NHẸ cho thao tác chỉnh sửa đối tượng ──────
     // Tối ưu TỐC ĐỘ: backend /edit/* đã tạo Working_File MỘT lần (pikepdf, color-safe)
@@ -1314,6 +1356,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     //   - trỏ file/pdfUrl sang Working_File mới (desktop: dùng output_path trực tiếp),
     //   - setSelectionFileId(output_fid) TRỰC TIẾP → op kế tiếp + effect /edit/objects
     //     dùng fid mới (cache key `${selectionFileId}:${page}` đổi ⇒ refetch đúng file).
+    // RECIPE (audit 2026-08-17 §REC.11R): chụp PHIÊN GHI đang hoạt động tại thời
+    // điểm BẮT ĐẦU sửa đối tượng (op đầu làm session dirty). Step chỉ được gán khi
+    // phiên ghi lúc commit-on-exit vẫn đúng phiên này → không gán nhầm cho thao tác
+    // xảy ra trước khi bật Ghi, cũng không thêm Step vào phiên đã Dừng giữa chừng.
+    const objectEditRecordingRef = useRef<{ sessionId: number } | null>(null);
+
     const handleEditCommit = useCallback(async (
         outputUrl: string,
         outputFilename: string,
@@ -1324,6 +1372,19 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         const displayName = outputFilename || `Edited_${file?.name || 'document.pdf'}`;
         const isTauri = !!(window as any).__TAURI_INTERNALS__;
         const prevPdfUrl = pdfUrl;
+
+        // RECIPE (audit 2026-08-16 §REC.11 + 2026-08-17 §REC.11A/R): đường commit nhẹ
+        // này thay working file mà KHÔNG qua commitWorkingFile. Sửa đối tượng theo toạ
+        // độ không phát lại được nên ghi một Step recordable=false — NHƯNG chỉ khi phiên
+        // ghi hiện tại ĐÚNG là phiên đã hoạt động lúc bắt đầu sửa. Không chặn commit vì
+        // op đã nằm trong RAM phiên; chặn sẽ mất việc của người dùng.
+        const editRecording = objectEditRecordingRef.current;
+        const sameRecordingSession = !!editRecording
+            && recipeRecorder.isRecordingFor(recipeOwnerTabId)
+            && recipeRecorder.state.sessionId === editRecording.sessionId;
+        let recipeTicket: RecipeOperationTicket | null = sameRecordingSession
+            ? recipeRecorder.noteNonRecordable('object_edit', undefined, recipeOwnerTabId)
+            : null;
 
         try {
             // Lưu snapshot TRƯỚC thao tác vào undo-stack riêng của object-edit (gồm cả
@@ -1364,6 +1425,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             // nhờ đó giao diện KHÔNG "reload" sau mỗi thao tác — chỉ tile + overlay đổi.
             try { Object.defineProperty(newFile, '__editCommit', { value: true, configurable: true }); } catch { /* noop */ }
 
+            // RECIPE (audit 2026-08-17 §REC.11A): kiểm lại vé NGAY TRƯỚC khi publish.
+            // stat/fetch ở trên có await; nếu người dùng Dừng/Hủy phiên ghi trong lúc
+            // chờ, vé đã hết hiệu lực → không gán Step (nhưng vẫn cập nhật working file).
+            if (recipeTicket && !recipeRecorder.canCommitWorkingFile(recipeOwnerTabId, recipeTicket)) {
+                recipeRecorder.discardPending(recipeTicket);
+                recipeTicket = null;
+            }
+
             setFile(newFile);
             setOriginalFileName(displayName);
             setPdfUrl(newPdfUrl);
@@ -1379,22 +1448,30 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             if (prevPdfUrl && prevPdfUrl.startsWith('blob:') && prevPdfUrl !== newPdfUrl) {
                 URL.revokeObjectURL(prevPdfUrl);
             }
+            // Working file đã đổi xong → chốt Step "Sửa đối tượng" vào draft.
+            recipeRecorder.noteCommit(recipeTicket);
+
             // LƯU Ý: KHÔNG reset viewerPageOrder/rotations (edit không đụng thứ tự trang)
             // và KHÔNG detectColorSpace (bỏ để giảm tải mỗi op) — khác commitWorkingFile.
         } catch (err: any) {
+            // Không để note treo sang thao tác kế tiếp khi lượt commit này thất bại.
+            recipeRecorder.discardPending(recipeTicket);
             setError(err?.message || t('tabs.imposition:loi_cap_nhat_sau_chinh_sua'));
         }
     }, [file, pdfUrl, setHistory, setFile, setOriginalFileName, setPdfUrl, setFileSizeStr,
-        setIsSaved, onTitleChange, setSelectionFileId, setError, selectionFileId, editHistory]);
+        setIsSaved, onTitleChange, setSelectionFileId, setError, selectionFileId, editHistory,
+        recipeOwnerTabId, t]);
 
     // Edit-session in-memory: áp op trong RAM backend + render vùng clip → dán overlay
     // tại chỗ (KHÔNG reload file mỗi op). Debounce-commit ngầm ~1.5s → onCommit đổi
     // pdfUrl sang tile thật MỘT lần (nền). Session lỗi/410 → BÁO LỖI, không fallback.
     const editSession = useEditSession({
         eventScopeId: tabId,
-        onCommit: (result) => {
+        // RECIPE (audit 2026-08-17 §REC.11A): await để lifecycle commit-on-exit chờ
+        // publish xong; recorder không bị Dừng/Hủy chen vào giữa lúc consumer đang chạy.
+        onCommit: async (result) => {
             if (result?.success && result.output_url) {
-                void handleEditCommit(
+                await handleEditCommit(
                     result.output_url,
                     result.output_filename || '',
                     result.output_fid,
@@ -1413,7 +1490,17 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // sửa object rồi tắt sẽ MẤT thay đổi mà KHÔNG hỏi (thay đổi chỉ nằm trong RAM phiên).
     useEffect(() => {
         setEditSessionDirty(editSession.dirty);
-    }, [editSession.dirty]);
+        // RECIPE (audit 2026-08-17 §REC.11R): op đầu tiên làm session dirty = thời
+        // điểm bắt đầu sửa. Chụp phiên ghi lúc này; khi hết dirty (đã commit/đóng) thì
+        // xoá. handleEditCommit dùng snapshot này để gán Step đúng phiên.
+        if (editSession.dirty) {
+            if (!objectEditRecordingRef.current && recipeRecorder.isRecordingFor(recipeOwnerTabId)) {
+                objectEditRecordingRef.current = { sessionId: recipeRecorder.state.sessionId };
+            }
+        } else {
+            objectEditRecordingRef.current = null;
+        }
+    }, [editSession.dirty, recipeOwnerTabId]);
 
     // ----------------------------
 
@@ -1724,6 +1811,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         ? 'sticker_imposer'
                         : 'nup';
             const recordParams = sanitizeRecipeImpositionParams(opId, settings as any);
+            // RECIPE (audit 2026-08-16 §PLAY.3R): thứ tự trang và góc xoay thuộc đúng
+            // tài liệu này nên đã bị tước khỏi Step. Lượt chạy tay vẫn dùng chúng, vì
+            // vậy phải nói rõ Step ghi ra sẽ không tái lập phần đó — im lặng ở đây từng
+            // làm người dùng tưởng recipe đã mang theo tay sách đã sắp.
+            if (hasDocumentBoundPageState(viewerPageOrder, viewerPageRotations)) {
+                toast.info(t('tabs.imposition:quy_trinh_khong_luu_thu_tu_trang'));
+            }
             recipeTicket = recipeRecorder.noteOperation(
                 opId,
                 recordParams,
@@ -1740,7 +1834,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             const { runProcessEngine } = await import('../lib/processHandlers');
             return runProcessEngine(buildProcessContext(recipeTicket), settings, effectiveSpawn);
         });
-    }, [file, buildProcessContext, recipeOwnerTabId, t]);
+    }, [file, buildProcessContext, recipeOwnerTabId, t, viewerPageOrder, viewerPageRotations]);
 
     const handleStartCatalogPlan = useCallback(async (planConfig: any, sheetSettings: any) => {
         if (!file) return;
@@ -1762,6 +1856,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const handleStartShuffle = async (settings: any) => {
         if (!file) return;
         const recordingThisTab = recipeRecorder.isRecordingFor(recipeOwnerTabId);
+        // RECIPE (audit 2026-08-16 §REC.2): "Tách chẵn/lẻ" luôn sinh HAI tài liệu và
+        // handler bỏ qua spawnNewTab=false → không commit, Step mất im lặng. Chặn
+        // tường minh như Tách nhiều file thay vì để recipe thiếu bước.
+        if (recordingThisTab && settings?.presetId === 'special' && settings?.specialAction === 'split_odd_even') {
+            toast.info(t('tabs.imposition:split_nhieu_file_khong_the_ghi_quy_trinh'));
+            return;
+        }
         const eff = recordingThisTab ? { ...settings, spawnNewTab: false } : settings;
         const recipeTicket = !eff.spawnNewTab && recordingThisTab
             ? recipeRecorder.noteOperation('shuffle', eff, undefined, recipeOwnerTabId)
@@ -1837,15 +1938,29 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const handleStartMerge = useCallback(async (settings: any) => {
         if (!file && settings.mode === 'insert_pages') return;
         const recordingThisTab = recipeRecorder.isRecordingFor(recipeOwnerTabId);
+        // RECIPE (audit 2026-08-16 §PLAY.5): Trộn xen kẽ cần đủ hai nguồn, Chèn trang
+        // cần file chèn + chỉ số trang tuyệt đối. Hợp đồng input ngoài v1 chỉ mang được
+        // một file vô danh nên hai mode này không phát lại được → không ghi từ đầu.
+        if (recordingThisTab && !isLinearRecipeMergeMode(settings?.mode)) {
+            toast.info(t('tabs.imposition:thao_tac_chua_ghi_duoc_vao_quy_trinh'));
+            return;
+        }
         const eff = recordingThisTab ? { ...settings, spawnNewTab: false } : settings;
         let recipeTicket: RecipeOperationTicket | null = null;
         if (!eff.spawnNewTab && recordingThisTab) {
             // KHÔNG lưu blob file ngoài vào recipe (Property 7) — chỉ lưu cấu hình ghép.
-            const { filesToMerge, oddFile, evenFile, ...mergeParams } = eff;
+            // `insertFile` cũng phải bị tước: JSON.stringify(File) = `{}` truthy sẽ lọt
+            // qua guard của engine rồi vỡ khi đọc `.name`.
+            const { filesToMerge, oddFile, evenFile, insertFile, ...mergeParams } = eff;
+            // RECIPE (audit 2026-08-17 §PLAY.5R): ghi ĐÚNG số file ngoài để phát lại hỏi
+            // lại đủ N file theo thứ tự (Ghép nối tiếp A+B+C ghi trên A → cần 2 file).
+            const externalInputCount = Array.isArray(filesToMerge)
+                ? filesToMerge.filter((f: unknown) => f instanceof File).length
+                : 0;
             recipeTicket = recipeRecorder.noteOperation(
                 'merge',
                 mergeParams,
-                undefined,
+                { externalInputCount },
                 recipeOwnerTabId,
             );
             if (!recipeTicket) {
@@ -1939,19 +2054,44 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         const { runRecipe } = await import('../lib/recipe/PlaybackRunner');
         const { RECIPE_RUNNERS } = await import('../lib/recipe/recipeRunners');
 
-        const requestExternalInput = (_step: any, kind: 'csv' | 'file') => new Promise<any>((resolve) => {
+        const pickOneFile = (accept: string) => new Promise<File | null>((resolve) => {
             const input = document.createElement('input');
             input.type = 'file';
-            input.accept = kind === 'csv' ? '.csv,text/csv' : 'application/pdf,.pdf';
-            input.onchange = async () => {
-                const f = input.files?.[0];
-                if (!f) { resolve(null); return; }
-                resolve(kind === 'csv' ? { csvFile: f, csvText: await f.text() } : { files: [f] });
-            };
+            input.accept = accept;
+            input.onchange = () => resolve(input.files?.[0] ?? null);
             (input as any).oncancel = () => resolve(null);
             input.click();
         });
 
+        const requestExternalInput = async (step: any, kind: 'csv' | 'file') => {
+            if (kind === 'csv') {
+                const f = await pickOneFile('.csv,text/csv');
+                if (!f) return null;
+                return { csvFile: f, csvText: await f.text() };
+            }
+            // RECIPE (audit 2026-08-17 §PLAY.5R): hỏi ĐỦ số file đã ghi, TỪNG cái theo
+            // thứ tự, để Ghép nối tiếp phát lại đúng A+B+C (không mất C). Recipe cũ
+            // thiếu externalInputCount → coi như 1 file (giữ hành vi cũ).
+            const count = Math.max(1, Number(step?.externalInputCount) || 1);
+            const files: File[] = [];
+            for (let i = 0; i < count; i++) {
+                // Native file picker không hiện label riêng → báo trước bằng toast để
+                // người dùng biết đang chọn file thứ mấy (thứ tự quyết định kết quả ghép).
+                if (count > 1) {
+                    toast.info(t('tabs.imposition:chon_file_ghep_thu', { index: i + 1, total: count }));
+                }
+                const f = await pickOneFile('application/pdf,.pdf');
+                // Huỷ giữa chừng = huỷ cả bước: không ghép thiếu file rồi báo hoàn tất.
+                if (!f) return null;
+                files.push(f);
+            }
+            return { files };
+        };
+
+        // RECIPE (audit 2026-08-17 §PLAY.12): gom LÝ DO bỏ qua để báo cụ thể, không
+        // chỉ hiện con số. onWarn trước đây không được nối nên người dùng không biết vì
+        // sao bước bị bỏ.
+        const skipReasons = new Set<string>();
         const res = await runRecipe(recipe, {
             buildContext: () => createWorkingArtifactProcessContext(
                 base,
@@ -1969,9 +2109,21 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             },
             requestExternalInput,
             onProgress: ({ index, total, step }) => setProcessStatus(t('tabs.imposition:phat_lai_progress_step', { cur: index + 1, total, step: step.label })),
+            onWarn: (_step, reason) => {
+                skipReasons.add(
+                    reason === 'missing_input' ? t('tabs.imposition:skip_missing_input')
+                        : reason === 'unsupported_op' ? t('tabs.imposition:skip_unsupported')
+                            : t('tabs.imposition:skip_non_recordable'),
+                );
+            },
         });
         if (res.status === 'canceled') {
             toast.info(t('shell:err_canceled'));
+        } else if (res.ok && res.completed === 0) {
+            // §PLAY.12: KHÔNG báo "thành công" khi không chạy được bước nào.
+            toast.info(t('tabs.imposition:phat_lai_khong_co_buoc', {
+                reasons: [...skipReasons].join(', ') || t('tabs.imposition:skip_non_recordable'),
+            }));
         } else if (res.ok) {
             toast.success(t('tabs.imposition:phat_lai_xong', { n: res.completed }) + (res.skipped ? t('tabs.imposition:bo_qua_n_suffix', { n: res.skipped }) : '') + '.');
         } else {
@@ -3038,7 +3190,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             </div>
                         )}
 
-                        <OutputPreviewHost onFileFixed={commitWorkingFile} />
+                        <OutputPreviewHost onFileFixed={commitToolWorkingFile} />
 
                         {activeDashboardTool === 'bgremover' && (
                             <div className="absolute top-0 left-0 bottom-0 z-40" style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}>
@@ -3406,9 +3558,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                     ) : rightPanelKind === 'stick_text_number' ? (
                                                         <StickTextNumberTool
                                                             pdfFile={file}
-                                                            onFileFixed={(blob, name) => {
-                                                                commitWorkingFile(blob, name);
-                                                            }}
+                                                            onFileFixed={(blob, name) => commitToolWorkingFile(blob, name)}
                                                             onBack={() => setActiveDashboardTool('none')}
                                                         />
                                                     ) : (
@@ -3426,7 +3576,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             initialFeature={initialFeature}
                                                             lockedMode={lockedMode}
                                                             onBleedUpdate={handleBleedUpdate}
-                                                            onFileFixed={commitWorkingFile}
+                                                            onFileFixed={commitToolWorkingFile}
                                                             systemMergeFiles={systemMergeFiles}
                                                             officeSourceFile={officeSourceFile}
                                                             officeSourceFiles={officeSourceFiles}

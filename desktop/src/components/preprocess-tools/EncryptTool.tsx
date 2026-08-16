@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 
 interface Props {
     pdfFile: File | null;
-    onFileFixed?: (blob: Blob, filename: string) => void;
+    onFileFixed?: (blob: Blob, filename: string) => void | boolean | Promise<void | boolean>;
 }
 
 type Mode = 'lock' | 'unlock';
@@ -77,10 +77,13 @@ export default function EncryptTool({ pdfFile, onFileFixed }: Props) {
             }
 
             const blob = await response.blob();
-            setSuccess(t('preprocess.encrypt:khoa_thanh_cong'));
             setProgress('');
             if (onFileFixed) {
-                onFileFixed(blob, `encrypted_${pdfFile.name}`);
+                // RECIPE (audit 2026-08-17 §REC.4R): commit bị chặn → không báo thành công.
+                const committed = await onFileFixed(blob, `encrypted_${pdfFile.name}`);
+                if (committed !== false) setSuccess(t('preprocess.encrypt:khoa_thanh_cong'));
+            } else {
+                setSuccess(t('preprocess.encrypt:khoa_thanh_cong'));
             }
         } catch (e: any) {
             setError(e.message || t('preprocess.encrypt:loi_khong_xac_dinh'));
@@ -122,10 +125,12 @@ export default function EncryptTool({ pdfFile, onFileFixed }: Props) {
             }
 
             const blob = await response.blob();
-            setSuccess(t('preprocess.encrypt:mo_khoa_thanh_cong'));
             setProgress('');
             if (onFileFixed) {
-                onFileFixed(blob, `decrypted_${pdfFile.name}`);
+                const committed = await onFileFixed(blob, `decrypted_${pdfFile.name}`);
+                if (committed !== false) setSuccess(t('preprocess.encrypt:mo_khoa_thanh_cong'));
+            } else {
+                setSuccess(t('preprocess.encrypt:mo_khoa_thanh_cong'));
             }
         } catch (e: any) {
             setError(e.message || t('preprocess.encrypt:loi_khong_xac_dinh'));

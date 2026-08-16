@@ -40,7 +40,7 @@ const POS_Y_OPTIONS = [
 
 interface Props {
     pdfFile: File | null;
-    onFileFixed?: (blob: Blob, filename: string) => void;
+    onFileFixed?: (blob: Blob, filename: string) => void | boolean | Promise<void | boolean>;
 }
 
 export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
@@ -327,8 +327,10 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
 
             setProgress('');
             if (onFileFixed) {
-                onFileFixed(blob, `watermarked_${pdfFile.name}`);
-                setIsSuccess(true);
+                // RECIPE (audit 2026-08-17 §REC.4R): chỉ báo thành công khi commit
+                // thực sự xảy ra; commit bị chặn (đang ghi quy trình) trả về false.
+                const committed = await onFileFixed(blob, `watermarked_${pdfFile.name}`);
+                if (committed !== false) setIsSuccess(true);
             }
         } catch (e: any) {
             setError(e.message || t('preprocess.watermark:da_xay_ra_loi_khong_xac_dinh'));

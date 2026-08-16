@@ -7,7 +7,7 @@ import { tv } from '../../i18n';
 
 interface Props {
     pdfFile: File | null;
-    onFileFixed?: (blob: Blob, filename: string) => void;
+    onFileFixed?: (blob: Blob, filename: string) => void | boolean | Promise<void | boolean>;
 }
 
 const LANG_OPTIONS = [
@@ -76,14 +76,17 @@ export default function OcrTool({ pdfFile, onFileFixed }: Props) {
             const pagesWithText = parseInt(response.headers.get('X-OCR-Pages-With-Text') || '0');
             const totalWords = parseInt(response.headers.get('X-OCR-Total-Words') || '0');
 
-            setResult({ totalPages, pagesWithText, totalWords });
             setProgress('');
 
             // Deliver the file
             if (onFileFixed) {
+                // RECIPE (audit 2026-08-17 §REC.4R): commit bị chặn → không hiện thẻ
+                // kết quả OCR vì file đang mở không đổi.
                 const newName = `Searchable_${pdfFile.name}`;
-                onFileFixed(blob, newName);
+                const committed = await onFileFixed(blob, newName);
+                if (committed === false) return;
             }
+            setResult({ totalPages, pagesWithText, totalWords });
         } catch (e: any) {
             setError(e.message || t('preprocess.ocr:da_xay_ra_loi_khong_xac_dinh'));
             setProgress('');

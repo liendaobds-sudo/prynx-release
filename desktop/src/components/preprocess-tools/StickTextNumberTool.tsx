@@ -11,7 +11,7 @@ import { useTranslation } from 'react-i18next';
 
 interface Props {
     pdfFile: File | null;
-    onFileFixed?: (blob: Blob, filename: string) => void;
+    onFileFixed?: (blob: Blob, filename: string) => void | boolean | Promise<void | boolean>;
     onBack?: () => void;
 }
 
@@ -217,8 +217,9 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
             const blob = new Blob([pdfBytes as any], { type: 'application/pdf' });
 
             if (onFileFixed) {
-                onFileFixed(blob, `Stamped_${pdfFile.name}`);
-                setIsSuccess(true);
+                // RECIPE (audit 2026-08-17 §REC.4R): commit bị chặn → không báo thành công.
+                const committed = await onFileFixed(blob, `Stamped_${pdfFile.name}`);
+                if (committed !== false) setIsSuccess(true);
             }
         } catch (e: any) {
             setError(e.message || t('preprocess.stickTextNumber:da_xay_ra_loi_khi_xu_ly'));

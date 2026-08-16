@@ -19,7 +19,7 @@ interface Props {
     /** File Office từ tab payload (Ctrl+O / drop cửa sổ) */
     officeSourceFile?: File | null;
     officeSourceFiles?: File[];
-    onFileFixed?: (blob: Blob, filename: string, path?: string) => void;
+    onFileFixed?: (blob: Blob, filename: string, path?: string) => void | boolean | Promise<void | boolean>;
 }
 interface OfficePathResponse {
     path: string;
@@ -462,9 +462,10 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                 );
                 if (!isRequestCurrent('single', request)) return;
             }
-            setSuccess(t('preprocess.officeConvert:thanh_cong'));
             setProgress('');
-            onFileFixed?.(output.blob, output.name, output.path);
+            // RECIPE (audit 2026-08-17 §REC.4R): commit bị chặn → không báo thành công.
+            const committed = await onFileFixed?.(output.blob, output.name, output.path);
+            if (committed !== false) setSuccess(t('preprocess.officeConvert:thanh_cong'));
         } catch (convertError: any) {
             if (!isRequestCurrent('single', request)) return;
             setError(isAbortError(convertError)
@@ -644,9 +645,10 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
             }
             const output = await readOfficeOutput(res, preferPath, 'google_export.pdf');
             if (!isRequestCurrent('single', request)) return;
-            setSuccess(t('preprocess.officeConvert:thanh_cong_google'));
             setProgress('');
-            onFileFixed?.(output.blob, output.name, output.path);
+            // RECIPE (audit 2026-08-17 §REC.4R): commit bị chặn → không báo thành công.
+            const committed = await onFileFixed?.(output.blob, output.name, output.path);
+            if (committed !== false) setSuccess(t('preprocess.officeConvert:thanh_cong_google'));
         } catch (googleError: any) {
             if (!isRequestCurrent('single', request)) return;
             setError(isAbortError(googleError)

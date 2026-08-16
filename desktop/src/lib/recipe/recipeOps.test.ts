@@ -92,4 +92,12 @@ describe('recipeOps — buildRecipeStep', () => {
         const step = buildRecipeStep('object_edit', { id: 'x' });
         expect(step.recordable).toBe(false);
     });
+
+    it('§PLAY.5R: ghi externalInputCount khi truyền extras (Ghép nhiều file)', () => {
+        const step = buildRecipeStep('merge', { mode: 'merge_files' }, { externalInputCount: 2 });
+        expect(step.externalInputCount).toBe(2);
+        // Không truyền → không gắn field (recipe cũ coi như 1 khi phát).
+        const legacy = buildRecipeStep('merge', { mode: 'merge_files' });
+        expect(legacy.externalInputCount).toBeUndefined();
+    });
 });

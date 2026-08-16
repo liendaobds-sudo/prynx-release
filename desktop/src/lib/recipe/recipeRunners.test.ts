@@ -238,13 +238,48 @@ describe('recipeRunners — tạo đường cắt (sticker_dieline)', () => {
         expect(fd.get('cut_mode')).toBe('original');
         expect(fd.get('bleed_mm')).toBe('2');
         expect(fd.get('corner_style')).toBe('preserve');
-        expect(fd.get('shape_mode')).toBe('contour');
+        // AUDIT (2026-08-16 §BX.F01): phát lại phải gửi ĐÚNG shape_mode đã ghi. Hợp đồng
+        // cũ suy `preserve → contour` nên recipe ghi ở chế độ nhận dạng hình chuẩn lại
+        // phát lại thành giữ mép ảnh — khuôn bế khác bản người dùng đã duyệt.
+        expect(fd.get('shape_mode')).toBe('auto_safe');
         expect(fd.get('file_id')).toBe('fid-123');
         // Parity: "tạo đường cắt cho trang đầu" phải được phát lại (không bị đánh mất).
         expect(fd.get('cut_first_page_only')).toBe('true');
         // Bế tem: không dùng edge_bite (trùng “Bỏ nền trắng”) — luôn 0 dù recipe có field.
         expect(fd.get('edge_bite_mm')).toBe('0');
-        expect(commit).toHaveBeenCalledWith(blob, 'sticker_tem.pdf');
+        // §PLAY.PATH: response không có header path → commit không kèm path (undefined).
+        expect(commit).toHaveBeenCalledWith(blob, 'sticker_tem.pdf', undefined);
+    });
+
+    it('§PLAY.PATH: giữ native output path từ header X-Sticker-Output-Path', async () => {
+        const blob = new Blob([new Uint8Array([4])], { type: 'application/pdf' });
+        (authenticatedFetch as any).mockResolvedValueOnce({
+            ok: true,
+            blob: async () => blob,
+            headers: { get: (k: string) => (k === 'X-Sticker-Output-Path' ? 'D:\\results\\sticker_tem.pdf' : null) },
+        });
+        const commit = vi.fn();
+        await RECIPE_RUNNERS.sticker_dieline!(
+            makeCtx({ commitWorkingFile: commit, file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
+            { productType: 'sticker', cutMode: 'original', offsetMm: 0, cornerStyle: 'preserve', bleedMm: 2, bleedColorType: 'image' },
+            null,
+        );
+        expect(commit).toHaveBeenCalledWith(blob, 'sticker_tem.pdf', 'D:\\results\\sticker_tem.pdf');
+    });
+
+    it('§PLAY.BX01-LEGACY: recipe cũ shapeMode=contour KHÔNG ép contour (fail-closed)', async () => {
+        const blob = new Blob([new Uint8Array([5])], { type: 'application/pdf' });
+        (authenticatedFetch as any).mockResolvedValueOnce({ ok: true, blob: async () => blob });
+        const commit = vi.fn();
+        await RECIPE_RUNNERS.sticker_dieline!(
+            makeCtx({ commitWorkingFile: commit, file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
+            // Bản ghi cũ: có shapeMode='contour' nhưng KHÔNG có forceContour.
+            { productType: 'sticker', cutMode: 'original', offsetMm: 0, cornerStyle: 'preserve', shapeMode: 'contour', bleedMm: 2, bleedColorType: 'image' },
+            null,
+        );
+        const fd = (authenticatedFetch as any).mock.calls[0][1].body as FormData;
+        // Không có forceContour tường minh → không ép contour.
+        expect(fd.get('shape_mode')).not.toBe('contour');
     });
 
     it('phát lại XÉN VUÔNG (rectangle) → gửi edge_bite_mm, KHÔNG bật cut_first_page_only', async () => {
@@ -264,5 +299,112 @@ describe('recipeRunners — tạo đường cắt (sticker_dieline)', () => {
         expect(fd.get('edge_bite_mm')).toBe('1.5');
         // rectangle không dùng "trang đầu" dù params có cờ.
         expect(fd.get('cut_first_page_only')).toBe('false');
+    });
+
+    // Hai helper có kiểu để test mới không thêm `as any` vào ngân sách lint.
+    function queueDielinePdfResponse(): void {
+        const blob = new Blob([new Uint8Array([3])], { type: 'application/pdf' });
+        vi.mocked(authenticatedFetch).mockResolvedValueOnce(
+            { ok: true, blob: async () => blob } as unknown as Response,
+        );
+    }
+    function firstRequestForm(): FormData {
+        const [, init] = vi.mocked(authenticatedFetch).mock.calls[0];
+        return (init as RequestInit).body as FormData;
+    }
+
+    it('van an toàn "giữ mép ảnh" đã ghi thì phát lại vẫn ép contour (§BX.F01)', async () => {
+        queueDielinePdfResponse();
+        await RECIPE_RUNNERS.sticker_dieline!(
+            makeCtx({ file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
+            { productType: 'sticker', cutMode: 'original', cornerStyle: 'preserve', forceContour: true, shapeMode: 'contour' },
+            null,
+        );
+        expect(firstRequestForm().get('shape_mode')).toBe('contour');
+    });
+
+    it('biên trong suốt (alpha) giữ nguyên góc và KHÔNG bỏ nền trắng (§BX.F13)', async () => {
+        queueDielinePdfResponse();
+        await RECIPE_RUNNERS.sticker_dieline!(
+            makeCtx({ file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
+            { productType: 'sticker', cutMode: 'alpha', cornerStyle: 'round', removeWhiteBg: true },
+            null,
+        );
+        const fd = firstRequestForm();
+        expect(fd.get('corner_style')).toBe('preserve');
+        expect(fd.get('remove_white_bg')).toBe('false');
+        expect(fd.get('shape_mode')).toBe('contour');
+    });
+
+    it('xén vuông + đổ màu trơn KHÔNG được gửi độ lẹm mép (§BX.F02)', async () => {
+        queueDielinePdfResponse();
+        await RECIPE_RUNNERS.sticker_dieline!(
+            makeCtx({ file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
+            { productType: 'rectangle', bleedMm: 3, bleedColorType: 'solid', bleedColorHex: '0,0,0,10', edgeBiteMm: 2 },
+            null,
+        );
+        expect(firstRequestForm().get('edge_bite_mm')).toBe('0');
+    });
+
+    it('recipe mang NaN/ngoài khoảng phải bị kẹp trước khi gửi (§BX.F07)', async () => {
+        queueDielinePdfResponse();
+        await RECIPE_RUNNERS.sticker_dieline!(
+            makeCtx({ file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
+            { productType: 'sticker', cutMode: 'original', bleedMm: Number.NaN, offsetMm: 999 },
+            null,
+        );
+        const fd = firstRequestForm();
+        expect(fd.get('bleed_mm')).toBe('0');
+        expect(fd.get('offset_mm')).toBe('10');
+    });
+
+    it('recipe CŨ không có thanh khử răng cưa phải phát lại y nguyên: tắt (§CUTJAG.3)', async () => {
+        queueDielinePdfResponse();
+        await RECIPE_RUNNERS.sticker_dieline!(
+            makeCtx({ file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
+            { productType: 'sticker', cutMode: 'original' },
+            null,
+        );
+        expect(firstRequestForm().get('cutline_denoise')).toBe('0');
+    });
+
+    it('phát lại đúng mức khử răng cưa đã ghi, có kẹp 0–100 (§CUTJAG.3)', async () => {
+        queueDielinePdfResponse();
+        await RECIPE_RUNNERS.sticker_dieline!(
+            makeCtx({ file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
+            { productType: 'sticker', cutMode: 'original', cutlineDenoise: 45 },
+            null,
+        );
+        expect(firstRequestForm().get('cutline_denoise')).toBe('45');
+    });
+
+    it('mức khử răng cưa ngoài khoảng bị kẹp về 100 (§CUTJAG.3)', async () => {
+        queueDielinePdfResponse();
+        await RECIPE_RUNNERS.sticker_dieline!(
+            makeCtx({ file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
+            { productType: 'sticker', cutMode: 'original', cutlineDenoise: 500 },
+            null,
+        );
+        expect(firstRequestForm().get('cutline_denoise')).toBe('100');
+    });
+
+    it('xén vuông không dò contour nên khử răng cưa phải là 0', async () => {
+        queueDielinePdfResponse();
+        await RECIPE_RUNNERS.sticker_dieline!(
+            makeCtx({ file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
+            { productType: 'rectangle', bleedMm: 3, cutlineDenoise: 80 },
+            null,
+        );
+        expect(firstRequestForm().get('cutline_denoise')).toBe('0');
+    });
+
+    it('"không tạo đường cắt" cũng không dò contour nên khử răng cưa phải là 0', async () => {
+        queueDielinePdfResponse();
+        await RECIPE_RUNNERS.sticker_dieline!(
+            makeCtx({ file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
+            { productType: 'sticker', cutMode: 'none', cutlineDenoise: 80 },
+            null,
+        );
+        expect(firstRequestForm().get('cutline_denoise')).toBe('0');
     });
 });

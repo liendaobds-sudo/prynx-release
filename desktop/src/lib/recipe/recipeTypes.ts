@@ -16,6 +16,39 @@ export function isLinearRecipeSplitMode(mode: unknown): mode is 'extract_pages' 
     return mode === 'extract_pages';
 }
 
+/**
+ * RECIPE (audit 2026-08-16 §PLAY.5): v1 chỉ ghi/phát được Ghép nối tiếp.
+ *
+ * `interleave` cần đủ HAI nguồn (`oddFile`+`evenFile`) và `insert_pages` cần
+ * `insertFile` + `afterPageNum` là chỉ số trang tuyệt đối — hợp đồng input ngoài
+ * hiện tại chỉ mang được một file vô danh nên hai mode đó không thể tái lập.
+ * Kiểm TƯỜNG MINH thay vì mặc định cho qua: `mode` thiếu/lạ sẽ khiến engine
+ * không khớp nhánh nào và trả về một PDF RỖNG.
+ */
+export function isLinearRecipeMergeMode(mode: unknown): mode is 'merge_files' {
+    return mode === 'merge_files';
+}
+
+/**
+ * Tài liệu có thứ tự trang đã sắp lại hoặc có trang bị xoay hay không.
+ *
+ * RECIPE (audit 2026-08-16 §PLAY.3R): `pageOrder`/`pageRotations` là dữ liệu của
+ * đúng tài liệu đang mở nên bị tước khỏi Step. Lượt chạy tay vẫn dùng chúng, vì
+ * vậy người dùng phải được cảnh báo là Step ghi ra KHÔNG mang theo phần đó.
+ */
+export function hasDocumentBoundPageState(
+    pageOrder?: number[] | null,
+    pageRotations?: Record<number, number> | number[] | null,
+): boolean {
+    const reordered = Array.isArray(pageOrder)
+        && pageOrder.some((pageNumber, index) => pageNumber !== index + 1);
+    if (reordered) return true;
+    const rotations = pageRotations
+        ? Object.values(pageRotations as Record<string, number>)
+        : [];
+    return rotations.some((deg) => (((Number(deg) % 360) + 360) % 360) !== 0);
+}
+
 /** Định danh thao tác — khớp handler/tool key trong processHandlers + PreprocessingRouter. */
 export type RecipeOpId =
     // Bình bài
@@ -49,6 +82,9 @@ export interface RecipeStep {
     recordable: boolean;
     /** Cần input ngoài (CSV / file thứ hai) trước khi chạy khi phát lại. */
     needsExternalInput?: RecipeExternalInput | null;
+    /** RECIPE (audit 2026-08-17 §PLAY.5R): số file ngoài cần cung cấp lại theo THỨ TỰ
+     *  (vd Ghép nối tiếp A+B+C ghi trên A → cần 2 file B,C). Thiếu (recipe cũ) coi như 1. */
+    externalInputCount?: number;
     /** Chụp thứ tự trang tại thời điểm ghi (1-based; -1 = trang trắng). */
     viewerPageOrder?: number[];
     /** Chụp góc xoay THEO VỊ TRÍ tại thời điểm ghi (out[i]=góc trang ở vị trí i trong
@@ -106,6 +142,7 @@ function cloneStep(s: RecipeStep): RecipeStep {
         params: JSON.parse(JSON.stringify(s.params ?? {})),
         recordable: s.recordable,
         ...(s.needsExternalInput !== undefined ? { needsExternalInput: s.needsExternalInput } : {}),
+        ...(typeof s.externalInputCount === 'number' ? { externalInputCount: s.externalInputCount } : {}),
         ...(s.viewerPageOrder ? { viewerPageOrder: [...s.viewerPageOrder] } : {}),
         ...(s.viewerPageRotations ? { viewerPageRotations: [...s.viewerPageRotations] } : {}),
     };

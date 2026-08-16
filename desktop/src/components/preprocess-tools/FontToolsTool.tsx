@@ -53,7 +53,7 @@ interface FixResult {
 
 interface Props {
   pdfFile: File | null;
-  onFileFixed: (blob: Blob, name: string) => void;
+  onFileFixed: (blob: Blob, name: string) => void | boolean | Promise<void | boolean>;
 }
 
 interface FontRequest {
@@ -309,7 +309,6 @@ export default function FontToolsTool({ pdfFile, onFileFixed }: Props) {
       }
       const data = await response.json() as FixResult;
       if (!isRequestCurrent(request)) return;
-      setResult(data);
       if (data.success && data.output_filename) {
         const output = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`, {
           signal: request.controller.signal,
@@ -319,8 +318,16 @@ export default function FontToolsTool({ pdfFile, onFileFixed }: Props) {
         if (!isRequestCurrent(request)) return;
         expectedOutlinedFileNameRef.current = data.output_filename;
         preserveResultOnNextScanRef.current = true;
-        onFileFixed(outputBlob, data.output_filename);
+        // RECIPE (audit 2026-08-17 §REC.4R): commit bị chặn → không hiện kết quả
+        // vì file đang mở chưa đổi.
+        const committed = await onFileFixed(outputBlob, data.output_filename);
+        if (committed === false) {
+          expectedOutlinedFileNameRef.current = null;
+          preserveResultOnNextScanRef.current = false;
+          return;
+        }
       }
+      setResult(data);
     } catch (reason) {
       if (isRequestCurrent(request) && !isAbortError(reason)) {
         setError(reason instanceof Error ? reason.message : t('preprocess.fontTools:loi_xu_ly'));

@@ -85,8 +85,10 @@ export interface UseEditSessionOptions {
     eventScopeId?: string;
     /** Override ngưỡng debounce-commit (ms). */
     debounceCommitMs?: number;
-    /** Gọi khi 1 lần debounce-commit (tự động) hoàn tất → FE đổi sang tile thật. */
-    onCommit?: (result: SessionCommitResult) => void;
+    /** Gọi khi 1 lần debounce-commit (tự động) hoàn tất → FE đổi sang tile thật.
+     *  RECIPE (audit 2026-08-17 §REC.11A): cho phép trả Promise để lifecycle await
+     *  consumer publish xong trước khi kết thúc commit. */
+    onCommit?: (result: SessionCommitResult) => void | Promise<void>;
     /** Gọi khi phiên hỏng/không tồn tại (410) → FE chuyển sang Legacy_Commit_Flow. */
     onSessionFailed?: () => void;
 }
@@ -214,7 +216,8 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
             };
             // Báo caller (ImpositionTab.onCommit → handleEditCommit) đổi pdfUrl sang
             // tile thật. Đây là RELOAD DUY NHẤT của cả phiên sửa — tại điểm thoát/Lưu.
-            try { optsRef.current.onCommit?.(result); } catch { /* nuốt lỗi callback */ }
+            // Await để publish xong trước khi commit kết thúc (§REC.11A).
+            try { await optsRef.current.onCommit?.(result); } catch { /* nuốt lỗi callback */ }
             return result;
         } catch (e) {
             if (e instanceof SessionGoneError) { markFailed(); return null; }
@@ -354,7 +357,7 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
             setCanUndo(false);
             setCanRedo(false);
             setPreviews([]);
-            try { optsRef.current.onCommit?.(result); } catch { /* callback best-effort */ }
+            try { await optsRef.current.onCommit?.(result); } catch { /* callback best-effort */ }
             return result;
         } catch (e) {
             if (e instanceof SessionGoneError) { markFailed(); return null; }

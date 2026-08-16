@@ -93,12 +93,14 @@ interface PreprocessingRouterProps {
     onIssueSelect: (issue: any) => void;
     onOpenOutputPreview: () => void;
     onOpenTool?: (tool: string) => void;
+    // RECIPE (audit 2026-08-17 §REC.4R): kết quả commit phải propagate về tool để
+    // tool không báo thành công khi bị chặn.
     onFileFixed?: (
         blob: Blob,
         name: string,
         path?: string,
         recipeTicket?: RecipeOperationTicket | null,
-    ) => void | Promise<void>;
+    ) => void | boolean | Promise<void | boolean>;
     officeSourceFile?: File | null;
     officeSourceFiles?: File[];
     ensureCropFileId?: (signal?: AbortSignal) => Promise<string>;
@@ -225,16 +227,14 @@ export default function PreprocessingRouter({
                     onIssueSelect={onIssueSelect}
                     onOpenOutputPreview={onOpenOutputPreview}
                     onOpenFontTools={() => onOpenTool?.('font_tools')}
-                    onFileFixed={(blob, name) => {
-                        if (onFileFixed) onFileFixed(blob, name);
-                    }}
+                    onFileFixed={(blob, name) => onFileFixed?.(blob, name)}
                 />
             )}
 
             {activeTool === 'font_tools' && (
                 <FontToolsTool
                     pdfFile={pdfFile}
-                    onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }}
+                    onFileFixed={(blob, name) => onFileFixed?.(blob, name)}
                 />
             )}
 
@@ -259,7 +259,7 @@ export default function PreprocessingRouter({
             )}
 
             {activeTool === 'ocr' && (
-                <OcrTool pdfFile={pdfFile} onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }} />
+                <OcrTool pdfFile={pdfFile} onFileFixed={(blob, name) => onFileFixed?.(blob, name)} />
             )}
 
             {activeTool === 'optimize' && (
@@ -288,7 +288,7 @@ export default function PreprocessingRouter({
             )}
 
             {activeTool === 'watermark' && (
-                <WatermarkTool pdfFile={pdfFile} onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }} />
+                <WatermarkTool pdfFile={pdfFile} onFileFixed={(blob, name) => onFileFixed?.(blob, name)} />
             )}
 
             {activeTool === 'upscale' && (
@@ -307,11 +307,11 @@ export default function PreprocessingRouter({
             )}
 
             {activeTool === 'encrypt' && (
-                <EncryptTool pdfFile={pdfFile} onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }} />
+                <EncryptTool pdfFile={pdfFile} onFileFixed={(blob, name) => onFileFixed?.(blob, name)} />
             )}
 
             {activeTool === 'metadata' && (
-                <MetadataTool pdfFile={pdfFile} onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }} />
+                <MetadataTool pdfFile={pdfFile} onFileFixed={(blob, name) => onFileFixed?.(blob, name)} />
             )}
 
             {activeTool === 'office_convert' && (
@@ -319,7 +319,7 @@ export default function PreprocessingRouter({
                     pdfFile={pdfFile}
                     officeSourceFile={officeSourceFile}
                     officeSourceFiles={officeSourceFiles}
-                    onFileFixed={(blob, name, path) => { if (onFileFixed) onFileFixed(blob, name, path); }}
+                    onFileFixed={(blob, name, path) => onFileFixed?.(blob, name, path)}
                 />
             )}
         </>

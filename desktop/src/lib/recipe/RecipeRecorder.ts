@@ -15,6 +15,8 @@ export interface RecorderExtras {
     viewerPageOrder?: number[];
     /** Góc xoay theo vị trí trang trong pageOrder. */
     viewerPageRotations?: number[];
+    /** RECIPE (audit 2026-08-17 §PLAY.5R): số file ngoài cần cung cấp lại theo thứ tự. */
+    externalInputCount?: number;
 }
 
 /** Vé nhân quả nội bộ; không thuộc schema Recipe. */

@@ -52,7 +52,7 @@ const ACTIONS = [
 
 interface Props {
   pdfFile: File | null;
-  onFileFixed: (blob: Blob, name: string) => void;
+  onFileFixed: (blob: Blob, name: string) => void | boolean | Promise<void | boolean>;
   onIssueSelect?: (issue: any) => void;
   onOpenOutputPreview?: () => void;
   onOpenFontTools?: () => void;
@@ -118,15 +118,20 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || t('preprocess.preflight:loi'));
       const data = await res.json();
-      setFixResult(data);
 
       if (data.success && data.output_filename) {
         const pdfRes = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
         if (pdfRes.ok) {
           const blob = await pdfRes.blob();
-          onFileFixed(blob, data.output_filename);
+          // RECIPE (audit 2026-08-17 §REC.4R): commit bị chặn → không hiện kết quả
+          // fix và không bỏ chọn action vì file đang mở chưa đổi.
+          const committed = await onFileFixed(blob, data.output_filename);
+          if (committed === false) return;
+          setFixResult(data);
           setSelectedActions(new Set()); // Auto-deselect fixed actions
         }
+      } else {
+        setFixResult(data);
       }
     } catch (e: any) { setError(e.message); }
     finally { setFixingAction(''); }

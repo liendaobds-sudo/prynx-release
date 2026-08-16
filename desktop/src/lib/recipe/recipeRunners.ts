@@ -25,7 +25,7 @@
  * /pdf-tools/sticker-dieline) → đúng trên sản phẩm tem mới.
  */
 import type { RecipeRunner, RecipeRunnerRegistry } from './PlaybackRunner';
-import { isLinearRecipeSplitMode, type RecipeOpId } from './recipeTypes';
+import { isLinearRecipeMergeMode, isLinearRecipeSplitMode, type RecipeOpId } from './recipeTypes';
 import type { ProcessContext, ProcessOutcome } from '../processHandlers';
 import {
     PROCESS_COMPLETED,
@@ -37,6 +37,11 @@ import {
     runMerge,
 } from '../processHandlers';
 import { authenticatedFetch, getApiUrl, uploadPDF, prepareFileForUpload } from '../api';
+import {
+    buildStickerDielineFields,
+    clampStickerMm,
+    STICKER_PARAM_LIMITS,
+} from '../../components/preprocess-tools/stickerToolPolicy';
 import i18n from '../../i18n';
 
 // ─────────────── Imposition (qua runProcessEngine, ép spawnNewTab=false) ───────────────
@@ -74,9 +79,22 @@ const runSplitStep: RecipeRunner = async (ctx, params) => {
 // ─────────────── Merge (file thứ hai từ input ngoài) ───────────────
 
 const runMergeStep: RecipeRunner = async (ctx, params, ext) => {
+    // RECIPE (audit 2026-08-16 §PLAY.5): recipe cũ có thể mang mode Trộn xen kẽ /
+    // Chèn trang. Hai mode đó không tái lập được: engine sẽ ném "chọn đủ 2 file
+    // nguồn", hoặc vỡ TypeError vì `insertFile` đã bị JSON hoá thành `{}`. Mode
+    // thiếu/lạ còn tệ hơn — engine không khớp nhánh nào và trả PDF rỗng.
+    if (!isLinearRecipeMergeMode(params.mode)) {
+        return failedStep(
+            ctx.setError,
+            i18n.t('lib.processHandlers:merge_mode_khong_the_phat_noi_tiep', {
+                defaultValue: 'Bước Ghép này cần nhiều nguồn theo vai trò (trộn xen kẽ / chèn trang) nên không thể phát lại trong quy trình. Chỉ chế độ Ghép nối tiếp được hỗ trợ.',
+            }),
+        );
+    }
     const files = ext?.files ?? [];
-    // mode mặc định 'merge_files'; chèn file ngoài vào filesToMerge.
-    return runMerge(ctx, { ...params, spawnNewTab: false, filesToMerge: files });
+    // Chỉ chèn file ngoài vừa được hỏi lại; KHÔNG tin dữ liệu file trong params.
+    const { insertFile: _ignoredInsertFile, oddFile: _ignoredOddFile, evenFile: _ignoredEvenFile, ...mergeParams } = params as Record<string, unknown>;
+    return runMerge(ctx, { ...mergeParams, spawnNewTab: false, filesToMerge: files });
 };
 
 function failedStep(setError: ProcessContext['setError'], message: string): ProcessOutcome {
@@ -237,6 +255,12 @@ function recipeBleedSideNames(saved: unknown): string[] {
     return enabled.length > 0 ? enabled : [...RECIPE_BLEED_SIDE_KEYS];
 }
 
+/** Cùng dữ liệu trên, dạng map để đưa vào builder payload dùng chung. */
+function recipeBleedSides(saved: unknown): Record<string, boolean> {
+    const names = recipeBleedSideNames(saved);
+    return Object.fromEntries(RECIPE_BLEED_SIDE_KEYS.map(side => [side, names.includes(side)]));
+}
+
 // ─── Tạo đường cắt / bù xén tem (dò contour server-side mỗi file) ───
 const runStickerDieline: RecipeRunner = async (ctx, params) => {
     const { file, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
@@ -247,6 +271,9 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
         const workingBytes = await getWorkingBytes();
         const targetFile = new File([workingBytes as any], file.name, { type: 'application/pdf' });
         let resultBlob: Blob;
+        // RECIPE (audit 2026-08-17 §PLAY.PATH): giữ native output path để bước sau đi
+        // fast-path (không sao chép/upload/nạp bytes lớn vào WebView), như lượt chạy tay.
+        let outputPath: string | undefined;
 
         if (productType === 'rectangle' && p.bleedColorType === 'mirror') {
             // Khổ trang hiện tại luôn là khổ thành phẩm; recipe cũ không còn được phép auto-trim đổi khổ.
@@ -256,7 +283,10 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     file_id: up.id,
-                    bleed_mm: p.bleedMm || 0,
+                    // RECIPE (audit 2026-08-17 §PLAY.BX-MIRROR): backend không đặt ge/le
+                    // và RecipePanel cho nhập số không giới hạn → clamp đúng như UI chạy
+                    // tay (0–10mm) để recipe sửa tay không gửi 999mm/NaN xuống engine.
+                    bleed_mm: clampStickerMm(p.bleedMm, STICKER_PARAM_LIMITS.bleedMm),
                     pages: null,
                     bleed_sides: recipeBleedSideNames(p.bleedSides),
                 }),
@@ -270,45 +300,51 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
             const up = await uploadPDF(targetFile);
             const fd = new FormData();
             fd.append('file_id', up.id);
-            fd.append('cut_mode', productType === 'rectangle' ? 'none' : (p.cutMode || 'original'));
-            fd.append('offset_mm', productType === 'rectangle' ? '0' : String(p.offsetMm ?? 0));
-            const effectiveCornerStyle = productType === 'rectangle' ? 'miter' : (p.cornerStyle || 'preserve');
-            fd.append('corner_style', effectiveCornerStyle);
-            fd.append('bleed_mm', String(p.bleedMm ?? 0));
-            fd.append('fill_holes', productType === 'rectangle' ? 'true' : (p.fillHoles ? 'true' : 'false'));
-            fd.append('remove_white_bg', productType === 'rectangle' ? 'false' : (p.removeWhiteBg ? 'true' : 'false'));
-            fd.append('draw_cut_contour', productType === 'rectangle' ? 'false' : ((p.cutMode && p.cutMode !== 'none') ? 'true' : 'false'));
-            fd.append('bleed_color_type', p.bleedColorType || 'image');
-            fd.append('bleed_color_hex', p.bleedColorHex || '#FFFFFF');
-            // Lẹm mép chỉ Xén vuông. Bế tem dùng “Bỏ nền trắng” + sample viền tự động.
-            fd.append('edge_bite_mm', productType === 'rectangle' ? String(p.edgeBiteMm ?? 0) : '0');
-            fd.append(
-                'bleed_sides',
-                productType === 'rectangle'
-                    ? (recipeBleedSideNames(p.bleedSides).join(',') || 'none')
-                    : 'all',
-            );
-            fd.append('cut_first_page_only', productType === 'sticker' && p.cutFirstPageOnly ? 'true' : 'false');
-            // Recipe cũ không có field này phải giữ hành vi cũ: không crop.
-            fd.append('crop_to_sticker', productType === 'sticker' && p.cutMode !== 'none' && p.cropToSticker === true ? 'true' : 'false');
-            fd.append(
-                'shape_mode',
-                productType === 'sticker'
-                    ? (effectiveCornerStyle === 'preserve' ? 'contour' : (p.shapeMode || 'auto_safe'))
-                    : 'contour',
-            );
-            fd.append('rectangle_mode', productType === 'rectangle' ? 'true' : 'false');
+            // AUDIT (2026-08-16 §BX.F01/F07/F13): dùng ĐÚNG builder mà StickerTool dùng
+            // lúc chạy tay. Ba công thức song song trước đây làm recipe phát lại đổi
+            // shape_mode, bỏ hai nhánh riêng của `cutMode='alpha'`, và bỏ qua toàn bộ
+            // clamp của UI (recipe sửa tay có thể mang NaN/Infinity).
+            const dielineFields = buildStickerDielineFields({
+                productType,
+                cutMode: productType === 'rectangle' ? 'none' : (p.cutMode || 'original'),
+                offsetMm: p.offsetMm,
+                cornerStyle: p.cornerStyle || 'preserve',
+                fillHoles: !!p.fillHoles,
+                bleedMm: p.bleedMm,
+                removeWhiteBg: !!p.removeWhiteBg,
+                bleedColorType: p.bleedColorType || 'image',
+                bleedColorHex: p.bleedColorHex || '#FFFFFF',
+                edgeBiteMm: p.edgeBiteMm,
+                cutFirstPageOnly: !!p.cutFirstPageOnly,
+                // Recipe cũ không có field này phải giữ hành vi cũ: không crop.
+                cropToSticker: p.cropToSticker === true,
+                bleedSides: recipeBleedSides(p.bleedSides),
+                // RECIPE (audit 2026-08-17 §PLAY.BX01-LEGACY — FAIL-CLOSED): recipe cũ
+                // ghi `shapeMode:'contour'` cho cả trường hợp người dùng chạy tay bằng
+                // auto_safe, nên KHÔNG thể suy ngược ý định. Chỉ ép contour khi bản ghi
+                // MỚI mang cờ tường minh `forceContour===true`; recipe cũ (thiếu cờ) đi
+                // theo mặc định an toàn của builder, không âm thầm ép contour.
+                forceContour: p.forceContour === true,
+                // §CUTJAG.3: recipe cũ không có field này → `undefined` → 0 (tắt),
+                // đúng hành vi của bản ghi đã duyệt trước khi có thanh kéo.
+                cutlineDenoise: p.cutlineDenoise,
+            });
+            for (const [field, value] of Object.entries(dielineFields)) {
+                fd.append(field, value);
+            }
             const response = await authenticatedFetch(`${getApiUrl()}/pdf-tools/sticker-dieline`, { method: 'POST', body: fd });
             if (!response.ok) {
                 const err = await response.json().catch(() => null);
                 throw new Error(err?.detail || i18n.t('recipe.recipeRunners:loi_server_response_status', { status: response.status }));
             }
             resultBlob = await response.blob();
+            // Header có thể vắng khi fetch cũ không expose; chỉ dùng khi có giá trị thật.
+            outputPath = response.headers?.get?.('X-Sticker-Output-Path') || undefined;
         }
 
         const baseName = file.name.replace(/\.[^/.]+$/, '');
         const prefix = productType === 'rectangle' ? 'autobleed' : 'sticker';
-        await commitWorkingFile(resultBlob, `${prefix}_${baseName}.pdf`);
+        await commitWorkingFile(resultBlob, `${prefix}_${baseName}.pdf`, outputPath);
         return PROCESS_COMPLETED;
     } catch (e: any) {
         return failedStep(
