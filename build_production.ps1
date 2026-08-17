@@ -12,6 +12,7 @@
 #    .\build_production.ps1 -NuitkaJobs 4    # Limit parallel MSVC jobs (default: 4)
 #    .\build_production.ps1 -Release         # Build updater artifacts (needs signing key)
 #    .\build_production.ps1 -SkipPreflightQA # Emergency build without automated QA
+#    .\build_production.ps1 -RunNoGsAudit     # Run the optional no-GS 18x16 audit
 #    .\build_production.ps1 -NoOpenExplorer  # Do not open Explorer after build
 #    .\build_production.ps1 -Version 1.0.0-beta.13  # Bump version before build
 #    Ghostscript is never bundled; dev/test/release share one no-GS contract.
@@ -25,6 +26,7 @@ param(
     [switch]$Release,
     [switch]$AllowPlaintextDieline,
     [switch]$SkipPreflightQA,
+    [switch]$RunNoGsAudit,
     [switch]$ReusePassedNoGs,
     [switch]$NoOpenExplorer,
     [ValidateRange(1, 8)]
@@ -365,6 +367,14 @@ $env:VITE_LOGO_REBUILD_ENABLED = "false"
 $env:PRYNX_LOGO_REBUILD_ENABLED = "false"
 Write-Host "  Logo Rebuild release gate: HOLD (frontend + backend)" -ForegroundColor Yellow
 
+# BUILD (2026-08-17): corpus no-GS 18 x 16 la audit chuyen sau theo yeu cau,
+# khong chay mac dinh trong moi build. Giu -ReusePassedNoGs tu GUI/CLI cu nghia
+# la nguoi dung muon chay audit nay va cho phep dung lai cache fingerprint hop le.
+if ($ReusePassedNoGs -and -not $RunNoGsAudit) {
+    $RunNoGsAudit = $true
+    Write-Host "  No-GS corpus audit: ENABLED because -ReusePassedNoGs was requested." -ForegroundColor Yellow
+}
+
 
 # ---- Step 0: Full release QA gate -----------------------------------------
 # The gate is executed after the native wheel is staged below. Running it here
@@ -374,7 +384,17 @@ if (-not $SkipPreflightQA) {
         # Internal convenience path only: no new wheel exists, so retain the old
         # behavior and test the active dev runtime instead of silently skipping QA.
         Write-Host "[0/5] Running internal QA against the active dev native runtime..." -ForegroundColor Yellow
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ROOT\scripts\run_release_qa.ps1"
+        if ($RunNoGsAudit) {
+            if ($ReusePassedNoGs) {
+                & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+                    -File "$ROOT\scripts\run_release_qa.ps1" -RunNoGsAudit -ReusePassedNoGs
+            } else {
+                & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+                    -File "$ROOT\scripts\run_release_qa.ps1" -RunNoGsAudit
+            }
+        } else {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ROOT\scripts\run_release_qa.ps1"
+        }
         if ($LASTEXITCODE -ne 0) {
             throw "Internal regression gate failed while -SkipNuitka was active."
         }
@@ -978,9 +998,12 @@ if (-not $SkipNuitka) {
         $env:PRYNX_RELEASE_NATIVE_SITE = $nativeSiteDir
         $env:PRYNX_NO_GS_AUDIT_OUT = $buildNoGsAuditOut
         try {
-            if ($ReusePassedNoGs) {
+            if ($RunNoGsAudit -and $ReusePassedNoGs) {
                 & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-                    -File "$ROOT\scripts\run_release_qa.ps1" -ReusePassedNoGs
+                    -File "$ROOT\scripts\run_release_qa.ps1" -RunNoGsAudit -ReusePassedNoGs
+            } elseif ($RunNoGsAudit) {
+                & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+                    -File "$ROOT\scripts\run_release_qa.ps1" -RunNoGsAudit
             } else {
                 & powershell.exe -NoProfile -ExecutionPolicy Bypass `
                     -File "$ROOT\scripts\run_release_qa.ps1"

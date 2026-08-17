@@ -5,6 +5,7 @@
 # ============================================================
 
 param(
+    [switch]$RunNoGsAudit,
     [switch]$ReusePassedNoGs
 )
 
@@ -377,52 +378,60 @@ try {
     Pop-Location
 }
 
-# RELEASE QA (audit 2026-07-28): the no-GS product contract is corpus-backed.
-# REFUSED is an intentional fail-closed outcome; GS and ERROR fail the release.
-if (-not (Test-Path -LiteralPath $NO_GS_CORPUS)) {
-    throw "No-GS corpus not found: $NO_GS_CORPUS (set PRYNX_NO_GS_CORPUS)"
+# BUILD (2026-08-17): corpus no-GS 18 x 16 la audit chuyen sau theo yeu cau.
+# Build mac dinh giu cac regression gate chinh va bo qua corpus nay; khi chay,
+# REFUSED van la ket qua fail-closed hop le, con GS va ERROR se chan QA.
+if ($ReusePassedNoGs -and -not $RunNoGsAudit) {
+    throw "-ReusePassedNoGs requires -RunNoGsAudit."
 }
-$noGsReusableFingerprint = $null
-$reuseNoGsPassed = $false
-if ($ReusePassedNoGs) {
-    try {
-        $noGsReusableFingerprint = Get-NoGsReusableFingerprint
-        $reuseNoGsPassed = Test-NoGsPassedCache -ExpectedFingerprint $noGsReusableFingerprint
-    } catch {
-        Write-Warning "Khong xac minh duoc cache PDF 18 x 16; tu dong chay lai day du."
+if ($RunNoGsAudit) {
+    if (-not (Test-Path -LiteralPath $NO_GS_CORPUS)) {
+        throw "No-GS corpus not found: $NO_GS_CORPUS (set PRYNX_NO_GS_CORPUS)"
     }
-}
-if ($reuseNoGsPassed) {
-    Write-Host "  [QA] Da dung lai ket qua PDF 18 x 16 da dat; fingerprint van khop." -ForegroundColor Green
-} elseif ($ReusePassedNoGs) {
-    Write-Host "  [QA] Cache PDF 18 x 16 khong con khop/khong day du; tu dong chay lai." -ForegroundColor Yellow
-}
-$NO_GS_MAX_ATTEMPTS = 2
-if (-not $reuseNoGsPassed) {
-    $noGsExit = 1
-    for ($noGsAttempt = 1; $noGsAttempt -le $NO_GS_MAX_ATTEMPTS; $noGsAttempt++) {
-        Write-Host "  [QA] No-GS dependency gate (18 files x 16 operations), lan $noGsAttempt/$NO_GS_MAX_ATTEMPTS..." -ForegroundColor DarkGray
-        & $PYTHON "$ROOT\scripts\gs_dependency_audit.py" $NO_GS_CORPUS `
-            --limit 18 --gate --resume --out $NO_GS_AUDIT_OUT
-        $noGsExit = $LASTEXITCODE
-        if ($noGsExit -eq 0) { break }
-        if ($noGsExit -ne 1 -or $noGsAttempt -eq $NO_GS_MAX_ATTEMPTS) { break }
-        # BUILD (audit 2026-08-06 REL.NO_GS.RETRY): process con co the bi ngat thoang qua;
-        # thu lai mot lan tren cung wheel/artifact va tiep tuc tu checkpoint operation.
-        Write-Warning "No-GS gate bi ngat/that bai; thu lai mot lan tu checkpoint cung artifact."
-    }
-    if ($noGsExit -ne 0) {
-        throw "No-GS dependency gate (18 files x 16 operations) failed with exit code $noGsExit"
-    }
-    try {
-        if ([string]::IsNullOrWhiteSpace($noGsReusableFingerprint)) {
+    $noGsReusableFingerprint = $null
+    $reuseNoGsPassed = $false
+    if ($ReusePassedNoGs) {
+        try {
             $noGsReusableFingerprint = Get-NoGsReusableFingerprint
+            $reuseNoGsPassed = Test-NoGsPassedCache -ExpectedFingerprint $noGsReusableFingerprint
+        } catch {
+            Write-Warning "Khong xac minh duoc cache PDF 18 x 16; tu dong chay lai day du."
         }
-        Save-NoGsPassedCache -InputFingerprint $noGsReusableFingerprint -AuditArtifact $NO_GS_AUDIT_OUT
-    } catch {
-        # Cache chi la toi uu cho lan sau; gate 18 x 16 vua dat van la bang chung goc.
-        Write-Warning "PDF 18 x 16 da dat nhung khong luu duoc cache tai dung; lan sau se chay lai."
     }
+    if ($reuseNoGsPassed) {
+        Write-Host "  [QA] Da dung lai ket qua PDF 18 x 16 da dat; fingerprint van khop." -ForegroundColor Green
+    } elseif ($ReusePassedNoGs) {
+        Write-Host "  [QA] Cache PDF 18 x 16 khong con khop/khong day du; tu dong chay lai." -ForegroundColor Yellow
+    }
+    $NO_GS_MAX_ATTEMPTS = 2
+    if (-not $reuseNoGsPassed) {
+        $noGsExit = 1
+        for ($noGsAttempt = 1; $noGsAttempt -le $NO_GS_MAX_ATTEMPTS; $noGsAttempt++) {
+            Write-Host "  [QA] No-GS dependency gate (18 files x 16 operations), lan $noGsAttempt/$NO_GS_MAX_ATTEMPTS..." -ForegroundColor DarkGray
+            & $PYTHON "$ROOT\scripts\gs_dependency_audit.py" $NO_GS_CORPUS `
+                --limit 18 --gate --resume --out $NO_GS_AUDIT_OUT
+            $noGsExit = $LASTEXITCODE
+            if ($noGsExit -eq 0) { break }
+            if ($noGsExit -ne 1 -or $noGsAttempt -eq $NO_GS_MAX_ATTEMPTS) { break }
+            # BUILD (audit 2026-08-06 REL.NO_GS.RETRY): process con co the bi ngat thoang qua;
+            # thu lai mot lan tren cung wheel/artifact va tiep tuc tu checkpoint operation.
+            Write-Warning "No-GS gate bi ngat/that bai; thu lai mot lan tu checkpoint cung artifact."
+        }
+        if ($noGsExit -ne 0) {
+            throw "No-GS dependency gate (18 files x 16 operations) failed with exit code $noGsExit"
+        }
+        try {
+            if ([string]::IsNullOrWhiteSpace($noGsReusableFingerprint)) {
+                $noGsReusableFingerprint = Get-NoGsReusableFingerprint
+            }
+            Save-NoGsPassedCache -InputFingerprint $noGsReusableFingerprint -AuditArtifact $NO_GS_AUDIT_OUT
+        } catch {
+            # Cache chi la toi uu cho lan sau; gate 18 x 16 vua dat van la bang chung goc.
+            Write-Warning "PDF 18 x 16 da dat nhung khong luu duoc cache tai dung; lan sau se chay lai."
+        }
+    }
+} else {
+    Write-Host "  [QA] Skipped optional no-GS corpus audit (18 files x 16 operations)." -ForegroundColor DarkGray
 }
 
 # RELEASE QA (audit 2026-07-27): Windows dev servers keep native npm DLLs locked,

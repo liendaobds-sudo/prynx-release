@@ -260,13 +260,17 @@ def test_release_qa_retries_no_gs_once_from_same_operation_checkpoint():
     assert "Remove-Item -LiteralPath $NO_GS_AUDIT_OUT" not in text
 
 
-def test_release_can_reuse_only_a_complete_fingerprint_matched_no_gs_pass():
+def test_no_gs_corpus_audit_is_opt_in_and_can_reuse_a_complete_pass():
     qa = _read(RELEASE_QA)
     build = _read(BUILD)
     release = _read(RELEASE_UPDATE)
     gui = _read(REPO / "quanly_phathanh.ps1")
 
+    assert "[switch]$RunNoGsAudit" in qa
     assert "[switch]$ReusePassedNoGs" in qa
+    assert "if ($RunNoGsAudit)" in qa
+    assert "Skipped optional no-GS corpus audit" in qa
+    assert "-ReusePassedNoGs requires -RunNoGsAudit." in qa
     assert "Get-NoGsReusableFingerprint" in qa
     assert "sorted(pathlib.Path(sys.argv[1]).glob('*.pdf'))" in qa
     assert "Test-NoGsPassedCache" in qa
@@ -280,8 +284,9 @@ def test_release_can_reuse_only_a_complete_fingerprint_matched_no_gs_pass():
     assert "Cache PDF 18 x 16 khong con khop/khong day du; tu dong chay lai." in qa
     assert "Khong xac minh duoc cache PDF 18 x 16; tu dong chay lai day du." in qa
     assert "Save-NoGsPassedCache" in qa
-    assert "[switch]$ReusePassedNoGs" in build
-    assert '-File "$ROOT\\scripts\\run_release_qa.ps1" -ReusePassedNoGs' in build
+    assert "[switch]$RunNoGsAudit" in build
+    assert "if ($ReusePassedNoGs -and -not $RunNoGsAudit)" in build
+    assert '-File "$ROOT\\scripts\\run_release_qa.ps1" -RunNoGsAudit -ReusePassedNoGs' in build
     assert "[switch]$ReusePassedNoGs" in release
     assert "$buildArgs.ReusePassedNoGs = $true" in release
     assert "$chkReuseNoGs" in gui
