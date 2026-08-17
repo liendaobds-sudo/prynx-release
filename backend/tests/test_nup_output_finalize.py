@@ -170,3 +170,60 @@ def test_render_inline_loi_thi_don_chunk_da_tao(tmp_path):
 
     assert not first_chunk.exists()
     assert context.perf_stages.names == ["plan_s"]
+
+
+def test_xuat_pdf_loai_metadata_link_ngoai_cua_illustrator(tmp_path):
+    """PDF mang PieceInfo/OPI/GoToR không được đòi lại file nup khi đổi máy."""
+    pikepdf = pytest.importorskip("pikepdf")
+    chunk = tmp_path / "chunk-with-link.pdf"
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(100, 100))
+    page.obj["/PieceInfo"] = pikepdf.Dictionary({
+        "/Illustrator": pikepdf.Dictionary({
+            "/Private": pikepdf.Dictionary({
+                "/AIPDFPrivateData1": pdf.make_stream(b"nup_b4f634ce.pdf"),
+            }),
+        }),
+    })
+    page.obj["/Resources"] = pikepdf.Dictionary({
+        "/XObject": pikepdf.Dictionary({
+            "/Im0": pikepdf.Stream(
+                pdf,
+                b"",
+                Type=pikepdf.Name("/XObject"),
+                Subtype=pikepdf.Name("/Image"),
+                OPI=pikepdf.Dictionary({"/F": "nup_b4f634ce.pdf"}),
+            ),
+        }),
+    })
+    page.obj["/Annots"] = pikepdf.Array([
+        pikepdf.Dictionary({
+            "/Type": pikepdf.Name("/Annot"),
+            "/Subtype": pikepdf.Name("/Link"),
+            "/A": pikepdf.Dictionary({
+                "/S": pikepdf.Name("/GoToR"),
+                "/F": "nup_b4f634ce.pdf",
+            }),
+        }),
+    ])
+    pdf.save(chunk)
+    pdf.close()
+
+    context = _context(tmp_path, is_die_cut=True)
+    finalize_nup_output(context, chunk_processor=lambda _args: str(chunk))
+
+    with pikepdf.Pdf.open(context.output_path) as output:
+        for obj in output.objects:
+            if isinstance(obj, pikepdf.Dictionary):
+                assert "/PieceInfo" not in obj
+                assert "/OPI" not in obj
+        assert "/OPI" not in output.pages[0].obj["/Resources"]["/XObject"]["/Im0"]
+        assert all(
+            not (
+                isinstance(annot, pikepdf.Dictionary)
+                and isinstance(annot.get("/A"), pikepdf.Dictionary)
+                and str(annot["/A"].get("/S", "")) in ("/GoToR", "/Launch")
+            )
+            for page in output.pages
+            for annot in (page.obj.get("/Annots") or [])
+        )

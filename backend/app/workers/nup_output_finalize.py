@@ -230,6 +230,96 @@ def _assemble_chunks(context: NupOutputContext, chunk_paths: list[str]) -> None:
         _merge_pdfium_chunks(chunk_paths, context.output_path)
 
 
+def _sanitize_portable_pdf(output_path: str) -> None:
+    """Loại liên kết file ngoài mà Illustrator có thể giữ lại trong PDF nguồn.
+
+    [PDF-PORTABILITY FIX 2026-08-17] Một số PDF từ Illustrator chứa ``/PieceInfo``
+    (AIPDFPrivateData) hoặc ``/OPI`` trỏ tới file PDF gốc. Khi bình bản rồi chép
+    file sang máy khác, Illustrator đọc lại dấu này như một linked file và báo
+    thiếu ``nup_*.pdf`` dù nội dung đã nằm trong PDF kết quả. OCG/layer CUT,
+    CREASE và nội dung đã nhúng không đi qua các trường này nên được giữ nguyên.
+    """
+    try:
+        import pikepdf
+
+        removed_piece_info = 0
+        removed_opi = 0
+        removed_file_links = 0
+        with pikepdf.Pdf.open(output_path, allow_overwriting_input=True) as pdf:
+            seen: set[tuple[int, int] | int] = set()
+
+            def walk(obj) -> None:
+                nonlocal removed_piece_info, removed_opi, removed_file_links
+                if not isinstance(obj, (pikepdf.Dictionary, pikepdf.Stream)):
+                    return
+                objgen = getattr(obj, "objgen", None)
+                marker: tuple[int, int] | int = (
+                    objgen if objgen and objgen != (0, 0) else id(obj)
+                )
+                if marker in seen:
+                    return
+                seen.add(marker)
+                if "/PieceInfo" in obj:
+                    del obj["/PieceInfo"]
+                    removed_piece_info += 1
+                if "/OPI" in obj:
+                    del obj["/OPI"]
+                    removed_opi += 1
+
+                annots = obj.get("/Annots")
+                if isinstance(annots, pikepdf.Array):
+                    kept = pikepdf.Array([])
+                    for annot in annots:
+                        if not isinstance(annot, pikepdf.Dictionary):
+                            kept.append(annot)
+                            continue
+                        action = annot.get("/A")
+                        action_type = (
+                            str(action.get("/S", ""))
+                            if isinstance(action, pikepdf.Dictionary)
+                            else ""
+                        )
+                        subtype = str(annot.get("/Subtype", ""))
+                        if (
+                            action_type in ("/GoToR", "/Launch")
+                            or subtype == "/FileAttachment"
+                        ):
+                            removed_file_links += 1
+                            continue
+                        kept.append(annot)
+                    if len(kept) != len(annots):
+                        if len(kept):
+                            obj["/Annots"] = kept
+                        else:
+                            del obj["/Annots"]
+
+                for _, value in list(obj.items()):
+                    if isinstance(value, (pikepdf.Dictionary, pikepdf.Stream)):
+                        walk(value)
+                    elif isinstance(value, pikepdf.Array):
+                        for item in value:
+                            walk(item)
+
+            walk(pdf.Root)
+            for page in pdf.pages:
+                walk(page.obj)
+
+            if removed_piece_info or removed_opi or removed_file_links:
+                pdf.save(output_path)
+
+        logger.info(
+            "[PDF-PORTABILITY] %s: removed_piece_info=%d removed_opi=%d "
+            "removed_file_links=%d",
+            os.path.basename(output_path),
+            removed_piece_info,
+            removed_opi,
+            removed_file_links,
+        )
+    except Exception as error:
+        # Không chặn job chỉ vì PDF có cấu trúc riêng mà pikepdf không sửa được.
+        logger.warning("[PDF-PORTABILITY] làm sạch liên kết ngoài thất bại: %s", error)
+
+
 def _uses_shared_master_cut(context: NupOutputContext) -> bool:
     return (
         context.homogeneous_master_idx is not None
@@ -521,6 +611,7 @@ def finalize_nup_output(
         _write_completed_progress(context)
         _build_report_fallback(context)
         _stamp_reports(context)
+        _sanitize_portable_pdf(context.output_path)
 
         if context.progress_callback:
             context.progress_callback(

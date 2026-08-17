@@ -52,10 +52,32 @@ class ShapeBuilder:
         self.pike_page = pike_page
         self.stream = []          # path ops đang chờ (kể từ finish() gần nhất)
         self._committed = []      # các nhóm đã hoàn tất — CHỈ append (tránh O(N²))
+        # [CUT-PATH FIX 2026-08-17] Giữ current point để các đoạn bế liên tiếp
+        # dùng chung một subpath PDF. Trước đây mỗi draw_line/draw_bezier luôn
+        # phát `m`, khiến Illustrator nhận từng đoạn là một path riêng dù hai
+        # endpoint trùng nhau.
+        self._path_current: Point | None = None
+        self._path_subpaths = 0
+        self._path_joins = 0
+
+    @staticmethod
+    def _same_point(a: Point | None, b: Point) -> bool:
+        if a is None:
+            return False
+        return abs(float(a.x) - float(b.x)) <= 0.0001 and abs(float(a.y) - float(b.y)) <= 0.0001
+
+    def _move_to_if_needed(self, point: Point) -> None:
+        """Mở subpath mới hoặc tiếp tục subpath hiện tại tại endpoint trùng."""
+        if self._same_point(self._path_current, point):
+            self._path_joins += 1
+            return
+        self.stream.append(f"{point.x:.4f} {self.page_height - point.y:.4f} m")
+        self._path_subpaths += 1
 
     def draw_line(self, p1: Point, p2: Point):
-        self.stream.append(f"{p1.x:.4f} {self.page_height - p1.y:.4f} m")
+        self._move_to_if_needed(p1)
         self.stream.append(f"{p2.x:.4f} {self.page_height - p2.y:.4f} l")
+        self._path_current = p2
 
     def draw_polyline(self, points):
         """Vẽ 1 subpath LIỀN qua nhiều điểm: moveto điểm đầu, lineto các điểm sau.
@@ -63,31 +85,35 @@ class ShapeBuilder:
         subpath rời, không có line-join tại đỉnh gấp khúc như góc L)."""
         if not points or len(points) < 2:
             return
-        p0 = points[0]
-        self.stream.append(f"{p0.x:.4f} {self.page_height - p0.y:.4f} m")
+        self._move_to_if_needed(points[0])
         for p in points[1:]:
             self.stream.append(f"{p.x:.4f} {self.page_height - p.y:.4f} l")
+        self._path_current = points[-1]
 
     def draw_circle(self, center: Point, radius: float):
         cx, cy_top = center.x, self.page_height - center.y
         k = 0.5522847498
         r = radius
-        self.stream.append(f"{cx:.4f} {cy_top + r:.4f} m")
+        start = Point(cx, center.y - r)
+        self._move_to_if_needed(start)
         self.stream.append(f"{cx + k*r:.4f} {cy_top + r:.4f} {cx + r:.4f} {cy_top + k*r:.4f} {cx + r:.4f} {cy_top:.4f} c")
         self.stream.append(f"{cx + r:.4f} {cy_top - k*r:.4f} {cx + k*r:.4f} {cy_top - r:.4f} {cx:.4f} {cy_top - r:.4f} c")
         self.stream.append(f"{cx - k*r:.4f} {cy_top - r:.4f} {cx - r:.4f} {cy_top - k*r:.4f} {cx - r:.4f} {cy_top:.4f} c")
         self.stream.append(f"{cx - r:.4f} {cy_top + k*r:.4f} {cx - k*r:.4f} {cy_top + r:.4f} {cx:.4f} {cy_top + r:.4f} c")
+        self._path_current = start
 
     def draw_rect(self, rect: Rect):
         self.stream.append(f"{rect.x0:.4f} {self.page_height - rect.y1:.4f} {rect.width:.4f} {rect.height:.4f} re")
+        self._path_current = None
 
     def draw_bezier(self, p1: Point, c1: Point, c2: Point, p2: Point):
-        self.stream.append(f"{p1.x:.4f} {self.page_height - p1.y:.4f} m")
+        self._move_to_if_needed(p1)
         self.stream.append(
             f"{c1.x:.4f} {self.page_height - c1.y:.4f} "
             f"{c2.x:.4f} {self.page_height - c2.y:.4f} "
             f"{p2.x:.4f} {self.page_height - p2.y:.4f} c"
         )
+        self._path_current = p2
 
     def insert_text(self, point: Point, text: str, fontsize=11, fontname="helv",
                     color=(0, 0, 0, 1), oc=None):
@@ -120,6 +146,7 @@ class ShapeBuilder:
         self.stream.append(f"{x:.4f} {y:.4f} Td")
         self.stream.append(f"({escaped}) Tj")
         self.stream.append("ET")
+        self._path_current = None
 
     def _ensure_font(self, pdf_fontname: str) -> str:
         resources = self.pike_page.get("/Resources")
@@ -188,11 +215,23 @@ class ShapeBuilder:
             oc_name = self._register_ocg(oc)
             wrapped = [f"/OC /{oc_name} BDC"] + wrapped + ["EMC"]
 
+        if oc is not None and new_part:
+            logger.warning(
+                "[CUT-PATH-AUDIT] subpaths=%d joined_segments=%d operators=%d close=%s",
+                self._path_subpaths,
+                self._path_joins,
+                len(new_part),
+                bool(closePath),
+            )
+
         # Append-only: gộp nhóm vừa hoàn tất vào _committed (O(k)). Trước đây làm
         # `self.stream = old_part + wrapped` → nối lại TOÀN BỘ list tích lũy mỗi
         # finish() → O(N²) khi vẽ nhiều tem/đường bế. Thứ tự ops giữ nguyên y hệt.
         self._committed.extend(wrapped)
         self.stream = []
+        self._path_current = None
+        self._path_subpaths = 0
+        self._path_joins = 0
 
     def _register_item_name(self, item_name) -> str:
         """Register a valid marked-content property carrying the object name.
@@ -266,6 +305,9 @@ class ShapeBuilder:
         self.pike_page.contents_add(pikepdf.Stream(self.pdf, content))
         self._committed = []
         self.stream = []
+        self._path_current = None
+        self._path_subpaths = 0
+        self._path_joins = 0
 
 
 # =========================================================================
