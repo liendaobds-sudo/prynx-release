@@ -88,6 +88,11 @@ Hiện thực tính năng Recipe (Ghi & Phát lại) theo 6 nhóm, tăng dần t
   - [ ] 12.1 Round-trip recipe (record→save→load→playback) 2 kịch bản THỰC TẾ:
     - **Ruột sách**: PDF nhiều trang → convertcolors → hairlines → pdfx → optimize → booklet.
     - **Tem nhãn**: file tem → tạo đường cắt (sticker_dieline) → bình tem (sticker_imposer). Phát lại trên tem MỚI: dieline + detect-shape DÒ LẠI hình theo từng file → bình đúng (không đóng băng hình cũ). *Cần backend chạy để nghiệm thu tay.*
+    - _Ghi chú (audit 2026-08-17): đã có integration test mức lib
+      `playbackChain.integration.test.ts` chứng minh compose runRecipe +
+      WorkingArtifactController + playbackPublisher (output bước N = input N+1,
+      vòng đời blob URL §PLAY.13/14). Vẫn CHƯA có runtime Tauri + PDF artifact thật
+      cho hai kịch bản trên → 12.1 giữ chưa hoàn thành._
   - [x] 12.2 Verify FE typecheck/build/vitest xanh (333 pass; thêm runner optimize + sticker_dieline + sticker_imposer dò-lại-hình). BE không đụng → pytest giữ nguyên
   - _Requirements: 3.1, 3.4, 7.1_
   - _Ghi chú: tách nền (bgremover) là công cụ ảnh tương tác theo lô (store/preview riêng, ngoài chuỗi PDF) → KHÔNG nằm trong recipe; tem dùng tùy chọn "Bỏ nền trắng" sẵn trong bước tạo đường cắt._

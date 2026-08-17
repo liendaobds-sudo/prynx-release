@@ -147,3 +147,30 @@ Verify: vitest recipe/preprocess/useEditSession/i18n **304 pass**; typecheck **P
 - `§PLAY.13/.14` — closure `base` trong `playRecipe` khiến Undo lặp revision gốc và rò blob URL trung gian. Đòi đổi đường publish của playback (hoặc `commitWorkingFile` dùng khắp nơi). **KHÔNG sửa** vì chưa có integration test cho `playRecipe` (§TEST.1) và lỗi ở đây hiển thị sai trên Viewer — refactor mù rủi ro cao. Chờ dựng harness test trước.
 - `§TEST.1/.2/.4` — round-trip `playRecipe`, Tauri store test, thêm ca runner. Cần harness riêng.
 - Toàn luồng vẫn ở mức **AUTO**; nâng RUNTIME cần chạy Tauri thật + PDF khách + build installer.
+
+---
+
+## 13. Lô cuối — playback publisher + integration test (§PLAY.13/.14, §TEST.1)
+
+| Finding | Trạng thái | Thay đổi |
+|---|---|---|
+| `§PLAY.13` — Undo lặp revision gốc khi phát | **Đã sửa / AUTO** | `playRecipe` đẩy ĐÚNG một entry history trước vòng lặp; publisher riêng không đẩy history mỗi bước → một Undo thu gọn cả lượt phát. |
+| `§PLAY.14` — rò blob URL trung gian | **Đã sửa / AUTO** | Module thuần `playbackPublisher.ts` chỉ giữ MỘT blob URL trung gian (thu hồi cái trước mỗi bước; nhánh path native thu hồi blob còn treo). |
+| `§TEST.1` — không có test đi qua chuỗi playback | **Đã sửa một phần / AUTO** | `playbackChain.integration.test.ts` compose runRecipe + WorkingArtifactController + playbackPublisher đúng như `playRecipe`: output bước N = input N+1, path native materialize bytes cho bước sau, vòng đời blob URL. **Chưa** có runtime Tauri + PDF artifact thật (12.1 vẫn mở). |
+
+Thiết kế an toàn: tách logic publish + vòng đời URL ra module thuần có unit test
+(`playbackPublisher.test.ts`) thay vì refactor mù `commitWorkingFile` dùng khắp nơi.
+`playRecipe` chỉ đổi đường publish sang publisher này; các đường commit khác giữ nguyên.
+
+File: `desktop/src/lib/recipe/playbackPublisher.ts` (+test), `playbackChain.integration.test.ts`,
+`desktop/src/components/ImpositionTab.tsx`, `.kiro/specs/recipe-record-playback/tasks.md`.
+
+Verify: vitest recipe/preprocess/useEditSession/i18n **309 pass**; typecheck **PASS**.
+
+## 14. Còn lại (chỉ nâng được bằng RUNTIME)
+
+- `§TEST.1` phần runtime Tauri + PDF artifact thật cho ruột sách & tem nhãn (Task 12.1).
+- `§TEST.2` (Tauri store thật: create/restart/rename/delete/import trên AppData sạch),
+  `§TEST.4` (thêm ca runner Merge nhiều file / cancel).
+- `§STORE.1` cần build lại Tauri để nghiệm thu `delete_file_scoped` trên app cài đặt.
+- Toàn luồng đạt **AUTO** trên contract đã khoá; nâng **RUNTIME** cần chạy app thật + build installer.

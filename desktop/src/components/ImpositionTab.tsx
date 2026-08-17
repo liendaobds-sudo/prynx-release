@@ -45,6 +45,7 @@ import {
     type Recipe,
 } from '../lib/recipe/recipeTypes';
 import { sanitizeRecipeImpositionParams } from '../lib/recipe/recipeImpositionParams';
+import { createPlaybackPublisher } from '../lib/recipe/playbackPublisher';
 import { firstDeniedRecipeStep, recipeStepAccessError } from '../lib/recipe/recipeEntitlements';
 import {
     createWorkingArtifactController,
@@ -2107,6 +2108,35 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             return { files };
         };
 
+        // RECIPE (audit 2026-08-17 §PLAY.13): đẩy ĐÚNG một entry history (revision
+        // trước lượt phát) để Undo thu gọn cả lượt về đúng file ban đầu, thay vì N lần.
+        if (file) {
+            setHistory(prev => {
+                const next = [...prev, stripBytesIfOnDisk(file)];
+                return next.length > MAX_HISTORY ? next.slice(next.length - MAX_HISTORY) : next;
+            });
+        }
+        // Thứ tự/góc xoay trang đã được bake vào input lúc đọc working; reset để không
+        // áp nhầm lên revision mới của lượt phát.
+        setViewerPageOrder(undefined);
+        setViewerPageRotations(undefined);
+
+        // RECIPE (audit 2026-08-17 §PLAY.14): publisher riêng cho lượt phát — chỉ giữ
+        // một blob URL trung gian, không đẩy history mỗi bước (đã đẩy một entry ở trên).
+        const playbackPublisher = createPlaybackPublisher({
+            createObjectUrl: (b) => URL.createObjectURL(b),
+            revokeObjectUrl: (u) => URL.revokeObjectURL(u),
+            localFileUrl,
+            onRevision: ({ file: revFile, url, name, path }) => {
+                setOriginalFileName(name);
+                setFile(revFile);
+                setPdfUrl(url);
+                if (!path) setFileSizeStr((revFile.size / (1024 * 1024)).toFixed(2) + ' MB');
+                setIsSaved(false);
+                onTitleChange?.(name);
+            },
+        });
+
         // RECIPE (audit 2026-08-17 §PLAY.12): gom LÝ DO bỏ qua để báo cụ thể, không
         // chỉ hiện con số. onWarn trước đây không được nối nên người dùng không biết vì
         // sao bước bị bỏ.
@@ -2115,7 +2145,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             buildContext: () => createWorkingArtifactProcessContext(
                 base,
                 workingArtifact,
-                base.commitWorkingFile,
+                playbackPublisher.publish,
             ),
             runners: RECIPE_RUNNERS,
             authorizeStep: (step) => {
@@ -2154,7 +2184,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             setProcessStatus('');
             setIsRecipePlaying(false);
         }
-    }, [file, buildProcessContext, recipeOwnerTabId, t]);
+    }, [file, buildProcessContext, recipeOwnerTabId, t, onTitleChange,
+        setHistory, setViewerPageOrder, setViewerPageRotations, setOriginalFileName,
+        setFile, setPdfUrl, setFileSizeStr, setIsSaved, setProcessStatus]);
 
     const handleStartBooklet = useCallback((config: BookletSettings) => {
         // NOTE: For 'auto_100', sheet dimension will be dynamically resolved inside the Engine during Phase 2.
