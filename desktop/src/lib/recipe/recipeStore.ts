@@ -7,6 +7,8 @@
  * `window.__TAURI_INTERNALS__` để môi trường node/test bỏ qua Tauri sạch sẽ.
  */
 import { type Recipe, isRecipe, deserializeRecipe, RECIPE_SCHEMA_VERSION } from './recipeTypes';
+import { RECIPE_OP_META } from './recipeOps';
+import { tv } from '../../i18n';
 
 const STORAGE_KEY = 'ps_recipes';
 
@@ -65,7 +67,13 @@ function lsRead(): Recipe[] {
 
 function lsWrite(recipes: Recipe[]): void {
     if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(recipes));
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(recipes));
+    } catch {
+        // RECIPE (audit 2026-08-17 §STORE.4): quota/lỗi ghi phải nổi lên RÕ RÀNG, không
+        // bị nuốt rồi gộp thành "file không hợp lệ" ở đường import.
+        throw new Error(tv('Không lưu được quy trình vào bộ nhớ trình duyệt (có thể đã đầy dung lượng).'));
+    }
 }
 
 function sortByUpdated(recipes: Recipe[]): Recipe[] {
@@ -166,6 +174,19 @@ export function exportRecipeAsFile(recipe: Recipe): void {
  */
 export async function importRecipeFromText(text: string): Promise<Recipe> {
     const parsed = deserializeRecipe(text); // ném lỗi nếu sai cấu trúc
+    // RECIPE (audit 2026-08-17 §STORE.3): KHÔNG âm thầm dán nhãn lại schema. Recipe
+    // schema MỚI hơn không thể diễn giải đúng → từ chối rõ ràng thay vì hạ về v1.
+    if (typeof parsed.schemaVersion === 'number' && parsed.schemaVersion > RECIPE_SCHEMA_VERSION) {
+        throw new Error(tv('Quy trình thuộc phiên bản mới hơn bản PrynX hiện tại nên không mở được. Hãy cập nhật phần mềm.'));
+    }
+    // §STORE.3: chặn thao tác không nhận diện được (fail-closed) — tránh nhập bước
+    // mà phát lại sẽ không hiểu, âm thầm bỏ qua.
+    const unknown = parsed.steps.find(
+        (s) => !Object.prototype.hasOwnProperty.call(RECIPE_OP_META, s.opId),
+    );
+    if (unknown) {
+        throw new Error(tv('Quy trình chứa thao tác không nhận diện được: ') + `"${unknown.opId}".`);
+    }
     const now = new Date().toISOString();
     const recipe: Recipe = {
         ...parsed,
@@ -177,11 +198,10 @@ export async function importRecipeFromText(text: string): Promise<Recipe> {
     return recipe;
 }
 
-/** Import recipe từ File (UI). Trả null nếu lỗi. */
-export async function importRecipeFromFile(file: File): Promise<Recipe | null> {
-    try {
-        return await importRecipeFromText(await file.text());
-    } catch {
-        return null;
-    }
+/**
+ * Import recipe từ File (UI). NÉM lỗi có thông điệp rõ ràng (schema mới/opId lạ/
+ * quota) để UI hiển thị đúng nguyên nhân thay vì gộp thành "file không hợp lệ".
+ */
+export async function importRecipeFromFile(file: File): Promise<Recipe> {
+    return importRecipeFromText(await file.text());
 }

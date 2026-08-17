@@ -4781,6 +4781,7 @@
     "da_nhap_quy_trinh_imported_name": "Imported recipe \"${imported.name}\".",
     "da_xoa_quy_trinh": "Recipe deleted.",
     "xoa_that_bai": "Failed to delete the recipe. Nothing was removed — please try again.",
+    "khong_bat_phat_lai_op_phu_thuoc": "This step depends on the file/position and cannot be enabled for playback.",
     "dang_chay": "Running...",
     "dang_tai": "Loading...",
     "doi_mep_mm": "Edge shift (mm)",
@@ -4887,7 +4888,8 @@
     "quy_trinh_da_luu": "Saved recipes",
     "ten_quy_trinh": "Recipe name",
     "vd_booklet_16_trang_doa_nen_chuyen_mau": "e.g. 16-page booklet (background cleanup + color conversion)",
-    "vui_long_nhap_ten_quy_trinh": "Please enter a recipe name."
+    "vui_long_nhap_ten_quy_trinh": "Please enter a recipe name.",
+    "bo_quy_trinh_vua_ghi": "Discard the {{count}} recorded steps? The unsaved recipe will be lost and cannot be recovered."
   },
   "recipe.recipeRecorder": {
     "recipe_commit_khi_dang_ghi_nhung_khong": "[recipe] commit while recording but NO operation was published (noteOperation) — skipping. This tool may be missing its record hook."
@@ -5334,7 +5336,9 @@
     "in_vua_kho_giay_mo_ta": "Scale up/down to fill the printable area. May no longer be exactly 1:1.",
     "dang_boc_tach_file_pdf": "Extracting PDF file...",
     "dang_xoa_doi_tuong": "Deleting object...",
-    "dang_xu_ly_file": "Processing",
+    "dang_xu_ly_file": "Another operation is waiting to be recorded into the recipe. Please try again.",
+    "catalog_khong_ghi_quy_trinh": "Catalog imposition cannot be recorded into a recipe yet. Stop recording, then run it.",
+    "dang_ghi_khong_the_phat": "Recording a recipe — stop recording before replaying.",
     "don_vao_cuoi_bia_sau_mac_dinh": "Push to end / back cover (default).",
     "dong_file_chua_luu": "Close unsaved file?",
     "dong_khong_luu": "Close without saving",

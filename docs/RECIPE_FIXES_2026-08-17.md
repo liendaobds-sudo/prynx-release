@@ -121,3 +121,29 @@ npm.cmd run typecheck   PASS
 ```
 
 Chưa build installer, chưa chạy Tauri runtime, chưa PDF artifact. `cargo check` bị chặn bởi file lock môi trường. Các finding đã khóa bằng test đạt **AUTO**; `§STORE.1` đạt **TRACED** (chờ Rust build).
+
+---
+
+## 11. Backlog P2 — Lô F/G/UX (2026-08-17, đợt 2)
+
+Đã đóng thêm các P2 an toàn, verify từng phần:
+
+| Finding | Trạng thái | Thay đổi |
+|---|---|---|
+| `§REC.5` — Undo không rút Step | **Đã sửa / AUTO** | Recorder thêm `rollbackDraftTo(tab, len)`; `commitWorkingFile` gắn `__recipeDraftLen` vào entry history; `handleUndo` rút draft về đúng độ dài khi về revision đó. Test recorder. |
+| `§REC.8` — hợp đồng page order chết | **Đã sửa (hồ sơ)** | Giữ field optional (vô hại) nhưng sửa `tasks.md` Task 4.2/1.6: page order là dữ liệu theo tài liệu (§PLAY.3R), KHÔNG lưu vào Step ở v1; thôi over-claim. |
+| `§REC.9` — đóng file khoá phiên ghi | **Đã sửa / AUTO** | `forceReset` gọi `recipeRecorder.cancel(tab)` để không kẹt isRecording khi nút Dừng biến mất. |
+| `§REC.10` — mất draft khi đóng dialog | **Đã sửa / AUTO** | `SaveRecipeDialog` xác nhận trước khi bỏ (X/nền/Hủy) khi còn bước chưa lưu. |
+| `§STORE.3` — không validate/migrate schema | **Đã sửa / AUTO** | Import từ chối schema mới hơn (không dán nhãn lại) và opId lạ (fail-closed). |
+| `§STORE.4` — JSON hỏng/quota nuốt lỗi | **Đã sửa / AUTO** | `lsWrite` ném lỗi quota rõ ràng; `importRecipeFromFile` không nuốt lỗi; UI hiện đúng nguyên nhân. |
+| `§STORE.6` — ô JSON không xóa trắng | **Đã sửa / AUTO** | Buffer dùng `?? ` + sentinel null; chuỗi rỗng giữ được. |
+| `§STORE.8` — toggle bật op file-dependent | **Đã sửa / AUTO** | Chặn bật phát lại cho op không recordable (giữ bất biến Property 6). |
+| `§UX.1` — key "Đang xử lý" đa nghĩa | **Đã sửa / AUTO** | Đổi text `dang_xu_ly_file` thành "đang bận ghi thao tác khác"; tách key riêng cho Catalog và play-while-recording. |
+
+Verify: vitest recipe/preprocess/useEditSession/i18n **304 pass**; typecheck **PASS**.
+
+## 12. Vẫn còn mở (cố ý dừng vì rủi ro, không sai kết quả xuất)
+
+- `§PLAY.13/.14` — closure `base` trong `playRecipe` khiến Undo lặp revision gốc và rò blob URL trung gian. Đòi đổi đường publish của playback (hoặc `commitWorkingFile` dùng khắp nơi). **KHÔNG sửa** vì chưa có integration test cho `playRecipe` (§TEST.1) và lỗi ở đây hiển thị sai trên Viewer — refactor mù rủi ro cao. Chờ dựng harness test trước.
+- `§TEST.1/.2/.4` — round-trip `playRecipe`, Tauri store test, thêm ca runner. Cần harness riêng.
+- Toàn luồng vẫn ở mức **AUTO**; nâng RUNTIME cần chạy Tauri thật + PDF khách + build installer.

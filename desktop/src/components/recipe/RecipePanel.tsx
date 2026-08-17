@@ -10,7 +10,7 @@ import { createPortal } from 'react-dom';
 import { Play, Trash2, Download, Upload, Pencil, X, Check, ChevronRight, ChevronDown, ArrowUp, ArrowDown, Eye, EyeOff } from 'lucide-react';
 import { loadRecipes, deleteRecipe, saveRecipe, exportRecipeAsFile, importRecipeFromFile } from '../../lib/recipe/recipeStore';
 import { isPlayableOp } from '../../lib/recipe/recipeRunners';
-import { opBaseLabel, summarizeParams } from '../../lib/recipe/recipeOps';
+import { opBaseLabel, summarizeParams, isRecordableOp } from '../../lib/recipe/recipeOps';
 import type { Recipe, RecipeStep } from '../../lib/recipe/recipeTypes';
 import { toast } from '../ui/Toast';
 import { confirmDialog } from '../ui/confirmDialog';
@@ -66,7 +66,9 @@ function paramLabel(name: string): string {
 // ── Ô sửa 1 tham số (suy kiểu theo giá trị). Object/Array → JSON textarea. ──
 function ParamField({ name, value, onChange }: { name: string; value: unknown; onChange: (v: unknown) => void }) {
   const { t } = useTranslation();
-    const [jsonText, setJsonText] = useState('');
+    // RECIPE (audit 2026-08-17 §STORE.6): null = chưa gõ dở; '' phải giữ được để xóa
+    // trắng (dùng ?? thay vì || để chuỗi rỗng không bị thay bằng giá trị cũ).
+    const [jsonText, setJsonText] = useState<string | null>(null);
     const [jsonErr, setJsonErr] = useState(false);
     // RECIPE (audit 2026-08-17 §STORE.5): buffer chuỗi cho ô số để gõ được số âm/thập
     // phân và xóa trắng mà KHÔNG bị ép về 0 rồi lưu ngay mỗi phím. null = chưa gõ dở.
@@ -118,7 +120,7 @@ function ParamField({ name, value, onChange }: { name: string; value: unknown; o
         );
     }
     // Object / Array / null → JSON (buffer cục bộ, parse khi blur)
-    const display = jsonText || JSON.stringify(value);
+    const display = jsonText ?? JSON.stringify(value);
     return (
         <div className="flex items-start gap-2 text-[11px]">
             <span className="font-mono text-slate-500 dark:text-zinc-400 w-28 truncate pt-1" title={name}>{paramLabel(name)}</span>
@@ -126,8 +128,8 @@ function ParamField({ name, value, onChange }: { name: string; value: unknown; o
                 value={display}
                 onChange={e => { setJsonText(e.target.value); setJsonErr(false); }}
                 onBlur={() => {
-                    if (!jsonText) return;
-                    try { onChange(JSON.parse(jsonText)); setJsonErr(false); setJsonText(''); }
+                    if (jsonText === null) return;
+                    try { onChange(JSON.parse(jsonText)); setJsonErr(false); setJsonText(null); }
                     catch { setJsonErr(true); }
                 }}
                 rows={2}
@@ -176,8 +178,18 @@ export default function RecipePanel({ open, onClose, onPlay, sourcePageCount, ha
         updateSteps(r, r.steps.filter((_, k) => k !== i));
         setExpandedStep(null);
     };
-    const toggleStep = (r: Recipe, i: number) =>
-        updateSteps(r, r.steps.map((s, k) => k === i ? { ...s, recordable: !s.recordable } : s));
+    const toggleStep = (r: Recipe, i: number) => {
+        const step = r.steps[i];
+        const next = !step.recordable;
+        // RECIPE (audit 2026-08-17 §STORE.8): không cho BẬT phát lại cho op vốn phụ
+        // thuộc file/vị trí — nếu về sau op đó có runner, Property 6 sẽ thủng và bước
+        // chạy trên tài liệu khác. Chỉ cho tắt (recordable→false) là an toàn.
+        if (next && !isRecordableOp(step.opId)) {
+            toast.error(t('recipe.recipe:khong_bat_phat_lai_op_phu_thuoc'));
+            return;
+        }
+        updateSteps(r, r.steps.map((s, k) => k === i ? { ...s, recordable: next } : s));
+    };
     const setParam = (r: Recipe, i: number, key: string, value: unknown) =>
         updateSteps(r, r.steps.map((s, k) => {
             if (k !== i) return s;
@@ -225,9 +237,17 @@ export default function RecipePanel({ open, onClose, onPlay, sourcePageCount, ha
         const file = e.target.files?.[0];
         e.target.value = '';
         if (!file) return;
-        const imported = await importRecipeFromFile(file);
-        if (imported) { toast.success(t('recipe.recipe:da_nhap_quy_trinh', { name: imported.name })); refresh(); }
-        else toast.error(t('recipe.recipe:file_quy_trinh_khong_hop_le'));
+        // RECIPE (audit 2026-08-17 §STORE.3/§STORE.4): hiện đúng nguyên nhân (schema
+        // mới/opId lạ/quota) thay vì gộp mọi lỗi thành "file không hợp lệ".
+        try {
+            const imported = await importRecipeFromFile(file);
+            toast.success(t('recipe.recipe:da_nhap_quy_trinh', { name: imported.name }));
+            refresh();
+        } catch (err) {
+            toast.error(err instanceof Error && err.message
+                ? err.message
+                : t('recipe.recipe:file_quy_trinh_khong_hop_le'));
+        }
     };
 
     return createPortal(

@@ -1033,6 +1033,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         // Không có await từ lần kiểm tra cuối tới khi publish state: Dừng/Hủy không
         // thể chen giữa rồi để callback cũ thay working file của phiên mới.
         assertRecipeCommitAllowed();
+        // RECIPE (audit 2026-08-17 §REC.5): số Step trong draft TRƯỚC khi commit này
+        // ghi thêm Step. Gắn vào entry history để Undo (về đúng revision trước) rút lại
+        // Step tương ứng — recipe lưu ra không còn chứa thao tác người dùng đã hoàn tác.
+        const recipeDraftLenBefore = recipeRecorder.isRecordingFor(recipeOwnerTabId)
+            ? recipeRecorder.draftSteps.length
+            : null;
         if (file) {
             // Cắt bớt entry cũ nhất khi vượt ngưỡng → chặn leak RAM (audit 2026-07-06).
             setHistory(prev => {
@@ -1040,6 +1046,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 // qua getFileArrayBuffer khi cần), chặn leak RAM (audit 2026-07-06). File
                 // không path → giữ nguyên bytes (fallback). handleUndo đã xử lý cả 2 nhánh.
                 const historyFile = stripBytesIfOnDisk(file);
+                if (recipeDraftLenBefore !== null) {
+                    Object.defineProperty(historyFile, '__recipeDraftLen', {
+                        value: recipeDraftLenBefore,
+                        configurable: true,
+                    });
+                }
                 // Undo phải khôi phục đồng thời PDF hiển thị và ảnh nguồn tương ứng;
                 // nếu không, Bù xén vẫn có thể âm thầm nhận ảnh upscale mới.
                 Object.defineProperty(historyFile, '__prynxSourceImageFile', {
@@ -1527,6 +1539,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         documentUndoTransitionRef.current = true;
         setHistory(prev => prev.slice(0, -1));
 
+        // RECIPE (audit 2026-08-17 §REC.5): về lại revision này thì rút Step mà commit
+        // sau nó đã ghi. Chỉ khi vẫn đang ghi ở tab này; recorder tự bỏ qua nếu lệch.
+        const recipeDraftLen = (prevFile as File & { __recipeDraftLen?: number }).__recipeDraftLen;
+        if (typeof recipeDraftLen === 'number') {
+            recipeRecorder.rollbackDraftTo(recipeOwnerTabId, recipeDraftLen);
+        }
+
         setFile(prevFile);
         setOriginalFileName(prevFile.name);
         setPdfUrl(objUrl);
@@ -1560,7 +1579,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     }, [history, pdfUrl, onTitleChange, setHistory, setFile, setOriginalFileName, setPdfUrl,
         setFileSizeStr, setViewerPageOrder, setViewerPageRotations, setDetectedShapeType,
         setDetectedShapeParams, setDetectedShapesByPage, setDetectedDimensionsByPage,
-        setDetectedShapeParamsByPage]);
+        setDetectedShapeParamsByPage, recipeOwnerTabId]);
 
 
 
@@ -1841,7 +1860,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         // Catalog chưa có RecipeOpId/runner. Cho phép chạy lúc đang ghi sẽ thay working file
         // nhưng không tạo Step, khiến mọi bước sau phát lại trên sai nguồn.
         if (recipeRecorder.isRecordingFor(recipeOwnerTabId)) {
-            toast.info(t('tabs.imposition:dang_xu_ly_file'));
+            toast.info(t('tabs.imposition:catalog_khong_ghi_quy_trinh'));
             return;
         }
         await runRecordedProcess(null, async () => {
@@ -1981,7 +2000,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         if (!file) { toast.error(t('tabs.imposition:hay_mo_mot_file_pdf_truoc_khi_phat_lai')); return; }
         if (recipeRecorder.isRecordingFor(recipeOwnerTabId)) {
             // Không cho hai chuỗi cùng sửa một working artifact của cùng tab.
-            toast.info(t('tabs.imposition:dang_xu_ly_file'));
+            toast.info(t('tabs.imposition:dang_ghi_khong_the_phat'));
             return;
         }
         const initialLicense = useAuthStore.getState();
@@ -2362,6 +2381,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     //#region Core UI Handlers
 
     const forceReset = () => {
+        // RECIPE (audit 2026-08-17 §REC.9): đóng/đổi file phải kết thúc phiên ghi. Nếu
+        // không, recorder singleton giữ isRecording=true trong khi nút Dừng (chỉ hiện
+        // khi có file) đã biến mất → khoá tính năng Ghi của MỌI tab tới khi restart app.
+        recipeRecorder.cancel(recipeOwnerTabId);
         setBatchOutput(null);
         setFile(null);
         setPdfUrl(null);

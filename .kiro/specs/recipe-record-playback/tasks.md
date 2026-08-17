@@ -31,9 +31,13 @@ Hiện thực tính năng Recipe (Ghi & Phát lại) theo 6 nhóm, tăng dần t
 
 - [x] 4. RecipeRecorder core
   - [x] 4.1 `recipe/RecipeRecorder.ts` (zustand store): `isRecording`, `draftSteps`, `start/stop/cancel`, `noteOperation(opId, params)`, `noteNonRecordable(opId)`
-  - [x] 4.2 Logic ghép `noteOperation` với lần `commitWorkingFile` kế tiếp → push Step; chụp kèm `viewerPageOrder/Rotations` khi cần
+  - [x] 4.2 Logic ghép `noteOperation` với lần `commitWorkingFile` kế tiếp → push Step
   - [x] 4.3 Test recorder (mock commit): thứ tự Step đúng, file-dependent → recordable=false
-  - _Requirements: 1.2, 1.3, 1.4, 1.6_
+  - _Requirements: 1.2, 1.3, 1.4_
+  - _Ghi chú (audit 2026-08-17 §REC.8): trường `viewerPageOrder/Rotations` giữ ở schema
+    nhưng KHÔNG được ghi ở production — thứ tự/góc xoay trang là dữ liệu theo tài liệu
+    (§PLAY.3R) nên không lưu vào Step; phát lại dùng thứ tự trang gốc của file mới +
+    cảnh báo. Yêu cầu 1.6 (chụp page order vào Step) KHÔNG áp dụng cho v1._
 
 - [x] 5. Gắn record hook vào ImpositionTab
   - [x] 5.1 Bọc/observe `commitWorkingFile` để recorder bắt sự kiện hoàn tất (noteCommit)

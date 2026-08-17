@@ -185,6 +185,24 @@ describe('RecipeRecorder — vòng đời và dữ liệu Step', () => {
         const steps = recipeRecorder.stop(TAB_A);
         expect(steps?.[0].viewerPageOrder).toEqual([1, 2, 3, -1]);
     });
+
+    // RECIPE (audit 2026-08-17 §REC.5): Undo rút Step đã ghi.
+    it('rollbackDraftTo rút draft về đúng độ dài khi Undo', () => {
+        recipeRecorder.start(TAB_A);
+        const t1 = recipeRecorder.noteOperation('nup', { cols: 2 }, undefined, TAB_A);
+        recipeRecorder.noteCommit(t1);
+        const t2 = recipeRecorder.noteOperation('optimize', { preset: 'ebook' }, undefined, TAB_A);
+        recipeRecorder.noteCommit(t2);
+        expect(recipeRecorder.draftSteps).toHaveLength(2);
+        // Undo commit thứ 2 → rút về 1 Step.
+        expect(recipeRecorder.rollbackDraftTo(TAB_A, 1)).toBe(true);
+        expect(recipeRecorder.draftSteps).toHaveLength(1);
+        // Tab khác hoặc length không hợp lệ → no-op.
+        expect(recipeRecorder.rollbackDraftTo(TAB_B, 0)).toBe(false);
+        expect(recipeRecorder.rollbackDraftTo(TAB_A, 5)).toBe(false);
+        expect(recipeRecorder.rollbackDraftTo(TAB_A, 1)).toBe(false); // length===current
+        recipeRecorder.cancel(TAB_A);
+    });
 });
 
 describe('isKnownRecipeOp', () => {

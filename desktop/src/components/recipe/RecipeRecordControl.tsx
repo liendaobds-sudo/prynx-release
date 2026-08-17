@@ -11,6 +11,7 @@ import { useRecipeRecorder, recipeRecorder } from '../../lib/recipe/RecipeRecord
 import { createRecipe } from '../../lib/recipe/recipeTypes';
 import { saveRecipe } from '../../lib/recipe/recipeStore';
 import { toast } from '../ui/Toast';
+import { confirmDialog } from '../ui/confirmDialog';
 import type { RecipeStep } from '../../lib/recipe/recipeTypes';
 import { useTranslation } from 'react-i18next';
 
@@ -128,6 +129,17 @@ function SaveRecipeDialog({ steps, sourcePageCount, onClose }: {
     // Ref guard chặn double-invoke → không tạo hai recipe trùng nội dung, id khác nhau.
     const savingRef = useRef(false);
 
+    // RECIPE (audit 2026-08-17 §REC.10): đóng dialog (X/nền/Hủy) = bỏ TRẮNG các bước
+    // vừa ghi, không hoàn tác được. Xác nhận trước khi bỏ để tránh mất công người dùng.
+    const requestClose = async () => {
+        if (saving) return;
+        const ok = await confirmDialog({
+            message: t('recipe.recipeRecordControl:bo_quy_trinh_vua_ghi', { count: steps.length }),
+            danger: true,
+        });
+        if (ok) onClose();
+    };
+
     const handleSave = async () => {
         if (savingRef.current) return;
         const trimmed = name.trim();
@@ -151,14 +163,14 @@ function SaveRecipeDialog({ steps, sourcePageCount, onClose }: {
     };
 
     return (
-        <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/40" onClick={onClose}>
+        <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/40" onClick={requestClose}>
             <div
                 className="w-[440px] max-w-[92vw] bg-white dark:bg-zinc-900 rounded-xl shadow-2xl ring-1 ring-black/10 dark:ring-white/10 overflow-hidden"
                 onClick={e => e.stopPropagation()}
             >
                 <div className="flex items-center justify-between px-4 py-3 border-b border-black/5 dark:border-white/10">
                     <h3 className="text-sm font-semibold text-slate-800 dark:text-zinc-100">{t('recipe.recipeRecordControl:luu_quy_trinh')}</h3>
-                    <button onClick={onClose} className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200" aria-label={t('recipe.recipeRecordControl:dong')}>
+                    <button onClick={requestClose} className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200" aria-label={t('recipe.recipeRecordControl:dong')}>
                         <X className="w-4 h-4" />
                     </button>
                 </div>
@@ -207,7 +219,7 @@ function SaveRecipeDialog({ steps, sourcePageCount, onClose }: {
 
                 <div className="flex justify-end gap-2 px-4 py-3 border-t border-black/5 dark:border-white/10">
                     <button
-                        onClick={onClose}
+                        onClick={requestClose}
                         className="px-3 py-1.5 text-[12px] rounded-lg text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
                     >
                         {t('recipe.recipeRecordControl:huy')}

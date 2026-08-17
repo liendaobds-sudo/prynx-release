@@ -88,6 +88,11 @@ export interface RecipeRecorderState {
      * Chỉ ticket tường minh mới được xóa pending. `undefined`/`null` luôn là no-op.
      */
     discardPending: (ticket?: RecipeOperationTicket | null) => boolean;
+    /**
+     * RECIPE (audit 2026-08-17 §REC.5): rút draftSteps về đúng độ dài `length` khi
+     * người dùng Undo working file. Chỉ hợp lệ cho tab đang ghi và length trong khoảng.
+     */
+    rollbackDraftTo: (ownerTabId: string, length: number) => boolean;
 }
 
 let nextSessionId = 0;
@@ -246,6 +251,16 @@ export const recipeRecorderStore = createStore<RecipeRecorderState>((set, get) =
             set({ pendingNote: null });
             return true;
         },
+
+        rollbackDraftTo: (ownerTabId, length) => {
+            const state = get();
+            if (!state.isRecording || state.ownerTabId !== ownerTabId) return false;
+            if (!Number.isInteger(length) || length < 0 || length >= state.draftSteps.length) {
+                return false;
+            }
+            set({ draftSteps: state.draftSteps.slice(0, length) });
+            return true;
+        },
     };
 });
 
@@ -283,6 +298,9 @@ export const recipeRecorder = {
     ),
     discardPending: (ticket?: RecipeOperationTicket | null) => (
         recipeRecorderStore.getState().discardPending(ticket)
+    ),
+    rollbackDraftTo: (ownerTabId: string, length: number) => (
+        recipeRecorderStore.getState().rollbackDraftTo(ownerTabId, length)
     ),
 };
 

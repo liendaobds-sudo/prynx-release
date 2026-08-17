@@ -4781,6 +4781,7 @@
     "da_nhap_quy_trinh_imported_name": "Đã nhập quy trình \"${imported.name}\".",
     "da_xoa_quy_trinh": "Đã xóa quy trình.",
     "xoa_that_bai": "Xóa quy trình thất bại. Chưa xóa được — hãy thử lại.",
+    "khong_bat_phat_lai_op_phu_thuoc": "Bước này phụ thuộc file/vị trí nên không thể bật phát lại.",
     "dang_chay": "Đang chạy...",
     "dang_tai": "Đang tải...",
     "doi_mep_mm": "Dời mép (mm)",
@@ -4887,7 +4888,8 @@
     "quy_trinh_da_luu": "Quy trình đã lưu",
     "ten_quy_trinh": "Tên quy trình",
     "vd_booklet_16_trang_doa_nen_chuyen_mau": "Vd: Booklet 16 trang (doa nền + chuyển màu)",
-    "vui_long_nhap_ten_quy_trinh": "Vui lòng nhập tên quy trình."
+    "vui_long_nhap_ten_quy_trinh": "Vui lòng nhập tên quy trình.",
+    "bo_quy_trinh_vua_ghi": "Bỏ {{count}} bước vừa ghi? Quy trình chưa lưu sẽ mất và không khôi phục được."
   },
   "recipe.recipeRecorder": {
     "recipe_commit_khi_dang_ghi_nhung_khong": "[recipe] commit khi đang ghi nhưng KHÔNG có thao tác được công bố (noteOperation) — bỏ qua. Có thể tool này thiếu hook ghi."
@@ -5334,7 +5336,9 @@
     "in_vua_kho_giay": "Vừa khổ giấy",
     "in_vua_kho_giay_mo_ta": "Phóng/thu để lấp đầy vùng in. Có thể không còn đúng tỷ lệ 1:1.",
     "dang_xoa_doi_tuong": "Đang xóa đối tượng...",
-    "dang_xu_ly_file": "Đang xử lý",
+    "dang_xu_ly_file": "Đang có thao tác khác chờ ghi vào quy trình. Hãy thử lại sau.",
+    "catalog_khong_ghi_quy_trinh": "Bình catalog chưa ghi vào quy trình được. Hãy dừng ghi rồi chạy lại.",
+    "dang_ghi_khong_the_phat": "Đang ghi quy trình — hãy dừng ghi trước khi phát lại.",
     "don_vao_cuoi_bia_sau_mac_dinh": "Dồn vào cuối / bìa sau (mặc định).",
     "dong_file_chua_luu": "Đóng file chưa lưu?",
     "dong_khong_luu": "Đóng không lưu",
