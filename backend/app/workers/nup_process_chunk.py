@@ -16,6 +16,7 @@ import pikepdf
 from collections import defaultdict
 
 from app.workers import pdf_wrapper as pdf_lib
+from app.workers.pdf_ops import copy_output_intents
 from app.workers.nup_layout_solver import get_src_page_idx
 from app.workers.nup_marks import _draw_ponts_on_page
 from app.workers.cluster_tile_engine import (
@@ -233,6 +234,10 @@ def process_chunk(args):
             )
 
     out_doc = pdf_lib.open()
+    # [BLEED-COLOR FIX 2026-08-18] Bù xén lấy mẫu đã có ICCBased riêng, còn artwork
+    # CMYK Device* dựa vào OutputIntent ở catalog. Giữ profile này trên mọi chunk
+    # để sau khi bình hai lớp vẫn được RIP/viewer diễn giải cùng một quản lý màu.
+    copy_output_intents(src_doc._pdf, out_doc._pdf)
 
     sheets_per_page = 1
 

@@ -119,6 +119,52 @@ def test_homogeneous_end_to_end_real_render(tmp_path, monkeypatch):
         f"— các ô auto-fill phải trải theo phương dàn")
 
 
+def test_homogeneous_nup_preserves_output_intent_for_sampled_bleed(tmp_path):
+    """Bình tem phải giữ profile CMYK để artwork và bleed ICC không lệch màu.
+
+    Bù xén lấy mẫu được lưu ICCBased sRGB, trong khi artwork gốc có thể là
+    DeviceCMYK dựa vào OutputIntent của tài liệu. Nếu chunk bình tạo PDF trắng
+    mà bỏ catalog OutputIntent, hai lớp sẽ bị diễn giải bằng hai profile khác
+    sau khi bình dù file bù xén riêng lẻ vẫn đúng màu.
+    """
+    import pikepdf
+
+    src = str(tmp_path / "source-with-output-intent.pdf")
+    out = str(tmp_path / "imposed-with-output-intent.pdf")
+    _make_homogeneous_pdf(src)
+    profile_bytes = b"PrynX CMYK profile regression sentinel"
+    with pikepdf.Pdf.open(src, allow_overwriting_input=True) as source:
+        profile = source.make_stream(profile_bytes)
+        profile[pikepdf.Name("/N")] = 4
+        intent = source.make_indirect(pikepdf.Dictionary({
+            "/Type": pikepdf.Name("/OutputIntent"),
+            "/S": pikepdf.Name("/GTS_PDFX"),
+            "/OutputConditionIdentifier": "PrynX-CMYK-Test",
+            "/DestOutputProfile": profile,
+        }))
+        source.Root[pikepdf.Name("/OutputIntents")] = pikepdf.Array([intent])
+        source.save(src)
+
+    nup_engine.run_nup_engine(src, out, {
+        "isDieCutMode": True,
+        "sheetWidth": 200,
+        "sheetHeight": 200,
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": {},
+        "detectedShapesByPage": {"0": "RECTANGLE"},
+        "gridStrategy": "optimal_auto",
+        "groupingStrategy": "maximize_area",
+        "pontType": "none",
+        "bleed": 0,
+    }, job_id="t-output-intent")
+
+    with pikepdf.Pdf.open(out) as imposed:
+        intents = imposed.Root.get("/OutputIntents")
+        assert intents and len(intents) == 1
+        assert str(intents[0].get("/OutputConditionIdentifier")) == "PrynX-CMYK-Test"
+        assert intents[0].get("/DestOutputProfile").read_bytes() == profile_bytes
+
+
 def _page_count(path: str) -> int:
     import pikepdf
     with pikepdf.Pdf.open(path) as pdf:

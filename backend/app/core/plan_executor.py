@@ -18,6 +18,7 @@ from typing import List, Optional, Tuple
 
 from app.workers import pdf_wrapper as pdf_lib
 from app.core.imposition_page_box import effective_imposition_box
+from app.workers.pdf_ops import copy_output_intents
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +162,10 @@ class PlanExecutor:
 
             # Create output PDF
             output_doc = pdf_lib.open()
+            # [BLEED-COLOR FIX 2026-08-18] Bình sách tạo catalog PDF mới. Giữ
+            # OutputIntent/ICC của file nguồn để artwork CMYK và phần bù xén đã
+            # lấy mẫu không bị diễn giải bằng hai profile khác nhau sau khi bình.
+            copy_output_intents(src_doc._pdf, output_doc._pdf)
             if perf_stages is not None:
                 perf_stages.mark("source_open_s")
 

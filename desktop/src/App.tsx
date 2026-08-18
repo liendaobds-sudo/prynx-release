@@ -216,7 +216,7 @@ function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
 const SPLASH_MIN_MS = 3000;
 
 export default function App() {
-  const { user, licenseKey, isChecking, checkSession, setUser, isLicenseLocked } = useAuthStore();
+  const { licenseKey, licenseValid, isChecking, checkSession, setUser, isLicenseLocked } = useAuthStore();
   const [splashMinElapsed, setSplashMinElapsed] = useState(false);
   const [splashExiting, setSplashExiting] = useState(false);
   const [splashDone, setSplashDone] = useState(false);
@@ -268,7 +268,9 @@ export default function App() {
     );
   }
 
-  const isAuthenticated = user && licenseKey;
+  // [KEY-FIRST ACTIVATION 2026-08-18] Gmail chỉ hỗ trợ tìm lại key; quyền mở app
+  // phải dựa trên key đã được xác minh, không phụ thuộc phiên đăng nhập Google.
+  const isAuthenticated = Boolean(licenseKey && licenseValid);
 
   return (
     <FileProvider>

@@ -14,6 +14,7 @@ import { Button } from './Button';
 import { Printer, Scissors, Settings, Star } from 'lucide-react';
 import { PDFDocument, degrees } from 'pdf-lib';
 import { imageFileToPdfIfNeeded, isSupportedImageFileName } from '../lib/imageNormalizer';
+import { initialFileOpeningPhase, type FileOpeningPhase } from '../lib/impositionOpeningState';
 import ImposerDashboard from './imposition-tools/ImposerDashboard';
 import CutExportModal from './imposition-tools/cut-export/CutExportModal';
 import OpenInDesignModal from './imposition-tools/OpenInDesignModal';
@@ -96,7 +97,6 @@ import FeatureAccessOverlay from './license/FeatureAccessOverlay';
 // Cắt entry CŨ NHẤT (đầu mảng) khi vượt ngưỡng; undo vẫn pop từ cuối như cũ.
 const MAX_HISTORY = 12;
 
-type FileOpeningPhase = 'idle' | 'loading' | 'slow' | 'error';
 const FILE_OPEN_SLOW_MS = 8_000;
 
 /**
@@ -522,10 +522,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     }, [file]);
     // FILEIO (audit 2026-08-02 §TEST.1): chuyển ảnh có trạng thái hữu hạn. Watchdog chỉ
     // đổi thông tin UI, không hard-timeout ảnh lớn; generation fence từ chối mọi callback muộn.
-    // PERF (audit 2026-08-14 §VIEW.FIRST.2): không phát spinner ngay khi tab vừa nhận
-    // File. Dispatcher đã pre-render PPE trước khi tạo tab; các cửa vào trực tiếp cũng
-    // giữ nguyên uploader/workspace trong lúc dựng, rồi swap một lần sang Viewer thật.
-    const [fileOpeningPhase, setFileOpeningPhase] = useState<FileOpeningPhase>('idle');
+    // [RESULT-TAB FLASH FIX 2026-08-18] Tab kết quả có file ngay từ lúc mount phải
+    // hiện trạng thái đang mở. Nếu bắt đầu ở `idle`, uploader trống sẽ lóe lên trong
+    // lúc primeViewerFirstFrame chuẩn bị viewer PDF, khiến người dùng tưởng mất file.
+    const [fileOpeningPhase, setFileOpeningPhase] = useState<FileOpeningPhase>(
+        () => initialFileOpeningPhase(initialFile),
+    );
     // NAV (audit 2026-08-05 §AI2.ROUTE1): giữ ảnh trước bước normalize -> PDF để
     // chế độ Ảnh AI dùng lại đúng nguồn đang mở, không bắt người dùng chọn lần hai.
     const [sourceImageFile, setSourceImageFile] = useState<File | null>(() => (
@@ -587,7 +589,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             let cancelled = false;
             pendingSelectedOpenRef.current = null;
             initialOpenRetryRef.current = () => setInitialOpenRetryToken(token => token + 1);
-            const attempt = beginFileOpeningAttempt(false);
+            const attempt = beginFileOpeningAttempt(true);
             (async () => {
                 let openedFile = initialFile;
                 setSourceImageFile(isSupportedImageFileName(initialFile.name) ? initialFile : null);

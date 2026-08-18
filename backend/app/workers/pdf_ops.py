@@ -39,6 +39,26 @@ def _stable_pdf_uid(src_pdf: pikepdf.Pdf) -> int:
     return uid
 
 
+def copy_output_intents(src_pdf: pikepdf.Pdf, dst_pdf: pikepdf.Pdf) -> None:
+    """Sao chép OutputIntent để PDF đích giữ nguyên cách diễn giải màu nguồn.
+
+    Nội dung CMYK Device* cần profile ở catalog để RIP/viewer diễn giải ổn định.
+    Các ảnh bù xén lấy mẫu đã tự mang ICCBased sRGB; mất OutputIntent khi bình
+    sẽ khiến riêng artwork CMYK đổi màu và lộ chênh màu ở mép bù xén.
+    """
+    try:
+        intents = src_pdf.Root.get("/OutputIntents")
+        if not intents:
+            return
+        dst_pdf.Root[pikepdf.Name("/OutputIntents")] = pikepdf.Array([
+            dst_pdf.copy_foreign(intent)
+            for intent in intents
+        ])
+    except Exception as exc:
+        # Không làm hỏng job chỉ vì catalog nguồn có OutputIntent dị dạng.
+        logger.warning("Không sao chép được OutputIntent của PDF nguồn: %s", exc)
+
+
 # =========================================================================
 # Shape Builder — constructs PDF content streams for vector drawings
 # =========================================================================

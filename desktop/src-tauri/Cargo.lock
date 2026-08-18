@@ -3199,7 +3199,7 @@ checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
 
 [[package]]
 name = "pdf-inspector"
-version = "1.0.0-rc.6"
+version = "1.0.0-rc.7"
 dependencies = [
  "base64 0.22.1",
  "chrono",

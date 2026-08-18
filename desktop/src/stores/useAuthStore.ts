@@ -424,7 +424,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const { data: { session }, error } = await supabase.auth.getSession();
       if (error) throw error;
       set({ session, user: session?.user || null });
+    } catch (err) {
+      // Google là kênh hỗ trợ tìm lại key, lỗi phiên Google không được chặn kích hoạt bằng key.
+      console.error('Session check failed:', err);
+      set({ session: null, user: null });
+    }
 
+    try {
       // PATCH #3: Validate license on startup (not just check if key exists)
       // Load from DPAPI first (async), then validate
       const dpapiKey = await loadStoredKeyAsync();
@@ -432,7 +438,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         set({ licenseKey: dpapiKey }); // Update store with DPAPI key
       }
       const storedKey = dpapiKey || get().licenseKey;
-      if (session?.user && storedKey) {
+      if (storedKey) {
         // C-1: nạp token đã lưu (DPAPI) trước khi validate — để nếu OFFLINE (RPC lỗi,
         // vào grace) thì vẫn có token hợp lệ gửi sidecar. Chỉ dùng nếu CHƯA hết hạn.
         const persistedToken = await loadTokenFromDPAPI();
@@ -461,8 +467,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         }
       }
     } catch (err) {
-      console.error('Session check failed:', err);
-      set({ session: null, user: null });
+      console.error('License startup check failed:', err);
     } finally {
       set({ isChecking: false });
     }

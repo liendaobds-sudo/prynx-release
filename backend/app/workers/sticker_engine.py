@@ -32,6 +32,7 @@ from app.core.bleed_sides import (
     normalize_bleed_sides,
 )
 from app.workers.shape_analyzer import ShapeType
+from app.workers.pdf_ops import copy_output_intents
 from app.workers.sticker_bleed_masks import (
     _SEAM_FEATHER_MM,
     _axis_aligned_rectangle_bbox,
@@ -6927,22 +6928,6 @@ def _make_srgb_colorspace(pdf: pikepdf.Pdf):
         return pikepdf.Name.DeviceRGB
 
 
-def _copy_output_intents(src_pdf: pikepdf.Pdf, dst_pdf: pikepdf.Pdf) -> None:
-    """Preserve document output profiles when rebuilding pages in a new PDF."""
-    try:
-        intents = src_pdf.Root.get("/OutputIntents")
-        if not intents:
-            return
-        copied = []
-        for intent in intents:
-            foreign = intent if intent.is_indirect else src_pdf.make_indirect(intent)
-            copied.append(dst_pdf.copy_foreign(foreign))
-        if copied:
-            dst_pdf.Root[pikepdf.Name("/OutputIntents")] = pikepdf.Array(copied)
-    except Exception as exc:
-        logger.warning("Cannot preserve PDF OutputIntents: %s", exc)
-
-
 def _stable_pdf_object_signature(
     value,
     *,
@@ -7894,7 +7879,7 @@ class StickerEngine:
             # Worker chunks are merged into a fresh document later; only the
             # top-level sequential path copies catalog-level output profiles here.
             if _page_subset is None:
-                _copy_output_intents(doc_in_pike, doc_out)
+                copy_output_intents(doc_in_pike, doc_out)
             
             debug_step = "Inject Spot Color Definition"
             c, m, y, k = cut_color
@@ -10227,7 +10212,7 @@ class StickerEngine:
                 final_doc.pages.extend(src.pages)
 
             with pikepdf.Pdf.open(input_path) as source_catalog:
-                _copy_output_intents(source_catalog, final_doc)
+                copy_output_intents(source_catalog, final_doc)
             merge_seconds = time.perf_counter() - merge_started
 
             dedup_stats = _deduplicate_image_xobjects(final_doc)

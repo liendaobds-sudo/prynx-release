@@ -8,7 +8,7 @@ import { useTranslation } from 'react-i18next';
 
 export default function LoginScreen() {
   const { t } = useTranslation();
-  const { user, licenseKey, setLicenseKey } = useAuthStore();
+  const { user, licenseKey, changeLicenseKey } = useAuthStore();
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [inputKey, setInputKey] = useState('');
@@ -104,11 +104,11 @@ export default function LoginScreen() {
       if (data && data.success && data.key) {
         // console.log('[AUTO-DISCOVERY] Found license:', data.message);
         
-        // Activation and signed-token issuance happen only through the Edge Function
-        // inside validateLicense; the renderer never calls the SECURITY DEFINER RPC.
-        setLicenseKey(data.key);
-        const ok = await useAuthStore.getState().validateLicense();
-        if (ok) useAuthStore.getState().startHeartbeat();
+        // Xác minh trước khi lưu key để giữ nguyên xác thực token/máy như luồng nhập tay.
+        const result = await changeLicenseKey(data.key);
+        if (!result.ok) {
+          setErrorMsg(result.message || t('misc.login:loi_xac_thuc_ban_quyen'));
+        }
       } else {
         // console.log('[AUTO-DISCOVERY] No active license found automatically.');
       }
@@ -154,11 +154,9 @@ export default function LoginScreen() {
       setLoading(true);
       setErrorMsg('');
       
-      // validateLicense invokes the rate-limited Edge Function and requires a signed token.
-      setLicenseKey(inputKey.trim());
-      const ok = await useAuthStore.getState().validateLicense();
-      if (!ok) throw new Error(t('misc.login:key_khong_hop_le'));
-      useAuthStore.getState().startHeartbeat();
+      // changeLicenseKey xác minh tại Edge Function trước khi lưu key vào DPAPI.
+      const result = await changeLicenseKey(inputKey.trim());
+      if (!result.ok) throw new Error(result.message || t('misc.login:key_khong_hop_le'));
     } catch (err: any) {
       setErrorMsg(err.message || t('misc.login:loi_xac_thuc_ban_quyen'));
     } finally {
@@ -189,40 +187,7 @@ export default function LoginScreen() {
         )}
 
         <div className="relative z-10 space-y-6">
-          {!user ? (
-            // STEP 1: LOGIN
-            <div className="space-y-4">
-              <div className="text-center text-sm text-slate-300 mb-6">
-                {t('misc.login:vui_long_dang_nhap_de_xac_thuc_ban')}
-              </div>
-              <button
-                onClick={handleGoogleLogin}
-                disabled={loading}
-                className="w-full relative flex items-center justify-center gap-3 px-6 py-3.5 rounded-xl bg-white text-slate-800 font-semibold text-[15px] transition-all hover:bg-slate-50 hover:scale-[1.02] active:scale-[0.98] shadow-lg disabled:opacity-70 disabled:pointer-events-none"
-              >
-                <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
-                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
-                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-                </svg>
-                {t('misc.login:tiep_tuc_voi_google')}
-              </button>
-            </div>
-          ) : (
-            // STEP 2: ENTER LICENSE KEY (Only shown if auto-discovery failed)
-            <form onSubmit={handleVerifyLicense} className="space-y-5 animate-in fade-in slide-in-from-bottom-4 duration-500">
-              <div className="flex items-center gap-3 mb-6 p-3 rounded-xl bg-white/5 border border-white/10 backdrop-blur-sm">
-                <img src={user.user_metadata?.avatar_url} alt="Avatar" className="w-10 h-10 rounded-full border border-white/20" />
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-white truncate">{user.user_metadata?.full_name || t('misc.login:nguoi_dung')}</div>
-                  <div className="text-xs text-slate-400 truncate">{user.email}</div>
-                </div>
-                <button type="button" onClick={() => supabase.auth.signOut()} className="p-2 text-slate-400 hover:text-white transition-colors" title={t('misc.login:dang_xuat')}>
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
-                </button>
-              </div>
-
+          <form onSubmit={handleVerifyLicense} className="space-y-5 animate-in fade-in slide-in-from-bottom-4 duration-500">
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-2">
                   {t('misc.login:hay_nhap_ma_ban_quyen_license_key_cua')}
@@ -255,8 +220,21 @@ export default function LoginScreen() {
                   </>
                 )}
               </button>
+              <button
+                type="button"
+                onClick={handleGoogleLogin}
+                disabled={loading}
+                className="w-full relative flex items-center justify-center gap-3 px-6 py-3 rounded-xl bg-white text-slate-800 font-semibold text-[15px] transition-all hover:bg-slate-50 hover:scale-[1.02] active:scale-[0.98] shadow-lg disabled:opacity-70 disabled:pointer-events-none"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                </svg>
+                {t('misc.login:tiep_tuc_voi_google')}
+              </button>
             </form>
-          )}
         </div>
       </div>
     </div>

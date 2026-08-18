@@ -3446,6 +3446,48 @@ def test_rectangle_vector_bleed_preserves_output_intent(tmp_path):
         assert intents[0].get("/DestOutputProfile").read_bytes() == expected_profile
 
 
+def test_bleed_and_cut_then_nup_preserves_output_intent(tmp_path):
+    """Chuỗi bù xén+tạo đường cắt → bình tem không được làm lệch quản lý màu."""
+    from app.workers import nup_engine
+
+    src = str(tmp_path / "bleed-cut-source.pdf")
+    bleed_pdf = str(tmp_path / "bleed-cut.pdf")
+    imposed_pdf = str(tmp_path / "bleed-cut-imposed.pdf")
+    expected_profile = _make_rectangle_white_edge_pdf(src, output_intent=True)
+
+    success, _meta = StickerEngine(dpi=150).process_pdf(
+        input_path=src,
+        output_path=bleed_pdf,
+        cut_mode="original",
+        corner_style="miter",
+        bleed_mm=2.0,
+        bleed_color_type="image",
+        draw_cut_contour=True,
+        rectangle_mode=True,
+        edge_bite_mm=0.0,
+    )
+    assert success is True
+
+    nup_engine.run_nup_engine(bleed_pdf, imposed_pdf, {
+        "isDieCutMode": True,
+        "sheetWidth": 200,
+        "sheetHeight": 200,
+        "targetQuantity": 1,
+        "targetQuantitiesByPage": {"0": 1},
+        "detectedShapesByPage": {"0": "RECTANGLE"},
+        "gridStrategy": "optimal_auto",
+        "groupingStrategy": "none",
+        "pontType": "none",
+        "bleed": 0,
+    }, job_id="t-bleed-cut-output-intent")
+
+    with pikepdf.Pdf.open(imposed_pdf) as imposed:
+        intents = imposed.Root.get("/OutputIntents")
+        assert intents and len(intents) == 1
+        assert str(intents[0].get("/OutputConditionIdentifier")) == "FOGRA39"
+        assert intents[0].get("/DestOutputProfile").read_bytes() == expected_profile
+
+
 def test_rectangle_vector_bleed_keeps_spot_colorspace(tmp_path):
     """Vector edge strips must retain Separation/spot resources without RGB flattening."""
     src = str(tmp_path / "rect_spot.pdf")

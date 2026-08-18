@@ -508,6 +508,47 @@ def test_marks_preserved_as_cmyk_not_rgb(tmp_path):
     assert "0.0 0.0 0.0 RG" not in text
 
 
+def test_booklet_preserves_source_output_intent(tmp_path):
+    """Bình sách phải giữ ICC nguồn để artwork CMYK không lệch màu sau bình."""
+    import pikepdf
+
+    src = _make_source(tmp_path, ['plain'])
+    profile_bytes = b'PrynX booklet CMYK profile regression sentinel'
+    with pikepdf.Pdf.open(src, allow_overwriting_input=True) as source:
+        profile = source.make_stream(profile_bytes)
+        profile[pikepdf.Name('/N')] = 4
+        intent = source.make_indirect(pikepdf.Dictionary({
+            '/Type': pikepdf.Name('/OutputIntent'),
+            '/S': pikepdf.Name('/GTS_PDFX'),
+            '/OutputConditionIdentifier': 'PrynX-Booklet-CMYK-Test',
+            '/DestOutputProfile': profile,
+        }))
+        source.Root[pikepdf.Name('/OutputIntents')] = pikepdf.Array([intent])
+        source.save(src)
+
+    plan = _plan(src, str(tmp_path / 'out'), [{
+        'sheet_index': 0,
+        'width_pt': 200,
+        'height_pt': 200,
+        'front': {
+            'placements': [{
+                'source_page': 0,
+                'x_pt': 10,
+                'y_pt': 10,
+                'scale': 1.0,
+            }],
+            'marks': [],
+        },
+    }])
+
+    output = _run(plan, src)
+    with pikepdf.Pdf.open(output) as imposed:
+        intents = imposed.Root.get('/OutputIntents')
+        assert intents and len(intents) == 1
+        assert str(intents[0].get('/OutputConditionIdentifier')) == 'PrynX-Booklet-CMYK-Test'
+        assert intents[0].get('/DestOutputProfile').read_bytes() == profile_bytes
+
+
 def test_uses_mediabox_not_trimbox_for_parity(tmp_path):
     """Audit 🔴 parity: /pdf-meta báo kích thước theo MediaBox nên PlanExecutor PHẢI vẽ
     trang theo MediaBox, không phải TrimBox. File in sẵn (TrimBox < MediaBox) nếu vẽ theo
