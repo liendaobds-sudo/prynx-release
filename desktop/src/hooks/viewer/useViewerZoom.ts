@@ -5,6 +5,7 @@ import i18n from '../../i18n';
 import {
     capturePageViewportAnchor,
     capturePagePointViewportAnchor,
+    centerHorizontalOverflow,
     restorePageViewportAnchor,
     restorePagePointViewportAnchor,
     type PageViewportAnchor,
@@ -212,6 +213,26 @@ export function useViewerZoom(props: UseViewerZoomProps) {
         });
         return () => cancelAnimationFrame(id);
     }, [zoom, fitMode, internalScrollRef]);
+
+    // UIUX (feedback 2026-08-21 §VIEW.TWO-PAGE): khi chuyển sang hai trang ở mức
+    // zoom tùy chỉnh, hàng trang có thể rộng hơn viewport. `safe center` cố ý neo
+    // hàng ở mép trái để phần đầu vẫn cuộn tới được; đặt scrollLeft vào giữa phần
+    // dư để hai trang không bị dồn/cắt riêng bên phải. Chạy lại khi viewport đổi
+    // (mở/đóng/kéo sidebar), nhưng không phụ thuộc zoom để khỏi phá neo con trỏ.
+    useLayoutEffect(() => {
+        if (!pageDisplayMode.startsWith('two_')) return;
+        const el = internalScrollRef.current;
+        if (!el) return;
+        let secondFrame = 0;
+        const firstFrame = requestAnimationFrame(() => {
+            centerHorizontalOverflow(el);
+            secondFrame = requestAnimationFrame(() => centerHorizontalOverflow(el));
+        });
+        return () => {
+            cancelAnimationFrame(firstFrame);
+            if (secondFrame) cancelAnimationFrame(secondFrame);
+        };
+    }, [pageDisplayMode, mainWidth, internalScrollRef]);
 
     // ═══ Fallback measurement when numPages changes ═══
     useEffect(() => {

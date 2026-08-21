@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
     capturePagePointViewportAnchor,
     capturePageViewportAnchor,
+    centerHorizontalOverflow,
     restorePagePointViewportAnchor,
     restorePageViewportAnchor,
 } from './pageViewport';
@@ -20,6 +21,29 @@ const rect = (left: number, top: number, width: number, height: number): DOMRect
 });
 
 describe('page viewport anchor', () => {
+    it('căn giữa phần tràn khi hàng hai trang rộng hơn viewport', () => {
+        const scroller = document.createElement('div');
+        Object.defineProperties(scroller, {
+            scrollWidth: { value: 1240 },
+            clientWidth: { value: 800 },
+        });
+
+        expect(centerHorizontalOverflow(scroller)).toBe(220);
+        expect(scroller.scrollLeft).toBe(220);
+    });
+
+    it('giữ mép trái khi hai trang vẫn vừa viewport', () => {
+        const scroller = document.createElement('div');
+        Object.defineProperties(scroller, {
+            scrollWidth: { value: 760 },
+            clientWidth: { value: 800 },
+        });
+        scroller.scrollLeft = 45;
+
+        expect(centerHorizontalOverflow(scroller)).toBe(0);
+        expect(scroller.scrollLeft).toBe(0);
+    });
+
     it('restores the same relative page coordinate after page navigation', () => {
         const scroller = document.createElement('div');
         const sourcePage = document.createElement('div');

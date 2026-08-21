@@ -14,6 +14,19 @@ export interface PagePointViewportAnchor {
 
 const clampRatio = (value: number): number => Math.max(0, Math.min(1, value));
 
+/**
+ * UIUX (feedback 2026-08-21 §VIEW.TWO-PAGE): căn giữa phần nội dung tràn ngang.
+ * Flex `safe center` phải lùi về mép trái khi hàng hai trang rộng hơn viewport để
+ * không tạo vùng âm không thể cuộn; vì vậy cần đặt thanh cuộn vào giữa phần dư.
+ */
+export function centerHorizontalOverflow(scroller: HTMLElement): number {
+    const scrollWidth = Number.isFinite(scroller.scrollWidth) ? scroller.scrollWidth : 0;
+    const clientWidth = Number.isFinite(scroller.clientWidth) ? scroller.clientWidth : 0;
+    const centeredLeft = Math.max(0, scrollWidth - clientWidth) / 2;
+    scroller.scrollLeft = centeredLeft;
+    return centeredLeft;
+}
+
 export function capturePageViewportAnchor(
     scroller: HTMLElement,
     page: HTMLElement,
