@@ -1386,6 +1386,62 @@ fn managed_indexed_rgb_image_smask_blends_before_icc() {
 }
 
 #[test]
+fn smask_matte_matches_unassociated_reference() {
+    fn build_image(samples: [u8; 3], matte: Option<[f32; 3]>) -> Document {
+        let content = format!(
+            "0.01 0 0 rg 0 0 {PAGE} {PAGE} re f\n\
+             q {PAGE} 0 0 {PAGE} 0 0 cm /Im0 Do Q"
+        );
+        let mut doc = build_with(&content, |doc| {
+            let mut mask_dict = dictionary! {
+                "Type" => "XObject", "Subtype" => "Image",
+                "Width" => 1, "Height" => 1,
+                "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8,
+            };
+            if let Some(matte) = matte {
+                mask_dict.set(
+                    "Matte",
+                    vec![matte[0].into(), matte[1].into(), matte[2].into()],
+                );
+            }
+            let smask = Object::Reference(doc.add_object(Stream::new(mask_dict, vec![128])));
+            let image = Object::Reference(doc.add_object(Stream::new(
+                dictionary! {
+                    "Type" => "XObject", "Subtype" => "Image",
+                    "Width" => 1, "Height" => 1,
+                    "ColorSpace" => "DeviceRGB", "BitsPerComponent" => 8,
+                    "SMask" => smask,
+                },
+                samples.to_vec(),
+            )));
+            dictionary! { "XObject" => dictionary! { "Im0" => image } }
+        });
+        set_page_blend_space(&mut doc, "DeviceRGB");
+        doc
+    }
+
+    // Đỏ chưa associated [255,0,0] và cùng đỏ đã preblend lên matte trắng
+    // [255,128,128] phải cho cùng kết quả khi alpha = 128/255.
+    let associated = build_image([255, 128, 128], Some([1.0, 1.0, 1.0]));
+    let reference = build_image([255, 0, 0], None);
+    let (Some(actual), Some(expected)) = (managed_render(&associated), managed_render(&reference))
+    else {
+        eprintln!("bỏ qua: không có profile ICC kiểm thử");
+        return;
+    };
+    let (x, y) = mid(&actual);
+    for channel in 0..4 {
+        let a = px(&actual, channel, x, y);
+        let e = px(&expected, channel, x, y);
+        assert!(
+            (a as i16 - e as i16).abs() <= 1,
+            "channel {channel}: Matte={a}, reference={e}"
+        );
+    }
+    assert!(!actual.warnings.ink_unsound(), "{:?}", actual.warnings);
+}
+
+#[test]
 fn managed_rgb_shading_alpha_blends_before_icc() {
     let background = [0.1f32, 0.2, 0.3];
     // Tâm pixel x=20.5 được LUT 256 ô làm tròn về chỉ số 131.

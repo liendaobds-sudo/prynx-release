@@ -31,6 +31,20 @@ export interface ExternalInputValue {
     csvFile?: File;
 }
 
+/** Metadata không làm thay đổi trạng thái thành công/thất bại của runner.
+ *
+ * PREPRESS (audit 2026-08-20 §COLOR.25): backend có thể hoàn tất việc ghi PDF
+ * nhưng vẫn trả cảnh báo (ví dụ raster hoá làm mất vector) hoặc tên engine đã
+ * dùng. Giữ metadata trong outcome để PlaybackRunner không làm rơi mất thông
+ * tin nghiệp vụ khi phát lại qua Recipe.
+ */
+export interface RecipeRunnerOutcomeMeta {
+    warnings?: string[];
+    engine?: string;
+}
+
+export type RecipeRunnerOutcome = ProcessOutcome & RecipeRunnerOutcomeMeta;
+
 /**
  * Một runner thực thi 1 op. Có thể báo lỗi bằng cách throw HOẶC gọi ctx.setError
  * (các handler hiện có dùng cách sau). PlaybackRunner bắt cả hai.
@@ -39,7 +53,7 @@ export type RecipeRunner = (
     ctx: ProcessContext,
     params: Record<string, unknown>,
     ext: ExternalInputValue | null,
-) => Promise<ProcessOutcome>;
+) => Promise<RecipeRunnerOutcome>;
 
 export type RecipeRunnerRegistry = Partial<Record<RecipeOpId, RecipeRunner>>;
 
@@ -59,8 +73,18 @@ export interface PlaybackDeps {
     onProgress?: (info: { index: number; total: number; step: RecipeStep }) => void;
     /** Cảnh báo bước bị bỏ qua. */
     onWarn?: (step: RecipeStep, reason: PlaybackSkipReason) => void;
+    /** Cảnh báo nghiệp vụ từ bước đã chạy và đã commit artifact. */
+    onStepWarning?: (info: PlaybackStepWarning) => void;
     /** Trả lỗi quyền hoặc null. Runner kiểm toàn recipe trước khi chạy và kiểm lại từng bước. */
     authorizeStep?: (step: RecipeStep) => string | null;
+}
+
+export interface PlaybackStepWarning {
+    index: number;
+    step: RecipeStep;
+    warnings: string[];
+    /** Engine backend (nếu endpoint có trả), để truy vết fidelity. */
+    engine?: string;
 }
 
 export interface PlaybackResult {
@@ -69,6 +93,8 @@ export interface PlaybackResult {
     completed: number;
     skipped: number;
     skippedSteps: { index: number; step: RecipeStep; reason: PlaybackSkipReason }[];
+    /** Cảnh báo không được lặng lẽ bỏ qua sau khi bước đã thành công. */
+    warnings: PlaybackStepWarning[];
     canceledStep?: { index: number; step: RecipeStep };
     failedStep?: { index: number; step: RecipeStep; error: string };
 }
@@ -81,6 +107,14 @@ export async function runRecipe(recipe: Recipe, deps: PlaybackDeps): Promise<Pla
     const total = steps.length;
     let completed = 0;
     const skippedSteps: PlaybackResult['skippedSteps'] = [];
+    const warnings: PlaybackResult['warnings'] = [];
+
+    // Mọi nhánh thoát sớm (quyền, hủy, lỗi) vẫn phải giữ cảnh báo đã nhận ở
+    // các bước trước đó; tránh trả một kết quả thiếu metadata rồi UI tưởng là
+    // recipe sạch.
+    const finish = (
+        result: Omit<PlaybackResult, 'warnings'>,
+    ): PlaybackResult => ({ ...result, warnings: [...warnings] });
 
     const skip = (index: number, step: RecipeStep, reason: PlaybackSkipReason) => {
         skippedSteps.push({ index, step, reason });
@@ -95,14 +129,14 @@ export async function runRecipe(recipe: Recipe, deps: PlaybackDeps): Promise<Pla
             if (!step.recordable) continue;
             const accessError = deps.authorizeStep(step);
             if (accessError) {
-                return {
+                return finish({
                     ok: false,
                     status: 'error',
                     completed: 0,
                     skipped: 0,
                     skippedSteps: [],
                     failedStep: { index: i, step, error: accessError },
-                };
+                });
             }
         }
     }
@@ -123,16 +157,16 @@ export async function runRecipe(recipe: Recipe, deps: PlaybackDeps): Promise<Pla
                 ext = (await deps.requestExternalInput?.(step, step.needsExternalInput)) ?? null;
             } catch (error: any) {
                 if (error?.message === 'ABORT_BY_USER' || isCanceled(error)) {
-                    return {
+                    return finish({
                         ok: false,
                         status: 'canceled',
                         completed,
                         skipped: skippedSteps.length,
                         skippedSteps,
                         canceledStep: { index: i, step },
-                    };
+                    });
                 }
-                return {
+                return finish({
                     ok: false,
                     status: 'error',
                     completed,
@@ -143,7 +177,7 @@ export async function runRecipe(recipe: Recipe, deps: PlaybackDeps): Promise<Pla
                         step,
                         error: error?.message || String(error),
                     },
-                };
+                });
             }
             if (!ext) {
                 skip(i, step, 'missing_input');
@@ -161,14 +195,14 @@ export async function runRecipe(recipe: Recipe, deps: PlaybackDeps): Promise<Pla
         // runner để dừng sạch, không dựa vào snapshot đầu chuỗi.
         const accessError = deps.authorizeStep?.(step);
         if (accessError) {
-            return {
+            return finish({
                 ok: false,
                 status: 'error',
                 completed,
                 skipped: skippedSteps.length,
                 skippedSteps,
                 failedStep: { index: i, step, error: accessError },
-            };
+            });
         }
 
         deps.onProgress?.({ index: i, total, step });
@@ -187,53 +221,69 @@ export async function runRecipe(recipe: Recipe, deps: PlaybackDeps): Promise<Pla
 
         try {
             const outcome = await runner(ctx, step.params, ext); // P4 — await tuần tự
+            const stepWarnings = Array.isArray(outcome.warnings)
+                ? [...new Set(outcome.warnings.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())))]
+                : [];
+            const stepEngine = typeof outcome.engine === 'string' && outcome.engine.trim()
+                ? outcome.engine.trim()
+                : undefined;
+            if (stepWarnings.length || stepEngine) {
+                const notice: PlaybackStepWarning = {
+                    index: i,
+                    step,
+                    warnings: stepWarnings,
+                    ...(stepEngine ? { engine: stepEngine } : {}),
+                };
+                warnings.push(notice);
+                deps.onStepWarning?.(notice);
+            }
             if (outcome.status === 'canceled') {
-                return {
+                return finish({
                     ok: false,
                     status: 'canceled',
                     completed,
                     skipped: skippedSteps.length,
                     skippedSteps,
                     canceledStep: { index: i, step },
-                };
+                });
             }
             if (outcome.status === 'error' && !capturedError) {
                 capturedError = outcome.error;
             }
         } catch (e: any) {
             if (e?.message === 'ABORT_BY_USER' || isCanceled(e)) {
-                return {
+                return finish({
                     ok: false,
                     status: 'canceled',
                     completed,
                     skipped: skippedSteps.length,
                     skippedSteps,
                     canceledStep: { index: i, step },
-                };
+                });
             }
             capturedError = e?.message || String(e);
         }
 
         if (capturedError) {
             // P8 — dừng sạch: không chạy bước kế.
-            return {
+            return finish({
                 ok: false,
                 status: 'error',
                 completed,
                 skipped: skippedSteps.length,
                 skippedSteps,
                 failedStep: { index: i, step, error: capturedError },
-            };
+            });
         }
 
         completed++;
     }
 
-    return {
+    return finish({
         ok: true,
         status: 'completed',
         completed,
         skipped: skippedSteps.length,
         skippedSteps,
-    };
+    });
 }

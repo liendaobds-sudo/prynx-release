@@ -238,6 +238,62 @@ fn rgb_without_icc_is_flagged_approximate() {
 }
 
 #[test]
+fn calrgb_never_reports_clean_while_calibration_is_not_applied() {
+    let cm = cm_or_skip!();
+    let mut doc = Document::with_version("1.7");
+    let resources_id = doc.add_object(dictionary! {
+        "ColorSpace" => dictionary! {
+            "CS0" => Object::Array(vec![
+                "CalRGB".into(),
+                Object::Dictionary(dictionary! {
+                    "WhitePoint" => vec![0.9505.into(), 1.into(), 1.089.into()],
+                    "Gamma" => vec![2.2.into(), 2.2.into(), 2.2.into()],
+                    "Matrix" => vec![
+                        0.64.into(), 0.33.into(), 0.03.into(),
+                        0.30.into(), 0.60.into(), 0.10.into(),
+                        0.15.into(), 0.06.into(), 0.79.into(),
+                    ],
+                }),
+            ]),
+        },
+    });
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        b"/CS0 cs 0.2 0.8 0.4 scn 0 0 10 10 re f".to_vec(),
+    ));
+    let pages_id = (doc.new_object_id().0, 0);
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page", "Parent" => Object::Reference(pages_id),
+        "Contents" => Object::Reference(content_id),
+        "Resources" => Object::Reference(resources_id),
+        "MediaBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+    });
+    doc.set_object(
+        pages_id,
+        dictionary! { "Type" => "Pages", "Kids" => vec![Object::Reference(page_id)], "Count" => 1 },
+    );
+    let catalog =
+        doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => Object::Reference(pages_id) });
+    doc.trailer.set("Root", Object::Reference(catalog));
+
+    let rendered = render_page_managed(
+        &doc,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::ink_accurate(),
+        Some(&cm),
+    )
+    .unwrap();
+    assert!(rendered.warnings.ink_unsound(), "{:?}", rendered.warnings);
+    assert!(rendered
+        .warnings
+        .approximated_colorspaces
+        .iter()
+        .any(|item| item.contains("CalRGB")));
+}
+
+#[test]
 fn icc_changes_rgb_result_versus_naive_formula() {
     // Nếu hai đường cho cùng kết quả thì ICC chưa hề được áp.
     let cm = cm_or_skip!();

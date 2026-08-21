@@ -133,6 +133,30 @@ describe('recipeRunners — prepress JSON (convertcolors)', () => {
         expect(commit).toHaveBeenCalledWith(expect.any(Blob), 'out.pdf');
     });
 
+    it('giữ cảnh báo và engine từ response prepress sau khi commit', async () => {
+        const post = {
+            json: async () => ({
+                success: true,
+                output_filename: 'out.pdf',
+                warnings: ['Mất vector khi raster hoá'],
+                engine: 'pikepdf',
+                log: [{ status: 'success', message: 'RGB → CMYK. Cảnh báo: Spot được giữ nguyên' }],
+            }),
+        };
+        const dl = { blob: async () => new Blob([new Uint8Array([5])], { type: 'application/pdf' }) };
+        (authenticatedFetch as any)
+            .mockResolvedValueOnce(post)
+            .mockResolvedValueOnce(dl);
+
+        const outcome = await RECIPE_RUNNERS.convertcolors!(makeCtx(), {}, null);
+
+        expect(outcome).toMatchObject({
+            status: 'completed',
+            warnings: ['Mất vector khi raster hoá', 'Spot được giữ nguyên'],
+            engine: 'pikepdf',
+        });
+    });
+
     it('download prepress lỗi thì không commit body lỗi như PDF', async () => {
         (authenticatedFetch as any)
             .mockResolvedValueOnce({ ok: true, json: async () => ({ success: true, output_filename: 'out.pdf' }) })
@@ -229,7 +253,7 @@ describe('recipeRunners — tạo đường cắt (sticker_dieline)', () => {
         const commit = vi.fn();
         await RECIPE_RUNNERS.sticker_dieline!(
             makeCtx({ commitWorkingFile: commit, file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
-            { productType: 'sticker', cutMode: 'original', offsetMm: 0, cornerStyle: 'preserve', shapeMode: 'auto_safe', fillHoles: true, bleedMm: 2, removeWhiteBg: true, bleedColorType: 'image', bleedColorHex: '#FFFFFF', cutFirstPageOnly: true, edgeBiteMm: 0.3 },
+            { productType: 'sticker', cutMode: 'original', offsetMm: 0, cornerStyle: 'preserve', curveTension: 85, shapeMode: 'auto_safe', fillHoles: true, bleedMm: 2, removeWhiteBg: true, bleedColorType: 'image', bleedColorHex: '#FFFFFF', cutFirstPageOnly: true, edgeBiteMm: 0.3 },
             null,
         );
         const call = (authenticatedFetch as any).mock.calls[0];
@@ -238,6 +262,8 @@ describe('recipeRunners — tạo đường cắt (sticker_dieline)', () => {
         expect(fd.get('cut_mode')).toBe('original');
         expect(fd.get('bleed_mm')).toBe('2');
         expect(fd.get('corner_style')).toBe('preserve');
+        // Giữ nguyên góc không dùng mức bo cũ dù recipe có mang field.
+        expect(fd.get('curve_tension')).toBe('50');
         // AUDIT (2026-08-16 §BX.F01): phát lại phải gửi ĐÚNG shape_mode đã ghi. Hợp đồng
         // cũ suy `preserve → contour` nên recipe ghi ở chế độ nhận dạng hình chuẩn lại
         // phát lại thành giữ mép ảnh — khuôn bế khác bản người dùng đã duyệt.
@@ -265,6 +291,20 @@ describe('recipeRunners — tạo đường cắt (sticker_dieline)', () => {
             null,
         );
         expect(commit).toHaveBeenCalledWith(blob, 'sticker_tem.pdf', 'D:\\results\\sticker_tem.pdf');
+    });
+
+    it('phát lại đúng Độ bo cong khi kiểu góc là Góc tròn', async () => {
+        const blob = new Blob([new Uint8Array([4])], { type: 'application/pdf' });
+        vi.mocked(authenticatedFetch).mockResolvedValueOnce(
+            { ok: true, blob: async () => blob } as unknown as Response,
+        );
+        await RECIPE_RUNNERS.sticker_dieline!(
+            makeCtx({ file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
+            { productType: 'sticker', cutMode: 'original', cornerStyle: 'round', curveTension: 85 },
+            null,
+        );
+        const request = vi.mocked(authenticatedFetch).mock.calls[0][1] as RequestInit;
+        expect((request.body as FormData).get('curve_tension')).toBe('85');
     });
 
     it('§PLAY.BX01-LEGACY: recipe cũ shapeMode=contour KHÔNG ép contour (fail-closed)', async () => {
@@ -327,13 +367,14 @@ describe('recipeRunners — tạo đường cắt (sticker_dieline)', () => {
         queueDielinePdfResponse();
         await RECIPE_RUNNERS.sticker_dieline!(
             makeCtx({ file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
-            { productType: 'sticker', cutMode: 'alpha', cornerStyle: 'round', removeWhiteBg: true },
+            { productType: 'sticker', cutMode: 'alpha', cornerStyle: 'round', curveTension: 95, removeWhiteBg: true },
             null,
         );
         const fd = firstRequestForm();
         expect(fd.get('corner_style')).toBe('preserve');
         expect(fd.get('remove_white_bg')).toBe('false');
         expect(fd.get('shape_mode')).toBe('contour');
+        expect(fd.get('curve_tension')).toBe('50');
     });
 
     it('xén vuông + đổ màu trơn KHÔNG được gửi độ lẹm mép (§BX.F02)', async () => {
@@ -365,7 +406,9 @@ describe('recipeRunners — tạo đường cắt (sticker_dieline)', () => {
             { productType: 'sticker', cutMode: 'original' },
             null,
         );
-        expect(firstRequestForm().get('cutline_denoise')).toBe('0');
+        const fd = firstRequestForm();
+        expect(fd.get('cutline_denoise')).toBe('0');
+        expect(fd.get('curve_tension')).toBe('50');
     });
 
     it('phát lại đúng mức khử răng cưa đã ghi, có kẹp 0–100 (§CUTJAG.3)', async () => {
@@ -386,6 +429,26 @@ describe('recipeRunners — tạo đường cắt (sticker_dieline)', () => {
             null,
         );
         expect(firstRequestForm().get('cutline_denoise')).toBe('100');
+    });
+
+    it('độ bo cong ngoài khoảng bị kẹp về 100', async () => {
+        queueDielinePdfResponse();
+        await RECIPE_RUNNERS.sticker_dieline!(
+            makeCtx({ file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
+            { productType: 'sticker', cutMode: 'original', cornerStyle: 'round', curveTension: 500 },
+            null,
+        );
+        expect(firstRequestForm().get('curve_tension')).toBe('100');
+    });
+
+    it('độ bo cong null/rỗng dùng mốc tương thích 50', async () => {
+        queueDielinePdfResponse();
+        await RECIPE_RUNNERS.sticker_dieline!(
+            makeCtx({ file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
+            { productType: 'sticker', cutMode: 'original', cornerStyle: 'round', curveTension: null },
+            null,
+        );
+        expect(firstRequestForm().get('curve_tension')).toBe('50');
     });
 
     it('xén vuông không dò contour nên khử răng cưa phải là 0', async () => {

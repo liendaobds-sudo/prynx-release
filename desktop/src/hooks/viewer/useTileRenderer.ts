@@ -105,11 +105,14 @@ export function shouldAutoDisableAccurateColor(
     error: unknown,
     viewerEngineMode: ViewerEngineMode,
 ): boolean {
-    // UIUX/COLOR (feedback 2026-08-10 §SHEETEXPORT.3): font không nhúng chỉ làm
-    // hình học chữ xấp xỉ. Ở mode hiện hành, cho Viewer trở về ảnh display có cảnh
-    // báo thay vì khóa trắng cả trang; các lỗi màu/nội dung vẫn fail-closed.
-    return viewerEngineMode === 'current'
-        && parsePpeUnsupportedStatus(error)?.reason === 'geometry_approximation';
+    // COLOR (audit 2026-08-19 §BXC.2): tuyệt đối không tự tắt PPE rồi thay toàn
+    // trang bằng PDFium khi PPE báo geometry_approximation. Hai renderer có thể
+    // lệch màu/transparency rất lớn (CMNM2026: hơn 92% pixel lệch >10), nên việc
+    // tự chuyển tạo cảm giác chính file vừa bị đổi màu. Giữ fail-closed + nút
+    // CMYK!; chỉ khi người dùng chủ động bấm nút mới mở preview tương thích.
+    void error;
+    void viewerEngineMode;
+    return false;
 }
 
 export function usesNativeAccurateWorker(

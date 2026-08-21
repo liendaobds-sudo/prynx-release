@@ -10,6 +10,7 @@ Ghostscript; file này tập trung kiểm chứng chất lượng đầu ra nati
 """
 
 import asyncio
+import base64
 import hashlib
 import os
 import zlib
@@ -94,6 +95,29 @@ def mixed_page_transparency_pdf(tmp_path):
             pikepdf.Stream(pdf, content)
         )
     path = tmp_path / "mixed_transparency.pdf"
+    pdf.save(str(path))
+    pdf.close()
+    return str(path)
+
+
+@pytest.fixture
+def all_page_transparency_pdf(tmp_path):
+    """Hai trang đều alpha, đủ điều kiện gắn OutputIntent FOGRA39 mới."""
+    pdf = pikepdf.Pdf.new()
+    for page_number in range(2):
+        page = pdf.add_blank_page(page_size=(100, 100))
+        gs = pikepdf.Dictionary(
+            Type=pikepdf.Name("/ExtGState"),
+            ca=0.5,
+            CA=0.5,
+        )
+        page[pikepdf.Name("/Resources")] = pikepdf.Dictionary(
+            ExtGState=pikepdf.Dictionary(GS0=pdf.make_indirect(gs))
+        )
+        page[pikepdf.Name("/Contents")] = pdf.make_indirect(
+            pikepdf.Stream(pdf, b"q /GS0 gs 1 0 0 rg 0 0 100 100 re f Q\n")
+        )
+    path = tmp_path / "all_transparency.pdf"
     pdf.save(str(path))
     pdf.close()
     return str(path)
@@ -294,11 +318,12 @@ def test_flatten_is_a_noop_when_there_is_no_transparency(tmp_path):
 
 
 def test_flatten_removes_transparency_and_says_what_it_cost(sample_pdf):
-    """Có trong suốt → raster hoá, và PHẢI nói rõ mất vector.
+    """Spot chưa có oracle tint thì phải dừng, không trộn RGB display vào CMYK.
 
-    `sample_pdf` có ảnh + spot CutContour. Raster hoá làm mất vector và gộp spot
-    vào CMYK — cả hai đều nghiêm trọng với tem bế, nên im lặng là không chấp
-    nhận được.
+    `facade.separations()` trả `plate["color"]` là RGB dùng cho preview, còn
+    tint process thật nằm trong LUT/alternate CMYK. Dùng nhầm bốn số RGB làm
+    trọng số CMYK tạo artifact mở được nhưng sai màu Pantone/CutContour; policy
+    an toàn là fail-closed và giữ bản gốc.
     """
     import pikepdf
 
@@ -317,13 +342,9 @@ def test_flatten_removes_transparency_and_says_what_it_cost(sample_pdf):
 
     engine = ActionEngine()
     result = asyncio.run(engine.execute(sample_pdf, "FLATTEN_TRANSPARENCY"))
-    assert result.success
-    assert result.log[0].engine == "ppe"
-
-    warnings = result.log[0].report["warnings"]
-    assert any("MẤT VECTOR" in w for w in warnings), warnings
-    assert any("Spot" in w for w in warnings), "gộp spot mà không cảnh báo"
-    assert pdf_actions_native.detect_transparency(result.output_path) == []
+    assert not result.success
+    assert result.output_path is None
+    assert any("SPOT_FLATTEN_UNSUPPORTED" in item.message for item in result.log)
 
 
 def test_flatten_only_rasterizes_pages_that_use_transparency(
@@ -350,11 +371,326 @@ def test_flatten_only_rasterizes_pages_that_use_transparency(
 
     with pikepdf.open(output) as pdf:
         assert len(pdf.pages) == 3
+        # Trang 1 còn nguyên vector/CMYK, nên không được gắn FOGRA39 lên cả
+        # tài liệu khi nguồn không có OutputIntent đã chứng minh tương ứng.
+        assert "/OutputIntents" not in pdf.Root
         opaque_content = bytes(pdf.pages[0].Contents.read_bytes())
         assert b" re f" in opaque_content
         assert b"/FlatIm Do" not in opaque_content
         for page in pdf.pages[1:]:
             assert b"/FlatIm Do" in bytes(page.Contents.read_bytes())
+    assert any("OutputIntent nguồn được giữ nguyên" in item for item in result["warnings"])
+    assert result["profile_mixed_unmanaged"] is True
+
+
+def test_flatten_rejects_malformed_source_output_intent_channel_count(
+    mixed_page_transparency_pdf, tmp_path
+):
+    """OI có byte FOGRA nhưng khai `/N=3` không được dùng cho trang đục."""
+    from app.core import pdf_actions_native
+
+    profile_path = Path(__file__).parents[1] / "app/assets/icc/FOGRA39.icc"
+    source = Path(mixed_page_transparency_pdf)
+    with pikepdf.open(source, allow_overwriting_input=True) as pdf:
+        profile = pdf.make_stream(profile_path.read_bytes())
+        profile["/N"] = 3
+        intent = pdf.make_indirect(
+            pikepdf.Dictionary(
+                Type=pikepdf.Name("/OutputIntent"),
+                S=pikepdf.Name("/GTS_PDFX"),
+                DestOutputProfile=profile,
+            )
+        )
+        pdf.Root["/OutputIntents"] = pikepdf.Array([intent])
+        pdf.save(source)
+
+    output = tmp_path / "malformed_oi_flattened.pdf"
+    result = pdf_actions_native.flatten_transparency(str(source), str(output), dpi=72)
+
+    assert result["supported"] is False
+    assert any("OUTPUT_INTENT_MISMATCH" in item for item in result["blockers"])
+    assert not output.exists()
+
+
+def test_flatten_all_raster_pages_attaches_verified_fogra_output_intent(
+    all_page_transparency_pdf, tmp_path
+):
+    """Khi mọi trang đã raster bằng PPE, OI phải khớp đúng profile tạo plate."""
+    from app.core import pdf_actions_native
+    from app.core.icc_profiles import resolve_cmyk_profile_path
+
+    output = tmp_path / "all_transparency_flat.pdf"
+    result = pdf_actions_native.flatten_transparency(
+        all_page_transparency_pdf, str(output), dpi=72
+    )
+    assert result["supported"] is True
+    assert result["output_intent_profile"] == "FOGRA39.icc"
+    profile_path = resolve_cmyk_profile_path("fogra39")
+    assert profile_path
+    with pikepdf.open(output) as pdf:
+        intents = pdf.Root["/OutputIntents"]
+        assert len(intents) == 1
+        intent = intents[0]
+        assert int(intent["/DestOutputProfile"]["/N"]) == 4
+        assert bytes(intent["/DestOutputProfile"].read_bytes()) == Path(profile_path).read_bytes()
+    assert pdf_actions_native.detect_transparency(str(output)) == []
+
+
+@pytest.mark.parametrize("failure", ["unmanaged", "missing_black", "bad_encoding"])
+def test_flatten_rejects_unmanaged_or_incomplete_ppe_contract(
+    all_page_transparency_pdf, tmp_path, monkeypatch, failure
+):
+    """Không gắn OI FOGRA39 nếu PPE không chứng minh plate/profile của mình."""
+    from app.core import pdf_actions_native
+    from app.core.print_engine import facade
+
+    output = tmp_path / f"bad_ppe_{failure}.pdf"
+    raw = base64.b64encode(zlib.compress(bytes([0, 0, 0, 0]))).decode("ascii")
+    names = ("Cyan", "Magenta", "Yellow") if failure == "missing_black" else ("Cyan", "Magenta", "Yellow", "Black")
+
+    def fake_separations(*_args, **_kwargs):
+        return {
+            "width": 2,
+            "height": 2,
+            "color_managed": failure != "unmanaged",
+            "plates": [
+                {
+                    "name": name,
+                    "alpha_data": "not-base64" if failure == "bad_encoding" else raw,
+                    "is_spot": False,
+                }
+                for name in names
+            ],
+        }
+
+    monkeypatch.setattr(facade, "separations", fake_separations)
+    result = pdf_actions_native.flatten_transparency(
+        all_page_transparency_pdf, str(output), dpi=72
+    )
+    assert result["supported"] is False
+    expected = "PPE_PROFILE_UNAVAILABLE" if failure == "unmanaged" else "PPE_PLATE_INVALID"
+    assert any(expected in item for item in result["blockers"])
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("carrier", ["inline_mask", "type3_alpha"])
+def test_flatten_detects_transparency_hidden_in_content_streams(
+    tmp_path, monkeypatch, carrier
+):
+    """Inline image/Type3 không được copy nguyên file rồi báo `flattened=0`.
+
+    COLOR (audit 2026-08-20 §COLOR.22): hai carrier này không nằm trong cây
+    XObject thông thường. Detector cũ bỏ sót hoàn toàn và nhánh flatten xem file
+    là đục, tạo false-success. PPE bị ép lỗi ở đây để chứng minh detector đã đưa
+    đúng trang vào kế hoạch raster và tác vụ dừng không để lại artifact.
+    """
+    from app.core import pdf_actions_native
+    from app.core.print_engine import facade
+
+    source = tmp_path / f"{carrier}.pdf"
+    output = tmp_path / f"{carrier}_flat.pdf"
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(100, 100))
+
+    if carrier == "inline_mask":
+        page.Contents = pdf.make_indirect(
+            pikepdf.Stream(
+                pdf,
+                b"BI /W 1 /H 1 /CS /RGB /BPC 8 "
+                b"/Mask [0 0 0 0 0 0] ID \x00\x00\x00 EI\n",
+            )
+        )
+    else:
+        gs = pikepdf.Dictionary(
+            Type=pikepdf.Name("/ExtGState"),
+            ca=0.5,
+            CA=0.5,
+        )
+        charproc = pikepdf.Stream(
+            pdf,
+            b"0 0 20 20 d1 /GS0 gs 1 0 0 rg 0 0 20 20 re f\n",
+        )
+        font = pikepdf.Dictionary(
+            Type=pikepdf.Name("/Font"),
+            Subtype=pikepdf.Name("/Type3"),
+            FontBBox=[0, 0, 20, 20],
+            FontMatrix=[0.05, 0, 0, 0.05, 0, 0],
+            CharProcs=pikepdf.Dictionary(A=pdf.make_indirect(charproc)),
+            Encoding=pikepdf.Dictionary(
+                Type=pikepdf.Name("/Encoding"),
+                Differences=[65, pikepdf.Name("/A")],
+            ),
+            FirstChar=65,
+            LastChar=65,
+            Widths=[20],
+            Resources=pikepdf.Dictionary(
+                ExtGState=pikepdf.Dictionary(GS0=pdf.make_indirect(gs))
+            ),
+        )
+        page.Resources = pikepdf.Dictionary(
+            Font=pikepdf.Dictionary(F0=pdf.make_indirect(font))
+        )
+        page.Contents = pdf.make_indirect(
+            pikepdf.Stream(pdf, b"BT /F0 20 Tf 10 10 Td (A) Tj ET\n")
+        )
+
+    pdf.save(str(source))
+    pdf.close()
+
+    signs = pdf_actions_native.detect_transparency(str(source))
+    assert signs, "carrier transparency bị detector bỏ sót"
+
+    def refuse_render(*_args, **_kwargs):
+        raise RuntimeError("fixture PPE từ chối")
+
+    monkeypatch.setattr(facade, "separations", refuse_render)
+    result = pdf_actions_native.flatten_transparency(
+        str(source), str(output), dpi=72
+    )
+
+    assert result["supported"] is False
+    assert any("PPE_RENDER_FAILED" in item for item in result["blockers"])
+    assert not output.exists()
+
+
+def test_flatten_rejects_artifact_when_annotation_transparency_remains(
+    tmp_path, monkeypatch
+):
+    """Raster page không được công bố nếu annotation AP vẫn còn alpha sống."""
+    from app.core import pdf_actions_native
+    from app.core.print_engine import facade
+
+    source = tmp_path / "annotation_alpha.pdf"
+    output = tmp_path / "annotation_alpha_flat.pdf"
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(100, 100))
+    gs = pikepdf.Dictionary(
+        Type=pikepdf.Name("/ExtGState"),
+        ca=0.5,
+        CA=0.5,
+    )
+    appearance = pikepdf.Stream(
+        pdf,
+        b"q /GS0 gs 1 0 0 rg 0 0 20 20 re f Q\n",
+        Type=pikepdf.Name("/XObject"),
+        Subtype=pikepdf.Name("/Form"),
+        BBox=[0, 0, 20, 20],
+        Resources=pikepdf.Dictionary(
+            ExtGState=pikepdf.Dictionary(GS0=pdf.make_indirect(gs))
+        ),
+    )
+    annotation = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Annot"),
+        Subtype=pikepdf.Name("/Stamp"),
+        Rect=[0, 0, 20, 20],
+        AP=pikepdf.Dictionary(N=pdf.make_indirect(appearance)),
+    )
+    page.Annots = pikepdf.Array([pdf.make_indirect(annotation)])
+    pdf.save(str(source))
+    pdf.close()
+
+    zeros = base64.b64encode(zlib.compress(bytes(100))).decode("ascii")
+
+    def fake_separations(*_args, **_kwargs):
+        return {
+            "width": 10,
+            "height": 10,
+            "color_managed": True,
+            "plates": [
+                {"name": name, "alpha_data": zeros, "is_spot": False}
+                for name in ("Cyan", "Magenta", "Yellow", "Black")
+            ],
+        }
+
+    monkeypatch.setattr(facade, "separations", fake_separations)
+    result = pdf_actions_native.flatten_transparency(
+        str(source), str(output), dpi=72
+    )
+
+    assert result["supported"] is False
+    assert result["flattened"] == 1
+    assert any("TRANSPARENCY_REMAINS" in item for item in result["blockers"])
+    assert not output.exists(), "artifact còn alpha không được phép tồn tại"
+
+
+def test_flatten_rejects_ppe_plate_with_wrong_byte_count(tmp_path, monkeypatch):
+    """Plate sai kích thước phải dừng, không được `np.resize` lặp/cắt byte."""
+    from app.core import pdf_actions_native
+    from app.core.print_engine import facade
+
+    source = tmp_path / "bad_plate.pdf"
+    output = tmp_path / "bad_plate_flat.pdf"
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(100, 100))
+    gs = pikepdf.Dictionary(
+        Type=pikepdf.Name("/ExtGState"),
+        ca=0.5,
+        CA=0.5,
+    )
+    page.Resources = pikepdf.Dictionary(
+        ExtGState=pikepdf.Dictionary(GS0=pdf.make_indirect(gs))
+    )
+    page.Contents = pdf.make_indirect(
+        pikepdf.Stream(pdf, b"/GS0 gs 1 0 0 rg 0 0 20 20 re f\n")
+    )
+    pdf.save(str(source))
+    pdf.close()
+
+    malformed = base64.b64encode(zlib.compress(b"\x00\x00\x00")).decode("ascii")
+    monkeypatch.setattr(
+        facade,
+        "separations",
+        lambda *_args, **_kwargs: {
+            "width": 2,
+            "height": 2,
+            "color_managed": True,
+            "plates": [
+                {"name": "Cyan", "alpha_data": malformed, "is_spot": False}
+            ],
+        },
+    )
+
+    result = pdf_actions_native.flatten_transparency(
+        str(source), str(output), dpi=72
+    )
+    assert result["supported"] is False
+    assert any("PPE_PLATE_INVALID" in item for item in result["blockers"])
+    assert not output.exists()
+
+
+def test_flatten_action_surfaces_postflight_blocker_and_keeps_no_artifact(
+    tmp_path, monkeypatch
+):
+    """ActionEngine phải đưa mã blocker an toàn tới UI và dọn file staging."""
+    from app.core import pdf_actions_native
+    from app.core.action_engine import ActionEngine
+
+    source = tmp_path / "opaque.pdf"
+    pdf = pikepdf.Pdf.new()
+    pdf.add_blank_page(page_size=(100, 100))
+    pdf.save(str(source))
+    pdf.close()
+
+    monkeypatch.setattr(
+        pdf_actions_native,
+        "flatten_transparency",
+        lambda *_args, **_kwargs: {
+            "supported": False,
+            "flattened": 1,
+            "warnings": ["artifact không đạt hậu kiểm"],
+            "blockers": [
+                "[TRANSPARENCY_REMAINS] Trang 1 còn alpha trong annotation."
+            ],
+        },
+    )
+
+    engine = ActionEngine()
+    result = asyncio.run(engine.execute(str(source), "FLATTEN_TRANSPARENCY"))
+    assert result.success is False
+    assert result.output_path is None
+    assert "TRANSPARENCY_REMAINS" in (result.error or "")
+    assert "TRANSPARENCY_REMAINS" in result.log[0].message
+    assert not list(Path(engine.output_dir).glob("*.pending-*"))
 
 
 def test_pdfx1a_export_without_gs(sample_pdf):
@@ -369,11 +705,19 @@ def test_pdfx1a_export_without_gs(sample_pdf):
     # detect → flatten 300 DPI → writer PDF/X trong cùng một phép thử.
     with pikepdf.open(sample_pdf, allow_overwriting_input=True) as pdf:
         page = pdf.pages[0]
+        # Fixture dùng chung có CutContour Spot để test separation; X-1a raster
+        # lane hiện fail-closed khi Spot cùng trang transparency, nên ca này
+        # phải cô lập riêng contract alpha process.
+        if "/ColorSpace" in page.Resources:
+            del page.Resources["/ColorSpace"]
         gs = pikepdf.Dictionary(Type=pikepdf.Name("/ExtGState"), ca=0.5, CA=0.5)
         page.Resources["/ExtGState"] = pikepdf.Dictionary(
             GS0=pdf.make_indirect(gs)
         )
-        old_content = bytes(page.Contents.read_bytes())
+        old_content = b"\n".join(
+            line for line in bytes(page.Contents.read_bytes()).splitlines()
+            if b"/CS0 cs" not in line
+        ) + b"\n"
         page.Contents = pdf.make_indirect(
             pikepdf.Stream(
                 pdf,

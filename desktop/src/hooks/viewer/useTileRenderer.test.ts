@@ -75,7 +75,7 @@ describe('Viewer — định tuyến render màu chính xác', () => {
         expect(parsePpeUnsupportedStatus(new Error('PPE_NATIVE_UNSUPPORTED:{sai-json'))).toBeNull();
     });
 
-    it('chỉ tự về chế độ xem tương thích khi font làm hình học xấp xỉ', () => {
+    it('không tự đổi toàn trang sang PDFium khi PPE báo hình học xấp xỉ', () => {
         const geometry = new Error(
             'PPE_NATIVE_UNSUPPORTED:{"reason":"geometry_approximation","detail":"font không nhúng"}',
         );
@@ -83,7 +83,7 @@ describe('Viewer — định tuyến render màu chính xác', () => {
             'PPE_NATIVE_UNSUPPORTED:{"reason":"color_approximation","detail":"màu xấp xỉ"}',
         );
 
-        expect(shouldAutoDisableAccurateColor(geometry, 'current')).toBe(true);
+        expect(shouldAutoDisableAccurateColor(geometry, 'current')).toBe(false);
         expect(shouldAutoDisableAccurateColor(color, 'current')).toBe(false);
         expect(shouldAutoDisableAccurateColor(geometry, 'ppe-only')).toBe(false);
         expect(shouldAutoDisableAccurateColor(geometry, 'hybrid')).toBe(false);

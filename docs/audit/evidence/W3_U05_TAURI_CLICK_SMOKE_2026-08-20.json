@@ -1,0 +1,65 @@
+{
+  "evidence_id": "W3-U05-TAURI-CLICK-SMOKE-2026-08-20",
+  "recorded_on": "2026-08-21",
+  "runtime_mode": "Tauri dev trên source hiện tại",
+  "scope": "Convert Colors RGB sang CMYK qua UI, HTTP, download, commit Working File và reopen artifact",
+  "summary": {
+    "assertions_passed": 23,
+    "assertions_failed": 0,
+    "fatal": false,
+    "console_errors": 0,
+    "page_errors": 0,
+    "network_failures": 0
+  },
+  "positive": {
+    "source_name": "rgb-source-with-stale-swop.pdf",
+    "source_sha256": "e897779c453348d1e2fa5e9d2fc9f3d4421b24380a1f4bfe5447ccca0cba6858",
+    "settings": {
+      "output_profile": "fogra39",
+      "rendering_intent": "relative",
+      "black_point_compensation": true,
+      "preserve_black_k_only": true
+    },
+    "http_status": 200,
+    "success": true,
+    "download_bytes": 486308,
+    "working_file_history_before": 0,
+    "working_file_history_after": 1,
+    "artifact_sha256": "37d80afa6fbc9cd4892c9e63000702f132658a46015ab846ec46a1c4f60f40ff",
+    "postflight_passed": true,
+    "residuals": [],
+    "output_intent_count": 1,
+    "output_intent_n": 4,
+    "output_intent_icc_sha256": "da2b9b593e27cba2563cbc8596071c5c8f2395d3dbb4434538bac2bc9d58ce77",
+    "pure_black_operator": "0 0 0 1 k",
+    "pure_white_operator": "0 0 0 0 k"
+  },
+  "negative": {
+    "source_name": "complex_alpha.pdf",
+    "source_sha256": "cb55c89a81fc23cd774d9e3d2c7b5828ca83e6cc28018918c2d11da19d228ad0",
+    "case": "hai fill RGB alpha chồng nhau với Multiply",
+    "http_status": 200,
+    "success": false,
+    "output_filename": null,
+    "blocker": "LIVE_TRANSPARENCY_RGB",
+    "working_file_history_before": 0,
+    "working_file_history_after": 0,
+    "working_file_unchanged": true
+  },
+  "raw_files": {
+    "local_directory": ".tmp/runtime-smoke/color-click-20260820",
+    "report_sha256": "5aaadb95f7f4cf4be69dc0d468d0c85121324d2d17704f2a636250f74ec7b335",
+    "positive_screenshot_sha256": "f82c90129c95a9dba54bfc524d844a3fba3a37058451deb32668bb5dce2b1243",
+    "negative_screenshot_sha256": "9ee33a06054aa8526e92e7a7dfd64f879fab8402e57f420a20b7a1a8e24dc56c"
+  },
+  "verification": {
+    "convert_colors_http_contract": "13 passed, 2 dependency warnings",
+    "smoke_listeners_after_cleanup": [],
+    "checked_ports": [8321, 8322, 5173, 5174, 9223]
+  },
+  "limitations": [
+    "WebView2 CDP không cung cấp raw POST body; serialization được khóa bởi test HTTP contract, không suy ra từ report click-smoke.",
+    "Không phải packaged-installer production smoke.",
+    "Không phủ runtime Recipe, Save PDF/X hoặc generic Flatten Transparency trong cửa sổ Tauri."
+  ]
+}

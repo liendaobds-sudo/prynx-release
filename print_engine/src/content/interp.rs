@@ -2647,7 +2647,8 @@ impl<'a> Renderer<'a> {
             self.color,
         )?;
         self.buffer.sync_channels()?;
-        let static_process_channels = matches!(img.colorspace, Some(ColorSpace::DeviceCMYK));
+        let static_process_channels =
+            matches!(img.colorspace, Some(ColorSpace::DeviceCMYK)) && !img.has_matte();
 
         // PERF (audit 2026-08-14 §VIEW.IMAGE): Viewer trước đây lấy đúng một texel
         // ở tâm dù đang thu ảnh CMYK 300–600 DPI xuống màn hình. menu.pdf @96 DPI

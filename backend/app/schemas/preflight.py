@@ -33,6 +33,21 @@ OutputPreviewFilter = Literal[
     "smooth-shades",
 ]
 
+ConvertColorOperation = Literal["rgb_to_cmyk", "gray_to_cmyk", "spot_to_cmyk"]
+CmykOutputProfileId = Literal[
+    "auto",
+    "fogra39",
+    "fogra27",
+    "gracol",
+    "swop",
+    "japan_color",
+    "uncoated",
+    "newspaper",
+]
+ColorRenderingIntent = Literal["relative", "perceptual", "saturation", "absolute"]
+ColorAdjustmentStage = Literal["post_cmyk", "pre_icc"]
+PdfxStandard = Literal["x1a", "x4"]
+
 
 class FixFileResponse(BaseModel):
     """Hình dạng dùng chung của các endpoint "sửa file rồi trả tên file kết quả".
@@ -90,10 +105,19 @@ class InksResponse(BaseModel):
     inks: list[Any] = Field(default_factory=list)
 
 
+class IccProfileSummary(BaseModel):
+    """Một profile output công khai; tuyệt đối không trả đường dẫn local."""
+
+    id: str
+    name: str
+    description: str
+    available: bool
+
+
 class IccProfilesResponse(BaseModel):
     """`/preflight/icc-profiles` — danh sách ICC dùng cho soft-proof."""
 
-    profiles: list[Any] = Field(default_factory=list)
+    profiles: list[IccProfileSummary] = Field(default_factory=list)
 
 
 class OverprintPreviewResponse(BaseModel):
@@ -122,15 +146,25 @@ class OverprintPreviewResponse(BaseModel):
 # ── Lô 13: phủ thêm các endpoint có hình dạng xác định ───────────────────────
 
 
+class FixFileLogEntryResponse(BaseModel):
+    """Một bước xử lý hiển thị trong nhật ký của các công cụ sửa file."""
+
+    action_id: str
+    status: str
+    message: str
+    duration_ms: int
+
+
+# COLOR (audit 2026-08-20 §COLOR.02): route trả mảng để UI duyệt từng bước;
+# khai chuỗi ở đây từng làm FastAPI trả 500 sau khi artifact đã được tạo thành công.
 class FixFileWithLogResponse(FixFileResponse):
     """Nhóm "sửa file + trả log": `/fix-hairlines`, `/set-overprint`, `/convert-colors`.
 
-    `log` là chuỗi nhật ký của engine (PPE/pikepdf) để người dùng đọc khi kết quả
-    không như mong đợi; `error` có mặt ở nhánh thất bại. Cả hai đều `Optional` vì nhánh
-    thành công không nhất thiết có log.
+    `log` là danh sách từng bước của engine (PPE/pikepdf) để UI hiển thị trạng thái,
+    thông điệp và thời gian xử lý; `error` có mặt ở nhánh thất bại.
     """
 
-    log: Optional[str] = None
+    log: list[FixFileLogEntryResponse] = Field(default_factory=list)
     error: Optional[str] = None
 
 
@@ -365,14 +399,57 @@ class ConvertSpotRequest(BaseModel):
 
 class ExportPdfxRequest(BaseModel):
     file_id: str
-    standard: str = "x4"  # "x1a" | "x4"
+    # SECURITY/COLOR (audit 2026-08-20 §COLOR.23): `standard` từng đi thẳng
+    # vào tên output và mọi giá trị khác x1a bị âm thầm xử lý như X-4.
+    standard: PdfxStandard = "x4"
 
 class ConvertColorsRequest(BaseModel):
     file_id: str
-    conversions: list[str] = ["rgb_to_cmyk"]  # "rgb_to_cmyk" | "gray_to_cmyk" | "spot_to_cmyk"
-    icc_profile: str = "auto"  # "auto" | "fogra39" | "swop" | "japan_color"
-    rendering_intent: str = "relative"  # "relative" | "perceptual" | "saturation" | "absolute"
+    conversions: list[ConvertColorOperation] = Field(
+        default_factory=lambda: ["rgb_to_cmyk"],
+        min_length=1,
+    )
+    icc_profile: CmykOutputProfileId = "auto"
+    rendering_intent: ColorRenderingIntent = "relative"
     preserve_black: bool = True
+    black_point_compensation: bool = True
+    adjustment_stage: ColorAdjustmentStage = Field(
+        default="post_cmyk",
+        description=(
+            "post_cmyk: đổi sang CMYK rồi tinh chỉnh theo proof (mặc định); "
+            "pre_icc: tinh chỉnh gamut nguồn trước khi đổi profile."
+        ),
+    )
+    # COLOR (audit 2026-08-21): tinh chỉnh trên bản CMYK sau khi đổi profile cho
+    # luồng in nhanh. Các giá trị mặc định là phép đồng nhất (identity), để
+    # recipe/API cũ giữ nguyên kết quả.
+    brightness_lstar: int = Field(
+        default=0,
+        ge=-10,
+        le=10,
+        description="Bù độ sáng L* sau khi đổi sang CMYK, trong khoảng -10..10.",
+    )
+    contrast_percent: int = Field(
+        default=0,
+        ge=-20,
+        le=20,
+        description="Bù tương phản trên bản CMYK, trong khoảng -20..20%.",
+    )
+    vibrance_percent: int = Field(
+        default=0,
+        ge=-20,
+        le=20,
+        description="Bù độ rực màu trên bản CMYK, trong khoảng -20..20%.",
+    )
+
+    @field_validator("conversions")
+    @classmethod
+    def validate_unique_conversions(cls, value):
+        # COLOR (audit 2026-08-20 §COLOR.12): tránh chạy cùng phép đổi hai lần
+        # và chặn `all([])` tạo response thành công giả mà không sinh artifact.
+        if len(set(value)) != len(value):
+            raise ValueError("Mỗi phép chuyển màu chỉ được xuất hiện một lần")
+        return value
 
 class SoftProofRequest(BaseModel):
     file_id: str

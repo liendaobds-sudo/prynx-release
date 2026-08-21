@@ -290,4 +290,31 @@ describe('PlaybackRunner — tiến trình', () => {
         // crop (index 1) bị bỏ qua nên không báo progress
         expect(prog).toEqual([0, 2]);
     });
+
+    it('không làm rơi warning/engine từ runner đã hoàn tất', async () => {
+        const onStepWarning = vi.fn();
+        const recipe = createRecipe('R', [step('convertcolors')]);
+        const res = await runRecipe(recipe, baseDeps({
+            runners: {
+                convertcolors: async () => ({
+                    status: 'completed',
+                    warnings: ['Mất vector khi raster hoá'],
+                    engine: 'pikepdf',
+                }),
+            },
+            onStepWarning,
+        }));
+
+        expect(res.ok).toBe(true);
+        expect(res.warnings).toHaveLength(1);
+        expect(res.warnings[0]).toMatchObject({
+            warnings: ['Mất vector khi raster hoá'],
+            engine: 'pikepdf',
+        });
+        expect(onStepWarning).toHaveBeenCalledWith(expect.objectContaining({
+            index: 0,
+            warnings: ['Mất vector khi raster hoá'],
+            engine: 'pikepdf',
+        }));
+    });
 });

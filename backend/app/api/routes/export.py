@@ -48,7 +48,8 @@ _RESERVED_OUTPUT_PATHS: set[str] = set()
 
 
 # ── ICC profile helpers (audit 2026-07-30 §IMG-01 lô 3) ──────────────────────
-# sRGB.icc trong bundle thực ra là Adobe RGB — dùng LittleCMS tạo profile đúng.
+# ICC bundle đã được kiểm tra danh tính; LittleCMS vẫn là nguồn tạo fallback
+# xác định để đường xuất ảnh không phụ thuộc profile hệ điều hành.
 # Cache module-level: tạo một lần, dùng lại mãi.
 
 _SRGB_ICC_BYTES: bytes | None = None

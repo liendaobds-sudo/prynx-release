@@ -75,6 +75,7 @@ from app.schemas.preflight import (  # noqa: F401
     ObjectToDelete,
     OverprintPreviewRequest,
     OutputPreviewFilter,
+    PdfxStandard,
     PdfObjectResponse,
     PipelineAction,
     PipelineRequest,
@@ -1344,7 +1345,7 @@ async def set_overprint(req: FixRequest):
 # ══════════════════════════════════════════════════════════════
 
 @router.get("/preflight/check-pdfx/{file_id}/{standard}", response_model=PdfxComplianceResponse)
-async def check_pdfx_compliance(file_id: str, standard: str):
+async def check_pdfx_compliance(file_id: str, standard: PdfxStandard):
     """Kiểm tra compliance PDF/X."""
     file_path = _get_file_path(file_id)
     from app.core.pdfx_export import PdfxExportEngine
@@ -1399,6 +1400,25 @@ async def convert_colors(req: ConvertColorsRequest):
     """Chuyển đổi không gian màu toàn bộ file PDF."""
     import time
     file_path = _get_file_path(req.file_id)
+    resolved_cmyk_profile: str | None = None
+    if "rgb_to_cmyk" in req.conversions:
+        from app.core import icc_profiles
+
+        resolved_cmyk_profile = icc_profiles.resolve_cmyk_profile_path(
+            req.icc_profile
+        )
+        if not resolved_cmyk_profile:
+            # COLOR (audit 2026-08-20 §COLOR.08/.12): profile người dùng chọn không
+            # được âm thầm đổi sang FOGRA39; preview và OutputIntent sẽ nói dối.
+            if req.icc_profile == "auto":
+                raise HTTPException(
+                    status_code=503,
+                    detail="Không tìm thấy hồ sơ CMYK mặc định FOGRA39.",
+                )
+            raise HTTPException(
+                status_code=422,
+                detail=f"Hồ sơ màu '{req.icc_profile}' chưa được cài trên máy.",
+            )
     log = []
     current_path = file_path
     # File trung gian giữa các bước conversion (output bước trước → input bước sau).
@@ -1441,15 +1461,30 @@ async def convert_colors(req: ConvertColorsRequest):
                     )
                     Path(native_out).parent.mkdir(parents=True, exist_ok=True)
                     if conv == "rgb_to_cmyk":
-                        profile = None
-                        if req.icc_profile and req.icc_profile != "auto":
-                            profile = icc_profiles.resolve_cmyk_profile_path(req.icc_profile)
+                        # COLOR (audit 2026-08-21): các thanh tinh chỉnh trên bản
+                        # CMYK là phép đồng nhất khi bằng 0. Chỉ gửi kwargs khác 0 để recipe
+                        # và sidecar cũ vẫn chạy được trong lúc core được nâng.
+                        adjustment_options = {
+                            "brightness_lstar": req.brightness_lstar,
+                            "contrast_percent": req.contrast_percent,
+                            "vibrance_percent": req.vibrance_percent,
+                        }
+                        adjustment_options = {
+                            key: value
+                            for key, value in adjustment_options.items()
+                            if value != 0
+                        }
                         native = await asyncio.to_thread(
                             pdf_actions_native.convert_to_cmyk,
                             current_path,
                             native_out,
-                            profile or icc_profiles.resolve_cmyk_profile_path(),
+                            resolved_cmyk_profile,
                             icc_profiles.resolve_srgb_profile_path(),
+                            rendering_intent=req.rendering_intent,
+                            preserve_black=req.preserve_black,
+                            black_point_compensation=req.black_point_compensation,
+                            adjustment_stage=req.adjustment_stage,
+                            **adjustment_options,
                         )
                     else:
                         native = await asyncio.to_thread(
@@ -1475,9 +1510,23 @@ async def convert_colors(req: ConvertColorsRequest):
                     current_path = native_out
                     ms = round((time.time() - t0) * 1000)
                     label = "RGB → CMYK" if conv == "rgb_to_cmyk" else "Chuyển sang Grayscale (đen trắng)"
+                    success_message = f"{label} (pikepdf, giữ spot)"
+                    native_warnings = native.get("warnings", []) if isinstance(native, dict) else []
+                    if isinstance(native_warnings, list):
+                        public_warnings = [
+                            re.sub(
+                                r"(?i)(?:[a-z]:[\\/]|\\\\)[^;\r\n]*",
+                                "[đường dẫn đã ẩn]",
+                                item.strip().replace("\r", " ").replace("\n", " "),
+                            )[:240]
+                            for item in native_warnings
+                            if isinstance(item, str) and item.strip()
+                        ][:3]
+                        if public_warnings:
+                            success_message += " Cảnh báo: " + "; ".join(public_warnings)
                     log.append({
                         "action_id": conv, "status": "success",
-                        "message": f"{label} (pikepdf, giữ spot)", "duration_ms": ms,
+                        "message": success_message, "duration_ms": ms,
                     })
                     continue
                 if native is not None:
@@ -1485,6 +1534,21 @@ async def convert_colors(req: ConvertColorsRequest):
                         "convert-colors: engine nội bộ không xử lý chắc chắn được (%s)",
                         "; ".join(native.get("blockers", [])),
                     )
+                    # COLOR (audit 2026-08-20 §COLOR.04): chỉ đưa mã blocker
+                    # nghiệp vụ đã được engine sinh ra vào log; không để path,
+                    # stacktrace hoặc dữ liệu PDF lọt ra response của desktop.
+                    raw_blockers = native.get("blockers", [])
+                    if not isinstance(raw_blockers, list):
+                        raw_blockers = []
+                    public_blockers = [
+                        re.sub(
+                            r"(?i)(?:[a-z]:[\\/]|\\\\)[^;\r\n]*",
+                            "[đường dẫn đã ẩn]",
+                            item.strip().replace("\r", " ").replace("\n", " "),
+                        )[:240]
+                        for item in raw_blockers
+                        if isinstance(item, str) and item.strip()
+                    ][:3]
                 _cleanup_intermediate(native_out)
                 from app.core.engine_support import (
                     InternalEngineUnsupported,
@@ -1492,7 +1556,12 @@ async def convert_colors(req: ConvertColorsRequest):
                 )
 
                 label = "RGB → CMYK" if conv == "rgb_to_cmyk" else "Chuyển sang Grayscale"
-                raise InternalEngineUnsupported(unsupported_message(label))
+                detail = (
+                    " Chi tiết hậu kiểm: " + "; ".join(public_blockers) + "."
+                    if native is not None and public_blockers
+                    else ""
+                )
+                raise InternalEngineUnsupported(unsupported_message(label) + detail)
 
         except Exception as e:
             # GS-SUNSET (audit 2026-08-08 §GS.1): pipeline thất bại không được
@@ -1505,11 +1574,21 @@ async def convert_colors(req: ConvertColorsRequest):
             break
 
     all_ok = all(l["status"] == "success" for l in log)
+    error_message = None
+    if not all_ok:
+        error_message = next(
+            (
+                entry.get("message")
+                for entry in reversed(log)
+                if entry.get("status") != "success" and entry.get("message")
+            ),
+            "Một số bước thất bại",
+        )
     return {
         "success": all_ok,
         "output_filename": Path(current_path).name if all_ok else None,
         "log": log,
-        "error": None if all_ok else "Một số bước thất bại",
+        "error": error_message,
     }
 
 

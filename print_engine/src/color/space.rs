@@ -581,8 +581,21 @@ fn resolve_cs_depth(
         "DeviceGray" | "G" => Ok(ColorSpace::DeviceGray),
         "DeviceRGB" | "RGB" => Ok(ColorSpace::DeviceRGB),
         "DeviceCMYK" | "CMYK" => Ok(ColorSpace::DeviceCMYK),
-        "CalGray" => Ok(ColorSpace::DeviceGray),
-        "CalRGB" => Ok(ColorSpace::DeviceRGB),
+        "CalGray" => {
+            warn.note_approximated_colorspace(
+                "CalGray: chưa áp WhitePoint/Gamma; tạm diễn giải như DeviceGray",
+            );
+            Ok(ColorSpace::DeviceGray)
+        }
+        "CalRGB" => {
+            // COLOR (audit 2026-08-20 §COLOR.10): không được báo clean khi
+            // WhitePoint/Gamma/Matrix đang bị bỏ. Consumer sẽ chuyển sang lane
+            // tương thích thay vì tin sai số mực này để chốt kẽm.
+            warn.note_approximated_colorspace(
+                "CalRGB: chưa áp WhitePoint/Gamma/Matrix; tạm diễn giải như DeviceRGB",
+            );
+            Ok(ColorSpace::DeviceRGB)
+        }
         "Lab" => Ok(ColorSpace::Lab),
 
         "ICCBased" => {
@@ -728,8 +741,20 @@ fn resolve_cs_name(
     depth: u32,
 ) -> PpeResult<ColorSpace> {
     match name {
-        "DeviceGray" | "G" | "CalGray" => return Ok(ColorSpace::DeviceGray),
-        "DeviceRGB" | "RGB" | "CalRGB" => return Ok(ColorSpace::DeviceRGB),
+        "DeviceGray" | "G" => return Ok(ColorSpace::DeviceGray),
+        "CalGray" => {
+            warn.note_approximated_colorspace(
+                "CalGray không có dictionary calibration; tạm diễn giải như DeviceGray",
+            );
+            return Ok(ColorSpace::DeviceGray);
+        }
+        "DeviceRGB" | "RGB" => return Ok(ColorSpace::DeviceRGB),
+        "CalRGB" => {
+            warn.note_approximated_colorspace(
+                "CalRGB không có dictionary calibration; tạm diễn giải như DeviceRGB",
+            );
+            return Ok(ColorSpace::DeviceRGB);
+        }
         "DeviceCMYK" | "CMYK" => return Ok(ColorSpace::DeviceCMYK),
         "Pattern" => return Ok(ColorSpace::Pattern { base: None }),
         _ => {}

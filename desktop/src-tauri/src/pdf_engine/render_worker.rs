@@ -1356,12 +1356,10 @@ fn classify_unsupported_warnings(
             "Trạng thái nội dung ẩn của trang chưa được xác minh đầy đủ.",
         ));
     }
-    if warnings.geometry_approximate() {
-        return Some((
-            RenderUnsupportedReason::GeometryApproximation,
-            "Trang dùng font không nhúng; font dự phòng chỉ bảo toàn khả năng đọc, không bảo toàn hình học.",
-        ));
-    }
+    // COLOR (audit 2026-08-19 §BXC.2): font dự phòng chỉ hạ độ chính xác HÌNH
+    // HỌC; PPE vẫn đã dựng đủ pixel qua đúng pipeline mực/ICC. Loại cả PNG ở đây
+    // làm Viewer hoặc trắng trang, hoặc phải đổi sang PDFium và đổi màu toàn bộ.
+    // Vì vậy geometry-only không phải capability failure của preview màu.
     if warnings.dropped_objects > 0 {
         return Some((
             RenderUnsupportedReason::UnsupportedFeature,
@@ -1574,9 +1572,10 @@ fn render_accurate_png(
             detail: detail.to_string(),
         });
     }
-    if rendered.warnings.degrades_accuracy() {
+    if rendered.warnings.ink_unsound() {
         return Err(AccurateWorkerFailure::Error(
-            "PPE phát hiện trạng thái giảm độ tin cậy chưa được phân loại.".to_string(),
+            "PPE phát hiện trạng thái màu/nội dung giảm độ tin cậy chưa được phân loại."
+                .to_string(),
         ));
     }
     let encode_started = Instant::now();
@@ -3873,7 +3872,7 @@ mod tests {
         geometry.note_substituted_font("FontKhongNhung");
         assert_eq!(
             classify_unsupported_warnings(&geometry).map(|value| value.0),
-            Some(RenderUnsupportedReason::GeometryApproximation)
+            None
         );
     }
 
@@ -4564,7 +4563,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_tra_unsupported_co_cau_truc_cho_font_khong_nhung() {
+    fn worker_van_tra_png_ppe_khi_font_khong_nhung() {
         let source = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../backend/tests/preflight_fixtures/pdfs/04_font_not_embedded.pdf");
         let path = std::env::temp_dir().join(format!(
@@ -4595,20 +4594,15 @@ mod tests {
         request.soundness = RenderSoundness::ColorVerified;
 
         let (response, payload) = super::render_response(request, None);
-        assert_eq!(
-            response.status,
-            RenderResponseStatus::Unsupported,
-            "{response:?}"
-        );
-        assert_eq!(
-            response.unsupported_reason,
-            Some(RenderUnsupportedReason::GeometryApproximation)
-        );
+        assert_eq!(response.status, RenderResponseStatus::Ready, "{response:?}");
+        assert_eq!(response.unsupported_reason, None);
         assert_eq!(
             response.fallback_font_sha256.as_deref(),
             Some(PPE_FALLBACK_FONT_SHA256)
         );
-        assert!(payload.is_empty());
+        assert!(payload.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
+        assert!(response.bitmap_width.is_some_and(|width| width > 0));
+        assert!(response.bitmap_height.is_some_and(|height| height > 0));
 
         let canonical = std::fs::canonicalize(path).unwrap();
         close_accurate_sessions_for_path(&canonical.to_string_lossy());

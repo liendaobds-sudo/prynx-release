@@ -1021,6 +1021,10 @@ def separations(
         "ppe_substituted_fonts": list(raw.get("substituted_fonts") or []),
         "ppe_colorspaces_used": list(raw.get("colorspaces_used") or []),
         "ppe_skipped_ops": list(raw.get("skipped_ops") or []),
+        # COLOR (audit 2026-08-20 §COLOR.26): đừng làm mất bằng chứng rằng
+        # native thực sự đã chạy CMM. Flatten dùng cờ này để không gắn
+        # OutputIntent FOGRA39 lên các plate chỉ là công thức fallback.
+        "color_managed": bool(raw.get("color_managed")),
     }
     return result
 

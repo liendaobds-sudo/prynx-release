@@ -6,6 +6,7 @@ Chức năng tương đương Acrobat Pro → Print Production → Save as PDF/X
 import os
 import asyncio
 import logging
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -22,6 +23,29 @@ logger = logging.getLogger(__name__)
 
 # Namespace định danh PDF/X trong XMP (ISO 15930-7 §6.2).
 _PDFX_ID_NS = "http://www.npes.org/pdfx/ns/id/"
+_PDFX_STANDARDS = {"x1a", "x4"}
+
+
+def _validate_pdfx_standard(standard: str) -> str:
+    """Chặn chuẩn lạ trước khi giá trị được ghép vào tên file output."""
+    if standard not in _PDFX_STANDARDS:
+        raise ValueError("Chuẩn PDF/X chỉ nhận 'x1a' hoặc 'x4'.")
+    return standard
+
+
+def _public_pdfx_blockers(items) -> list[str]:
+    """Giữ tối đa ba blocker nghiệp vụ, che mọi đường dẫn local."""
+    if not isinstance(items, list):
+        return []
+    return [
+        re.sub(
+            r"(?i)(?:[a-z]:[\\/]|\\\\)[^;\r\n]*",
+            "[đường dẫn đã ẩn]",
+            item.strip().replace("\r", " ").replace("\n", " "),
+        )[:240]
+        for item in items
+        if isinstance(item, str) and item.strip()
+    ][:3]
 
 
 def _remove_file_quietly(path: str) -> None:
@@ -145,6 +169,7 @@ class PdfxExportEngine:
         # là để họ gửi nhà in một file bị xén nhầm.
         self.last_warnings: list[str] = []
         self.last_engine: str | None = None
+        self.last_blockers: list[str] = []
 
     def check_compliance(self, file_path: str, standard: str = "x4") -> dict:
         """
@@ -152,6 +177,7 @@ class PdfxExportEngine:
         standard: 'x1a' | 'x4'
         Returns: dict with checks and overall pass/fail.
         """
+        standard = _validate_pdfx_standard(standard)
         doc = pikepdf.Pdf.open(file_path)
         checks = []
 
@@ -204,36 +230,46 @@ class PdfxExportEngine:
             "detail": "TrimBox có trên tất cả trang" if has_trimbox else "Một số trang thiếu TrimBox"
         })
 
-        # 3. Check color spaces (only for X-1a)
+        # 3. Check color spaces (only for X-1a). Dùng cùng parser hậu điều
+        # kiện của writer thay vì tìm tên trong page dictionary: toán tử `rg`,
+        # RGB trong Form/AP/inline/shading và trang sau trang 10 đều lên bản in.
         has_rgb = False
         if standard == "x1a":
-            for page_idx in range(min(len(doc.pages), 10)):  # Sample first 10 pages
-                page = doc.pages[page_idx]
-                page_str = str(page.obj)
-                if "/DeviceRGB" in page_str or "/CalRGB" in page_str or "/ICCBased" in page_str:
-                    has_rgb = True
-                    break
+            from app.core import pdf_actions_native
+
+            color_scan = pdf_actions_native._scan_cmyk_postcondition(doc)
+            has_rgb = not bool(color_scan.get("passed"))
+            color_codes = [
+                item.get("code", "?")
+                for item in color_scan.get("residuals", [])[:3]
+                if isinstance(item, dict)
+            ]
             checks.append({
                 "id": "CMYK_ONLY",
                 "label": "Chỉ sử dụng CMYK",
                 "passed": not has_rgb,
-                "detail": "Phát hiện RGB, cần convert sang CMYK" if has_rgb else "Chỉ có CMYK"
+                "detail": (
+                    "Phát hiện nội dung process chưa phải CMYK/Gray"
+                    + (f" ({', '.join(color_codes)})" if color_codes else "")
+                    if has_rgb else "Chỉ có CMYK/Gray/Spot"
+                )
             })
 
         # 4. Check transparency (only for X-1a, must be flattened)
         has_transparency = False
         if standard == "x1a":
-            for page_idx in range(len(doc.pages)):
-                page = doc.pages[page_idx]
-                page_str = str(page.obj)
-                if "/Group" in page_str and "/Transparency" in page_str:
-                    has_transparency = True
-                    break
+            from app.core import pdf_actions_native
+
+            transparency_signs = pdf_actions_native.detect_transparency(file_path)
+            has_transparency = bool(transparency_signs)
             checks.append({
                 "id": "NO_TRANSPARENCY",
                 "label": "Không có Transparency",
                 "passed": not has_transparency,
-                "detail": "Phát hiện Transparency, cần flatten" if has_transparency else "Không có Transparency"
+                "detail": (
+                    "Phát hiện Transparency: " + ", ".join(transparency_signs[:3])
+                    if has_transparency else "Không có Transparency"
+                )
             })
 
         # 5. Check OutputIntent
@@ -350,6 +386,8 @@ class PdfxExportEngine:
         PDF/X-1a flatten trong suốt qua PPE rồi hạ về PDF 1.3. Nếu engine nội bộ
         không chứng minh được compliance, tác vụ dừng và không giao file dở.
         """
+        standard = _validate_pdfx_standard(standard)
+        standard_label = "PDF/X-1a" if standard == "x1a" else "PDF/X-4"
         output_name = f"{Path(file_path).stem}_PDF-X_{standard}_{uuid.uuid4().hex[:6]}.pdf"
         output_path = str(self.output_dir / output_name)
         staged_path = str(
@@ -359,6 +397,7 @@ class PdfxExportEngine:
         cancel_event = threading.Event()
         self.last_warnings = []
         self.last_engine = None
+        self.last_blockers = []
 
         try:
             async def run_worker_and_publish() -> bool:
@@ -399,7 +438,7 @@ class PdfxExportEngine:
                 raise
             if native_ok:
                 self.last_engine = "pikepdf"
-                logger.info(f"Exported PDF/X-{standard} (pikepdf) → {output_path}")
+                logger.info("Exported %s (pikepdf) → %s", standard_label, output_path)
                 return output_path
         except Exception as exc:  # noqa: BLE001
             logger.warning("PDF/X object-level lỗi: %s", exc)
@@ -410,9 +449,11 @@ class PdfxExportEngine:
         # compliance thì dừng có chủ đích và xoá mọi output trung gian.
         _remove_file_quietly(output_path)
         self.last_engine = "none"
-        raise InternalEngineUnsupported(
-            unsupported_message(f"Xuất PDF/X-{standard.upper()}")
-        )
+        message = unsupported_message(f"Xuất {standard_label}")
+        blockers = _public_pdfx_blockers(self.last_blockers)
+        if blockers:
+            message += " Giới hạn phát hiện: " + "; ".join(blockers) + "."
+        raise InternalEngineUnsupported(message)
 
     def _export_x1a_native(
         self,
@@ -451,6 +492,9 @@ class PdfxExportEngine:
                     cancel_check=cancel_check,
                 )
                 if not flat.get("supported"):
+                    self.last_blockers = _public_pdfx_blockers(
+                        flat.get("blockers") or flat.get("warnings")
+                    )
                     return False
                 self.last_warnings.extend(flat.get("warnings", []))
                 source = tmp_flat
@@ -554,6 +598,7 @@ class PdfxExportEngine:
             cancel_check=cancel_check,
         )
         if not conv.get("supported"):
+            self.last_blockers = _public_pdfx_blockers(conv.get("blockers"))
             logger.info(
                 "PDF/X-4 native: không quy đổi được màu (%s)",
                 "; ".join(conv.get("blockers", [])),

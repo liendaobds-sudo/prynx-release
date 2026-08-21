@@ -19,6 +19,13 @@ from app.core.icc_profiles import (
 )
 
 
+# Fixture Adobe RGB cũ của bundle (giữ dưới dạng dữ liệu kiểm thử để guardrail
+# tiếp tục chứng minh resolver không nhận profile bị đặt sai tên).
+_MISLABELED_ADOBE_RGB_ICC = base64.b64decode(
+    "AAACMEFEQkUCEAAAbW50clJHQiBYWVogB9AACAALABMAMwA7YWNzcEFQUEwAAAAAbm9uZQAAAAAAAAAAAAAAAAAAAAAAAPbWAAEAAAAA0y1BREJFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKY3BydAAAAPwAAAAyZGVzYwAAATAAAABrd3RwdAAAAZwAAAAUYmtwdAAAAbAAAAAUclRSQwAAAcQAAAAOZ1RSQwAAAdQAAAAOYlRSQwAAAeQAAAAOclhZWgAAAfQAAAAUZ1hZWgAAAggAAAAUYlhZWgAAAhwAAAAUdGV4dAAAAABDb3B5cmlnaHQgMjAwMCBBZG9iZSBTeXN0ZW1zIEluY29ycG9yYXRlZAAAAGRlc2MAAAAAAAAAEUFkb2JlIFJHQiAoMTk5OCkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFhZWiAAAAAAAADzUQABAAAAARbMWFlaIAAAAAAAAAAAAAAAAAAAAABjdXJ2AAAAAAAAAAECMwAAY3VydgAAAAAAAAABAjMAAGN1cnYAAAAAAAAAAQIzAABYWVogAAAAAAAAnBgAAE+lAAAE/FhZWiAAAAAAAAA0jQAAoCwAAA+VWFlaIAAAAAAAACYxAAAQLwAAvpw="
+)
+
+
 class _ConnectedRequest:
     async def is_disconnected(self) -> bool:
         return False
@@ -49,10 +56,9 @@ def test_mislabeled_bundle_is_quarantined_and_lcms_fallback_is_srgb(monkeypatch,
     from PIL import ImageCms
     import app.core.icc_profiles as registry
 
-    wrong_bundle = Path(__file__).resolve().parents[1] / "app" / "assets" / "icc" / "sRGB.icc"
     isolated_bundle = tmp_path / "profiles"
     isolated_bundle.mkdir()
-    (isolated_bundle / "sRGB.icc").write_bytes(wrong_bundle.read_bytes())
+    (isolated_bundle / "sRGB.icc").write_bytes(_MISLABELED_ADOBE_RGB_ICC)
 
     monkeypatch.setattr(registry.settings, "ICC_PROFILE_DIR", str(isolated_bundle))
     monkeypatch.setattr(registry, "OS_ICC_SEARCH_PATHS", [])

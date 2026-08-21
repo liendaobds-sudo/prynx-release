@@ -7,6 +7,13 @@ const mocks = vi.hoisted(() => ({
   getWorkingFile: vi.fn(),
   prepareFileForUpload: vi.fn(),
   uploadPDF: vi.fn(),
+  workspaceState: {
+    fileSizeStr: '1 MB',
+    outputPreviewProfileId: 'fogra39',
+    outputPreviewRenderingIntent: 'relative',
+    setOutputPreviewProfileId: vi.fn(),
+    setOutputPreviewRenderingIntent: vi.fn(),
+  },
 }));
 
 vi.mock('react-i18next', () => ({
@@ -22,8 +29,8 @@ vi.mock('../../lib/api', () => ({
   uploadPDF: mocks.uploadPDF,
 }));
 vi.mock('../../stores/useWorkspaceStore', () => ({
-  useWorkspaceStore: (selector: (state: { fileSizeStr: string }) => unknown) => (
-    selector({ fileSizeStr: '1 MB' })
+  useWorkspaceStore: (selector: (state: typeof mocks.workspaceState) => unknown) => (
+    selector(mocks.workspaceState)
   ),
 }));
 
@@ -49,10 +56,21 @@ beforeEach(() => {
   mocks.prepareFileForUpload.mockImplementation(async (file: File) => file);
   mocks.uploadPDF.mockResolvedValue({ id: 'fid-1' });
   mocks.authenticatedFetch.mockImplementation(async (url: string) => {
+    if (url.includes('/icc-profiles')) {
+      return {
+        ok: true,
+        json: async () => ({
+          profiles: [
+            { id: 'fogra39', name: 'FOGRA39', description: '', available: true },
+          ],
+        }),
+      };
+    }
     if (url.includes('/download/')) {
-      return { blob: async () => new Blob(['pdf'], { type: 'application/pdf' }) };
+      return { ok: true, blob: async () => new Blob(['pdf'], { type: 'application/pdf' }) };
     }
     return {
+      ok: true,
       json: async () => ({ success: true, output_filename: 'Converted.pdf', log: [] }),
     };
   });

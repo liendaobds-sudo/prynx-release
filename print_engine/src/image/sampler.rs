@@ -59,6 +59,11 @@ pub struct SampledImage {
     pub stencil: Option<Vec<bool>>,
     /// Alpha 0..1 từ `/SMask`, cùng kích thước ảnh gốc (đã lấy mẫu lại nếu lệch).
     pub alpha: Option<Vec<f32>>,
+    /// Màu nền `/Matte` đã dùng để preblend mẫu ảnh trước khi ghi PDF.
+    ///
+    /// Khi có, mẫu màu phải được khử preblend trước ICC rồi mới composite bằng
+    /// alpha; nếu không viền bán trong suốt sẽ bị pha màu nền lần thứ hai.
+    matte: Option<Vec<f32>>,
 }
 
 impl SampledImage {
@@ -68,7 +73,19 @@ impl SampledImage {
         for c in 0..self.n_comps {
             out.push(self.component_at(x, y, c));
         }
+        self.unblend_matte(x, y, &mut out);
         out
+    }
+
+    fn unblend_matte(&self, x: u32, y: u32, components: &mut [f32]) {
+        let Some(matte) = &self.matte else { return };
+        let alpha = self.alpha_at(x, y).clamp(0.0, 1.0);
+        if alpha <= 1.0e-6 {
+            return; // pixel vô hình; màu gốc không xác định và không được composite
+        }
+        for (component, matte_component) in components.iter_mut().zip(matte) {
+            *component = ((*component - (1.0 - alpha) * *matte_component) / alpha).clamp(0.0, 1.0);
+        }
     }
 
     /// Một thành phần không cấp phát — dùng cho đường dựng image SMask nóng.
@@ -90,9 +107,11 @@ impl SampledImage {
     #[inline]
     fn device_cmyk_at(&self, x: u32, y: u32) -> [f32; 4] {
         let raw = self.device_cmyk_raw_at(x, y);
-        self.decode_device_cmyk_units(std::array::from_fn(|component| {
+        let mut decoded = self.decode_device_cmyk_units(std::array::from_fn(|component| {
             raw[component] as f32 / 255.0
-        }))
+        }));
+        self.unblend_matte(x, y, &mut decoded);
+        decoded
     }
 
     /// Bốn mẫu CMYK thô tại một texel, chưa áp `/Decode`.
@@ -133,6 +152,11 @@ impl SampledImage {
             .saturating_add(self.decode.capacity() * std::mem::size_of::<f32>())
             .saturating_add(
                 self.alpha
+                    .as_ref()
+                    .map_or(0, |v| v.capacity() * std::mem::size_of::<f32>()),
+            )
+            .saturating_add(
+                self.matte
                     .as_ref()
                     .map_or(0, |v| v.capacity() * std::mem::size_of::<f32>()),
             )
@@ -188,6 +212,10 @@ impl SampledImage {
                 .unwrap_or(1.0),
             None => 1.0,
         }
+    }
+
+    pub(crate) fn has_matte(&self) -> bool {
+        self.matte.is_some()
     }
 
     /// `true` nếu stencil cho phép tô tại pixel này.
@@ -463,6 +491,18 @@ pub(crate) fn decode_image_with_cancel(
     };
 
     let alpha = decode_soft_mask(doc, dict, width, height, warn, cancel_token)?;
+    let matte = decode_soft_mask_matte(doc, dict, colorspace.as_ref(), n_comps, warn);
+
+    // `/Mask [min max ...]` dùng chính component của colorspace cha. Nếu quy đổi/
+    // đo màu mà bỏ mask này, vùng đáng lẽ trong suốt sẽ lên mực. Chưa dựng được
+    // color-key mask thì phải hạ soundness, tuyệt đối không báo trang clean.
+    if matches!(
+        pdf::dict_get(doc, dict, "Mask").map(|value| pdf::deref(doc, value)),
+        Some(Object::Array(_))
+    ) {
+        warn.unsupported_transparency = true;
+        warn.note_skipped_op("ảnh /Mask color-key chưa hỗ trợ");
+    }
 
     check_cancelled(cancel_token)?;
     Ok(SampledImage {
@@ -475,7 +515,43 @@ pub(crate) fn decode_image_with_cancel(
         bpc,
         stencil,
         alpha,
+        matte,
     })
+}
+
+/// Đọc `/Matte` từ stream SMask và chỉ nhận colorspace có component 0..1.
+fn decode_soft_mask_matte(
+    doc: &Document,
+    parent: &Dictionary,
+    colorspace: Option<&ColorSpace>,
+    n_comps: usize,
+    warn: &mut RenderWarnings,
+) -> Option<Vec<f32>> {
+    let smask = parent
+        .get(b"SMask")
+        .ok()
+        .map(|value| pdf::deref(doc, value))?;
+    let Object::Stream(mask_stream) = smask else {
+        return None;
+    };
+    let matte_obj = pdf::dict_get(doc, &mask_stream.dict, "Matte")?;
+    let values = pdf::num_array(doc, matte_obj).unwrap_or_default();
+    let normalized = matches!(
+        colorspace,
+        Some(ColorSpace::DeviceGray | ColorSpace::DeviceRGB | ColorSpace::DeviceCMYK)
+            | Some(ColorSpace::IccBased { .. })
+    );
+    if !normalized || values.len() != n_comps {
+        warn.unsupported_transparency = true;
+        warn.note_skipped_op("SMask /Matte không khớp colorspace ảnh");
+        return None;
+    }
+    Some(
+        values
+            .into_iter()
+            .map(|value| value.clamp(0.0, 1.0))
+            .collect(),
+    )
 }
 
 /// `/SMask` — ảnh xám riêng làm alpha.
@@ -965,6 +1041,7 @@ mod tests {
             bpc: 8,
             stencil: None,
             alpha: None,
+            matte: None,
         }
     }
 
@@ -999,6 +1076,7 @@ mod tests {
             bpc: 8,
             stencil: None,
             alpha: None,
+            matte: None,
         };
         // Chỉ số phải giữ nguyên 0 và 3, KHÔNG chia 255.
         assert_eq!(img.components_at(0, 0)[0], 0.0);
@@ -1020,6 +1098,7 @@ mod tests {
             bpc: 8,
             stencil: None,
             alpha: None,
+            matte: None,
         };
         assert!(img.supports_device_rgb());
         let rgb = img.device_rgb_at(1, 0).unwrap();
@@ -1044,6 +1123,7 @@ mod tests {
             bpc: 8,
             stencil: None,
             alpha: None,
+            matte: None,
         };
         let mut space = InkSpace::new();
         let mut warn = RenderWarnings::default();
@@ -1072,6 +1152,7 @@ mod tests {
             bpc: 8,
             stencil: None,
             alpha: None,
+            matte: None,
         };
         let mut space = InkSpace::new();
         let mut warn = RenderWarnings::default();
@@ -1099,6 +1180,7 @@ mod tests {
             bpc: 8,
             stencil: None,
             alpha: None,
+            matte: None,
         };
         let mut space = InkSpace::new();
         let mut warn = RenderWarnings::default();
@@ -1121,6 +1203,28 @@ mod tests {
     }
 
     #[test]
+    fn matte_samples_are_unblended_before_color_conversion() {
+        // Đỏ 100% preblend trên matte trắng ở alpha 0,5 được lưu thành
+        // [1, 0,5, 0,5]. Khử Matte phải lấy lại gần [1,0,0].
+        let img = SampledImage {
+            width: 1,
+            height: 1,
+            n_comps: 3,
+            samples: vec![255, 128, 128],
+            colorspace: Some(ColorSpace::DeviceRGB),
+            decode: vec![],
+            bpc: 8,
+            stencil: None,
+            alpha: Some(vec![128.0 / 255.0]),
+            matte: Some(vec![1.0, 1.0, 1.0]),
+        };
+        let rgb = img.components_at(0, 0);
+        assert!((rgb[0] - 1.0).abs() < 1e-6);
+        assert!(rgb[1] < 0.01, "green={}", rgb[1]);
+        assert!(rgb[2] < 0.01, "blue={}", rgb[2]);
+    }
+
+    #[test]
     fn stencil_default_decode_paints_zero_samples() {
         let img = SampledImage {
             width: 2,
@@ -1132,6 +1236,7 @@ mod tests {
             bpc: 8,
             stencil: Some(vec![true, false]),
             alpha: None,
+            matte: None,
         };
         assert!(img.stencil_at(0, 0));
         assert!(!img.stencil_at(1, 0));

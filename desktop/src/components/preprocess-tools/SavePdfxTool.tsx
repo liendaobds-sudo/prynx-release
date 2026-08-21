@@ -26,12 +26,12 @@ interface CheckItem {
 
 const STANDARDS = [
   { key: 'x1a' as const, label: 'PDF/X-1a', desc: 'Tương thích cao, CMYK only, flatten transparency. Phù hợp hầu hết nhà in.' },
-  { key: 'x4' as const, label: 'PDF/X-4', desc: 'Hiện đại, giữ transparency & ICC profile. Yêu cầu RIP mới.' },
+  { key: 'x4' as const, label: 'PDF/X-4', desc: 'Chuẩn hiện đại. PrynX đưa màu process về CMYK và chỉ xuất khi transparency được chứng minh an toàn.' },
 ];
 
 const COMPARE = [
-  { feat: 'Transparency', x1a: '❌ Flatten', x4: '✅ Giữ nguyên' },
-  { feat: 'Hệ màu', x1a: 'CMYK only', x4: 'CMYK+RGB+ICC' },
+  { feat: 'Transparency', x1a: '❌ Flatten', x4: 'Giữ khi an toàn' },
+  { feat: 'Hệ màu', x1a: 'CMYK only', x4: 'CMYK + Spot + ICC' },
   { feat: 'Tương thích', x1a: '⭐⭐⭐⭐⭐', x4: '⭐⭐⭐⭐' },
   { feat: 'PDF Version', x1a: '1.3', x4: '1.6' },
 ];
@@ -62,7 +62,7 @@ const CHECK_HELP: Record<string, CheckHelp> = {
   NO_TRANSPARENCY: {
     what: 'Kiểm tra file không còn hiệu ứng trong suốt (transparency) chưa được làm phẳng.',
     why: 'Transparency (đổ bóng, mờ chồng lớp) có thể hiển thị khác nhau trên từng máy RIP cũ, gây sai lệch so với bản duyệt. PDF/X-1a yêu cầu làm phẳng (flatten) để kết quả in ổn định.',
-    fix: 'Khi xuất PDF/X-1a, hệ thống tự làm phẳng mọi vùng transparency thành ảnh/vector đặc.',
+    fix: 'Khi xuất PDF/X-1a, PrynX thử raster hoá trang có transparency và cảnh báo mất vector. Nếu không chứng minh được artifact sạch, tác vụ sẽ dừng an toàn.',
     autoFix: true,
   },
   OUTPUT_INTENT: {
@@ -77,7 +77,24 @@ const CHECK_HELP: Record<string, CheckHelp> = {
     fix: 'Khi xuất PDF/X, PrynX Print Engine đặt đúng phiên bản PDF theo chuẩn đã chọn.',
     autoFix: true,
   },
+  PDFX_IDENTIFICATION: {
+    what: 'Kiểm tra file có đúng định danh và phiên bản PDF của chuẩn PDF/X đã chọn.',
+    why: 'Một file chỉ mang tên PDF/X nhưng thiếu định danh XMP/Info hoặc sai phiên bản có thể bị RIP và validator từ chối.',
+    fix: 'Bước xuất PDF/X của PrynX tự ghi định danh và phiên bản tương ứng sau khi artifact vượt hậu kiểm.',
+    autoFix: true,
+  },
 };
+
+async function responseError(response: Response, fallback: string): Promise<string> {
+  try {
+    const payload = await response.json();
+    const detail = payload?.detail;
+    if (typeof detail === 'string' && detail.trim()) return detail;
+  } catch {
+    // Response lỗi có thể không phải JSON; dùng mã HTTP bên dưới.
+  }
+  return `${fallback} (HTTP ${response.status})`;
+}
 
 export default function SavePdfxTool({ tabId, pdfFile, onFileFixed }: Props) {
   const { t } = useTranslation();
@@ -88,6 +105,7 @@ export default function SavePdfxTool({ tabId, pdfFile, onFileFixed }: Props) {
   const [checking, setChecking] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [status, setStatus] = useState('');
+  const [warnings, setWarnings] = useState<string[]>([]);
   const [isStandardOpen, setIsStandardOpen] = useState(true);
   const [helpFor, setHelpFor] = useState<CheckItem | null>(null);
   const expectedOutputNameRef = useRef<string | null>(null);
@@ -99,6 +117,7 @@ export default function SavePdfxTool({ tabId, pdfFile, onFileFixed }: Props) {
     setFileId('');
     setChecks([]);
     setCompliance(null);
+    setWarnings([]);
     if (!preserveSuccess) setStatus('');
   }, [pdfFile]);
 
@@ -125,6 +144,13 @@ export default function SavePdfxTool({ tabId, pdfFile, onFileFixed }: Props) {
       const fid = await ensureUploaded();
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/check-pdfx/${fid}/${standard}`);
       const data = await res.json();
+      if (!res.ok) {
+        throw new Error(
+          typeof data?.detail === 'string'
+            ? data.detail
+            : `${t('preprocess.savePdfx:loi_xuat_pdf_x')} (HTTP ${res.status})`,
+        );
+      }
       setCompliance(data);
       setChecks(data.checks || []);
     } catch (e: any) { setStatus(`❌ ${e.message}`); }
@@ -132,7 +158,7 @@ export default function SavePdfxTool({ tabId, pdfFile, onFileFixed }: Props) {
   };
 
   const exportPdfx = async () => {
-    setExporting(true); setStatus('');
+    setExporting(true); setStatus(''); setWarnings([]);
     const shouldRecord = !!tabId && recipeRecorder.isRecordingFor(tabId);
     const recipeTicket = shouldRecord
       ? recipeRecorder.noteOperation('pdfx', { standard }, undefined, tabId)
@@ -149,17 +175,37 @@ export default function SavePdfxTool({ tabId, pdfFile, onFileFixed }: Props) {
         body: JSON.stringify({ file_id: fid, standard }),
       });
       const data = await res.json();
-      if (data.success) {
-        setStatus(`✅ ${t('preprocess.savePdfx:da_xuat_x_thanh_cong', { x: standard === 'x1a' ? 'PDF/X-1a' : 'PDF/X-4' })}`);
-        if (data.output_filename && onFileFixed) {
-          const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
-          expectedOutputNameRef.current = data.output_filename;
-          await onFileFixed(await dl.blob(), data.output_filename, undefined, recipeTicket);
-        } else {
-          recipeRecorder.discardPending(recipeTicket);
+      if (!res.ok || !data.success) {
+        recipeRecorder.discardPending(recipeTicket);
+        setStatus(`❌ ${data.detail || t('preprocess.savePdfx:loi_xuat_pdf_x')}`);
+        return;
+      }
+      if (!data.output_filename) {
+        throw new Error(t('preprocess.savePdfx:loi_xuat_pdf_x'));
+      }
+      if (onFileFixed) {
+        const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
+        if (!dl.ok) {
+          throw new Error(await responseError(dl, t('preprocess.savePdfx:loi_xuat_pdf_x')));
         }
-      } else { recipeRecorder.discardPending(recipeTicket); setStatus(`❌ ${data.detail || t('preprocess.savePdfx:loi_xuat_pdf_x')}`); }
-    } catch (e: any) { recipeRecorder.discardPending(recipeTicket); setStatus(`❌ ${e.message}`); }
+        const artifact = await dl.blob();
+        expectedOutputNameRef.current = data.output_filename;
+        await onFileFixed(artifact, data.output_filename, undefined, recipeTicket);
+      } else {
+        recipeRecorder.discardPending(recipeTicket);
+      }
+      setWarnings(
+        Array.isArray(data.warnings)
+          ? data.warnings.filter((item: unknown): item is string => typeof item === 'string' && item.trim().length > 0)
+          : [],
+      );
+      setStatus(`✅ ${t('preprocess.savePdfx:da_xuat_x_thanh_cong', { x: standard === 'x1a' ? 'PDF/X-1a' : 'PDF/X-4' })}`);
+    } catch (e: any) {
+      expectedOutputNameRef.current = null;
+      setWarnings([]);
+      recipeRecorder.discardPending(recipeTicket);
+      setStatus(`❌ ${e.message}`);
+    }
     finally { setExporting(false); }
   };
 
@@ -270,7 +316,7 @@ export default function SavePdfxTool({ tabId, pdfFile, onFileFixed }: Props) {
           {compliance && (() => {
             // Mục engine nội bộ không thể sửa chắc chắn phải được xử lý ở file
             // nguồn trước; không hứa tự sửa nếu có nguy cơ đổi bản in.
-            const manualFixes = checks.filter(c => !c.passed && CHECK_HELP[c.id]?.autoFix === false);
+            const manualFixes = checks.filter(c => !c.passed && CHECK_HELP[c.id]?.autoFix !== true);
             const allAutoFixable = manualFixes.length === 0;
             return (
               <div className={`text-center py-2 text-[12px] font-bold ${compliance.passed ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
@@ -298,6 +344,15 @@ export default function SavePdfxTool({ tabId, pdfFile, onFileFixed }: Props) {
         <div className={`p-3 rounded-lg border ${status.startsWith('✅') ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-red-500/10 border-red-500/20'}`}>
           <h4 className={`text-[11px] font-bold ${status.startsWith('✅') ? 'text-emerald-600' : 'text-red-600'}`}>{status}</h4>
           {status.startsWith('✅') && <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium">{t('preprocess.savePdfx:file_da_duoc_cap_nhat_tren_viewer')}</p>}
+        </div>
+      )}
+
+      {warnings.length > 0 && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-800 dark:border-amber-700/60 dark:bg-amber-950/30 dark:text-amber-200">
+          <h4 className="text-[11px] font-bold">⚠ Cảnh báo artifact</h4>
+          {warnings.map((warning, index) => (
+            <p key={`${index}-${warning}`} className="mt-1 text-[10px] leading-snug">{warning}</p>
+          ))}
         </div>
       )}
 

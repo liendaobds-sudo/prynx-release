@@ -24,7 +24,7 @@
  * hình, runner DÒ LẠI hình trên file mới mỗi lần phát (/imposition/detect-shape,
  * /pdf-tools/sticker-dieline) → đúng trên sản phẩm tem mới.
  */
-import type { RecipeRunner, RecipeRunnerRegistry } from './PlaybackRunner';
+import type { RecipeRunner, RecipeRunnerRegistry, RecipeRunnerOutcome } from './PlaybackRunner';
 import { isLinearRecipeMergeMode, isLinearRecipeSplitMode, type RecipeOpId } from './recipeTypes';
 import type { ProcessContext, ProcessOutcome } from '../processHandlers';
 import {
@@ -102,6 +102,43 @@ function failedStep(setError: ProcessContext['setError'], message: string): Proc
     return { status: 'error', error: message };
 }
 
+/**
+ * PREPRESS (audit 2026-08-20 §COLOR.25): gom cảnh báo từ mọi hình dạng response
+ * preflight. Convert Colors hiện đặt cảnh báo trong `log[].message`, còn PDF/X
+ * trả `warnings[]`; cả hai phải đi cùng working artifact khi phát lại Recipe.
+ */
+function collectPreflightMetadata(data: any): Pick<RecipeRunnerOutcome, 'warnings' | 'engine'> {
+    const warnings: string[] = [];
+    const add = (value: unknown) => {
+        if (typeof value !== 'string' || !value.trim()) return;
+        const clean = value
+            .replace(/(?:[a-z]:[\\/]|\\\\)[^;\r\n]*/gi, '[đường dẫn đã ẩn]')
+            .replace(/[\r\n]+/g, ' ')
+            .trim()
+            .slice(0, 240);
+        if (clean && !warnings.includes(clean)) warnings.push(clean);
+    };
+
+    if (Array.isArray(data?.warnings)) data.warnings.forEach(add);
+    if (Array.isArray(data?.log)) {
+        data.log.forEach((entry: any) => {
+            const message = typeof entry?.message === 'string' ? entry.message : '';
+            const status = typeof entry?.status === 'string' ? entry.status.toLowerCase() : '';
+            const marker = message.match(/(?:cảnh báo|warning)\s*:\s*(.*)$/i);
+            if (marker?.[1]) add(marker[1]);
+            else if (status === 'warning' || status === 'warn') add(message);
+        });
+    }
+
+    const engine = typeof data?.engine === 'string' && data.engine.trim()
+        ? data.engine.trim()
+        : undefined;
+    return {
+        ...(warnings.length ? { warnings } : {}),
+        ...(engine ? { engine } : {}),
+    };
+}
+
 // ─────────────── Prepress JSON (upload → POST → download → commit) ───────────────
 
 /** Endpoint preflight theo opId (kiểu "POST {file_id, ...params} → output_filename"). */
@@ -147,7 +184,10 @@ function makePreflightRunner(endpoint: string): RecipeRunner {
                 const blob = await dl.blob();
                 await commitWorkingFile(blob, data.output_filename);
             }
-            return PROCESS_COMPLETED;
+            const metadata = collectPreflightMetadata(data);
+            return metadata.warnings?.length || metadata.engine
+                ? { status: 'completed', ...metadata }
+                : PROCESS_COMPLETED;
         } catch (e: any) {
             return failedStep(
                 setError,
@@ -309,6 +349,8 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
                 cutMode: productType === 'rectangle' ? 'none' : (p.cutMode || 'original'),
                 offsetMm: p.offsetMm,
                 cornerStyle: p.cornerStyle || 'preserve',
+                // Recipe cũ thiếu field được builder đưa về mốc tương thích 50.
+                curveTension: p.curveTension,
                 fillHoles: !!p.fillHoles,
                 bleedMm: p.bleedMm,
                 removeWhiteBg: !!p.removeWhiteBg,

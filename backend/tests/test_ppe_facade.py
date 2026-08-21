@@ -266,6 +266,9 @@ def test_clean_page_is_labelled_rip(solid_cmyk):
     assert r["accuracy"] == ACCURACY_RIP
     assert r["engine"] == "ppe"
     assert r["ppe_pdf_recovered"] is False
+    # COLOR (audit 2026-08-20 §COLOR.26): caller cần bằng chứng native đã
+    # dùng CMM; thiếu field không được suy diễn từ tên profile.
+    assert r["color_managed"] is True
 
 
 def test_ink_unsound_page_is_rejected_not_returned(shading_page):

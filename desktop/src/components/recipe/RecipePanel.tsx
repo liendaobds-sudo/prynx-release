@@ -42,7 +42,7 @@ const PARAM_LABELS: Record<string, string> = {
     cornerStyle: 'Kiểu góc', fillHoles: 'Lấp lỗ thủng', bleedMm: 'Bù xén (mm)',
     removeWhiteBg: 'Bỏ nền trắng', trimWhiteEdge: 'Thiết lập cũ (đã vô hiệu)',
     bleedColorType: 'Kiểu màu bù xén', bleedColorHex: 'Màu bù xén', edgeBiteMm: 'Ăn mép (mm)',
-    cutlineDenoise: 'Khử răng cưa (%)',
+    cutlineDenoise: 'Khử răng cưa (%)', curveTension: 'Độ bo cong (%)',
     // Bình bài
     sheetWidth: 'Rộng tờ in (mm)', sheetHeight: 'Cao tờ in (mm)', cols: 'Số cột', rows: 'Số hàng',
     bleed: 'Bù xén (mm)', gapX: 'Cách ngang (mm)', gapY: 'Cách dọc (mm)',

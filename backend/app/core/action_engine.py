@@ -15,6 +15,7 @@ Actions:
 import asyncio
 import logging
 import os
+import re
 import shutil
 import threading
 import uuid
@@ -399,16 +400,36 @@ class ActionEngine:
             log=all_logs,
         )
 
-    def _refuse_unsupported(self, action_id: str, details: str = "") -> None:
+    def _refuse_unsupported(
+        self,
+        action_id: str,
+        details: str = "",
+        *,
+        public_details: list[str] | None = None,
+    ) -> None:
         """Dừng tác vụ khi engine nội bộ không bảo toàn chắc chắn được file."""
         # GS-SUNSET (audit 2026-08-08 §GS.2): từ chối ngay tại điểm quyết định,
         # không dựng lệnh hoặc làm tiền xử lý cho đường engine đã bị loại bỏ.
         self._last_engine = "none"
         if details:
             logger.info("%s: engine nội bộ từ chối (%s)", action_id, details)
-        raise InternalEngineUnsupported(
-            unsupported_message(AVAILABLE_ACTIONS[action_id]["title"])
-        )
+        message = unsupported_message(AVAILABLE_ACTIONS[action_id]["title"])
+        if public_details:
+            # COLOR (audit 2026-08-20 §COLOR.04): chỉ surface blocker nghiệp vụ
+            # do core trả về; giới hạn ba mục để log kỹ thuật/path không lọt vào
+            # phản hồi và thông báo vẫn đủ ngắn để UI hiển thị.
+            blockers = [
+                re.sub(
+                    r"(?i)(?:[a-z]:[\\/]|\\\\)[^;\r\n]*",
+                    "[đường dẫn đã ẩn]",
+                    item.strip().replace("\r", " ").replace("\n", " "),
+                )[:240]
+                for item in public_details
+                if isinstance(item, str) and item.strip()
+            ][:3]
+            if blockers:
+                message += " Giới hạn phát hiện: " + "; ".join(blockers) + "."
+        raise InternalEngineUnsupported(message)
 
     # ────────────────────────────────────────────────────────
     #  ACTION HANDLERS
@@ -443,6 +464,13 @@ class ActionEngine:
                     icc_path,
                     srgb,
                     cancel_check=cancel_event.is_set if cancel_event else None,
+                    rendering_intent=params.get("rendering_intent", "relative"),
+                    preserve_black=params.get("preserve_black", True),
+                    black_point_compensation=params.get("black_point_compensation", True),
+                    brightness_lstar=params.get("brightness_lstar", 0),
+                    contrast_percent=params.get("contrast_percent", 0),
+                    vibrance_percent=params.get("vibrance_percent", 0),
+                    adjustment_stage=params.get("adjustment_stage", "pre_icc"),
                 )
         except Exception as exc:  # noqa: BLE001
             if cancel_event is not None and cancel_event.is_set():
@@ -460,12 +488,25 @@ class ActionEngine:
             self._last_report = {
                 "color_ops_converted": native.get("ops", 0),
                 "images_converted": native.get("images", 0),
+                "images_flattened": native.get("flattened_images", 0),
+                "color_adjustments": native.get("adjustments", {}),
                 "warnings": report_warnings,
             }
             return True
 
-        blockers = "; ".join((native or {}).get("blockers", []))
-        self._refuse_unsupported("CONVERT_TO_CMYK", blockers)
+        native_blockers = (native or {}).get("blockers", [])
+        if not isinstance(native_blockers, list):
+            native_blockers = []
+        blockers = [
+            item.strip()
+            for item in native_blockers
+            if isinstance(item, str) and item.strip()
+        ][:3]
+        self._refuse_unsupported(
+            "CONVERT_TO_CMYK",
+            "; ".join(blockers),
+            public_details=blockers,
+        )
 
     async def _action_flatten_transparency(
         self, input_path: str, output_path: str, params: dict
@@ -481,14 +522,14 @@ class ActionEngine:
                 raise InterruptedError("Tác vụ flatten đã bị hủy.")
             if has_ocg:
                 warnings.append(
-                    "File có Layer (OCG). Flatten hạ PDF về 1.3 sẽ GỘP/MẤT layer — "
-                    "không thể tách lại. Cân nhắc giữ bản gốc."
+                    "File có Layer (OCG). Flatten sẽ raster hóa trang có trong suốt, "
+                    "GỘP/MẤT layer — không thể tách lại. Cân nhắc giữ bản gốc."
                 )
             if has_spot:
                 warnings.append(
-                    "File có màu Spot/Separation (Pantone/dieline). Flatten vùng chồng "
-                    "lấp trong suốt có thể chuyển spot sang process (sai màu pha). "
-                    "Kiểm tra kênh màu sau khi flatten."
+                    "File có màu Spot/Separation (Pantone/dieline). Nếu Spot nằm trên "
+                    "trang có transparency, tác vụ sẽ từ chối vì chưa có oracle tint "
+                    "an toàn; giữ bản gốc hoặc chuyển Spot riêng trước khi flatten."
                 )
         except Exception as e:
             logger.debug("detect OCG/spot trước flatten thất bại: %s", e)
@@ -516,11 +557,36 @@ class ActionEngine:
             self._last_report = {
                 "pages_rasterized": native.get("flattened", 0),
                 "warnings": warnings + list(native.get("warnings", [])),
+                # COLOR (audit 2026-08-20 §COLOR.26): giữ provenance để log/API
+                # không chỉ nói "đã flatten" mà còn cho biết OI/CMM nào đã tạo
+                # số CMYK và liệu tài liệu mixed có phần chưa quản lý profile.
+                "output_intent_profile": native.get("output_intent_profile"),
+                "rendering_intent": native.get("rendering_intent"),
+                "black_point_compensation": native.get("black_point_compensation"),
+                "profile_mixed_unmanaged": bool(native.get("profile_mixed_unmanaged")),
             }
             return True
 
-        details = "; ".join((native or {}).get("warnings", []))
-        self._refuse_unsupported("FLATTEN_TRANSPARENCY", details)
+        native_blockers = (native or {}).get("blockers", [])
+        if not isinstance(native_blockers, list):
+            native_blockers = []
+        public_details = [
+            item.strip()
+            for item in native_blockers
+            if isinstance(item, str) and item.strip()
+        ][:3]
+        native_warnings = (native or {}).get("warnings", [])
+        if not isinstance(native_warnings, list):
+            native_warnings = []
+        details = "; ".join(public_details or native_warnings)
+        # COLOR (audit 2026-08-20 §COLOR.22): lỗi hậu kiểm transparency là
+        # giới hạn nghiệp vụ, không phải stacktrace. Surface mã đã lọc để UI
+        # biết vì sao không có artifact thay vì chỉ nhận thông báo chung chung.
+        self._refuse_unsupported(
+            "FLATTEN_TRANSPARENCY",
+            details,
+            public_details=public_details,
+        )
 
     @staticmethod
     def _detect_ocg_and_spot(pdf_path: str) -> tuple[bool, bool]:
