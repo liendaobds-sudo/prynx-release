@@ -18,7 +18,7 @@ _PLAN_RANK = {"free": 1, "pro": 2, "dev": 99}
 FREE_FEATURES = {
     "pdf.shuffle", "pdf.resize", "pdf.crop", "pdf.split", "pdf.pages", "pdf.merge",
     "pdf.encrypt", "pdf.decrypt", "pdf.metadata", "pdf.optimize", "pdf.watermark",
-    "pdf.header_footer", "pdf.office_convert", "qc.compare_text",
+    "pdf.header_footer", "pdf.office_convert", "qc.compare_text", "util.document_cleanup",
 }
 PRO_FEATURES = {
     "pdf.resize_batch", "pdf.office_batch", "pdf.trim_shift",

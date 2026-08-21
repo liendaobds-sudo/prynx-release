@@ -14,6 +14,7 @@ describe('điều hướng đa tab', () => {
         { id: 'tach-nen', type: 'imposition', payload: { focusFeature: 'bgremover' } },
         { id: 'phong-to', type: 'imposition', payload: { focusFeature: 'upscale' } },
         { id: 'logo', type: 'imposition', payload: { focusFeature: 'logo_rebuild' } },
+        { id: 'tai-lieu', type: 'imposition', payload: { focusFeature: 'document_cleanup' } },
     ];
 
     it('không gửi file vào công cụ chuyên dụng đang nằm ở tab nền', () => {
@@ -49,6 +50,14 @@ describe('điều hướng đa tab', () => {
             tabId: 'logo',
             feature: 'logo_rebuild',
             eventName: 'prynx-logo-rebuild-add-files',
+        });
+    });
+
+    it('định tuyến ảnh native vào đúng công cụ Nắn thẻ – Làm trắng scan', () => {
+        expect(resolveActiveImageBatchReceiver(tabs, 'tai-lieu')).toEqual({
+            tabId: 'tai-lieu',
+            feature: 'document_cleanup',
+            eventName: 'prynx-document-cleanup-add-files',
         });
     });
 

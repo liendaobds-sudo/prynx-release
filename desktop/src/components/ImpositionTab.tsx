@@ -65,14 +65,28 @@ import { useAppSettingsStore } from '../stores/appSettingsStore';
 import { primeViewerFirstFrame } from '../lib/viewerFirstFrame';
 import { statNativeSystemFile } from '../lib/nativeFileAccess';
 
-import { WorkspaceContext, createWorkspaceStore, useWorkspaceStore } from '../stores/useWorkspaceStore';
+import {
+    WorkspaceContext,
+    createWorkspaceStore,
+    useWorkspaceStore,
+    workspaceDocumentIdentity,
+} from '../stores/useWorkspaceStore';
 import { clearTileUrlCacheForFile } from './workspace/LivePageFrame';
 import { useShallow } from 'zustand/react/shallow';
 import { globalPdfObjectCache } from '../stores/pdfObjectCache';
 import { BgRemoverPreview } from './preprocess-tools/BgRemoverTool';
+import {
+    copyDocumentCleanupResultIdentity,
+    DocumentCleanupDropReceiver,
+    DocumentCleanupPreview,
+    shouldShowDocumentCleanupOverlay,
+} from './preprocess-tools/DocumentCleanupTool';
 import { copyUpscaleResultIdentity, UpscalePreview } from './preprocess-tools/UpscaleTool';
-import StickerSheetWorkspace from './preprocess-tools/StickerSheetWorkspace';
+import StickerSheetWorkspace, {
+    StickerCutlineOverlay,
+} from './preprocess-tools/StickerSheetWorkspace';
 import { useStickerSheetStore } from './preprocess-tools/stickerSheetStore';
+import type { StickerCutlinePreview } from '../lib/stickerSheetApi';
 import {
     resolveStickerSourceSyncMarker,
     selectStickerSheetTabSummary,
@@ -98,6 +112,55 @@ import FeatureAccessOverlay from './license/FeatureAccessOverlay';
 const MAX_HISTORY = 12;
 
 const FILE_OPEN_SLOW_MS = 8_000;
+
+/** Chỉ lớp SVG subscribe zoom; tránh render lại toàn bộ ImpositionTab khi cuộn. */
+function ClassicCutlinePageOverlay({
+    preview,
+    isUpdating,
+}: {
+    preview: StickerCutlinePreview;
+    isUpdating: boolean;
+}) {
+    const displayZoom = useWorkspaceStore(state => state.viewerZoom);
+    return (
+        <div
+            data-testid="classic-cutline-page-overlay"
+            aria-busy={isUpdating}
+            className="pointer-events-none absolute inset-0 z-[35] overflow-visible"
+        >
+            <StickerCutlineOverlay
+                preview={preview}
+                selectedInstanceId={null}
+                displayZoom={displayZoom}
+            />
+        </div>
+    );
+}
+
+/** Đồng bộ đúng zoom Viewer cho đường bế của chế độ Ảnh AI nhiều tem. */
+function ViewerStickerSheetWorkspace({
+    tabId,
+    isActive,
+    editingEnabled,
+    sourcePage,
+}: {
+    tabId: string;
+    isActive: boolean;
+    editingEnabled: boolean;
+    sourcePage: number;
+}) {
+    const displayZoom = useWorkspaceStore(state => state.viewerZoom);
+    return (
+        <StickerSheetWorkspace
+            tabId={tabId}
+            isActive={isActive}
+            embedded
+            editingEnabled={editingEnabled}
+            sourcePage={sourcePage}
+            cutlineDisplayZoom={displayZoom}
+        />
+    );
+}
 
 /**
  * RECIPE (audit 2026-08-15 §REC.1): thao tác Hủy/lỗi không được để pending
@@ -203,6 +266,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         viewerNumPages,
         viewerActivePage,
         viewerToolMode,
+        classicCutlineViewerPreview,
         setDetectedShapeType, setDetectedShapeParams, 
         setDetectedShapesByPage, setDetectedDimensionsByPage, setDetectedShapeParamsByPage,
         detectedDimensionsByPage,
@@ -228,6 +292,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         viewerNumPages: state.viewerNumPages,
         viewerActivePage: state.viewerActivePage,
         viewerToolMode: state.viewerToolMode,
+        classicCutlineViewerPreview: state.classicCutlineViewerPreview,
         setDetectedShapeType: state.setDetectedShapeType, setDetectedShapeParams: state.setDetectedShapeParams, 
         setDetectedShapesByPage: state.setDetectedShapesByPage, setDetectedDimensionsByPage: state.setDetectedDimensionsByPage, setDetectedShapeParamsByPage: state.setDetectedShapeParamsByPage,
         detectedDimensionsByPage: state.detectedDimensionsByPage,
@@ -538,6 +603,18 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         sourceImageFile,
         stickerSheetSourceFile,
     );
+    const currentViewerDocumentIdentity = workspaceDocumentIdentity(
+        file,
+        viewerPageOrder,
+        viewerPageRotations,
+    );
+    const classicCutlineOverlay = (
+        isActive === true
+        && activeDashboardTool === 'sticker'
+        && stickerSheetMode === 'existing'
+        && classicCutlineViewerPreview?.viewerPage === viewerActivePage
+        && classicCutlineViewerPreview.documentIdentity === currentViewerDocumentIdentity
+    ) ? classicCutlineViewerPreview : null;
     const [initialOpenRetryToken, setInitialOpenRetryToken] = useState(0);
     const fileOpeningAttemptRef = useRef(0);
     const fileOpeningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -710,6 +787,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             applyLockedMode(lockedMode);
             const names: Record<string, string> = {
                 'bgremover': t('tabs.imposition:tach_nen_ai'),
+                'document_cleanup': tv('Nắn thẻ – Làm trắng scan'),
                 'upscale': t('tabs.imposition:phong_to_anh'),
                 'logo_rebuild': tv('Vector hóa Logo'),
                 'sticker': t('tabs.imposition:tao_vien_cat_be'),
@@ -963,6 +1041,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             // UIUX (audit 2026-08-11 §UP.X.01): giữ token owner khi Blob Upscale
             // được bọc thành File để Undo riêng đối chiếu chính xác item đã commit.
             copyUpscaleResultIdentity(newBlob, nextSourceImage);
+            copyDocumentCleanupResultIdentity(newBlob, nextSourceImage);
             const companionPdfPath = (
                 (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
                 && existingPath?.toLowerCase().endsWith('.pdf')
@@ -2167,6 +2246,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             : t('tabs.imposition:skip_non_recordable'),
                 );
             },
+            // PREPRESS (audit 2026-08-20 §COLOR.25): warning từ backend phải hiện
+            // ngay trong lượt phát lại; không coi artifact đã commit là "sạch"
+            // chỉ vì runner trả completed.
+            onStepWarning: ({ step, warnings, engine }) => {
+                const detail = warnings.length
+                    ? warnings.join('; ')
+                    : `Engine: ${engine}`;
+                toast.info(`Cảnh báo bước ${step.label}: ${detail}`);
+            },
         });
         if (res.status === 'canceled') {
             toast.info(t('shell:err_canceled'));
@@ -3249,9 +3337,25 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
                         <OutputPreviewHost onFileFixed={commitToolWorkingFile} />
 
+                        {activeDashboardTool === 'document_cleanup' && (
+                            <DocumentCleanupDropReceiver
+                                tabId={tabId || ''}
+                                isActive={isActive === true}
+                            />
+                        )}
+
                         {activeDashboardTool === 'bgremover' && (
                             <div className="absolute top-0 left-0 bottom-0 z-40" style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}>
                                 <BgRemoverPreview tabId={tabId || ''} isActive={isActive === true} />
+                            </div>
+                        )}
+
+                        {activeDashboardTool === 'document_cleanup' && shouldShowDocumentCleanupOverlay(!!file, !!sourceImageFile) && (
+                            // UIUX (feedback 2026-08-21 §DOC.VIEW.01): toolbar Acrobat cao 48 px
+                            // vẫn phải dùng được; bắt đầu workspace ngay dưới toolbar để các cụm
+                            // Ảnh gốc/Kết quả và thu phóng không bị toolbar che mất.
+                            <div className="absolute top-12 left-0 bottom-0 z-40" style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}>
+                                <DocumentCleanupPreview tabId={tabId || ''} isActive={isActive === true} />
                             </div>
                         )}
 
@@ -3323,15 +3427,25 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     pageOverlay={activeDashboardTool === 'sticker'
                                         && stickerSheetMode === 'ai-sheet'
                                         && stickerSheetSourceVisible ? (
-                                        <StickerSheetWorkspace
+                                        <ViewerStickerSheetWorkspace
                                             tabId={tabId || ''}
                                             isActive={isActive === true}
-                                            embedded
                                             editingEnabled={viewerToolMode === 'pointer'}
                                             sourcePage={stickerSheetActiveSourcePage}
                                         />
+                                    ) : classicCutlineOverlay ? (
+                                        <ClassicCutlinePageOverlay
+                                            preview={classicCutlineOverlay.preview}
+                                            isUpdating={classicCutlineOverlay.isUpdating}
+                                        />
                                     ) : undefined}
                                     pageOverlayPage={stickerSheetActiveSourcePage}
+                                    pageOverlayViewerPage={activeDashboardTool === 'sticker'
+                                        && stickerSheetMode === 'ai-sheet'
+                                        && stickerSheetSourceVisible
+                                        ? viewerActivePage
+                                        : classicCutlineOverlay?.viewerPage}
+                                    pageOverlayInstanceId={classicCutlineOverlay?.pageInstanceId}
                                     pageWorkflowStatuses={activeDashboardTool === 'sticker'
                                         && stickerSheetMode === 'ai-sheet'
                                         && stickerSheetSourceVisible
@@ -3424,7 +3538,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                         )}
                                                         {/* UIUX (audit 2026-07-27) feedback user: bỏ nhãn "🛠️ THÔNG SỐ" — rối,
                                                             nút ‹ Quay lại đã đủ định vị; giữ chip dung lượng file (thông tin thật) */}
-                                                        {(activeDashboardTool !== 'bgremover' && activeDashboardTool !== 'upscale') && fileSizeStr && (
+                                                        {(activeDashboardTool !== 'bgremover' && activeDashboardTool !== 'upscale' && (activeDashboardTool !== 'document_cleanup' || (!!file && !sourceImageFile))) && fileSizeStr && (
                                                             <span className="text-[10px] text-slate-400 dark:text-zinc-500 font-mono normal-case tracking-normal border pl-1.5 pr-1.5 py-0.5 rounded-full border-black/5 dark:border-white/5">{fileSizeStr}</span>
                                                         )}
                                                     </h2>
@@ -3462,7 +3576,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             </button>
                                                         )}
 
-                                                        {(isObjectEditMode ? (editSession.canUndo || editHistory.canUndo) : history.length > 0) && activeDashboardTool !== 'bgremover' && activeDashboardTool !== 'upscale' && (
+                                                        {(isObjectEditMode ? (editSession.canUndo || editHistory.canUndo) : history.length > 0) && activeDashboardTool !== 'bgremover' && activeDashboardTool !== 'upscale' && (activeDashboardTool !== 'document_cleanup' || (!!file && !sourceImageFile)) && (
                                                             <button
                                                                 onClick={() => { if (isObjectEditMode) { if (editSession.canUndo) void editSession.undo(); else editHistory.undo(); } else handleUndo(); }}
                                                                 className="w-7 h-7 flex items-center justify-center hover:bg-amber-100 dark:hover:bg-amber-900/40 text-amber-600 dark:text-amber-500 rounded transition-colors"

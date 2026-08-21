@@ -637,6 +637,9 @@ function AppInner() {
     void import('./components/preprocess-tools/UpscaleTool')
       .then(({ disposeUpscaleTab }) => disposeUpscaleTab(id))
       .catch(() => {});
+    void import('./components/preprocess-tools/DocumentCleanupTool')
+      .then(({ disposeDocumentCleanupTab }) => disposeDocumentCleanupTab(id))
+      .catch(() => {});
     // Đóng tab CHỦ ĐỘNG (có xác nhận nếu dirty) = thoát sạch tab này → xóa snapshot
     // recovery để lần mở sau không hỏi khôi phục nhầm.
     void deleteSnapshot(id);

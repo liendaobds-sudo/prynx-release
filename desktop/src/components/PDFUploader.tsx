@@ -3,6 +3,12 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from './ui/Toast';
 import { useTranslation } from 'react-i18next';
+import {
+  IMAGE_ACCEPT_ATTR,
+  isSupportedImageFileName,
+  mimeForImageName,
+  SUPPORTED_IMAGE_EXTENSIONS,
+} from '../lib/imageFileTypes';
 
 interface PDFUploaderProps {
   label: string;
@@ -12,6 +18,7 @@ interface PDFUploaderProps {
   uploadedName?: string;
   pageCount?: number | null;
   accentColor?: string;
+  acceptImages?: boolean;
 }
 
 export default function PDFUploader({
@@ -22,6 +29,7 @@ export default function PDFUploader({
   uploadedName,
   pageCount,
   accentColor = '#3b82f6',
+  acceptImages = false,
 }: PDFUploaderProps) {
   const { t } = useTranslation();
   const [isDragging, setIsDragging] = useState(false);
@@ -30,14 +38,19 @@ export default function PDFUploader({
   const handleFiles = useCallback(
     (files: File[]) => {
       if (!files.length) return;
-      const pdfs = files.filter(f => f.name.toLowerCase().endsWith('.pdf'));
-      if (!pdfs.length) {
-        toast.info(t('misc.pDFUploader:vui_long_chon_hoac_tha_file_pdf'));
+      const acceptedFiles = files.filter(file => {
+        const name = file.name.toLowerCase();
+        return name.endsWith('.pdf') || (acceptImages && isSupportedImageFileName(name));
+      });
+      if (!acceptedFiles.length) {
+        toast.info(t(acceptImages
+          ? 'misc.pDFUploader:vui_long_chon_hoac_tha_file_pdf_hoac_anh'
+          : 'misc.pDFUploader:vui_long_chon_hoac_tha_file_pdf'));
         return;
       }
-      onFileSelected(pdfs[0], pdfs);
+      onFileSelected(acceptedFiles[0], acceptedFiles);
     },
-    [onFileSelected, t],
+    [acceptImages, onFileSelected, t],
   );
 
   const onDrop = useCallback(
@@ -72,7 +85,10 @@ export default function PDFUploader({
       try {
         const selected = await open({
           multiple: true,
-          filters: [{ name: 'PDF', extensions: ['pdf'] }]
+          filters: [{
+            name: acceptImages ? 'PDF / Ảnh' : 'PDF',
+            extensions: acceptImages ? ['pdf', ...SUPPORTED_IMAGE_EXTENSIONS] : ['pdf'],
+          }]
         });
         
         if (selected) {
@@ -101,9 +117,12 @@ export default function PDFUploader({
 
             try {
               const name = p.split('\\').pop() || p.split('/').pop() || 'unknown';
+              const mimeType = name.toLowerCase().endsWith('.pdf')
+                ? 'application/pdf'
+                : mimeForImageName(name) || 'application/octet-stream';
               const fileObj = typeof File === 'function'
-                ? new File([], name, { type: 'application/pdf' })
-                : Object.assign(new Blob([], { type: 'application/pdf' }), { name }) as File;
+                ? new File([], name, { type: mimeType })
+                : Object.assign(new Blob([], { type: mimeType }), { name }) as File;
               Object.defineProperty(fileObj, 'path', { value: p, configurable: true });
               Object.defineProperty(fileObj, 'size', { value: fileSize, configurable: true });
               filesToProcess.push(fileObj);
@@ -132,7 +151,7 @@ export default function PDFUploader({
     } else {
       inputRef.current?.click();
     }
-  }, [handleFiles, t]);
+  }, [acceptImages, handleFiles, t]);
 
   const uploaded = !!uploadedName;
 
@@ -147,7 +166,7 @@ export default function PDFUploader({
       <input
         ref={inputRef}
         type="file"
-        accept=".pdf"
+        accept={acceptImages ? `.pdf,${IMAGE_ACCEPT_ATTR}` : '.pdf'}
         className="hidden"
         multiple
         onChange={onChange}
@@ -188,7 +207,9 @@ export default function PDFUploader({
             <p className="text-xs text-slate-400 dark:text-zinc-500">{sublabel}</p>
           </div>
           <p className="text-xs text-slate-400 dark:text-zinc-500 mt-2">
-            {t('misc.pDFUploader:keo_tha_file_pdf_vao_day_hoac_click_de')}
+            {t(acceptImages
+              ? 'misc.pDFUploader:keo_tha_file_pdf_hoac_anh_vao_day_hoac_click_de'
+              : 'misc.pDFUploader:keo_tha_file_pdf_vao_day_hoac_click_de')}
           </p>
         </div>
       )}

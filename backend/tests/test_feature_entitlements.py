@@ -87,6 +87,7 @@ def test_frontend_and_backend_feature_catalogs_have_exact_parity():
 
     assert frontend_catalog == entitlements.FEATURE_MIN_PLAN
     assert entitlements.FEATURE_MIN_PLAN["pdf.crop"] == "free"
+    assert entitlements.FEATURE_MIN_PLAN["util.document_cleanup"] == "free"
     assert "pdf.optimize_advanced" not in entitlements.FEATURE_MIN_PLAN
     assert "prepress.font_tools" not in entitlements.FEATURE_MIN_PLAN
 

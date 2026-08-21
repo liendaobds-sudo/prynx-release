@@ -28,6 +28,7 @@ import OptimizeTool from '../../preprocess-tools/OptimizeTool';
 import StickerCutlineTool from '../../preprocess-tools/StickerCutlineTool';
 import StickerToolErrorBoundary from '../../preprocess-tools/StickerToolErrorBoundary';
 import BgRemoverTool from '../../preprocess-tools/BgRemoverTool';
+import DocumentCleanupTool from '../../preprocess-tools/DocumentCleanupTool';
 import WatermarkTool from '../../preprocess-tools/WatermarkTool';
 import UpscaleTool from '../../preprocess-tools/UpscaleTool';
 import EncryptTool from '../../preprocess-tools/EncryptTool';
@@ -60,6 +61,7 @@ const TOOL_HEADERS: Record<string, { icon: React.ReactNode; title: string; desc:
     optimize: { icon: '📦', title: 'Nén / Tối ưu PDF', desc: 'Giảm dung lượng file, nén ảnh, gỡ metadata thừa.' },
     sticker: { icon: '🔪', title: 'Bù xén - Tạo đường cắt', desc: 'Quét hình ảnh, tự động offset viền và tràn lề cho tem nhãn.' },
     bgremover: { icon: '✨', title: 'Tách nền AI', desc: 'Sử dụng AI siêu nét để bóc tách nền tóc, lưới, chi tiết mảnh.' },
+    document_cleanup: { icon: '🪪', title: 'Nắn thẻ – Làm trắng scan', desc: 'Nắn ảnh giấy tờ chụp xiên và làm sạch nền xám của bản scan.' },
     datamerge: { icon: '🔤', title: 'Trộn dữ liệu VDP', desc: 'Vui lòng sử dụng Không gian thiết kế ở màn hình bên phải để kéo thả vùng in và nạp dữ liệu.' },
     numbering: { icon: '🔢', title: 'Nhảy số tự động', desc: 'Vui lòng sử dụng Không gian thiết kế ở màn hình bên phải để cấu hình số nhảy.' },
     stick_text_number: { icon: '🔠', title: 'Header & Footer', desc: 'Vui lòng sử dụng Không gian thiết kế ở màn hình bên phải để đóng dấu cố định trang.' },
@@ -81,6 +83,7 @@ interface PreprocessingRouterProps {
     activeTool: string;
     pdfFile: File | null;
     sourceImageFile?: File | null;
+    getWorkingFile?: () => Promise<File>;
     viewerActivePage?: number;
     viewerPageOrder?: number[];
     isActive?: boolean;
@@ -109,7 +112,7 @@ interface PreprocessingRouterProps {
 }
 
 export default function PreprocessingRouter({
-    tabId, activeTool, pdfFile, sourceImageFile, viewerActivePage, viewerPageOrder, isProcessing, isActive, ensureCropFileId, onCropApplied, onCropClose,
+    tabId, activeTool, pdfFile, sourceImageFile, getWorkingFile, viewerActivePage, viewerPageOrder, isProcessing, isActive, ensureCropFileId, onCropApplied, onCropClose,
     onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge,
     onIssueSelect, onOpenOutputPreview, onOpenTool, onFileFixed, officeSourceFile, officeSourceFiles,
 }: PreprocessingRouterProps) {
@@ -275,6 +278,7 @@ export default function PreprocessingRouter({
                         activeSourcePage={viewerPageOrder?.[Math.max(0, (viewerActivePage || 1) - 1)]
                             ?? viewerActivePage
                             ?? 1}
+                        activeWorkingPage={viewerActivePage ?? 1}
                         pageOrder={viewerPageOrder}
                         isActive={isActive === true}
                         onOpenTool={onOpenTool}
@@ -285,6 +289,16 @@ export default function PreprocessingRouter({
 
             {activeTool === 'bgremover' && (
                 <BgRemoverTool tabId={tabId} pdfFile={pdfFile} />
+            )}
+
+            {activeTool === 'document_cleanup' && (
+                <DocumentCleanupTool
+                    tabId={tabId}
+                    pdfFile={pdfFile}
+                    sourceImageFile={sourceImageFile}
+                    getWorkingFile={getWorkingFile}
+                    onFileFixed={(blob, name, path) => onFileFixed?.(blob, name, path)}
+                />
             )}
 
             {activeTool === 'watermark' && (

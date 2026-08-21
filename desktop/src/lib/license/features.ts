@@ -16,6 +16,7 @@ export const FEATURE_CATALOG = {
   'pdf.header_footer': { minPlan: 'free', label: 'Header & Footer' },
   'pdf.office_convert': { minPlan: 'free', label: 'Office sang PDF một file' },
   'qc.compare_text': { minPlan: 'free', label: 'So sánh văn bản' },
+  'util.document_cleanup': { minPlan: 'free', label: 'Nắn thẻ – Làm trắng scan' },
   'pdf.resize_batch': { minPlan: 'pro', label: 'Resize hàng loạt' },
   'pdf.office_batch': { minPlan: 'pro', label: 'Office sang PDF hàng loạt' },
   'pdf.trim_shift': { minPlan: 'pro', label: 'Trim & Shift' },

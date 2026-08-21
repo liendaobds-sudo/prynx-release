@@ -370,7 +370,7 @@ export const DEFAULT_BOOK_REPORT_CONFIG: BookReportDisplayConfig = {
 
 export type TaskMode = 'booklet' | 'nup' | 'step_repeat' | 'offset' | 'sticker_imposer' | 'cnc_imposer';
 
-export type ActiveToolType = 'none' | 'booklet' | 'nup' | 'shuffle' | 'resize' | 'split' | 'merge' | 'preflight' | 'font_tools' | 'hairlines' | 'inkmanager' | 'convertcolors' | 'trapping' | 'pdfx' | 'datamerge' | 'numbering' | 'cover_numbering' | 'stick_text_number' | 'ocr' | 'optimize' | 'sticker' | 'sticker_imposer' | 'cnc_imposer' | 'bgremover' | 'watermark' | 'upscale' | 'logo_rebuild' | 'pages' | 'trim_shift' | 'encrypt' | 'metadata' | 'office_convert' | 'crop';
+export type ActiveToolType = 'none' | 'booklet' | 'nup' | 'shuffle' | 'resize' | 'split' | 'merge' | 'preflight' | 'font_tools' | 'hairlines' | 'inkmanager' | 'convertcolors' | 'trapping' | 'pdfx' | 'datamerge' | 'numbering' | 'cover_numbering' | 'stick_text_number' | 'ocr' | 'optimize' | 'sticker' | 'sticker_imposer' | 'cnc_imposer' | 'bgremover' | 'document_cleanup' | 'watermark' | 'upscale' | 'logo_rebuild' | 'pages' | 'trim_shift' | 'encrypt' | 'metadata' | 'office_convert' | 'crop';
 
 /**
  * Loại panel mà một công cụ hiển thị trong workspace bình bài.
@@ -422,6 +422,7 @@ export const WORKSPACE_TOOL_PANEL: Record<ActiveToolType, WorkspacePanelKind> = 
     optimize: 'preprocess',
     sticker: 'preprocess',
     bgremover: 'preprocess',
+    document_cleanup: 'preprocess',
     watermark: 'preprocess',
     upscale: 'preprocess',
     logo_rebuild: 'preprocess',

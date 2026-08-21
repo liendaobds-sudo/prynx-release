@@ -194,17 +194,25 @@ describe('UpscaleTool — dùng kết quả cho công cụ kế tiếp', () => {
         const path = 'D:\\mau\\tem.jpg';
         (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
         tauriMocks.invoke.mockResolvedValue({ path, grant: 'v1.payload.signature' });
-        apiMocks.authenticatedFetch
-            .mockResolvedValueOnce({ ok: false, status: 403 })
-            .mockResolvedValueOnce(successResponse(resultBlob));
+        let upscaleAttempt = 0;
+        apiMocks.authenticatedFetch.mockImplementation(async (url: string) => {
+            if (url.endsWith('/health')) return { ok: true, status: 200 };
+            upscaleAttempt += 1;
+            return upscaleAttempt === 1
+                ? { ok: false, status: 403 }
+                : successResponse(resultBlob);
+        });
         useUpscaleStore.getState().initTab('tab-stale');
         useUpscaleStore.getState().addItems('tab-stale', [item('source', source, path)]);
 
         await processUpscaleBatch('tab-stale', async () => undefined);
 
-        expect(apiMocks.authenticatedFetch).toHaveBeenCalledTimes(2);
-        const first = apiMocks.authenticatedFetch.mock.calls[0][1]?.body as FormData;
-        const retry = apiMocks.authenticatedFetch.mock.calls[1][1]?.body as FormData;
+        const upscaleRequests = apiMocks.authenticatedFetch.mock.calls.filter(
+            ([url]) => String(url).endsWith('/pdf-tools/upscale'),
+        );
+        expect(upscaleRequests).toHaveLength(2);
+        const first = upscaleRequests[0][1]?.body as FormData;
+        const retry = upscaleRequests[1][1]?.body as FormData;
         expect(first.get('file_path')).toBe(path);
         expect(retry.get('file_path')).toBeNull();
         expect(retry.get('file')).toEqual(expect.objectContaining({
@@ -214,6 +222,24 @@ describe('UpscaleTool — dùng kết quả cho công cụ kế tiếp', () => {
         expect(retry.get('engine')).toBe(first.get('engine'));
         expect(retry.get('scale_factor')).toBe(first.get('scale_factor'));
         expect(retry.get('include_working_pdf')).toBe(first.get('include_working_pdf'));
+    });
+
+    it('chờ backend sẵn sàng trước khi gửi đúng một tác vụ Upscale', async () => {
+        const source = new File(['source'], 'tem.jpg', { type: 'image/jpeg' });
+        useUpscaleStore.getState().initTab('tab-ready');
+        useUpscaleStore.getState().addItems('tab-ready', [item('source', source)]);
+
+        await processUpscaleBatch('tab-ready');
+
+        const urls = apiMocks.authenticatedFetch.mock.calls.map(([url]) => String(url));
+        const healthIndex = urls.findIndex(url => url.endsWith('/health'));
+        const upscaleIndexes = urls
+            .map((url, index) => url.endsWith('/pdf-tools/upscale') ? index : -1)
+            .filter(index => index >= 0);
+        expect(healthIndex).toBeGreaterThanOrEqual(0);
+        expect(upscaleIndexes).toHaveLength(1);
+        expect(healthIndex).toBeLessThan(upscaleIndexes[0]);
+        expect(useUpscaleStore.getState().getTab('tab-ready').batchItems[0].status).toBe('success');
     });
 
     it('tự dùng kết quả ảnh đơn và không nhân đôi batch khi parent cập nhật ảnh nguồn', async () => {

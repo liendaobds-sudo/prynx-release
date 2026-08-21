@@ -176,8 +176,19 @@ export function installBackendFetchAuth(): void {
   const SAFE_RETRY_POST_PATHS = new Set([
     '/api/imposition/pdf-text',
     '/api/imposition/pdf-meta',
+    // NET (audit 2026-08-20): preview chỉ tính toán và trả JSON, không tạo
+    // file/job. Cho phép gửi lại khi sidecar vừa khởi động hoặc đổi worker.
+    '/api/imposition/preview-layout',
   ]);
   const RETRY_DELAYS_MS = [150, 350, 700];
+  // Preview và health thường là request đầu tiên ngay sau khi mở công cụ.
+  // Sidecar có thể cần vài giây để sẵn sàng, nên cho hai endpoint idempotent
+  // này một cửa sổ hồi phục dài hơn; các API khác vẫn giữ độ trễ cũ.
+  const SIDECAR_RECOVERY_PATHS = new Set([
+    '/api/imposition/preview-layout',
+    '/health',
+  ]);
+  const SIDECAR_RECOVERY_DELAYS_MS = [150, 350, 700, 1200, 2000];
 
 
   const canRetryBackendRequest = (request: Request): boolean => {
@@ -188,6 +199,9 @@ export function installBackendFetchAuth(): void {
 
   const fetchBackend = async (request: Request): Promise<Response> => {
     const canRetry = canRetryBackendRequest(request);
+    const retryDelays = SIDECAR_RECOVERY_PATHS.has(new URL(request.url).pathname)
+      ? SIDECAR_RECOVERY_DELAYS_MS
+      : RETRY_DELAYS_MS;
     for (let attempt = 0; ; attempt += 1) {
       try {
         return await origFetch(request.clone());
@@ -195,10 +209,10 @@ export function installBackendFetchAuth(): void {
         const aborted =
           request.signal.aborted ||
           (error instanceof Error && error.name === 'AbortError');
-        if (!canRetry || aborted || attempt >= RETRY_DELAYS_MS.length) {
+        if (!canRetry || aborted || attempt >= retryDelays.length) {
           throw error;
         }
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
+        await new Promise(resolve => setTimeout(resolve, retryDelays[attempt]));
       }
     }
   };

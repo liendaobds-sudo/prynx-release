@@ -1677,6 +1677,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             {isPreprocessing && (
                 <PreprocessingRouter
                     tabId={tabId} activeTool={activeTool} pdfFile={pdfFile || null} isProcessing={isProcessing} isActive={isActive === true}
+                    getWorkingFile={getWorkingFile}
                     onStartShuffle={onStartShuffle} onStartResize={onStartResize}
                     onStartTrimShift={onStartTrimShift}
                     onStartSplit={onStartSplit} onStartMerge={onStartMerge}

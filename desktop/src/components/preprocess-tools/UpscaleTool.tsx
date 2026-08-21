@@ -195,6 +195,17 @@ function appendUpscaleOptions(
     if (includeWorkingPdf) formData.append('include_working_pdf', 'true');
 }
 
+async function waitForUpscaleBackend(signal: AbortSignal): Promise<void> {
+    // NET (audit 2026-08-20): warmup chạy nền nên không bảo đảm sidecar đã lắng
+    // nghe khi người dùng bấm Xử lý. Chờ health (GET idempotent, có retry ở api.ts)
+    // trước khi gửi POST Upscale nặng để không phải lặp một tác vụ AI đã bắt đầu.
+    const healthUrl = new URL('/health', getApiUrl()).toString();
+    const response = await authenticatedFetch(healthUrl, { signal });
+    if (!response.ok) {
+        throw new Error(tv('Bộ xử lý của PrynX chưa sẵn sàng. Hãy chờ vài giây rồi thử lại.'));
+    }
+}
+
 async function prepareUpscaleRequest(
     tabId: string,
     item: BatchItem,
@@ -262,6 +273,9 @@ export async function processUpscaleBatch(
             store.setBatchItems(tabId, [...items]);
             try {
                 const item = items[i];
+                store.setProgress(tabId, tv('Đang kết nối bộ xử lý...'));
+                await waitForUpscaleBackend(controller.signal);
+                store.setProgress(tabId, tv('Đang phóng to') + ' ' + processed + ' / ' + items.length + '...');
                 const includeWorkingPdf = !!onResultReady
                     && (!shouldPrepareWorkingPdf || shouldPrepareWorkingPdf(item, items));
                 const { formData, usedPathGrant } = await prepareUpscaleRequest(

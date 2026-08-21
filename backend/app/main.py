@@ -271,7 +271,7 @@ app.include_router(compare.router, prefix="/api", tags=["Compare"])
 app.include_router(results.router, prefix="/api", tags=["Results"])
 app.include_router(qc.router, prefix="/api", tags=["QC"])
 app.include_router(logo_rebuild.router, prefix="/api", tags=["Logo Rebuild"])
-from app.api.routes import system, imposition, document_tools, preflight, vdp, pdf_tools, sticker_sheet, office_convert, edit, export, dieline
+from app.api.routes import system, imposition, document_tools, preflight, vdp, pdf_tools, sticker_sheet, office_convert, edit, export, dieline, document_cleanup
 app.include_router(system.router, prefix="/api", tags=["System"])
 app.include_router(imposition.router, prefix="/api", tags=["Imposition"])
 app.include_router(document_tools.router, prefix="/api", tags=["Document Tools"])
@@ -283,6 +283,7 @@ app.include_router(office_convert.router, prefix="/api", tags=["Office Convert"]
 app.include_router(edit.router, prefix="/api", tags=["Edit"])
 app.include_router(export.router, prefix="/api", tags=["Export"])
 app.include_router(dieline.router, prefix="/api", tags=["Dieline"])
+app.include_router(document_cleanup.router, prefix="/api", tags=["Document Cleanup"])
 app.include_router(ws.router, tags=["WebSocket"])
 
 # Cut Export (spec: gui-may-be) — module độc lập backend/app/workers/cut_export

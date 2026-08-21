@@ -172,6 +172,30 @@ describe('API request authentication', () => {
     });
     expect(transport).toHaveBeenCalledTimes(beforeReadPost + 2);
 
+    // Preview là POST nhưng chỉ đọc/tính toán. Khi sidecar vừa đổi worker,
+    // request phải tự gửi lại thay vì hiện ngay lỗi "Failed to fetch".
+    const beforePreviewPost = transport.mock.calls.length;
+    transport
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(new Response('{"success":true}', { status: 200 }));
+    const preview = await window.fetch('http://localhost:8321/api/imposition/preview-layout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"usable_w":100,"usable_h":100}',
+    });
+    expect(preview.status).toBe(200);
+    expect(transport).toHaveBeenCalledTimes(beforePreviewPost + 2);
+
+    // Health được dùng làm cổng trước tác vụ Upscale nặng và cần chịu được
+    // khoảng trống khi sidecar đang đổi tiến trình.
+    const beforeHealth = transport.mock.calls.length;
+    transport
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(new Response('{"status":"ok"}', { status: 200 }));
+    const health = await window.fetch('http://localhost:8321/health');
+    expect(health.status).toBe(200);
+    expect(transport).toHaveBeenCalledTimes(beforeHealth + 2);
+
 
     // POST tạo trạng thái không được lặp, tránh tạo hai job/file khi response bị đứt.
     const beforeUnsafePost = transport.mock.calls.length;

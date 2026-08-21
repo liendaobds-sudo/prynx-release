@@ -10,7 +10,7 @@
 export const PREPROCESS_ROUTER_TOOLS = [
     'shuffle', 'resize', 'trim_shift', 'split', 'pages',
     'preflight', 'font_tools', 'hairlines', 'inkmanager', 'convertcolors', 'trapping', 'pdfx',
-    'ocr', 'optimize', 'sticker', 'bgremover', 'watermark', 'upscale', 'logo_rebuild',
+    'ocr', 'optimize', 'sticker', 'bgremover', 'document_cleanup', 'watermark', 'upscale', 'logo_rebuild',
     'encrypt', 'metadata', 'office_convert', 'crop',
 ] as const;
 
@@ -32,7 +32,7 @@ export const LOGO_REBUILD_ENABLED = isLogoRebuildEnabled(
 );
 
 /** Các công cụ mở thành tab chuyên dụng và không dùng workspace PDF làm màn hình gốc. */
-export const DEDICATED_STANDALONE_TOOLS = ['bgremover', 'upscale', 'logo_rebuild', 'office_convert'] as const;
+export const DEDICATED_STANDALONE_TOOLS = ['bgremover', 'document_cleanup', 'upscale', 'logo_rebuild', 'office_convert'] as const;
 
 export type DedicatedStandaloneTool = (typeof DEDICATED_STANDALONE_TOOLS)[number];
 

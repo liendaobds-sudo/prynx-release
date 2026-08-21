@@ -294,6 +294,58 @@ describe('useIncomingFileDispatcher', () => {
 
     expect(onOpenApp).toHaveBeenCalledWith('imposition', { file: image });
   });
+
+  it('gửi cả PDF và ảnh vào đúng Document Cleanup đang active', () => {
+    const tabs: NavigationTabLike[] = [
+      { id: 'home', type: 'home' },
+      { id: 'cleanup', type: 'imposition', payload: { file: 'working.pdf' } },
+    ];
+    registerFeature('cleanup', 'document_cleanup');
+    const received = vi.fn();
+    const receiveCleanupFiles = (event: Event) => received((event as CustomEvent).detail);
+    window.addEventListener('prynx-document-cleanup-add-files', receiveCleanupFiles);
+    disposers.push(() => window.removeEventListener('prynx-document-cleanup-add-files', receiveCleanupFiles));
+    const { onOpenApp } = renderDispatcher('cleanup', tabs);
+    const pdf = file('01-scan.pdf');
+    const image = file('02-mat-the.png');
+
+    act(() => emitFiles([image, pdf]));
+    act(() => vi.advanceTimersByTime(INCOMING_FILES_DEBOUNCE_MS));
+
+    expect(received).toHaveBeenCalledTimes(1);
+    expect(received).toHaveBeenCalledWith({
+      tabId: 'cleanup',
+      files: [pdf, image],
+    });
+    expect(onOpenApp).not.toHaveBeenCalled();
+  });
+
+  it('receiver ảnh khác vẫn không hút PDF khỏi luồng tài liệu mặc định', () => {
+    const tabs: NavigationTabLike[] = [
+      { id: 'home', type: 'home' },
+      { id: 'upscale', type: 'imposition', payload: { file: 'working.pdf' } },
+    ];
+    registerFeature('upscale', 'upscale');
+    const received = vi.fn();
+    const receiveUpscaleFiles = (event: Event) => received((event as CustomEvent).detail);
+    window.addEventListener('prynx-upscale-add-files', receiveUpscaleFiles);
+    disposers.push(() => window.removeEventListener('prynx-upscale-add-files', receiveUpscaleFiles));
+    const { onOpenApp } = renderDispatcher('upscale', tabs);
+    const pdf = file('01-scan.pdf');
+    const image = file('02-anh.png');
+
+    act(() => emitFiles([image, pdf]));
+    act(() => vi.advanceTimersByTime(INCOMING_FILES_DEBOUNCE_MS));
+
+    expect(onOpenApp).toHaveBeenCalledTimes(1);
+    expect(onOpenApp).toHaveBeenCalledWith('imposition', { file: pdf });
+    expect(received).toHaveBeenCalledTimes(1);
+    expect(received).toHaveBeenCalledWith({
+      tabId: 'upscale',
+      files: [image],
+    });
+  });
+
   it('phân PDF thành tab riêng và gom đủ Office trong cùng batch', () => {
     const { onOpenApp } = renderDispatcher();
     const pdf = file('mau.pdf');

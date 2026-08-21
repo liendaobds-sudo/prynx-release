@@ -74,8 +74,25 @@ export function dispatchIncomingFileBatch(
   }
 
   const { pdfFiles, officeFiles, otherFiles } = incomingPlan;
-  for (const pdfFile of pdfFiles) {
-    onOpenApp('imposition', { file: pdfFile });
+  const imageBatchReceiver = resolveActiveImageBatchReceiver(tabs, activeTabId);
+  // DOC-CLEANUP UIUX (feedback 2026-08-21 §DROP.01): công cụ này hỗ trợ cả
+  // PDF scan lẫn ảnh. Khi chính nó đang active, giữ toàn bộ tài liệu phù hợp trong
+  // đúng workspace thay vì mở PDF thành tab mới trước khi receiver có cơ hội nhận.
+  // Các receiver ảnh khác vẫn chỉ nhận `otherFiles` như hợp đồng cũ.
+  const documentCleanupOwnsIncoming = !intent
+    && imageBatchReceiver?.feature === 'document_cleanup';
+  if (documentCleanupOwnsIncoming) {
+    const cleanupFileSet = new Set<File>([...pdfFiles, ...otherFiles]);
+    const cleanupFiles = sortedFiles.filter(file => cleanupFileSet.has(file));
+    if (cleanupFiles.length > 0) {
+      window.dispatchEvent(new CustomEvent(imageBatchReceiver.eventName, {
+        detail: { tabId: imageBatchReceiver.tabId, files: cleanupFiles },
+      }));
+    }
+  } else {
+    for (const pdfFile of pdfFiles) {
+      onOpenApp('imposition', { file: pdfFile });
+    }
   }
 
   if (officeFiles.length > 0) {
@@ -86,13 +103,14 @@ export function dispatchIncomingFileBatch(
     });
   }
 
+  if (documentCleanupOwnsIncoming) return;
+
   if (otherFiles.length === 0) return;
   if (intent === 'convert') {
     onOpenApp('combine_pdf', { files: otherFiles });
     return;
   }
 
-  const imageBatchReceiver = resolveActiveImageBatchReceiver(tabs, activeTabId);
   if (imageBatchReceiver) {
     window.dispatchEvent(new CustomEvent(imageBatchReceiver.eventName, {
       detail: { tabId: imageBatchReceiver.tabId, files: otherFiles },
