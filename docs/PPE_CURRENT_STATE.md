@@ -1,6 +1,6 @@
 # PPE — TRẠNG THÁI HIỆN TẠI (SSOT)
 
-**Cập nhật:** 2026-08-08
+**Cập nhật:** 2026-08-21
 **Nguồn sự thật duy nhất** cho câu hỏi “PPE đang ở đâu, cái gì đã đóng, cái gì chưa”.
 
 > `docs/PRYNX_GS_REPLACEMENT_ENGINE_PLAN.md` là **kế hoạch + changelog**: nó chồng
@@ -21,6 +21,7 @@
 | Runtime sản phẩm còn gọi Ghostscript? | **KHÔNG** — các luồng prepress thuộc tài liệu này chỉ dùng PPE, PDFium và các engine nội bộ; hàng rào subprocess chặn executable bị cấm trước khi tạo process. |
 | Còn fallback hoặc chế độ opt-in cho engine cũ? | **KHÔNG** — không còn cờ build/release, biến môi trường hay nhánh runtime để bật lại. Tác vụ sửa file chưa được engine nội bộ hỗ trợ sẽ dừng an toàn và xoá output dở. |
 | Pipeline phát hành đã theo hợp đồng PPE-only? | **ĐẠT** — build không tạo/bundle payload GS; verifier luôn quét binary và NOTICE, không phụ thuộc cờ hay marker. |
+| Audit corpus 18 PDF × 16 thao tác còn nằm trong release QA? | **KHÔNG** — đã xóa engine audit, cache, cờ CLI, checkbox và artifact riêng ngày 2026-08-21; các regression backend/frontend/Rust vẫn giữ nguyên. |
 | Phát hành **công khai** artifact mới sau đợt dọn 2026-08-08? | **CHƯA XÁC NHẬN** — còn validator PDF/X độc lập, kiểm tay trên máy sạch và installed smoke trên artifact vừa build. |
 
 ## 2. Số đo đối chứng lịch sử — snapshot 2026-07-28
@@ -35,7 +36,7 @@ payload phát hành của PrynX.
 | Rust `print_engine` | **565 pass** | `cargo test --locked` trong `print_engine/` |
 | Backend pytest | **1467 pass, 1 skip** | `cd backend && venv\Scripts\python.exe -m pytest -q` |
 | Frontend Vitest | **1140 pass, 2 skip** | `cd desktop && npm.cmd test` |
-| Corpus PPE-only (tên phép đo cũ: no-GS) | **18 PDF × 16 thao tác: 276 OK, 12 REFUSED, 0 GS, 0 ERROR** | `scripts/gs_dependency_audit.py private_test_corpus\incoming --limit 18 --gate` |
+| Corpus PPE-only (phép đo lịch sử, đã gỡ khỏi repo/pipeline) | **18 PDF × 16 thao tác: 276 OK, 12 REFUSED, 0 GS, 0 ERROR** | Báo cáo audit/changelog tháng 7–8/2026; không còn lệnh release hiện hành |
 | Golden một-biến @100 DPI | **52 PASS, 0 FAIL, 1 khác renderer GS tham chiếu có chủ ý** (53 fixture) | `scripts/ppe_golden_compare.py print_engine/golden/fixtures --dpi 100 --color-managed` |
 | Golden một-biến @72 DPI | **50 PASS, 0 FAIL, 1 khác renderer GS tham chiếu có chủ ý** (đo trước khi thêm cặp spot-overprint) | như trên, `--dpi 72` |
 | Golden preflight @100 DPI | **17 PASS, 1 fixture JPEG stub chưa đủ tính năng** | `scripts/ppe_golden_compare.py backend/tests/preflight_fixtures/pdfs --dpi 100 --color-managed` |
@@ -56,7 +57,7 @@ artifact còn mở được liệt kê riêng ở §5.
 | 3 | ≥1 chuẩn PDF/X qua validator độc lập | **CHƯA** — chỉ có validator nội bộ |
 | 4 | Convert CMYK / Downscale / Embed non-GS | **ĐẠT** |
 | 5 | Flatten / Outline có quyết định sản phẩm rõ | **ĐẠT tại snapshot**: flatten raster PPE có cảnh báo; corpus khi đó có OUTLINE_FONTS 12/18 OK, 6/18 REFUSED; **13.985 glyph dùng PPE, 0 glyph lùi fontTools** |
-| 6 | Build không copy GS + release QA xanh | **ĐẠT tại snapshot**: wrapper Release QA end-to-end đã xanh ngày 2026-07-28; audit corpus/typecheck/`print_engine` là gate bắt buộc. Artifact mới vẫn phải qua §5 |
+| 6 | Build không copy GS + release QA xanh | **ĐẠT tại snapshot**: wrapper Release QA end-to-end đã xanh ngày 2026-07-28. Audit corpus khi đó là gate bắt buộc nhưng đã bị loại khỏi pipeline ngày 2026-08-21; typecheck/backend/Rust và kiểm payload vẫn giữ. Artifact mới vẫn phải qua §5 |
 
 ## 4. Hành vi engine đã chốt
 
@@ -77,8 +78,6 @@ artifact còn mở được liệt kê riêng ở §5.
 
 | Việc | Vì sao chưa | Ghi ở |
 |---|---|---|
-| Mở rộng gate từ 18 lên đủ 33 PDF khách | Gate 18 file hiện đã đạt; 15 file còn lại cần manifest/hash ẩn danh trước khi dùng làm bằng chứng lặp lại | `GS_SUNSET_FIXES` §12 |
-| Corpus khách không nằm trong repo | Không commit file khách; Release QA đọc `PRYNX_NO_GS_CORPUS` hoặc corpus riêng trên máy phát hành | Báo cáo lần 4 §3.3 |
 | Telemetry lịch sử đo tỉ lệ GS | Đã loại khỏi gate và khỏi runtime; nếu nghiên cứu lại thì phải là công cụ đối chứng dev có mẫu số theo operation | Báo cáo lần 1 §4.2 |
 
 ## 7. Lịch sử và bằng chứng
