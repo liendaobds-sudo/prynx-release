@@ -122,6 +122,62 @@ def test_birefnet_releases_failed_gpu_session_before_loading_cpu(monkeypatch):
     assert events == ["native_gpu_released", "gc", "cpu_created"]
     assert engine._force_cpu is True
 
+
+def test_birefnet_discards_cached_directml_session_under_real_memory_pressure(monkeypatch):
+    from app.workers import birefnet_engine as engine
+
+    events = []
+
+    class NativeSession:
+        def __del__(self):
+            events.append("native_dml_released")
+
+    class DmlSession:
+        def __init__(self):
+            self._sess = NativeSession()
+
+        def get_providers(self):
+            return ["DmlExecutionProvider", "CPUExecutionProvider"]
+
+    cached = DmlSession()
+    monkeypatch.setattr(engine, "_sessions", {"lite": cached})
+    monkeypatch.setattr(engine, "_force_cpu", False)
+    monkeypatch.setattr(
+        engine,
+        "read_memory_status_mb",
+        lambda: (32 * 1024.0, 4800.0),
+        raising=False,
+    )
+    monkeypatch.setattr(engine.gc, "collect", lambda: events.append("gc"))
+
+    assert engine._discard_dml_session_if_memory_pressure("lite") is True
+    assert "lite" not in engine._sessions
+    assert engine._force_cpu is True
+    assert events == ["native_dml_released", "gc"]
+
+
+def test_birefnet_keeps_directml_session_when_ram_is_healthy(monkeypatch):
+    from app.workers import birefnet_engine as engine
+
+    class DmlSession:
+        def get_providers(self):
+            return ["DmlExecutionProvider", "CPUExecutionProvider"]
+
+    cached = DmlSession()
+    monkeypatch.setattr(engine, "_sessions", {"lite": cached})
+    monkeypatch.setattr(engine, "_force_cpu", False)
+    monkeypatch.setattr(
+        engine,
+        "read_memory_status_mb",
+        lambda: (32 * 1024.0, 18 * 1024.0),
+        raising=False,
+    )
+
+    assert engine._discard_dml_session_if_memory_pressure("lite") is False
+    assert engine._sessions["lite"] is cached
+    assert engine._force_cpu is False
+
+
 def test_warmup_only_loads_sessions_without_fake_inference(monkeypatch):
     from app.workers import birefnet_engine, isnet_engine
 

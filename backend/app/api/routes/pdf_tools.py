@@ -23,6 +23,7 @@ from contextlib import contextmanager, suppress
 from fastapi import APIRouter, File, UploadFile, HTTPException, Form, Request, Depends
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool as run_light_in_threadpool
 
 from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
 from app.core.heavy_job_scheduler import run_scheduled_in_threadpool
@@ -854,7 +855,6 @@ async def inspect_resize_transparency_endpoint(
     license_info: dict = Depends(require_license),
 ):
     """Nhận diện trang còn transparency để UI chỉ hiện lựa chọn phù hợp."""
-    from starlette.concurrency import run_in_threadpool as run_light_in_threadpool
     from app.core.pdf_actions_native import detect_transparent_pages
 
     source_path: Optional[str] = None
@@ -1455,6 +1455,11 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
     # AUDIT (2026-08-16 §BX.F08): default phải khớp UI + recipe (`preserve`). Default
     # `round` cũ khiến client thiếu field nhận khuôn BỊ BO GÓC thay vì giữ nguyên góc.
     corner_style = form.get("corner_style", "preserve")
+    # QUALITY (feedback 2026-08-19 §CUTROUND.UI1): engine đã hỗ trợ 0–100 nhưng
+    # route cũ làm rơi field nên giao diện PDF/PNG luôn xuất ở mốc mặc định 50.
+    curve_tension = _sticker_float_param(
+        form, "curve_tension", default=50.0, low=0.0, high=100.0
+    )
     bleed_mm = _sticker_float_param(form, "bleed_mm", default=0.0, low=0.0, high=50.0)
     fill_holes = form.get("fill_holes", "true")
     remove_white_bg = form.get("remove_white_bg", "false")
@@ -1549,10 +1554,17 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
     # Trước đây chỉ bắt ValueError, nên `'inf'` vẫn đi tiếp và clip artwork vô hạn.
     edge_bite_mm = _sticker_float_param(form, "edge_bite_mm", default=0.0, low=0.0, high=10.0)
 
-    # UIUX (feedback 2026-08-16 §CUTJAG.3): thanh "Khử răng cưa" 0–100. Default 0 để
-    # client cũ không đổi kết quả; giao diện tự đặt mức khởi điểm riêng.
+    # UIUX (feedback 2026-08-19 §CUTJAG.PARITY1): phải phân biệt
+    # client cũ KHÔNG gửi field (giữ cổng tự động theo nguồn biên) với
+    # người dùng chủ động kéo về 0 (tắt hẳn khử răng cưa).
+    cutline_denoise_raw = form.get("cutline_denoise")
     cutline_denoise = _sticker_float_param(
         form, "cutline_denoise", default=0.0, low=0.0, high=100.0
+    )
+    legacy_cutline_denoise = (
+        None
+        if cutline_denoise_raw is None or str(cutline_denoise_raw).strip() == ""
+        else cutline_denoise
     )
 
     # Resize chỉ dịch điểm lấy màu vào trong; không dùng tham số này để clip artwork.
@@ -1565,12 +1577,131 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
     edge_sample_inset_mm = max(0.0, min(5.0, edge_sample_inset_mm))
     job_id = uuid.uuid4().hex[:8]
     output_path = os.path.join(RESULTS_DIR, f"sticker_{job_id}.pdf")
+    def _cleanup_owned_sticker_source() -> None:
+        if delete_source and source_path:
+            try:
+                os.remove(source_path)
+            except OSError:
+                pass
     do_fill_holes = fill_holes.lower() in ("true", "1", "yes")
     do_remove_bg = remove_white_bg.lower() in ("true", "1", "yes")
     do_draw_cut_contour = draw_cut_contour.lower() in ("true", "1", "yes")
     adaptive_corner_policy = resolve_sticker_corner_policy(
         cut_mode, do_rectangle_mode, selected_objects_by_page is not None, shape_mode, corner_style
     )
+    # PERF/QUALITY (audit 2026-08-21 §CANONICAL.3): preview classic đã fit đúng
+    # CutContour thật. Khi client gửi reference, snapshot nó TRƯỚC heavy job và
+    # tuyệt đối không detect/fit lần hai. Selection/multi giữ pipeline riêng.
+    # Chế độ Alpha cũng có artifact canonical; `remove_white_bg=false` ở mode
+    # này là chủ ý nghiệp vụ, không được làm rơi reference rồi fit lại.
+    use_single_canonical_contour = (
+        not do_rectangle_mode
+        and cut_mode != "none"
+        and selected_objects_by_page is None
+        and process_pages is None
+        and shape_mode in {"auto_safe", "contour"}
+        and (do_remove_bg or cut_mode == "alpha")
+    )
+    use_single_ai_contour = (
+        do_remove_bg
+        and not do_rectangle_mode
+        and cut_mode != "none"
+        and selected_objects_by_page is None
+        and process_pages is None
+        and shape_mode in {"auto_safe", "contour"}
+    )
+    preview_ref_names = (
+        "cutline_preview_session_id",
+        "cutline_preview_revision",
+        "cutline_preview_fingerprint",
+    )
+    preview_ref_supplied = any(
+        str(form.get(name) or "").strip() for name in preview_ref_names
+    )
+    canonical_preview_override = None
+    canonical_preview_page = 1
+    if use_single_canonical_contour and preview_ref_supplied:
+        raw_session_id = str(form.get("cutline_preview_session_id") or "").strip()
+        raw_revision = str(form.get("cutline_preview_revision") or "").strip()
+        raw_fingerprint = str(form.get("cutline_preview_fingerprint") or "").strip()
+        raw_page = str(form.get("cutline_preview_page_number") or "1").strip()
+        if not all((raw_session_id, raw_revision, raw_fingerprint, raw_page)):
+            _cleanup_owned_sticker_source()
+            raise HTTPException(
+                status_code=400,
+                detail="Tham chiếu preview đường bế chưa đầy đủ.",
+            )
+        if (
+            len(raw_session_id) != 32
+            or any(ch not in "0123456789abcdef" for ch in raw_session_id)
+            or len(raw_fingerprint) != 64
+            or any(ch not in "0123456789abcdef" for ch in raw_fingerprint)
+        ):
+            _cleanup_owned_sticker_source()
+            raise HTTPException(
+                status_code=400,
+                detail="Tham chiếu preview đường bế không hợp lệ.",
+            )
+        try:
+            preview_revision = int(raw_revision)
+            canonical_preview_page = int(raw_page)
+        except (TypeError, ValueError, OverflowError) as exc:
+            _cleanup_owned_sticker_source()
+            raise HTTPException(
+                status_code=400,
+                detail="Revision/trang của preview đường bế không hợp lệ.",
+            ) from exc
+        if preview_revision < 1 or canonical_preview_page < 1:
+            _cleanup_owned_sticker_source()
+            raise HTTPException(
+                status_code=400,
+                detail="Revision/trang của preview đường bế không hợp lệ.",
+            )
+
+        from app.core.sticker_sheet_session import get_session
+        from app.workers.sticker_sheet_export import (
+            StickerCanonicalPreviewConflict,
+            StickerSheetExportError,
+            snapshot_classic_cutline_preview,
+        )
+
+        preview_session = get_session(raw_session_id)
+        if preview_session is None:
+            _cleanup_owned_sticker_source()
+            raise HTTPException(
+                status_code=409,
+                detail="Phiên preview đường bế đã hết hạn. Hãy chờ nhận diện lại.",
+            )
+        try:
+            # Snapshot có hash/Array copy và có thể chờ operation_lock. Chạy ở
+            # threadpool nhẹ để không đóng băng event loop/WebSocket tiến độ;
+            # không chiếm slot `sticker` của job PDF nặng.
+            canonical_preview_override = await run_light_in_threadpool(
+                snapshot_classic_cutline_preview,
+                preview_session,
+                source_path=source_path,
+                page_number=canonical_preview_page,
+                expected_revision=preview_revision,
+                expected_fingerprint=raw_fingerprint,
+                offset_mm=offset_mm,
+                bleed_mm=bleed_mm,
+                cut_mode=cut_mode,
+                corner_style=corner_style,
+                fill_holes=do_fill_holes,
+                curve_tension=curve_tension,
+                cutline_denoise=legacy_cutline_denoise,
+            )
+        except StickerCanonicalPreviewConflict as exc:
+            _cleanup_owned_sticker_source()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except StickerSheetExportError as exc:
+            _cleanup_owned_sticker_source()
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception:
+            # Block lỗi bất ngờ vẫn phải dọn upload tạm; trước đây snapshot nằm
+            # trước try chính nên exception ở đây có thể làm rò file nguồn.
+            _cleanup_owned_sticker_source()
+            raise
     try:
         # Parse CMYK string (e.g. "100,50,0,0") or fallback to RGB HEX.
         # Bọc an toàn: chuỗi rỗng/thiếu phần tử không được làm sập request.
@@ -1603,15 +1734,19 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             """
             engine = StickerEngine(dpi=300)
             engine_started = time.perf_counter()
-            approved_contour_overrides = None
-            use_single_ai_contour = (
-                do_remove_bg
-                and not do_rectangle_mode
-                and cut_mode != "none"
-                and selected_objects_by_page is None
-                and shape_mode in {"auto_safe", "contour"}
+            approved_contour_overrides = (
+                {canonical_preview_page - 1: canonical_preview_override}
+                if canonical_preview_override is not None
+                else None
             )
-            if use_single_ai_contour:
+            if canonical_preview_override is not None:
+                logger.info(
+                    "[STICKER] page=%d tái dùng canonical preview %s; "
+                    "không detect/fit lần hai",
+                    canonical_preview_page,
+                    str(canonical_preview_override.get("preview_fingerprint", ""))[:12],
+                )
+            elif use_single_ai_contour:
                 from app.workers.sticker_source_inspector import (
                     StickerSourceInspectionError,
                 )
@@ -1627,6 +1762,8 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                         offset_mm=offset_mm,
                         bleed_mm=bleed_mm,
                         corner_style=corner_style,
+                        curve_tension=curve_tension,
+                        cutline_denoise=legacy_cutline_denoise,
                         fill_holes=do_fill_holes,
                     )
                 except (
@@ -1642,6 +1779,13 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                             "source_pixel_mm": approved.source_pixel_mm,
                             "boundary_source": approved.boundary_source,
                             "path_groups": approved.path_groups,
+                            # QUALITY (audit 2026-08-19 §STK.EDGE01): màu nền
+                            # là một phần của artifact đã duyệt; làm rơi nó khiến
+                            # engine lấy chính halo JPEG nhạt làm màu bù xén.
+                            "edge_background_rgb": approved.edge_background_rgb,
+                            "edge_background_tolerance": (
+                                approved.edge_background_tolerance
+                            ),
                         }
                     }
                     logger.info(
@@ -1670,6 +1814,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                 selected_objects_by_page=selected_objects_by_page,
                 process_pages=process_pages,
                 alpha_corner_policy=adaptive_corner_policy,
+                curve_tension=curve_tension,
                 approved_contour_overrides=approved_contour_overrides,
                 cutline_denoise=cutline_denoise,
             )

@@ -18,6 +18,7 @@ import onnxruntime as ort
 import numpy as np
 from PIL import Image
 
+from app.core.system_memory import read_memory_status_mb
 from app.workers.model_cache import ensure_model
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,12 @@ _session_lock = threading.Lock()
 _run_locks = {variant: threading.Lock() for variant in MODELS}
 # Ép CPU ngay từ đầu bằng env PRYNX_BG_FORCE_CPU=1 (bỏ qua GPU; tránh OOM/treo máy yếu).
 _force_cpu = os.environ.get('PRYNX_BG_FORCE_CPU', '').lower() in ('1', 'true', 'yes')
+
+# DirectML có thể giữ arena rất lớn sau inference dù output chỉ vài MB. Chỉ nhả
+# session khi RAM khả dụng thật đã xuống vùng nguy hiểm; máy mạnh còn dư RAM vẫn
+# giữ cache và tốc độ đầy đủ.
+_DML_MIN_AVAILABLE_RAM_RATIO = 0.25
+_DML_MIN_AVAILABLE_RAM_MB = 2048.0
 
 
 def _build_providers():
@@ -98,6 +105,77 @@ def _get_session(variant: str = "full"):
     return _sessions[variant]
 
 
+def _discard_cached_session_locked(variant: str) -> None:
+    """Bỏ session dưới `_session_lock` và cắt tham chiếu native ngay lập tức."""
+    failed_session = _sessions.pop(variant, None)
+    close = getattr(failed_session, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            logger.debug(
+                "BiRefNet[%s] không đóng được session.",
+                variant,
+                exc_info=True,
+            )
+    # onnxruntime.InferenceSession không công khai close(); tài nguyên DirectML
+    # thật nằm trong `_sess`. Cắt tham chiếu native trước khi gc để arena được hủy.
+    native_session = getattr(failed_session, "_sess", None)
+    if native_session is not None:
+        try:
+            failed_session._sess = None
+        except Exception:
+            logger.debug(
+                "BiRefNet[%s] không tháo được native session.",
+                variant,
+                exc_info=True,
+            )
+        native_session = None
+    failed_session = None
+    gc.collect()
+
+
+def _discard_dml_session_if_memory_pressure(variant: str) -> bool:
+    """Nhả arena DML khi nó vừa đẩy RAM hệ thống xuống vùng nguy hiểm.
+
+    PERF/STABILITY (feedback 2026-08-20 §CUTPREVIEW.DML1): đây không phải trần
+    chất lượng hay worker. Chỉ khi RAM khả dụng sau inference thấp hơn 25% tổng
+    RAM (tối thiểu 2 GB), session DML mới bị bỏ và những lượt sau chuyển CPU
+    cùng model. Máy còn dư RAM vẫn giữ nguyên fast path DirectML.
+    """
+    total_mb, available_mb = read_memory_status_mb()
+    if (
+        total_mb is None
+        or available_mb is None
+        or total_mb <= 0
+        or available_mb < 0
+    ):
+        return False
+    minimum_available_mb = max(
+        _DML_MIN_AVAILABLE_RAM_MB,
+        float(total_mb) * _DML_MIN_AVAILABLE_RAM_RATIO,
+    )
+    if float(available_mb) >= minimum_available_mb:
+        return False
+
+    global _force_cpu
+    with _session_lock:
+        session = _sessions.get(variant)
+        providers = session.get_providers() if session is not None else ()
+        if "DmlExecutionProvider" not in providers:
+            return False
+        _force_cpu = True
+        _discard_cached_session_locked(variant)
+    logger.warning(
+        "BiRefNet[%s] nhả DirectML arena vì RAM khả dụng %.0f MB < %.0f MB; "
+        "các lượt sau dùng CPU.",
+        variant,
+        available_mb,
+        minimum_available_mb,
+    )
+    return True
+
+
 def _switch_to_cpu(variant: str):
     """Dựng lại session CPU sau khi GPU lỗi (OOM 8007000E / device-hung 887A0007).
     Sticky: mọi lần sau dùng CPU → tránh treo GPU lặp lại."""
@@ -107,33 +185,7 @@ def _switch_to_cpu(variant: str):
         # STABILITY (audit 2026-08-05 §AI2.RUNTIME1): phải tháo session GPU lỗi
         # khỏi cache và giải phóng tài nguyên trước khi nạp thêm model CPU. Nếu giữ
         # đồng thời hai session, DirectML OOM thường nối tiếp bằng bad allocation.
-        failed_session = _sessions.pop(variant, None)
-        close = getattr(failed_session, "close", None)
-        if callable(close):
-            try:
-                close()
-            except Exception:
-                logger.debug(
-                    "BiRefNet[%s] không đóng được session GPU lỗi.",
-                    variant,
-                    exc_info=True,
-                )
-        # onnxruntime.InferenceSession không công khai close(); tài nguyên DirectML
-        # thật nằm trong `_sess`. Cắt tham chiếu native này trước khi gc để allocator
-        # GPU được hủy ngay, tránh CPU session tiếp tục bad allocation.
-        native_session = getattr(failed_session, "_sess", None)
-        if native_session is not None:
-            try:
-                failed_session._sess = None
-            except Exception:
-                logger.debug(
-                    "BiRefNet[%s] không tháo được native session GPU lỗi.",
-                    variant,
-                    exc_info=True,
-                )
-            native_session = None
-        failed_session = None
-        gc.collect()
+        _discard_cached_session_locked(variant)
         path = _download_model_if_needed(variant)
         logger.warning("Rebuilding BiRefNet[%s] on CPU only (GPU không ổn định).", variant)
         _sessions[variant] = _create_session(path, ['CPUExecutionProvider'])
@@ -180,6 +232,7 @@ def predict_alpha(image: Image.Image, variant: str = "full") -> Image.Image:
         # session. Variant khác và CPU/CUDA vẫn chạy song song trên máy mạnh.
         with _run_locks[variant]:
             outputs = _run_with_fallback()
+            _discard_dml_session_if_memory_pressure(variant)
     else:
         outputs = _run_with_fallback()
 

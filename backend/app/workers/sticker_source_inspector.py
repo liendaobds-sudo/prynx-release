@@ -27,6 +27,7 @@ StickerBoundarySource = Literal[
     "vector",
     "alpha",
     "simple-bg",
+    "page-box",
     "ai",
     "manual",
 ]

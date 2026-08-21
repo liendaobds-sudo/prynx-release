@@ -9,6 +9,7 @@ import logging
 import math
 import threading
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -21,11 +22,15 @@ from app.core.sticker_sheet_session import (
 from app.workers.sticker_engine import (
     ALPHA_CONTOUR_INSET_MM,
     UnsafeCutlineGeometryError,
+    _analytic_fillet_short_line_count,
+    _alpha_live_machine_path_summary,
+    _cutline_round_radius_mm,
     compute_cut_bleed_offsets,
     fit_prepared_alpha_cutline_geometry,
     prepare_alpha_cutline_geometry,
     should_presmooth_cutline_alpha,
 )
+from app.workers.cutline_geometry import build_filleted_polygon_beziers
 from app.workers.sticker_sheet_export import (
     STICKER_PAGE_PADDING_MM,
     StickerSheetExportError,
@@ -40,6 +45,72 @@ logger = logging.getLogger(__name__)
 
 _PREVIEW_EXECUTOR: ThreadPoolExecutor | None = None
 _PREVIEW_EXECUTOR_LOCK = threading.Lock()
+
+# QUALITY (audit 2026-08-20 §CUTLINE.EDGE): mask composite đã loại offset trắng
+# và bóng lệch thì biên thật đã đủ chi tiết; fidelity mặc định 50 làm fitter giản
+# lược thành các đoạn dài, nhìn thành góc gãy. Chỉ nâng cổng cho marker này để các
+# nguồn thường vẫn giữ đúng thanh kéo và thời gian xử lý cũ.
+_COMPOSITE_CUTLINE_FIDELITY_MIN = 95.0
+_COMPOSITE_CUTLINE_WARNINGS = frozenset({
+    "simple-bg-composite-recovered",
+    "simple-bg-drop-shadow-removed",
+})
+_CUTLINE_ALPHA_FRINGE_PX = 2
+# QUALITY (audit 2026-08-21 §RECOGNITION-GUARD.4): nếu preview một-tem đã
+# chứng minh mask simple-bg bị răng cưa, không bắt người dùng chờ mô hình nặng.
+# Mức 70 là mức đầu tiên trên file `tải xuống.jpg` đưa quỹ đạo
+# từ 2–5 cusp/123–150° về 0 cusp, 82–141 đoạn và ~2,6 giây. Chỉ marker hẹp này
+# mới được nâng sàn; mọi nguồn/multi-sticker và giá trị cao hơn của người dùng
+# giữ nguyên.
+_ROUGH_SIMPLE_BG_DENOISE_WARNING = "simple-bg-preview-denoise-fallback"
+_ROUGH_SIMPLE_BG_DENOISE_MIN = 70.0
+
+
+def _effective_cutline_fidelity(
+    requested: float | int | None,
+    warnings: object,
+) -> float:
+    """Tăng fidelity có điều kiện cho mask đã qua phục hồi offset/bóng."""
+    try:
+        value = float(requested if requested is not None else 50.0)
+    except (TypeError, ValueError):
+        value = 50.0
+    if not math.isfinite(value):
+        value = 50.0
+    try:
+        warning_set = {str(item) for item in (warnings or ())}
+    except TypeError:
+        warning_set = set()
+    if warning_set.intersection(_COMPOSITE_CUTLINE_WARNINGS):
+        return max(value, _COMPOSITE_CUTLINE_FIDELITY_MIN)
+    return value
+
+
+def _effective_composite_curve_tension(
+    requested: float | int | None,
+    corner_style: str,
+    warnings: object,
+) -> float:
+    """Không bo ngầm biên composite khi người dùng đang giữ góc gốc."""
+    try:
+        value = float(requested if requested is not None else 50.0)
+    except (TypeError, ValueError):
+        value = 50.0
+    if not math.isfinite(value):
+        value = 50.0
+    try:
+        warning_set = {str(item) for item in (warnings or ())}
+    except TypeError:
+        warning_set = set()
+    if (
+        warning_set.intersection(_COMPOSITE_CUTLINE_WARNINGS)
+        and str(corner_style).strip().lower() != "round"
+    ):
+        # QUALITY (audit 2026-08-20 §CUTLINE.EDGE): profile precision của
+        # composite phải bám mép trắng thật, không tái áp bán kính 1,5 mm vào
+        # mấu tự do chỉ vì route cũ gửi tension mặc định 50.
+        return 0.0
+    return value
 
 
 def _preview_executor() -> ThreadPoolExecutor:
@@ -78,6 +149,7 @@ def _number(value: float) -> str:
 
 
 _EXACT_ELLIPSE_KAPPA = 0.5522847498307936
+_PT_PER_MM = 72.0 / 25.4
 
 
 def _exact_offset_points(
@@ -236,16 +308,6 @@ def _ellipse_path_segments(
     return segments
 
 
-def _line_path_segments(points: list[tuple[float, float]]) -> list[tuple[tuple[float, float], ...]]:
-    if len(points) < 3:
-        return []
-    return [
-        (start, start, end, end)
-        for index, start in enumerate(points)
-        for end in [points[(index + 1) % len(points)]]
-    ]
-
-
 def _polygon_shape_path_groups(
     shape: dict[str, object],
     *,
@@ -255,6 +317,7 @@ def _polygon_shape_path_groups(
     dpi_y: float,
     total_offset_pts: float,
     corner_style: str,
+    curve_tension: float,
 ) -> list[dict[str, object]] | None:
     raw_coords = shape.get("coords")
     if not isinstance(raw_coords, (list, tuple)):
@@ -284,8 +347,13 @@ def _polygon_shape_path_groups(
             polygon = Polygon(points)
             if polygon.is_empty or not polygon.is_valid:
                 polygon = polygon.buffer(0)
-            join_style = 1 if str(corner_style).strip().lower() == "round" else 2
-            polygon = polygon.buffer(total_offset_pts, join_style=join_style)
+            # Offset miter tạo đúng polygon chuẩn; fillet có bán kính chủ đích
+            # được dựng bằng cubic ở dưới, không lấy 64 chord của Shapely Round.
+            polygon = polygon.buffer(
+                total_offset_pts,
+                join_style=2,
+                mitre_limit=100.0,
+            )
             if polygon.is_empty:
                 return None
             if isinstance(polygon, MultiPolygon):
@@ -293,7 +361,111 @@ def _polygon_shape_path_groups(
             points = [(float(x), float(y)) for x, y in polygon.exterior.coords[:-1]]
         except (ImportError, ValueError, TypeError):
             return None
-    segments = _line_path_segments(points)
+    round_radius_pts = 0.0
+    if str(corner_style).strip().lower() == "round":
+        round_radius_pts = (
+            _cutline_round_radius_mm(curve_tension) * _PT_PER_MM
+        )
+    segments = build_filleted_polygon_beziers(
+        points,
+        radius=round_radius_pts,
+        minimum_straight=(
+            0.25 * _PT_PER_MM if round_radius_pts > 1e-9 else 0.0
+        ),
+    )
+    return [{"exterior": segments, "interiors": []}] if segments else None
+
+
+def _rounded_rect_shape_path_groups(
+    shape: dict[str, object],
+    *,
+    left_px: int,
+    top_px: int,
+    dpi_x: float,
+    dpi_y: float,
+    total_offset_pts: float,
+    corner_style: str,
+    curve_tension: float,
+) -> list[dict[str, object]] | None:
+    """Dựng chữ nhật bo góc từ 4 đỉnh + 4 cung, không lấy mẫu thành chord."""
+    params = _local_shape_params(
+        shape,
+        left_px=left_px,
+        top_px=top_px,
+        dpi_x=dpi_x,
+        dpi_y=dpi_y,
+    )
+    if params is None or not {"cx", "cy", "w", "h"}.issubset(params):
+        # Tương thích manifest thử nghiệm cũ chỉ lưu 68 điểm mẫu mà chưa có
+        # params. Fit lại MỘT lần thành rounded-rect giải tích; không tái xuất
+        # chính 68 chord gây gãy như trước.
+        raw_coords = shape.get("coords")
+        local_points = []
+        if isinstance(raw_coords, (list, tuple)):
+            unit = _shape_coordinate_unit(shape)
+            for raw_point in raw_coords:
+                local = _global_shape_point_to_local(
+                    raw_point,
+                    unit=unit,
+                    left_px=left_px,
+                    top_px=top_px,
+                    dpi_x=dpi_x,
+                    dpi_y=dpi_y,
+                )
+                if local is None:
+                    return None
+                local_points.append(local)
+        if len(local_points) < 8:
+            return None
+        from app.workers.sticker_cut_reconstruct import try_rounded_rect
+
+        reconstructed = try_rounded_rect(
+            np.asarray(local_points, dtype=np.float64),
+            force=True,
+        )
+        if reconstructed is None:
+            return None
+        params = {
+            key: float(value)
+            for key, value in reconstructed.params.items()
+            if isinstance(value, (int, float, np.integer, np.floating))
+        }
+    try:
+        cx = float(params["cx"])
+        cy = float(params["cy"])
+        half_width = float(params["w"]) / 2.0 + total_offset_pts
+        half_height = float(params["h"]) / 2.0 + total_offset_pts
+        source_radius = max(0.0, float(params.get("r", 0.0)) + total_offset_pts)
+        angle = float(params.get("angle", 0.0))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if (
+        min(half_width, half_height) <= 0.0
+        or not all(math.isfinite(value) for value in (
+            cx, cy, half_width, half_height, source_radius, angle,
+        ))
+    ):
+        return None
+    requested_radius = 0.0
+    if str(corner_style).strip().lower() == "round":
+        requested_radius = _cutline_round_radius_mm(curve_tension) * _PT_PER_MM
+    radius = min(max(source_radius, requested_radius), half_width, half_height)
+    points = [
+        _rotated_point(cx, cy, x, y, angle)
+        for x, y in (
+            (-half_width, -half_height),
+            (half_width, -half_height),
+            (half_width, half_height),
+            (-half_width, half_height),
+        )
+    ]
+    segments = build_filleted_polygon_beziers(
+        points,
+        radius=radius,
+        # Rounded-rect/stadium hợp lệ có thể chạm nửa cạnh ngắn; cho hai cung
+        # gần gặp nhau nhưng vẫn không chồng, thay vì co sai bán kính nguồn.
+        edge_cap_ratio=0.499999,
+    )
     return [{"exterior": segments, "interiors": []}] if segments else None
 
 
@@ -308,6 +480,7 @@ def _exact_shape_path_groups(
     offset_mm: float,
     bleed_mm: float,
     corner_style: str,
+    curve_tension: float,
 ) -> list[dict[str, object]] | None:
     """Dựng đường bế từ hình chuẩn, không quay lại contour pixel."""
     total_offset_pts = _exact_offset_points(
@@ -357,18 +530,19 @@ def _exact_shape_path_groups(
             return None
         return [{"exterior": segments, "interiors": []}] if segments else None
     if kind == "rounded_rect":
-        # Rounded-rect có thể dùng polygon exact ở mọi DPI; fallback này vẫn bỏ hẳn
-        # marching-squares nên không còn bậc thang của mask.
-        return _polygon_shape_path_groups(
+        return _rounded_rect_shape_path_groups(
             shape,
             left_px=left_px,
             top_px=top_px,
-            dpi=dpi_x,
+            dpi_x=dpi_x,
             dpi_y=dpi_y_resolved,
             total_offset_pts=total_offset_pts,
             corner_style=corner_style,
+            curve_tension=curve_tension,
         )
-    if kind in {"rect", "triangle"}:
+    if kind in {
+        "rect", "triangle", "pentagon", "hexagon", "heptagon", "octagon",
+    }:
         return _polygon_shape_path_groups(
             shape,
             left_px=left_px,
@@ -377,6 +551,7 @@ def _exact_shape_path_groups(
             dpi_y=dpi_y_resolved,
             total_offset_pts=total_offset_pts,
             corner_style=corner_style,
+            curve_tension=curve_tension,
         )
     return None
 
@@ -402,7 +577,10 @@ def _exact_shapes_by_instance(
             instance_id = int(raw_shape["instance_id"])
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
-        if raw_shape.get("kind") in {"circle", "ellipse", "rounded_rect", "rect", "triangle"}:
+        if raw_shape.get("kind") in {
+            "circle", "ellipse", "rounded_rect", "rect", "triangle",
+            "pentagon", "hexagon", "heptagon", "octagon",
+        }:
             shapes[instance_id] = raw_shape
     return shapes
 
@@ -525,6 +703,104 @@ def _aggregate_cutline_quality(items: list[dict[str, object]]) -> dict[str, obje
     }
 
 
+def _exact_path_quality(
+    path_groups: list[dict[str, object]],
+    *,
+    expect_smooth_joins: bool,
+) -> dict[str, object]:
+    """Đo path exact thật; góc chủ đích chỉ được bảo vệ khi không yêu cầu bo."""
+    summaries = []
+    invalid_ring_count = 0
+    for group in path_groups:
+        for ring in [group["exterior"], *(group.get("interiors") or [])]:
+            summary = _alpha_live_machine_path_summary(ring, mm_to_pts=_PT_PER_MM)
+            if summary is None:
+                invalid_ring_count += 1
+            else:
+                summaries.append(summary)
+    sharp_join_count = sum(
+        len(summary.get("sharp_join_points") or ()) for summary in summaries
+    )
+    trajectory_cusp_count = sum(
+        len(summary.get("trajectory_cusp_points") or ()) for summary in summaries
+    )
+    protected_corner_count = 0 if expect_smooth_joins else sharp_join_count
+    protected_cusp_count = 0 if expect_smooth_joins else trajectory_cusp_count
+    measured_short_segment_count = sum(
+        int(summary.get("short_segment_count", 0)) for summary in summaries
+    )
+    all_paths = [
+        ring
+        for group in path_groups
+        for ring in [group["exterior"], *(group.get("interiors") or [])]
+    ]
+    if expect_smooth_joins:
+        short_segment_count = _analytic_fillet_short_line_count(
+            all_paths,
+            mm_to_pts=_PT_PER_MM,
+        )
+        smooth_short_arc_count = max(
+            0,
+            measured_short_segment_count - short_segment_count,
+        )
+    else:
+        short_segment_count = measured_short_segment_count
+        smooth_short_arc_count = 0
+    disconnected_join_count = sum(
+        int(summary.get("disconnected_join_count", 0)) for summary in summaries
+    )
+    minimum_lengths = [
+        float(summary["minimum_segment_length_mm"])
+        for summary in summaries
+        if summary.get("minimum_segment_length_mm") is not None
+    ]
+    maximum_angles = [
+        float(summary["maximum_join_angle_degrees"])
+        for summary in summaries
+        if summary.get("maximum_join_angle_degrees") is not None
+    ]
+    trajectory_turns = [
+        float(summary["maximum_trajectory_turn_degrees"])
+        for summary in summaries
+        if summary.get("maximum_trajectory_turn_degrees") is not None
+    ]
+    wedge_widths = [
+        float(summary["minimum_wedge_width_mm"])
+        for summary in summaries
+        if summary.get("minimum_wedge_width_mm") is not None
+    ]
+    unprotected_join_count = sharp_join_count - protected_corner_count
+    unprotected_cusp_count = trajectory_cusp_count - protected_cusp_count
+    return {
+        "machine_safe": bool(
+            summaries
+            and invalid_ring_count == 0
+            and short_segment_count == 0
+            and disconnected_join_count == 0
+            and unprotected_join_count == 0
+        ),
+        "segment_count": sum(
+            int(summary.get("segment_count", 0)) for summary in summaries
+        ),
+        "short_segment_count": short_segment_count,
+        "smooth_short_arc_count": smooth_short_arc_count,
+        "disconnected_join_count": disconnected_join_count,
+        "unprotected_join_count": unprotected_join_count,
+        "protected_corner_count": protected_corner_count,
+        "dropped_component_count": 0,
+        "minimum_segment_length_mm": min(minimum_lengths, default=None),
+        "maximum_join_angle_degrees": max(maximum_angles, default=None),
+        "effective_deviation_mm": None,
+        "fit_mode": "disabled" if not path_groups else "exact-geometry",
+        "trajectory_cusp_count": trajectory_cusp_count,
+        "protected_cusp_count": protected_cusp_count,
+        "unprotected_cusp_count": unprotected_cusp_count,
+        "maximum_trajectory_turn_degrees": max(trajectory_turns, default=None),
+        "minimum_wedge_width_mm": min(wedge_widths, default=None),
+        "cutline_hook_tolerated": False,
+    }
+
+
 def build_sticker_cutline_preview(
     session: StickerSheetSession,
     *,
@@ -579,6 +855,23 @@ def build_sticker_cutline_preview(
         ):
             raise StickerSheetExportError("Độ phân giải ảnh không hợp lệ.")
 
+        # QUALITY (audit 2026-08-20 §CUTLINE.EDGE): dùng profile bám sát chỉ
+        # cho mask đã được detector xác nhận đã bỏ offset trắng/bóng lệch. Giữ
+        # giá trị gốc cho cache key để export fallback vẫn tìm đúng artifact.
+        effective_cutline_fidelity = _effective_cutline_fidelity(
+            cutline_fidelity,
+            page.manifest.get("warnings", []),
+        )
+        effective_curve_tension = _effective_composite_curve_tension(
+            curve_tension,
+            corner_style,
+            page.manifest.get("warnings", []),
+        )
+        preserve_alpha_fringe = bool(
+            set(str(item) for item in (page.manifest.get("warnings", []) or ()))
+            .intersection(_COMPOSITE_CUTLINE_WARNINGS)
+        )
+
         preview_width = int(page.preview_width_px)
         preview_height = int(page.preview_height_px)
         exact_shapes = _exact_shapes_by_instance(page, edits)
@@ -588,14 +881,39 @@ def build_sticker_cutline_preview(
         # §CUTJAG.3: thanh kéo thắng cổng tự động. Người dùng kéo về 0 nghĩa là TẮT
         # hẳn, nên phải phân biệt `0.0` với "không gửi field" (`None`).
         denoise_amount = 0.0
+        requested_denoise_value: float | None = None
+        explicit_denoise_off = False
         if cutline_denoise is None:
             denoise_amount = 0.0
         else:
             try:
-                denoise_amount = max(0.0, min(100.0, float(cutline_denoise)))
+                requested_denoise_value = max(
+                    0.0,
+                    min(100.0, float(cutline_denoise)),
+                )
+                denoise_amount = requested_denoise_value
+                explicit_denoise_off = denoise_amount <= 0.0
             except (TypeError, ValueError):
+                requested_denoise_value = 0.0
                 denoise_amount = 0.0
             presmooth_alpha = False
+        manifest_warnings = {
+            str(item) for item in (page.manifest.get("warnings", []) or ())
+        }
+        if (
+            _ROUGH_SIMPLE_BG_DENOISE_WARNING in manifest_warnings
+            and not explicit_denoise_off
+        ):
+            denoise_amount = max(
+                denoise_amount,
+                _ROUGH_SIMPLE_BG_DENOISE_MIN,
+            )
+            presmooth_alpha = False
+            logger.info(
+                "[RECOGNITION-GUARD] áp khử răng cưa %.0f cho preview "
+                "simple-bg thô mà không gọi mô hình nặng",
+                denoise_amount,
+            )
         geometry_key_payload = {
             "page": page_number,
             "revision": revision,
@@ -611,6 +929,7 @@ def build_sticker_cutline_preview(
             "exact_shapes": exact_shapes,
             "presmooth_alpha": presmooth_alpha,
             "cutline_denoise": denoise_amount,
+            "preserve_alpha_fringe": preserve_alpha_fringe,
         }
         geometry_key = hashlib.sha256(json.dumps(
             geometry_key_payload,
@@ -632,14 +951,24 @@ def build_sticker_cutline_preview(
             }
             labels = apply_export_edits(original_labels, edits, valid_ids)
             page_view = _page_session_view(session, page)
-            rgba = _build_edited_rgba(page_view, original_labels, labels)
+            # QUALITY (audit 2026-08-20 §CUTLINE.EDGE): với marker composite,
+            # giữ dải alpha mềm 2 px quanh nhãn; nếu cắt về 0 theo labels nhị
+            # phân thì marching-squares mất dữ liệu chuyển tiếp và đường bế bị
+            # bậc thang dù fidelity cao.
+            rgba = _build_edited_rgba(
+                page_view,
+                original_labels,
+                labels,
+                preserve_alpha_fringe=preserve_alpha_fringe,
+            )
             analysis_height, analysis_width = labels.shape
+            fringe_padding = _CUTLINE_ALPHA_FRINGE_PX if preserve_alpha_fringe else 1
             padding_x = max(
-                1,
+                fringe_padding,
                 round(STICKER_PAGE_PADDING_MM * dpi_x / 25.4),
             )
             padding_y = max(
-                1,
+                fringe_padding,
                 round(STICKER_PAGE_PADDING_MM * dpi_y_resolved / 25.4),
             )
             prepare_jobs = []
@@ -661,18 +990,31 @@ def build_sticker_cutline_preview(
                     int(ys.max()) + padding_y + 1,
                 )
                 exact_shape = exact_shapes.get(instance_id)
-                if exact_shape is not None:
-                    prepare_jobs.append((instance_id, left, top, None, exact_shape))
-                    continue
-                local_mask = labels[top:bottom, left:right] == instance_id
+                local_labels = labels[top:bottom, left:right]
+                local_mask = local_labels == instance_id
+                if preserve_alpha_fringe:
+                    fringe_mask = cv2.dilate(
+                        local_mask.astype(np.uint8),
+                        cv2.getStructuringElement(
+                            cv2.MORPH_ELLIPSE,
+                            (
+                                _CUTLINE_ALPHA_FRINGE_PX * 2 + 1,
+                                _CUTLINE_ALPHA_FRINGE_PX * 2 + 1,
+                            ),
+                        ),
+                    ).astype(bool)
+                    # Không lấy dải alpha của tem kế bên khi hai bbox gần nhau.
+                    fringe_mask &= (local_labels == 0) | local_mask
+                else:
+                    fringe_mask = local_mask
                 alpha = rgba[top:bottom, left:right, 3].copy()
-                alpha[~local_mask] = 0
-                prepare_jobs.append((instance_id, left, top, alpha, None))
+                alpha[~fringe_mask] = 0
+                prepare_jobs.append((instance_id, left, top, alpha, exact_shape))
 
             def prepare_instance(item):
                 instance_id, left, top, alpha, exact_shape = item
                 if exact_shape is not None:
-                    return instance_id, left, top, {"exact_shape": exact_shape}
+                    return instance_id, left, top, {"exact_shape": exact_shape}, alpha
                 prepared = prepare_alpha_cutline_geometry(
                     alpha,
                     dpi=dpi_x,
@@ -690,7 +1032,7 @@ def build_sticker_cutline_preview(
                     raise StickerSheetExportError(
                         f"Không chuẩn bị được đường bế xem trước cho tem {instance_id}."
                     )
-                return instance_id, left, top, prepared
+                return instance_id, left, top, prepared, alpha
 
             prepared_instances = _map_preview_jobs(
                 prepare_instance,
@@ -710,7 +1052,7 @@ def build_sticker_cutline_preview(
         scale_x = preview_width / max(1, analysis_width)
         scale_y = preview_height / max(1, analysis_height)
         def fit_instance(item):
-            instance_id, left, top, prepared = item
+            instance_id, left, top, prepared, local_alpha = item
             exact_shape = prepared.get("exact_shape")
             if isinstance(exact_shape, dict):
                 path_groups = _exact_shape_path_groups(
@@ -723,39 +1065,49 @@ def build_sticker_cutline_preview(
                     offset_mm=offset_mm,
                     bleed_mm=bleed_mm,
                     corner_style=corner_style,
+                    curve_tension=effective_curve_tension,
                 )
                 if path_groups is None:
                     raise StickerSheetExportError(
                         f"Không tạo được đường bế hình học cho tem {instance_id}."
                     )
-                exact_segment_count = sum(
-                    len(ring)
-                    for group in path_groups
-                    for ring in [group["exterior"], *(group.get("interiors") or [])]
+                if not path_groups:
+                    # cut_mode=none: giống nhánh mask disabled, không có path là
+                    # kết quả hợp lệ chứ không phải lỗi chất lượng.
+                    return None
+                exact_kind = str(exact_shape.get("kind", "")).strip().lower()
+                requested_radius_mm = _cutline_round_radius_mm(
+                    effective_curve_tension
+                )
+                expect_smooth_joins = bool(
+                    exact_kind in {"circle", "ellipse", "rounded_rect"}
+                    or (
+                        str(corner_style).strip().lower() == "round"
+                        and requested_radius_mm > 1e-9
+                    )
                 )
                 cutline = {
                     "path_groups": path_groups,
-                    "quality": {
-                        "machine_safe": True,
-                        "segment_count": exact_segment_count,
-                        "short_segment_count": 0,
-                        "disconnected_join_count": 0,
-                        "unprotected_join_count": 0,
-                        "protected_corner_count": 0,
-                        "dropped_component_count": 0,
-                        "minimum_segment_length_mm": None,
-                        "maximum_join_angle_degrees": 0.0,
-                        "effective_deviation_mm": 0.0,
-                        "fit_mode": "disabled" if not path_groups else "exact-geometry",
-                    },
+                    "quality": _exact_path_quality(
+                        path_groups,
+                        expect_smooth_joins=expect_smooth_joins,
+                    ),
                 }
+                if not bool(cutline["quality"].get("machine_safe")):
+                    quality = cutline["quality"]
+                    raise StickerSheetExportError(
+                        f"Tem {instance_id}: đường bế hình học chưa an toàn "
+                        f"({int(quality.get('short_segment_count', 0))} đoạn ngắn, "
+                        f"{int(quality.get('disconnected_join_count', 0))} khớp hở, "
+                        f"{int(quality.get('unprotected_join_count', 0))} khớp gãy)."
+                    )
             else:
                 try:
                     cutline = fit_prepared_alpha_cutline_geometry(
                         prepared,
                         cutline_smoothness=cutline_smoothness,
-                        cutline_fidelity=cutline_fidelity,
-                        curve_tension=curve_tension,
+                        cutline_fidelity=effective_cutline_fidelity,
+                        curve_tension=effective_curve_tension,
                     )
                 except UnsafeCutlineGeometryError as exc:
                     # QUALITY (audit 2026-08-10 §CUTSMOOTH.4): đổi lỗi hình học thành
@@ -786,6 +1138,17 @@ def build_sticker_cutline_preview(
                     ))
                     segment_count += len(ring)
             quality = dict(cutline.get("quality") or {})
+            alpha_value = np.ascontiguousarray(local_alpha, dtype=np.uint8)
+            alpha_sha256 = hashlib.sha256(
+                alpha_value.tobytes(order="C")
+            ).hexdigest()
+            fingerprint_instance = {
+                "instance_id": instance_id,
+                "left": left,
+                "top": top,
+                "path_groups": path_groups,
+                "alpha_sha256": alpha_sha256,
+            }
             return (
                 {
                     "instance_id": instance_id,
@@ -793,26 +1156,32 @@ def build_sticker_cutline_preview(
                     "segment_count": segment_count,
                     "quality": quality,
                 },
-                {
-                    "instance_id": instance_id,
-                    "left": left,
-                    "top": top,
-                    "path_groups": path_groups,
-                },
+                fingerprint_instance,
+                # Dùng cùng buffer với prepared working-set; tránh nhân đôi vài
+                # MB cho mỗi tem chỉ để dựng cache canonical.
+                {**fingerprint_instance, "alpha": alpha_value},
                 segment_count,
                 quality,
             )
 
         response_paths = []
         fingerprint_paths = []
+        cache_instances = []
         quality_items = []
         total_segments = 0
         for fitted in _map_preview_jobs(fit_instance, prepared_instances):
             if fitted is None:
                 continue
-            response_path, fingerprint_path, segment_count, quality = fitted
+            (
+                response_path,
+                fingerprint_path,
+                cache_instance,
+                segment_count,
+                quality,
+            ) = fitted
             response_paths.append(response_path)
             fingerprint_paths.append(fingerprint_path)
+            cache_instances.append(cache_instance)
             quality_items.append(quality)
             total_segments += segment_count
 
@@ -830,6 +1199,8 @@ def build_sticker_cutline_preview(
             "cutline_fidelity": cutline_fidelity,
             "curve_tension": curve_tension,
             "min_detail_area_mm2": min_detail_area_mm2,
+            "requested_cutline_denoise": requested_denoise_value,
+            "effective_cutline_denoise": denoise_amount,
             "paths": fingerprint_paths,
         }
         fingerprint = hashlib.sha256(json.dumps(
@@ -841,6 +1212,7 @@ def build_sticker_cutline_preview(
         # PERF (audit 2026-08-10 §CUTLINE.EXPORT4): export dùng đúng Bézier vừa
         # hiện trên màn hình. Cache chỉ có một bản mới nhất/trang và khóa bao phủ
         # toàn bộ revision, edit, DPI cùng các tham số quỹ đạo.
+        aggregate_quality = _aggregate_cutline_quality(quality_items)
         page.cutline_export_cache = {
             "key": _cutline_export_cache_key(
                 page_number=page_number,
@@ -857,10 +1229,22 @@ def build_sticker_cutline_preview(
                 cutline_fidelity=cutline_fidelity,
                 curve_tension=curve_tension,
                 min_detail_area_mm2=min_detail_area_mm2,
+                cutline_denoise=requested_denoise_value,
             ),
+            "page_number": page_number,
+            "revision": revision,
+            "mask_revision": revision,
+            "fingerprint": fingerprint,
+            "dpi": dpi_x,
+            "dpi_y": dpi_y_resolved,
+            "source_pixel_mm": max(25.4 / dpi_x, 25.4 / dpi_y_resolved),
+            "boundary_source": str(page.boundary_source or "approved"),
+            "requested_cutline_denoise": requested_denoise_value,
+            "effective_cutline_denoise": denoise_amount,
+            "quality": aggregate_quality,
             "analysis_width": analysis_width,
             "analysis_height": analysis_height,
-            "instances": fingerprint_paths,
+            "instances": cache_instances,
         }
         return {
             "page_number": page_number,
@@ -870,5 +1254,5 @@ def build_sticker_cutline_preview(
             "paths": response_paths,
             "fingerprint": fingerprint,
             "segment_count": total_segments,
-            "quality": _aggregate_cutline_quality(quality_items),
+            "quality": aggregate_quality,
         }

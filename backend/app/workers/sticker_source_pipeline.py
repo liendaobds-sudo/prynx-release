@@ -53,6 +53,7 @@ StickerDetectionStrategy = Literal[
     "vector",
     "alpha",
     "simple-bg",
+    "page-box",
     "ai",
 ]
 
@@ -75,6 +76,71 @@ _PDF_ANALYSIS_MAX_EDGE_MID_RAM_PX = 6000
 _PDF_ANALYSIS_BYTES_PER_PX = 20.0
 _PDF_ANALYSIS_RAM_FRACTION = 0.55
 _AUTO_BACKGROUND_CONFIDENCE_MIN = 0.60
+# QUALITY (audit 2026-08-21 §STK.PREVIEW-GATE.1): nền phẳng là cổng rất nhanh,
+# nhưng mask nhị phân của JPEG có thể bám theo răng cưa/halo 1 px và làm đường bế
+# preview khác hẳn đường xuất (nhánh xuất đã nâng sang Alpha AI). Đo độ lệch p99
+# so với contour đã Gaussian-smooth và tỷ lệ góc gắt trên contour đã smooth; chỉ
+# cần một trong hai vượt ngưỡng là nâng hình học. Đo sau smooth để các góc 45° do
+# raster của một hình tròn sạch không bị coi là rác. Nhánh nhiều tem không qua cổng.
+_SIMPLE_BG_PREVIEW_ROUGHNESS_SMOOTH_SIGMA_PX = 3.0
+_SIMPLE_BG_PREVIEW_ROUGHNESS_DEVIATION_P99_PX = 1.20
+_SIMPLE_BG_PREVIEW_ROUGHNESS_TURN_DEGREES = 45.0
+_SIMPLE_BG_PREVIEW_ROUGHNESS_TURN_RATIO_MIN = 0.05
+_SIMPLE_BG_AI_IOU_MIN = 0.80
+_SIMPLE_BG_PREVIEW_DENOISE_FALLBACK_WARNING = (
+    "simple-bg-preview-denoise-fallback"
+)
+# QUALITY (audit 2026-08-20 §CUTLINE.EDGE): silhouette composite đã loại bóng
+# lệch cần fitter giữ nhiều điểm hơn để file xuất khớp đúng preview; chỉ áp dụng
+# khi detector đã gắn marker, không đổi fidelity của các nguồn khác.
+_COMPOSITE_CUTLINE_FIDELITY_MIN = 95.0
+_COMPOSITE_CUTLINE_WARNINGS = frozenset({
+    "simple-bg-composite-recovered",
+    "simple-bg-drop-shadow-removed",
+})
+
+# QUALITY (feedback 2026-08-21 §FULLPAGE.1): ảnh quảng cáo/thẻ thành phẩm thường
+# là MỘT nhãn chữ nhật phủ kín trang. Khi không có nền ngoài, mô hình tách nền chỉ
+# chọn vài chữ/quả nổi bật và ``instances`` trở thành số mảnh nội bộ, không còn là
+# số tem. Fallback dưới đây chỉ dùng cho hợp đồng một-tem (preview classic/legacy),
+# có bằng chứng PDF là một ảnh phủ kín trang, mask AI quá nhỏ, bốn mép không phải
+# nền gần trắng và phần bị AI bỏ vẫn còn nhiều chi tiết ảnh thật.
+_FULL_PAGE_AI_MASK_MAX_RATIO = 0.35
+_FULL_PAGE_BORDER_NEAR_WHITE_MAX_RATIO = 0.60
+_FULL_PAGE_RESIDUAL_EDGE_MIN_RATIO = 0.08
+_FULL_PAGE_RESIDUAL_LUMA_STD_MIN = 18.0
+_FULL_PAGE_METRIC_MAX_EDGE_PX = 512
+_FULL_PAGE_NEAR_WHITE_MIN_CHANNEL = 245
+_FULL_PAGE_NEAR_WHITE_MAX_CHROMA = 18
+_FULL_PAGE_WARNING = "full-page-artwork-page-box"
+
+
+def _effective_composite_curve_tension(
+    requested: float | int | None,
+    corner_style: str,
+    warnings: object,
+) -> float:
+    """Giữ góc gốc cho composite; chỉ bo khi người dùng chọn round."""
+    try:
+        value = float(requested if requested is not None else 50.0)
+    except (TypeError, ValueError):
+        value = 50.0
+    if not math.isfinite(value):
+        value = 50.0
+    try:
+        warning_set = {str(item) for item in (warnings or ())}
+    except TypeError:
+        warning_set = set()
+    if (
+        warning_set.intersection(_COMPOSITE_CUTLINE_WARNINGS)
+        and str(corner_style).strip().lower() != "round"
+    ):
+        # QUALITY (audit 2026-08-20 §CUTLINE.EDGE): route classic từng gửi
+        # tension mặc định dù thanh bo đã ẩn; bỏ bo ngầm để path bám mép ảnh.
+        return 0.0
+    return value
+
+
 _AUTO_FRAGMENT_MIN_INSTANCES = 6
 _AUTO_FRAGMENT_MIN_NESTED = 3
 _AUTO_FRAGMENT_NESTED_RATIO = 0.18
@@ -119,6 +185,41 @@ _EXACT_VECTOR_SHAPE_KINDS = frozenset({
     "triangle",
 })
 
+# QUALITY (audit 2026-08-20 §STICKER-COMPOSITE.1): một số tem raster có viền
+# trắng/xám tách khỏi phần artwork. BiRefNet có thể coi các mảng màu sáng bên
+# trong là nền và làm lõm silhouette. Chỉ phục hồi trường hợp rất hẹp có một
+# vỏ ngoài bao toàn bộ các mảnh đang chồng lên nhau; không biến mask nền thô của
+# tờ nhiều tem thành một đường cắt mới.
+_COMPOSITE_MIN_COMPONENTS = 3
+_COMPOSITE_MAX_COMPONENTS = 12
+_COMPOSITE_COMPONENT_AREA_RATIO = 0.001
+_COMPOSITE_SHELL_MIN_PAGE_RATIO = 0.55
+_COMPOSITE_SHELL_AREA_RATIO_MIN = 0.005
+_COMPOSITE_SHELL_AREA_RATIO_MAX = 0.15
+_COMPOSITE_CHILD_OVERLAP_RATIO = 0.08
+_COMPOSITE_CLOSE_KERNEL_RATIO = 0.035
+_COMPOSITE_CLOSE_KERNEL_MIN = 9
+_COMPOSITE_CLOSE_KERNEL_MAX = 41
+_COMPOSITE_MAX_SEGMENTS = 240
+_COMPOSITE_COLOR_COVERAGE_MIN = 0.90
+# QUALITY (audit 2026-08-20 §WHITE-OFFSET-SHADOW): ảnh AI thường có một dải
+# offset trắng thật rồi mới tới bóng đổ xám lệch hướng. Không được nhập dải bóng
+# này vào CutContour. Các guard dưới đây cố ý chặt: không đủ bằng chứng thì giữ
+# nhánh composite cũ/AI, tuyệt đối không đoán silhouette mới.
+_COMPOSITE_SHADOW_NEUTRAL_MIN = 0.98
+_COMPOSITE_SHADOW_MATERIAL_MAX = 0.005
+_COMPOSITE_SHADOW_DIRECTION_RESULTANT_MIN = 0.35
+_COMPOSITE_SHADOW_DIRECTION_HALF_MIN = 0.72
+_COMPOSITE_SHADOW_DIRECTION_SHIFT_MIN = 0.45
+_COMPOSITE_SHADOW_GAP_MIN_PX = 2.0
+_COMPOSITE_SHADOW_GAP_SPREAD_MAX = 2.0
+_COMPOSITE_SHADOW_GAP_MAX_EDGE_RATIO = 0.04
+# Mỗi container có thêm một chút biên raster vì khoảng cách tới trọng tâm lõi
+# thường lớn hơn đúng bề rộng bóng (các lobe ở góc làm p95 nở ra).
+_COMPOSITE_MULTI_SHADOW_GAP_MAX_EDGE_RATIO = 0.06
+_COMPOSITE_SHADOW_BOUNDARY_MIN = 0.88
+_COMPOSITE_SHADOW_BOUNDARY_GAIN_MIN = 0.08
+
 
 class StickerSourcePipelineError(ValueError):
     """Không thể tạo mask đáng tin cậy bằng chiến lược được yêu cầu."""
@@ -135,6 +236,9 @@ class StickerSourceDetection:
     source_page: int
     vector_geometry_ref: dict[str, object] | None
     warnings: tuple[str, ...]
+    background_rgb: tuple[int, int, int] | None = None
+    background_tolerance: int = 0
+    background_is_flat: bool = False
 
 
 @dataclass(frozen=True)
@@ -147,6 +251,8 @@ class LegacyApprovedContour:
     boundary_source: str
     instance_count: int
     source_pixel_mm: float
+    edge_background_rgb: tuple[int, int, int] | None = None
+    edge_background_tolerance: int = 0
 
 
 def _convert_to_srgb(image: Image.Image) -> Image.Image:
@@ -448,6 +554,180 @@ def _analysis_from_alpha(
     )
 
 
+def _page_box_detection(
+    source_image: Image.Image,
+    *,
+    model: StickerSheetModel,
+    alpha_threshold: int,
+    dpi: tuple[float, float] | None,
+    source_page: int,
+) -> StickerSourceDetection:
+    """Dựng một silhouette kín đúng khổ trang, không dò nền hay chạy AI.
+
+    UI có tùy chọn giữ nền trắng; khi tùy chọn đó tắt, hợp đồng của luồng xuất là
+    coi toàn bộ trang như một tem hình chữ nhật. Preview phải dùng đúng mask đó,
+    thay vì vô tình gọi detector AI/vector rồi cho ra một silhouette khác.
+    """
+    height, width = source_image.height, source_image.width
+    full_alpha = np.full((height, width), 255, dtype=np.uint8)
+    analysis = _analysis_from_alpha(
+        source_image,
+        full_alpha,
+        model=model,
+        alpha_threshold=alpha_threshold,
+    )
+    return StickerSourceDetection(
+        analysis=analysis,
+        source_image=source_image,
+        boundary_source="page-box",
+        strategy_confidence=1.0,
+        needs_review=False,
+        dpi=dpi,
+        source_page=source_page,
+        vector_geometry_ref=None,
+        warnings=(),
+    )
+
+
+def _full_page_artwork_metrics(
+    source_image: Image.Image,
+    analysis: StickerSheetAnalysis,
+    *,
+    source_fills_page: bool,
+) -> dict[str, float] | None:
+    """Chứng minh mask AI chỉ là vài mảnh nằm trong một artwork kín trang.
+
+    Không dùng số component làm bằng chứng vì đó chính là nguyên nhân false
+    positive. Cổng này đo ba đại lượng độc lập trên thumbnail tối đa 512 px:
+
+    - mask AI chỉ phủ một phần nhỏ trang;
+    - cả bốn mép không phải vành nền gần trắng;
+    - phần ngoài mask vẫn giàu biên/texture, tức là nội dung bị AI bỏ chứ không
+      phải khoảng trống phẳng giữa các tem.
+
+    Trả metrics để log/test hoặc ``None`` khi thiếu bất kỳ bằng chứng nào.
+    """
+    if not source_fills_page or not analysis.instances:
+        return None
+    labels = np.asarray(analysis.labels)
+    if labels.shape != (source_image.height, source_image.width):
+        return None
+    mask = labels > 0
+    mask_ratio = float(np.mean(mask))
+    if not math.isfinite(mask_ratio) or mask_ratio > _FULL_PAGE_AI_MASK_MAX_RATIO:
+        return None
+
+    rgb = np.asarray(source_image.convert("RGB"), dtype=np.uint8)
+    height, width = rgb.shape[:2]
+    if min(height, width) < 16:
+        return None
+    scale = min(
+        1.0,
+        _FULL_PAGE_METRIC_MAX_EDGE_PX / float(max(height, width)),
+    )
+    if scale < 1.0:
+        thumb_size = (
+            max(8, int(round(width * scale))),
+            max(8, int(round(height * scale))),
+        )
+        rgb = cv2.resize(rgb, thumb_size, interpolation=cv2.INTER_AREA)
+        mask = cv2.resize(
+            mask.astype(np.uint8),
+            thumb_size,
+            interpolation=cv2.INTER_NEAREST,
+        ) > 0
+
+    height, width = rgb.shape[:2]
+    band = max(2, int(round(min(height, width) * 0.02)))
+    edge_strips = (
+        rgb[:band, :, :],
+        rgb[-band:, :, :],
+        rgb[:, :band, :],
+        rgb[:, -band:, :],
+    )
+    border_near_white_ratios: list[float] = []
+    for strip in edge_strips:
+        minimum = np.min(strip, axis=2)
+        chroma = np.max(strip, axis=2) - minimum
+        near_white = (
+            (minimum >= _FULL_PAGE_NEAR_WHITE_MIN_CHANNEL)
+            & (chroma <= _FULL_PAGE_NEAR_WHITE_MAX_CHROMA)
+        )
+        border_near_white_ratios.append(float(np.mean(near_white)))
+    border_near_white_max = max(border_near_white_ratios)
+    if border_near_white_max > _FULL_PAGE_BORDER_NEAR_WHITE_MAX_RATIO:
+        return None
+
+    support = cv2.dilate(
+        mask.astype(np.uint8),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        iterations=1,
+    ) > 0
+    outside = ~support
+    outside_count = int(np.count_nonzero(outside))
+    if outside_count < max(64, int(outside.size * 0.25)):
+        return None
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    gradient_x = cv2.Sobel(gray, cv2.CV_16S, 1, 0, ksize=3)
+    gradient_y = cv2.Sobel(gray, cv2.CV_16S, 0, 1, ksize=3)
+    gradient = np.maximum(np.abs(gradient_x), np.abs(gradient_y))
+    residual_edge_ratio = float(np.mean(gradient[outside] > 40))
+    residual_luma_std = float(np.std(gray[outside]))
+    if (
+        residual_edge_ratio < _FULL_PAGE_RESIDUAL_EDGE_MIN_RATIO
+        or residual_luma_std < _FULL_PAGE_RESIDUAL_LUMA_STD_MIN
+    ):
+        return None
+    return {
+        "mask_ratio": mask_ratio,
+        "border_near_white_max": border_near_white_max,
+        "residual_edge_ratio": residual_edge_ratio,
+        "residual_luma_std": residual_luma_std,
+    }
+
+
+def _full_page_artwork_page_box_detection(
+    source_image: Image.Image,
+    analysis: StickerSheetAnalysis,
+    *,
+    source_fills_page: bool,
+    model: StickerSheetModel,
+    alpha_threshold: int,
+    dpi: tuple[float, float] | None,
+    source_page: int,
+) -> StickerSourceDetection | None:
+    """Đổi salient fragments thành khung trang trong luồng một-tem duy nhất."""
+    metrics = _full_page_artwork_metrics(
+        source_image,
+        analysis,
+        source_fills_page=source_fills_page,
+    )
+    if metrics is None:
+        return None
+    logger.info(
+        "[STICKER_FULL_PAGE] dùng khung trang thay %d mảnh AI: "
+        "mask=%.1f%% border_white_max=%.1f%% residual_edge=%.1f%% "
+        "residual_std=%.1f",
+        len(analysis.instances),
+        metrics["mask_ratio"] * 100.0,
+        metrics["border_near_white_max"] * 100.0,
+        metrics["residual_edge_ratio"] * 100.0,
+        metrics["residual_luma_std"],
+    )
+    return replace(
+        _page_box_detection(
+            source_image,
+            model=model,
+            alpha_threshold=alpha_threshold,
+            dpi=dpi,
+            source_page=source_page,
+        ),
+        strategy_confidence=0.90,
+        needs_review=True,
+        warnings=(_FULL_PAGE_WARNING,),
+    )
+
+
 def build_legacy_single_page_approved_contour(
     source_path: str,
     *,
@@ -461,8 +741,8 @@ def build_legacy_single_page_approved_contour(
     cutline_smoothness: float = 50.0,
     cutline_fidelity: float = 50.0,
     curve_tension: float = 50.0,
-    # §CUTJAG.3: thanh "Khử răng cưa" 0–100; 0 giữ nguyên hành vi cũ.
-    cutline_denoise: float = 0.0,
+    # §CUTJAG.PARITY1: None = cổng tự động cũ; 0 = người dùng tắt hẳn.
+    cutline_denoise: float | None = None,
     min_detail_area_mm2: float = 1.0,
 ) -> LegacyApprovedContour | None:
     """Dùng cùng Alpha/path của chế độ AI cho đúng một tem raster trong PDF.
@@ -502,6 +782,23 @@ def build_legacy_single_page_approved_contour(
         0,
         (float(page.width_mm), float(page.height_mm)),
     )
+    source_fills_page = _full_page_raster_scale_limit(source_path, 0) is not None
+    detection_started = time.perf_counter()
+    edge_background_rgb: tuple[int, int, int] | None = None
+    edge_background_tolerance = 0
+    try:
+        effective_cutline_fidelity = float(
+            cutline_fidelity if cutline_fidelity is not None else 50.0
+        )
+    except (TypeError, ValueError):
+        effective_cutline_fidelity = 50.0
+    if not math.isfinite(effective_cutline_fidelity):
+        effective_cutline_fidelity = 50.0
+    effective_curve_tension = _effective_composite_curve_tension(
+        curve_tension,
+        corner_style,
+        (),
+    )
     rendered_alpha = np.asarray(source_image.getchannel("A"), dtype=np.uint8)
     if page.has_alpha and has_meaningful_alpha(rendered_alpha, alpha_threshold):
         analysis = _analysis_from_alpha(
@@ -512,21 +809,97 @@ def build_legacy_single_page_approved_contour(
         )
         boundary_source = "alpha"
     else:
-        try:
-            analysis = analyze_sticker_sheet(
-                source_image.convert("RGB"),
-                model=model,
-                alpha_threshold=alpha_threshold,
+        # PERF/QUALITY (audit 2026-08-19 §STK.MEM02/EDGE01): cầu nối legacy
+        # trước đây gọi BiRefNet ngay cả khi bốn góc chứng minh được nền phẳng.
+        # Dùng đúng cổng deterministic của workspace trước; ngoài việc nhanh hơn,
+        # kết quả này còn giữ màu nền thật để bước lấy màu viền không hút halo AA.
+        detected = _background_detection(
+            source_image,
+            model=model,
+            alpha_threshold=alpha_threshold,
+            boundary_source="simple-bg",
+            dpi=dpi,
+            minimum_confidence=_AUTO_BACKGROUND_CONFIDENCE_MIN,
+        )
+        if detected is not None and detected.background_is_flat:
+            edge_background_rgb = detected.background_rgb
+            edge_background_tolerance = max(
+                0,
+                int(detected.background_tolerance),
             )
-        except StickerSheetError as exc:
-            raise StickerSourcePipelineError(str(exc)) from exc
-        boundary_source = "ai"
+        if detected is not None and set(detected.warnings).intersection(
+            _COMPOSITE_CUTLINE_WARNINGS
+        ):
+            # QUALITY (audit 2026-08-20 §CUTLINE.EDGE): giữ cùng profile precision
+            # với preview workspace; key/cache vẫn dùng giá trị caller gửi.
+            effective_cutline_fidelity = max(
+                effective_cutline_fidelity,
+                _COMPOSITE_CUTLINE_FIDELITY_MIN,
+            )
+            effective_curve_tension = _effective_composite_curve_tension(
+                curve_tension,
+                corner_style,
+                detected.warnings,
+            )
+        if (
+            detected is not None
+            and "simple-bg-composite-recovered" in detected.warnings
+        ):
+            # QUALITY (audit 2026-08-20 §STICKER-COMPOSITE.3): đây là artifact
+            # đã qua cổng topology + fitter ở trên, nên legacy phải dùng đúng
+            # Alpha đó. Nếu gọi AI lại tại đây preview và file xuất sẽ lệch nhau.
+            analysis = detected.analysis
+            boundary_source = "simple-bg"
+        else:
+            # QUALITY (feedback 2026-08-19 §STK.CUTJAG04): deterministic chỉ cấp
+            # ngữ cảnh MÀU nền; các ca simple-bg một component vẫn giữ Alpha hình
+            # học của AI để tránh mask nhị phân sinh đường rác.
+            try:
+                analysis = analyze_sticker_sheet(
+                    source_image.convert("RGB"),
+                    model=model,
+                    alpha_threshold=alpha_threshold,
+                )
+            except StickerSheetError as exc:
+                raise StickerSourcePipelineError(str(exc)) from exc
+            boundary_source = "ai"
+
+    if boundary_source == "ai":
+        page_box = _full_page_artwork_page_box_detection(
+            source_image,
+            analysis,
+            source_fills_page=source_fills_page,
+            model=model,
+            alpha_threshold=alpha_threshold,
+            dpi=dpi,
+            source_page=1,
+        )
+        if page_box is not None:
+            analysis = page_box.analysis
+            boundary_source = page_box.boundary_source
+
+    logger.info(
+        "[STICKER_STAGE] stage=legacy_contour_detection boundary=%s "
+        "instances=%d raster_px=%dx%d seconds=%.3f",
+        boundary_source,
+        len(analysis.instances),
+        source_image.width,
+        source_image.height,
+        time.perf_counter() - detection_started,
+    )
 
     # Chế độ cũ là một tem trên một trang. Không biến cầu nối parity này thành
     # bộ tách nhiều tem; ca đó vẫn thuộc workspace AI có bước review riêng.
     if len(analysis.instances) != 1:
         return None
 
+    # QUALITY (feedback 2026-08-19 §CUTJAG.PARITY1): `0` là một lựa chọn
+    # có chủ đích, không phải sentinel cho cổng tự động. Chỉ caller cũ
+    # thiếu field/None mới được presmooth theo loại biên.
+    use_automatic_presmooth = cutline_denoise is None
+    resolved_cutline_denoise = (
+        0.0 if cutline_denoise is None else cutline_denoise
+    )
     try:
         cutline = build_alpha_cutline_geometry(
             analysis.alpha,
@@ -538,19 +911,20 @@ def build_legacy_single_page_approved_contour(
             corner_style=corner_style,
             fill_holes=fill_holes,
             cutline_smoothness=cutline_smoothness,
-            cutline_fidelity=cutline_fidelity,
-            curve_tension=curve_tension,
+            cutline_fidelity=effective_cutline_fidelity,
+            curve_tension=effective_curve_tension,
             min_detail_area_mm2=min_detail_area_mm2,
-            # §CUTJAG.3: thanh kéo thắng cổng tự động; để 0 thì vẫn dùng cổng tự
-            # động theo nguồn biên (mask AI là mask nhị phân hoá từ điểm ảnh).
-            cutline_denoise=cutline_denoise,
-            presmooth_alpha=should_presmooth_cutline_alpha("ai"),
+            cutline_denoise=resolved_cutline_denoise,
+            presmooth_alpha=(
+                use_automatic_presmooth
+                and should_presmooth_cutline_alpha(boundary_source)
+            ),
         )
     except UnsafeCutlineGeometryError as exc:
         raise StickerSourcePipelineError(str(exc)) from exc
     if cutline is None or not cutline.get("path_groups"):
         raise StickerSourcePipelineError(
-            "Không tạo được đường bế an toàn từ vùng tem AI đã nhận diện."
+            "Không tạo được đường bế an toàn từ vùng tem đã nhận diện."
         )
 
     # QUALITY (feedback 2026-08-12 §SEAM.2): DPI render AI chỉ là lưới phân tích,
@@ -577,6 +951,8 @@ def build_legacy_single_page_approved_contour(
         boundary_source=boundary_source,
         instance_count=1,
         source_pixel_mm=source_pixel_mm,
+        edge_background_rgb=edge_background_rgb,
+        edge_background_tolerance=edge_background_tolerance,
     )
 
 
@@ -680,26 +1056,54 @@ def _background_detection(
         # Mask deterministic không còn component hợp lệ thì auto phải đi tiếp tới AI.
         return None
     recovered_white_body = False
-    if (
-        boundary_source == "simple-bg"
-        and minimum_confidence > 0.0
-        and _looks_like_fragmented_sticker_sheet(analysis)
-    ):
-        # QUALITY (audit 2026-08-08 §UNIFIED.11): nền trang và thân tem cùng
-        # gần-trắng làm phép so màu chỉ giữ chữ/viền/bóng, rồi báo hàng chục
-        # "tem" nằm lồng trong cùng một bbox. Confidence màu nền vẫn rất cao,
-        # nên phải có guard topology riêng để auto chuyển sang AI.
-        recovered = _recover_fragmented_near_white_sheet(
-            source_image,
-            background,
-            analysis,
-            model=model,
-            alpha_threshold=alpha_threshold,
-        )
-        if recovered is None:
-            return None
-        analysis = recovered
-        recovered_white_body = True
+    recovered_composite = False
+    if boundary_source == "simple-bg" and minimum_confidence > 0.0:
+        fragmented = _looks_like_fragmented_sticker_sheet(analysis)
+        # QUALITY (audit 2026-08-20 §WHITE-OFFSET-SHADOW): tờ nhiều tem có thể
+        # chỉ còn vỏ + một mảng lõi cho mỗi tem (chưa đạt ngưỡng ``fragmented``),
+        # nhưng vẫn cần đi qua cổng bóng lệch theo từng container. Guard bên
+        # trong cổng này sẽ trả None cho ảnh nhiều tem bình thường.
+        containers = _fragment_container_instances(analysis)
+        recovered_multi = None
+        if len(containers) >= 2:
+            recovered_multi = _recover_multi_composite_shadow_sheet(
+                source_image,
+                background,
+                analysis,
+                model=model,
+                alpha_threshold=alpha_threshold,
+                dpi=dpi,
+            )
+        if recovered_multi is not None:
+            analysis = recovered_multi
+            recovered_composite = True
+        elif fragmented:
+            # QUALITY (audit 2026-08-08 §UNIFIED.11): nền trang và thân tem cùng
+            # gần-trắng làm phép so màu chỉ giữ chữ/viền/bóng, rồi báo hàng chục
+            # "tem" nằm lồng trong cùng một bbox. Confidence màu nền vẫn rất cao,
+            # nên phải có guard topology riêng để auto chuyển sang AI.
+            recovered = _recover_fragmented_near_white_sheet(
+                source_image,
+                background,
+                analysis,
+                model=model,
+                alpha_threshold=alpha_threshold,
+            )
+            if recovered is None:
+                composite = _recover_single_composite_background(
+                    source_image,
+                    background,
+                    model=model,
+                    alpha_threshold=alpha_threshold,
+                    dpi=dpi,
+                )
+                if composite is None:
+                    return None
+                analysis = composite
+                recovered_composite = True
+            else:
+                analysis = recovered
+                recovered_white_body = True
     exact_shapes: tuple[dict[str, object], ...] = ()
     if boundary_source == "vector":
         # QUALITY (feedback 2026-08-16 §XEPTEM.ALPHA): hình chuẩn chỉ được suy ra
@@ -709,6 +1113,14 @@ def _background_detection(
     confidence = background.confidence if boundary_source == "simple-bg" else min(0.72, background.confidence)
     if recovered_white_body:
         confidence = min(confidence, 0.84)
+    detection_warnings: list[str] = []
+    if any(shape.get("kind") in {"circle", "ellipse"} for shape in exact_shapes):
+        detection_warnings.append("round-sticker-contour-inferred")
+    if recovered_composite:
+        detection_warnings.append("simple-bg-composite-recovered")
+    if "simple-bg-drop-shadow-removed" in analysis.warnings:
+        detection_warnings.append("simple-bg-drop-shadow-removed")
+
     return StickerSourceDetection(
         analysis=analysis,
         source_image=source_image,
@@ -722,11 +1134,179 @@ def _background_detection(
             if exact_shapes
             else None
         ),
-        warnings=(
-            ("round-sticker-contour-inferred",)
-            if any(shape.get("kind") in {"circle", "ellipse"} for shape in exact_shapes)
-            else ()
+        warnings=tuple(detection_warnings),
+        background_rgb=tuple(int(value) for value in background.color),
+        background_tolerance=max(0, int(background.tolerance)),
+        background_is_flat=bool(background.is_flat),
+    )
+
+
+def _simple_bg_preview_needs_geometry_upgrade(
+    analysis: StickerSheetAnalysis,
+) -> bool:
+    """Đo nhanh răng cưa của mask nền phẳng trước khi preview gọi AI.
+
+    ``preview_only`` trước đây luôn giữ nguyên mask `simple-bg`, trong khi luồng
+    xuất tự nâng ca một-tem sang Alpha AI. Với ảnh JPEG có halo, hai mask này có
+    thể cùng một bbox nhưng quỹ đạo khác nhau vài pixel quanh toàn bộ viền. Hàm
+    này chỉ là cổng quyết định (không sửa mask): contour được Gaussian-smooth
+    theo vòng kín rồi đo p99 độ lệch và tỷ lệ góc quay gắt. Một trong hai vượt
+    ngưỡng là đủ gọi AI; hình tròn sạch sau smooth không còn các góc raster giả.
+
+    Chỉ nhận một instance; tờ nhiều tem vẫn giữ fast path deterministic như hợp
+    đồng của chế độ ``Tách nhiều tem``.
+    """
+    if (
+        len(analysis.instances) != 1
+        or not isinstance(analysis.labels, np.ndarray)
+        or analysis.labels.ndim != 2
+    ):
+        return False
+    instance = analysis.instances[0]
+    labels = np.asarray(analysis.labels)
+    left = max(0, int(instance.x))
+    top = max(0, int(instance.y))
+    right = min(labels.shape[1], left + int(instance.width))
+    bottom = min(labels.shape[0], top + int(instance.height))
+    if right <= left or bottom <= top:
+        return False
+    component = np.ascontiguousarray(
+        (labels[top:bottom, left:right] == int(instance.id)).astype(np.uint8)
+    )
+    contours, _hierarchy = cv2.findContours(
+        component,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_NONE,
+    )
+    if not contours:
+        return False
+    contour = max(contours, key=cv2.contourArea)
+    points = contour.reshape(-1, 2).astype(np.float64, copy=False)
+    point_count = int(len(points))
+    if point_count < 8:
+        return False
+    sigma = float(_SIMPLE_BG_PREVIEW_ROUGHNESS_SMOOTH_SIGMA_PX)
+    padding = max(8, int(round(sigma * 5.0)))
+    padded = np.vstack((points[-padding:], points, points[:padding]))
+    smoothed = cv2.GaussianBlur(
+        padded.reshape(-1, 1, 2),
+        (0, 0),
+        sigmaX=sigma,
+    ).reshape(-1, 2)[padding:-padding]
+    deviation = np.linalg.norm(points - smoothed, axis=1)
+    p99_deviation = float(np.percentile(deviation, 99.0))
+
+    previous = np.roll(smoothed, 1, axis=0)
+    following = np.roll(smoothed, -1, axis=0)
+    incoming = smoothed - previous
+    outgoing = following - smoothed
+    denominator = np.linalg.norm(incoming, axis=1) * np.linalg.norm(outgoing, axis=1)
+    cosine = np.divide(
+        np.sum(incoming * outgoing, axis=1),
+        denominator,
+        out=np.ones_like(denominator),
+        where=denominator > 1e-9,
+    )
+    turns = np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0)))
+    turn_ratio = float(np.mean(
+        turns > float(_SIMPLE_BG_PREVIEW_ROUGHNESS_TURN_DEGREES)
+    ))
+    rough_by_deviation = (
+        math.isfinite(p99_deviation)
+        and p99_deviation > _SIMPLE_BG_PREVIEW_ROUGHNESS_DEVIATION_P99_PX
+    )
+    rough_by_turn = (
+        math.isfinite(turn_ratio)
+        and turn_ratio > _SIMPLE_BG_PREVIEW_ROUGHNESS_TURN_RATIO_MIN
+    )
+    if not (rough_by_deviation or rough_by_turn):
+        return False
+    logger.info(
+        "[STICKER_PREVIEW_GATE] simple-bg contour thô: points=%d "
+        "p99_deviation=%.3fpx turn_ratio=%.3f; nâng hình học sang AI",
+        point_count,
+        p99_deviation,
+        turn_ratio,
+    )
+    return True
+
+
+def _upgrade_single_simple_background_geometry(
+    detected: StickerSourceDetection,
+    source_image: Image.Image,
+    *,
+    model: StickerSheetModel,
+    alpha_threshold: int,
+) -> StickerSourceDetection:
+    """Dùng Alpha AI cho hình học khi auto chỉ tìm được một tem nền phẳng.
+
+    QUALITY (feedback 2026-08-19 §STK.MULTI-CUT01): chế độ Tách nhiều tem phải
+    giữ fast path deterministic khi nó thật sự tách nhiều tem. Riêng ca chỉ có
+    một tem, Alpha `simple-bg` nhị phân đã xuất 11 CutContour/905 cubic trên file
+    thật. Chạy AI đúng một lần và chỉ nhận khi silhouette AI vẫn là đúng một tem,
+    chồng khít với mask chắc chắn ban đầu.
+    Màu nền scalar của `detected` được giữ nguyên cho bước sinh bù xén.
+    """
+    if (
+        detected.boundary_source != "simple-bg"
+        or len(detected.analysis.instances) != 1
+        or "simple-bg-composite-recovered" in detected.warnings
+    ):
+        return detected
+
+    try:
+        ai_analysis = analyze_sticker_sheet(
+            source_image.convert("RGB"),
+            model=model,
+            alpha_threshold=alpha_threshold,
+        )
+    except (StickerSheetError, MemoryError):
+        # PERF/STABILITY (feedback 2026-08-20 §CUTPREVIEW.MEM2): đây chỉ là
+        # bước nâng hình học tùy chọn. Mask nền phẳng đã hợp lệ phải tiếp tục
+        # cấp preview nếu allocator hết chỗ sau inference, không được biến thành
+        # HTTP 500 rồi khiến WebView đóng session.
+        logger.warning(
+            "Không nâng được hình học simple-bg sang AI; giữ mask đã nhận diện",
+            exc_info=True,
+        )
+        return detected
+    if len(ai_analysis.instances) != 1:
+        logger.info(
+            "Giữ simple-bg vì AI đổi số tem: deterministic=1 ai=%d",
+            len(ai_analysis.instances),
+        )
+        return detected
+
+    deterministic_mask = detected.analysis.labels > 0
+    ai_mask = ai_analysis.labels > 0
+    intersection = int(np.count_nonzero(deterministic_mask & ai_mask))
+    union = int(np.count_nonzero(deterministic_mask | ai_mask))
+    overlap = float(intersection) / float(max(1, union))
+    if overlap < _SIMPLE_BG_AI_IOU_MIN:
+        logger.info(
+            "Giữ simple-bg vì Alpha AI lệch silhouette (IoU=%.3f)",
+            overlap,
+        )
+        return detected
+
+    logger.info(
+        "[STICKER_GEOMETRY] simple-bg→ai instances=1 iou=%.3f",
+        overlap,
+    )
+    return replace(
+        detected,
+        analysis=ai_analysis,
+        boundary_source="ai",
+        strategy_confidence=min(
+            float(detected.strategy_confidence),
+            float(np.mean([item.confidence for item in ai_analysis.instances])),
         ),
+        needs_review=True,
+        warnings=tuple(dict.fromkeys((
+            *detected.warnings,
+            *ai_analysis.warnings,
+            "simple-bg-color-ai-geometry",
+        ))),
     )
 
 
@@ -867,6 +1447,736 @@ def _looks_like_fragmented_sticker_sheet(analysis: StickerSheetAnalysis) -> bool
         int(np.ceil(count * _AUTO_FRAGMENT_NESTED_RATIO)),
     )
     return nested >= required
+
+
+def _recover_composite_white_offset_from_shadow(
+    source_rgb: np.ndarray,
+    raw_labels: np.ndarray,
+    components: list[dict[str, int]],
+    shell_id: int,
+    *,
+    background_rgb: tuple[int, int, int],
+    baseline_mask: np.ndarray,
+    gap_edge_limit_px: float | None = None,
+) -> np.ndarray | None:
+    """Dựng mép offset trắng ở phía *trong* một vỏ bóng xám lệch hướng.
+
+    Khi nền ảnh cũng là trắng, ``foreground_from_flat_background`` làm mất dải
+    offset trắng và chỉ để lại artwork màu cùng drop shadow. Nhánh composite cũ
+    khép toàn bộ các component, vì vậy đường bế chạy theo mép ngoài bóng. Ở đây
+    chỉ nhận một vỏ trung tính, mảnh, có hướng rõ ràng; lấy các component màu làm
+    lõi, đo khoảng hở tới vỏ và nới lõi tới đúng mép trong của bóng. Mọi guard
+    thất bại đều trả ``None`` để caller dùng đường cũ.
+    """
+    if (
+        source_rgb.ndim != 3
+        or source_rgb.shape[2] < 3
+        or raw_labels.shape != source_rgb.shape[:2]
+        or len(components) < _COMPOSITE_MIN_COMPONENTS
+    ):
+        return None
+
+    # Chỉ xử lý ROI bao các component đã chọn. Với PDF có lề lớn, cách này
+    # tránh dựng luma/chroma/distance-transform trên toàn trang trong lúc
+    # preview; mask trả về vẫn giữ nguyên kích thước ảnh nguồn.
+    left = max(0, min(int(item["x"]) for item in components))
+    top = max(0, min(int(item["y"]) for item in components))
+    right = min(
+        source_rgb.shape[1],
+        max(int(item["x"]) + int(item["width"]) for item in components),
+    )
+    bottom = min(
+        source_rgb.shape[0],
+        max(int(item["y"]) + int(item["height"]) for item in components),
+    )
+    if right <= left or bottom <= top:
+        return None
+    rgb = source_rgb[top:bottom, left:right, :3]
+    labels = raw_labels[top:bottom, left:right]
+    baseline = baseline_mask[top:bottom, left:right]
+    rgb_i16 = rgb.astype(np.int16, copy=False)
+    luma = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    chroma = rgb_i16.max(axis=2) - rgb_i16.min(axis=2)
+    bg_pixel = np.asarray([[background_rgb]], dtype=np.uint8)
+    background_luma = int(cv2.cvtColor(bg_pixel, cv2.COLOR_RGB2GRAY)[0, 0])
+    neutral = (
+        (luma >= _AUTO_WHITE_SHADOW_LUMA_MIN)
+        & (luma <= max(
+            _AUTO_WHITE_SHADOW_LUMA_MIN,
+            background_luma - _AUTO_WHITE_SHADOW_BACKGROUND_GAP,
+        ))
+        & (chroma <= 18)
+    )
+    material = (luma <= _AUTO_WHITE_SHADOW_LUMA_MIN) | (chroma >= 30)
+
+    shadow_ids: list[int] = []
+    core_ids: list[int] = []
+    for component in components:
+        raw_id = int(component["raw_id"])
+        pixels = labels == raw_id
+        area = int(np.count_nonzero(pixels))
+        if area <= 0:
+            continue
+        neutral_ratio = float(np.count_nonzero(neutral & pixels)) / float(area)
+        material_ratio = float(np.count_nonzero(material & pixels)) / float(area)
+        if (
+            neutral_ratio >= _COMPOSITE_SHADOW_NEUTRAL_MIN
+            and material_ratio <= _COMPOSITE_SHADOW_MATERIAL_MAX
+        ):
+            shadow_ids.append(raw_id)
+        else:
+            core_ids.append(raw_id)
+
+    # Component được chọn làm vỏ phải thực sự là bóng; nếu là khung xám/viền
+    # in thì không được phép chuyển sang phép nới offset.
+    if shell_id not in shadow_ids or not core_ids:
+        return None
+    shadow_mask = np.isin(labels, shadow_ids)
+    core_mask = np.isin(labels, core_ids)
+    shadow_area = int(np.count_nonzero(shadow_mask))
+    core_area = int(np.count_nonzero(core_mask))
+    if shadow_area <= 0 or core_area < MIN_COMPONENT_AREA_PX:
+        return None
+
+    # Bóng đổ phải có hướng; khung xám đều quanh tem có resultant gần 0 và bị
+    # từ chối. Đo theo trọng tâm artwork để không phụ thuộc hướng cụ thể của ảnh.
+    core_y, core_x = np.nonzero(core_mask)
+    shadow_y, shadow_x = np.nonzero(shadow_mask)
+    if core_x.size == 0 or shadow_x.size == 0:
+        return None
+    center = np.asarray((float(core_x.mean()), float(core_y.mean())))
+    vectors = np.column_stack((shadow_x, shadow_y)).astype(np.float64) - center
+    radii = np.linalg.norm(vectors, axis=1)
+    valid = radii > 1e-6
+    if not np.any(valid):
+        return None
+    resultant = float(np.linalg.norm((vectors[valid] / radii[valid, None]).mean(axis=0)))
+    shadow_center = np.asarray((float(shadow_x.mean()), float(shadow_y.mean())))
+    direction = shadow_center - center
+    direction_norm = float(np.linalg.norm(direction))
+    if direction_norm <= 1e-6:
+        return None
+    direction_unit = direction / direction_norm
+    positive_half = float(np.count_nonzero(vectors @ direction_unit > 0)) / float(len(vectors))
+    core_radius = float(np.mean(
+        np.linalg.norm(
+            np.column_stack((core_x, core_y)).astype(np.float64) - center,
+            axis=1,
+        )
+    ))
+    shift_ratio = direction_norm / max(1e-6, core_radius)
+    if (
+        resultant < _COMPOSITE_SHADOW_DIRECTION_RESULTANT_MIN
+        or positive_half < _COMPOSITE_SHADOW_DIRECTION_HALF_MIN
+        or shift_ratio < _COMPOSITE_SHADOW_DIRECTION_SHIFT_MIN
+    ):
+        return None
+
+    # Khoảng cách từ bóng tới lõi cho biết bề rộng offset trắng. Phân vị thấp
+    # là mép trong của bóng; trừ một pixel để không ăn vào dải xám do raster.
+    distance_to_core = cv2.distanceTransform(
+        (~core_mask).astype(np.uint8),
+        cv2.DIST_L2,
+        5,
+    )
+    shadow_distances = distance_to_core[shadow_mask]
+    if shadow_distances.size == 0:
+        return None
+    gap_p05, gap_p95 = np.percentile(shadow_distances, (5, 95))
+    if gap_edge_limit_px is None:
+        resolved_gap_edge_limit = (
+            min(source_rgb.shape[:2]) * _COMPOSITE_SHADOW_GAP_MAX_EDGE_RATIO
+        )
+    else:
+        try:
+            resolved_gap_edge_limit = float(gap_edge_limit_px)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(resolved_gap_edge_limit) or resolved_gap_edge_limit <= 0:
+            return None
+    if (
+        gap_p05 < _COMPOSITE_SHADOW_GAP_MIN_PX
+        or gap_p95 / max(1e-6, gap_p05) > _COMPOSITE_SHADOW_GAP_SPREAD_MAX
+        or gap_p95 > resolved_gap_edge_limit
+    ):
+        return None
+    radius = max(1, int(math.floor(float(gap_p05))) - 1)
+    candidate = (
+        (distance_to_core <= float(radius))
+        & ~shadow_mask
+    ).astype(np.uint8) * 255
+    candidate[core_mask] = 255
+    if not np.any(candidate):
+        return None
+    candidate_count, _candidate_labels, _stats, _centroids = (
+        cv2.connectedComponentsWithStats(candidate, connectivity=8)
+    )
+    if candidate_count != 2:
+        return None
+
+    def boundary_white_ratio(mask: np.ndarray) -> float:
+        mask_u8 = (mask > 0).astype(np.uint8) * 255
+        inner = cv2.erode(
+            mask_u8,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+            iterations=1,
+        )
+        rim = (mask_u8 > 0) & (inner == 0)
+        colors = rgb[rim]
+        if colors.size == 0:
+            return 0.0
+        minimum = colors.min(axis=1)
+        colors_chroma = colors.max(axis=1) - minimum
+        return float(np.count_nonzero(
+            (minimum >= max(225, background_luma - 2))
+            & (colors_chroma <= 25)
+        )) / float(len(colors))
+
+    before_white = boundary_white_ratio(baseline)
+    after_white = boundary_white_ratio(candidate)
+    if (
+        after_white < _COMPOSITE_SHADOW_BOUNDARY_MIN
+        or after_white - before_white < _COMPOSITE_SHADOW_BOUNDARY_GAIN_MIN
+    ):
+        return None
+    logger.info(
+        "[STICKER_SHADOW] bỏ bóng lệch khỏi offset trắng: shadow=%d core=%d "
+        "resultant=%.3f half=%.3f shift=%.3f gap=%.1f..%.1f radius=%d "
+        "white=%.1f%%→%.1f%%",
+        len(shadow_ids),
+        len(core_ids),
+        resultant,
+        positive_half,
+        shift_ratio,
+        gap_p05,
+        gap_p95,
+        radius,
+        before_white * 100.0,
+        after_white * 100.0,
+    )
+    full_candidate = np.zeros(raw_labels.shape, dtype=np.uint8)
+    full_candidate[top:bottom, left:right] = candidate
+    return full_candidate
+
+
+def _recover_single_composite_background(
+    source_image: Image.Image,
+    background: BackgroundInfo,
+    *,
+    model: StickerSheetModel,
+    alpha_threshold: int,
+    dpi: tuple[float, float] | None = None,
+) -> StickerSheetAnalysis | None:
+    """Khép một tem có vỏ ngoài và nhiều mảng artwork bị tách bởi nền sáng.
+
+    Đây là cổng chất lượng cho đúng dạng ảnh user đang gặp, không phải phép
+    ``close`` áp dụng đại trà. Mặt nạ chỉ được nhận khi có đúng một component
+    mỏng bao các mảnh lớn, ít nhất hai mảnh có bbox chồng nhau, màu sặc được giữ
+    lại, và fitter đường bế xác nhận một quỹ đạo kín an toàn. Mọi ca không đủ
+    bằng chứng đều trả ``None`` để luồng AI hiện hành tiếp quản.
+    """
+    if (
+        not background.is_flat
+        or not background.is_near_white
+        or source_image.width <= 0
+        or source_image.height <= 0
+    ):
+        return None
+
+    raw_mask = np.asarray(background.foreground_mask, dtype=np.uint8)
+    expected_shape = (source_image.height, source_image.width)
+    if raw_mask.shape != expected_shape:
+        return None
+    raw_binary = np.where(raw_mask > 0, 255, 0).astype(np.uint8)
+    if not np.any(raw_binary):
+        return None
+
+    page_area = max(1, int(raw_binary.size))
+    minimum_area = max(
+        MIN_COMPONENT_AREA_PX,
+        int(math.ceil(page_area * _COMPOSITE_COMPONENT_AREA_RATIO)),
+    )
+    count, raw_labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        raw_binary,
+        connectivity=8,
+    )
+    components: list[dict[str, int]] = []
+    for raw_id in range(1, count):
+        area = int(stats[raw_id, cv2.CC_STAT_AREA])
+        if area < minimum_area:
+            continue
+        components.append({
+            "raw_id": int(raw_id),
+            "x": int(stats[raw_id, cv2.CC_STAT_LEFT]),
+            "y": int(stats[raw_id, cv2.CC_STAT_TOP]),
+            "width": int(stats[raw_id, cv2.CC_STAT_WIDTH]),
+            "height": int(stats[raw_id, cv2.CC_STAT_HEIGHT]),
+            "area": area,
+        })
+    if not (
+        _COMPOSITE_MIN_COMPONENTS
+        <= len(components)
+        <= _COMPOSITE_MAX_COMPONENTS
+    ):
+        return None
+
+    def contains(container: dict[str, int], child: dict[str, int]) -> bool:
+        return bool(
+            container["x"] <= child["x"]
+            and container["y"] <= child["y"]
+            and container["x"] + container["width"]
+            >= child["x"] + child["width"]
+            and container["y"] + container["height"]
+            >= child["y"] + child["height"]
+        )
+
+    shell_candidates: list[
+        tuple[dict[str, int], list[dict[str, int]], float]
+    ] = []
+    for candidate in components:
+        if (
+            candidate["width"] < source_image.width * _COMPOSITE_SHELL_MIN_PAGE_RATIO
+            or candidate["height"] < source_image.height * _COMPOSITE_SHELL_MIN_PAGE_RATIO
+        ):
+            continue
+        children = [
+            item
+            for item in components
+            if item is not candidate and contains(candidate, item)
+        ]
+        if len(children) < 2:
+            continue
+        child_area = sum(int(item["area"]) for item in children)
+        shell_ratio = float(candidate["area"]) / float(max(1, child_area))
+        if not (
+            _COMPOSITE_SHELL_AREA_RATIO_MIN
+            <= shell_ratio
+            <= _COMPOSITE_SHELL_AREA_RATIO_MAX
+        ):
+            continue
+        shell_candidates.append((candidate, children, shell_ratio))
+    if len(shell_candidates) != 1:
+        return None
+
+    _shell, children, shell_ratio = shell_candidates[0]
+    overlapping_children = False
+    for index, first in enumerate(children):
+        for second in children[index + 1:]:
+            intersection = _bbox_intersection_area(
+                (
+                    first["x"], first["y"], first["width"], first["height"]
+                ),
+                (
+                    second["x"], second["y"], second["width"], second["height"]
+                ),
+            )
+            smaller_bbox = min(
+                first["width"] * first["height"],
+                second["width"] * second["height"],
+            )
+            if intersection / float(max(1, smaller_bbox)) >= _COMPOSITE_CHILD_OVERLAP_RATIO:
+                overlapping_children = True
+                break
+        if overlapping_children:
+            break
+    if not overlapping_children:
+        return None
+
+    candidate_binary = np.zeros_like(raw_binary)
+    for component in components:
+        candidate_binary[raw_labels == component["raw_id"]] = 255
+
+    source_rgb = np.asarray(source_image.convert("RGB"), dtype=np.uint8)
+
+    kernel_size = int(round(
+        min(source_image.width, source_image.height)
+        * _COMPOSITE_CLOSE_KERNEL_RATIO
+    ))
+    kernel_size = max(
+        _COMPOSITE_CLOSE_KERNEL_MIN,
+        min(_COMPOSITE_CLOSE_KERNEL_MAX, kernel_size),
+    )
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (kernel_size, kernel_size),
+    )
+    closed = cv2.morphologyEx(
+        candidate_binary,
+        cv2.MORPH_CLOSE,
+        kernel,
+    )
+    # QUALITY (audit 2026-08-20 §WHITE-OFFSET-SHADOW): component vỏ trung tính
+    # có thể là drop shadow tách rời, không phải mép cắt. Chỉ thay mask khi
+    # helper chứng minh được hướng bóng, khoảng offset và mép trắng; nếu không
+    # thì giữ nguyên hành vi composite đã có.
+    try:
+        shadow_recovered = _recover_composite_white_offset_from_shadow(
+            source_rgb,
+            raw_labels,
+            components,
+            int(_shell["raw_id"]),
+            background_rgb=background.color,
+            baseline_mask=closed,
+        )
+    except (MemoryError, cv2.error, ValueError, TypeError) as exc:
+        # Đây là nhánh phục hồi tùy chọn; không để thiếu một buffer/ảnh lỗi làm
+        # hỏng toàn bộ preview. AI/nhánh composite cũ sẽ tiếp quản bên dưới.
+        logger.info(
+            "[STICKER_SHADOW] bỏ phục hồi vì lỗi tài nguyên: %s",
+            type(exc).__name__,
+        )
+        shadow_recovered = None
+    if shadow_recovered is not None:
+        candidate_binary = shadow_recovered
+        closed = shadow_recovered
+    closed_area = int(np.count_nonzero(closed))
+    source_area = int(np.count_nonzero(candidate_binary))
+    if (
+        closed_area <= 0
+        or closed_area / float(max(1, source_area)) > 1.25
+    ):
+        return None
+    closed_count, _closed_labels, _closed_stats, _closed_centroids = (
+        cv2.connectedComponentsWithStats(closed, connectivity=8)
+    )
+    if closed_count != 2:
+        # Một silhouette duy nhất là điều kiện bắt buộc; nếu còn nhiều vùng,
+        # đây rất có thể là tờ nhiều tem hoặc artwork rời.
+        return None
+
+    hsv = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2HSV)
+    colorful = (hsv[:, :, 1] >= 45) & (hsv[:, :, 2] >= 45)
+    colorful_source = colorful & (candidate_binary > 0)
+    colorful_count = int(np.count_nonzero(colorful_source))
+    colorful_kept = 0
+    if colorful_count >= 100:
+        colorful_kept = int(np.count_nonzero(colorful_source & (closed > 0)))
+        if colorful_kept / float(colorful_count) < _COMPOSITE_COLOR_COVERAGE_MIN:
+            return None
+
+    # Giữ dải chuyển tiếp cho marching-squares; alpha nhị phân thuần làm đường
+    # bế bậc thang và quay lại đúng hồi quy 905 đoạn trước đây.
+    transition_sigma = max(0.5, kernel_size / 8.0)
+    candidate_alpha = cv2.GaussianBlur(
+        closed,
+        (0, 0),
+        sigmaX=transition_sigma,
+        sigmaY=transition_sigma,
+    )
+    try:
+        analysis = _analysis_from_alpha(
+            source_image,
+            candidate_alpha,
+            model=model,
+            alpha_threshold=alpha_threshold,
+        )
+    except Exception as exc:
+        logger.info(
+            "[STICKER_COMPOSITE] bỏ ứng viên vì không dựng được mask: %s",
+            type(exc).__name__,
+        )
+        return None
+    if len(analysis.instances) != 1:
+        return None
+
+    # QUALITY (audit 2026-08-20 §STICKER-COMPOSITE.2): dùng chính oracle của
+    # CutContour để loại mask khép được bằng ảnh nhưng sinh quỹ đạo rác.
+    try:
+        from app.workers.sticker_engine import build_alpha_cutline_geometry
+
+        dpi_x = float(dpi[0]) if dpi is not None else 300.0
+        dpi_y = float(dpi[1]) if dpi is not None else dpi_x
+        if (
+            not math.isfinite(dpi_x)
+            or not math.isfinite(dpi_y)
+            or dpi_x <= 0.0
+            or dpi_y <= 0.0
+        ):
+            dpi_x = dpi_y = 300.0
+        geometry = build_alpha_cutline_geometry(
+            analysis.alpha,
+            dpi=dpi_x,
+            dpi_y=dpi_y,
+            cut_mode="original",
+            offset_mm=0.0,
+            bleed_mm=2.0,
+            corner_style="round",
+            fill_holes=True,
+            cutline_smoothness=50.0,
+            cutline_fidelity=50.0,
+            curve_tension=50.0,
+            min_detail_area_mm2=1.0,
+            presmooth_alpha=False,
+        )
+    except Exception as exc:
+        # Cổng này chỉ là nhánh phục hồi tùy chọn; lỗi fitter/GEOS/OOM phải
+        # nhường lại cho AI hiện hành, không được làm route detect 500.
+        logger.info(
+            "[STICKER_COMPOSITE] bỏ ứng viên vì fitter không chấp nhận: %s",
+            type(exc).__name__,
+        )
+        return None
+    if not geometry:
+        return None
+    path_groups = geometry.get("path_groups")
+    quality = geometry.get("quality")
+    if not isinstance(path_groups, list) or len(path_groups) != 1:
+        return None
+    if not isinstance(quality, dict) or not bool(quality.get("machine_safe")):
+        return None
+    segment_count = sum(
+        len(group.get("exterior", ()))
+        + sum(len(interior) for interior in group.get("interiors", ()))
+        for group in path_groups
+        if isinstance(group, dict)
+    )
+    if segment_count <= 0 or segment_count > _COMPOSITE_MAX_SEGMENTS:
+        return None
+
+    analysis.warnings.append("simple-bg-composite-recovered")
+    if shadow_recovered is not None:
+        analysis.warnings.append("simple-bg-drop-shadow-removed")
+    logger.info(
+        "[STICKER_COMPOSITE] khôi phục một silhouette từ vỏ ngoài: "
+        "components=%d shell_ratio=%.3f kernel=%d segments=%d colorful=%.1f%%",
+        len(components),
+        shell_ratio,
+        kernel_size,
+        segment_count,
+        100.0
+        if colorful_count <= 0
+        else colorful_kept / float(colorful_count) * 100.0,
+    )
+    return analysis
+
+
+def _recover_multi_composite_shadow_sheet(
+    source_image: Image.Image,
+    background: BackgroundInfo,
+    fragmented_analysis: StickerSheetAnalysis,
+    *,
+    model: StickerSheetModel,
+    alpha_threshold: int,
+    dpi: tuple[float, float] | None = None,
+) -> StickerSheetAnalysis | None:
+    """Khôi phục nhiều tem có offset trắng và bóng đổ lệch hướng.
+
+    ``_recover_single_composite_background`` chỉ nhận một vỏ lớn trên toàn
+    trang. Với chế độ *Tách nhiều tem*, mỗi tem có một vỏ riêng nên phải chạy
+    cùng cổng chất lượng theo từng container rồi ghép lại. Chỉ cần một tem
+    không qua đủ guard là trả ``None`` để giữ nhánh nhận diện cũ/AI; không ghép
+    một phần kết quả vì điều đó làm số tem và thứ tự trên tờ bị sai.
+    """
+    if (
+        not background.is_flat
+        or not background.is_near_white
+        or source_image.width <= 0
+        or source_image.height <= 0
+    ):
+        return None
+    containers = _fragment_container_instances(fragmented_analysis)
+    if len(containers) < 2:
+        return None
+
+    labels = np.asarray(fragmented_analysis.labels)
+    expected_shape = (source_image.height, source_image.width)
+    if labels.shape != expected_shape or labels.ndim != 2:
+        return None
+    # Chỉ đọc RGB; giữ view PIL để không nhân đôi bitmap lớn trong mỗi mode.
+    source_rgb = np.asarray(source_image.convert("RGB"), dtype=np.uint8)
+
+    def _record(instance: StickerInstance) -> dict[str, int]:
+        return {
+            "raw_id": int(instance.id),
+            "x": int(instance.x),
+            "y": int(instance.y),
+            "width": int(instance.width),
+            "height": int(instance.height),
+            "area": int(instance.area_px),
+        }
+
+    def _contains(
+        container: StickerInstance,
+        child: StickerInstance,
+    ) -> bool:
+        return bool(
+            container.x <= child.x
+            and container.y <= child.y
+            and container.x + container.width >= child.x + child.width
+            and container.y + container.height >= child.y + child.height
+        )
+
+    # Dùng cùng kích thước kernel với nhánh một tem. Helper nhận toàn bộ tờ nên
+    # guard khoảng cách bóng vẫn dựa trên cạnh ngắn của nguồn, không bị crop
+    # nhỏ của từng tem làm từ chối một bóng hợp lệ.
+    kernel_size = int(round(
+        min(source_image.width, source_image.height)
+        * _COMPOSITE_CLOSE_KERNEL_RATIO
+    ))
+    kernel_size = max(
+        _COMPOSITE_CLOSE_KERNEL_MIN,
+        min(_COMPOSITE_CLOSE_KERNEL_MAX, kernel_size),
+    )
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (kernel_size, kernel_size),
+    )
+
+    recovered_mask = np.zeros(labels.shape, dtype=np.uint8)
+    # Helper tự cắt ROI khi đo màu/khoảng cách. Baseline dùng một buffer toàn tờ
+    # duy nhất nhưng phép close chỉ chạy trên ROI của từng container, tránh nở
+    # một kernel morphology toàn khung lặp lại cho sáu/giấy nhiều tem.
+    baseline_full = np.zeros(labels.shape, dtype=np.uint8)
+    used_ids: set[int] = set()
+    recovered_count = 0
+    for container in containers:
+        children = [
+            item
+            for item in fragmented_analysis.instances
+            if item.id == container.id or _contains(container, item)
+        ]
+        # Vỏ + ít nhất hai mảng artwork là bằng chứng tối thiểu của composite;
+        # ảnh nhiều tem thông thường sẽ rơi qua guard này và không bị đổi mask.
+        if len(children) < _COMPOSITE_MIN_COMPONENTS:
+            return None
+        records = [_record(item) for item in children]
+        ids = {int(item["raw_id"]) for item in records}
+        if len(ids) != len(records) or used_ids.intersection(ids):
+            return None
+        used_ids.update(ids)
+        artwork_children = [item for item in children if item.id != container.id]
+        overlapping_children = False
+        for index, first in enumerate(artwork_children):
+            for second in artwork_children[index + 1:]:
+                intersection = _bbox_intersection_area(first.bbox, second.bbox)
+                smaller_bbox = min(
+                    first.width * first.height,
+                    second.width * second.height,
+                )
+                if intersection / float(max(1, smaller_bbox)) >= (
+                    _COMPOSITE_CHILD_OVERLAP_RATIO
+                ):
+                    overlapping_children = True
+                    break
+            if overlapping_children:
+                break
+        if not overlapping_children:
+            return None
+
+        region_left = min(int(item["x"]) for item in records)
+        region_top = min(int(item["y"]) for item in records)
+        region_right = min(
+            labels.shape[1],
+            max(int(item["x"]) + int(item["width"]) for item in records),
+        )
+        region_bottom = min(
+            labels.shape[0],
+            max(int(item["y"]) + int(item["height"]) for item in records),
+        )
+        if (
+            region_right <= region_left
+            or region_bottom <= region_top
+        ):
+            return None
+        selected_binary_roi = np.where(
+            np.isin(labels[region_top:region_bottom, region_left:region_right], list(ids)),
+            255,
+            0,
+        ).astype(np.uint8)
+        baseline_roi = cv2.morphologyEx(
+            selected_binary_roi,
+            cv2.MORPH_CLOSE,
+            kernel,
+        )
+        baseline_full[region_top:region_bottom, region_left:region_right] = baseline_roi
+        try:
+            candidate = _recover_composite_white_offset_from_shadow(
+                source_rgb,
+                labels,
+                records,
+                int(container.id),
+                background_rgb=background.color,
+                baseline_mask=baseline_full,
+                gap_edge_limit_px=min(
+                    min(source_rgb.shape[:2])
+                    * _COMPOSITE_SHADOW_GAP_MAX_EDGE_RATIO,
+                    min(container.width, container.height)
+                    * _COMPOSITE_MULTI_SHADOW_GAP_MAX_EDGE_RATIO,
+                ),
+            )
+        except (MemoryError, cv2.error, ValueError, TypeError) as exc:
+            logger.info(
+                "[STICKER_SHADOW] bỏ phục hồi tem nhiều vì lỗi tài nguyên: %s",
+                type(exc).__name__,
+            )
+            return None
+        if candidate is None:
+            return None
+
+        # Mép offset hợp lệ phải nằm trong vỏ đã nhận diện; nếu candidate vượt
+        # ra ngoài thì đây là component lẫn giữa hai tem hoặc guard bị đánh lừa.
+        left = max(0, int(container.x))
+        top = max(0, int(container.y))
+        right = min(candidate.shape[1], left + int(container.width))
+        bottom = min(candidate.shape[0], top + int(container.height))
+        if right <= left or bottom <= top:
+            return None
+        if (
+            np.any(candidate[:top] > 0)
+            or np.any(candidate[bottom:] > 0)
+            or np.any(candidate[top:bottom, :left] > 0)
+            or np.any(candidate[top:bottom, right:] > 0)
+        ):
+            return None
+        candidate_roi = candidate[top:bottom, left:right]
+        recovered_roi = recovered_mask[top:bottom, left:right]
+        if np.any((recovered_roi > 0) & (candidate_roi > 0)):
+            return None
+        recovered_mask[top:bottom, left:right] = np.maximum(
+            recovered_roi,
+            candidate_roi,
+        )
+        recovered_count += 1
+
+    if recovered_count != len(containers) or not np.any(recovered_mask):
+        return None
+
+    # Giữ dải chuyển tiếp cho marching-squares giống nhánh một tem; mỗi
+    # candidate đã qua fitter riêng nên blur này chỉ nối lại alpha ở cấp tờ.
+    transition_sigma = max(0.5, kernel_size / 8.0)
+    candidate_alpha = cv2.GaussianBlur(
+        recovered_mask,
+        (0, 0),
+        sigmaX=transition_sigma,
+        sigmaY=transition_sigma,
+    )
+    try:
+        recovered = _analysis_from_alpha(
+            source_image,
+            candidate_alpha,
+            model=model,
+            alpha_threshold=alpha_threshold,
+        )
+    except (StickerSourcePipelineError, MemoryError, cv2.error, ValueError):
+        return None
+    if (
+        len(recovered.instances) != len(containers)
+        or _looks_like_fragmented_sticker_sheet(recovered)
+    ):
+        return None
+    recovered.warnings.append("simple-bg-composite-recovered")
+    recovered.warnings.append("simple-bg-drop-shadow-removed")
+    logger.info(
+        "[STICKER_COMPOSITE] khôi phục %d tem từ offset trắng, đã bỏ bóng lệch "
+        "kernel=%d",
+        recovered_count,
+        kernel_size,
+    )
+    return recovered
 
 
 def _bbox_intersection_area(
@@ -1221,15 +2531,24 @@ def detect_sticker_source(
     model: StickerSheetModel = DEFAULT_MODEL,
     alpha_threshold: int = DEFAULT_ALPHA_THRESHOLD,
     page_number: int = 1,
+    preview_only: bool = False,
 ) -> StickerSourceDetection:
-    """Nhận diện một trang/ảnh từ session inspected, không ghi session."""
+    """Nhận diện một trang/ảnh từ session inspected, không ghi session.
+
+    ``preview_only`` giữ fast path ``simple-bg`` khi contour đã sạch. Nếu cổng
+    hình học phát hiện răng cưa/halo thì preview vẫn nâng đúng một lần sang Alpha
+    AI; artifact đã promote sau đó được cả preview và bước xuất tái sử dụng.
+    Nhánh mặc định vẫn nâng mọi ca ``simple-bg`` một-tem như trước.
+    """
     # UIUX (audit 2026-08-09 §MP.2): stage thuộc trang nguồn. Dùng stage toàn
     # session khiến trang đầu vừa promote đã chặn mọi trang còn lại trong tài liệu.
     page_state = session.pages.get(page_number)
     stage = page_state.stage if page_state is not None else session.stage
     if stage not in ("inspected", "detecting"):
         raise StickerSourcePipelineError("Nguồn tem không còn ở trạng thái chờ nhận diện.")
-    if strategy not in ("auto", "existing-cut", "vector", "alpha", "simple-bg", "ai"):
+    if strategy not in (
+        "auto", "existing-cut", "vector", "alpha", "simple-bg", "page-box", "ai"
+    ):
         raise StickerSourcePipelineError("Chiến lược nhận diện không được hỗ trợ.")
     if not 1 <= page_number <= session.page_count:
         raise StickerSourcePipelineError("Trang cần nhận diện không tồn tại trong file nguồn.")
@@ -1238,6 +2557,16 @@ def detect_sticker_source(
     if session.source_kind == "raster":
         source_image = _load_raster_source(session)
         dpi = session.dpi
+        if strategy == "page-box":
+            # QUALITY (feedback 2026-08-19 §CUTPREVIEW.PAGEBOX1): giữ nền trắng
+            # tắt thì không được rơi qua nhánh Alpha/nền phẳng/AI.
+            return _page_box_detection(
+                source_image,
+                model=model,
+                alpha_threshold=alpha_threshold,
+                dpi=dpi,
+                source_page=1,
+            )
         rgba = np.asarray(source_image, dtype=np.uint8)
         raw_alpha = rgba[:, :, 3]
         has_clean_alpha = has_meaningful_alpha(raw_alpha, alpha_threshold)
@@ -1274,7 +2603,33 @@ def detect_sticker_source(
                 ),
             )
             if detected is not None:
-                return replace(detected, dpi=dpi, source_page=1)
+                resolved = replace(detected, dpi=dpi, source_page=1)
+                rough_preview = bool(
+                    strategy == "auto"
+                    and preview_only
+                    and _simple_bg_preview_needs_geometry_upgrade(
+                        resolved.analysis,
+                    )
+                )
+                if strategy == "auto" and (not preview_only or rough_preview):
+                    resolved = _upgrade_single_simple_background_geometry(
+                        resolved,
+                        source_image,
+                        model=model,
+                        alpha_threshold=alpha_threshold,
+                    )
+                if rough_preview and resolved.boundary_source == "simple-bg":
+                    # AI thiếu RAM/không đủ parity: vẫn cho preview xác định,
+                    # nhưng buộc worker dùng profile khử răng cưa an toàn.
+                    resolved = replace(
+                        resolved,
+                        needs_review=True,
+                        warnings=tuple(dict.fromkeys((
+                            *resolved.warnings,
+                            _SIMPLE_BG_PREVIEW_DENOISE_FALLBACK_WARNING,
+                        ))),
+                    )
+                return resolved
             if strategy == "simple-bg":
                 raise StickerSourcePipelineError("Nền ảnh không đủ đồng nhất để tách an toàn.")
 
@@ -1288,6 +2643,18 @@ def detect_sticker_source(
             )
         except StickerSheetError as exc:
             raise StickerSourcePipelineError(str(exc)) from exc
+        if strategy == "auto" and preview_only:
+            page_box = _full_page_artwork_page_box_detection(
+                source_image,
+                analysis,
+                source_fills_page=True,
+                model=model,
+                alpha_threshold=alpha_threshold,
+                dpi=dpi,
+                source_page=1,
+            )
+            if page_box is not None:
+                return page_box
         return StickerSourceDetection(
             analysis=analysis,
             source_image=source_image,
@@ -1310,6 +2677,17 @@ def detect_sticker_source(
         page_index,
         (float(width_mm), float(height_mm)),
     )
+    if strategy == "page-box":
+        # QUALITY (feedback 2026-08-19 §CUTPREVIEW.PAGEBOX1): render chỉ để có
+        # đúng kích thước hiển thị; hình học là full-page mask, không đọc
+        # CutContour/vector/nền và không nạp detector AI.
+        return _page_box_detection(
+            source_image,
+            model=model,
+            alpha_threshold=alpha_threshold,
+            dpi=dpi,
+            source_page=page_number,
+        )
     cut_count = int(page_manifest.get("cut_contour_count", 0))
     has_vector = bool(page_manifest.get("has_vector", False))
     has_alpha = bool(page_manifest.get("has_alpha", False))
@@ -1452,7 +2830,35 @@ def detect_sticker_source(
             ),
         )
         if detected is not None:
-            return replace(detected, dpi=dpi, source_page=page_number)
+            resolved = replace(
+                detected,
+                dpi=dpi,
+                source_page=page_number,
+            )
+            rough_preview = bool(
+                strategy == "auto"
+                and preview_only
+                and _simple_bg_preview_needs_geometry_upgrade(
+                    resolved.analysis,
+                )
+            )
+            if strategy == "auto" and (not preview_only or rough_preview):
+                resolved = _upgrade_single_simple_background_geometry(
+                    resolved,
+                    source_image,
+                    model=model,
+                    alpha_threshold=alpha_threshold,
+                )
+            if rough_preview and resolved.boundary_source == "simple-bg":
+                resolved = replace(
+                    resolved,
+                    needs_review=True,
+                    warnings=tuple(dict.fromkeys((
+                        *resolved.warnings,
+                        _SIMPLE_BG_PREVIEW_DENOISE_FALLBACK_WARNING,
+                    ))),
+                )
+            return resolved
         if strategy == "simple-bg":
             raise StickerSourcePipelineError("Nền trang PDF không đủ đồng nhất để tách an toàn.")
 
@@ -1466,6 +2872,21 @@ def detect_sticker_source(
         )
     except StickerSheetError as exc:
         raise StickerSourcePipelineError(str(exc)) from exc
+    if strategy == "auto" and preview_only:
+        page_box = _full_page_artwork_page_box_detection(
+            source_image,
+            analysis,
+            source_fills_page=(
+                _full_page_raster_scale_limit(str(session.source_path), page_index)
+                is not None
+            ),
+            model=model,
+            alpha_threshold=alpha_threshold,
+            dpi=dpi,
+            source_page=page_number,
+        )
+        if page_box is not None:
+            return page_box
     return StickerSourceDetection(
         analysis=analysis,
         source_image=source_image,

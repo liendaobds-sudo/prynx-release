@@ -9,7 +9,8 @@ import numpy as np
 from PIL import Image
 import pikepdf
 import pytest
-from shapely.geometry import Polygon
+from shapely.geometry import LineString, Point, Polygon, box
+from shapely.ops import unary_union
 
 import app.workers.sticker_engine as sticker_engine_module
 import app.workers.sticker_sheet_export as sticker_export_module
@@ -132,8 +133,9 @@ def test_suc_cang_duoc_tu_dong_hoa_khong_lam_cung_duong_cong() -> None:
 
 def test_do_bo_cong_dieu_khien_ban_kinh_round_thuc() -> None:
     assert _cutline_round_radius_mm(0, 25.4 / 72.0) == pytest.approx(0.0)
-    assert _cutline_round_radius_mm(50, 25.4 / 72.0) == pytest.approx(0.35)
-    assert _cutline_round_radius_mm(100, 25.4 / 300.0) == pytest.approx(0.25)
+    assert _cutline_round_radius_mm(50, 25.4 / 72.0) == pytest.approx(1.5)
+    assert _cutline_round_radius_mm(50, 25.4 / 300.0) == pytest.approx(1.5)
+    assert _cutline_round_radius_mm(100, 25.4 / 300.0) == pytest.approx(3.0)
 
     mask = np.zeros((240, 300), dtype=np.uint8)
     points = np.array([
@@ -568,6 +570,7 @@ def test_khoa_cache_preview_phu_day_du_tham_so_xuat() -> None:
         "cutline_fidelity": 61.0,
         "curve_tension": 48.0,
         "min_detail_area_mm2": 0.8,
+        "cutline_denoise": 70.0,
     }
     original = sticker_export_module._cutline_export_cache_key(**base)
     variants = {
@@ -585,6 +588,7 @@ def test_khoa_cache_preview_phu_day_du_tham_so_xuat() -> None:
         "cutline_fidelity": 62.0,
         "curve_tension": 49.0,
         "min_detail_area_mm2": 0.9,
+        "cutline_denoise": 71.0,
     }
 
     changed = {
@@ -1010,6 +1014,34 @@ def test_phep_do_quy_dao_khong_bao_dong_gia_tren_duong_muot() -> None:
     assert float(summary["maximum_trajectory_turn_degrees"]) < 20.0
 
 
+@pytest.mark.parametrize(
+    ("quality", "expected"),
+    (
+        ({
+            "unprotected_cusp_count": 2,
+            "maximum_trajectory_turn_degrees": 73.0,
+            "minimum_wedge_width_mm": 0.30,
+        }, True),
+        ({
+            "unprotected_cusp_count": 1,
+            "maximum_trajectory_turn_degrees": 91.0,
+            "minimum_wedge_width_mm": 0.40,
+        }, True),
+        ({
+            "unprotected_cusp_count": 1,
+            "maximum_trajectory_turn_degrees": 55.0,
+            "minimum_wedge_width_mm": 0.30,
+        }, False),
+    ),
+)
+def test_cua_nhan_dien_tu_choi_moc_nghiem_trong(
+    quality: dict[str, object],
+    expected: bool,
+) -> None:
+    """Không coi machine_safe là đủ khi cubic còn quay ngược thành móc."""
+    assert sticker_engine_module._cutline_hook_is_severe(quality) is expected
+
+
 def test_gom_dai_mau_lien_nhau_thanh_mot_cusp() -> None:
     """Một cái móc trải 1–3 mẫu; không gom thì đếm sai và so khớp góc chạy thừa."""
     turns = np.zeros(20, dtype=np.float64)
@@ -1157,6 +1189,30 @@ def test_thanh_khu_rang_cua_bi_kep_theo_mm_khi_dpi_thap() -> None:
     )
 
 
+def test_thanh_khu_rang_cua_72dpi_khong_bi_bao_hoa_tu_muc_70() -> None:
+    """72 DPI vẫn đủ lưới để 70/100 khác nhau; không khóa cả hai ở 0,85 px.
+
+    Đây là hồi quy của wrapper `tải xuống.jpg`: cap 0,30 mm nhỏ hơn một pixel
+    nguồn làm slider 70, 85 và 100 sinh cùng mask, fitter phải ôm hàng trăm node.
+    """
+    mask = _jagged_circle_mask()
+    px_per_mm = 72.0 / 25.4
+    medium = sticker_engine_module.denoise_cutline_mask(
+        mask,
+        amount=70,
+        px_per_mm=px_per_mm,
+    )
+    maximum = sticker_engine_module.denoise_cutline_mask(
+        mask,
+        amount=100,
+        px_per_mm=px_per_mm,
+    )
+
+    assert not np.array_equal(medium, maximum)
+    assert _contour_turn_variation(maximum) < _contour_turn_variation(medium)
+    assert np.count_nonzero(maximum >= 128) >= np.count_nonzero(mask >= 128) * 0.9
+
+
 def test_thanh_khu_rang_cua_dung_chung_van_mask_mong() -> None:
     """Thanh kéo cũng phải chịu van §CUTJAG.2, không được bào mask thành rỗng."""
     soi = np.zeros((8, 400), dtype=np.uint8)
@@ -1197,3 +1253,323 @@ def test_thanh_khu_rang_cua_thang_cong_tu_dong() -> None:
     assert abs(thanh_keo.area - tu_dong.area) / tu_dong.area > 1e-4
     # Nhưng vẫn là khử nhiễu, không phải bo hình: lệch diện tích dưới 2%.
     assert abs(thanh_keo.area - tu_dong.area) / tu_dong.area < 0.02
+
+
+# ---------------------------------------------------------------------------
+# §CUTHYBRID.1 — chuẩn hóa cục bộ line/arc, không nuốt đoạn contour tự do
+# ---------------------------------------------------------------------------
+
+
+_HYBRID_DPI = 300.0
+_HYBRID_PT_PER_PX = 72.0 / _HYBRID_DPI
+
+
+def _hybrid_rounded_rect(
+    left: float,
+    top: float,
+    right: float,
+    bottom: float,
+    radius: float,
+):
+    return box(
+        left + radius,
+        top + radius,
+        right - radius,
+        bottom - radius,
+    ).buffer(radius, quad_segs=32)
+
+
+def _hybrid_rasterize(geometry, shape: tuple[int, int]) -> np.ndarray:
+    mask = np.zeros(shape, dtype=np.uint8)
+    parts = [geometry] if isinstance(geometry, Polygon) else list(geometry.geoms)
+    for part in parts:
+        cv2.fillPoly(
+            mask,
+            [np.rint(np.asarray(part.exterior.coords)).astype(np.int32)],
+            255,
+            lineType=cv2.LINE_8,
+        )
+        for interior in part.interiors:
+            cv2.fillPoly(
+                mask,
+                [np.rint(np.asarray(interior.coords)).astype(np.int32)],
+                0,
+                lineType=cv2.LINE_8,
+            )
+    return cv2.GaussianBlur(mask, (0, 0), sigmaX=0.65, sigmaY=0.65)
+
+
+def _hybrid_prepare(mask: np.ndarray):
+    prepared = sticker_engine_module.prepare_alpha_cutline_geometry(
+        mask,
+        dpi=_HYBRID_DPI,
+        dpi_y=_HYBRID_DPI,
+        min_detail_area_mm2=0,
+        fill_holes=False,
+        cutline_denoise=30,
+    )
+    assert prepared is not None
+    return prepared
+
+
+def _hybrid_fit(mask: np.ndarray):
+    result = build_alpha_cutline_geometry(
+        mask,
+        dpi=_HYBRID_DPI,
+        dpi_y=_HYBRID_DPI,
+        min_detail_area_mm2=0,
+        fill_holes=False,
+        cutline_smoothness=50,
+        cutline_fidelity=95,
+        curve_tension=0,
+        cutline_denoise=30,
+    )
+    assert result is not None
+    return result
+
+
+def _hybrid_topology(geometry) -> tuple[int, tuple[int, ...]]:
+    parts = [geometry] if isinstance(geometry, Polygon) else list(geometry.geoms)
+    return len(parts), tuple(sorted(len(part.interiors) for part in parts))
+
+
+def _hybrid_assert_machine_safe(result) -> None:
+    quality = result["quality"]
+    assert quality["machine_safe"] is True
+    assert int(quality["short_segment_count"]) == 0
+    assert int(quality["disconnected_join_count"]) == 0
+    assert int(quality["unprotected_join_count"]) == 0
+    # G1 ở mối nối primitive ↔ contour tự do; dung sai 2° rộng hơn nhiễu số.
+    assert float(quality["maximum_join_angle_degrees"] or 0.0) <= 2.0
+
+
+def _partial_rounded_rect_with_free_protrusion() -> tuple[np.ndarray, np.ndarray]:
+    """Nửa trái là chữ nhật bo; bên phải là nhánh hữu cơ phải giữ nguyên."""
+    body = _hybrid_rounded_rect(130, 70, 650, 970, 72)
+    arm = LineString([(620, 575), (715, 535), (790, 600)]).buffer(
+        29,
+        cap_style=1,
+        join_style=1,
+        quad_segs=24,
+    )
+    hand = Point(800, 610).buffer(43, quad_segs=32)
+    lower_lobe = LineString([(635, 730), (700, 780)]).buffer(
+        20,
+        cap_style=1,
+        join_style=1,
+        quad_segs=20,
+    )
+    ideal = unary_union((body, arm, hand, lower_lobe)).buffer(0)
+    clean = _hybrid_rasterize(ideal, (1050, 900))
+    noisy = (clean >= 128).astype(np.uint8) * 255
+    rng = np.random.default_rng(20260820)
+    random_jitter = rng.choice((-1, 0, 1), size=691, p=(0.28, 0.44, 0.28))
+    for offset, y in enumerate(range(175, 866)):
+        xs = np.flatnonzero(noisy[y] > 0)
+        assert xs.size
+        old_x = int(xs[0])
+        wave = 1.35 * math.sin(offset * 0.31) + 0.80 * math.sin(offset * 0.83)
+        new_x = old_x + int(round(wave + random_jitter[offset]))
+        if new_x > old_x:
+            noisy[y, old_x:new_x] = 0
+        elif new_x < old_x:
+            noisy[y, new_x:old_x] = 255
+    noisy = cv2.GaussianBlur(noisy, (0, 0), sigmaX=0.65, sigmaY=0.65)
+    return clean, noisy
+
+
+def test_hybrid_chuan_hoa_canh_thang_bo_goc_nhung_giu_mau_nho_huu_co() -> None:
+    """Ca dương: lọc rung dưới pixel, không biến cả tem thành rounded-rect."""
+    clean, noisy = _partial_rounded_rect_with_free_protrusion()
+    expected = _hybrid_prepare(clean)["ideal_geometry"]
+    source = _hybrid_prepare(noisy)["ideal_geometry"]
+    result = _hybrid_fit(noisy)
+    fitted = result["geometry"]
+
+    assert _hybrid_topology(fitted) == _hybrid_topology(expected)
+    assert source.hausdorff_distance(fitted) / _PT_PER_MM <= 0.35
+    # Guard toan cuc rong hon primitive cục bộ: phan nhô huu co vẫn được phép
+    # bám raster trong 0,30 mm; riêng cạnh thẳng bị khóa chặt ở phép đo bên dưới.
+    assert expected.hausdorff_distance(fitted) / _PT_PER_MM <= 0.30
+
+    # Vùng nhô bên phải không được classifier rounded-rect nuốt hoặc kéo thẳng.
+    body_right_pts = 650.0 * _HYBRID_PT_PER_PX
+    protrusion = expected.difference(box(-1e6, -1e6, body_right_pts, 1e6))
+    assert fitted.intersection(protrusion).area / protrusion.area >= 0.985
+    assert abs(fitted.bounds[2] - expected.bounds[2]) / _PT_PER_MM <= 0.15
+
+    # Đo đúng phần cạnh thẳng người dùng nhìn thấy, tránh hai cung bo ở đầu.
+    points = np.asarray(fitted.exterior.coords[:-1], dtype=np.float64)
+    y0, y1 = 190.0 * _HYBRID_PT_PER_PX, 850.0 * _HYBRID_PT_PER_PX
+    expected_x = 130.0 * _HYBRID_PT_PER_PX
+    side = points[
+        (points[:, 1] >= y0)
+        & (points[:, 1] <= y1)
+        & (points[:, 0] <= expected_x + 2.0 * _PT_PER_MM)
+    ]
+    assert len(side) >= 4
+    residual_mm = np.abs(side[:, 0] - expected_x) / _PT_PER_MM
+    # Baseline 2026-08-20: p95=0,2045 mm, peak=0,2506 mm — test phải đỏ
+    # cho tới khi có primitive line cục bộ thay vì spline bám mọi răng pixel.
+    assert float(np.quantile(residual_mm, 0.95)) <= 0.06
+    assert float(np.max(residual_mm)) <= 0.12
+
+    # Không chỉ nhìn thẳng bằng raster: rail dài phải thật sự được rút gọn còn
+    # một cubic chính và tối đa hai đoạn chuyển tiếp ở hai cung bo. Điều này
+    # khóa hồi quy "thẳng bằng mắt nhưng đầy node rác" khi mở trong Illustrator.
+    side_segments = []
+    for segment in result["paths"][0]:
+        start = np.asarray(segment[0], dtype=np.float64)
+        end = np.asarray(segment[3], dtype=np.float64)
+        delta = np.abs(end - start)
+        if (
+            max(float(start[0]), float(end[0]))
+            <= expected_x + 2.0 * _PT_PER_MM
+            and float(delta[1]) > float(delta[0]) * 4.0
+        ):
+            side_segments.append(segment)
+    chord_lengths_mm = [
+        float(
+            np.linalg.norm(
+                np.asarray(segment[3], dtype=np.float64)
+                - np.asarray(segment[0], dtype=np.float64)
+            )
+            / _PT_PER_MM
+        )
+        for segment in side_segments
+    ]
+    assert len(side_segments) <= 3
+    assert max(chord_lengths_mm, default=0.0) >= 50.0
+    _hybrid_assert_machine_safe(result)
+
+
+def test_hybrid_khong_nhan_dien_lai_quy_dao_khi_keo_thanh_preview(
+    monkeypatch,
+) -> None:
+    """Tuning đổi liên tục phải tái fit, nhưng không phân tích lại cùng contour."""
+    _clean, noisy = _partial_rounded_rect_with_free_protrusion()
+    prepared = _hybrid_prepare(noisy)
+    original = sticker_engine_module._regularize_partial_straight_reference
+    call_count = 0
+
+    def counting_regularizer(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sticker_engine_module,
+        "_regularize_partial_straight_reference",
+        counting_regularizer,
+    )
+    first = sticker_engine_module.fit_prepared_alpha_cutline_geometry(
+        prepared,
+        cutline_smoothness=45,
+        cutline_fidelity=90,
+        curve_tension=0,
+    )
+    second = sticker_engine_module.fit_prepared_alpha_cutline_geometry(
+        prepared,
+        cutline_smoothness=55,
+        cutline_fidelity=95,
+        curve_tension=0,
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first["paths"] != second["paths"]
+    assert call_count == 1
+    assert "_hybrid_reference_cache" in prepared
+
+
+def _hybrid_negative_cases():
+    angles = np.linspace(0.0, 2.0 * math.pi, 540, endpoint=False)
+    radius = 285.0 + 44.0 * np.cos(3 * angles + 0.35) + 21.0 * np.sin(7 * angles)
+    organic = Polygon(np.column_stack((
+        450.0 + radius * np.cos(angles),
+        500.0 + radius * np.sin(angles),
+    ))).buffer(0)
+
+    gear_points = []
+    for index in range(18 * 4):
+        angle = index * 2.0 * math.pi / (18 * 4)
+        tooth_radius = 305.0 if index % 4 in (1, 2) else 255.0
+        gear_points.append((
+            440.0 + tooth_radius * math.cos(angle),
+            440.0 + tooth_radius * math.sin(angle),
+        ))
+    gear = Polygon(gear_points).buffer(0)
+
+    notched = _hybrid_rounded_rect(100, 100, 780, 750, 65)
+    for y in (260, 440, 620):
+        notched = notched.difference(Point(100, y).buffer(34, quad_segs=20))
+    notched = notched.union(Point(780, 360).buffer(52, quad_segs=24)).buffer(0)
+
+    text_mask = np.zeros((900, 900), dtype=np.uint8)
+    cv2.putText(
+        text_mask,
+        "A",
+        (105, 760),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        8.5,
+        255,
+        thickness=74,
+        lineType=cv2.LINE_AA,
+    )
+
+    first = _hybrid_rounded_rect(70, 120, 420, 760, 55)
+    second = _hybrid_rounded_rect(438, 110, 810, 770, 62)
+    close_mask = _hybrid_rasterize(first.union(second), (880, 880))
+
+    y_values = np.linspace(160.0, 880.0, 180)
+    left = 135.0 + 15.0 * np.sin((y_values - 80.0) * 2.0 * math.pi / 108.0)
+    wavy = Polygon([
+        (215, 80), (625, 80), (700, 155), (700, 885), (625, 960), (215, 960),
+        *reversed(list(zip(left, y_values))),
+    ]).buffer(18, join_style=1, quad_segs=20).buffer(
+        -18,
+        join_style=1,
+        quad_segs=20,
+    )
+    return (
+        ("organic", _hybrid_rasterize(organic, (1000, 900)), 0.18),
+        ("gear", _hybrid_rasterize(gear, (880, 880)), 0.20),
+        ("notches", _hybrid_rasterize(notched, (850, 900)), 0.20),
+        ("text", text_mask, 0.28),
+        ("multiple_close", close_mask, 0.16),
+        ("genuine_wavy", _hybrid_rasterize(wavy, (1050, 850)), 0.35),
+    )
+
+
+@pytest.mark.parametrize(
+    ("case_name", "mask", "hausdorff_limit_mm"),
+    _hybrid_negative_cases(),
+    ids=("organic", "gear", "notches", "text", "multiple_close", "genuine_wavy"),
+)
+def test_hybrid_khong_bao_mat_chi_tiet_that(
+    case_name: str,
+    mask: np.ndarray,
+    hausdorff_limit_mm: float,
+) -> None:
+    """Ca âm: blob/răng/khấc/chữ/nhiều tem/sóng thật không được sửa thành rác."""
+    reference = _hybrid_prepare(mask)["ideal_geometry"]
+    result = _hybrid_fit(mask)
+    fitted = result["geometry"]
+
+    assert _hybrid_topology(fitted) == _hybrid_topology(reference)
+    assert reference.hausdorff_distance(fitted) / _PT_PER_MM <= hausdorff_limit_mm
+    if case_name == "multiple_close":
+        parts = list(fitted.geoms)
+        assert len(parts) == 2
+        assert parts[0].distance(parts[1]) / _PT_PER_MM >= 1.30
+    elif case_name == "genuine_wavy":
+        points = np.asarray(fitted.exterior.coords[:-1], dtype=np.float64)
+        y0, y1 = 230.0 * _HYBRID_PT_PER_PX, 810.0 * _HYBRID_PT_PER_PX
+        side = points[
+            (points[:, 1] >= y0)
+            & (points[:, 1] <= y1)
+            & (points[:, 0] <= np.quantile(points[:, 0], 0.35))
+        ]
+        # Biên lượn thật có biên độ ~2,5 mm đỉnh-đỉnh, không được ép thành line.
+        assert float(np.ptp(side[:, 0]) / _PT_PER_MM) >= 1.80
+    _hybrid_assert_machine_safe(result)

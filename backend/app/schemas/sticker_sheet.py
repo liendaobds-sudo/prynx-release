@@ -15,6 +15,7 @@ StickerBoundarySource = Literal[
     "vector",
     "alpha",
     "simple-bg",
+    "page-box",
     "ai",
     "manual",
 ]
@@ -81,11 +82,15 @@ class StickerSourceDetectRequest(BaseModel):
         "vector",
         "alpha",
         "simple-bg",
+        "page-box",
         "ai",
     ] = "auto"
     model: StickerSheetModel = "birefnet-lite"
     alpha_threshold: int = Field(default=128, ge=1, le=254)
     page_number: int = Field(default=1, ge=1)
+    # PERF (feedback 2026-08-20 §CUTPREVIEW.FAST1): preview classic được phép
+    # giữ mask nền phẳng đã đủ tin cậy, không chạy bước nâng hình học AI tùy chọn.
+    preview_only: bool = False
 
 
 class StickerSourceRefineRequest(BaseModel):
@@ -251,7 +256,8 @@ class StickerCutlineQualityResponse(BaseModel):
     fit_mode: str = "unknown"
     # §CUTHOOK.1: gai/móc nằm bên trong một cubic nên `maximum_join_angle_degrees`
     # (chỉ đo tiếp tuyến tại anchor) không thấy. Bốn field dưới đo trên quỹ đạo được
-    # lấy mẫu dày, hiện chỉ để báo cáo — chưa tham gia quyết định `machine_safe`.
+    # lấy mẫu dày; cổng cuối dùng chúng để từ chối móc nghiêm trọng sau khi đã thử
+    # hết ứng viên sạch, còn cusp thật khớp reference vẫn được bảo vệ.
     trajectory_cusp_count: int = Field(default=0, ge=0)
     unprotected_cusp_count: int = Field(default=0, ge=0)
     maximum_trajectory_turn_degrees: float | None = Field(

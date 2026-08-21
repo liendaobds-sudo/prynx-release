@@ -33,6 +33,16 @@ SOFT_EDGE_RADIUS_PX = 2
 MAX_UNCERTAIN_ALPHA = 207
 MIN_UNCERTAIN_ALPHA = 48
 
+# PERF/STABILITY (feedback 2026-08-20 §CUTPREVIEW.MEM1): scale Alpha bằng LUT
+# 256 byte thay vì dựng một bản sao float32 toàn trang. Khi model AI vừa nhả peak
+# bộ nhớ, chính bản sao nhỏ này từng là cấp phát cuối làm request preview văng 500.
+_SOFT_ALPHA_SCALE_LUT = np.clip(
+    (np.arange(256, dtype=np.float32) - MIN_UNCERTAIN_ALPHA)
+    * (255.0 / float(MAX_UNCERTAIN_ALPHA - MIN_UNCERTAIN_ALPHA)),
+    0.0,
+    255.0,
+).astype(np.uint8)
+
 logger = logging.getLogger(__name__)
 
 # PERF (audit 2026-08-10 §AI-SPEED.1): cache đúng Alpha model, không cache
@@ -327,11 +337,7 @@ def _clean_alpha(raw_alpha: np.ndarray, labels: np.ndarray) -> np.ndarray:
         (SOFT_EDGE_RADIUS_PX * 2 + 1, SOFT_EDGE_RADIUS_PX * 2 + 1),
     )
     soft_support = cv2.dilate(accepted, kernel, iterations=1) > 0
-    scaled = (
-        (raw_alpha.astype(np.float32) - MIN_UNCERTAIN_ALPHA)
-        * (255.0 / float(MAX_UNCERTAIN_ALPHA - MIN_UNCERTAIN_ALPHA))
-    )
-    scaled = np.clip(scaled, 0.0, 255.0).astype(np.uint8)
+    scaled = _SOFT_ALPHA_SCALE_LUT[np.asarray(raw_alpha, dtype=np.uint8)]
     return np.where(soft_support, scaled, 0).astype(np.uint8)
 
 
@@ -808,6 +814,12 @@ def analyze_sticker_sheet(
         post_started = time.perf_counter()
         model_array = np.asarray(model_result, dtype=np.uint8)
         raw_alpha = model_array[:, :, 3].copy()
+        # PERF/STABILITY (feedback 2026-08-20 §CUTPREVIEW.MEM3): từ đây màu
+        # của output model không còn được dùng. Nhả RGBA sớm để hậu xử lý không
+        # chồng thêm labels/mask lên đúng peak RAM của inference.
+        del model_array
+        model_result.close()
+        del model_result
         binary = np.where(raw_alpha >= int(alpha_threshold), 255, 0).astype(np.uint8)
         min_area = max(
             MIN_COMPONENT_AREA_PX,
@@ -830,6 +842,12 @@ def analyze_sticker_sheet(
                 # đổi số tem thì bỏ lượt bóc bóng và giữ nguyên kết quả model.
                 if len(refined_records) == len(records):
                     shadow_exclusion[(binary > 0) & (refined_binary == 0)] = 255
+                del _refined_raw_labels
+            del refined_binary
+
+        # `_build_analysis_from_raw_alpha` dựng lại component/labels theo mask
+        # đã chốt; giữ prepass này sống trong lúc gọi hàm chỉ làm tăng peak RAM.
+        del binary, raw_labels
 
         # COLOR (audit 2026-08-05 §AI2.COLOR1): model chỉ quyết định Alpha.
         return _build_analysis_from_raw_alpha(
@@ -844,43 +862,58 @@ def analyze_sticker_sheet(
             post_started=post_started,
         )
 
-    # Runner test/custom phải luôn chạy để caller kiểm được đúng một invocation.
-    if model_runner is not None:
-        return run_uncached(model_runner)
+    try:
+        # Runner test/custom phải luôn chạy để caller kiểm được đúng một invocation.
+        if model_runner is not None:
+            return run_uncached(model_runner)
 
-    # Runner bị thay lúc runtime (chủ yếu trong test) không có cùng hợp đồng version
-    # với model thật, nên phải chạy trực tiếp thay vì đọc cache persistent của app.
-    if _run_background_model is not _DEFAULT_BACKGROUND_RUNNER:
-        return run_uncached(_run_background_model)
+        # Runner bị thay lúc runtime (chủ yếu trong test) không có cùng hợp đồng version
+        # với model thật, nên phải chạy trực tiếp thay vì đọc cache persistent của app.
+        if _run_background_model is not _DEFAULT_BACKGROUND_RUNNER:
+            return run_uncached(_run_background_model)
 
-    cache_key = _ai_alpha_cache_key(
-        source_rgb,
-        model=model,
-        alpha_threshold=alpha_threshold,
-        min_component_area_ratio=min_component_area_ratio,
-    )
-    with _ai_alpha_cache_lock(cache_key):
-        cache_started = time.perf_counter()
-        cached = _load_ai_alpha_cache(cache_key, (source.height, source.width))
-        if cached is not None:
-            raw_alpha, shadow_exclusion = cached
-            return _build_analysis_from_raw_alpha(
-                source,
-                raw_alpha,
-                model=model,
-                alpha_threshold=alpha_threshold,
-                min_component_area_ratio=min_component_area_ratio,
-                shadow_exclusion=shadow_exclusion,
-                shadow_cleanup="auto",
-                model_seconds=0.0,
-                post_started=cache_started,
-            )
+        cache_key = _ai_alpha_cache_key(
+            source_rgb,
+            model=model,
+            alpha_threshold=alpha_threshold,
+            min_component_area_ratio=min_component_area_ratio,
+        )
+        with _ai_alpha_cache_lock(cache_key):
+            cache_started = time.perf_counter()
+            cached = _load_ai_alpha_cache(cache_key, (source.height, source.width))
+            if cached is not None:
+                raw_alpha, shadow_exclusion = cached
+                return _build_analysis_from_raw_alpha(
+                    source,
+                    raw_alpha,
+                    model=model,
+                    alpha_threshold=alpha_threshold,
+                    min_component_area_ratio=min_component_area_ratio,
+                    shadow_exclusion=shadow_exclusion,
+                    shadow_cleanup="auto",
+                    model_seconds=0.0,
+                    post_started=cache_started,
+                )
 
-        result = run_uncached(_run_background_model)
-        if result.raw_alpha is not None and result.shadow_exclusion is not None:
-            _store_ai_alpha_cache(
-                cache_key,
-                result.raw_alpha,
-                result.shadow_exclusion,
-            )
-        return result
+            result = run_uncached(_run_background_model)
+            if result.raw_alpha is not None and result.shadow_exclusion is not None:
+                _store_ai_alpha_cache(
+                    cache_key,
+                    result.raw_alpha,
+                    result.shadow_exclusion,
+                )
+            return result
+    except StickerSheetError:
+        raise
+    except Exception as exc:
+        if _is_background_model_memory_error(exc):
+            # STABILITY (feedback 2026-08-20 §CUTPREVIEW.MEM4): lỗi cấp phát
+            # trong hậu xử lý cũng phải thành lỗi nghiệp vụ có kiểm soát; trước
+            # đây chỉ OOM bên trong ONNX được chuyển đổi, còn NumPy làm route 500.
+            logger.exception("Không còn đủ bộ nhớ khi hậu xử lý vùng tem")
+            raise StickerSheetError(
+                "Máy không còn đủ bộ nhớ để nhận diện vùng tem. "
+                "File gốc vẫn được giữ; hãy đóng bớt ứng dụng hoặc khởi động lại "
+                "PrynX rồi thử lại."
+            ) from exc
+        raise

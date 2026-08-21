@@ -55,10 +55,12 @@ from app.workers.sticker_engine import (
     _fit_alpha_bezier_paths,
     _fit_alpha_simplified_anchor_paths,
     _fit_preserved_contour_paths,
+    _budgeted_hausdorff_distance,
     _geometry_within_hausdorff_budget,
     _infer_document_image_pixel_mm,
     _infer_full_page_image_pixel_mm,
     _filter_full_page_jpeg_halo_components,
+    _page_box_corner_foreground_for_bleed,
     _reconstruct_cut_geometry_parts,
     _PT_PER_MM,
     _round_preserved_corners,
@@ -291,6 +293,148 @@ def _make_rounded_rectangle_sticker_pdf(path: str) -> None:
     )
     pdf.showPage()
     pdf.save()
+
+
+def _make_vector_rounded_navy_on_white_pdf(path: str) -> None:
+    """Tem navy vector bo góc sát khổ, bốn góc trang là nền trắng."""
+    from reportlab.pdfgen import canvas
+
+    size_mm = 30.0
+    radius_mm = 7.0
+    page_size = size_mm * _PT_PER_MM
+    pdf = canvas.Canvas(
+        path,
+        pagesize=(page_size, page_size),
+        pageCompression=0,
+    )
+    pdf.setFillColorRGB(26 / 255.0, 42 / 255.0, 74 / 255.0)
+    pdf.roundRect(
+        0,
+        0,
+        page_size,
+        page_size,
+        radius_mm * _PT_PER_MM,
+        stroke=0,
+        fill=1,
+    )
+    pdf.showPage()
+    pdf.save()
+
+
+def _make_white_page_with_inset_round_border_pdf(path: str) -> None:
+    """Trang trắng có khung vàng bo góc, gần giống ca người dùng báo lỗi."""
+    from reportlab.pdfgen import canvas
+
+    width_mm, height_mm = 55.0, 75.0
+    width_pt = width_mm * _PT_PER_MM
+    height_pt = height_mm * _PT_PER_MM
+    inset_pt = 3.0 * _PT_PER_MM
+    pdf = canvas.Canvas(
+        path,
+        pagesize=(width_pt, height_pt),
+        pageCompression=0,
+    )
+    pdf.setFillColorRGB(1.0, 1.0, 1.0)
+    pdf.rect(0, 0, width_pt, height_pt, stroke=0, fill=1)
+    pdf.setStrokeColorRGB(0.82, 0.65, 0.39)
+    pdf.setLineWidth(0.35 * _PT_PER_MM)
+    pdf.roundRect(
+        inset_pt,
+        inset_pt,
+        width_pt - 2 * inset_pt,
+        height_pt - 2 * inset_pt,
+        4.0 * _PT_PER_MM,
+        stroke=1,
+        fill=0,
+    )
+    pdf.showPage()
+    pdf.save()
+
+
+def _make_white_page_with_bottom_navy_pdf(path: str) -> None:
+    """Trang trắng hợp lệ, chỉ có mảng navy chạm riêng cạnh dưới."""
+    from reportlab.pdfgen import canvas
+
+    width_mm, height_mm = 55.0, 75.0
+    width_pt = width_mm * _PT_PER_MM
+    height_pt = height_mm * _PT_PER_MM
+    pdf = canvas.Canvas(
+        path,
+        pagesize=(width_pt, height_pt),
+        pageCompression=0,
+    )
+    pdf.setFillColorRGB(1.0, 1.0, 1.0)
+    pdf.rect(0, 0, width_pt, height_pt, stroke=0, fill=1)
+    pdf.setFillColorRGB(13 / 255.0, 41 / 255.0, 75 / 255.0)
+    pdf.rect(0, 0, width_pt, 9.0 * _PT_PER_MM, stroke=0, fill=1)
+    pdf.showPage()
+    pdf.save()
+
+
+def _make_low_dpi_rounded_navy_jpeg_pdf(path: str) -> None:
+    """JPEG 72 DPI có cung bo anti-alias pha navy với nền trắng."""
+    import io
+    from PIL import Image, ImageDraw
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+
+    size_mm = 30.0
+    radius_mm = 7.0
+    source_dpi = 72.0
+    size_px = int(round(size_mm * source_dpi / 25.4))
+    supersample = 4
+    high_size = size_px * supersample
+    image = Image.new("RGB", (high_size, high_size), (255, 255, 255))
+    ImageDraw.Draw(image).rounded_rectangle(
+        (0, 0, high_size - 1, high_size - 1),
+        radius=int(round(radius_mm * source_dpi / 25.4 * supersample)),
+        fill=(26, 42, 74),
+    )
+    image = image.resize((size_px, size_px), Image.Resampling.LANCZOS)
+    jpeg = io.BytesIO()
+    image.save(jpeg, format="JPEG", quality=88)
+    jpeg.seek(0)
+
+    page_size = size_mm * _PT_PER_MM
+    pdf = canvas.Canvas(
+        path,
+        pagesize=(page_size, page_size),
+        pageCompression=0,
+    )
+    pdf.drawImage(
+        ImageReader(jpeg),
+        0,
+        0,
+        width=page_size,
+        height=page_size,
+    )
+    pdf.showPage()
+    pdf.save()
+
+
+def _read_visible_bleed_rgb(path: str) -> np.ndarray:
+    """Đọc pixel RGB có alpha nhìn thấy từ đúng XObject bù xén."""
+    with pikepdf.Pdf.open(path) as result:
+        xobjects = result.pages[0].Resources.get("/XObject", {})
+        bleed_images = [
+            xobjects[name]
+            for name in xobjects
+            if str(xobjects[name].get("/Subtype")) == "/Image"
+            and xobjects[name].get("/SMask") is not None
+        ]
+        assert len(bleed_images) == 1
+        bleed_image = bleed_images[0]
+        width = int(bleed_image.get("/Width"))
+        height = int(bleed_image.get("/Height"))
+        rgb = np.frombuffer(
+            bleed_image.read_bytes(), dtype=np.uint8
+        ).reshape(height, width, 3)
+        alpha = np.frombuffer(
+            bleed_image.get("/SMask").read_bytes(), dtype=np.uint8
+        ).reshape(height, width)
+    visible = rgb[alpha >= 128]
+    assert visible.size > 0
+    return visible
 
 
 def _make_white_outline_pdf(
@@ -663,7 +807,9 @@ def test_process_pdf_original_round_succeeds(src_pdf, tmp_path):
         page = o.pages[0]
         cs = page.obj.get("/Resources", {}).get("/ColorSpace", {})
         assert "/CutContour" in cs, "Phải đăng ký spot color CutContour"
-        assert b"/CutContour CS" in _read_all_content(page), "Phải vẽ đường cắt CutContour"
+        content = _read_all_content(page)
+        assert b"/CutContour CS" in content, "Phải vẽ đường cắt CutContour"
+        assert b" c\n" in content, "Góc tròn phải xuất cubic fillet, không phải polyline miter"
         assert "/TrimBox" in page.obj, "Phải gắn TrimBox theo viền cắt"
 
 
@@ -1323,6 +1469,31 @@ def test_buffer_guard_matches_exact_hausdorff_for_polygon_with_hole(budget):
         budget,
         first_envelope=geometry.buffer(budget, join_style=1),
     ) is expected
+
+
+def test_budgeted_hausdorff_gives_safe_upper_bound_and_exact_fallback():
+    """Metric live phải bảo thủ trong budget và giữ exact khi candidate vượt trần."""
+    geometry = Polygon(
+        [(0, 0), (10, 0), (10, 10), (0, 10)],
+        [[(3, 3), (7, 3), (7, 7), (3, 7)]],
+    )
+    candidate = geometry.buffer(-0.10, join_style=1)
+    exact = geometry.hausdorff_distance(candidate)
+    budget = 0.20
+    estimated = _budgeted_hausdorff_distance(
+        geometry,
+        candidate,
+        budget,
+        iterations=7,
+    )
+
+    assert estimated + 1e-9 >= exact
+    assert estimated - exact <= budget / (2 ** 7) + 1e-6
+    assert _budgeted_hausdorff_distance(
+        geometry,
+        candidate,
+        exact * 0.5,
+    ) == pytest.approx(exact)
 
 
 def test_preserve_mode_keeps_auto_safe_shape_contract(src_pdf, tmp_path):
@@ -2062,6 +2233,287 @@ def test_trajectory_rounded_rectangle_fills_all_output_corners(
         for corner in media_corner_patches
     ]
     assert max(media_white_fractions) < 0.10, media_white_fractions
+
+
+@pytest.mark.parametrize("bleed_color_type", ["image", "trajectory"])
+def test_rounded_vector_bleed_does_not_stretch_white_antialias(
+    tmp_path, bleed_color_type
+):
+    """Cung bo vector phải kéo navy sạch, không phóng pixel AA pha trắng ra bleed."""
+    src = str(tmp_path / f"rounded_vector_{bleed_color_type}_source.pdf")
+    out = str(tmp_path / f"rounded_vector_{bleed_color_type}_bleed.pdf")
+    _make_vector_rounded_navy_on_white_pdf(src)
+
+    success, meta = StickerEngine(dpi=300).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="original",
+        offset_mm=0.0,
+        corner_style="preserve",
+        bleed_mm=3.0,
+        fill_holes=True,
+        remove_white_bg=True,
+        bleed_color_type=bleed_color_type,
+        draw_cut_contour=False,
+        rectangle_mode=False,
+        shape_mode="contour",
+    )
+    assert success is True
+    assert meta.get("warning") is None
+
+    visible = _read_visible_bleed_rgb(out).astype(np.int16)
+    navy = np.array([26, 42, 74], dtype=np.int16)
+    color_error = np.max(np.abs(visible - navy), axis=1)
+    assert float(np.mean(color_error > 20)) < 0.01
+    assert float(np.percentile(color_error, 99)) <= 20.0
+
+
+def test_low_dpi_rounded_jpeg_image_bleed_rejects_broad_white_fringe(tmp_path):
+    """AA/JPEG pha trắng rộng và trơn vẫn phải lùi tới nguồn navy phủ đủ chu vi."""
+    src = str(tmp_path / "rounded_72dpi_jpeg_source.pdf")
+    out = str(tmp_path / "rounded_72dpi_jpeg_bleed.pdf")
+    _make_low_dpi_rounded_navy_jpeg_pdf(src)
+
+    success, meta = StickerEngine(dpi=300).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="original",
+        offset_mm=0.0,
+        corner_style="preserve",
+        bleed_mm=3.0,
+        fill_holes=True,
+        remove_white_bg=True,
+        bleed_color_type="image",
+        draw_cut_contour=False,
+        rectangle_mode=False,
+        shape_mode="contour",
+    )
+    assert success is True
+    assert meta.get("warning") is None
+    assert int(meta["pages"][0]["edge_sample_peel_px"]) > 1
+
+    visible = _read_visible_bleed_rgb(out).astype(np.int16)
+    navy = np.array([26, 42, 74], dtype=np.int16)
+    white = np.array([255, 255, 255], dtype=np.int16)
+    color_error = np.max(np.abs(visible - navy), axis=1)
+    distance_to_white = np.max(np.abs(visible - white), axis=1)
+    assert float(np.mean(distance_to_white <= 72)) < 0.01
+    # JPEG nguồn vẫn có dao động vài chục mức quanh navy, nhưng không được còn
+    # dải pha trắng; p95 thấp hơn nhiều so với baseline kéo nền (≈229).
+    assert float(np.percentile(color_error, 95)) < 40.0
+
+
+@pytest.mark.parametrize("bleed_color_type", ["image", "trajectory"])
+def test_page_box_round_bleed_replaces_square_white_corners(
+    tmp_path, bleed_color_type
+):
+    """Giữ nền trang nhưng bo dao vẫn phải phủ màu vào bốn góc ngoài cung gốc.
+
+    Đây là đúng luồng classic khi người dùng không bật ``Bỏ nền trắng``: mask
+    nguồn ban đầu là cả trang vuông, còn CutContour được fillet theo thanh Độ bo.
+    Artwork vuông phải được clip theo footprint bo để lớp bù xén navy bên dưới
+    thay phần góc, không để lại tam giác trắng giữa trang gốc và đường dao.
+    """
+    import pypdfium2 as pdfium
+
+    src = str(tmp_path / f"page_box_round_{bleed_color_type}_source.pdf")
+    out = str(tmp_path / f"page_box_round_{bleed_color_type}_bleed.pdf")
+    _make_vector_rounded_navy_on_white_pdf(src)
+
+    success, meta = StickerEngine(dpi=300).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="original",
+        offset_mm=0.0,
+        corner_style="round",
+        curve_tension=100.0,
+        bleed_mm=3.0,
+        fill_holes=True,
+        remove_white_bg=False,
+        bleed_color_type=bleed_color_type,
+        draw_cut_contour=True,
+        rectangle_mode=False,
+        shape_mode="auto_safe",
+    )
+    assert success is True, meta
+
+    document = pdfium.PdfDocument(out)
+    page = bitmap = None
+    try:
+        page = document[0]
+        bitmap = page.render(scale=300.0 / 72.0, rev_byteorder=True)
+        pixels = bitmap.to_numpy()[:, :, :3].copy()
+    finally:
+        if bitmap is not None:
+            bitmap.close()
+        if page is not None:
+            page.close()
+        document.close()
+
+    # Điểm thử nằm bên trong TrimBox nhưng ngoài cung bo của footprint nguồn.
+    # Trước bản sửa cả bốn patch là trắng vì Form XObject chưa được clip theo fillet.
+    with pikepdf.Pdf.open(out) as result:
+        media = [float(value) for value in result.pages[0].MediaBox]
+        trim = [float(value) for value in result.pages[0].TrimBox]
+    scale = 300.0 / 72.0
+    left = int(round((trim[0] - media[0]) * scale))
+    right = int(round((trim[2] - media[0]) * scale)) - 1
+    top = int(round((media[3] - trim[3]) * scale))
+    bottom = int(round((media[3] - trim[1]) * scale)) - 1
+    inset = int(round(0.45 * 300.0 / 25.4))
+    half = 2
+    probes = (
+        (left + inset, top + inset),
+        (right - inset, top + inset),
+        (left + inset, bottom - inset),
+        (right - inset, bottom - inset),
+    )
+    white_fractions = []
+    navy = np.array([26, 42, 74], dtype=np.float64)
+    color_errors = []
+    median_colors = []
+    for x, y in probes:
+        patch = pixels[y - half:y + half + 1, x - half:x + half + 1]
+        white_fractions.append(float(np.all(patch >= 245, axis=2).mean()))
+        median_color = np.median(patch, axis=(0, 1))
+        median_colors.append(median_color.tolist())
+        color_errors.append(float(np.max(np.abs(median_color - navy))))
+    assert max(white_fractions) < 0.10, white_fractions
+    assert max(color_errors) < 40.0, median_colors
+
+    visible_bleed = _read_visible_bleed_rgb(out).astype(np.int16)
+    navy_i16 = np.array([26, 42, 74], dtype=np.int16)
+    visible_error = np.max(np.abs(visible_bleed - navy_i16), axis=1)
+    assert float(np.mean(visible_error > 20)) < 0.01
+    assert float(np.percentile(visible_error, 99)) <= 20.0
+
+
+@pytest.mark.parametrize("bleed_color_type", ["image", "trajectory"])
+def test_page_box_round_bleed_keeps_legitimate_white_edge(
+    tmp_path, bleed_color_type
+):
+    """Nền/mép trắng chủ ý phải bù ra trắng, không hút màu khác thành xám xanh."""
+    src = str(tmp_path / f"white_round_{bleed_color_type}_source.pdf")
+    out = str(tmp_path / f"white_round_{bleed_color_type}_bleed.pdf")
+    _make_white_page_with_inset_round_border_pdf(src)
+
+    success, meta = StickerEngine(dpi=300).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="original",
+        offset_mm=0.0,
+        corner_style="round",
+        curve_tension=100.0,
+        bleed_mm=3.0,
+        fill_holes=True,
+        remove_white_bg=False,
+        bleed_color_type=bleed_color_type,
+        draw_cut_contour=True,
+        rectangle_mode=False,
+        shape_mode="auto_safe",
+    )
+    assert success is True, meta
+
+    visible = _read_visible_bleed_rgb(out).astype(np.int16)
+    distance_to_white = np.max(
+        np.abs(visible - np.array([255, 255, 255], dtype=np.int16)),
+        axis=1,
+    )
+    assert float(np.mean(distance_to_white > 8)) < 0.01
+    assert float(np.percentile(distance_to_white, 99)) <= 8.0
+
+
+@pytest.mark.parametrize("bleed_color_type", ["image", "trajectory"])
+def test_page_box_round_bleed_keeps_white_when_color_touches_only_bottom_edge(
+    tmp_path, bleed_color_type
+):
+    """Màu ở một cạnh không được thay nền trắng hợp lệ quanh ba cạnh còn lại."""
+    src = str(tmp_path / f"white_bottom_{bleed_color_type}_source.pdf")
+    out = str(tmp_path / f"white_bottom_{bleed_color_type}_bleed.pdf")
+    _make_white_page_with_bottom_navy_pdf(src)
+
+    success, meta = StickerEngine(dpi=300).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="original",
+        offset_mm=0.0,
+        corner_style="round",
+        curve_tension=100.0,
+        bleed_mm=3.0,
+        fill_holes=True,
+        remove_white_bg=False,
+        bleed_color_type=bleed_color_type,
+        draw_cut_contour=True,
+        rectangle_mode=False,
+        shape_mode="auto_safe",
+    )
+    assert success is True, meta
+
+    with pikepdf.Pdf.open(out) as result:
+        xobjects = result.pages[0].Resources.get("/XObject", {})
+        bleed_images = [
+            xobjects[name]
+            for name in xobjects
+            if str(xobjects[name].get("/Subtype")) == "/Image"
+            and xobjects[name].get("/SMask") is not None
+        ]
+        assert len(bleed_images) == 1
+        bleed_image = bleed_images[0]
+        width = int(bleed_image.get("/Width"))
+        height = int(bleed_image.get("/Height"))
+        rgb = np.frombuffer(bleed_image.read_bytes(), dtype=np.uint8).reshape(
+            height, width, 3
+        )
+        alpha = np.frombuffer(
+            bleed_image.get("/SMask").read_bytes(), dtype=np.uint8
+        ).reshape(height, width)
+
+    yy, xx = np.indices((height, width))
+    visible = alpha >= 128
+    top_and_upper_sides = visible & (yy < int(height * 0.70))
+    upper_rgb = rgb[top_and_upper_sides].astype(np.int16)
+    assert upper_rgb.size > 0
+    distance_to_white = np.max(
+        np.abs(upper_rgb - np.array([255, 255, 255], dtype=np.int16)), axis=1
+    )
+    assert float(np.mean(distance_to_white <= 8)) > 0.95
+
+    bottom_center = (
+        visible
+        & (yy > int(height * 0.90))
+        & (xx > int(width * 0.35))
+        & (xx < int(width * 0.65))
+    )
+    bottom_rgb = rgb[bottom_center].astype(np.int16)
+    assert bottom_rgb.size > 0
+    distance_to_navy = np.max(
+        np.abs(bottom_rgb - np.array([13, 41, 75], dtype=np.int16)), axis=1
+    )
+    assert float(np.mean(distance_to_navy <= 20)) > 0.95
+
+
+def test_page_box_corner_sampling_only_accepts_background_at_corners():
+    """Không được biến viền trắng chủ ý quanh cả trang thành vùng bù xén."""
+    import cv2
+
+    navy = (26, 42, 74)
+    rounded = np.full((120, 160, 3), 255, dtype=np.uint8)
+    cv2.rectangle(rounded, (22, 0), (137, 119), navy, cv2.FILLED)
+    cv2.rectangle(rounded, (0, 22), (159, 97), navy, cv2.FILLED)
+    for center in ((22, 22), (137, 22), (22, 97), (137, 97)):
+        cv2.circle(rounded, center, 22, navy, cv2.FILLED)
+    accepted = _page_box_corner_foreground_for_bleed(rounded, 300.0 / 25.4)
+    assert accepted is not None
+    foreground, background_rgb, _tolerance = accepted
+    assert background_rgb == (255, 255, 255)
+    assert foreground[60, 0] == 255 and foreground[0, 80] == 255
+
+    white_border = np.full((120, 160, 3), 255, dtype=np.uint8)
+    cv2.rectangle(white_border, (8, 8), (151, 111), navy, cv2.FILLED)
+    assert _page_box_corner_foreground_for_bleed(
+        white_border,
+        300.0 / 25.4,
+    ) is None
 
 
 def test_alpha_cut_mode_uses_pdf_smask_and_keeps_white_outline(tmp_path):
@@ -3538,6 +3990,135 @@ def test_rectangle_vector_bleed_keeps_spot_colorspace(tmp_path):
         assert b"/SpotEdge cs 1 scn" in source_form.read_bytes()
 
 
+@pytest.mark.parametrize("edge_bite_mm", [0.0, 1.0])
+def test_rectangle_trajectory_keeps_requested_mode_for_direct_cmyk(
+    tmp_path, edge_bite_mm
+):
+    """CMYK vẫn chạy Quỹ đạo; lẹm mép chỉ thay đúng dải người dùng yêu cầu."""
+    src = str(tmp_path / "rect_direct_cmyk_trajectory.pdf")
+    out = str(tmp_path / "rect_direct_cmyk_trajectory_bleed.pdf")
+
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(100, 60))
+    page.Contents = pdf.make_stream(b"0.8 0.2 0 0.1 k 0 0 100 60 re f\n")
+    pdf.save(src)
+
+    success, meta = StickerEngine(dpi=150).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="none",
+        bleed_mm=2.0,
+        bleed_color_type="trajectory",
+        draw_cut_contour=False,
+        rectangle_mode=True,
+        edge_bite_mm=edge_bite_mm,
+    )
+    assert success is True
+    assert meta["bleed_color_mode_requested"] == "trajectory"
+    assert meta["bleed_color_mode_applied"] == "trajectory"
+    assert meta.get("color_safe_vector_fallback") is not True
+    assert "đã tự chuyển bù xén" not in meta.get("warning", "")
+
+    with pikepdf.Pdf.open(out) as result:
+        page_out = result.pages[0]
+        xobjects = page_out.Resources.get("/XObject", {})
+        image_names = [
+            name
+            for name in xobjects
+            if str(xobjects[name].get("/Subtype")) == "/Image"
+            and str(xobjects[name].get("/ColorSpace")) != "/DeviceGray"
+        ]
+        form_names = [
+            name
+            for name in xobjects
+            if str(xobjects[name].get("/Subtype")) == "/Form"
+        ]
+        assert image_names, "Quỹ đạo phải tạo lớp màu raster"
+        assert len(form_names) == 1
+        image = xobjects[image_names[0]]
+        source_form = xobjects[form_names[0]]
+        assert image.get("/SMask") is not None
+        assert str(image.get("/ColorSpace")[0]) == "/ICCBased"
+        assert b"0.8 0.2 0 0.1 k" in source_form.read_bytes()
+        content = _read_all_content(page_out)
+        assert content.find(f"{image_names[0]} Do".encode()) < content.rfind(
+            f"{form_names[0]} Do".encode()
+        )
+
+
+@pytest.mark.parametrize("bleed_color_type", ["trajectory", "inpaint"])
+def test_rectangle_raster_bleed_keeps_requested_mode_for_spot_source(
+    tmp_path, bleed_color_type
+):
+    """Spot không được làm engine tự bỏ Quỹ đạo/Làm mượt đã chọn."""
+    src = str(tmp_path / f"rect_spot_{bleed_color_type}.pdf")
+    out = str(tmp_path / f"rect_spot_{bleed_color_type}_bleed.pdf")
+
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(100, 60))
+    tint = pdf.make_indirect(pikepdf.Dictionary({
+        "/FunctionType": 2,
+        "/Domain": [0.0, 1.0],
+        "/C0": [0.0, 0.0, 0.0, 0.0],
+        "/C1": [0.8, 0.0, 0.9, 0.1],
+        "/N": 1.0,
+    }))
+    spot = pikepdf.Array([
+        pikepdf.Name("/Separation"),
+        pikepdf.Name("/BrandGreen"),
+        pikepdf.Name("/DeviceCMYK"),
+        tint,
+    ])
+    page.Resources = pikepdf.Dictionary({
+        "/ColorSpace": pikepdf.Dictionary({"/SpotEdge": spot}),
+    })
+    page.Contents = pdf.make_stream(b"/SpotEdge cs 1 scn 0 0 100 60 re f\n")
+    pdf.save(src)
+
+    success, meta = StickerEngine(dpi=150).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="none",
+        bleed_mm=2.0,
+        bleed_color_type=bleed_color_type,
+        draw_cut_contour=False,
+        rectangle_mode=True,
+        edge_bite_mm=1.0,
+    )
+    assert success is True
+    assert meta["bleed_color_mode_requested"] == bleed_color_type
+    assert meta["bleed_color_mode_applied"] == bleed_color_type
+    assert meta.get("color_safe_vector_fallback") is not True
+    assert "đã tự chuyển bù xén" not in meta.get("warning", "")
+
+    with pikepdf.Pdf.open(out) as result:
+        page_out = result.pages[0]
+        xobjects = page_out.Resources.get("/XObject", {})
+        image_names = [
+            name
+            for name in xobjects
+            if str(xobjects[name].get("/Subtype")) == "/Image"
+            and str(xobjects[name].get("/ColorSpace")) != "/DeviceGray"
+        ]
+        form_names = [
+            name
+            for name in xobjects
+            if str(xobjects[name].get("/Subtype")) == "/Form"
+        ]
+        assert image_names, f"{bleed_color_type} phải tạo lớp màu raster"
+        assert len(form_names) == 1
+        image = xobjects[image_names[0]]
+        source_form = xobjects[form_names[0]]
+        assert image.get("/SMask") is not None
+        spot_out = source_form.Resources.get("/ColorSpace").get("/SpotEdge")
+        assert str(spot_out[0]) == "/Separation"
+        assert str(spot_out[1]) == "/BrandGreen"
+        content = _read_all_content(page_out)
+        assert content.find(f"{image_names[0]} Do".encode()) < content.rfind(
+            f"{form_names[0]} Do".encode()
+        )
+
+
 def test_rectangle_smooth_fill_is_bounded_and_preserves_page_size():
     """Smart smoothing must not invent saturated colors outside the source gamut."""
     import numpy as np
@@ -3721,6 +4302,7 @@ def test_sticker_endpoint_uses_local_pdf_without_deleting_source(tmp_path, monke
     )
     assert os.path.exists(response.path)
     assert captured["edge_sample_inset_mm"] == pytest.approx(0.5)
+    assert captured["curve_tension"] == pytest.approx(50.0)
 
 
 def test_sticker_endpoint_chuyen_artifact_ai_mot_tem_vao_engine(
@@ -3751,6 +4333,8 @@ def test_sticker_endpoint_chuyen_artifact_ai_mot_tem_vao_engine(
         boundary_source="ai",
         instance_count=1,
         source_pixel_mm=25.4 / 72.0,
+        edge_background_rgb=(254, 254, 254),
+        edge_background_tolerance=12,
     )
     captured = {}
     helper_calls = []
@@ -3774,6 +4358,8 @@ def test_sticker_endpoint_chuyen_artifact_ai_mot_tem_vao_engine(
                 "file_path": str(source),
                 "cut_mode": "original",
                 "corner_style": "round",
+                "curve_tension": "85",
+                "cutline_denoise": "65",
                 "remove_white_bg": "true",
                 "shape_mode": "auto_safe",
                 "crop_to_sticker": "true",
@@ -3793,11 +4379,94 @@ def test_sticker_endpoint_chuyen_artifact_ai_mot_tem_vao_engine(
     )
 
     assert len(helper_calls) == 1
+    assert helper_calls[0][1]["curve_tension"] == pytest.approx(85.0)
+    assert helper_calls[0][1]["cutline_denoise"] == pytest.approx(65.0)
     overrides = captured["approved_contour_overrides"]
     assert list(overrides) == [0]
     assert np.array_equal(overrides[0]["alpha"], alpha)
     assert overrides[0]["path_groups"] == approved.path_groups
     assert overrides[0]["boundary_source"] == "ai"
+    assert overrides[0]["edge_background_rgb"] == (254, 254, 254)
+    assert overrides[0]["edge_background_tolerance"] == 12
+    assert captured["curve_tension"] == pytest.approx(85.0)
+    assert captured["cutline_denoise"] == pytest.approx(65.0)
+    assert os.path.exists(response.path)
+
+
+@pytest.mark.parametrize(
+    "raw_denoise,expected_legacy,expected_engine",
+    [
+        (None, None, 0.0),
+        ("", None, 0.0),
+        ("0", 0.0, 0.0),
+        ("35", 35.0, 35.0),
+    ],
+)
+def test_sticker_endpoint_giu_semantic_khu_rang_cua_thieu_va_so_khong(
+    tmp_path,
+    monkeypatch,
+    raw_denoise,
+    expected_legacy,
+    expected_engine,
+):
+    """Route không được biến lựa chọn 0 thành sentinel tự động của client cũ."""
+    import asyncio
+    import shutil
+
+    from app.api.routes import pdf_tools
+    from app.workers import sticker_engine, sticker_source_pipeline
+
+    source = tmp_path / f"legacy-denoise-route-{raw_denoise!s}.pdf"
+    pdf = pikepdf.Pdf.new()
+    pdf.add_blank_page(page_size=(120, 80))
+    pdf.save(source)
+    pdf.close()
+    helper_calls = []
+    engine_calls = []
+
+    def fake_approved(*args, **kwargs):
+        helper_calls.append((args, kwargs))
+        return None
+
+    class StubEngine:
+        def __init__(self, dpi=300):
+            self.dpi = dpi
+
+        def process_pdf(self, input_path, output_path, **kwargs):
+            engine_calls.append(kwargs)
+            shutil.copyfile(input_path, output_path)
+            return True, {"pages": [{"page": 1}]}
+
+    class FakeRequest:
+        async def form(self):
+            form = {
+                "file_path": str(source),
+                "cut_mode": "original",
+                "remove_white_bg": "true",
+                "shape_mode": "auto_safe",
+                "crop_to_sticker": "true",
+            }
+            if raw_denoise is not None:
+                form["cutline_denoise"] = raw_denoise
+            return form
+
+    monkeypatch.setattr(sticker_engine, "StickerEngine", StubEngine)
+    monkeypatch.setattr(
+        sticker_source_pipeline,
+        "build_legacy_single_page_approved_contour",
+        fake_approved,
+    )
+    monkeypatch.setattr(pdf_tools, "RESULTS_DIR", str(tmp_path))
+    monkeypatch.setattr(pdf_tools, "_safe_watermark", lambda *args: None)
+
+    response = asyncio.run(
+        pdf_tools.sticker_dieline_endpoint(FakeRequest(), license_info={})
+    )
+
+    assert len(helper_calls) == 1
+    assert helper_calls[0][1]["cutline_denoise"] == expected_legacy
+    assert len(engine_calls) == 1
+    assert engine_calls[0]["cutline_denoise"] == pytest.approx(expected_engine)
     assert os.path.exists(response.path)
 
 

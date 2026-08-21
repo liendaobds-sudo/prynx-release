@@ -341,7 +341,7 @@ describe('StickerSheetPanel', () => {
         const roundness = screen.getByRole('slider', { name: 'Độ bo cong đường bế' });
         const detail = screen.getByRole('slider', { name: 'Mức lọc chi tiết rời' });
         expect(screen.getByText('Xem và chỉnh đường bế')).toBeTruthy();
-        expect(screen.getByText('0.35 mm')).toBeTruthy();
+        expect(screen.getByText('1.50 mm')).toBeTruthy();
         expect(screen.queryByRole('slider', { name: 'Độ mượt đường bế' })).toBeNull();
         expect(screen.queryByRole('slider', { name: 'Sức căng đường cong' })).toBeNull();
         expect(screen.queryByText('Bám biên AI')).toBeNull();
@@ -357,7 +357,7 @@ describe('StickerSheetPanel', () => {
         expect(state.cutlineFidelity).toBe(82);
         expect(state.minDetailAreaMm2).toBe(1.6);
         expect(state.outputSettings.cornerStyle).toBe('round');
-        expect(screen.getByText('0.49 mm')).toBeTruthy();
+        expect(screen.getByText('2.10 mm')).toBeTruthy();
         expect(state.isCutlinePreviewing).toBe(true);
         expect(screen.getByText('Đang cập nhật đường bế…')).toBeTruthy();
         expect((screen.getByRole('button', { name: 'Tạo PDF có đường cắt' }) as HTMLButtonElement).disabled).toBe(true);

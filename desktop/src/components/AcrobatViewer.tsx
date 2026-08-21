@@ -3,7 +3,11 @@ import { pdfjs } from 'react-pdf';
 import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
 import 'react-pdf/dist/esm/Page/TextLayer.css';
 import { Virtuoso } from 'react-virtuoso';
-import { outputPreviewProofIdentity, useWorkspaceStore } from '../stores/useWorkspaceStore';
+import {
+    outputPreviewProofIdentity,
+    useWorkspaceStore,
+    workspaceDocumentIdentity,
+} from '../stores/useWorkspaceStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useImposerSettingsStore } from './imposition-tools/useImposerSettingsStore';
 import { useAppSettingsStore } from '../stores/appSettingsStore';
@@ -93,6 +97,10 @@ interface Props {
     pageOverlay?: ReactNode;
     /** Số trang nguồn một-based nhận lớp phủ. */
     pageOverlayPage?: number;
+    /** Vị trí một-based trong Viewer; dùng cho working PDF sau reorder/nhân bản. */
+    pageOverlayViewerPage?: number;
+    /** ID instance ổn định; ưu tiên hơn vị trí để không phủ nhầm bản nhân đôi. */
+    pageOverlayInstanceId?: string | null;
     /** Trạng thái nghiệp vụ theo số trang nguồn, hiển thị trên thumbnail. */
     pageWorkflowStatuses?: Partial<Record<number, ThumbPageWorkflowStatus>>;
     /** PHIÊN chỉnh sửa trong bộ nhớ (spec `pdf-edit-session`) — sở hữu bởi ImpositionTab,
@@ -100,7 +108,24 @@ interface Props {
     editSession?: UseEditSession;
 }
 
-export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onDocumentUndo, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, pageOverlay, pageOverlayPage = 1, pageWorkflowStatuses, onViewerDirtyChange, editSession }: Props) {
+// Hàm thuần được export để khóa hồi quy reorder/duplicate mà không mount Viewer nặng.
+// eslint-disable-next-line react-refresh/only-export-components
+export function matchesPageOverlayTarget(input: {
+    originalPageNum: number;
+    viewerPagePosition: number;
+    pageInstanceId: string;
+    targetSourcePage: number;
+    targetViewerPage?: number;
+    targetInstanceId?: string | null;
+}): boolean {
+    if (input.targetInstanceId) return input.pageInstanceId === input.targetInstanceId;
+    if (input.targetViewerPage !== undefined) {
+        return input.viewerPagePosition === input.targetViewerPage;
+    }
+    return input.originalPageNum === input.targetSourcePage;
+}
+
+export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onDocumentUndo, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, pageOverlay, pageOverlayPage = 1, pageOverlayViewerPage, pageOverlayInstanceId, pageWorkflowStatuses, onViewerDirtyChange, editSession }: Props) {
   const { t } = useTranslation();
     const {
         scale: physicalDisplayScale,
@@ -1398,17 +1423,61 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     }, []);
 
     const activePagePhysical = useMemo(() => {
-        const originalPage = pageOrder[activePage - 1] || activePage;
-        const dim = allPageDims[originalPage] || pageDim;
-        if (!dim) return { widthPt: pageWidthPt || 0, heightPt: 0 };
-        const instanceId = pageInstanceIds[activePage - 1];
-        const rotation = ((instanceId ? pageRotations[instanceId] : 0) || 0) % 360;
+        const sourcePage = pageOrder[activePage - 1] || activePage;
+        const pageInstanceId = pageInstanceIds[activePage - 1] || null;
+        const rawRotation = (pageInstanceId ? pageRotations[pageInstanceId] : 0) || 0;
+        const rotation = ((rawRotation % 360) + 360) % 360;
+        const dim = allPageDims[sourcePage] || pageDim;
+        if (!dim) {
+            return {
+                viewerPage: activePage,
+                sourcePage,
+                pageInstanceId,
+                rotation,
+                widthPt: pageWidthPt || 0,
+                heightPt: 0,
+            };
+        }
         const widthPt = dim.w * 72 / 96;
         const heightPt = dim.h * 72 / 96;
-        return rotation === 90 || rotation === 270
-            ? { widthPt: heightPt, heightPt: widthPt }
-            : { widthPt, heightPt };
+        const rotated = rotation === 90 || rotation === 270;
+        return {
+            viewerPage: activePage,
+            sourcePage,
+            pageInstanceId,
+            rotation,
+            widthPt: rotated ? heightPt : widthPt,
+            heightPt: rotated ? widthPt : heightPt,
+        };
     }, [activePage, pageOrder, allPageDims, pageDim, pageWidthPt, pageInstanceIds, pageRotations]);
+
+    const setViewerActivePagePhysical = useWorkspaceStore(
+        state => state.setViewerActivePagePhysical,
+    );
+    useEffect(() => {
+        if (activePagePhysical.widthPt <= 0 || activePagePhysical.heightPt <= 0) {
+            setViewerActivePagePhysical(null);
+            return;
+        }
+        // PERF/QUALITY (feedback 2026-08-19 §CUTPREVIEW.INSTANT2): công cụ bế cần
+        // khổ in thật của đúng instance trang đang xem. Không tái sử dụng CSS-mm của
+        // VDP vì đơn vị đó lớn hơn mm vật lý 96/72 lần và không theo reorder/rotation.
+        setViewerActivePagePhysical({
+            documentIdentity: workspaceDocumentIdentity(
+                file,
+                pageOrder,
+                flattenRotations(pageInstanceIds, pageRotations),
+            ),
+            ...activePagePhysical,
+        });
+    }, [
+        activePagePhysical,
+        file,
+        pageInstanceIds,
+        pageOrder,
+        pageRotations,
+        setViewerActivePagePhysical,
+    ]);
 
     const lastDimHintAtRef = useRef(0);
     const dimHintToastIdRef = useRef<number | null>(null);
@@ -1670,6 +1739,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         // khi thiếu index (không nên xảy ra ở luồng render rows).
         const instId = flatIndex !== undefined ? pageInstanceIds[flatIndex] : undefined;
         const viewerPagePosition = (flatIndex ?? (originalPageNum - 1)) + 1;
+        const renderedPageInstanceId = instId || `page-${originalPageNum}-${flatIndex ?? 0}`;
         const rot = instId ? (pageRotations[instId] || 0) : 0;
         const localDim = allPageDims[originalPageNum] || pageDim;
         const localWidth100 = localDim ? localDim.w : actualWidth100;
@@ -1688,7 +1758,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                         isViewerActive={isActive}
                         originalPageNum={originalPageNum}
                         viewerPageNum={viewerPagePosition}
-                        pageInstanceId={instId || `page-${originalPageNum}-${flatIndex ?? 0}`}
+                        pageInstanceId={renderedPageInstanceId}
                         actualWidth100={localWidth100}
                         zoom={effectiveZoom}
                         physicalDisplayScale={physicalDisplayScale}
@@ -1729,12 +1799,19 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                             accuratePrefetchReady,
                         )}
                     />
-                    {pageOverlay && originalPageNum === pageOverlayPage && pageOverlay}
+                    {pageOverlay && matchesPageOverlayTarget({
+                        originalPageNum,
+                        viewerPagePosition,
+                        pageInstanceId: renderedPageInstanceId,
+                        targetSourcePage: pageOverlayPage,
+                        targetViewerPage: pageOverlayViewerPage,
+                        targetInstanceId: pageOverlayInstanceId,
+                    }) && pageOverlay}
                     {showOcgOverlay && <OcgPreviewOverlay url={ocgPreviewUrl} />}
                 </div>
             </div>
         );
-    }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, effectiveZoom, physicalDisplayScale, physicalDisplayDpr, physicalRawDpi, bleedView, highlightBoxes, isVdpMode, getTileUrl, renderOwnerId, renderDocumentToken, cancelAccurateGroup, accurateColorEnabled, accurateColorPages, viewerSimulationProfileId, viewerSimulationIntent, viewerOutputPreviewProofIdentity, viewerEngineMode, handleActivePageRenderReady, accuratePrefetchReady, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage, tabId, isActive, pageOverlay, pageOverlayPage]);
+    }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, effectiveZoom, physicalDisplayScale, physicalDisplayDpr, physicalRawDpi, bleedView, highlightBoxes, isVdpMode, getTileUrl, renderOwnerId, renderDocumentToken, cancelAccurateGroup, accurateColorEnabled, accurateColorPages, viewerSimulationProfileId, viewerSimulationIntent, viewerOutputPreviewProofIdentity, viewerEngineMode, handleActivePageRenderReady, accuratePrefetchReady, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage, tabId, isActive, pageOverlay, pageOverlayPage, pageOverlayViewerPage, pageOverlayInstanceId]);
 
     // Kiểm tra loadError SAU khi mọi hook đã được gọi (xem ghi chú ở đầu component).
     if (loadError) {

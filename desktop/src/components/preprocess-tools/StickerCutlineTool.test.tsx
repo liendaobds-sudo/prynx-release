@@ -20,12 +20,15 @@ vi.mock('./StickerTool', () => ({
     default: ({
         pdfFile,
         onProcessingChange,
+        pageNumber,
     }: {
         pdfFile: File | null;
         onProcessingChange?: (processing: boolean) => void;
+        pageNumber?: number;
     }) => (
         <div>
             <div>direct-engine:{pdfFile?.name || 'none'}</div>
+            <div>direct-preview-page:{pageNumber ?? 1}</div>
             <button type="button" onClick={() => onProcessingChange?.(true)}>start-direct</button>
             <button type="button" onClick={() => onProcessingChange?.(false)}>finish-direct</button>
         </div>
@@ -236,6 +239,24 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
         ).toBe(2));
         expect(inspectStickerSource).not.toHaveBeenCalled();
         expect(detectStickerSource).not.toHaveBeenCalled();
+    });
+
+    it('preview trực tiếp dùng vị trí trang trong working PDF sau reorder', async () => {
+        const pdf = new File(['pdf'], 'reordered.pdf', { type: 'application/pdf' });
+        render(
+            <StickerCutlineTool
+                tabId="direct-reorder-tab"
+                pdfFile={pdf}
+                sourceImageFile={null}
+                activeSourcePage={3}
+                activeWorkingPage={1}
+                pageOrder={[3, 1, 2]}
+                isActive
+                onFileFixed={vi.fn()}
+            />,
+        );
+
+        await waitFor(() => expect(screen.getByText('direct-preview-page:1')).toBeTruthy());
     });
 
     it('hai nút nguồn dùng chung mode với workspace nhưng không tự nhận diện', async () => {

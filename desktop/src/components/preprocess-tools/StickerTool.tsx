@@ -5,7 +5,10 @@ import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { recipeRecorder, type RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
 import { ToolSectionLabel, ToolCheckboxOption, ToolNumberInput } from './ToolUI';
 import { RichSelect, ToolItem } from '../imposition-tools/SharedUI';
-import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
+import {
+    useWorkspaceStore,
+    workspaceDocumentIdentity,
+} from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
@@ -21,6 +24,7 @@ import {
 } from './stickerToolPolicy';
 import { findToolByUniqueKey } from '../../lib/toolRegistry';
 import { useToolActivationGuard } from '../../hooks/useToolActivationGuard';
+import { useClassicCutlinePreview } from './useClassicCutlinePreview';
 
 interface Props {
     tabId?: string;
@@ -36,6 +40,8 @@ interface Props {
     productType?: 'sticker' | 'rectangle';
     onProductTypeChange?: (type: 'sticker' | 'rectangle') => void;
     showProductTypeSelector?: boolean;
+    isActive?: boolean;
+    pageNumber?: number;
 }
 
 interface DesktopFile extends File {
@@ -47,11 +53,22 @@ interface CutlineRunOverrides {
     forceContour?: boolean;
 }
 
+interface StickerRunResult {
+    blob: Blob;
+    path?: string;
+    cutKind?: string | null;
+    cutConfidence?: number | null;
+    warning?: string;
+}
+
 const CORNER_STYLES = [
     { id: 'preserve', label: '🎯 Giữ nguyên', desc: '' },
     { id: 'round', label: '🟢 Góc tròn', desc: '' },
     { id: 'miter', label: '🔺 Góc nhọn', desc: '' },
 ];
+// QUALITY (audit 2026-08-21 §RECOGNITION-GUARD.2): dưới 50% là mức cần soi lại
+// đường chuẩn hoá; đây là ngưỡng cảnh báo UI, không thay đổi quyết định backend.
+const LOW_CUT_CONFIDENCE_THRESHOLD = 0.5;
 
 const BLEED_COLOR_MODES_RECTANGLE = [
     { value: 'mirror', title: '🪞 Lật gương tự động', desc: 'Lật ngược mép ảnh siêu tốc. Giữ nguyên 100% độ sắc nét ban đầu.' },
@@ -96,7 +113,7 @@ const STICKER_PREFERENCE_KEYS = [
     'productType', 'cutMode', 'offsetMm', 'cornerStyle', 'fillHoles', 'bleedMm',
     'removeWhiteBg', 'trimWhiteEdge', 'bleedColorType', 'bleedColorHex',
     'edgeBiteMm', 'edgeBiteVersion', 'cutFirstPageOnly', 'cropToSticker', 'bleedSides',
-    'cutlineDenoise',
+    'cutlineDenoise', 'curveTension',
 ] as const;
 // AUDIT (2026-08-16 §BX.F15): trước đây là `let` toàn cục nên tab thứ hai không bao giờ
 // log được cảnh báo storage — vi phạm bất biến "không dùng cờ boolean toàn cục" trong
@@ -234,6 +251,8 @@ export default function StickerTool({
     productType: controlledProductType,
     onProductTypeChange,
     showProductTypeSelector = true,
+    isActive = true,
+    pageNumber = 1,
 }: Props) {
   const { t } = useTranslation();
     const getWorkingFile = useWorkingPdf();
@@ -245,6 +264,11 @@ export default function StickerTool({
         setIsObjectEditMode,
         setIsCropMode,
         setViewerToolMode,
+        viewerPageOrder,
+        viewerPageRotations,
+        viewerPageInstanceIds,
+        setClassicCutlineViewerPreview,
+        clearClassicCutlineViewerPreview,
     } = useWorkspaceStore();
     const { setActiveDashboardTool } = useImposerSettingsStore();
     const requestToolActivation = useToolActivationGuard();
@@ -287,6 +311,12 @@ export default function StickerTool({
     const [cutMode, setCutMode] = useState(() => readStickerEnum('cutMode', 'original', ['original', 'alpha', 'bleed', 'none']));
     const [offsetMm, setOffsetMm] = useState<number>(() => readStickerNumber('offsetMm', 0.0, -10, 10));
     const [cornerStyle, setCornerStyle] = useState(() => readStickerEnum('cornerStyle', 'preserve', ['preserve', 'round', 'miter']));
+    // QUALITY (feedback 2026-08-19 §CUTROUND.UI1): giao diện PDF/PNG có biên
+    // trước đây chỉ chọn được kiểu góc, không có cách điều khiển bán kính bo mà
+    // engine đã hỗ trợ. Mốc 50 giữ nguyên artifact của mọi thiết lập cũ.
+    const [curveTension, setCurveTension] = useState<number>(
+        () => readStickerNumber('curveTension', 50, 0, 100),
+    );
     const [fillHoles, setFillHoles] = useState<boolean>(() => readStickerBoolean('fillHoles', true));
     // "Tạo đường cắt cho trang đầu": file nhiều loại tem CÙNG khuôn → chỉ trang 1 mang
     // đường cắt (khuôn master), trang 2+ chỉ bù xén. Bước đệm sang Bình tem bế/CNC đồng nhất.
@@ -384,6 +414,7 @@ export default function StickerTool({
         writeStickerPreference('cutMode', cutMode);
         writeStickerPreference('offsetMm', offsetMm);
         writeStickerPreference('cornerStyle', cornerStyle);
+        writeStickerPreference('curveTension', curveTension);
         writeStickerPreference('fillHoles', fillHoles);
         writeStickerPreference('bleedMm', bleedMm);
         writeStickerPreference('removeWhiteBg', removeWhiteBg);
@@ -395,7 +426,7 @@ export default function StickerTool({
         writeStickerPreference('cropToSticker', cropToSticker);
         writeStickerPreference('bleedSides', bleedSides);
         writeStickerPreference('cutlineDenoise', cutlineDenoise);
-    }, [productType, cutMode, offsetMm, cornerStyle, fillHoles, bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm, cutFirstPageOnly, cropToSticker, bleedSides, cutlineDenoise]);
+    }, [productType, cutMode, offsetMm, cornerStyle, curveTension, fillHoles, bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm, cutFirstPageOnly, cropToSticker, bleedSides, cutlineDenoise]);
     
     // Process state
     const [isProcessing, setIsProcessing] = useState(false);
@@ -406,6 +437,112 @@ export default function StickerTool({
     // ảnh AI — hoàn tất thì thu thiết lập, nhưng vẫn cho xổ lại mà không mất kết quả.
     const [settingsOpen, setSettingsOpen] = useState(true);
     const settingsPanelId = React.useId();
+    const previewOwnerId = React.useId();
+    const resolvedPreviewPage = Math.max(1, Math.trunc(pageNumber));
+    const previewPageInstanceId = viewerPageInstanceIds?.[resolvedPreviewPage - 1] ?? null;
+    const previewDocumentIdentity = workspaceDocumentIdentity(
+        pdfFile,
+        viewerPageOrder,
+        viewerPageRotations,
+    );
+    const canPreviewCutline = Boolean(
+        productType === 'sticker'
+        && cutMode !== 'none'
+        && !activeObjectSelection
+        && (!cutFirstPageOnly || resolvedPreviewPage === 1)
+    );
+    const classicPreviewEnabled = Boolean(
+        isActive
+        && settingsOpen
+        && pdfFile
+        && canPreviewCutline
+    );
+    const resolvePreviewSourceFile = React.useCallback(async () => {
+        if (!pdfFile) return null;
+        if (preferPdfFile) return pdfFile;
+        return (await getWorkingFile()) || pdfFile;
+    }, [getWorkingFile, pdfFile, preferPdfFile]);
+    const cutlinePreview = useClassicCutlinePreview({
+        enabled: classicPreviewEnabled,
+        resolveSourceFile: resolvePreviewSourceFile,
+        documentIdentity: previewDocumentIdentity,
+        pageNumber: resolvedPreviewPage,
+        pageInstanceId: previewPageInstanceId,
+        cutMode,
+        cornerStyle,
+        offsetMm,
+        bleedMm,
+        fillHoles,
+        curveTension,
+        cutlineDenoise,
+        forceContour,
+        removeWhiteBg,
+    });
+    const canonicalPreviewStale = Boolean(
+        cutlinePreview.preview
+        && !cutlinePreview.canonicalReference
+    );
+    // Chế độ Alpha vẫn dùng preview server (không phải page-box local), dù
+    // policy cố ý giữ `removeWhiteBg=false`. Chỉ khóa khi thật sự có canonical
+    // preview cần chờ; các mode giữ nguyên nền vẫn chạy tức thì bằng page-box.
+    const canonicalPreviewExpected = Boolean(
+        canPreviewCutline
+        && (removeWhiteBg || cutMode === 'alpha')
+    );
+    const canonicalPreviewPending = Boolean(
+        canonicalPreviewExpected
+        && (
+            cutlinePreview.isPreparing
+            || cutlinePreview.isUpdating
+            || canonicalPreviewStale
+        )
+    );
+
+    // UIUX (feedback 2026-08-19 §CUTPREVIEW.VIEWER1): preview classic phải phủ
+    // trực tiếp lên trang Acrobat Viewer như chế độ nhiều tem. Workspace store là
+    // riêng từng tab; ownerId ngăn cleanup của component cũ xóa overlay mới.
+    useEffect(() => {
+        const preview = cutlinePreview.preview;
+        const validPreview = Boolean(
+            preview
+            && Number.isFinite(preview.preview_width_px)
+            && Number.isFinite(preview.preview_height_px)
+            && preview.preview_width_px > 0
+            && preview.preview_height_px > 0
+            && preview.page_number === resolvedPreviewPage
+            && preview.paths.length > 0
+        );
+        // UIUX (feedback 2026-08-20 §CUTPREVIEW.STATUS1): lỗi của lượt fit mới
+        // không được xóa frame hợp lệ trước đó. Người dùng vẫn cần thấy đường bế
+        // cũ để đối chiếu trong lúc chỉnh tiếp hoặc thử lại.
+        if (!classicPreviewEnabled || !preview || !validPreview) {
+            clearClassicCutlineViewerPreview(previewOwnerId);
+            return;
+        }
+        setClassicCutlineViewerPreview({
+            ownerId: previewOwnerId,
+            preview,
+            viewerPage: resolvedPreviewPage,
+            pageInstanceId: previewPageInstanceId,
+            documentIdentity: previewDocumentIdentity,
+            isUpdating: cutlinePreview.isUpdating,
+        });
+    }, [
+        classicPreviewEnabled,
+        clearClassicCutlineViewerPreview,
+        cutlinePreview.error,
+        cutlinePreview.isUpdating,
+        cutlinePreview.preview,
+        previewOwnerId,
+        previewDocumentIdentity,
+        previewPageInstanceId,
+        resolvedPreviewPage,
+        setClassicCutlineViewerPreview,
+    ]);
+
+    useEffect(() => () => {
+        clearClassicCutlineViewerPreview(previewOwnerId);
+    }, [clearClassicCutlineViewerPreview, previewOwnerId]);
 
     // AUDIT (2026-08-16 §BX.F05): job bù xén là việc nặng nhất của công cụ. Trước đây
     // không có đường huỷ nào: bấm sai phải chờ hết, đóng tab thì response về vẫn setState
@@ -459,7 +596,10 @@ export default function StickerTool({
         return await finalRes.blob();
     };
 
-    const runOpenCVBleed = async (overrides?: CutlineRunOverrides, signal?: AbortSignal) => {
+    const runOpenCVBleed = async (
+        overrides?: CutlineRunOverrides,
+        signal?: AbortSignal,
+    ): Promise<StickerRunResult> => {
         const requestedCornerStyle = overrides?.cornerStyle ?? cornerStyle;
         const requestedForceContour = overrides?.forceContour ?? forceContour;
         const targetFile = preferPdfFile
@@ -490,6 +630,7 @@ export default function StickerTool({
             cutMode,
             offsetMm,
             cornerStyle: requestedCornerStyle,
+            curveTension,
             fillHoles,
             bleedMm,
             removeWhiteBg,
@@ -504,6 +645,18 @@ export default function StickerTool({
         });
         for (const [field, value] of Object.entries(dielineFields)) {
             formData.append(field, value);
+        }
+        // PERF/QUALITY (audit 2026-08-21 §CANONICAL.5): backend snapshot đúng
+        // Alpha+Bézier của frame đang hiển thị và bỏ lượt detect/fit thứ hai.
+        // Override đổi hình học ngay trong cùng click nên không dùng frame cũ.
+        const canonicalReference = overrides
+            ? null
+            : cutlinePreview.canonicalReference;
+        if (canonicalReference) {
+            formData.append('cutline_preview_session_id', canonicalReference.sessionId);
+            formData.append('cutline_preview_page_number', String(canonicalReference.pageNumber));
+            formData.append('cutline_preview_revision', String(canonicalReference.maskRevision));
+            formData.append('cutline_preview_fingerprint', canonicalReference.fingerprint);
         }
         if (activeObjectSelection) {
             formData.append('selection_json', JSON.stringify({
@@ -525,6 +678,8 @@ export default function StickerTool({
             throw new Error(errData?.detail || t('preprocess.sticker:loi_server', { status: response.status }));
         }
         
+        let cutKind: string | null = null;
+        let cutConfidence: number | null = null;
         if (productType === 'sticker') {
             const shapeType = response.headers.get('X-Sticker-Shape-Type');
             const shapeParams = response.headers.get('X-Sticker-Shape-Params');
@@ -536,29 +691,44 @@ export default function StickerTool({
             if (shapeParams) setDetectedShapeParams(shapeParams);
             // Hình học đường cắt máy tự nhận (van an toàn thay dropdown đã ẩn):
             // có kind → tên hình; không có (die phức tạp / forceContour) → 'contour'.
-            const cutKind = response.headers.get('X-Sticker-Cut-Kind');
+            cutKind = response.headers.get('X-Sticker-Cut-Kind');
             setDetectedCutKind(cutKind || ((requestedCornerStyle === 'preserve' || requestedForceContour) ? 'contour' : null));
             // AUDIT (2026-08-16 §BX.F12): backend đã phát độ tin cậy nhận dạng nhưng UI bỏ
             // qua, nên hình nhận ở sát ngưỡng trông y như hình chắc chắn. Hiện số này để
             // người dùng biết khi nào nên bấm "Hình cắt sai?".
             const confidenceRaw = response.headers.get('X-Sticker-Cut-Confidence');
             const confidence = confidenceRaw === null ? Number.NaN : Number(confidenceRaw);
-            setDetectedCutConfidence(Number.isFinite(confidence) ? confidence : null);
+            cutConfidence = Number.isFinite(confidence) ? confidence : null;
+            setDetectedCutConfidence(cutConfidence);
         }
 
         // Cảnh báo nghiệp vụ (vd một số trang không dò được hình) — header được
         // percent-encode ở backend để giữ tiếng Việt.
         const warnHeader = response.headers.get('X-Sticker-Warning');
+        let warningText: string | undefined;
         if (warnHeader) {
-            try { setWarning(decodeURIComponent(warnHeader)); } catch { setWarning(warnHeader); }
+            try { warningText = decodeURIComponent(warnHeader); } catch { warningText = warnHeader; }
+            setWarning(warningText);
         }
         
         const outputPath = response.headers.get('X-Sticker-Output-Path') || undefined;
-        return { blob: await response.blob(), path: outputPath };
+        return {
+            blob: await response.blob(),
+            path: outputPath,
+            cutKind,
+            cutConfidence,
+            warning: warningText,
+        };
     };
 
     const handleRun = async (overrides?: CutlineRunOverrides) => {
         if (!pdfFile) return;
+        if (!overrides && (canonicalPreviewPending || canonicalPreviewStale)) {
+            // Viewer cố ý giữ frame cũ trong lúc cập nhật/lỗi. Không cho request
+            // rơi về detector legacy rồi tạo một CutContour khác frame đó.
+            setError(t('preprocess.stickerSheet:classic_preview_updating'));
+            return;
+        }
         const requestedCornerStyle = overrides?.cornerStyle ?? cornerStyle;
         const requestedForceContour = overrides?.forceContour ?? forceContour;
 
@@ -587,7 +757,7 @@ export default function StickerTool({
         }
         const recipeTicket = recordingThisTab
             ? recipeRecorder.noteOperation('sticker_dieline', {
-                productType, cutMode, offsetMm, cornerStyle: requestedCornerStyle, fillHoles,
+                productType, cutMode, offsetMm, cornerStyle: requestedCornerStyle, curveTension, fillHoles,
                 bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm,
                 cutlineDenoise,
                 cutFirstPageOnly, cropToSticker,
@@ -618,6 +788,24 @@ export default function StickerTool({
                 const result = await runOpenCVBleed(overrides, signal);
                 resultBlob = result.blob;
                 resultPath = result.path;
+                // QUALITY (audit 2026-08-21 §RECOGNITION-GUARD.2): confidence dưới
+                // 50% nghĩa là auto_safe chỉ vừa lọt qua ngưỡng hình học. Không chặn
+                // file (người dùng vẫn có thể cần xuất ngay), nhưng nói rõ để họ kiểm
+                // tra preview hoặc bật "Giữ mép ảnh" trước khi đưa sang bình.
+                if (
+                    productType === 'sticker'
+                    && !requestedForceContour
+                    && result.cutConfidence !== null
+                    && result.cutConfidence !== undefined
+                    && result.cutConfidence < LOW_CUT_CONFIDENCE_THRESHOLD
+                ) {
+                    const confidenceWarning = t('preprocess.sticker:canh_bao_do_tin_cay_thap', {
+                        confidence: Math.round(result.cutConfidence * 100),
+                    });
+                    setWarning(result.warning
+                        ? `${result.warning}\n${confidenceWarning}`
+                        : confidenceWarning);
+                }
             }
 
             // Tab đã đóng / job đã bị huỷ: không commit file vào tài liệu không còn chủ.
@@ -929,23 +1117,125 @@ export default function StickerTool({
                                 </div>
                                 <p className="text-[10px] text-slate-400 mt-1">{t('preprocess.sticker:so_am_vd_0_5_ep_duong_cat_lun_vao_trong')}</p>
                                 {cutMode !== 'alpha' && (
-                                    <div className="flex gap-1.5 mt-2 mb-4">
-                                        {CORNER_STYLES.map(option => (
-                                            <button
-                                                key={option.id}
-                                                onClick={() => setCornerStyle(option.id)}
-                                                aria-pressed={cornerStyle === option.id}
-                                                className={`flex-1 h-[32px] rounded border text-[12px] transition-all flex items-center justify-center font-bold ${
-                                                    cornerStyle === option.id
-                                                        ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
-                                                        : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'
-                                                }`}
-                                            >
-                                                {tv(option.label)}
-                                            </button>
-                                        ))}
+                                    <div className="mt-2 mb-4 space-y-2.5">
+                                        <div className="flex gap-1.5">
+                                            {CORNER_STYLES.map(option => (
+                                                <button
+                                                    key={option.id}
+                                                    onClick={() => {
+                                                        setCornerStyle(option.id);
+                                                        // Chọn kiểu góc chuẩn là yêu cầu bật lại
+                                                        // auto_safe; không để trạng thái "giữ contour"
+                                                        // nhưng lại âm thầm bo/ép hình ở backend.
+                                                        if (forceContour && option.id !== 'preserve') {
+                                                            setForceContour(false);
+                                                        }
+                                                    }}
+                                                    aria-pressed={cornerStyle === option.id}
+                                                    className={`flex-1 h-[32px] rounded border text-[12px] transition-all flex items-center justify-center font-bold ${
+                                                        cornerStyle === option.id
+                                                            ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
+                                                            : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'
+                                                    }`}
+                                                >
+                                                    {tv(option.label)}
+                                                </button>
+                                            ))}
+                                        </div>
+                                        {cornerStyle === 'round' && (
+                                            <div className="rounded-lg border border-slate-200 bg-slate-50/70 px-2.5 py-2 dark:border-white/10 dark:bg-zinc-800/50">
+                                                <div className="mb-1 flex items-center justify-between gap-2">
+                                                    <label
+                                                        htmlFor="sticker-curve-tension"
+                                                        className="text-xs font-bold text-slate-700 dark:text-zinc-300"
+                                                    >
+                                                        {t('preprocess.stickerSheet:cutline_tension')}
+                                                    </label>
+                                                    <span className="text-xs font-bold text-teal-600 dark:text-teal-400 tabular-nums">
+                                                        {Math.round(curveTension)}%
+                                                    </span>
+                                                </div>
+                                                <input
+                                                    id="sticker-curve-tension"
+                                                    type="range"
+                                                    aria-label={t('preprocess.stickerSheet:cutline_tension_aria')}
+                                                    min={0}
+                                                    max={100}
+                                                    step={5}
+                                                    value={curveTension}
+                                                    disabled={isProcessing}
+                                                    onChange={(event) => setCurveTension(Number(event.target.value))}
+                                                    className="w-full accent-teal-600 dark:accent-teal-400 disabled:opacity-50"
+                                                />
+                                                <div className="mt-0.5 flex justify-between text-[9px] text-slate-500 dark:text-zinc-400">
+                                                    <span>{t('preprocess.stickerSheet:cutline_tension_low')}</span>
+                                                    <span>{t('preprocess.stickerSheet:cutline_tension_high')}</span>
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
+                                {/* UIUX (audit 2026-08-21 §RECOGNITION-GUARD.1): người dùng
+                                    phải có van an toàn TRƯỚC khi chạy. `auto_safe` chỉ được
+                                    dùng để chuẩn hoá hình học khi biên khớp chặt; với tem có
+                                    tai/ribbon/notch, giữ contour ảnh là lựa chọn rõ ràng hơn.
+                                    Control này chỉ thuộc luồng một tem (StickerTool), không
+                                    thay đổi hợp đồng tách nhiều tem của StickerSheet. */}
+                                <div
+                                    data-testid="sticker-shape-recognition-control"
+                                    className="mt-2 mb-4 rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-2 dark:border-white/10 dark:bg-zinc-800/50"
+                                >
+                                    <div className="mb-1 flex items-center justify-between gap-2">
+                                        <span className="text-xs font-bold text-slate-700 dark:text-zinc-300">
+                                            {t('preprocess.sticker:hinh_hoc_duong_cat')}
+                                        </span>
+                                        <span className={`text-[10px] font-semibold ${
+                                            forceContour
+                                                ? 'text-amber-600 dark:text-amber-400'
+                                                : 'text-teal-600 dark:text-teal-400'
+                                        }`}>
+                                            {forceContour
+                                                ? t('preprocess.sticker:hinh_hoc_duong_cat_contour_state')
+                                                : t('preprocess.sticker:hinh_hoc_duong_cat_auto_state')}
+                                        </span>
+                                    </div>
+                                    <p className="mb-2 text-[10.5px] leading-snug text-slate-500 dark:text-zinc-400">
+                                        {t('preprocess.sticker:hinh_hoc_duong_cat_hint')}
+                                    </p>
+                                    <div className="grid grid-cols-2 gap-1.5">
+                                        <button
+                                            type="button"
+                                            aria-pressed={!forceContour}
+                                            disabled={isProcessing}
+                                            onClick={() => setForceContour(false)}
+                                            className={`h-8 rounded-lg border px-2 text-[10.5px] font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                                                !forceContour
+                                                    ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
+                                                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800'
+                                            }`}
+                                        >
+                                            {t('preprocess.sticker:hinh_hoc_duong_cat_auto')}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            aria-pressed={forceContour}
+                                            disabled={isProcessing}
+                                            onClick={() => {
+                                                setForceContour(true);
+                                                // Giữ contour phải giữ nguyên mép, không bo lại
+                                                // bằng lựa chọn góc tròn đang còn từ lượt trước.
+                                                setCornerStyle('preserve');
+                                            }}
+                                            className={`h-8 rounded-lg border px-2 text-[10.5px] font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                                                forceContour
+                                                    ? 'border-amber-500 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                                                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800'
+                                            }`}
+                                        >
+                                            {t('preprocess.sticker:hinh_hoc_duong_cat_contour')}
+                                        </button>
+                                    </div>
+                                </div>
                                 {!activeObjectSelection && (
                                     <div className="mt-2 mb-4">
                                         <ToolCheckboxOption
@@ -1245,9 +1535,9 @@ export default function StickerTool({
             {/* Execute */}
             <button
                 onClick={() => { void handleRun(); }}
-                disabled={isProcessing || !pdfFile}
+                disabled={isProcessing || !pdfFile || canonicalPreviewPending}
                 className={`w-full h-12 rounded-xl text-[14px] font-bold transition-all mt-2 flex items-center justify-center gap-2 ${
-                    isProcessing || !pdfFile
+                    isProcessing || !pdfFile || canonicalPreviewPending
                         ? 'bg-slate-300 dark:bg-zinc-700 text-slate-500 cursor-not-allowed'
                         : 'bg-indigo-600 hover:bg-indigo-700 text-white'
                 }`}
@@ -1259,9 +1549,56 @@ export default function StickerTool({
             </div>
 
             {/* Warning (nghiệp vụ, không phải lỗi chặn) */}
+            {classicPreviewEnabled
+                && !cutlinePreview.error
+                && (cutlinePreview.isPreparing || cutlinePreview.isUpdating)
+                && (
+                    <div
+                        role="status"
+                        aria-live="polite"
+                        data-testid="classic-cutline-preview-status"
+                        className="mt-2 flex items-center gap-2 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2.5 dark:border-teal-800/60 dark:bg-teal-900/20"
+                    >
+                        <span
+                            aria-hidden="true"
+                            className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-teal-500"
+                        />
+                        <span className="text-[12px] font-medium text-teal-700 dark:text-teal-300">
+                            {cutlinePreview.isPreparing
+                                ? t('preprocess.stickerSheet:classic_preview_preparing')
+                                : t('preprocess.stickerSheet:classic_preview_updating')}
+                        </span>
+                    </div>
+                )}
+            {cutlinePreview.error && (
+                <div
+                    role="alert"
+                    aria-live="assertive"
+                    className="bg-amber-50 dark:bg-amber-900/20 p-3 rounded-lg border border-amber-200 dark:border-amber-800/50 mt-2"
+                >
+                    <span className="text-[12px] text-amber-700 dark:text-amber-300 font-medium">
+                        ⚠️ {cutlinePreview.error}
+                    </span>
+                </div>
+            )}
+            {cutlinePreview.warning && (
+                <div
+                    role="alert"
+                    aria-live="polite"
+                    className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800/50 dark:bg-amber-900/20"
+                >
+                    <span className="whitespace-pre-line text-[12px] font-medium text-amber-700 dark:text-amber-300">
+                        ⚠️ {cutlinePreview.warning}
+                    </span>
+                </div>
+            )}
             {warning && (
-                <div className="bg-amber-50 dark:bg-amber-900/20 p-3 rounded-lg border border-amber-200 dark:border-amber-800/50 mt-2">
-                    <span className="text-[12px] text-amber-700 dark:text-amber-300 font-medium">⚠️ {warning}</span>
+                <div
+                    role="alert"
+                    aria-live="polite"
+                    className="bg-amber-50 dark:bg-amber-900/20 p-3 rounded-lg border border-amber-200 dark:border-amber-800/50 mt-2"
+                >
+                    <span className="whitespace-pre-line text-[12px] text-amber-700 dark:text-amber-300 font-medium">⚠️ {warning}</span>
                 </div>
             )}
 

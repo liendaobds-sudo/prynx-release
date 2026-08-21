@@ -25,7 +25,7 @@ import pikepdf
 
 from app.workers import pdf_wrapper as pdf_lib
 from app.workers.nup_sticker import compute_sticker_layout_for_page
-from app.workers.nup_diecut import _find_largest_die_path
+from app.workers.nup_diecut import _find_largest_die_path, resolve_die_stroke_width
 from app.workers.nup_artwork import (
     place_one_artwork,
     compute_block_bbox,
@@ -265,7 +265,7 @@ def _render_cnc_unit(out_doc, src_doc, front_pl, *, two_sided, flip_edge, back_o
         die_items = cached['items']
         die_rect = cached['rect']
         die_color = _resolve_die_color(cached.get('color'))
-        die_width = max(0.5, float(cached.get('width') or 0.5))
+        die_width = resolve_die_stroke_width(cached.get('width'))
         cell = p['cell']
         draw_die_lines_for_placement(
             cut_shape, die_items, die_rect,

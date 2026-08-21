@@ -21,11 +21,9 @@ const TOOL_OPTIONS: Array<{ id: StickerMaskTool; label: string; hint: string }> 
     { id: 'merge', label: 'Gộp với tem', hint: 'Chọn chi tiết rời, sau đó chọn tem chính.' },
 ];
 
-function cutlineRoundRadiusMm(roundness: number, dpiX: number, dpiY: number): number {
-    const safeDpi = Math.max(1, Math.min(dpiX, dpiY));
-    const sourcePixelMm = 25.4 / safeDpi;
-    const maxRadiusMm = Math.min(0.70, Math.max(0.25, sourcePixelMm * 2));
-    return Math.max(0, Math.min(100, roundness)) / 100 * maxRadiusMm;
+function cutlineRoundRadiusMm(roundness: number): number {
+    // QUALITY (feedback 2026-08-19 §CUTROUND.7): phải khớp helper backend.
+    return Math.max(0, Math.min(100, roundness)) / 100 * 3;
 }
 
 interface CutlineSliderProps {
@@ -119,11 +117,7 @@ export default function StickerSheetPanel({
         && manifest.boundary_source !== 'existing-cut'
         && state.status === 'mask-review',
     );
-    const roundRadiusMm = cutlineRoundRadiusMm(
-        state.curveTension,
-        state.outputDpi,
-        state.outputDpiY,
-    );
+    const roundRadiusMm = cutlineRoundRadiusMm(state.curveTension);
     const pageCount = Math.max(
         1,
         state.inspection?.page_count || state.sourceImageCount || 1,

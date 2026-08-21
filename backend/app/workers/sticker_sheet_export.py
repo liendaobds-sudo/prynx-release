@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+import copy
 from dataclasses import dataclass, replace
 import gc
 import hashlib
@@ -20,6 +21,7 @@ from PIL import Image, ImageOps
 import pikepdf
 
 from app.core.sticker_cutline_policy import resolve_sticker_corner_policy
+from app.core.sticker_background import detect_background
 from app.core.sticker_sheet_session import StickerSheetPageState, StickerSheetSession
 from app.workers.sticker_engine import (
     ALPHA_CONTOUR_INSET_MM,
@@ -39,6 +41,10 @@ logger = logging.getLogger(__name__)
 
 class StickerSheetExportError(RuntimeError):
     """Lỗi nghiệp vụ khi mask đã sửa không thể tạo artifact."""
+
+
+class StickerCanonicalPreviewConflict(RuntimeError):
+    """Artifact preview classic đã mất, stale hoặc không còn khớp file nguồn."""
 
 
 @dataclass(frozen=True)
@@ -65,6 +71,7 @@ def _cutline_export_cache_key(
     cutline_fidelity: float,
     curve_tension: float,
     min_detail_area_mm2: float,
+    cutline_denoise: float | None = None,
 ) -> str:
     """Khóa chung để preview và export chỉ chia sẻ đúng cùng một hình học."""
     normalized_cut_mode = str(cut_mode).strip().lower()
@@ -86,6 +93,12 @@ def _cutline_export_cache_key(
         "cutline_fidelity": float(cutline_fidelity),
         "curve_tension": float(curve_tension),
         "min_detail_area_mm2": float(min_detail_area_mm2),
+        # PERF/QUALITY (audit 2026-08-21 §CANONICAL.1): denoise thay đổi chính
+        # silhouette trước marching-squares. Thiếu field này từng cho phép lượt
+        # Thực thi lấy nhầm Bézier của vị trí slider trước đó.
+        "cutline_denoise": (
+            None if cutline_denoise is None else float(cutline_denoise)
+        ),
     }
     serialized = json.dumps(
         payload,
@@ -95,6 +108,22 @@ def _cutline_export_cache_key(
         allow_nan=False,
     )
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _same_source_bytes(first: Path, second: Path) -> bool:
+    """So file session với file execute; đường khác nhau vẫn có thể cùng nội dung."""
+    try:
+        if first.resolve() == second.resolve():
+            return True
+        if first.stat().st_size != second.stat().st_size:
+            return False
+        with first.open("rb") as first_stream, second.open("rb") as second_stream:
+            return (
+                hashlib.file_digest(first_stream, "sha256").digest()
+                == hashlib.file_digest(second_stream, "sha256").digest()
+            )
+    except OSError:
+        return False
 
 
 def _valid_cutline_path_groups(value: object) -> bool:
@@ -214,6 +243,209 @@ def _cutline_overrides_from_preview_cache(
     return [{"path_groups": combined_groups}] if combined_groups else None
 
 
+def snapshot_classic_cutline_preview(
+    session: StickerSheetSession,
+    *,
+    source_path: str | Path,
+    page_number: int,
+    expected_revision: int,
+    expected_fingerprint: str,
+    offset_mm: float,
+    bleed_mm: float,
+    cut_mode: str,
+    corner_style: str,
+    fill_holes: bool,
+    curve_tension: float,
+    cutline_denoise: float | None,
+    cutline_smoothness: float = 50.0,
+    cutline_fidelity: float = 50.0,
+    min_detail_area_mm2: float = 1.0,
+) -> dict[str, object]:
+    """Chụp nguyên tử Alpha + Bézier đang hiển thị cho execute classic.
+
+    Không dựng fallback ở đây. Client đã gửi reference nghĩa là người dùng đã
+    duyệt đúng frame đó; stale phải dừng rõ ràng thay vì âm thầm detect/fit lại.
+    """
+    if not _same_source_bytes(Path(session.source_path), Path(source_path)):
+        raise StickerCanonicalPreviewConflict(
+            "Preview đường bế không còn thuộc file đang mở. Hãy chờ nhận diện lại."
+        )
+    page = session.pages.get(int(page_number))
+    if page is None:
+        raise StickerCanonicalPreviewConflict(
+            "Trang của preview đường bế không còn tồn tại."
+        )
+
+    with page.operation_lock:
+        if page.stage not in {"mask-review", "mask-ready"}:
+            raise StickerCanonicalPreviewConflict(
+                "Preview đường bế chưa sẵn sàng để Thực thi."
+            )
+        revision = int(page.manifest.get("mask_revision", 0))
+        if revision != int(expected_revision):
+            raise StickerCanonicalPreviewConflict(
+                "Preview đường bế đã thay đổi revision. Hãy chờ đường mới cập nhật."
+            )
+        cache = page.cutline_export_cache
+        if not isinstance(cache, dict):
+            raise StickerCanonicalPreviewConflict(
+                "Artifact preview đường bế đã hết hạn. Hãy cập nhật preview rồi thử lại."
+            )
+        if (
+            int(cache.get("page_number", -1)) != int(page_number)
+            or int(cache.get("revision", -1)) != revision
+            or str(cache.get("fingerprint", "")) != str(expected_fingerprint)
+        ):
+            raise StickerCanonicalPreviewConflict(
+                "Preview đường bế đã cũ hoặc fingerprint không khớp."
+            )
+        try:
+            dpi_x = float(cache["dpi"])
+            dpi_y = float(cache["dpi_y"])
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise StickerSheetExportError(
+                "Artifact preview thiếu độ phân giải hình học."
+            ) from exc
+        if (
+            not math.isfinite(dpi_x)
+            or not math.isfinite(dpi_y)
+            or dpi_x <= 0.0
+            or dpi_y <= 0.0
+        ):
+            raise StickerSheetExportError(
+                "Artifact preview có độ phân giải không hợp lệ."
+            )
+        expected_key = _cutline_export_cache_key(
+            page_number=page_number,
+            revision=revision,
+            edits=[],
+            dpi=dpi_x,
+            dpi_y=dpi_y,
+            offset_mm=offset_mm,
+            bleed_mm=bleed_mm,
+            cut_mode=cut_mode,
+            corner_style=corner_style,
+            fill_holes=fill_holes,
+            cutline_smoothness=cutline_smoothness,
+            cutline_fidelity=cutline_fidelity,
+            curve_tension=curve_tension,
+            min_detail_area_mm2=min_detail_area_mm2,
+            cutline_denoise=cutline_denoise,
+        )
+        if str(cache.get("key", "")) != expected_key:
+            raise StickerCanonicalPreviewConflict(
+                "Thiết lập đường bế đã đổi sau preview. Hãy chờ đường mới cập nhật."
+            )
+        quality = cache.get("quality")
+        if not isinstance(quality, dict) or quality.get("machine_safe") is not True:
+            raise StickerSheetExportError(
+                "Artifact preview chưa vượt kiểm tra quỹ đạo máy bế."
+            )
+        raw_instances = cache.get("instances")
+        manifest_instances = page.manifest.get("instances")
+        if (
+            not isinstance(raw_instances, list)
+            or len(raw_instances) != 1
+            or not isinstance(manifest_instances, list)
+            or len(manifest_instances) != 1
+        ):
+            raise StickerSheetExportError(
+                "Preview classic chỉ được snapshot đúng một vùng tem."
+            )
+        raw_instance = raw_instances[0]
+        if not isinstance(raw_instance, dict):
+            raise StickerSheetExportError("Artifact preview vùng tem không hợp lệ.")
+        try:
+            instance_id = int(raw_instance["instance_id"])
+            manifest_instance_id = int(manifest_instances[0]["id"])
+            left = int(raw_instance["left"])
+            top = int(raw_instance["top"])
+            analysis_width = int(cache["analysis_width"])
+            analysis_height = int(cache["analysis_height"])
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise StickerSheetExportError(
+                "Artifact preview thiếu tọa độ vùng tem."
+            ) from exc
+        if instance_id != manifest_instance_id:
+            raise StickerCanonicalPreviewConflict(
+                "Vùng tem trong preview đã thay đổi."
+            )
+        local_alpha = raw_instance.get("alpha")
+        if not isinstance(local_alpha, np.ndarray) or local_alpha.ndim != 2:
+            raise StickerSheetExportError(
+                "Artifact preview thiếu Alpha canonical."
+            )
+        local_alpha = np.ascontiguousarray(local_alpha, dtype=np.uint8)
+        bottom = top + int(local_alpha.shape[0])
+        right = left + int(local_alpha.shape[1])
+        if (
+            analysis_width <= 0
+            or analysis_height <= 0
+            or left < 0
+            or top < 0
+            or right > analysis_width
+            or bottom > analysis_height
+        ):
+            raise StickerSheetExportError(
+                "Alpha canonical nằm ngoài kích thước trang phân tích."
+            )
+        alpha_sha256 = hashlib.sha256(local_alpha.tobytes(order="C")).hexdigest()
+        if alpha_sha256 != str(raw_instance.get("alpha_sha256", "")):
+            raise StickerSheetExportError(
+                "Alpha canonical không còn khớp fingerprint preview."
+            )
+        full_alpha = np.zeros((analysis_height, analysis_width), dtype=np.uint8)
+        full_alpha[top:bottom, left:right] = local_alpha
+        translated = _cutline_overrides_from_preview_cache(
+            page,
+            cache_key=expected_key,
+            instance_ids=[instance_id],
+            crop_to_sticker=False,
+            dpi=dpi_x,
+            dpi_y=dpi_y,
+        )
+        if not translated or not _valid_cutline_path_groups(
+            translated[0].get("path_groups")
+        ):
+            raise StickerSheetExportError(
+                "Bézier canonical trong preview không hợp lệ."
+            )
+
+        edge_background_rgb = page.manifest.get("edge_background_rgb")
+        if not (
+            isinstance(edge_background_rgb, (list, tuple))
+            and len(edge_background_rgb) == 3
+        ):
+            edge_background_rgb = None
+        else:
+            try:
+                edge_background_rgb = tuple(
+                    max(0, min(255, int(value))) for value in edge_background_rgb
+                )
+            except (TypeError, ValueError, OverflowError):
+                edge_background_rgb = None
+        try:
+            edge_background_tolerance = max(
+                0,
+                min(255, int(page.manifest.get("edge_background_tolerance", 0))),
+            )
+        except (TypeError, ValueError, OverflowError):
+            edge_background_tolerance = 0
+
+        # Deep-copy trước khi nhả lock: request preview kế tiếp được phép thay cache
+        # ngay sau snapshot nhưng job PDF vẫn phải dùng đúng frame người dùng đã thấy.
+        return {
+            "alpha": full_alpha.copy(),
+            "dpi": (dpi_x, dpi_y),
+            "source_pixel_mm": max(25.4 / dpi_x, 25.4 / dpi_y),
+            "boundary_source": str(page.boundary_source or "approved"),
+            "path_groups": copy.deepcopy(translated[0]["path_groups"]),
+            "edge_background_rgb": edge_background_rgb,
+            "edge_background_tolerance": edge_background_tolerance,
+            "preview_fingerprint": str(expected_fingerprint),
+        }
+
+
 def _sticker_engine_dpi(dpi: float, dpi_y: float) -> int:
     """Không nội suy raster nguồn thấp; nguồn ≥300 DPI vẫn giữ trần chất lượng cũ."""
     resolved = max(float(dpi), float(dpi_y))
@@ -290,6 +522,8 @@ def _build_edited_rgba(
     session: StickerSheetSession,
     original_labels: np.ndarray,
     labels: np.ndarray,
+    *,
+    preserve_alpha_fringe: bool = False,
 ) -> np.ndarray:
     with Image.open(session.directory / "rgba.png") as opened:
         rgba = np.asarray(opened.convert("RGBA"), dtype=np.uint8).copy()
@@ -299,7 +533,12 @@ def _build_edited_rgba(
     source_rgb = _load_source_rgb(session, (rgba.shape[1], rgba.shape[0]))
     restored = (labels > 0) & (original_labels == 0)
     rgba[restored, :3] = source_rgb[restored]
-    rgba[labels == 0, 3] = 0
+    if preserve_alpha_fringe:
+        # Preview cần giữ dải alpha chuyển tiếp mà detector đã tạo quanh nhãn;
+        # chỉ xoá vùng tem bị erase, còn nền ngoài nhãn để caller clip theo ROI.
+        rgba[(labels == 0) & (original_labels > 0), 3] = 0
+    else:
+        rgba[labels == 0, 3] = 0
     rgba[restored, 3] = 255
     return rgba
 
@@ -425,6 +664,42 @@ def white_boundary_ratio(rgba: np.ndarray, labels: np.ndarray) -> float:
     chroma = colors.max(axis=1) - minimum
     white = (minimum >= 225) & (chroma <= 25)
     return float(np.count_nonzero(white)) / float(len(colors))
+
+
+def _flat_edge_background_override(rgba: np.ndarray) -> dict[str, object]:
+    """Lấy metadata nền nhỏ gọn cho sampler màu của PDF Alpha trung gian.
+
+    QUALITY (feedback 2026-08-19 §STK.MULTI-EDGE01): chế độ nhiều tem đã làm
+    trong suốt nền trước khi gọi StickerEngine, nên engine không thể tự suy lại
+    màu nền gây halo. Dò trên RGB nguyên tấm tại đây; chỉ truyền nền phẳng, không
+    áp một màu đại diện cho nền gradient/hoạ tiết.
+    """
+    if rgba.ndim != 3 or rgba.shape[2] < 3:
+        return {}
+    try:
+        background = detect_background(
+            np.ascontiguousarray(rgba[:, :, :3], dtype=np.uint8)
+        )
+    except cv2.error:
+        logger.warning("Không dò được màu nền khi xuất nhiều tem", exc_info=True)
+        return {}
+    if background is None or not background.is_flat:
+        return {}
+    return {
+        "edge_background_rgb": tuple(int(value) for value in background.color),
+        "edge_background_tolerance": max(0, int(background.tolerance)),
+    }
+
+
+def _merge_edge_background_override(
+    override: dict[str, object] | None,
+    background: dict[str, object],
+) -> dict[str, object] | None:
+    """Ghép scalar nền mà không làm mất Bézier preview đã duyệt."""
+    merged = dict(background)
+    if isinstance(override, dict):
+        merged.update(override)
+    return merged or None
 
 
 def _png_pages_to_pdf(
@@ -691,14 +966,32 @@ def _build_cutline_pdf_from_pngs(
         corner_style,
     )
     alpha_path_overrides: dict[int, dict] = {}
+    if (
+        alpha_path_override_sequence is not None
+        and len(alpha_path_override_sequence) != len(png_paths)
+    ):
+        raise StickerSheetExportError(
+            "Dữ liệu đường bế xem trước không khớp số trang cần xuất."
+        )
+    # Metadata màu nền vẫn cần khi người dùng chỉ tạo bleed mà không vẽ dao cắt.
+    for page_index in range(len(png_paths)):
+        cached_override = (
+            alpha_path_override_sequence[page_index]
+            if alpha_path_override_sequence is not None
+            else None
+        )
+        if isinstance(cached_override, dict):
+            scalar_payload = {
+                key: cached_override[key]
+                for key in (
+                    "edge_background_rgb",
+                    "edge_background_tolerance",
+                )
+                if key in cached_override
+            }
+            if scalar_payload:
+                alpha_path_overrides[page_index] = scalar_payload
     if cut_mode != "none" and draw_cut_contour:
-        if (
-            alpha_path_override_sequence is not None
-            and len(alpha_path_override_sequence) != len(png_paths)
-        ):
-            raise StickerSheetExportError(
-                "Dữ liệu đường bế xem trước không khớp số trang cần xuất."
-            )
         for page_index, png_path in enumerate(png_paths):
             cached_override = (
                 alpha_path_override_sequence[page_index]
@@ -711,9 +1004,9 @@ def _build_cutline_pdf_from_pngs(
             ):
                 # PERF (audit 2026-08-10 §CUTLINE.EXPORT3): dùng chính Bézier
                 # người dùng vừa xem; chỉ fit những PNG không có cache hợp lệ.
-                alpha_path_overrides[page_index] = {
-                    "path_groups": cached_override["path_groups"],
-                }
+                alpha_path_overrides.setdefault(page_index, {})[
+                    "path_groups"
+                ] = cached_override["path_groups"]
                 continue
             with Image.open(png_path) as opened:
                 alpha = np.asarray(opened.convert("RGBA"), dtype=np.uint8)[:, :, 3]
@@ -741,9 +1034,9 @@ def _build_cutline_pdf_from_pngs(
                 raise StickerSheetExportError(
                     f"Không tạo được đường bế an toàn cho tem {page_index + 1}."
                 )
-            alpha_path_overrides[page_index] = {
-                "path_groups": cutline["path_groups"],
-            }
+            alpha_path_overrides.setdefault(page_index, {})[
+                "path_groups"
+            ] = cutline["path_groups"]
 
     def _process_cutline() -> tuple[bool, dict]:
         return StickerEngine(dpi=_sticker_engine_dpi(dpi, dpi_y)).process_pdf(
@@ -955,6 +1248,7 @@ def export_sticker_sheet_document(
                 }
                 labels = apply_export_edits(original_labels, edits, valid_ids)
                 rgba = _build_edited_rgba(page_view, original_labels, labels)
+                edge_background_override = _flat_edge_background_override(rgba)
                 page_dpi = float(config.get("dpi") or dpi)
                 page_dpi_y = float(config.get("dpi_y") or dpi_y or page_dpi)
                 png_paths, page_sticker_count = _prepare_output_pngs(
@@ -1015,6 +1309,13 @@ def export_sticker_sheet_document(
                     )
                 if page_overrides is None or len(page_overrides) != len(png_paths):
                     page_overrides = [None] * len(png_paths)
+                page_overrides = [
+                    _merge_edge_background_override(
+                        override,
+                        edge_background_override,
+                    )
+                    for override in page_overrides
+                ]
                 key = (
                     resolved_bleed_type,
                     page_dpi,
@@ -1116,6 +1417,7 @@ def export_sticker_sheet(
     }
     labels = apply_export_edits(original_labels, edits, valid_ids)
     rgba = _build_edited_rgba(session, original_labels, labels)
+    edge_background_override = _flat_edge_background_override(rgba)
     use_white_bleed = white_boundary_ratio(rgba, labels) >= 0.70
 
     export_dir = session.directory / f"export_{uuid.uuid4().hex[:12]}"
@@ -1185,6 +1487,27 @@ def export_sticker_sheet(
                 and len(preview_override_sequence) != len(png_paths)
             ):
                 preview_override_sequence = None
+        if preview_override_sequence is None:
+            preview_override_sequence = [None] * len(png_paths)
+        preview_override_sequence = [
+            _merge_edge_background_override(
+                override,
+                edge_background_override,
+            )
+            for override in preview_override_sequence
+        ]
+        for page_index, override in enumerate(preview_override_sequence):
+            if isinstance(override, dict):
+                scalar_payload = {
+                    key: override[key]
+                    for key in (
+                        "edge_background_rgb",
+                        "edge_background_tolerance",
+                    )
+                    if key in override
+                }
+                if scalar_payload:
+                    alpha_path_overrides[page_index] = scalar_payload
         if cut_mode != "none" and draw_cut_contour:
             for page_index, png_path in enumerate(png_paths):
                 cached_override = (
@@ -1196,9 +1519,9 @@ def export_sticker_sheet(
                     isinstance(cached_override, dict)
                     and _valid_cutline_path_groups(cached_override.get("path_groups"))
                 ):
-                    alpha_path_overrides[page_index] = {
-                        "path_groups": cached_override["path_groups"],
-                    }
+                    alpha_path_overrides.setdefault(page_index, {})[
+                        "path_groups"
+                    ] = cached_override["path_groups"]
                     continue
                 with Image.open(png_path) as opened:
                     alpha = np.asarray(
@@ -1231,9 +1554,9 @@ def export_sticker_sheet(
                     raise StickerSheetExportError(
                         f"Không tạo được đường bế an toàn cho tem {page_index + 1}."
                     )
-                alpha_path_overrides[page_index] = {
-                    "path_groups": cutline["path_groups"],
-                }
+                alpha_path_overrides.setdefault(page_index, {})[
+                    "path_groups"
+                ] = cutline["path_groups"]
 
         def _process_cutline() -> tuple[bool, dict]:
             return StickerEngine(

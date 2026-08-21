@@ -12,15 +12,134 @@ import {
 import StickerTool from './StickerTool';
 
 
+const previewApiMocks = vi.hoisted(() => ({
+    inspectStickerSourceManifest: vi.fn(),
+    detectStickerSourceManifest: vi.fn(),
+    previewStickerCutline: vi.fn(),
+    closeStickerSheetSession: vi.fn(),
+    resolveWorkingPdf: vi.fn(async () => null),
+}));
+
+const workspaceMocks = vi.hoisted(() => ({
+    setDetectedShapeType: vi.fn(),
+    setDetectedShapeParams: vi.fn(),
+    objectSelectionContext: null,
+    isObjectEditMode: false,
+    setIsObjectEditMode: vi.fn(),
+    setIsCropMode: vi.fn(),
+    setViewerToolMode: vi.fn(),
+    viewerPageInstanceIds: ['viewer-instance-1'],
+    setClassicCutlineViewerPreview: vi.fn(),
+    clearClassicCutlineViewerPreview: vi.fn(),
+}));
+
+const CLASSIC_PREVIEW_SESSION_ID = '0123456789abcdef0123456789abcdef';
+const CLASSIC_PREVIEW_FINGERPRINT = 'a'.repeat(64);
+
+function mockClassicPreviewArtifact(): void {
+    previewApiMocks.inspectStickerSourceManifest.mockResolvedValue({
+        session_id: CLASSIC_PREVIEW_SESSION_ID,
+        stage: 'inspected',
+        original_name: 'tem.pdf',
+        source_kind: 'pdf',
+        mime_type: 'application/pdf',
+        boundary_source: 'vector',
+        strategy_confidence: 0.96,
+        needs_review: false,
+        page_count: 1,
+        source_width_px: 120,
+        source_height_px: 80,
+        dpi: [300, 300],
+        physical_width_mm: 10,
+        physical_height_mm: 8,
+        preview_width_px: 120,
+        preview_height_px: 80,
+        has_existing_cut: false,
+        has_vector: true,
+        has_raster: false,
+        has_alpha: false,
+        cut_contour_count: 0,
+        pages: [{
+            page_number: 1,
+            width_mm: 10,
+            height_mm: 8,
+            has_existing_cut: false,
+            has_vector: true,
+            has_raster: false,
+            has_alpha: false,
+            cut_contour_count: 0,
+        }],
+        warnings: [],
+        preview_url: '/unused-preview.png',
+    });
+    previewApiMocks.detectStickerSourceManifest.mockResolvedValue({
+        session_id: CLASSIC_PREVIEW_SESSION_ID,
+        stage: 'mask-review',
+        original_name: 'tem.pdf',
+        source_kind: 'pdf',
+        boundary_source: 'vector',
+        strategy_confidence: 0.96,
+        needs_review: false,
+        page_count: 1,
+        source_page: 1,
+        original_width_px: 120,
+        original_height_px: 80,
+        analysis_width_px: 120,
+        analysis_height_px: 80,
+        preview_width_px: 120,
+        preview_height_px: 80,
+        dpi: [300, 300],
+        model: 'birefnet-lite',
+        model_seconds: 0,
+        postprocess_seconds: 0,
+        mask_revision: 1,
+        refinement_available: false,
+        alpha_threshold: 128,
+        shadow_cleanup: 'auto',
+        instances: [{
+            id: 1,
+            x: 10,
+            y: 10,
+            width: 100,
+            height: 60,
+            area_px: 6000,
+            confidence: 0.96,
+            uncertain_ratio: 0,
+        }],
+        warnings: [],
+        vector_geometry_ref: null,
+        preview_url: '/unused-preview.png',
+        labels_url: '/unused-labels.png',
+        uncertainty_url: '/unused-uncertainty.png',
+    });
+    previewApiMocks.previewStickerCutline.mockResolvedValue({
+        page_number: 1,
+        mask_revision: 1,
+        preview_width_px: 120,
+        preview_height_px: 80,
+        paths: [{
+            instance_id: 1,
+            d: 'M 10 10 L 110 10 L 110 70 L 10 70 Z',
+            segment_count: 4,
+        }],
+        fingerprint: CLASSIC_PREVIEW_FINGERPRINT,
+        segment_count: 4,
+    });
+}
+
+
 vi.mock('../../lib/api', () => ({
     authenticatedFetch: vi.fn(),
     getApiUrl: () => 'http://127.0.0.1:8321',
     uploadPDF: vi.fn(),
 }));
 
+vi.mock('../../lib/stickerSheetApi', () => previewApiMocks);
+
 vi.mock('react-i18next', () => ({
     useTranslation: () => ({
-        t: (key: string) => ({
+        t: (key: string, options?: Record<string, unknown>) => {
+            const value = ({
             'preprocess.sticker:be_tem_nhan': 'Bế tem nhãn',
             'preprocess.sticker:xen_vuong_goc': 'Xén vuông góc',
             'preprocess.sticker:1_duong_cat_dieline': '1. Đường cắt (Dieline)',
@@ -29,6 +148,13 @@ vi.mock('react-i18next', () => ({
             'preprocess.sticker:file_nhieu_loai_tem_dung_chung_1_khuon': 'File nhiều loại tem dùng chung một khuôn',
             'preprocess.sticker:so_am_vd_0_5_ep_duong_cat_lun_vao_trong': 'Số âm ép đường cắt lún vào trong',
             'preprocess.sticker:2_tran_le_dac_ruot': '2. Tràn lề & Đặc ruột',
+            'preprocess.sticker:hinh_hoc_duong_cat': 'Hình học đường cắt',
+            'preprocess.sticker:hinh_hoc_duong_cat_hint': 'Mặc định an toàn: chỉ ép hình chuẩn khi biên khớp chặt.',
+            'preprocess.sticker:hinh_hoc_duong_cat_auto': '🤖 Tự nhận dạng an toàn',
+            'preprocess.sticker:hinh_hoc_duong_cat_auto_state': 'Tự nhận dạng',
+            'preprocess.sticker:hinh_hoc_duong_cat_contour': '🖼️ Giữ mép ảnh',
+            'preprocess.sticker:hinh_hoc_duong_cat_contour_state': 'Giữ contour',
+            'preprocess.sticker:canh_bao_do_tin_cay_thap': 'Độ tin cậy nhận dạng hình chuẩn chỉ {{confidence}}%.',
             'preprocess.sticker:bu_xen_ngoai_duong_cat': 'Bù xén ngoài đường cắt',
             'preprocess.sticker:tran_mau': 'Tràn màu',
             'preprocess.sticker:bo_qua_cac_lo_rong_ben_trong_khoi_hinh': 'Bỏ qua các lỗ rỗng bên trong khối hình',
@@ -47,28 +173,31 @@ vi.mock('react-i18next', () => ({
             'preprocess.sticker:bat_dau_chon': 'Bắt đầu chọn',
             'preprocess.sticker:chon_lai': 'Chọn lại',
             'preprocess.sticker:xong_chon': 'Xong chọn',
+            'preprocess.stickerSheet:cutline_tension': 'Độ bo cong',
+            'preprocess.stickerSheet:cutline_tension_aria': 'Độ bo cong đường bế',
+            'preprocess.stickerSheet:cutline_tension_low': 'Ít bo',
+            'preprocess.stickerSheet:cutline_tension_high': 'Bo tròn',
+            'preprocess.stickerSheet:classic_preview_preparing': 'Đang nhận diện vùng tem để tạo preview…',
+            'preprocess.stickerSheet:classic_preview_updating': 'Đang cập nhật đường bế xem trước… Vẫn giữ đường hiện tại.',
             'preprocess.common:run': 'Thực thi',
             'preprocess.sticker:da_tao_bu_xen_thanh_cong': 'Đã tạo bù xén thành công!',
             'preprocess.sticker:buoc_tiep_theo_chon_kieu_dan_trang': 'Bước tiếp theo: Chọn kiểu dàn trang (Imposition)',
             'preprocess.sticker:quay_lai_chinh_sua_bu_xen': 'Quay lại chỉnh sửa bù xén',
-        }[key] || key),
+        }[key] || key);
+            return options?.confidence === undefined
+                ? value
+                : value.replace('{{confidence}}', String(options.confidence));
+        },
     }),
 }));
 
 vi.mock('../../hooks/useWorkingPdf', () => ({
-    useWorkingPdf: () => vi.fn(async () => null),
+    useWorkingPdf: () => previewApiMocks.resolveWorkingPdf,
 }));
 
 vi.mock('../../stores/useWorkspaceStore', () => ({
-    useWorkspaceStore: () => ({
-        setDetectedShapeType: vi.fn(),
-        setDetectedShapeParams: vi.fn(),
-        objectSelectionContext: null,
-        isObjectEditMode: false,
-        setIsObjectEditMode: vi.fn(),
-        setIsCropMode: vi.fn(),
-        setViewerToolMode: vi.fn(),
-    }),
+    useWorkspaceStore: () => workspaceMocks,
+    workspaceDocumentIdentity: () => 'document-identity',
 }));
 
 vi.mock('../imposition-tools/useImposerSettingsStore', () => {
@@ -90,6 +219,14 @@ vi.mock('../../hooks/useToolActivationGuard', () => ({
 describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        // Các test UI không nhắm preview giữ bước chuẩn bị đứng yên; test riêng bên
+        // dưới cấp manifest/path đầy đủ. Như vậy không có request nền ngoài dự kiến.
+        previewApiMocks.inspectStickerSourceManifest.mockImplementation(
+            () => new Promise(() => undefined),
+        );
+        previewApiMocks.detectStickerSourceManifest.mockReset();
+        previewApiMocks.previewStickerCutline.mockReset();
+        previewApiMocks.closeStickerSheetSession.mockResolvedValue(undefined);
         window.localStorage.clear();
         recipeRecorderStore.setState({
             isRecording: false,
@@ -127,6 +264,483 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
         expect(screen.getByTestId('sticker-bleed-geometry-summary')).toBeTruthy();
     });
 
+    it('chỉ hiện Độ bo cong khi chọn Góc tròn và gửi đúng xuống backend', async () => {
+        vi.mocked(uploadPDF).mockResolvedValue({ id: 'source-id' });
+        vi.mocked(authenticatedFetch).mockResolvedValue({
+            ok: true,
+            headers: new Headers(),
+            blob: vi.fn(async () => new Blob(['result'], { type: 'application/pdf' })),
+        } as unknown as Response);
+        window.localStorage.setItem('ps_sticker_removeWhiteBg', 'false');
+
+        render(
+            <StickerTool
+                pdfFile={new File(['pdf'], 'tem.pdf', { type: 'application/pdf' })}
+                onFileFixed={vi.fn()}
+            />,
+        );
+
+        const roundButton = screen.getByRole('button', { name: /Góc tròn/ });
+        expect(roundButton.getAttribute('aria-pressed')).toBe('false');
+        expect(screen.queryByRole('slider', { name: 'Độ bo cong đường bế' })).toBeNull();
+
+        fireEvent.click(roundButton);
+        const slider = screen.getByRole('slider', { name: 'Độ bo cong đường bế' });
+        expect(slider.getAttribute('value')).toBe('50');
+        fireEvent.change(slider, { target: { value: '85' } });
+        expect(roundButton.getAttribute('aria-pressed')).toBe('true');
+
+        fireEvent.click(screen.getByRole('button', { name: /Góc nhọn/ }));
+        expect(screen.queryByRole('slider', { name: 'Độ bo cong đường bế' })).toBeNull();
+        fireEvent.click(roundButton);
+        expect(screen.getByRole('slider', { name: 'Độ bo cong đường bế' }).getAttribute('value'))
+            .toBe('85');
+        fireEvent.click(screen.getByRole('button', { name: 'Thực thi' }));
+
+        await waitFor(() => expect(authenticatedFetch).toHaveBeenCalledTimes(1));
+        const request = vi.mocked(authenticatedFetch).mock.calls[0][1] as RequestInit;
+        const form = request.body as FormData;
+        expect(form.get('corner_style')).toBe('round');
+        expect(form.get('curve_tension')).toBe('85');
+    });
+
+    it('cho phép chọn giữ contour trước khi chạy và gửi shape_mode=contour', async () => {
+        vi.mocked(uploadPDF).mockResolvedValue({ id: 'source-id' });
+        vi.mocked(authenticatedFetch).mockResolvedValue({
+            ok: true,
+            headers: new Headers(),
+            blob: vi.fn(async () => new Blob(['result'], { type: 'application/pdf' })),
+        } as unknown as Response);
+        window.localStorage.setItem('ps_sticker_removeWhiteBg', 'false');
+
+        render(
+            <StickerTool
+                pdfFile={new File(['pdf'], 'tem.pdf', { type: 'application/pdf' })}
+                onFileFixed={vi.fn()}
+            />,
+        );
+
+        const control = screen.getByTestId('sticker-shape-recognition-control');
+        const autoButton = screen.getByRole('button', { name: /Tự nhận dạng an toàn/ });
+        const contourButton = screen.getByRole('button', { name: /Giữ mép ảnh/ });
+        expect(control).toBeTruthy();
+        expect(autoButton.getAttribute('aria-pressed')).toBe('true');
+        expect(contourButton.getAttribute('aria-pressed')).toBe('false');
+
+        fireEvent.click(screen.getByRole('button', { name: /Góc tròn/ }));
+        expect(screen.getByRole('slider', { name: 'Độ bo cong đường bế' })).toBeTruthy();
+        fireEvent.click(contourButton);
+        expect(contourButton.getAttribute('aria-pressed')).toBe('true');
+        expect(screen.queryByRole('slider', { name: 'Độ bo cong đường bế' })).toBeNull();
+        expect(screen.getByRole('button', { name: /Giữ nguyên/ }).getAttribute('aria-pressed')).toBe('true');
+
+        fireEvent.click(screen.getByRole('button', { name: 'Thực thi' }));
+        await waitFor(() => expect(authenticatedFetch).toHaveBeenCalledTimes(1));
+        const request = vi.mocked(authenticatedFetch).mock.calls[0][1] as RequestInit;
+        const form = request.body as FormData;
+        expect(form.get('shape_mode')).toBe('contour');
+        expect(form.get('corner_style')).toBe('preserve');
+    });
+
+    it('không hiển thị van nhận diện trong chế độ xén vuông góc', () => {
+        render(
+            <StickerTool
+                productType="rectangle"
+                showProductTypeSelector={false}
+                pdfFile={new File(['pdf'], 'tem.pdf', { type: 'application/pdf' })}
+                onFileFixed={vi.fn()}
+            />,
+        );
+
+        expect(screen.queryByTestId('sticker-shape-recognition-control')).toBeNull();
+    });
+
+    it('hiện cảnh báo khi confidence hình chuẩn thấp sau lượt chạy', async () => {
+        vi.mocked(uploadPDF).mockResolvedValue({ id: 'source-id' });
+        const headers = new Headers({
+            'X-Sticker-Cut-Kind': 'circle',
+            'X-Sticker-Cut-Confidence': '0.38',
+        });
+        vi.mocked(authenticatedFetch).mockResolvedValue({
+            ok: true,
+            headers,
+            blob: vi.fn(async () => new Blob(['result'], { type: 'application/pdf' })),
+        } as unknown as Response);
+        window.localStorage.setItem('ps_sticker_removeWhiteBg', 'false');
+
+        render(
+            <StickerTool
+                pdfFile={new File(['pdf'], 'tem.pdf', { type: 'application/pdf' })}
+                onFileFixed={vi.fn().mockResolvedValue(undefined)}
+            />,
+        );
+
+        fireEvent.click(screen.getByRole('button', { name: 'Thực thi' }));
+        await waitFor(() => expect(screen.getByText(/Độ tin cậy nhận dạng hình chuẩn chỉ 38%/)).toBeTruthy());
+    });
+
+    it('preview nhẹ công bố SVG lên Viewer, không dựng thumbnail trong panel', async () => {
+        previewApiMocks.inspectStickerSourceManifest.mockResolvedValue({
+            session_id: '0123456789abcdef0123456789abcdef',
+            stage: 'inspected',
+            original_name: 'tem.pdf',
+            source_kind: 'pdf',
+            mime_type: 'application/pdf',
+            boundary_source: 'vector',
+            strategy_confidence: 0.96,
+            needs_review: false,
+            page_count: 1,
+            source_width_px: 120,
+            source_height_px: 80,
+            dpi: [300, 300],
+            physical_width_mm: 10,
+            physical_height_mm: 8,
+            preview_width_px: 120,
+            preview_height_px: 80,
+            has_existing_cut: false,
+            has_vector: true,
+            has_raster: false,
+            has_alpha: false,
+            cut_contour_count: 0,
+            pages: [{
+                page_number: 1,
+                width_mm: 10,
+                height_mm: 8,
+                has_existing_cut: false,
+                has_vector: true,
+                has_raster: false,
+                has_alpha: false,
+                cut_contour_count: 0,
+            }],
+            warnings: [],
+            preview_url: '/unused-preview.png',
+        });
+        previewApiMocks.detectStickerSourceManifest.mockResolvedValue({
+            session_id: '0123456789abcdef0123456789abcdef',
+            stage: 'mask-review',
+            original_name: 'tem.pdf',
+            source_kind: 'pdf',
+            boundary_source: 'vector',
+            strategy_confidence: 0.96,
+            needs_review: false,
+            page_count: 1,
+            source_page: 1,
+            original_width_px: 120,
+            original_height_px: 80,
+            analysis_width_px: 120,
+            analysis_height_px: 80,
+            preview_width_px: 120,
+            preview_height_px: 80,
+            dpi: [300, 300],
+            model: 'birefnet-lite',
+            model_seconds: 0,
+            postprocess_seconds: 0,
+            mask_revision: 1,
+            refinement_available: false,
+            alpha_threshold: 128,
+            shadow_cleanup: 'auto',
+            instances: [{
+                id: 1, x: 10, y: 10, width: 100, height: 60,
+                area_px: 6000, confidence: 0.96, uncertain_ratio: 0,
+            }],
+            warnings: [],
+            vector_geometry_ref: null,
+            preview_url: '/unused-preview.png',
+            labels_url: '/unused-labels.png',
+            uncertainty_url: '/unused-uncertainty.png',
+        });
+        previewApiMocks.previewStickerCutline.mockResolvedValue({
+            page_number: 1,
+            mask_revision: 1,
+            preview_width_px: 120,
+            preview_height_px: 80,
+            paths: [{
+                instance_id: 1,
+                d: 'M 10 10 L 110 10 L 110 70 L 10 70 Z',
+                segment_count: 4,
+            }],
+            fingerprint: 'a'.repeat(64),
+            segment_count: 4,
+        });
+
+        const sourceFile = new File(['pdf'], 'tem.pdf', { type: 'application/pdf' });
+        const view = render(
+            <StickerTool
+                pdfFile={sourceFile}
+                onFileFixed={vi.fn()}
+            />,
+        );
+
+        await waitFor(() => expect(workspaceMocks.setClassicCutlineViewerPreview)
+            .toHaveBeenCalledWith(expect.objectContaining({
+                viewerPage: 1,
+                pageInstanceId: 'viewer-instance-1',
+                documentIdentity: 'document-identity',
+                preview: expect.objectContaining({
+                    paths: [expect.objectContaining({
+                        d: 'M 10 10 L 110 10 L 110 70 L 10 70 Z',
+                    })],
+                }),
+            })), { timeout: 2000 });
+        expect(screen.queryByTestId('classic-cutline-preview-card')).toBeNull();
+        expect(screen.queryByTestId('classic-cutline-preview-svg')).toBeNull();
+        expect(previewApiMocks.detectStickerSourceManifest).toHaveBeenCalledWith(
+            '0123456789abcdef0123456789abcdef',
+            expect.objectContaining({ strategy: 'vector', pageNumber: 1 }),
+        );
+        expect(previewApiMocks.previewStickerCutline).toHaveBeenCalledWith(
+            '0123456789abcdef0123456789abcdef',
+            expect.objectContaining({ cornerStyle: 'preserve', curveTension: 50 }),
+        );
+
+        const clearsBeforeBackground = workspaceMocks.clearClassicCutlineViewerPreview.mock.calls.length;
+        view.rerender(
+            <StickerTool
+                pdfFile={sourceFile}
+                onFileFixed={vi.fn()}
+                isActive={false}
+            />,
+        );
+        await waitFor(() => expect(
+            workspaceMocks.clearClassicCutlineViewerPreview.mock.calls.length,
+        ).toBeGreaterThan(clearsBeforeBackground));
+
+        view.unmount();
+        await waitFor(() => expect(previewApiMocks.closeStickerSheetSession)
+            .toHaveBeenCalledWith('0123456789abcdef0123456789abcdef'));
+        expect(workspaceMocks.clearClassicCutlineViewerPreview).toHaveBeenCalled();
+    });
+
+    it('Thực thi tái dùng đúng artifact preview và giữ session tới khi backend chụp xong', async () => {
+        mockClassicPreviewArtifact();
+        vi.mocked(uploadPDF).mockResolvedValue({ id: 'source-id' });
+        let resolveExecute!: (response: Response) => void;
+        const executePending = new Promise<Response>((resolve) => {
+            resolveExecute = resolve;
+        });
+        vi.mocked(authenticatedFetch).mockImplementationOnce(() => executePending);
+        const onFileFixed = vi.fn().mockResolvedValue(undefined);
+
+        render(
+            <StickerTool
+                pdfFile={new File(['pdf'], 'tem.pdf', { type: 'application/pdf' })}
+                onFileFixed={onFileFixed}
+            />,
+        );
+
+        await waitFor(() => expect(previewApiMocks.previewStickerCutline)
+            .toHaveBeenCalledTimes(1), { timeout: 2000 });
+        expect(previewApiMocks.detectStickerSourceManifest).toHaveBeenCalledTimes(1);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Thực thi' }));
+        await waitFor(() => expect(authenticatedFetch).toHaveBeenCalledTimes(1));
+
+        const request = vi.mocked(authenticatedFetch).mock.calls[0][1] as RequestInit;
+        const form = request.body as FormData;
+        expect(form.get('cutline_preview_session_id')).toBe(CLASSIC_PREVIEW_SESSION_ID);
+        expect(form.get('cutline_preview_revision')).toBe('1');
+        expect(form.get('cutline_preview_fingerprint')).toBe(CLASSIC_PREVIEW_FINGERPRINT);
+        // Việc bật isProcessing không được cleanup session trước khi request backend
+        // đã có cơ hội snapshot artifact; nếu không execute sẽ rơi về detect/fit lần hai.
+        expect(previewApiMocks.closeStickerSheetSession).not.toHaveBeenCalled();
+        expect(previewApiMocks.detectStickerSourceManifest).toHaveBeenCalledTimes(1);
+        expect(previewApiMocks.previewStickerCutline).toHaveBeenCalledTimes(1);
+
+        resolveExecute({
+            ok: true,
+            headers: new Headers(),
+            blob: vi.fn(async () => new Blob(['result'], { type: 'application/pdf' })),
+        } as unknown as Response);
+        await waitFor(() => expect(onFileFixed).toHaveBeenCalledTimes(1));
+        expect(previewApiMocks.detectStickerSourceManifest).toHaveBeenCalledTimes(1);
+        expect(previewApiMocks.previewStickerCutline).toHaveBeenCalledTimes(1);
+    });
+
+    it('khóa Thực thi trong khoảng detect xong nhưng canonical preview chưa fit xong', async () => {
+        mockClassicPreviewArtifact();
+        let resolvePreview!: (value: {
+            page_number: number;
+            mask_revision: number;
+            preview_width_px: number;
+            preview_height_px: number;
+            paths: Array<{ instance_id: number; d: string; segment_count: number }>;
+            fingerprint: string;
+            segment_count: number;
+        }) => void;
+        previewApiMocks.previewStickerCutline.mockImplementationOnce(
+            () => new Promise(resolve => { resolvePreview = resolve; }),
+        );
+
+        render(
+            <StickerTool
+                pdfFile={new File(['pdf'], 'tem.pdf', { type: 'application/pdf' })}
+                onFileFixed={vi.fn()}
+            />,
+        );
+
+        await waitFor(() => expect(previewApiMocks.previewStickerCutline)
+            .toHaveBeenCalledTimes(1), { timeout: 2000 });
+        const execute = screen.getByRole('button', { name: 'Thực thi' }) as HTMLButtonElement;
+        expect(execute.disabled).toBe(true);
+        fireEvent.click(execute);
+        expect(authenticatedFetch).not.toHaveBeenCalled();
+
+        resolvePreview({
+            page_number: 1,
+            mask_revision: 1,
+            preview_width_px: 120,
+            preview_height_px: 80,
+            paths: [{
+                instance_id: 1,
+                d: 'M 10 10 L 110 10 L 110 70 L 10 70 Z',
+                segment_count: 4,
+            }],
+            fingerprint: CLASSIC_PREVIEW_FINGERPRINT,
+            segment_count: 4,
+        });
+        await waitFor(() => expect(execute.disabled).toBe(false));
+    });
+
+    it('báo rõ đang nhận diện trong lúc chuẩn bị preview lần đầu', () => {
+        render(
+            <StickerTool
+                pdfFile={new File(['pdf'], 'tem.pdf', { type: 'application/pdf' })}
+                onFileFixed={vi.fn()}
+            />,
+        );
+
+        expect(screen.getByTestId('classic-cutline-preview-status').textContent)
+            .toContain('Đang nhận diện vùng tem để tạo preview…');
+    });
+
+    it('giữ đường bế cũ trên Viewer khi lượt cập nhật đang chạy rồi báo lỗi', async () => {
+        const sessionId = '0123456789abcdef0123456789abcdef';
+        const firstPreview = {
+            page_number: 1,
+            mask_revision: 1,
+            preview_width_px: 120,
+            preview_height_px: 80,
+            paths: [{
+                instance_id: 1,
+                d: 'M 10 10 L 110 10 L 110 70 L 10 70 Z',
+                segment_count: 4,
+            }],
+            fingerprint: 'a'.repeat(64),
+            segment_count: 4,
+        };
+        previewApiMocks.inspectStickerSourceManifest.mockResolvedValue({
+            session_id: sessionId,
+            stage: 'inspected',
+            original_name: 'tem.pdf',
+            source_kind: 'pdf',
+            mime_type: 'application/pdf',
+            boundary_source: 'vector',
+            strategy_confidence: 0.96,
+            needs_review: false,
+            page_count: 1,
+            source_width_px: 120,
+            source_height_px: 80,
+            dpi: [300, 300],
+            physical_width_mm: 10,
+            physical_height_mm: 8,
+            preview_width_px: 120,
+            preview_height_px: 80,
+            has_existing_cut: false,
+            has_vector: true,
+            has_raster: false,
+            has_alpha: false,
+            cut_contour_count: 0,
+            pages: [{
+                page_number: 1,
+                width_mm: 10,
+                height_mm: 8,
+                has_existing_cut: false,
+                has_vector: true,
+                has_raster: false,
+                has_alpha: false,
+                cut_contour_count: 0,
+            }],
+            warnings: [],
+            preview_url: '/unused-preview.png',
+        });
+        previewApiMocks.detectStickerSourceManifest.mockResolvedValue({
+            session_id: sessionId,
+            stage: 'mask-review',
+            original_name: 'tem.pdf',
+            source_kind: 'pdf',
+            boundary_source: 'vector',
+            strategy_confidence: 0.96,
+            needs_review: false,
+            page_count: 1,
+            source_page: 1,
+            original_width_px: 120,
+            original_height_px: 80,
+            analysis_width_px: 120,
+            analysis_height_px: 80,
+            preview_width_px: 120,
+            preview_height_px: 80,
+            dpi: [300, 300],
+            model: 'birefnet-lite',
+            model_seconds: 0,
+            postprocess_seconds: 0,
+            mask_revision: 1,
+            refinement_available: false,
+            alpha_threshold: 128,
+            shadow_cleanup: 'auto',
+            instances: [{
+                id: 1, x: 10, y: 10, width: 100, height: 60,
+                area_px: 6000, confidence: 0.96, uncertain_ratio: 0,
+            }],
+            warnings: [],
+            vector_geometry_ref: null,
+            preview_url: '/unused-preview.png',
+            labels_url: '/unused-labels.png',
+            uncertainty_url: '/unused-uncertainty.png',
+        });
+        let rejectUpdate!: (reason?: unknown) => void;
+        const pendingUpdate = new Promise((_, reject) => { rejectUpdate = reject; });
+        previewApiMocks.previewStickerCutline
+            .mockResolvedValueOnce(firstPreview)
+            .mockImplementationOnce(() => pendingUpdate);
+
+        render(
+            <StickerTool
+                pdfFile={new File(['pdf'], 'tem.pdf', { type: 'application/pdf' })}
+                onFileFixed={vi.fn()}
+            />,
+        );
+
+        await waitFor(() => expect(workspaceMocks.setClassicCutlineViewerPreview)
+            .toHaveBeenCalledWith(expect.objectContaining({
+                preview: firstPreview,
+                isUpdating: false,
+            })), { timeout: 2000 });
+
+        fireEvent.click(screen.getByRole('button', { name: /Góc tròn/ }));
+        await waitFor(() => expect(previewApiMocks.previewStickerCutline)
+            .toHaveBeenCalledTimes(2));
+        expect(screen.getByTestId('classic-cutline-preview-status').textContent)
+            .toContain('Đang cập nhật đường bế xem trước…');
+        expect(workspaceMocks.setClassicCutlineViewerPreview)
+            .toHaveBeenLastCalledWith(expect.objectContaining({
+                preview: firstPreview,
+                isUpdating: true,
+            }));
+
+        const clearCountBeforeError = workspaceMocks.clearClassicCutlineViewerPreview.mock.calls.length;
+        rejectUpdate(new Error('Không cập nhật được preview thử nghiệm'));
+        await waitFor(() => expect(screen.getByText(/Không cập nhật được preview thử nghiệm/))
+            .toBeTruthy());
+
+        expect(workspaceMocks.clearClassicCutlineViewerPreview)
+            .toHaveBeenCalledTimes(clearCountBeforeError);
+        expect(workspaceMocks.setClassicCutlineViewerPreview)
+            .toHaveBeenLastCalledWith(expect.objectContaining({
+                preview: firstPreview,
+                isUpdating: false,
+            }));
+    });
+
     it('tự thu thiết lập sau khi tạo đường cắt và cho xổ lại mà vẫn giữ kết quả', async () => {
         vi.mocked(uploadPDF).mockResolvedValue({ id: 'source-id' });
         vi.mocked(authenticatedFetch).mockResolvedValue({
@@ -135,6 +749,7 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
             blob: vi.fn(async () => new Blob(['result'], { type: 'application/pdf' })),
         } as unknown as Response);
         const onFileFixed = vi.fn().mockResolvedValue(undefined);
+        window.localStorage.setItem('ps_sticker_removeWhiteBg', 'false');
 
         render(
             <StickerTool
@@ -161,7 +776,8 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
         expect(settingsToggle.getAttribute('aria-expanded')).toBe('true');
         expect(screen.getByText('1. Đường cắt (Dieline)')).toBeTruthy();
         expect(screen.getByRole('button', { name: 'Thực thi' })).toBeTruthy();
-        expect(screen.getByRole('status')).toBe(resultCard);
+        expect(screen.getByText('Đã tạo bù xén thành công!').closest('[role="status"]'))
+            .toBe(resultCard);
     });
 
     it('giữ đúng ticket của tab cho tới callback commit', async () => {
@@ -180,6 +796,7 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
             _path?: string,
             _ticket?: RecipeOperationTicket | null,
         ) => commitGate);
+        window.localStorage.setItem('ps_sticker_removeWhiteBg', 'false');
 
         render(
             <StickerTool

@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { detectStickerSource, inspectStickerSource } from '../../lib/stickerSheetApi';
-import StickerSheetWorkspace from './StickerSheetWorkspace';
+import StickerSheetWorkspace, { StickerCutlineOverlay } from './StickerSheetWorkspace';
 import { useStickerSheetStore } from './stickerSheetStore';
 
 
@@ -278,11 +278,70 @@ describe('StickerSheetWorkspace - tách thao tác view và sửa mask', () => {
         render(<StickerSheetWorkspace tabId="tab" isActive />);
 
         const svg = screen.getByTestId('sticker-cutline-preview');
+        const main = svg.querySelector('[data-cutline-layer="main"]');
         expect(svg.getAttribute('viewBox')).toBe('0 0 100 80');
-        expect(svg.querySelector('path')?.getAttribute('d'))
-            .toBe('M 5 5 C 15 5 20 10 25 20 Z');
+        expect(main?.getAttribute('d')).toBe('M 5 5 C 15 5 20 10 25 20 Z');
+        expect(svg.querySelector('[data-cutline-layer="halo"]')).toBeNull();
+        expect(main?.getAttribute('stroke')).toBe('#d946ef');
+        expect(main?.getAttribute('stroke-width')).toBe('2');
+        expect(main?.getAttribute('vector-effect')).toBe('non-scaling-stroke');
         expect((document.querySelector('canvas') as HTMLCanvasElement).className)
             .toContain('opacity-0');
+
+        act(() => {
+            const current = useStickerSheetStore.getState().getTab('tab');
+            useStickerSheetStore.setState({
+                tabs: { tab: { ...current, selectedInstanceId: null } },
+            });
+        });
+        expect(svg.querySelector('[data-cutline-layer="main"]')?.getAttribute('stroke')).toBe('#7c3aed');
+        expect(svg.querySelector('[data-cutline-layer="main"]')?.getAttribute('stroke-width')).toBe('1.4');
+    });
+
+    it('làm nét bế nổi ở zoom nhỏ và tự thu mảnh khi zoom lớn', () => {
+        const preview = {
+            page_number: 1,
+            mask_revision: 1,
+            preview_width_px: 100,
+            preview_height_px: 80,
+            paths: [{
+                instance_id: 1,
+                d: 'M 5 5 L 95 5 L 95 75 L 5 75 Z',
+                segment_count: 4,
+            }],
+            fingerprint: 'd'.repeat(64),
+            segment_count: 4,
+        };
+        const { rerender } = render(
+            <StickerCutlineOverlay
+                preview={preview}
+                selectedInstanceId={null}
+                displayZoom={0.25}
+            />,
+        );
+        const strokeWidth = () => Number(
+            screen.getByTestId('sticker-cutline-preview')
+                .querySelector('[data-cutline-layer="main"]')
+                ?.getAttribute('stroke-width'),
+        );
+
+        expect(strokeWidth()).toBe(2.4);
+        rerender(
+            <StickerCutlineOverlay
+                preview={preview}
+                selectedInstanceId={null}
+                displayZoom={1}
+            />,
+        );
+        expect(strokeWidth()).toBe(1.4);
+        rerender(
+            <StickerCutlineOverlay
+                preview={preview}
+                selectedInstanceId={null}
+                displayZoom={4}
+            />,
+        );
+        expect(strokeWidth()).toBe(0.7);
     });
 
     it('khóa cọ trên canvas trong lúc cập nhật preview AI', () => {

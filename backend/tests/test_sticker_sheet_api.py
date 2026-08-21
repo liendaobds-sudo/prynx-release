@@ -8,10 +8,11 @@ from io import BytesIO
 from pathlib import Path
 import threading
 
+from fastapi import UploadFile
 from fastapi.testclient import TestClient
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 import pytest
 import pikepdf
 
@@ -23,6 +24,7 @@ from app.workers.sticker_sheet_export import (
 
 from app.main import app
 from app.core import sticker_sheet_session as session_store
+from app.api.routes import sticker_sheet as sticker_sheet_route
 from app.api.routes.sticker_sheet import detect_sticker_source_endpoint
 from app.schemas.sticker_sheet import StickerSourceDetectRequest
 
@@ -298,6 +300,80 @@ def test_export_tai_su_dung_bezier_vua_preview_thay_vi_fit_lai(monkeypatch):
 
     assert exported.status_code == 200, exported.text
     assert exported.headers["X-Sticker-Sheet-Count"] == "2"
+
+
+def test_cutline_preview_chi_tra_svg_khong_chay_xuat_pdf(monkeypatch):
+    """Realtime preview không được gọi StickerEngine hoặc sinh artifact PDF."""
+    def forbidden_process_pdf(*_args, **_kwargs):
+        pytest.fail("Preview SVG đã gọi nhầm luồng xuất PDF đầy đủ")
+
+    monkeypatch.setattr(
+        "app.workers.sticker_engine.StickerEngine.process_pdf",
+        forbidden_process_pdf,
+    )
+    with TestClient(app) as client:
+        inspected = client.post(
+            "/api/sticker-sheet/inspect",
+            files={"file": ("alpha.png", _alpha_png_bytes(), "image/png")},
+        )
+        assert inspected.status_code == 200, inspected.text
+        session_id = inspected.json()["session_id"]
+        detected = client.post(
+            f"/api/sticker-sheet/{session_id}/detect",
+            json={"strategy": "alpha", "page_number": 1},
+        )
+        assert detected.status_code == 200, detected.text
+        response = client.post(
+            f"/api/sticker-sheet/{session_id}/cutline-preview",
+            json={
+                "base_revision": 1,
+                "page_number": 1,
+                "edits": [],
+                "dpi": 300,
+                "dpi_y": 150,
+                "corner_style": "round",
+                "curve_tension": 80,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["paths"][0]["d"].startswith("M ")
+    assert not list(session_store.SESSION_ROOT.rglob("*.pdf"))
+
+
+def test_detect_preview_only_truyen_hop_dong_fast_path_den_pipeline(monkeypatch):
+    """API preview classic không được vô tình bỏ cờ rồi nạp AI nâng hình học."""
+    image = Image.new("RGB", (320, 240), (254, 254, 254))
+    ImageDraw.Draw(image).ellipse((38, 28, 282, 212), fill=(78, 12, 10))
+    source = BytesIO()
+    image.save(source, format="PNG")
+
+    def forbidden_ai(*_args, **_kwargs):
+        raise AssertionError("API đã làm mất cờ preview_only")
+
+    monkeypatch.setattr(
+        "app.workers.sticker_source_pipeline.analyze_sticker_sheet",
+        forbidden_ai,
+    )
+    with TestClient(app) as client:
+        inspected = client.post(
+            "/api/sticker-sheet/inspect",
+            files={"file": ("fast-preview.png", source.getvalue(), "image/png")},
+        )
+        assert inspected.status_code == 200, inspected.text
+        detected = client.post(
+            f"/api/sticker-sheet/{inspected.json()['session_id']}/detect",
+            json={
+                "strategy": "auto",
+                "page_number": 1,
+                "preview_only": True,
+            },
+        )
+
+    assert detected.status_code == 200, detected.text
+    assert detected.json()["boundary_source"] == "simple-bg"
+    assert len(detected.json()["instances"]) == 1
 
 
 def test_export_theo_thumbnail_dung_cache_preview_cua_dung_trang(monkeypatch):
@@ -1079,6 +1155,130 @@ def test_cancelled_detect_releases_session_reservation(monkeypatch):
     session = session_store.get_session(session_id)
     assert session is not None
     assert session.stage == "inspected"
+
+
+def test_cancelled_inspect_don_upload_va_session_sau_khi_worker_xong(monkeypatch):
+    """Client hủy không được xóa file dưới chân worker hoặc rò session."""
+    started = threading.Event()
+    release = threading.Event()
+    closed = threading.Event()
+    closed_sessions: list[tuple[str, bool]] = []
+    original_inspect = sticker_sheet_route.inspect_sticker_source
+    original_close = sticker_sheet_route.close_session
+
+    def blocking_inspect(source_path: str, original_name: str):
+        started.set()
+        assert release.wait(timeout=10)
+        return original_inspect(source_path, original_name)
+
+    def recording_close(session_id: str) -> bool:
+        try:
+            result = original_close(session_id)
+            closed_sessions.append((session_id, result))
+            return result
+        finally:
+            closed.set()
+
+    monkeypatch.setattr(sticker_sheet_route, "inspect_sticker_source", blocking_inspect)
+    monkeypatch.setattr(sticker_sheet_route, "close_session", recording_close)
+
+    async def cancel_pending_inspect() -> tuple[Path, bool]:
+        upload = UploadFile(
+            BytesIO(_alpha_png_bytes()),
+            filename="cancelled-inspect.png",
+        )
+        request_task = asyncio.create_task(
+            sticker_sheet_route.inspect_sticker_source_endpoint(
+                file=upload,
+                file_path=None,
+            )
+        )
+        try:
+            worker_started = await asyncio.wait_for(
+                asyncio.to_thread(started.wait, 10),
+                timeout=11,
+            )
+            assert worker_started
+            upload_path = Path(getattr(upload, "_prynx_partial_path"))
+            assert upload_path.is_file()
+
+            request_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request_task
+            # File phải còn nguyên trong lúc worker đang bị chặn. Bản cũ xóa
+            # nó ngay trong finally của request và tạo race FileNotFoundError.
+            worker_still_owns_upload = upload_path.is_file()
+        finally:
+            release.set()
+
+        session_closed = await asyncio.wait_for(
+            asyncio.to_thread(closed.wait, 10),
+            timeout=11,
+        )
+        await upload.close()
+        assert session_closed
+        return upload_path, worker_still_owns_upload
+
+    upload_path, worker_still_owns_upload = asyncio.run(cancel_pending_inspect())
+
+    assert worker_still_owns_upload is True
+    assert closed_sessions and closed_sessions[0][1] is True
+    assert session_store.get_session(closed_sessions[0][0]) is None
+    assert not upload_path.exists()
+    assert not any(session_store.SESSION_ROOT.iterdir())
+
+
+def test_detect_alpha_preview_khong_chiem_hang_doi_heavy(monkeypatch):
+    """Nguồn đã có Alpha chỉ chuẩn bị mask trong thread thường cho preview line-only."""
+    async def forbidden_heavy(*_args, **_kwargs):
+        pytest.fail("Detect Alpha không được chiếm hàng đợi heavy")
+
+    monkeypatch.setattr(
+        "app.api.routes.sticker_sheet.run_heavy_in_threadpool",
+        forbidden_heavy,
+    )
+    with TestClient(app) as client:
+        inspected = client.post(
+            "/api/sticker-sheet/inspect",
+            files={"file": ("alpha.png", _alpha_png_bytes(), "image/png")},
+        )
+        assert inspected.status_code == 200, inspected.text
+        detected = client.post(
+            f"/api/sticker-sheet/{inspected.json()['session_id']}/detect",
+            json={"strategy": "alpha", "page_number": 1},
+        )
+
+    assert detected.status_code == 200, detected.text
+    assert detected.json()["boundary_source"] == "alpha"
+
+
+def test_detect_page_box_preview_khong_chiem_hang_doi_heavy(monkeypatch):
+    """page-box là mask deterministic nên chạy thread thường, không chiếm heavy."""
+    async def forbidden_heavy(*_args, **_kwargs):
+        pytest.fail("Detect page-box không được chiếm hàng đợi heavy")
+
+    monkeypatch.setattr(
+        "app.api.routes.sticker_sheet.run_heavy_in_threadpool",
+        forbidden_heavy,
+    )
+    with TestClient(app) as client:
+        inspected = client.post(
+            "/api/sticker-sheet/inspect",
+            files={"file": ("page-box.png", _alpha_png_bytes(), "image/png")},
+        )
+        assert inspected.status_code == 200, inspected.text
+        detected = client.post(
+            f"/api/sticker-sheet/{inspected.json()['session_id']}/detect",
+            json={"strategy": "page-box", "page_number": 1},
+        )
+
+    assert detected.status_code == 200, detected.text
+    payload = detected.json()
+    assert payload["boundary_source"] == "page-box"
+    assert payload["needs_review"] is False
+    assert len(payload["instances"]) == 1
+    assert payload["instances"][0]["x"] == 0
+    assert payload["instances"][0]["y"] == 0
 
 
 def test_detected_pdf_exports_after_confirmation(monkeypatch):

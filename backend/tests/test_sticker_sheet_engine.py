@@ -314,6 +314,54 @@ def test_model_memory_error_is_reported_without_runtime_exception_name():
     assert "RuntimeException" not in str(captured.value)
 
 
+def test_clean_alpha_does_not_copy_the_full_mask_to_float32():
+    """Hậu xử lý phải còn chạy khi allocator từ chối bản sao float32 toàn trang."""
+
+    class NoFloat32Copy(np.ndarray):
+        def astype(self, dtype, *args, **kwargs):
+            if np.dtype(dtype) == np.dtype(np.float32):
+                raise MemoryError("Unable to allocate float32 mask copy")
+            return super().astype(dtype, *args, **kwargs)
+
+    raw_alpha = np.arange(256, dtype=np.uint8).reshape(16, 16).view(NoFloat32Copy)
+    labels = np.ones(raw_alpha.shape, dtype=np.uint16)
+    expected = np.clip(
+        (np.arange(256, dtype=np.float32) - sticker_engine_module.MIN_UNCERTAIN_ALPHA)
+        * (
+            255.0
+            / float(
+                sticker_engine_module.MAX_UNCERTAIN_ALPHA
+                - sticker_engine_module.MIN_UNCERTAIN_ALPHA
+            )
+        ),
+        0.0,
+        255.0,
+    ).astype(np.uint8).reshape(raw_alpha.shape)
+
+    cleaned = sticker_engine_module._clean_alpha(raw_alpha, labels)
+
+    assert np.array_equal(cleaned, expected)
+
+
+def test_postprocess_memory_error_is_reported_as_controlled_sticker_error(monkeypatch):
+    """OOM sau inference không được lọt ra route dưới dạng HTTP 500 thô."""
+
+    def postprocess_out_of_memory(*_args, **_kwargs):
+        raise MemoryError("Unable to allocate 2.40 MiB for an array")
+
+    monkeypatch.setattr(
+        sticker_engine_module,
+        "_build_analysis_from_raw_alpha",
+        postprocess_out_of_memory,
+    )
+
+    with pytest.raises(StickerSheetError, match="không còn đủ bộ nhớ"):
+        analyze_sticker_sheet(
+            Image.new("RGB", (100, 80)),
+            model_runner=_synthetic_runner([(20, 20, 40, 30)]),
+        )
+
+
 @pytest.mark.parametrize("threshold", [0, 255])
 def test_rejects_invalid_alpha_threshold(threshold: int):
     with pytest.raises(StickerSheetError, match="Ngưỡng Alpha"):

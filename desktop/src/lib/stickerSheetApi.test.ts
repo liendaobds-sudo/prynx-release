@@ -11,7 +11,9 @@ vi.mock('./api', () => apiMocks);
 import {
     confirmStickerSource,
     detectStickerSource,
+    detectStickerSourceManifest,
     exportStickerSheet,
+    inspectStickerSourceManifest,
     previewStickerCutline,
     refineStickerSource,
     type StickerSourceDetection,
@@ -86,6 +88,70 @@ describe('stickerSheetApi — hợp đồng theo trang', () => {
             'http://127.0.0.1:8321/api/sticker-sheet/session/assets/labels?v=1&page=2',
             'http://127.0.0.1:8321/api/sticker-sheet/session/assets/uncertainty?v=1&page=2',
         ]);
+    });
+
+    it('biến thể line-only chỉ lấy manifest, không tải bitmap preview/mask', async () => {
+        const inspected = {
+            session_id: '0123456789abcdef0123456789abcdef',
+            stage: 'inspected',
+            original_name: 'tem.pdf',
+            source_kind: 'pdf',
+            mime_type: 'application/pdf',
+            boundary_source: 'vector',
+            strategy_confidence: 0.96,
+            needs_review: false,
+            page_count: 1,
+            source_width_px: 120,
+            source_height_px: 80,
+            dpi: [300, 300],
+            physical_width_mm: 10,
+            physical_height_mm: 8,
+            preview_width_px: 120,
+            preview_height_px: 80,
+            has_existing_cut: false,
+            has_vector: true,
+            has_raster: false,
+            has_alpha: false,
+            cut_contour_count: 0,
+            pages: [{
+                page_number: 1,
+                width_mm: 10,
+                height_mm: 8,
+                has_existing_cut: false,
+                has_vector: true,
+                has_raster: false,
+                has_alpha: false,
+                cut_contour_count: 0,
+            }],
+            warnings: [],
+            preview_url: '/api/sticker-sheet/session/assets/preview',
+        };
+        const detected = detectionManifest(1);
+        apiMocks.authenticatedFetch
+            .mockResolvedValueOnce(responseJson(inspected))
+            .mockResolvedValueOnce(responseJson(detected));
+
+        const source = await inspectStickerSourceManifest(
+            new File(['pdf'], 'tem.pdf', { type: 'application/pdf' }),
+        );
+        const manifest = await detectStickerSourceManifest(source.session_id, {
+            strategy: 'vector',
+            pageNumber: 1,
+            previewOnly: true,
+        });
+
+        expect(manifest).toEqual(detected);
+        expect(apiMocks.authenticatedFetch).toHaveBeenCalledTimes(2);
+        expect(apiMocks.authenticatedFetch.mock.calls.map(call => call[0])).toEqual([
+            'http://127.0.0.1:8321/api/sticker-sheet/inspect',
+            'http://127.0.0.1:8321/api/sticker-sheet/0123456789abcdef0123456789abcdef/detect',
+        ]);
+        const detectInit = apiMocks.authenticatedFetch.mock.calls[1][1] as RequestInit;
+        expect(JSON.parse(String(detectInit.body))).toMatchObject({
+            strategy: 'vector',
+            page_number: 1,
+            preview_only: true,
+        });
     });
 
     it('refine và confirm luôn gửi trang nguồn rõ ràng', async () => {
@@ -176,6 +242,7 @@ describe('stickerSheetApi — hợp đồng theo trang', () => {
             segment_count: 1,
         }));
 
+        const controller = new AbortController();
         await previewStickerCutline('0123456789abcdef0123456789abcdef', {
             baseRevision: 4,
             pageNumber: 2,
@@ -192,9 +259,11 @@ describe('stickerSheetApi — hợp đồng theo trang', () => {
             curveTension: 36,
             minDetailAreaMm2: 1.4,
             cutlineDenoise: 65,
+            signal: controller.signal,
         });
 
         const init = apiMocks.authenticatedFetch.mock.calls[0][1] as RequestInit;
+        expect(init.signal).toBe(controller.signal);
         expect(JSON.parse(String(init.body))).toMatchObject({
             base_revision: 4,
             page_number: 2,

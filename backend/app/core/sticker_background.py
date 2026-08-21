@@ -138,9 +138,33 @@ def _foreground_from_flat_background(
     tolerance: int,
 ) -> Optional[np.ndarray]:
     """Xoá vùng cùng màu nền NỐI VỚI BIÊN; trả mask hình (uint8 0/255)."""
-    candidate = (
-        np.max(np.abs(rgb - background_rgb), axis=2) <= tolerance
+    # PERF/STABILITY (feedback 2026-08-21 §STK.BG-RAM1): trung vị màu nền là
+    # float64; phép trừ NumPy cũ vì thế nâng TOÀN BỘ ảnh lên float64 (ảnh
+    # 2000×2000 xin thêm ~92 MiB) trước khi lấy trị tuyệt đối. `inRange` dùng
+    # trực tiếp uint8 và hai cận nguyên tương đương chính xác với điều kiện
+    # abs(pixel - median) <= tolerance, kể cả median có phần lẻ 0.5.
+    source = np.ascontiguousarray(rgb[:, :, :3], dtype=np.uint8)
+    color = np.asarray(background_rgb, dtype=np.float64).reshape(-1)
+    if color.size < 3 or not np.all(np.isfinite(color[:3])):
+        return None
+    resolved_tolerance = max(0, int(tolerance))
+    lower = np.clip(
+        np.ceil(color[:3] - resolved_tolerance),
+        0,
+        255,
     ).astype(np.uint8)
+    upper = np.clip(
+        np.floor(color[:3] + resolved_tolerance),
+        0,
+        255,
+    ).astype(np.uint8)
+    if np.any(lower > upper):
+        return None
+    candidate = cv2.inRange(
+        source,
+        tuple(int(value) for value in lower),
+        tuple(int(value) for value in upper),
+    )
     num_labels, labels = cv2.connectedComponents(candidate)
     if num_labels <= 1:
         return None
@@ -171,7 +195,7 @@ def foreground_from_flat_background(
     if color.size < 3:
         return None
     return _foreground_from_flat_background(
-        img_rgb[:, :, :3].astype(np.int16, copy=False),
+        img_rgb[:, :, :3],
         color[:3],
         max(0, int(tolerance)),
     )
@@ -286,7 +310,7 @@ def detect_background(img_rgb: np.ndarray) -> Optional[BackgroundInfo]:
             )
         )
         foreground = _foreground_from_flat_background(
-            img_rgb[:, :, :3].astype(np.int16), background_rgb, tolerance
+            img_rgb[:, :, :3], background_rgb, tolerance
         )
         if foreground is not None and mask_tach_duoc_nen(foreground):
             confidence = float(

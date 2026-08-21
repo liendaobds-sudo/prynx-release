@@ -651,6 +651,8 @@ def promote_source_session(
     source_page: int,
     vector_geometry_ref: dict[str, object] | None = None,
     warnings: list[str] | None = None,
+    edge_background_rgb: tuple[int, int, int] | None = None,
+    edge_background_tolerance: int = 0,
 ) -> StickerSheetSession | None:
     """Nâng session inspect thành mask-review nhưng vẫn giữ nguyên file nguồn gốc."""
     session = get_session(session_id)
@@ -777,6 +779,18 @@ def promote_source_session(
                 "alpha_threshold": int(analysis.alpha_threshold),
                 "shadow_cleanup": analysis.shadow_cleanup,
                 "warnings": merged_warnings,
+                # QUALITY (audit 2026-08-21 §CANONICAL.2): màu nền là metadata
+                # của chính silhouette đã duyệt. Giữ qua session để execute dùng
+                # lại artifact không phải hút màu từ halo JPEG ở mép tem.
+                "edge_background_rgb": (
+                    list(edge_background_rgb)
+                    if edge_background_rgb is not None
+                    else None
+                ),
+                "edge_background_tolerance": max(
+                    0,
+                    min(255, int(edge_background_tolerance)),
+                ),
                 "instances": [
                     {
                         "id": instance.id,

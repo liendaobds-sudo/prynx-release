@@ -5,6 +5,7 @@ import type { StoreApi } from 'zustand';
 import type { OutputPreviewPageBoxes, PlateOverlay } from '../lib/outputPreviewOverlay';
 import type { CropRegionFrac } from '../lib/cropGeometry';
 import type { ProcessingSettings } from '../lib/pdfImposer';
+import type { StickerCutlinePreview } from '../lib/stickerSheetApi';
 
 // ═══════════════════════════════════════════════════════════
 // useWorkspaceStore — Central state for ImpositionTab workspace
@@ -76,6 +77,35 @@ export interface EditObjectSelectionContext {
 export interface FontInspectionCache {
     identity: string;
     report: unknown;
+}
+
+export interface ClassicCutlineViewerPreview {
+    /** Chủ sở hữu giúp cleanup của component cũ không xóa preview mới. */
+    ownerId: string;
+    preview: StickerCutlinePreview;
+    /** Vị trí 1-based trong working PDF, không phải số trang nguồn trước reorder. */
+    viewerPage: number;
+    /** ID ổn định để bản nhân đôi cùng trang nguồn không cùng nhận overlay. */
+    pageInstanceId: string | null;
+    /** Fence file + reorder + rotation; payload cũ không được lóe lại sau khi đổi nguồn. */
+    documentIdentity: string;
+    isUpdating: boolean;
+}
+
+export interface ViewerActivePagePhysical {
+    /** Fence file + thứ tự + góc xoay; dữ liệu trang cũ không được dùng cho file mới. */
+    documentIdentity: string;
+    /** Vị trí 1-based trong working PDF đang hiển thị. */
+    viewerPage: number;
+    /** Số trang nguồn 1-based sau khi ánh xạ qua pageOrder. */
+    sourcePage: number;
+    /** ID ổn định để phân biệt các bản nhân đôi cùng một trang nguồn. */
+    pageInstanceId: string | null;
+    /** Góc xoay đã chuẩn hóa về [0, 360). */
+    rotation: number;
+    /** Khổ vật lý sau xoay, tính bằng point PDF. */
+    widthPt: number;
+    heightPt: number;
 }
 
 type CropSelectionUpdater = CropSelectionState | null | ((prev: CropSelectionState | null) => CropSelectionState | null);
@@ -201,6 +231,8 @@ export interface WorkspaceState {
     detectedShapesByPage: Record<number, string>;
     detectedDimensionsByPage: Record<number, { w: number, h: number }>;
     detectedShapeParamsByPage: Record<number, any>;
+    /** SVG đường bế classic phủ trực tiếp lên Viewer của riêng workspace/tab này. */
+    classicCutlineViewerPreview: ClassicCutlineViewerPreview | null;
 
     // ── Watermark Preview ──
     watermarkPreview: any | null;
@@ -217,6 +249,8 @@ export interface WorkspaceState {
     viewerThumbMenuOpen: boolean;
     viewerThumbWidth: number;
     viewerPageDimMm: { w: number; h: number } | null;
+    /** Khổ in thật của đúng instance trang đang xem; tách khỏi CSS-mm dùng cho VDP. */
+    viewerActivePagePhysical: ViewerActivePagePhysical | null;
 
     // ── Setters ──
     setPhase: (phase: Phase) => void;
@@ -310,6 +344,8 @@ export interface WorkspaceState {
     setDetectedShapesByPage: (updater: Record<number, string> | ((prev: Record<number, string>) => Record<number, string>)) => void;
     setDetectedDimensionsByPage: (updater: Record<number, { w: number, h: number }> | ((prev: Record<number, { w: number, h: number }>) => Record<number, { w: number, h: number }>)) => void;
     setDetectedShapeParamsByPage: (updater: Record<number, any> | ((prev: Record<number, any>) => Record<number, any>)) => void;
+    setClassicCutlineViewerPreview: (value: ClassicCutlineViewerPreview) => void;
+    clearClassicCutlineViewerPreview: (ownerId: string) => void;
 
     setViewerZoom: (updater: number | ((prev: number) => number)) => void;
     setViewerFitMode: (mode: 'width' | 'page' | 'custom' | 'smart') => void;
@@ -321,6 +357,7 @@ export interface WorkspaceState {
     setViewerThumbMenuOpen: (v: boolean) => void;
     setViewerThumbWidth: (width: number) => void;
     setViewerPageDimMm: (dim: { w: number; h: number } | null) => void;
+    setViewerActivePagePhysical: (value: ViewerActivePagePhysical | null) => void;
 
     stickPreviewParams: any | null;
     setStickPreviewParams: (params: any | null) => void;
@@ -414,6 +451,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     detectedShapesByPage: {},
     detectedDimensionsByPage: {},
     detectedShapeParamsByPage: {},
+    classicCutlineViewerPreview: null,
 
     watermarkPreview: null,
     stickPreviewParams: null,
@@ -429,6 +467,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     viewerThumbMenuOpen: false,
     viewerThumbWidth: 256,
     viewerPageDimMm: null,
+    viewerActivePagePhysical: null,
 
     // ── Setters ──
     setPhase: (phase) => set({ phase }),
@@ -445,6 +484,8 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
             detectedShapesByPage: {},
             detectedDimensionsByPage: {},
             detectedShapeParamsByPage: {},
+            classicCutlineViewerPreview: null,
+            viewerActivePagePhysical: null,
         };
     }),
     setImageBatchFiles: (imageBatchFiles) => set({ imageBatchFiles }),
@@ -473,9 +514,21 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     setViewerDirty: (v) => set({ viewerDirty: v }),
     setShowCloseConfirm: (v) => set({ showCloseConfirm: v }),
 
-    setViewerPageOrder: (order) => set({ viewerPageOrder: order }),
-    setViewerPageInstanceIds: (ids) => set({ viewerPageInstanceIds: ids }),
-    setViewerPageRotations: (rotations) => set({ viewerPageRotations: rotations }),
+    setViewerPageOrder: (order) => set({
+        viewerPageOrder: order,
+        classicCutlineViewerPreview: null,
+        viewerActivePagePhysical: null,
+    }),
+    setViewerPageInstanceIds: (ids) => set({
+        viewerPageInstanceIds: ids,
+        classicCutlineViewerPreview: null,
+        viewerActivePagePhysical: null,
+    }),
+    setViewerPageRotations: (rotations) => set({
+        viewerPageRotations: rotations,
+        classicCutlineViewerPreview: null,
+        viewerActivePagePhysical: null,
+    }),
     setHighlightedIssue: (issue) => set({ highlightedIssue: issue }),
     setBleedView: (updater) => set((state) => ({
         bleedView: typeof updater === 'function' ? updater(state.bleedView) : updater,
@@ -810,6 +863,12 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     setDetectedShapeParamsByPage: (updater) => set((state) => ({
         detectedShapeParamsByPage: typeof updater === 'function' ? updater(state.detectedShapeParamsByPage) : updater,
     })),
+    setClassicCutlineViewerPreview: (value) => set({ classicCutlineViewerPreview: value }),
+    clearClassicCutlineViewerPreview: (ownerId) => set((state) => (
+        state.classicCutlineViewerPreview?.ownerId === ownerId
+            ? { classicCutlineViewerPreview: null }
+            : state
+    )),
 
     setViewerZoom: (updater) => set((state) => ({
         viewerZoom: typeof updater === 'function' ? updater(state.viewerZoom) : updater,
@@ -823,6 +882,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     setViewerThumbMenuOpen: (v) => set({ viewerThumbMenuOpen: v }),
     setViewerThumbWidth: (w) => set({ viewerThumbWidth: w }),
     setViewerPageDimMm: (dim) => set({ viewerPageDimMm: dim }),
+    setViewerActivePagePhysical: (value) => set({ viewerActivePagePhysical: value }),
 }));
 
 export const WorkspaceContext = createContext<StoreApi<WorkspaceState> | null>(null);

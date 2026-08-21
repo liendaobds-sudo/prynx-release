@@ -142,6 +142,8 @@ export interface StickerDielineFormInput {
     cutMode: string;
     offsetMm: unknown;
     cornerStyle: string;
+    /** Độ bo 0–100. Recipe cũ không có field này phải giữ artifact mặc định 50. */
+    curveTension?: unknown;
     fillHoles: boolean;
     bleedMm: unknown;
     removeWhiteBg: boolean;
@@ -166,6 +168,16 @@ export function resolveStickerCutlineDenoise(value: unknown): number {
     return Math.round(Math.max(0, Math.min(100, resolved)));
 }
 
+/** Kẹp độ bo về 0–100; dữ liệu cũ/không hợp lệ dùng mốc tương thích 50. */
+export function resolveStickerCurveTension(value: unknown): number {
+    if (value === null || value === undefined) return 50;
+    if (typeof value !== 'number' && typeof value !== 'string') return 50;
+    if (typeof value === 'string' && value.trim() === '') return 50;
+    const resolved = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(resolved)) return 50;
+    return Math.round(Math.max(0, Math.min(100, resolved)));
+}
+
 /**
  * Dựng đủ các field hình học của `POST /pdf-tools/sticker-dieline`.
  *
@@ -183,16 +195,25 @@ export function buildStickerDielineFields(
         cutMode: input.cutMode,
         forceContour: input.forceContour,
     });
+    const cornerStyle = resolveStickerCornerStyle({
+        productType: input.productType,
+        cutMode: input.cutMode,
+        cornerStyle: input.cornerStyle,
+    });
+    // Hidden-state invariant: Alpha/Xén vuông/Không vẽ đường cắt và các kiểu góc
+    // không bo không được nhận mức cũ của thanh kéo. Mốc 50 giữ artifact tương thích.
+    const curveTension = (
+        !isRectangle
+        && cutMode !== 'none'
+        && cornerStyle === 'round'
+    ) ? resolveStickerCurveTension(input.curveTension) : 50;
     return {
         cut_mode: cutMode,
         offset_mm: isRectangle
             ? '0'
             : String(clampStickerMm(input.offsetMm, STICKER_PARAM_LIMITS.offsetMm)),
-        corner_style: resolveStickerCornerStyle({
-            productType: input.productType,
-            cutMode: input.cutMode,
-            cornerStyle: input.cornerStyle,
-        }),
+        corner_style: cornerStyle,
+        curve_tension: String(curveTension),
         bleed_mm: String(clampStickerMm(input.bleedMm, STICKER_PARAM_LIMITS.bleedMm)),
         fill_holes: isRectangle ? 'true' : (input.fillHoles ? 'true' : 'false'),
         remove_white_bg: resolveStickerRemoveWhiteBg({

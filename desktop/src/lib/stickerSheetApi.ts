@@ -4,8 +4,8 @@ import { authenticatedFetch, formatApiErrorDetail, getApiUrl } from './api';
 export type StickerSheetModel = 'birefnet-lite' | 'birefnet-full' | 'isnet';
 export type StickerShadowCleanup = 'off' | 'auto';
 export type StickerSourceKind = 'pdf' | 'raster';
-export type StickerBoundarySource = 'existing-cut' | 'vector' | 'alpha' | 'simple-bg' | 'ai' | 'manual';
-export type StickerDetectionStrategy = 'auto' | 'existing-cut' | 'vector' | 'alpha' | 'simple-bg' | 'ai';
+export type StickerBoundarySource = 'page-box' | 'existing-cut' | 'vector' | 'alpha' | 'simple-bg' | 'ai' | 'manual';
+export type StickerDetectionStrategy = 'auto' | 'page-box' | 'existing-cut' | 'vector' | 'alpha' | 'simple-bg' | 'ai';
 
 export interface StickerSheetInstance {
     id: number;
@@ -215,15 +215,7 @@ export async function inspectStickerSource(
     file: File,
     signal?: AbortSignal,
 ): Promise<StickerSourceInspectPayload> {
-    const form = new FormData();
-    appendSource(form, file);
-    const response = await authenticatedFetch(`${getApiUrl()}/sticker-sheet/inspect`, {
-        method: 'POST',
-        body: form,
-        signal,
-    });
-    if (!response.ok) throw await apiError(response, 'Không chuẩn bị được file tem.');
-    const inspection = await response.json() as StickerSourceInspection;
+    const inspection = await inspectStickerSourceManifest(file, signal);
     try {
         return {
             inspection,
@@ -235,6 +227,22 @@ export async function inspectStickerSource(
     }
 }
 
+/** Chỉ lấy metadata/session, không tải bitmap — dùng cho preview SVG nhẹ. */
+export async function inspectStickerSourceManifest(
+    file: File,
+    signal?: AbortSignal,
+): Promise<StickerSourceInspection> {
+    const form = new FormData();
+    appendSource(form, file);
+    const response = await authenticatedFetch(`${getApiUrl()}/sticker-sheet/inspect`, {
+        method: 'POST',
+        body: form,
+        signal,
+    });
+    if (!response.ok) throw await apiError(response, 'Không chuẩn bị được file tem.');
+    return response.json() as Promise<StickerSourceInspection>;
+}
+
 export async function detectStickerSource(
     sessionId: string,
     options: {
@@ -242,9 +250,33 @@ export async function detectStickerSource(
         model?: StickerSheetModel;
         alphaThreshold?: number;
         pageNumber?: number;
+        previewOnly?: boolean;
         signal?: AbortSignal;
     } = {},
 ): Promise<StickerSourceDetectionPayload> {
+    const manifest = await detectStickerSourceManifest(sessionId, options);
+    // UIUX (audit 2026-08-09 §MP.10): một trang lỗi tải asset không được đóng
+    // session chứa các trang sibling. Retry detect sẽ chỉ phát lại URL đã promote.
+    const [previewBlob, labelsBlob, uncertaintyBlob] = await Promise.all([
+        fetchAsset(manifest.preview_url, options.signal),
+        fetchAsset(manifest.labels_url, options.signal),
+        fetchAsset(manifest.uncertainty_url, options.signal),
+    ]);
+    return { manifest, previewBlob, labelsBlob, uncertaintyBlob };
+}
+
+/** Chỉ lấy manifest detect; không tải ba PNG mà preview line-only không dùng. */
+export async function detectStickerSourceManifest(
+    sessionId: string,
+    options: {
+        strategy?: StickerDetectionStrategy;
+        model?: StickerSheetModel;
+        alphaThreshold?: number;
+        pageNumber?: number;
+        previewOnly?: boolean;
+        signal?: AbortSignal;
+    } = {},
+): Promise<StickerSourceDetection> {
     const response = await authenticatedFetch(
         `${getApiUrl()}/sticker-sheet/${encodeURIComponent(sessionId)}/detect`,
         {
@@ -255,20 +287,13 @@ export async function detectStickerSource(
                 model: options.model || 'birefnet-lite',
                 alpha_threshold: options.alphaThreshold ?? 128,
                 page_number: options.pageNumber ?? 1,
+                preview_only: options.previewOnly ?? false,
             }),
             signal: options.signal,
         },
     );
     if (!response.ok) throw await apiError(response, 'Không nhận diện được vùng tem.');
-    const manifest = await response.json() as StickerSourceDetection;
-    // UIUX (audit 2026-08-09 §MP.10): một trang lỗi tải asset không được đóng
-    // session chứa các trang sibling. Retry detect sẽ chỉ phát lại URL đã promote.
-    const [previewBlob, labelsBlob, uncertaintyBlob] = await Promise.all([
-        fetchAsset(manifest.preview_url, options.signal),
-        fetchAsset(manifest.labels_url, options.signal),
-        fetchAsset(manifest.uncertainty_url, options.signal),
-    ]);
-    return { manifest, previewBlob, labelsBlob, uncertaintyBlob };
+    return response.json() as Promise<StickerSourceDetection>;
 }
 
 export async function refineStickerSource(
@@ -328,6 +353,7 @@ export async function previewStickerCutline(
         minDetailAreaMm2: number;
         /** §CUTJAG.3 — thanh "Khử răng cưa" 0–100. */
         cutlineDenoise: number;
+        signal?: AbortSignal;
     },
 ): Promise<StickerCutlinePreview> {
     const response = await authenticatedFetch(
@@ -352,6 +378,7 @@ export async function previewStickerCutline(
                 min_detail_area_mm2: options.minDetailAreaMm2,
                 cutline_denoise: options.cutlineDenoise,
             }),
+            signal: options.signal,
         },
     );
     if (!response.ok) throw await apiError(response, 'Không cập nhật được đường bế xem trước.');

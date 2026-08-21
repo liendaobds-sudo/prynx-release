@@ -190,17 +190,51 @@ async def inspect_sticker_source_endpoint(
         raise HTTPException(status_code=400, detail="Hãy chọn một file PDF hoặc ảnh tem.")
 
     def _inspect_and_store():
-        # UIUX (audit 2026-08-08 §UNIFIED.8): inspector chỉ đọc metadata/preview
-        # trong thread thường; AI và connected-components chưa được gọi ở bước này.
-        inspection = inspect_sticker_source(source_path, original_name)
-        return create_source_session(
-            source_path=source_path,
-            original_name=original_name,
-            inspection=inspection,
-        )
+        try:
+            # UIUX (audit 2026-08-08 §UNIFIED.8): inspector chỉ đọc metadata/preview
+            # trong thread thường; AI và connected-components chưa được gọi ở bước này.
+            inspection = inspect_sticker_source(source_path, original_name)
+            return create_source_session(
+                source_path=source_path,
+                original_name=original_name,
+                inspection=inspection,
+            )
+        finally:
+            # UIUX (feedback 2026-08-19 §CUTPREVIEW.3): thread sở hữu file
+            # upload tạm. Request bị hủy không được xóa file khi inspector
+            # vẫn đang đọc nó; worker tự dọn sau khi đọc/tạo session xong.
+            if owned_upload and source_path:
+                try:
+                    os.remove(source_path)
+                except OSError:
+                    pass
+
+    def _close_abandoned_session(completed: asyncio.Task):
+        """Dọn session mà client đã hủy trước khi nhận được ID."""
+        try:
+            abandoned = completed.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            # Đọc exception để task không phát cảnh báo "never retrieved".
+            return
+        try:
+            close_session(abandoned.session_id)
+        except Exception:
+            logger.error(
+                "Không dọn được phiên inspect bị client bỏ rơi",
+                exc_info=True,
+            )
 
     try:
-        session = await run_in_threadpool(_inspect_and_store)
+        # Shield task thật, không chỉ coroutine chờ: khi WebView đổi file/đóng
+        # tab, worker phải được chạy tới finally để file upload không rò rỉ.
+        inspect_task = asyncio.create_task(run_in_threadpool(_inspect_and_store))
+        try:
+            session = await asyncio.shield(inspect_task)
+        except asyncio.CancelledError:
+            inspect_task.add_done_callback(_close_abandoned_session)
+            raise
         return {
             **session.manifest,
             "preview_url": f"/api/sticker-sheet/{session.session_id}/assets/preview",
@@ -215,12 +249,6 @@ async def inspect_sticker_source_endpoint(
             status_code=500,
             detail=f"Không chuẩn bị được file nguồn ({type(exc).__name__}).",
         ) from exc
-    finally:
-        if owned_upload and source_path:
-            try:
-                os.remove(source_path)
-            except OSError:
-                pass
 
 
 @router.post(
@@ -255,6 +283,7 @@ async def detect_sticker_source_endpoint(
             model=request.model,
             alpha_threshold=request.alpha_threshold,
             page_number=request.page_number,
+            preview_only=request.preview_only,
         )
         return promote_source_session(
             session_id,
@@ -267,10 +296,19 @@ async def detect_sticker_source_endpoint(
             source_page=detected.source_page,
             vector_geometry_ref=detected.vector_geometry_ref,
             warnings=list(detected.warnings),
+            edge_background_rgb=detected.background_rgb,
+            edge_background_tolerance=detected.background_tolerance,
         )
 
     try:
-        promoted = await run_heavy_in_threadpool(_detect_and_promote)
+        # PERF/UIUX (feedback 2026-08-19 §CUTPREVIEW.2): các chiến lược đã có
+        # biên (CutContour/vector/Alpha/nền phẳng) chỉ là bước chuẩn bị preview
+        # trung bình, không được chiếm hàng đợi heavy. AI/auto vẫn giữ scheduler
+        # vì có thể nạp model và chạy inference nặng.
+        if request.strategy in {"existing-cut", "vector", "alpha", "simple-bg", "page-box"}:
+            promoted = await run_in_threadpool(_detect_and_promote)
+        else:
+            promoted = await run_heavy_in_threadpool(_detect_and_promote)
     except asyncio.CancelledError:
         abort_source_detection(session_id, page_number=request.page_number)
         raise

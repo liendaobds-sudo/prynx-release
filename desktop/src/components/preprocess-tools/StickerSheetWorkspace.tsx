@@ -26,14 +26,37 @@ interface Props {
     editingEnabled?: boolean;
     /** Số trang nguồn đang được thumbnail/Viewer chọn (không phải vị trí thumbnail). */
     sourcePage?: number;
+    /** Zoom đang hiển thị; Viewer truyền vào khi embedded, workspace dùng zoom nội bộ. */
+    cutlineDisplayZoom?: number;
 }
 
-function CutlineOverlay({
+/**
+ * UIUX (feedback 2026-08-20 §CUTPREVIEW.ZOOM1): zoom nhỏ cần dễ thấy, zoom
+ * lớn phải thu mảnh để không che mép tem và vùng bù xén.
+ */
+function resolveStickerCutlineStrokeWidth(
+    displayZoom: number | undefined,
+    selected: boolean,
+): number {
+    const zoom = Number.isFinite(displayZoom) && Number(displayZoom) > 0
+        ? Number(displayZoom)
+        : 1;
+    const base = selected ? 2 : 1.4;
+    const min = selected ? 1 : 0.7;
+    const max = selected ? 3 : 2.4;
+    const width = Math.max(min, Math.min(max, base / Math.sqrt(zoom)));
+    return Math.round(width * 100) / 100;
+}
+
+/** SVG đường bế dùng chung cho workspace AI và overlay classic trên Viewer. */
+export function StickerCutlineOverlay({
     preview,
     selectedInstanceId,
+    displayZoom = 1,
 }: {
     preview: StickerCutlinePreview;
     selectedInstanceId: number | null;
+    displayZoom?: number;
 }) {
     return (
         <svg
@@ -43,18 +66,22 @@ function CutlineOverlay({
             aria-label={tv('Đường bế xem trước', 'preprocess.stickerSheet')}
             className="pointer-events-none absolute inset-0 z-10 h-full w-full overflow-visible"
         >
-            {preview.paths.map(path => (
-                <path
-                    key={path.instance_id}
-                    d={path.d}
-                    fill="none"
-                    stroke={selectedInstanceId === path.instance_id ? '#d946ef' : '#7c3aed'}
-                    strokeWidth={selectedInstanceId === path.instance_id ? 2 : 1.4}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    vectorEffect="non-scaling-stroke"
-                />
-            ))}
+            {preview.paths.map(path => {
+                const selected = selectedInstanceId === path.instance_id;
+                return (
+                    <path
+                        key={path.instance_id}
+                        data-cutline-layer="main"
+                        d={path.d}
+                        fill="none"
+                        stroke={selected ? '#d946ef' : '#7c3aed'}
+                        strokeWidth={resolveStickerCutlineStrokeWidth(displayZoom, selected)}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        vectorEffect="non-scaling-stroke"
+                    />
+                );
+            })}
         </svg>
     );
 }
@@ -140,6 +167,7 @@ export default function StickerSheetWorkspace({
     embedded = false,
     editingEnabled = false,
     sourcePage,
+    cutlineDisplayZoom,
 }: Props) {
     const tab = useStickerSheetStore(state => state.tabs[tabId]);
     const tabState = tab || useStickerSheetStore.getState().getTab(tabId);
@@ -706,9 +734,10 @@ export default function StickerSheetWorkspace({
                     className="pointer-events-none absolute inset-0 h-full w-full select-none"
                 />
                 {cutlinePreview ? (
-                    <CutlineOverlay
+                    <StickerCutlineOverlay
                         preview={cutlinePreview}
                         selectedInstanceId={state.selectedInstanceId}
+                        displayZoom={cutlineDisplayZoom}
                     />
                 ) : null}
                 <canvas
@@ -791,9 +820,10 @@ export default function StickerSheetWorkspace({
                         />
                         <img src={state.previewUrl} alt={tv('Ảnh tách tem')} draggable={false} className="absolute inset-0 h-full w-full select-none" />
                         {cutlinePreview ? (
-                            <CutlineOverlay
+                            <StickerCutlineOverlay
                                 preview={cutlinePreview}
                                 selectedInstanceId={state.selectedInstanceId}
+                                displayZoom={cutlineDisplayZoom ?? zoom}
                             />
                         ) : null}
                         <canvas

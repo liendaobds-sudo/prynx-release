@@ -14,7 +14,10 @@ interface Props {
     tabId: string;
     pdfFile: File | null;
     sourceImageFile?: File | null;
+    /** Số trang nguồn gốc để workspace AI bám đúng thumbnail sau reorder. */
     activeSourcePage?: number;
+    /** Vị trí 1-based trong working PDF đã bake reorder/xóa/nhân bản. */
+    activeWorkingPage?: number;
     pageOrder?: number[];
     isActive?: boolean;
     onOpenTool?: (tool: 'sticker_imposer' | 'cnc_imposer') => void;
@@ -46,6 +49,7 @@ export default function StickerCutlineTool({
     pdfFile,
     sourceImageFile,
     activeSourcePage = 1,
+    activeWorkingPage = activeSourcePage,
     pageOrder,
     isActive = true,
     onOpenTool,
@@ -201,6 +205,8 @@ export default function StickerCutlineTool({
                     pdfFile={pdfFile}
                     onFileFixed={onFileFixed}
                     onProcessingChange={setDirectProcessing}
+                    isActive={isActive}
+                    pageNumber={activeWorkingPage}
                 />
             ) : (
                 <>

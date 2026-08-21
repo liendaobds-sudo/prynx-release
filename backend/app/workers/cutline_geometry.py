@@ -124,6 +124,185 @@ def _vec_normalize(vector):
     return (vector[0] / length, vector[1] / length) if length > 1e-12 else (0.0, 0.0)
 
 
+def _linear_cubic_segment(start, end):
+    """Biểu diễn một đoạn thẳng bằng cubic có tiếp tuyến đúng ở hai đầu."""
+    delta = _vec_scale(_vec_sub(end, start), 1.0 / 3.0)
+    return (
+        start,
+        _vec_add(start, delta),
+        _vec_add(start, _vec_scale(delta, 2.0)),
+        end,
+    )
+
+
+def _clean_convex_polygon_vertices(coords):
+    """Chuẩn hóa ring lồi; trả ``[]`` nếu ring lõm hoặc suy biến.
+
+    Fillet giải tích chỉ an toàn khi mỗi đỉnh có cùng chiều quay. Hình custom
+    lõm tiếp tục đi fitter có guard riêng, không được âm thầm làm tròn sai hõm.
+    """
+    points = []
+    for raw_point in coords:
+        try:
+            point = (float(raw_point[0]), float(raw_point[1]))
+        except (IndexError, TypeError, ValueError, OverflowError):
+            return []
+        if not all(math.isfinite(component) for component in point):
+            return []
+        if not points or _vec_length(_vec_sub(point, points[-1])) > 1e-10:
+            points.append(point)
+    if len(points) > 1 and _vec_length(_vec_sub(points[0], points[-1])) <= 1e-10:
+        points.pop()
+
+    # Shapely/OpenCV có thể để lại node thẳng hàng sau offset. Bỏ chúng để mỗi
+    # node còn lại thật sự là một góc, tránh sinh cung bán kính gần bằng 0.
+    changed = True
+    while changed and len(points) >= 3:
+        changed = False
+        cleaned = []
+        count = len(points)
+        for index, point in enumerate(points):
+            previous = points[(index - 1) % count]
+            following = points[(index + 1) % count]
+            incoming = _vec_sub(point, previous)
+            outgoing = _vec_sub(following, point)
+            incoming_length = _vec_length(incoming)
+            outgoing_length = _vec_length(outgoing)
+            if min(incoming_length, outgoing_length) <= 1e-10:
+                changed = True
+                continue
+            cross = incoming[0] * outgoing[1] - incoming[1] * outgoing[0]
+            collinear_limit = 1e-10 * incoming_length * outgoing_length
+            if (
+                abs(cross) <= collinear_limit
+                and _vec_dot(incoming, outgoing) > 0.0
+            ):
+                changed = True
+                continue
+            cleaned.append(point)
+        points = cleaned
+
+    if len(points) < 3:
+        return []
+    signed_area_twice = sum(
+        points[index][0] * points[(index + 1) % len(points)][1]
+        - points[(index + 1) % len(points)][0] * points[index][1]
+        for index in range(len(points))
+    )
+    if abs(signed_area_twice) <= 1e-10:
+        return []
+    orientation = 1.0 if signed_area_twice > 0.0 else -1.0
+    for index, point in enumerate(points):
+        previous = points[(index - 1) % len(points)]
+        following = points[(index + 1) % len(points)]
+        incoming = _vec_sub(point, previous)
+        outgoing = _vec_sub(following, point)
+        cross = incoming[0] * outgoing[1] - incoming[1] * outgoing[0]
+        if cross * orientation <= 1e-10:
+            return []
+    return points
+
+
+def build_filleted_polygon_beziers(
+    coords,
+    *,
+    radius,
+    edge_cap_ratio=0.45,
+    minimum_straight=0.0,
+):
+    """Dựng fillet cubic G1 thật cho polygon lồi.
+
+    Mỗi góc được thay bằng hai tiếp điểm và một cung cubic. Bán kính tự co theo
+    hai cạnh kề; hai fillet cạnh nhau vì thế không thể chồng lấn. ``radius=0``
+    trả đúng polygon cạnh thẳng, giúp preview và PDF dùng chung một hợp đồng.
+    """
+    try:
+        requested_radius = float(radius)
+        cap_ratio = float(edge_cap_ratio)
+        minimum_line = max(0.0, float(minimum_straight))
+    except (TypeError, ValueError, OverflowError):
+        return []
+    if (
+        not all(math.isfinite(value) for value in (
+            requested_radius,
+            cap_ratio,
+            minimum_line,
+        ))
+        or requested_radius < 0.0
+        or not 0.0 < cap_ratio < 0.5
+    ):
+        return []
+
+    points = _clean_convex_polygon_vertices(coords)
+    if len(points) < 3:
+        return []
+
+    entries = []
+    exits = []
+    handles = []
+    count = len(points)
+    for index, corner in enumerate(points):
+        previous = points[(index - 1) % count]
+        following = points[(index + 1) % count]
+        toward_previous = _vec_sub(previous, corner)
+        toward_following = _vec_sub(following, corner)
+        previous_length = _vec_length(toward_previous)
+        following_length = _vec_length(toward_following)
+        if min(previous_length, following_length) <= 1e-10:
+            return []
+        toward_previous = _vec_scale(toward_previous, 1.0 / previous_length)
+        toward_following = _vec_scale(toward_following, 1.0 / following_length)
+        interior_angle = math.acos(max(-1.0, min(
+            1.0,
+            _vec_dot(toward_previous, toward_following),
+        )))
+        tangent_factor = math.tan(interior_angle / 2.0)
+        if tangent_factor <= 1e-10:
+            return []
+
+        setback = requested_radius / tangent_factor
+        setback = min(
+            setback,
+            previous_length * cap_ratio,
+            following_length * cap_ratio,
+        )
+        # Khi cạnh đủ dài, luôn chừa một đoạn dao thẳng hữu dụng. Đây là guard
+        # vật lý, không phải hard-cap node/hiệu năng.
+        for edge_length in (previous_length, following_length):
+            if edge_length > minimum_line:
+                setback = min(setback, (edge_length - minimum_line) / 2.0)
+        setback = max(0.0, setback)
+        effective_radius = setback * tangent_factor
+        sweep_angle = math.pi - interior_angle
+        handle = (
+            4.0 / 3.0
+            * math.tan(sweep_angle / 4.0)
+            * effective_radius
+        )
+        entries.append(_vec_add(corner, _vec_scale(toward_previous, setback)))
+        exits.append(_vec_add(corner, _vec_scale(toward_following, setback)))
+        handles.append((toward_previous, toward_following, handle))
+
+    segments = []
+    for index in range(count):
+        line_start = exits[(index - 1) % count]
+        line_end = entries[index]
+        if _vec_length(_vec_sub(line_end, line_start)) > 1e-10:
+            segments.append(_linear_cubic_segment(line_start, line_end))
+
+        entry = entries[index]
+        exit_point = exits[index]
+        toward_previous, toward_following, handle = handles[index]
+        if handle > 1e-10 and _vec_length(_vec_sub(exit_point, entry)) > 1e-10:
+            segments.append((
+                entry,
+                _vec_sub(entry, _vec_scale(toward_previous, handle)),
+                _vec_sub(exit_point, _vec_scale(toward_following, handle)),
+                exit_point,
+            ))
+    return segments
+
+
 def _bezier_point(control_points, t):
     """Đánh giá Bézier bậc 1–3 bằng de Casteljau."""
     work = [(float(point[0]), float(point[1])) for point in control_points]

@@ -15,6 +15,7 @@ from app.workers.sticker_engine import (
     _build_bleed_color_work_band,
     _build_edge_color_source_mask,
     _edge_color_adaptive_max_mm,
+    _edge_color_sampling_warning,
     _near_background_mask_rgb,
     _near_white_mask_rgb,
     _sampled_bleed_overlap_px,
@@ -217,6 +218,210 @@ def test_anh_72dpi_khong_lay_lop_do_pha_trang_truoc_vien_muc():
     assert sampled.size > 0
     assert np.all(sampled == dark_red_outline)
     assert not np.any(np.all(sampled == red_white_transition, axis=1))
+
+
+def test_candidate_mau_thua_phai_phu_du_chu_vi_moi_duoc_chon():
+    """Vài pixel đỏ ở độ sâu 3 không được thắng vòng đỏ đầy đủ ở độ sâu 7."""
+    import cv2
+
+    size = 160
+    image = np.full((size, size, 3), 255, dtype=np.uint8)
+    silhouette = np.zeros((size, size), dtype=np.uint8)
+    silhouette[20:140, 20:140] = 255
+    halo = (255, 232, 232)
+    dark_red = (70, 8, 6)
+    image[20:140, 20:140] = halo
+    # Dúm màu tối cục bộ ở candidate nông — lỗi cũ lấy chính dúm này rồi kéo
+    # quanh toàn contour vì candidate <64 mẫu không bị xem là bất ổn.
+    image[23:25, 66:78] = dark_red
+    # Nguồn đúng sâu hơn nhưng phủ kín cả bốn cạnh.
+    image[27:133, 27:133] = dark_red
+    image[29:131, 29:131] = (238, 196, 72)
+
+    source, selected_peel = _build_adaptive_edge_color_source_mask(
+        silhouette,
+        image,
+        band_px=2,
+        peel_px=1,
+        max_peel_px=7,
+        kernel_type=cv2.MORPH_RECT,
+        background_rgb=(255, 255, 255),
+        background_tolerance=1,
+    )
+
+    sampled = image[source > 0]
+    assert selected_peel == 7
+    assert sampled.shape[0] > 400
+    assert np.all(sampled == dark_red)
+
+
+def test_khong_keo_vai_pixel_toi_quanh_tem_khi_khong_co_vong_mau_du_phu():
+    """Không có shell sâu phủ đủ thì giữ nguồn nông và để warning xử lý."""
+    import cv2
+
+    size = 160
+    image = np.full((size, size, 3), 255, dtype=np.uint8)
+    silhouette = np.zeros((size, size), dtype=np.uint8)
+    silhouette[20:140, 20:140] = 255
+    image[20:140, 20:140] = (255, 232, 232)
+    image[23:25, 66:78] = (70, 8, 6)
+
+    initial = _build_edge_color_source_mask(
+        silhouette,
+        image,
+        band_px=2,
+        peel_px=1,
+        kernel_type=cv2.MORPH_RECT,
+        background_rgb=(255, 255, 255),
+        background_tolerance=1,
+    )
+    adaptive, selected_peel = _build_adaptive_edge_color_source_mask(
+        silhouette,
+        image,
+        band_px=2,
+        peel_px=1,
+        max_peel_px=7,
+        kernel_type=cv2.MORPH_RECT,
+        background_rgb=(255, 255, 255),
+        background_tolerance=1,
+    )
+
+    assert selected_peel == 1
+    assert np.array_equal(adaptive, initial)
+
+
+def test_probe_noi_suy_chi_duoc_vuot_tran_khi_caller_cap_phan_dich():
+    """Lưới native giữ trần 7 px; ảnh upscale chỉ được thăm dò thêm 4 px."""
+    import cv2
+
+    size = 160
+    image = np.full((size, size, 3), 255, dtype=np.uint8)
+    silhouette = np.zeros((size, size), dtype=np.uint8)
+    silhouette[20:140, 20:140] = 255
+    image[20:140, 20:140] = (255, 232, 232)
+    dark_red = (70, 8, 6)
+    image[31:129, 31:129] = dark_red
+    image[33:127, 33:127] = (238, 196, 72)
+
+    native_source, native_peel = _build_adaptive_edge_color_source_mask(
+        silhouette,
+        image,
+        band_px=2,
+        peel_px=1,
+        max_peel_px=7,
+        kernel_type=cv2.MORPH_RECT,
+        background_rgb=(255, 255, 255),
+        background_tolerance=1,
+    )
+    probed_source, probed_peel = _build_adaptive_edge_color_source_mask(
+        silhouette,
+        image,
+        band_px=2,
+        peel_px=1,
+        max_peel_px=7,
+        max_interpolation_probe_px=4,
+        kernel_type=cv2.MORPH_RECT,
+        background_rgb=(255, 255, 255),
+        background_tolerance=1,
+    )
+
+    assert native_peel <= 7
+    assert not np.all(image[native_source > 0] == dark_red)
+    assert probed_peel == 11
+    assert np.all(image[probed_source > 0] == dark_red)
+
+
+def test_cham_mau_thua_rai_deu_khong_duoc_gia_phu_du_chu_vi():
+    """Distance coverage cao không đủ nếu nguồn chỉ là các speckle rời rạc."""
+    import cv2
+
+    size = 160
+    image = np.full((size, size, 3), 255, dtype=np.uint8)
+    silhouette = np.zeros((size, size), dtype=np.uint8)
+    silhouette[20:140, 20:140] = 255
+    image[20:140, 20:140] = (255, 232, 232)
+    colors = ((70, 8, 6), (6, 8, 70))
+    for index, position in enumerate(range(27, 133, 6)):
+        image[27, position] = colors[index % 2]
+        image[132, position] = colors[(index + 1) % 2]
+        image[position, 27] = colors[(index + 1) % 2]
+        image[position, 132] = colors[index % 2]
+
+    initial = _build_edge_color_source_mask(
+        silhouette,
+        image,
+        band_px=2,
+        peel_px=1,
+        kernel_type=cv2.MORPH_RECT,
+        background_rgb=(255, 255, 255),
+        background_tolerance=1,
+    )
+    adaptive, selected_peel = _build_adaptive_edge_color_source_mask(
+        silhouette,
+        image,
+        band_px=2,
+        peel_px=1,
+        max_peel_px=7,
+        kernel_type=cv2.MORPH_RECT,
+        background_rgb=(255, 255, 255),
+        background_tolerance=1,
+    )
+
+    assert selected_peel == 1
+    assert np.array_equal(adaptive, initial)
+    assert (
+        _edge_color_sampling_warning(
+            adaptive,
+            image,
+            1,
+            background_rgb=(255, 255, 255),
+        )
+        is not None
+    )
+
+
+def test_vong_muc_mot_pixel_lien_tuc_nhieu_mau_van_duoc_chon():
+    """Density guard không được loại viền mực mỏng nhưng liên tục."""
+    import cv2
+
+    size = 160
+    image = np.full((size, size, 3), 255, dtype=np.uint8)
+    silhouette = np.zeros((size, size), dtype=np.uint8)
+    silhouette[20:140, 20:140] = 255
+    image[20:140, 20:140] = (255, 232, 232)
+    red = (70, 8, 6)
+    blue = (6, 8, 70)
+    image[27, 27:133] = red
+    image[132, 27:133] = blue
+    image[27:133, 27] = blue
+    image[27:133, 132] = red
+
+    adaptive, selected_peel = _build_adaptive_edge_color_source_mask(
+        silhouette,
+        image,
+        band_px=2,
+        peel_px=1,
+        max_peel_px=7,
+        kernel_type=cv2.MORPH_RECT,
+        background_rgb=(255, 255, 255),
+        background_tolerance=1,
+    )
+
+    sampled = image[adaptive > 0]
+    assert selected_peel == 7
+    assert sampled.shape[0] > 300
+    assert np.all(
+        np.any(
+            np.stack(
+                (
+                    np.all(sampled == red, axis=1),
+                    np.all(sampled == blue, axis=1),
+                ),
+                axis=1,
+            ),
+            axis=1,
+        )
+    )
 
 
 def test_chong_mi_mau_khong_duoc_tang_theo_do_sau_lay_mau():

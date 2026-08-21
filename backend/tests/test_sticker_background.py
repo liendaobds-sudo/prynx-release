@@ -12,6 +12,7 @@ from app.core.sticker_background import (
     foreground_ratio,
     mask_tach_duoc_nen,
 )
+import app.core.sticker_background as sticker_background_module
 
 
 def _anh_nen_phang(mau, kich_thuoc=(120, 160)) -> np.ndarray:
@@ -55,6 +56,25 @@ def test_nen_mau_phang_do_duoc_dung_mau():
     assert info.is_near_white is False
     assert all(abs(a - b) <= 2 for a, b in zip(info.color, (242, 233, 220)))
     assert info.confidence > 0.9
+
+
+def test_so_nen_phang_khong_nang_toan_anh_len_float64(monkeypatch):
+    """So màu nền không được tạo mảng float64 cỡ nguyên ảnh."""
+    image = _anh_nen_phang((254, 254, 254)).astype(np.uint8)
+    original_abs = np.abs
+
+    def guarded_abs(values, *args, **kwargs):
+        array = np.asarray(values)
+        if array.shape[:2] == image.shape[:2] and array.dtype == np.float64:
+            raise AssertionError("đã cấp phát mảng float64 cỡ nguyên ảnh")
+        return original_abs(values, *args, **kwargs)
+
+    monkeypatch.setattr(sticker_background_module.np, "abs", guarded_abs)
+    info = detect_background(image)
+
+    assert info is not None
+    assert info.foreground_mask.dtype == np.uint8
+    assert 0.20 < foreground_ratio(info.foreground_mask) < 0.30
 
 
 def test_nen_gradient_khong_co_hinh_tra_none():

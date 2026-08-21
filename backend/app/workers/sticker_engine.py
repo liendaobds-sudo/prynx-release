@@ -129,6 +129,7 @@ from app.workers.cutline_geometry import (  # noqa: E402
     build_bezier_segments_path_stream,
     build_corner_locked_catmull_beziers,
     build_contour_path_stream,
+    build_filleted_polygon_beziers,
     _catmull_rom_bezier_segments,
     _catmull_rom_chord_deviation_bound,
     _sample_catmull_rom_ring,
@@ -201,6 +202,76 @@ def _near_white_background_candidate_rgb(
     mn = rgb.min(axis=2)
     chroma = mx.astype(np.int16) - mn.astype(np.int16)
     return (mn >= min_channel) & (chroma <= max_chroma)
+
+
+def _page_box_corner_foreground_for_bleed(
+    img_rgb: np.ndarray,
+    px_per_mm: float,
+) -> tuple[np.ndarray, tuple[int, int, int], int] | None:
+    """Tách riêng nền trắng chỉ nằm ở bốn góc để lấy màu bù xén.
+
+    QUALITY (feedback 2026-08-19 §PAGEBOX-BLEED.2): khi người dùng giữ nền
+    trang nhưng bo CutContour, tem gốc đã bo sẵn thường vẫn là một hình phủ sát
+    bốn cạnh trên nền trắng ở góc. Mask page-box không được dùng làm nguồn màu:
+    nó đi qua vùng trắng/AA rồi kéo thành bốn nêm xám. Helper này không thay đổi
+    đường cắt hay tuỳ chọn ``Bỏ nền trắng``; nó chỉ nhận ca nền phẳng gần trắng,
+    foreground phủ gần kín trang và thật sự chạm cả bốn cạnh ở đoạn giữa.
+    """
+    if img_rgb is None or img_rgb.ndim != 3 or img_rgb.shape[2] < 3:
+        return None
+    info = detect_background(img_rgb[:, :, :3])
+    if info is None or not info.is_flat or not info.is_near_white:
+        return None
+    foreground = np.ascontiguousarray(info.foreground_mask, dtype=np.uint8)
+    height, width = foreground.shape[:2]
+    if min(height, width) < 8:
+        return None
+    ratio = float(np.count_nonzero(foreground)) / float(foreground.size)
+    if not 0.75 <= ratio <= 0.995:
+        return None
+
+    points = cv2.findNonZero(foreground)
+    if points is None:
+        return None
+    x, y, box_width, box_height = (
+        int(value) for value in cv2.boundingRect(points)
+    )
+    try:
+        resolved_px_per_mm = float(px_per_mm)
+    except (TypeError, ValueError):
+        resolved_px_per_mm = 0.0
+    reach_px = max(
+        2,
+        int(round(0.20 * resolved_px_per_mm))
+        if math.isfinite(resolved_px_per_mm) and resolved_px_per_mm > 0.0
+        else 2,
+    )
+    if (
+        x > reach_px
+        or y > reach_px
+        or width - (x + box_width) > reach_px
+        or height - (y + box_height) > reach_px
+    ):
+        return None
+
+    # Tránh nhận nhầm artwork có viền trắng quanh cả trang: hình bo thật chạm
+    # cạnh trên/dưới/trái/phải ở nửa giữa, còn nền trắng chỉ tập trung ở góc.
+    strip = min(max(1, reach_px), max(1, min(height, width) // 8))
+    x0, x1 = width // 4, width - width // 4
+    y0, y1 = height // 4, height - height // 4
+    edge_mid_ratios = (
+        float(np.mean(foreground[:strip, x0:x1] > 0)),
+        float(np.mean(foreground[-strip:, x0:x1] > 0)),
+        float(np.mean(foreground[y0:y1, :strip] > 0)),
+        float(np.mean(foreground[y0:y1, -strip:] > 0)),
+    )
+    if min(edge_mid_ratios) < 0.80:
+        return None
+    return (
+        foreground,
+        tuple(int(channel) for channel in info.color),
+        int(info.tolerance) + _EDGE_BG_TOLERANCE_PADDING,
+    )
 
 
 ALPHA_CONTOUR_INSET_MM = 0.15
@@ -282,7 +353,8 @@ def should_presmooth_cutline_alpha(boundary_source: object) -> bool:
     return boundary_source.strip().lower() in _CUTLINE_PRESMOOTH_BOUNDARY_SOURCES
 
 # UIUX/QUALITY (audit 2026-08-09 §PV.3): các thanh tinh chỉnh CutContour dùng
-# thang 0–100, nhưng giá trị 50 PHẢI giữ nguyên profile đã kiểm chứng trước đây.
+# thang 0–100. Mốc 50 giữ profile cũ cho Bám sát/Độ mượt/Sức căng tay nắm;
+# riêng Độ bo cong đã chuyển sang bán kính vật lý hiển thị ngay bên dưới.
 # Bám sát và độ mượt là hai đại lượng độc lập: bám sát điều khiển ngân sách sai
 # lệch hình học; độ mượt điều khiển mức lọc dao động nhỏ trước khi fit Bézier.
 _CUTLINE_TUNING_DEFAULT = 50.0
@@ -294,6 +366,28 @@ _CUTLINE_TENSION_HANDLE_MIN = 0.55
 _CUTLINE_TENSION_HANDLE_MAX = 1.45
 _CUTLINE_TENSION_EXTRA_BUDGET_MM = 0.18
 _CUTLINE_TUNING_MAX_HAUSDORFF_MM = 1.0
+# QUALITY (feedback 2026-08-19 §CUTROUND.7): độ bo là kích thước thành phẩm,
+# không phải số pixel nguồn. Thang tuyến tính giúp preview và PDF cùng hiểu
+# 50% = 1,5 mm, 100% = 3 mm ở mọi DPI.
+_CUTLINE_ROUND_RADIUS_MAX_MM = 3.0
+
+# QUALITY (audit 2026-08-20 §CUTHYBRID.1): chỉ chuẩn hóa các đoạn thẳng dài
+# có bằng chứng hình học rõ ràng. Đây là ngân sách hình học theo mm (không phải
+# cap hiệu năng): ảnh hữu cơ/răng cưa thật không được ép thành hình chữ nhật.
+# Chỉ khóa cạnh đủ dài để có bằng chứng là rail của thân tem; các mấu/tay ngắn
+# thường tình cờ có tiếp tuyến ngang/dọc và không được biến thành line nhân tạo.
+_HYBRID_STRAIGHT_MIN_RUN_MM = 12.0
+_HYBRID_STRAIGHT_ORIENTATION_TOLERANCE_DEG = 4.5
+# Ảnh raster/JPEG có thể để lại rung 2–3 px ở cạnh thẳng. Ngưỡng thực tế sẽ
+# scale theo pixel nguồn (floor/cap bên dưới), vẫn cách xa biên lượn thật.
+_HYBRID_STRAIGHT_P95_RESIDUAL_MM = 0.10
+_HYBRID_STRAIGHT_P95_RESIDUAL_MAX_MM = 0.24
+_HYBRID_STRAIGHT_MAX_RESIDUAL_MM = 0.22
+_HYBRID_STRAIGHT_MAX_RESIDUAL_CAP_MM = 0.40
+_HYBRID_STRAIGHT_GAP_MM = 0.64
+# Taper ngắn ở điểm giao line↔cung; taper dài sẽ ăn sang mấu hữu cơ vừa chạm rail.
+_HYBRID_STRAIGHT_FEATHER_MM = 0.25
+_HYBRID_STRAIGHT_MAX_HAUSDORFF_MM = 0.30
 
 
 def _clamp_cutline_percent(value: float | int | None) -> float:
@@ -332,13 +426,15 @@ def _cutline_fidelity_budget_scale(value: float | int | None) -> float:
 
 def _cutline_round_radius_mm(
     value: float | int | None,
-    source_pixel_mm: float,
+    _source_pixel_mm: float | None = None,
 ) -> float:
-    """Đổi mức bo 0–100 sang bán kính Round thực theo độ phân giải nguồn."""
+    """Đổi mức bo 0–100 sang bán kính vật lý, độc lập độ phân giải nguồn.
+
+    ``_source_pixel_mm`` được giữ tùy chọn để caller cũ không vỡ; nó cố ý
+    không tham gia phép tính.
+    """
     roundness = _clamp_cutline_percent(value) / 100.0
-    pixel_mm = max(0.001, float(source_pixel_mm))
-    max_radius_mm = min(0.70, max(0.25, pixel_mm * 2.0))
-    return roundness * max_radius_mm
+    return roundness * _CUTLINE_ROUND_RADIUS_MAX_MM
 
 
 def _cutline_tension_handle_scale(value: float | int | None) -> float:
@@ -900,6 +996,15 @@ _CUTLINE_WEDGE_PROBE_SPAN_MM = 0.35
 # Đây là hạn mức ĐỘ TRỄ, không phải cap theo cấu hình máy: máy mạnh vẫn chạy hết chuỗi
 # vì nó làm xong trước hạn.
 _CUTLINE_HOOK_SEARCH_BUDGET_SECONDS = 1.0
+# QUALITY (audit 2026-08-21 §RECOGNITION-GUARD.3): một quỹ đạo còn móc/gai
+# nghiêm trọng không được phép đi tiếp chỉ vì các guard hình học cơ bản vẫn
+# đánh dấu ``machine_safe``. Đây là cổng fail-closed cho nhận diện nhiễu: cho
+# phép tối đa một cusp rộng (có thể là đầu nhọn thật), nhưng từ hai cusp chưa
+# khớp góc thật trở lên, hoặc nêm quá hẹp/góc quay quá lớn, thì phải yêu cầu
+# người dùng tăng khử răng cưa/giữ mép ảnh thay vì xuất một đường dao rác.
+_CUTLINE_HOOK_MAX_TOLERATED_UNPROTECTED_CUSPS = 1
+_CUTLINE_HOOK_MIN_SAFE_WEDGE_MM = 0.25
+_CUTLINE_HOOK_MAX_SAFE_TURN_DEGREES = 90.0
 
 # UIUX (feedback 2026-08-16 §CUTJAG.3): thanh "Khử răng cưa" của công cụ Bù xén.
 # 0 = tắt (giữ đúng hành vi cũ, không đổi một byte artifact nào), 100 = 2,5 px.
@@ -907,6 +1012,12 @@ _CUTLINE_HOOK_SEARCH_BUDGET_SECONDS = 1.0
 # 0,21 mm, còn ở 72 DPI thì trần mm cắt xuống chỉ còn ~1 px.
 _CUTLINE_DENOISE_SIGMA_PX_MAX = 2.5
 _CUTLINE_DENOISE_MAX_MM = 0.30
+# PERF/QUALITY (audit 2026-08-21 §CANONICAL.SPEED1): ở 72–150 DPI, cap 0,30 mm
+# nhỏ hơn 1–1,8 pixel nên slider 70/85/100 bị bão hòa cùng một mask. Cho bộ lọc
+# tối đa 2,25 pixel nguồn ở lưới còn đủ dùng; nguồn cực thấp dưới ~51 DPI vẫn giữ
+# cap mm cũ để không bào chi tiết mà ảnh vốn không còn khả năng mô tả.
+_CUTLINE_DENOISE_SOURCE_CAP_MIN_PX = 2.25
+_CUTLINE_DENOISE_SOURCE_CAP_MIN_PX_PER_MM = 2.0
 # QUALITY (feedback 2026-08-10 §ROUND-PATH.1): bước ghi PDF không được làm
 # quỹ đạo ``Theo hình gốc`` trôi thêm chỉ vì đổi polyline thành cubic. 0,12 mm
 # nhỏ hơn sai số một pixel ở 300 DPI và đủ chặt để mắt không thấy đường bế nở.
@@ -1035,6 +1146,23 @@ def _infer_full_page_image_pixel_mm(page) -> float | None:
         return (pixel_mm_x + pixel_mm_y) * 0.5
     except (ArithmeticError, KeyError, TypeError, ValueError, pikepdf.PdfError):
         return None
+
+
+def _source_raster_scale_limit(source_pixel_mm: float | None) -> float | None:
+    """Đổi mật độ ảnh gốc (mm/pixel) thành trần render px/point đáng tin cậy.
+
+    Đây không phải cap theo cấu hình máy: ảnh raster phủ kín đã được kiểm tra chặt
+    không có thêm chi tiết khi nội suy vượt lưới nguồn. PDF vector/mixed trả ``None``
+    từ bước suy luận và tiếp tục render đủ DPI như trước.
+    """
+    try:
+        pixel_mm = float(source_pixel_mm)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(pixel_mm) or pixel_mm <= 0.0:
+        return None
+    scale = 1.0 / (pixel_mm * _PT_PER_MM)
+    return scale if math.isfinite(scale) and scale > 0.0 else None
 
 
 def _infer_document_image_pixel_mm(
@@ -1458,6 +1586,40 @@ def _geometry_within_hausdorff_budget(
     ).covers(first)
 
 
+def _budgeted_hausdorff_distance(
+    first,
+    second,
+    max_budget_pts: float,
+    *,
+    iterations: int = 7,
+) -> float:
+    """Ước lượng Hausdorff bằng guard buffer, chỉ đo chính xác khi vượt trần.
+
+    GEOS `hausdorff_distance` có chi phí O(n²) trên contour raster dày. Với
+    preview live, ta chỉ cần một cận trên để kiểm cổng sai số; tìm nhị phân trên
+    phép bao phủ buffer cho kết quả ổn định và rẻ hơn nhiều. Nếu ứng viên không
+    nằm trong trần dự kiến thì giữ phép đo chính xác để không đổi quyết định fail.
+    """
+    try:
+        upper = float(max_budget_pts)
+    except (TypeError, ValueError, OverflowError):
+        upper = 0.0
+    if not math.isfinite(upper) or upper <= 0.0:
+        return float(first.hausdorff_distance(second))
+    if not _geometry_within_hausdorff_budget(first, second, upper):
+        return float(first.hausdorff_distance(second))
+    if _geometry_within_hausdorff_budget(first, second, 0.0):
+        return 0.0
+    lower = 0.0
+    for _ in range(max(1, int(iterations))):
+        middle = (lower + upper) * 0.5
+        if _geometry_within_hausdorff_budget(first, second, middle):
+            upper = middle
+        else:
+            lower = middle
+    return upper
+
+
 def _fit_alpha_inset_anchor_paths(
     alpha_geometry,
     ideal_cut_geometry,
@@ -1639,6 +1801,321 @@ def _smooth_closed_ring_source_scale(
         np.convolve(padded[:, 0], weights, mode="valid"),
         np.convolve(padded[:, 1], weights, mode="valid"),
     ))
+
+
+def _hybrid_circular_true_runs(mask: np.ndarray, minimum_count: int) -> list[tuple[int, int]]:
+    """Lấy các run ``True`` trên ring, gộp đúng seam nhưng không gộp vòng lớn."""
+    values = np.asarray(mask, dtype=bool)
+    size = int(values.size)
+    if size == 0 or not np.any(values):
+        return []
+    if np.all(values):
+        return [(0, size - 1)] if size >= minimum_count else []
+
+    starts = np.flatnonzero(values & ~np.roll(values, 1))
+    runs: list[tuple[int, int]] = []
+    for start in starts:
+        end = int(start)
+        while values[(end + 1) % size]:
+            end += 1
+            if end - int(start) + 1 >= size:
+                break
+        length = end - int(start) + 1
+        if length >= minimum_count:
+            # Giữ ``end`` chưa modulo để caller có thể lấy đúng run băng qua
+            # seam bằng `arange(... ) % size`.
+            runs.append((int(start), int(end)))
+    return runs
+
+
+def _hybrid_tls_line(points: np.ndarray):
+    """Fit line TLS và trả (tâm, hướng, pháp tuyến, residual signed)."""
+    cloud = np.asarray(points, dtype=np.float64)
+    if cloud.ndim != 2 or cloud.shape[0] < 3 or cloud.shape[1] != 2:
+        return None
+    center = np.mean(cloud, axis=0)
+    try:
+        _u, _s, vt = np.linalg.svd(cloud - center, full_matrices=False)
+    except (ArithmeticError, np.linalg.LinAlgError, ValueError):
+        return None
+    direction = np.asarray(vt[0], dtype=np.float64)
+    norm = float(np.linalg.norm(direction))
+    if not math.isfinite(norm) or norm <= 1e-9:
+        return None
+    direction /= norm
+    if direction[0] < -1e-12 or (
+        abs(direction[0]) <= 1e-12 and direction[1] < 0.0
+    ):
+        direction = -direction
+    normal = np.asarray((-direction[1], direction[0]), dtype=np.float64)
+    residuals = (cloud - center) @ normal
+    return center, direction, normal, residuals
+
+
+def _hybrid_angle_delta(theta: np.ndarray, target: float) -> np.ndarray:
+    """Khoảng cách góc modulo 180° (tránh nhảy tại −π/π)."""
+    return np.abs(np.angle(np.exp(1j * 2.0 * (theta - target)))) / 2.0
+
+
+def _regularize_partial_straight_reference(
+    ideal_cut_geometry,
+    *,
+    source_pixel_mm: float | None,
+    mm_to_pts: float,
+):
+    """Chuẩn hóa cục bộ các cạnh thẳng dài trước fitter Bézier.
+
+    Đây là candidate fail-closed cho tem một component không có lỗ. Nó không
+    dựng rounded-rect toàn vòng: chỉ chiếu các run thẳng đã qua cổng residual,
+    giữ nguyên phần contour tự do và làm feather ngắn ở hai đầu run. Vì vậy cạnh
+    trái của tem bo góc được kéo thành một đường duy nhất, còn tay/mấu hữu cơ
+    bên phải vẫn đi theo mask nguồn.
+
+    Trả ``(geometry, metadata)`` hoặc ``None``. Metadata chỉ dùng log/test, không
+    phải hợp đồng API.
+    """
+    if (
+        not isinstance(ideal_cut_geometry, Polygon)
+        or ideal_cut_geometry.is_empty
+        or not ideal_cut_geometry.is_valid
+        or ideal_cut_geometry.interiors
+    ):
+        return None
+    try:
+        pixel_mm = float(source_pixel_mm)
+        scale = float(mm_to_pts)
+    except (TypeError, ValueError):
+        return None
+    if (
+        not math.isfinite(pixel_mm)
+        or pixel_mm <= 0.0
+        or not math.isfinite(scale)
+        or scale <= 0.0
+    ):
+        return None
+
+    # Một điểm lấy mẫu xấp xỉ một pixel nguồn; không tạo knot dày giả ở ảnh DPI
+    # thấp.  Cùng hàm này được gọi trong preview và PDF nên không lệch quỹ đạo.
+    spacing_mm = max(0.05, min(0.12, pixel_mm * 0.95))
+    spacing_pts = spacing_mm * scale
+    # Dò đầu vào cho phép một lượng jitter tối đa khoảng hai pixel nguồn; sau
+    # khi chiếu line, candidate vẫn phải qua Hausdorff/oracle cuối.  300-DPI ca
+    # thật dùng ngưỡng xấp xỉ 0,18/0,34 mm; ảnh sạch vẫn giữ cổng 0,10/0,22 mm.
+    line_p95_limit_mm = max(
+        _HYBRID_STRAIGHT_P95_RESIDUAL_MM,
+        min(_HYBRID_STRAIGHT_P95_RESIDUAL_MAX_MM, pixel_mm * 2.20),
+    )
+    line_max_limit_mm = max(
+        _HYBRID_STRAIGHT_MAX_RESIDUAL_MM,
+        min(_HYBRID_STRAIGHT_MAX_RESIDUAL_CAP_MM, pixel_mm * 4.10),
+    )
+    raw = _resample_closed_ring_by_spacing(
+        ideal_cut_geometry.exterior.coords,
+        spacing_pts,
+    )
+    if len(raw) < 64:
+        return None
+    # Chỉ dùng bản làm mượt để đo hướng/residual; helper spline có thể đổi số
+    # mẫu sau khi khép vòng, vì vậy nội suy ngược về đúng lưới `raw` thay vì
+    # fail-closed oan và không bao giờ kích hoạt nhánh chuẩn hóa.
+    smoothed_probe = _smooth_closed_ring_source_scale(
+        raw,
+        spacing_pts=spacing_pts,
+        sigma_pts=min(0.35, pixel_mm * 0.45) * scale,
+    )
+    if len(smoothed_probe) < 8:
+        return None
+    probe_positions = np.linspace(
+        0.0,
+        1.0,
+        len(smoothed_probe),
+        endpoint=False,
+    )
+    raw_positions = np.linspace(
+        0.0,
+        1.0,
+        len(raw),
+        endpoint=False,
+    )
+    probe = np.column_stack((
+        np.interp(
+            raw_positions,
+            np.r_[probe_positions, 1.0],
+            np.r_[smoothed_probe[:, 0], smoothed_probe[0, 0]],
+        ),
+        np.interp(
+            raw_positions,
+            np.r_[probe_positions, 1.0],
+            np.r_[smoothed_probe[:, 1], smoothed_probe[0, 1]],
+        ),
+    ))
+    half_window = max(2, int(round(0.90 / spacing_mm)))
+    tangent = np.roll(probe, -half_window, axis=0) - np.roll(
+        probe,
+        half_window,
+        axis=0,
+    )
+    tangent_norm = np.linalg.norm(tangent, axis=1, keepdims=True)
+    tangent = tangent / np.maximum(tangent_norm, 1e-9)
+    theta = np.mod(np.arctan2(tangent[:, 1], tangent[:, 0]), math.pi)
+
+    # Frame trội lấy bằng histogram 0,5° modulo 90°. Cạnh xoay vẫn được nhận,
+    # không giả định tem luôn song song trục trang.
+    bin_count = 180
+    folded = np.mod(theta, math.pi / 2.0)
+    histogram, edges = np.histogram(
+        folded,
+        bins=bin_count,
+        range=(0.0, math.pi / 2.0),
+    )
+    smoothed_histogram = (
+        np.roll(histogram, -3)
+        + 2 * np.roll(histogram, -2)
+        + 3 * np.roll(histogram, -1)
+        + 4 * histogram
+        + 3 * np.roll(histogram, 1)
+        + 2 * np.roll(histogram, 2)
+        + np.roll(histogram, 3)
+    )
+    peak = int(np.argmax(smoothed_histogram))
+    frame_angle = float((edges[peak] + edges[peak + 1]) * 0.5)
+    tolerance = math.radians(_HYBRID_STRAIGHT_ORIENTATION_TOLERANCE_DEG)
+    straight = np.minimum(
+        _hybrid_angle_delta(theta, frame_angle),
+        _hybrid_angle_delta(theta, frame_angle + math.pi / 2.0),
+    ) <= tolerance
+
+    # Lấp khe do một vài pixel AA nhưng không nuốt một góc thật.  Chỉ lấp các
+    # run False ngắn hơn 0,64 mm trên vòng.
+    gap_count = max(1, int(round(_HYBRID_STRAIGHT_GAP_MM / spacing_mm)))
+    for start, end in _hybrid_circular_true_runs(~straight, 1):
+        false_indexes = (
+            np.arange(start, end + 1, dtype=np.int64) % len(straight)
+        )
+        if len(false_indexes) <= gap_count:
+            straight[false_indexes] = True
+
+    candidates = _hybrid_circular_true_runs(
+        straight,
+        max(8, int(round(_HYBRID_STRAIGHT_MIN_RUN_MM / spacing_mm))),
+    )
+    accepted: list[dict[str, object]] = []
+    for start, end in candidates:
+        indexes = np.arange(start, end + 1, dtype=np.int64) % len(probe)
+        fit = _hybrid_tls_line(probe[indexes])
+        if fit is None:
+            continue
+        center, direction, normal, residuals = fit
+        absolute_mm = np.abs(residuals) / scale
+        projection = (probe[indexes] - center) @ direction
+        run_length_mm = float(np.ptp(projection) / scale)
+        if (
+            run_length_mm < _HYBRID_STRAIGHT_MIN_RUN_MM
+            or float(np.percentile(absolute_mm, 95))
+            > line_p95_limit_mm
+            or float(np.max(absolute_mm)) > line_max_limit_mm
+        ):
+            continue
+        accepted.append(
+            {
+                "start": int(start),
+                "end": int(end),
+                "indexes": indexes,
+                "center": center,
+                "direction": direction,
+                "normal": normal,
+                "length_mm": run_length_mm,
+                "p95_mm": float(np.percentile(absolute_mm, 95)),
+                "max_mm": float(np.max(absolute_mm)),
+            }
+        )
+    if len(accepted) < 2:
+        return None
+
+    # Một đường cong hữu cơ dài có thể tình cờ phẳng; yêu cầu tối thiểu một cặp
+    # cạnh gần vuông để xác nhận đây là mảnh rounded-rectangle, không phải ép
+    # toàn contour theo một hướng duy nhất.
+    has_orthogonal_pair = False
+    for left_index, first in enumerate(accepted):
+        first_angle = math.atan2(
+            float(first["direction"][1]),
+            float(first["direction"][0]),
+        )
+        for second in accepted[left_index + 1 :]:
+            second_angle = math.atan2(
+                float(second["direction"][1]),
+                float(second["direction"][0]),
+            )
+            angular_delta = float(
+                _hybrid_angle_delta(
+                    np.asarray((first_angle,)),
+                    second_angle,
+                )[0]
+            )
+            difference = math.degrees(
+                min(angular_delta, math.pi - angular_delta)
+            )
+            if 65.0 <= difference <= 115.0:
+                has_orthogonal_pair = True
+                break
+        if has_orthogonal_pair:
+            break
+    if not has_orthogonal_pair:
+        return None
+
+    modified = np.asarray(raw, dtype=np.float64).copy()
+    changed = np.zeros(len(modified), dtype=bool)
+    feather_count = max(1, int(round(_HYBRID_STRAIGHT_FEATHER_MM / spacing_mm)))
+    for run in accepted:
+        indexes = np.asarray(run["indexes"], dtype=np.int64)
+        center = np.asarray(run["center"], dtype=np.float64)
+        normal = np.asarray(run["normal"], dtype=np.float64)
+        residual = (modified[indexes] - center) @ normal
+        weights = np.ones(len(indexes), dtype=np.float64)
+        count = min(feather_count, len(indexes) // 3)
+        if count > 0:
+            weights[:count] = np.linspace(0.0, 1.0, count)
+            weights[-count:] = np.linspace(1.0, 0.0, count)
+        modified[indexes] -= np.outer(residual * weights, normal)
+        changed[indexes] = True
+
+    candidate = Polygon(modified)
+    topology = _polygon_topology_signature(ideal_cut_geometry)
+    budget_mm = max(
+        _HYBRID_STRAIGHT_MAX_HAUSDORFF_MM,
+        min(0.45, pixel_mm * 3.50),
+    )
+    if (
+        candidate.is_empty
+        or not candidate.is_valid
+        or _polygon_topology_signature(candidate) != topology
+        # PERF (audit 2026-08-21 §CUTLINE.FAST-GUARD): đây chỉ là cổng
+        # đúng/sai, không cần số đo Hausdorff chính xác. Bao phủ buffer hai
+        # chiều tương đương với điều kiện Hausdorff và tránh O(n²) trên contour
+        # hàng nghìn điểm; số đo chi tiết vẫn được tính ở quality cuối nếu cần.
+        or not _geometry_within_hausdorff_budget(
+            ideal_cut_geometry,
+            candidate,
+            budget_mm * scale,
+        )
+    ):
+        return None
+    return candidate, {
+        "run_count": len(accepted),
+        "runs": [
+            {
+                "length_mm": float(run["length_mm"]),
+                "p95_mm": float(run["p95_mm"]),
+                "max_mm": float(run["max_mm"]),
+            }
+            for run in accepted
+        ],
+        "spacing_mm": spacing_mm,
+        "budget_mm": budget_mm,
+        "line_p95_limit_mm": line_p95_limit_mm,
+        "line_max_limit_mm": line_max_limit_mm,
+        "changed_point_count": int(np.count_nonzero(changed)),
+    }
 
 
 def _periodic_smoothing_spline_segments(
@@ -3902,6 +4379,11 @@ def _approved_contour_override(payload, target_shape):
     raw_alpha = payload.get("alpha")
     if fitted is None or raw_alpha is None:
         return None
+    # QUALITY (feedback 2026-08-21 §FULLPAGE-OVERRIDE.1): `page-box` là
+    # artifact hợp lệ cho ảnh phủ kín trang, vì vậy Alpha toàn 255 là có chủ
+    # đích chứ không phải mask không tách được nền. Các nguồn khác vẫn phải
+    # qua cổng tách nền để tránh payload cũ/stale làm mất toàn bộ trang.
+    boundary_source = str(payload.get("boundary_source") or "approved").strip().lower()
     alpha = np.asarray(raw_alpha, dtype=np.uint8)
     if alpha.ndim != 2 or alpha.size == 0:
         return None
@@ -3920,7 +4402,14 @@ def _approved_contour_override(payload, target_shape):
             interpolation=interpolation,
         )
     alpha = np.ascontiguousarray(alpha, dtype=np.uint8)
-    if not mask_tach_duoc_nen(alpha >= ALPHA_CONTOUR_THRESHOLD):
+    foreground_mask = alpha >= ALPHA_CONTOUR_THRESHOLD
+    if boundary_source == "page-box":
+        # Chỉ chấp nhận page-box thật sự kín trang. Không nới cổng thành
+        # ``ratio <= 1`` chung cho mọi nguồn, nếu không Alpha stale gần kín
+        # trang sẽ vô tình được coi là artifact đã duyệt.
+        if not np.all(foreground_mask):
+            return None
+    elif not mask_tach_duoc_nen(foreground_mask):
         return None
 
     try:
@@ -3934,8 +4423,24 @@ def _approved_contour_override(payload, target_shape):
             source_pixel_mm = max(25.4 / dpi_x, 25.4 / dpi_y)
         except (IndexError, TypeError, ValueError, ZeroDivisionError):
             return None
-    boundary_source = str(payload.get("boundary_source") or "approved")
     return alpha, source_pixel_mm, boundary_source, fitted
+
+
+def _approved_edge_background(payload) -> tuple[tuple[int, int, int], int] | None:
+    """Đọc ngữ cảnh nền scalar từ artifact approved, không mang mask lớn qua pool."""
+    if not isinstance(payload, dict):
+        return None
+    raw_rgb = payload.get("edge_background_rgb")
+    if not isinstance(raw_rgb, (list, tuple)) or len(raw_rgb) != 3:
+        return None
+    try:
+        values = tuple(int(round(float(value))) for value in raw_rgb)
+        tolerance = int(round(float(payload.get("edge_background_tolerance", 0))))
+    except (TypeError, ValueError):
+        return None
+    if any(value < 0 or value > 255 for value in values):
+        return None
+    return values, min(255, max(0, tolerance))
 
 
 def _alpha_live_machine_path_summary(path, *, mm_to_pts: float):
@@ -4289,6 +4794,41 @@ def _match_protected_corner_count(join_points, corner_points, radius_pts: float)
     return len(matched_joins)
 
 
+def _analytic_fillet_short_line_count(paths, *, mm_to_pts: float) -> int:
+    """Đếm riêng lệnh thẳng ngắn; cung fillet ngắn nhưng G1 không phải faceting.
+
+    Ngưỡng 0,25 mm ban đầu nhằm bắt chuỗi chord đổi hướng liên tục. Một cung cubic
+    giải tích duy nhất có thể ngắn hơn ngưỡng khi UI yêu cầu bán kính 0,12 mm,
+    nhưng vẫn là chuyển động trơn. Đoạn thẳng ngắn vẫn bị chặn như cũ.
+    """
+    count = 0
+    threshold_pts = _CUTLINE_FINAL_SHORT_SEGMENT_MM * mm_to_pts
+    for path in paths:
+        for raw_segment in path:
+            try:
+                p0, control1, control2, p3 = (
+                    np.asarray(point, dtype=np.float64) for point in raw_segment
+                )
+            except (TypeError, ValueError):
+                return 1
+            chord = p3 - p0
+            chord_length = float(np.linalg.norm(chord))
+            if chord_length <= 1e-12:
+                count += 1
+                continue
+            relative1 = control1 - p0
+            relative2 = control2 - p0
+            cross1 = abs(float(
+                chord[0] * relative1[1] - chord[1] * relative1[0]
+            )) / chord_length
+            cross2 = abs(float(
+                chord[0] * relative2[1] - chord[1] * relative2[0]
+            )) / chord_length
+            if max(cross1, cross2) <= 1e-8 and chord_length < threshold_pts:
+                count += 1
+    return count
+
+
 def _alpha_final_cutline_quality(
     paths,
     *,
@@ -4352,9 +4892,21 @@ def _alpha_final_cutline_quality(
                 corner_points,
                 match_radius_pts,
             )
-    short_segment_count = sum(
+    measured_short_segment_count = sum(
         int(summary["short_segment_count"]) for summary in valid_summaries
     )
+    if fit_mode == "analytic-fillet":
+        short_segment_count = _analytic_fillet_short_line_count(
+            paths,
+            mm_to_pts=mm_to_pts,
+        )
+        smooth_short_arc_count = max(
+            0,
+            measured_short_segment_count - short_segment_count,
+        )
+    else:
+        short_segment_count = measured_short_segment_count
+        smooth_short_arc_count = 0
     disconnected_join_count = sum(
         int(summary["disconnected_join_count"]) for summary in valid_summaries
     )
@@ -4398,9 +4950,23 @@ def _alpha_final_cutline_quality(
             and safe_envelope.covers(fitted_geometry)
         )
     try:
-        effective_deviation_mm = float(
-            reference_geometry.hausdorff_distance(fitted_geometry) / mm_to_pts
-        )
+        if fit_mode in {"live-bezier", "hybrid-straight-reference"}:
+            # PERF (audit 2026-08-21 §CUTLINE.FAST-GUARD): live preview chỉ cần
+            # cận trên để xét budget; binary search trên buffer tránh đo GEOS
+            # O(n²) ở mọi frame. Candidate vượt trần vẫn rơi về phép đo chính
+            # xác trong helper, nên không có đường tắt làm nới sai số.
+            probe_budget_mm = min(
+                1.30,
+                max(0.25, float(source_pixel_mm or 0.0) * 4.50),
+            )
+            deviation_pts = _budgeted_hausdorff_distance(
+                reference_geometry,
+                fitted_geometry,
+                probe_budget_mm * mm_to_pts,
+            )
+        else:
+            deviation_pts = reference_geometry.hausdorff_distance(fitted_geometry)
+        effective_deviation_mm = float(deviation_pts / mm_to_pts)
         if not math.isfinite(effective_deviation_mm):
             effective_deviation_mm = None
     except (ArithmeticError, TypeError, ValueError):
@@ -4421,6 +4987,7 @@ def _alpha_final_cutline_quality(
             int(summary["segment_count"]) for summary in valid_summaries
         ),
         "short_segment_count": short_segment_count,
+        "smooth_short_arc_count": smooth_short_arc_count,
         "disconnected_join_count": disconnected_join_count,
         "unprotected_join_count": unprotected_join_count,
         "protected_corner_count": protected_corner_count,
@@ -4436,6 +5003,46 @@ def _alpha_final_cutline_quality(
         "maximum_trajectory_turn_degrees": max(maximum_trajectory_turns, default=None),
         "minimum_wedge_width_mm": min(minimum_wedge_widths, default=None),
     }
+
+
+def _cutline_hook_is_severe(quality: dict[str, object] | None) -> bool:
+    """Trả ``True`` khi quỹ đạo có dấu hiệu fitter bẻ thành móc/gai rác.
+
+    ``machine_safe`` chỉ kiểm tra tính kín/topology và các đoạn quá ngắn; nó
+    không đủ để nhận ra một cubic tự quay ngược ở giữa đường. Hàm này cố ý
+    dùng các số đo đã có trong ``quality`` để làm cổng nhỏ, fail-closed và dễ
+    kiểm thử. Một cusp đơn có nêm đủ rộng vẫn được giữ cho hình sao/tai nhọn;
+    chỉ khi có nhiều cusp hoặc một cusp có hình học quá hẹp/gắt mới bị chặn.
+    """
+    if not isinstance(quality, dict):
+        return False
+    try:
+        cusp_count = int(quality.get("unprotected_cusp_count", 0) or 0)
+    except (TypeError, ValueError):
+        cusp_count = 0
+    try:
+        wedge = quality.get("minimum_wedge_width_mm")
+        wedge_value = float(wedge) if wedge is not None else None
+    except (TypeError, ValueError):
+        wedge_value = None
+    try:
+        turn = quality.get("maximum_trajectory_turn_degrees")
+        turn_value = float(turn) if turn is not None else None
+    except (TypeError, ValueError):
+        turn_value = None
+    if cusp_count > _CUTLINE_HOOK_MAX_TOLERATED_UNPROTECTED_CUSPS:
+        return True
+    if wedge_value is not None and (
+        not math.isfinite(wedge_value)
+        or wedge_value < _CUTLINE_HOOK_MIN_SAFE_WEDGE_MM
+    ):
+        return True
+    if turn_value is not None and (
+        not math.isfinite(turn_value)
+        or turn_value >= _CUTLINE_HOOK_MAX_SAFE_TURN_DEGREES
+    ):
+        return True
+    return False
 
 
 def _fit_alpha_live_tuned_paths(
@@ -4502,7 +5109,7 @@ def _fit_alpha_live_tuned_paths(
     # hình học độc lập. Lùi vào rồi trả ra với Join Round để tạo fillet ở góc
     # lồi; vòng ra–vào trước đây chỉ khép khe lõm nên tem lồi không hề đổi.
     # Topology và sai lệch vẫn phải qua cùng guard của preview lẫn PDF.
-    round_radius_mm = _cutline_round_radius_mm(curve_tension, pixel_mm)
+    round_radius_mm = _cutline_round_radius_mm(curve_tension)
     if round_radius_mm > 1e-9:
         rounded_parts = []
         rounded_any = False
@@ -4510,7 +5117,7 @@ def _fit_alpha_live_tuned_paths(
             accepted_part = None
             # Một mấu hẹp có thể vượt guard ở bán kính yêu cầu dù phần còn lại
             # bo được. Hạ bán kính có thứ tự thay vì vô hiệu cả tem ngay lập tức.
-            for radius_scale in (1.0, 0.75, 0.50, 0.25):
+            for radius_scale in (1.0, 0.75, 0.50, 0.25, 0.125, 0.0625):
                 candidate_radius_mm = round_radius_mm * radius_scale
                 candidate_radius_pts = candidate_radius_mm * mm_to_pts
                 round_budget_pts = min(
@@ -4531,8 +5138,13 @@ def _fit_alpha_live_tuned_paths(
                     and rounded_part.is_valid
                     and _polygon_topology_signature(rounded_part)
                     == _polygon_topology_signature(part)
-                    and part.hausdorff_distance(rounded_part)
-                    <= round_budget_pts + 1e-7
+                    # PERF (audit 2026-08-21 §CUTLINE.FAST-GUARD):
+                    # `_geometry_within_hausdorff_budget` kiểm tra Hausdorff hai
+                    # chiều bằng bao phủ buffer GEOS. Phép gọi
+                    # `part.hausdorff_distance()` ở đây là cùng một guard nhưng
+                    # chạy O(n²), từng làm mỗi ứng viên bo góc mất nhiều giây.
+                    # Giữ envelope + topology làm hợp đồng duy nhất; các guard
+                    # cuối của fitter vẫn đo quỹ đạo Bézier đã xuất.
                     and _geometry_within_hausdorff_budget(
                         part,
                         rounded_part,
@@ -4725,9 +5337,15 @@ def denoise_cutline_mask(
     if not math.isfinite(px_per_mm) or px_per_mm <= 0:
         return mask
 
+    sigma_cap_px = _CUTLINE_DENOISE_MAX_MM * px_per_mm
+    if px_per_mm >= _CUTLINE_DENOISE_SOURCE_CAP_MIN_PX_PER_MM:
+        sigma_cap_px = max(
+            sigma_cap_px,
+            _CUTLINE_DENOISE_SOURCE_CAP_MIN_PX,
+        )
     sigma = min(
         _CUTLINE_DENOISE_SIGMA_PX_MAX * resolved / 100.0,
-        _CUTLINE_DENOISE_MAX_MM * px_per_mm,
+        sigma_cap_px,
     )
     if sigma < 0.30 or min(mask.shape[:2]) < 5:
         return mask
@@ -4973,8 +5591,190 @@ def prepare_alpha_cutline_geometry(
         "ideal_geometry": ideal_geometry,
         "total_offset_pts": total_offset_pts,
         "source_pixel_mm": max(25.4 / dpi_x, 25.4 / dpi_y_resolved),
+        "corner_style": str(corner_style or "preserve").strip().lower(),
         "dropped_contours": len(filtered_exteriors),
     }
+
+
+def _collapse_raster_corner_splits(vertices):
+    """Gộp cặp node cực ngắn do một đỉnh rơi giữa hai pixel raster."""
+    points = [np.asarray(point, dtype=np.float64) for point in vertices]
+    while len(points) > 3:
+        lengths = np.asarray([
+            np.linalg.norm(points[(index + 1) % len(points)] - point)
+            for index, point in enumerate(points)
+        ])
+        median_length = float(np.median(lengths))
+        short_index = int(np.argmin(lengths))
+        if (
+            not math.isfinite(median_length)
+            or median_length <= 1e-9
+            or float(lengths[short_index]) >= median_length * 0.08
+        ):
+            break
+        rotated = points[short_index:] + points[:short_index]
+        first, second = rotated[0], rotated[1]
+        previous = rotated[-1]
+        following = rotated[2]
+        incoming = first - previous
+        outgoing = following - second
+        denominator = float(
+            incoming[0] * outgoing[1] - incoming[1] * outgoing[0]
+        )
+        intersection = (first + second) / 2.0
+        if abs(denominator) > 1e-12:
+            delta = second - previous
+            factor = float(
+                delta[0] * outgoing[1] - delta[1] * outgoing[0]
+            ) / denominator
+            candidate = previous + incoming * factor
+            if (
+                np.all(np.isfinite(candidate))
+                and np.linalg.norm(candidate - intersection) <= median_length
+            ):
+                intersection = candidate
+        points = [intersection, *rotated[2:]]
+    return [(float(point[0]), float(point[1])) for point in points]
+
+
+def _standard_convex_polygon_vertices(
+    geometry,
+    *,
+    source_pixel_mm: float,
+):
+    """Nhận polygon lồi 3–8 cạnh từ silhouette raster với guard vật lý.
+
+    Chỉ đường bao gần convex-hull, không lỗ và không gần tròn mới được đưa vào
+    fillet giải tích. Hình lõm/custom tiếp tục đi fitter bảo toàn góc hiện có.
+    """
+    if (
+        not isinstance(geometry, Polygon)
+        or geometry.is_empty
+        or not geometry.is_valid
+        or geometry.interiors
+    ):
+        return None
+    perimeter = float(geometry.length)
+    area = float(geometry.area)
+    if perimeter <= 1e-9 or area <= 1e-9:
+        return None
+    circularity = 4.0 * math.pi * area / (perimeter * perimeter)
+    # Bát giác đều có circularity lý thuyết ≈0,948; ngưỡng cũ 0,94 loại oan
+    # tùy góc xoay raster. Tròn/elip thật còn có guard fit elip ngay bên dưới.
+    if circularity > 0.97:
+        return None
+
+    raw = np.asarray(geometry.exterior.coords[:-1], dtype=np.float32)
+    if raw.ndim != 2 or raw.shape[0] < 3 or raw.shape[1] != 2:
+        return None
+
+    pixel_mm = max(0.001, float(source_pixel_mm))
+    residual_budget_mm = min(0.55, max(0.14, pixel_mm * 1.75))
+    # Elip dẹt có circularity thấp nên chỉ ngưỡng trên chưa đủ. Classifier elip
+    # là phép fit vector hóa nhẹ; chạy được mỗi tick slider mà không lặp bộ guard
+    # rounded-rect/rect/triangle nặng hơn trên toàn contour.
+    from app.workers.sticker_cut_reconstruct import try_ellipse_or_circle
+
+    if try_ellipse_or_circle(
+        raw,
+        force=None,
+        max_residual_mm=residual_budget_mm,
+        max_defect_mm=residual_budget_mm,
+    ) is not None:
+        return None
+    hull = geometry.convex_hull
+    if (
+        not isinstance(hull, Polygon)
+        or geometry.hausdorff_distance(hull)
+        > residual_budget_mm * _PT_PER_MM
+    ):
+        return None
+
+    epsilon_min_mm = max(0.025, pixel_mm * 0.30)
+    epsilon_candidates_mm = np.linspace(
+        epsilon_min_mm,
+        residual_budget_mm,
+        9,
+    )
+    accepted = []
+    for epsilon_mm in epsilon_candidates_mm:
+        approximated = cv2.approxPolyDP(
+            raw.reshape(-1, 1, 2),
+            epsilon_mm * _PT_PER_MM,
+            True,
+        ).reshape(-1, 2)
+        approximated = np.asarray(
+            _collapse_raster_corner_splits(approximated),
+            dtype=np.float32,
+        )
+        side_count = len(approximated)
+        if not 3 <= side_count <= 8:
+            continue
+        if not cv2.isContourConvex(approximated.reshape(-1, 1, 2)):
+            continue
+        candidate = Polygon(np.asarray(approximated, dtype=np.float64))
+        if candidate.is_empty or not candidate.is_valid or candidate.area <= 1e-9:
+            continue
+        area_ratio = area / float(candidate.area)
+        residual_mm = geometry.hausdorff_distance(candidate) / _PT_PER_MM
+        if (
+            not 0.94 <= area_ratio <= 1.06
+            or residual_mm > residual_budget_mm
+        ):
+            continue
+        accepted.append((
+            float(residual_mm),
+            side_count,
+            [(float(x), float(y)) for x, y in approximated],
+        ))
+    if not accepted:
+        return None
+    # Mọi candidate đều đã nằm trong residual vật lý rất hẹp ở trên. Trong hành
+    # lang đó, node phụ chủ yếu là răng cưa nửa pixel tại góc; ưu tiên polygon
+    # đơn giản nhất rồi mới so residual. Hình custom nằm ngoài guard không vào đây.
+    return min(accepted, key=lambda item: (item[1], item[0]))[2]
+
+
+def _fit_standard_polygon_fillet(
+    base_geometry,
+    *,
+    total_offset_pts: float,
+    source_pixel_mm: float,
+    curve_tension: float | int | None,
+):
+    """Dựng line + cung cubic tiếp tuyến cho polygon chuẩn của mask/AI."""
+    vertices = _standard_convex_polygon_vertices(
+        base_geometry,
+        source_pixel_mm=source_pixel_mm,
+    )
+    if vertices is None:
+        return None
+    polygon = Polygon(vertices)
+    if abs(total_offset_pts) > 1e-12:
+        polygon = polygon.buffer(
+            total_offset_pts,
+            join_style=2,
+            mitre_limit=100.0,
+        )
+    if not isinstance(polygon, Polygon) or polygon.is_empty or polygon.interiors:
+        return None
+    radius_pts = (
+        _cutline_round_radius_mm(curve_tension) * _PT_PER_MM
+    )
+    if radius_pts <= 1e-9:
+        return None
+    segments = build_filleted_polygon_beziers(
+        list(polygon.exterior.coords[:-1]),
+        radius=radius_pts,
+        minimum_straight=_CUTLINE_FINAL_SHORT_SEGMENT_MM * _PT_PER_MM,
+    )
+    if not segments:
+        return None
+    sampled = sample_bezier_segments(segments, samples_per_segment=24)
+    fitted_geometry = Polygon(sampled)
+    if fitted_geometry.is_empty or not fitted_geometry.is_valid:
+        return None
+    return fitted_geometry, [segments], 0.0
 
 
 def fit_prepared_alpha_cutline_geometry(
@@ -5022,10 +5822,9 @@ def fit_prepared_alpha_cutline_geometry(
         return None
 
     rejected_qualities: list[dict[str, object]] = []
-    # §CUTHOOK.1 bước 2: ứng viên có gai do fitter tự sinh bị đẩy xuống cuối hàng,
-    # KHÔNG bị loại hẳn. Nhờ vậy `live-bezier` có móc sẽ nhường cho fallback fit trên
-    # reference (không thể sinh cusp mới), còn nếu mọi ứng viên đều có gai thì hành vi
-    # giữ nguyên như trước — chưa xuất hiện lỗi 422 mới. Chặn hẳn là bước 3.
+    # §CUTHOOK.1: ứng viên có gai do fitter tự sinh bị đẩy xuống cuối hàng để
+    # `live-bezier` nhường cho fallback sạch. Nếu mọi ứng viên đều còn gai, chỉ
+    # cusp đơn đủ rộng mới được dung nạp; móc nghiêm trọng bị cổng bước 3 từ chối.
     hooked_candidates: list[dict[str, object]] = []
     hook_search_started: list[float] = []
     # PERF §CUTHOOK.2: `ideal_geometry` bất biến suốt chuỗi ứng viên nên bộ dò góc
@@ -5050,7 +5849,7 @@ def fit_prepared_alpha_cutline_geometry(
         quality["dropped_component_count"] = int(
             prepared.get("dropped_contours", 0)
         )
-        if fit_mode == "live-bezier":
+        if fit_mode in {"live-bezier", "hybrid-straight-reference"}:
             effective_deviation_mm = quality.get("effective_deviation_mm")
             live_deviation_budget_mm = max(
                 float(fit_tolerance_mm),
@@ -5058,7 +5857,7 @@ def fit_prepared_alpha_cutline_geometry(
             )
             round_allowance_mm = min(
                 0.10,
-                _cutline_round_radius_mm(curve_tension, source_pixel_mm) * 0.15,
+                _cutline_round_radius_mm(curve_tension) * 0.15,
             )
             live_deviation_budget_mm = min(
                 1.30,
@@ -5111,6 +5910,23 @@ def fit_prepared_alpha_cutline_geometry(
                 int(candidate["quality"].get("segment_count", 0)),
             ),
         )
+        if _cutline_hook_is_severe(best.get("quality")):
+            quality = dict(best.get("quality") or {})
+            quality["cutline_hook_rejected"] = True
+            quality["machine_safe"] = False
+            logger.warning(
+                "[RECOGNITION-GUARD] từ chối đường bế còn móc/gai: "
+                "cusps=%s turn=%s wedge=%smm segments=%s",
+                quality.get("unprotected_cusp_count"),
+                quality.get("maximum_trajectory_turn_degrees"),
+                quality.get("minimum_wedge_width_mm"),
+                quality.get("segment_count"),
+            )
+            raise UnsafeCutlineGeometryError(
+                "Nhận diện đường bế còn gai/móc quá nhỏ nên chưa an toàn để xuất. "
+                "Hãy tăng Khử răng cưa/Độ mượt hoặc chọn «Giữ mép ảnh» rồi kiểm tra lại.",
+                quality=quality,
+            )
         best["quality"]["cutline_hook_tolerated"] = True
         logger.info(
             "Đường bế còn %d gai chưa khớp góc thật (nêm hẹp nhất %s mm, chế độ %s); "
@@ -5129,6 +5945,60 @@ def fit_prepared_alpha_cutline_geometry(
             time.perf_counter() - hook_search_started[0]
             > _CUTLINE_HOOK_SEARCH_BUDGET_SECONDS
         )
+
+    # QUALITY (feedback 2026-08-19 §CUTROUND.4): polygon chuẩn không được bo bằng
+    # spline toàn vòng. Cách đó phụ thuộc hướng/loại hình và thường rơi fallback,
+    # làm vuông/ngũ giác/lục giác bỏ mất bán kính người dùng. Fillet cục bộ tạo
+    # tiếp tuyến G1 thật; hình lõm/custom đã bị guard phía helper loại từ trước.
+    if str(prepared.get("corner_style", "preserve")) == "round":
+        analytic_fillet = accept_candidate(
+            _fit_standard_polygon_fillet(
+                base_geometry,
+                total_offset_pts=total_offset_pts,
+                source_pixel_mm=source_pixel_mm,
+                curve_tension=curve_tension,
+            ),
+            "analytic-fillet",
+        )
+        if analytic_fillet is not None:
+            return analytic_fillet
+
+    # QUALITY (audit 2026-08-20 §CUTHYBRID.1): trước live-bezier, thử chuẩn hóa
+    # cục bộ các cạnh thẳng dài đã có bằng chứng là một phần rounded-rectangle.
+    # Candidate chỉ chiếu line; không dựng rounded-rect toàn vòng nên mấu/tay tự
+    # do vẫn giữ nguyên. Nếu bất kỳ guard nào không đạt, nhánh live cũ chạy tiếp.
+    # PERF (audit 2026-08-20 §CUTHYBRID.2): nhận dạng quỹ đạo là bước hình học
+    # thuần từ ``prepared``. Preview gọi fitter nhiều lần khi kéo slider; giữ
+    # cả kết quả ``None`` để không lặp lại phép resample/TLS nặng ở mỗi tick.
+    # ``prepared`` được tạo mới khi mask, DPI, bleed hoặc góc thay đổi nên cache
+    # này không làm cũ hình học giữa các phiên.
+    if "_hybrid_reference_cache" not in prepared:
+        prepared["_hybrid_reference_cache"] = (
+            _regularize_partial_straight_reference(
+                ideal_geometry,
+                source_pixel_mm=source_pixel_mm,
+                mm_to_pts=_PT_PER_MM,
+            )
+        )
+    hybrid_reference = prepared.get("_hybrid_reference_cache")
+    if hybrid_reference is not None:
+        hybrid_geometry, hybrid_metadata = hybrid_reference
+        hybrid_result = accept_candidate(
+            _fit_alpha_live_tuned_paths(
+                base_geometry,
+                hybrid_geometry,
+                total_offset_pts=total_offset_pts,
+                mm_to_pts=_PT_PER_MM,
+                source_pixel_mm=source_pixel_mm,
+                cutline_smoothness=cutline_smoothness,
+                cutline_fidelity=cutline_fidelity,
+                curve_tension=curve_tension,
+            ),
+            "hybrid-straight-reference",
+        )
+        if hybrid_result is not None:
+            hybrid_result["quality"]["hybrid_regularization"] = hybrid_metadata
+            return hybrid_result
 
     # QUALITY (audit 2026-08-10 §CUTSMOOTH.1): cả kết quả live sau retension
     # cũng phải qua oracle cuối; không dựa vào việc ứng viên trước retension đã đạt.
@@ -5242,9 +6112,9 @@ def fit_prepared_alpha_cutline_geometry(
     if fallback_result is not None:
         return fallback_result
 
-    # §CUTHOOK.1 bước 2: không ứng viên nào sạch gai. Trả về ứng viên ÍT gai nhất,
-    # kèm cờ `cutline_hook_tolerated` để giao diện/log thấy được. Chưa ném lỗi ở đây —
-    # biến ca này thành 422 là bước 3, cần duyệt riêng.
+    # §CUTHOOK.1 bước 3: không ứng viên nào sạch gai. Ứng viên ít gai nhất vẫn
+    # phải qua cổng độ rộng nêm/số cusp/góc quay trong `best_hooked_candidate`;
+    # chỉ cusp đơn đủ rộng mới nhận cờ `cutline_hook_tolerated`.
     hooked_result = best_hooked_candidate()
     if hooked_result is not None:
         return hooked_result
@@ -5511,7 +6381,9 @@ _EDGE_COLOR_TRANSITION_RGB = 48
 _EDGE_COLOR_TRANSITION_RATIO = 0.05
 _EDGE_COLOR_LUMA_SPAN = 30.0
 _EDGE_COLOR_MIN_SAMPLES = 64
-_EDGE_COLOR_BRIGHT_TAIL_PERCENTILE = 99.0
+# Ngưỡng sparse bắt đầu từ 0,5%; đo ở p99 sẽ bỏ lọt đúng các cụm 0,5–1% rồi
+# nearest phóng từng pixel AA thành nan dài ở góc bo. p99,5 khớp cùng ngân sách.
+_EDGE_COLOR_BRIGHT_TAIL_PERCENTILE = 99.5
 _EDGE_COLOR_BRIGHT_TAIL_DELTA = 20.0
 _EDGE_COLOR_BRIGHT_TAIL_MIN_RATIO = 0.005
 _EDGE_COLOR_BRIGHT_TAIL_MAX_RATIO = 0.08
@@ -5527,7 +6399,11 @@ _EDGE_COLOR_WHITE_FRINGE_DISTANCE = 200
 _EDGE_COLOR_BACKGROUND_FRINGE_RATIO = 0.70
 _EDGE_COLOR_BACKGROUND_RELEASE_RATIO = 0.25
 _EDGE_COLOR_BACKGROUND_COVERAGE_RATIO = 0.90
+_EDGE_COLOR_MIN_SOURCE_DENSITY_RATIO = 0.20
 _EDGE_COLOR_BACKGROUND_SCORE_WEIGHT = 0.50
+_EDGE_COLOR_BROAD_BACKGROUND_MIN_RATIO = 0.05
+_EDGE_COLOR_BROAD_BACKGROUND_MIN_LUMA_SPAN = 60.0
+_EDGE_COLOR_BROAD_BACKGROUND_MIN_TAIL_SPAN = 40.0
 def _edge_color_instability_metrics(
     source_mask: np.ndarray,
     img: np.ndarray,
@@ -5669,6 +6545,30 @@ def _edge_color_has_background_fringe(metrics: dict[str, float]) -> bool:
     )
 
 
+def _edge_color_has_broad_background_fringe(metrics: dict[str, float]) -> bool:
+    """True khi fringe pha nền trải thành dải rộng, không còn là đuôi sáng thưa.
+
+    QUALITY (feedback 2026-08-19 §STK.EDGE03): ảnh JPEG/AA thấp DPI có thể tạo
+    cả một phổ màu liên tục từ mực tới nền. Khi đó tỷ lệ đổi màu từng cặp thấp,
+    đuôi sáng vượt trần ``sparse`` và chỉ phần sáng nhất nằm gần nền. Ba bằng
+    chứng phải cùng có mặt mới cho phép thử shell sâu; candidate thay thế vẫn
+    phải qua guard phủ chu vi + mật độ ở ``_build_adaptive_edge_color_source_mask``.
+    """
+    return (
+        metrics.get("sample_count", 0.0) >= _EDGE_COLOR_MIN_SAMPLES
+        and metrics.get("transition_ratio", 0.0)
+        < _EDGE_COLOR_TRANSITION_RATIO
+        and metrics.get("background_close_ratio", 0.0)
+        >= _EDGE_COLOR_BROAD_BACKGROUND_MIN_RATIO
+        and metrics.get("luma_span", 0.0)
+        >= _EDGE_COLOR_BROAD_BACKGROUND_MIN_LUMA_SPAN
+        and metrics.get("bright_tail_span", 0.0)
+        >= _EDGE_COLOR_BROAD_BACKGROUND_MIN_TAIL_SPAN
+        and metrics.get("bright_tail_ratio", 0.0)
+        > _EDGE_COLOR_BRIGHT_TAIL_MAX_RATIO
+    )
+
+
 def _edge_color_stability_score(metrics: dict[str, float]) -> float:
     """Điểm thấp hơn = shell ổn định hơn; ưu tiên giảm đổi màu từng pixel."""
     transition = max(0.0, float(metrics.get("transition_ratio", 0.0)))
@@ -5737,6 +6637,7 @@ def _build_adaptive_edge_color_source_mask(
     band_px: int,
     peel_px: int,
     max_peel_px: int,
+    max_interpolation_probe_px: int = 0,
     edge_bite_px: int = 0,
     kernel_type: int = cv2.MORPH_ELLIPSE,
     exclude_near_white: bool = True,
@@ -5772,13 +6673,34 @@ def _build_adaptive_edge_color_source_mask(
         background_rgb=background_rgb,
     )
     sparse_bright_fringe = _edge_color_has_sparse_bright_fringe(initial_metrics)
-    background_fringe = _edge_color_has_background_fringe(initial_metrics)
+    background_fringe = (
+        _edge_color_has_background_fringe(initial_metrics)
+        or _edge_color_has_broad_background_fringe(initial_metrics)
+    )
     if not (
         _edge_color_is_unstable(initial_metrics)
         or sparse_bright_fringe
         or background_fringe
     ):
         return initial, initial_peel
+
+    # QUALITY (audit 2026-08-19 §STK.EDGE02): shell tham chiếu phải là HÌNH HỌC
+    # nguyên vẹn, chưa lọc trắng/màu nền. Nếu dùng `initial` đã lọc, một dúm pixel
+    # tối có thể tự tạo chuẩn phủ rất nhỏ rồi thắng điểm và bị kéo quanh cả tem.
+    # Chỉ dựng thêm shell này sau khi initial thật sự cần adaptive để đường ổn
+    # định thông thường không chịu thêm một lượt morphology toàn trang.
+    coverage_reference = _build_edge_color_source_mask(
+        silhouette,
+        img,
+        band_px=band_px,
+        peel_px=initial_peel,
+        edge_bite_px=edge_bite_px,
+        kernel_type=kernel_type,
+        exclude_near_white=False,
+        background_rgb=None,
+        background_tolerance=0,
+    )
+    coverage_reference_count = max(1, int(np.count_nonzero(coverage_reference)))
 
     deepest_peel = max(initial_peel, int(max_peel_px))
     band = max(1, int(band_px))
@@ -5789,6 +6711,17 @@ def _build_adaptive_edge_color_source_mask(
         min(deepest_peel, initial_peel + band),
         deepest_peel,
     })
+    interpolation_probe_px = max(0, int(max_interpolation_probe_px))
+    if background_fringe and interpolation_probe_px > 0:
+        # QUALITY (audit 2026-08-19 §STK.EDGE02): render 300 DPI của ảnh nguồn
+        # 72 DPI có thể đặt lớp màu sạch ngay SAU trần quy đổi vì nội suy + làm
+        # tròn morphology (fixture: peel 29 chỉ có 18,8% coverage, peel 33 mới
+        # chạm đủ vòng đỏ). Chỉ thăm dò thêm tối đa hai bề dày shell khi đã xác
+        # nhận fringe nền; caller chỉ cấp phần dịch do UPSCALE nội suy, mặc định
+        # bằng 0 nên `max_peel_px` vẫn là trần cứng cho ảnh chạy lưới native.
+        # Candidate vẫn phải qua coverage 90%, nên không mở cửa cho vài pixel tối.
+        candidate_peels.append(deepest_peel + interpolation_probe_px)
+        candidate_peels = sorted(set(candidate_peels))
     # Fringe sáng thưa thường chiếm trọn lớp AA đầu tiên. Khi đã nhận ra mẫu này,
     # lùi tối thiểu một bề dày shell để không chọn lại lớp kế cận vẫn còn pha nền.
     minimum_candidate_peel = (
@@ -5848,27 +6781,42 @@ def _build_adaptive_edge_color_source_mask(
             background_rgb=background_rgb,
             background_tolerance=candidate_background_tolerance,
         )
+        source_density = (
+            float(np.count_nonzero(candidate)) / coverage_reference_count
+        )
+        # Chặn speckle thưa trước metrics/distance-map: ngoài đúng hình
+        # học, nhánh lỗi này còn không được tốn thêm một phép quét raster.
+        if source_density < _EDGE_COLOR_MIN_SOURCE_DENSITY_RATIO:
+            continue
         metrics = _edge_color_instability_metrics(
             candidate,
             img,
             background_rgb=background_rgb,
         )
-        background_coverage = (
-            _edge_color_source_coverage_ratio(
-                initial,
-                candidate,
-                candidate_peel,
-            )
-            if background_fringe
-            else 1.0
+        source_coverage = _edge_color_source_coverage_ratio(
+            coverage_reference,
+            candidate,
+            candidate_peel,
         )
+        # Mọi candidate thay thế đều phải phủ gần trọn chu vi. Không chỉ kiểm ở
+        # nhánh `background_released`: candidate dưới 64 mẫu trước đây vẫn được
+        # coi ổn định và có thể thắng chỉ nhờ vài pixel màu đậm cục bộ.
+        # Distance coverage kết hợp với density đã kiểm phía trên chặn
+        # được cả cluster cục bộ lẫn chấm thưa rải đều.
+        if source_coverage < _EDGE_COLOR_BACKGROUND_COVERAGE_RATIO:
+            continue
         background_released = (
             background_fringe
             and metrics.get("background_close_ratio", 0.0)
             <= initial_metrics.get("background_close_ratio", 0.0)
             * _EDGE_COLOR_BACKGROUND_RELEASE_RATIO
-            and background_coverage >= _EDGE_COLOR_BACKGROUND_COVERAGE_RATIO
+            and source_coverage >= _EDGE_COLOR_BACKGROUND_COVERAGE_RATIO
         )
+        if background_released:
+            # Candidate được duyệt theo thứ tự nông→sâu; vòng đầu tiên vừa sạch
+            # nền vừa phủ đủ chu vi là nguồn đúng gần mép nhất. Không tiếp tục
+            # chọc sâu vào màu ruột chỉ để giảm vài phần nghìn điểm stability.
+            return candidate, candidate_peel
         if _edge_color_is_unstable(metrics) and not background_released:
             continue
         depth_penalty = (
@@ -5899,14 +6847,24 @@ def _edge_color_sampling_warning(
     source_mask: np.ndarray,
     img: np.ndarray,
     page_number: int,
+    *,
+    background_rgb: Optional[Tuple[int, int, int]] = None,
 ) -> str | None:
     """Cảnh báo khi nearest có nguy cơ kéo nhiễu mép thành vệt dài."""
-    metrics = _edge_color_instability_metrics(source_mask, img)
-    if _edge_color_is_unstable(metrics):
+    metrics = _edge_color_instability_metrics(
+        source_mask,
+        img,
+        background_rgb=background_rgb,
+    )
+    if (
+        _edge_color_is_unstable(metrics)
+        or _edge_color_has_background_fringe(metrics)
+        or _edge_color_has_broad_background_fringe(metrics)
+    ):
         return (
-            f"Trang {page_number}: màu viền lấy mẫu thay đổi gắt theo từng pixel; "
-            "bù xén có thể xuất hiện vệt. Hãy kiểm tra bản xem trước hoặc chọn "
-            "‘Đổ màu trơn’."
+            f"Trang {page_number}: chưa tìm được dải màu viền sạch phủ đủ quanh "
+            "tem; bù xén có thể còn ám màu nền hoặc xuất hiện vệt. Hãy kiểm tra "
+            "bản xem trước hoặc chọn ‘Đổ màu trơn’."
         )
     return None
 
@@ -6916,8 +7874,8 @@ def _make_srgb_colorspace(pdf: pikepdf.Pdf):
     """
     try:
         from PIL import ImageCms
-        # The legacy asset named sRGB.icc is actually Adobe RGB (1998). Build a
-        # genuine LittleCMS sRGB profile so viewers do not oversaturate the bleed.
+        # Dùng profile sRGB đã kiểm tra danh tính; nếu bundle lỗi thì dựng fallback
+        # bằng LittleCMS thay vì nhúng bytes không đúng vào vùng bleed.
         cms_profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB"))
         profile = pikepdf.Stream(pdf, cms_profile.tobytes())
         profile[pikepdf.Name("/N")] = 3
@@ -7652,6 +8610,7 @@ class StickerEngine:
                     raise ValueError("Selection object không hợp lệ.")
                 selection_targets[page_number] = object_ids
         selection_mode = bool(selection_targets)
+        bleed_color_type = str(bleed_color_type or "image").strip().lower()
         alpha_corner_policy = (
             "adaptive" if alpha_corner_policy == "adaptive" else "legacy"
         )
@@ -7852,7 +8811,7 @@ class StickerEngine:
                 doc_in_pike.close(); doc_in_pike = None
                 # Nhãn đúng bước (trước đây lỗi pool vẫn dính "Open Original PDF@…").
                 debug_step = "Process Parallel Workers"
-                return self._process_parallel(
+                parallel_success, parallel_meta = self._process_parallel(
                     input_path=input_path, output_path=output_path,
                     cut_mode=cut_mode, offset_mm=offset_mm, corner_style=corner_style,
                     cut_color=cut_color, bleed_mm=bleed_mm, fill_holes=fill_holes,
@@ -7873,6 +8832,7 @@ class StickerEngine:
                     alpha_path_overrides=alpha_path_overrides,
                     approved_contour_overrides=approved_contour_overrides,
                 )
+                return parallel_success, parallel_meta
 
             debug_step = "Create Output PDF"
             doc_out = pikepdf.Pdf.new()
@@ -7915,6 +8875,9 @@ class StickerEngine:
 
             for page_idx in _page_list:
                 page_started = time.perf_counter()
+                raster_seconds = 0.0
+                contour_seconds = 0.0
+                selected_peel_px = None
                 gs_seconds = 0.0
                 smooth_seconds = 0.0
                 compress_seconds = 0.0
@@ -7928,10 +8891,20 @@ class StickerEngine:
                 color_bg_detected: BackgroundInfo | None = None
                 # §BG.6b: mask nền trắng do engine tự dựng từ ngưỡng cứng.
                 white_bg_mask_built = False
+                # QUALITY (feedback 2026-08-19 §PAGEBOX-BLEED.1): ghi riêng nhánh
+                # người dùng giữ nền để phần bù xén có thể theo cung CutContour,
+                # không biến mọi mask kín trang khác thành page-box.
+                page_box_mask_built = False
+                page_box_corner_background_rgb = None
+                page_box_corner_background_tolerance = 0
                 approved_contour_source = None
                 approved_alpha_mask = None
                 approved_override_result = None
                 approved_contour_page = False
+                approved_edge_background_rgb = None
+                approved_edge_background_tolerance = 0
+                alpha_edge_background_rgb = None
+                alpha_edge_background_tolerance = 0
                 debug_step = f"Rasterize Page {page_idx}"
                 with pdfium_guard():
                     if page_in is not None:
@@ -7939,6 +8912,14 @@ class StickerEngine:
                     page_in = doc_in_pdfium[page_idx]
                 page_in_pike = doc_in_pike.pages[page_idx]
                 selection_page_mode = page_idx in selection_targets
+                approved_payload = approved_contour_overrides.get(page_idx)
+                alpha_path_payload = alpha_path_overrides.get(page_idx)
+                alpha_background = _approved_edge_background(alpha_path_payload)
+                if alpha_background is not None:
+                    (
+                        alpha_edge_background_rgb,
+                        alpha_edge_background_tolerance,
+                    ) = alpha_background
                 if process_page_indexes is not None and page_idx not in process_page_indexes:
                     doc_out.pages.append(page_in_pike)
                     all_pages_meta.append({
@@ -7965,6 +8946,25 @@ class StickerEngine:
                 # RAM/worker không lệch khỏi kích thước raster thật.
                 MAX_MEGAPIXELS = _STICKER_MAX_MEGAPIXELS
                 base_scale = self.dpi / 72.0
+                # PERF (audit 2026-08-19 §STK.MEM01): suy lưới ảnh NGUỒN trước
+                # khi chọn scale. Trang một ảnh phủ kín không được nội suy 72 DPI
+                # lên 300 DPI chỉ để marching-squares cấp một mảng float64 214 MiB.
+                try:
+                    source_pixel_mm_page = _infer_full_page_image_pixel_mm(
+                        page_in_pike
+                    )
+                except Exception:
+                    source_pixel_mm_page = None
+                approved_boundary_source = (
+                    str(approved_payload.get("boundary_source") or "").lower()
+                    if isinstance(approved_payload, dict)
+                    else ""
+                )
+                source_scale_limit = (
+                    _source_raster_scale_limit(source_pixel_mm_page)
+                    if approved_boundary_source in {"ai", "simple-bg"}
+                    else None
+                )
                 try:
                     with pdfium_guard():
                         pw_pt, ph_pt = page_in.get_size()
@@ -7979,21 +8979,21 @@ class StickerEngine:
                     mp = est_w * est_h
                     if mp > MAX_MEGAPIXELS:
                         shrink = min(shrink, (MAX_MEGAPIXELS / mp) ** 0.5)
-                self.scale = base_scale * shrink
+                resource_limited_scale = base_scale * shrink
+                source_grid_limited = bool(
+                    source_scale_limit is not None
+                    and source_scale_limit < resource_limited_scale - 1e-9
+                )
+                self.scale = (
+                    min(resource_limited_scale, source_scale_limit)
+                    if source_scale_limit is not None
+                    else resource_limited_scale
+                )
                 # px/mm THỰC TẾ của raster: self.scale là px/point (đã gồm shrink khi trang
                 # bị DPI-cap), nên px/mm = scale × 72/25.4. MỌI morphology bù xén PHẢI dùng
                 # số này, KHÔNG dùng self.dpi/25.4 (bỏ qua shrink → phóng đại 1/shrink lần khi
                 # trang lớn: hút màu quá sâu, đóng lỗ/lẹm mép quá tay, lệch bleed_mask).
                 px_per_mm = self.scale * 72.0 / 25.4
-                # QUALITY (audit 2026-08-07 §NOODLE.1): kích thước pixel ẢNH NGUỒN
-                # trên trang này (mm/pixel). Ảnh raster đặt lên tem lớn bị phóng to
-                # nhiều lần, mỗi bậc pixel của biên ảnh trở thành một gợn cỡ mm trên
-                # đường cắt — làm mượt theo hằng số 1 mm không xoá nổi gợn đó nữa.
-                # None khi trang không phải "một ảnh phủ kín" (vector/nhiều đối tượng).
-                try:
-                    source_pixel_mm_page = _infer_full_page_image_pixel_mm(page_in_pike)
-                except Exception:
-                    source_pixel_mm_page = None
                 if shrink < 1.0:
                     # PERF (audit 2026-08-16 §BX.P05): trước đây chỉ log khi self.debug,
                     # nên trên bản phát hành không ai biết tờ lớn đang bị hạ về ~95–152 DPI.
@@ -8003,7 +9003,19 @@ class StickerEngine:
                         page_idx + 1, float(self.dpi), self.dpi * shrink,
                         base_scale, self.scale, pw_pt, ph_pt,
                     )
+                if source_grid_limited:
+                    logger.info(
+                        "[STICKER] source-grid page %d: %.0f→%.0f DPI "
+                        "(scale %.4f→%.4f, source_pixel_mm=%.6f)",
+                        page_idx + 1,
+                        resource_limited_scale * 72.0,
+                        self.scale * 72.0,
+                        resource_limited_scale,
+                        self.scale,
+                        source_pixel_mm_page,
+                    )
 
+                raster_started = time.perf_counter()
                 if use_vector_rectangle_bleed:
                     # Geometry is the page rectangle and bleed is drawn from the
                     # source Form XObject. No raster is needed for detection/color.
@@ -8057,7 +9069,7 @@ class StickerEngine:
                             and img[:, :, 3].min() < 255
                             and img[:, :, 3].max() > 10
                         )
-                approved_payload = approved_contour_overrides.get(page_idx)
+                raster_seconds = time.perf_counter() - raster_started
                 if approved_payload is not None:
                     approved = _approved_contour_override(
                         approved_payload,
@@ -8073,6 +9085,14 @@ class StickerEngine:
                         approved_contour_source,
                         approved_override_result,
                     ) = approved
+                    approved_background = _approved_edge_background(
+                        approved_payload
+                    )
+                    if approved_background is not None:
+                        (
+                            approved_edge_background_rgb,
+                            approved_edge_background_tolerance,
+                        ) = approved_background
                     approved_contour_page = True
                 if page_idx == 0 and self.debug:
                     logger.warning(">>> PARAMS: cut_mode=%s offset_mm=%.2f bleed_mm=%.2f corner_style=%s remove_white_bg=%s bleed_color_type=%s fill_holes=%s", cut_mode, offset_mm, bleed_mm, corner_style, remove_white_bg, bleed_color_type, fill_holes)
@@ -8204,6 +9224,7 @@ class StickerEngine:
                                     white_bg_detect_failed = True
                         else:
                             base_mask = np.ones(img.shape[:2], dtype=np.uint8) * 255
+                            page_box_mask_built = True
 
                     if alpha_source_contour or approved_contour_page:
                         # ALPHA (audit 2026-08-01 §A.3): lấy biên tại khoảng 25% độ đục.
@@ -8312,7 +9333,9 @@ class StickerEngine:
 
                     debug_step = f"Find Contours Page {page_idx}"
                     from skimage import measure
+                    contour_started = time.perf_counter()
                     contours = measure.find_contours(aa_mask_padded, 127.5)
+                    contour_seconds = time.perf_counter() - contour_started
                 
                 # Hình học phải theo CROPBOX, KHÔNG phải MediaBox: pdfium render và
                 # page.as_form_xobject() đều dùng CropBox (đã verify). Khi file có
@@ -8381,6 +9404,7 @@ class StickerEngine:
                 cut_poly = None
                 bleed_outer_poly = None
                 artwork_footprint_poly = None
+                page_box_round_footprint_poly = None
                 dieline_polygons = []
                 total_offset = 0
                 bleed_outer_offset = 0
@@ -8666,6 +9690,72 @@ class StickerEngine:
                             elif bleed_outer_poly.geom_type == 'Polygon':
                                 bleed_outer_poly = Polygon(bleed_outer_poly.exterior)
 
+                        direct_analytic_fillet = None
+                        if (
+                            not alpha_source_contour
+                            and not approved_contour_page
+                            and cut_mode != "none"
+                            and corner_style == "round"
+                        ):
+                            direct_source_pixel_mm = source_pixel_mm_page
+                            if (
+                                direct_source_pixel_mm is None
+                                or not math.isfinite(float(direct_source_pixel_mm))
+                                or float(direct_source_pixel_mm) <= 0.0
+                            ):
+                                direct_source_pixel_mm = 1.0 / max(px_per_mm, 1e-9)
+                            direct_analytic_fillet = _fit_standard_polygon_fillet(
+                                base_dieline,
+                                total_offset_pts=total_offset,
+                                source_pixel_mm=float(direct_source_pixel_mm),
+                                curve_tension=curve_tension,
+                            )
+                            if direct_analytic_fillet is not None:
+                                (
+                                    direct_fitted_geometry,
+                                    direct_fitted_paths,
+                                    _direct_fit_tolerance_mm,
+                                ) = direct_analytic_fillet
+                                direct_quality = _alpha_final_cutline_quality(
+                                    direct_fitted_paths,
+                                    reference_geometry=dieline_poly,
+                                    fitted_geometry=direct_fitted_geometry,
+                                    alpha_geometry=base_dieline,
+                                    total_offset_pts=total_offset,
+                                    mm_to_pts=mm_to_pts,
+                                    source_pixel_mm=float(direct_source_pixel_mm),
+                                    fit_mode="analytic-fillet",
+                                )
+                                if not bool(direct_quality.get("machine_safe")):
+                                    raise UnsafeCutlineGeometryError(
+                                        "Đường bo góc hình chuẩn chưa an toàn "
+                                        f"({int(direct_quality.get('short_segment_count', 0))} "
+                                        "đoạn thẳng ngắn, "
+                                        f"{int(direct_quality.get('disconnected_join_count', 0))} "
+                                        "khớp hở, "
+                                        f"{int(direct_quality.get('unprotected_join_count', 0))} "
+                                        "khớp gãy).",
+                                        quality=direct_quality,
+                                    )
+                                if page_box_mask_built:
+                                    # QUALITY (feedback 2026-08-19 §PAGEBOX-BLEED.1):
+                                    # CutContour page-box đã bo nhưng footprint màu vẫn
+                                    # là hình vuông làm góc trắng của artwork nằm ngoài
+                                    # cung dao không được lớp bleed phủ. Dựng thêm fillet
+                                    # tại offset 0 làm biên clip/lấy màu; đường dao có
+                                    # offset vẫn dùng candidate riêng ở trên.
+                                    source_fillet = _fit_standard_polygon_fillet(
+                                        base_dieline,
+                                        total_offset_pts=0.0,
+                                        source_pixel_mm=float(direct_source_pixel_mm),
+                                        curve_tension=curve_tension,
+                                    )
+                                    if source_fillet is not None:
+                                        page_box_round_footprint_poly = source_fillet[0]
+                                        artwork_footprint_poly = (
+                                            page_box_round_footprint_poly
+                                        )
+
                         override_result = (
                             approved_override_result
                             if approved_contour_page
@@ -8724,6 +9814,16 @@ class StickerEngine:
                                 if alpha_bezier_tension is not None:
                                     cut_draw_style = "alpha_smooth"
                                     cut_draw_tension = alpha_bezier_tension
+                        elif direct_analytic_fillet is not None:
+                            # QUALITY (feedback 2026-08-19 §CUTROUND.5): luồng
+                            # PDF thường phải dùng cùng fillet G1 như workspace AI;
+                            # trước đây rect/triangle bị ép miter sau reconstruct.
+                            (
+                                cut_poly,
+                                cut_fitted_paths,
+                                _fit_tolerance_mm,
+                            ) = direct_analytic_fillet
+                            dieline_poly = cut_poly
                         elif (
                             recon_meta.get("reconstructed")
                             and recon_meta.get("fully_reconstructed", True)
@@ -8864,6 +9964,64 @@ class StickerEngine:
                         # Original (unsmoothed) mask for bleed_ring inner boundary
                         # Prevents bleed from entering artwork at smoothing-shrunken edges
                         padded_original_mask = np.pad(mask, pad_width=(pad_rows, pad_cols), mode='constant', constant_values=0)
+                        if page_box_round_footprint_poly is not None:
+                            page_box_corner_source = (
+                                _page_box_corner_foreground_for_bleed(
+                                    img_native,
+                                    px_per_mm,
+                                )
+                            )
+                            if page_box_corner_source is not None:
+                                (
+                                    corner_foreground,
+                                    page_box_corner_background_rgb,
+                                    page_box_corner_background_tolerance,
+                                ) = page_box_corner_source
+                                padded_original_mask = np.pad(
+                                    corner_foreground,
+                                    pad_width=(pad_rows, pad_cols),
+                                    mode="constant",
+                                    constant_values=0,
+                                )
+                                # Footprint thật của tem bo sẵn phải thắng fillet
+                                # page-box: vùng giữa hai cung chính là phần cần bù màu.
+                                artwork_footprint_poly = None
+                            else:
+                                # Cùng hệ toạ độ với `_rasterize_poly` phía dưới. Khi
+                                # không chứng minh được tem đã bo sẵn, giữ fillet do
+                                # người dùng chọn làm silhouette lấy màu/clip artwork.
+                                padded_original_mask.fill(0)
+
+                                def _rasterize_page_box_round(poly_geom):
+                                    if isinstance(poly_geom, MultiPolygon):
+                                        for part in poly_geom.geoms:
+                                            _rasterize_page_box_round(part)
+                                        return
+                                    exterior = np.asarray(poly_geom.exterior.coords)
+                                    exterior_px = np.column_stack([
+                                        exterior[:, 0] * self.scale + pad_left,
+                                        exterior[:, 1] * self.scale + pad_top,
+                                    ]).astype(np.int32)
+                                    cv2.fillPoly(
+                                        padded_original_mask,
+                                        [exterior_px],
+                                        255,
+                                    )
+                                    for interior in poly_geom.interiors:
+                                        interior_coords = np.asarray(interior.coords)
+                                        interior_px = np.column_stack([
+                                            interior_coords[:, 0] * self.scale + pad_left,
+                                            interior_coords[:, 1] * self.scale + pad_top,
+                                        ]).astype(np.int32)
+                                        cv2.fillPoly(
+                                            padded_original_mask,
+                                            [interior_px],
+                                            0,
+                                        )
+
+                                _rasterize_page_box_round(
+                                    page_box_round_footprint_poly,
+                                )
                         
                         _, raw_mask_bin = cv2.threshold(raw_mask, 10, 255, cv2.THRESH_BINARY)
                         padded_raw_mask = np.pad(raw_mask_bin, pad_width=(pad_rows, pad_cols), mode='constant', constant_values=0)
@@ -8887,6 +10045,27 @@ class StickerEngine:
                         edge_bg_rgb = None
                         edge_bg_tolerance = 0
                         if (
+                            approved_contour_page
+                            and approved_edge_background_rgb is not None
+                        ):
+                            # QUALITY (audit 2026-08-19 §STK.EDGE01): approved
+                            # contour đã bỏ qua nhánh tự dựng white/color mask,
+                            # nên phải lấy lại ngữ cảnh nền scalar từ artifact.
+                            edge_bg_rgb = approved_edge_background_rgb
+                            edge_bg_tolerance = (
+                                approved_edge_background_tolerance
+                            )
+                        elif (
+                            alpha_source_contour
+                            and alpha_edge_background_rgb is not None
+                        ):
+                            # QUALITY (feedback 2026-08-19 §STK.MULTI-EDGE01):
+                            # PDF Alpha của chế độ nhiều tem đã xóa nền trước khi
+                            # vào engine; lấy lại scalar do exporter đo trên RGB
+                            # nguyên tấm để không hút halo JPEG vào màu bù xén.
+                            edge_bg_rgb = alpha_edge_background_rgb
+                            edge_bg_tolerance = alpha_edge_background_tolerance
+                        elif (
                             color_bg_detected is not None
                             and color_bg_detected.is_flat
                             and not color_bg_detected.is_near_white
@@ -8896,12 +10075,26 @@ class StickerEngine:
                                 color_bg_detected.tolerance
                                 + _EDGE_BG_TOLERANCE_PADDING
                             )
+                        elif page_box_corner_background_rgb is not None:
+                            # §PAGEBOX-BLEED.2: chỉ dùng nền góc làm ngữ cảnh lọc
+                            # màu; tuỳ chọn giữ nền và hình học page-box không đổi.
+                            edge_bg_rgb = page_box_corner_background_rgb
+                            edge_bg_tolerance = (
+                                page_box_corner_background_tolerance
+                            )
                         elif remove_white_bg and white_bg_mask_built:
                             # Nền trắng đã được xác nhận bởi connected-component ở
                             # mép trang. Truyền làm màu tham chiếu để adaptive nhận ra
                             # cả dải JPEG hồng/trắng đều, không chỉ pixel gần #FFFFFF.
                             edge_bg_rgb = (255, 255, 255)
                             edge_bg_tolerance = 1
+                        # QUALITY (feedback 2026-08-19 §STK.WHITE-EDGE01): màu
+                        # trắng chỉ được loại khỏi shell khi đã có bằng chứng đó
+                        # là nền ngoài. Nếu người dùng giữ nền và không dò được
+                        # ``edge_bg_rgb``, trắng là màu artwork hợp lệ. Lọc trắng
+                        # vô điều kiện từng xóa 73% shell thật, rồi nearest-fill
+                        # phóng vài pixel AA xanh-xám ra toàn vùng bù xén.
+                        exclude_edge_background = edge_bg_rgb is not None
                         if bleed_color_type in ("image", "trajectory") and not rectangle_mode:
                             adaptive_max_mm = _edge_color_adaptive_max_mm(
                                 source_pixel_mm_page
@@ -8910,6 +10103,20 @@ class StickerEngine:
                                 peel_px,
                                 int(round(adaptive_max_mm * px_per_mm)),
                             )
+                            # Ảnh nguồn thấp DPI được PDFium nội suy lên lưới render;
+                            # biên màu sạch có thể trễ tối đa gần một pixel NGUỒN so
+                            # với trần peel sau làm tròn. Chỉ cho phép probe phần lệch
+                            # nội suy này; ảnh chạy đúng lưới native nhận 0 và không
+                            # bao giờ vượt hợp đồng max_adaptive_peel_px.
+                            source_to_render = (
+                                source_pixel_mm_page * px_per_mm
+                                if source_pixel_mm_page is not None
+                                else 1.0
+                            )
+                            interpolation_probe_px = min(
+                                edge_band_px * 2,
+                                max(0, int(math.ceil(source_to_render - 1.0))),
+                            )
                             color_source_mask, selected_peel_px = (
                                 _build_adaptive_edge_color_source_mask(
                                     padded_original_mask,
@@ -8917,9 +10124,12 @@ class StickerEngine:
                                     band_px=edge_band_px,
                                     peel_px=peel_px,
                                     max_peel_px=max_adaptive_peel_px,
+                                    max_interpolation_probe_px=(
+                                        interpolation_probe_px
+                                    ),
                                     edge_bite_px=edge_color_inset_px,
                                     kernel_type=kernel_type,
-                                    exclude_near_white=True,
+                                    exclude_near_white=exclude_edge_background,
                                     background_rgb=edge_bg_rgb,
                                     background_tolerance=edge_bg_tolerance,
                                 )
@@ -8932,7 +10142,9 @@ class StickerEngine:
                                 peel_px=peel_px,
                                 edge_bite_px=edge_color_inset_px,
                                 kernel_type=kernel_type,
-                                exclude_near_white=not rectangle_mode,
+                                exclude_near_white=(
+                                    not rectangle_mode and exclude_edge_background
+                                ),
                                 background_rgb=(
                                     None if rectangle_mode else edge_bg_rgb
                                 ),
@@ -8947,6 +10159,7 @@ class StickerEngine:
                                 color_source_mask,
                                 padded_img,
                                 page_idx + 1,
+                                background_rgb=edge_bg_rgb,
                             )
                         # Giữ tên inset_px cho log/công thức band cũ (tương đương depth nguồn).
                         inset_px = max(1, source_depth_px)
@@ -9204,12 +10417,40 @@ class StickerEngine:
                             )
                             rect_core_source = padded_img[y0:y1, x0:x1]
                             rect_core_mask = padded_original_mask[y0:y1, x0:x1]
-                            # Lấp góc trong suốt trước khi ngoại suy quỹ đạo;
-                            # pixel artwork thật vẫn giữ nguyên từng byte.
-                            rect_core = _nearest_color_fill(
-                                rect_core_mask,
-                                rect_core_source,
-                            )
+                            # Lấp góc trong suốt trước khi ngoại suy quỹ đạo. Mask
+                            # hình học thô có thể chứa pixel AA pha nền ở cung bo;
+                            # nếu dùng nó làm nguồn nearest, một dúm pixel xám bị
+                            # phóng thành cả nêm màu ở bốn góc. Dùng shell màu sạch
+                            # đã qua adaptive sampling để tạo ảnh lấp, nhưng giữ
+                            # nguyên nội dung lõi bên trong vùng co an toàn.
+                            clean_rect_mask = color_source_mask[y0:y1, x0:x1]
+                            if np.count_nonzero(clean_rect_mask) > 0:
+                                clean_rect_fill = _nearest_color_fill(
+                                    clean_rect_mask,
+                                    rect_core_source,
+                                )
+                                safe_inset_px = max(
+                                    1,
+                                    int(edge_color_inset_px + selected_peel_px),
+                                )
+                                safe_kernel = cv2.getStructuringElement(
+                                    cv2.MORPH_ELLIPSE,
+                                    (safe_inset_px * 2 + 1, safe_inset_px * 2 + 1),
+                                )
+                                trusted_core = cv2.erode(
+                                    rect_core_mask,
+                                    safe_kernel,
+                                )
+                                rect_core = rect_core_source.copy()
+                                replace = trusted_core == 0
+                                rect_core[replace] = clean_rect_fill[replace]
+                            else:
+                                # Fallback giữ hành vi cũ cho artwork quá mảnh,
+                                # nơi shell màu sạch không còn điểm hợp lệ.
+                                rect_core = _nearest_color_fill(
+                                    rect_core_mask,
+                                    rect_core_source,
+                                )
                             # Pad đúng phạm vi bleed cục bộ, không kéo màu qua cả tờ PDF.
                             rect_fill = _rectangle_trajectory_color_fill(
                                 rect_core,
@@ -9786,6 +11027,22 @@ class StickerEngine:
                         color_bg_detected.confidence, 2
                     )
                     page_meta["background_is_flat"] = color_bg_detected.is_flat
+                page_meta["render_dpi"] = round(self.scale * 72.0, 2)
+                page_meta["raster_width_px"] = int(img.shape[1])
+                page_meta["raster_height_px"] = int(img.shape[0])
+                page_meta["raster_seconds"] = round(raster_seconds, 4)
+                page_meta["find_contours_seconds"] = round(contour_seconds, 4)
+                if selected_peel_px is not None:
+                    page_meta["edge_sample_peel_px"] = int(selected_peel_px)
+                resolved_edge_background_rgb = (
+                    approved_edge_background_rgb
+                    if approved_edge_background_rgb is not None
+                    else alpha_edge_background_rgb
+                )
+                if resolved_edge_background_rgb is not None:
+                    page_meta["edge_background_rgb"] = list(
+                        resolved_edge_background_rgb
+                    )
                 page_warning = " ".join(
                     warning for warning in (
                         alpha_contour_warning, white_bg_warning,
@@ -9797,6 +11054,22 @@ class StickerEngine:
                     page_meta["bleed_warning"] = page_warning
                 
                 all_pages_meta.append(page_meta)
+                logger.info(
+                    "[STICKER_STAGE] page=%d boundary=%s raster_px=%dx%d "
+                    "render_dpi=%.2f render_s=%.3f contour_s=%.3f total_s=%.3f",
+                    page_idx + 1,
+                    (
+                        approved_contour_source
+                        if approved_contour_page
+                        else ("alpha" if alpha_source_contour else "auto")
+                    ),
+                    int(img.shape[1]),
+                    int(img.shape[0]),
+                    self.scale * 72.0,
+                    raster_seconds,
+                    contour_seconds,
+                    time.perf_counter() - page_started,
+                )
                 if rectangle_mode and bleed_color_type in ("inpaint", "trajectory"):
                     logger.info(
                         "[STICKER_TIMING] page=%d gs_s=%.3f smooth_s=%.3f "
@@ -9835,6 +11108,12 @@ class StickerEngine:
             if not final_meta and len(all_pages_meta) > 0 and all_pages_meta[0]:
                 final_meta = all_pages_meta[0].copy()
             final_meta["pages"] = all_pages_meta
+            if rectangle_mode:
+                # QUALITY (feedback 2026-08-19 §BLEED-COLOR.2): Xén vuông góc
+                # phải báo đúng mode đã chạy; không được âm thầm đổi lựa chọn của
+                # người dùng chỉ vì artwork chứa CMYK/spot/DeviceN.
+                final_meta["bleed_color_mode_requested"] = bleed_color_type
+                final_meta["bleed_color_mode_applied"] = bleed_color_type
             if selection_mode:
                 final_meta["selection_count"] = sum(
                     len(object_ids) for object_ids in selection_targets.values()
@@ -9855,7 +11134,6 @@ class StickerEngine:
             combined_warning = _compose_sticker_warning(all_pages_meta, pages_no_dieline)
             if combined_warning:
                 final_meta["warning"] = combined_warning
-
             return True, final_meta
             
         except Exception as e:
@@ -10254,6 +11532,9 @@ class StickerEngine:
         if len(all_pages_meta) > 0 and all_pages_meta[0]:
             final_meta = all_pages_meta[0].copy()
         final_meta["pages"] = all_pages_meta
+        if kw.get("rectangle_mode"):
+            final_meta["bleed_color_mode_requested"] = kw.get("bleed_color_type")
+            final_meta["bleed_color_mode_applied"] = kw.get("bleed_color_type")
 
         if cut_mode != "none" and not any_dieline_found:
             try:
