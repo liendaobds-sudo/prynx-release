@@ -120,27 +120,20 @@ $btnPublish.BackColor = [System.Drawing.Color]::FromArgb(79, 70, 229); $btnPubli
 $btnPublish.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 $form.Controls.Add($btnPublish)
 
-# ---- Lua chon tai dung QA PDF cho PHAT HANH ----
-$chkReuseNoGs = New-Object System.Windows.Forms.CheckBox
-$chkReuseNoGs.Text = "Dùng lại kiểm tra PDF 18×16 đã đạt (chỉ khi dấu vân tay còn khớp)"
-$chkReuseNoGs.Location = New-Object System.Drawing.Point(15, 310)
-$chkReuseNoGs.Width = 595
-$chkReuseNoGs.Checked = $false
-$form.Controls.Add($chkReuseNoGs)
-
 # ---- Trạng thái build nền ----
-$lblRunState = New-Label "Trạng thái: Sẵn sàng" 15 340 410
+# UIUX (audit 2026-08-21 §NGS.2): lấp khoảng trống của checkbox corpus đã bỏ.
+$lblRunState = New-Label "Trạng thái: Sẵn sàng" 15 316 410
 $lblRunState.ForeColor = [System.Drawing.Color]::FromArgb(55, 65, 81)
 
 $btnOpenLog = New-Object System.Windows.Forms.Button
 $btnOpenLog.Text = "Mở log"
-$btnOpenLog.Location = New-Object System.Drawing.Point(455, 334); $btnOpenLog.Width = 155
+$btnOpenLog.Location = New-Object System.Drawing.Point(455, 310); $btnOpenLog.Width = 155
 $btnOpenLog.Enabled = $false
 $form.Controls.Add($btnOpenLog)
 
 # ---- Log ----
 $txtLog = New-Object System.Windows.Forms.TextBox
-$txtLog.Location = New-Object System.Drawing.Point(15, 372); $txtLog.Width = 595; $txtLog.Height = 236
+$txtLog.Location = New-Object System.Drawing.Point(15, 348); $txtLog.Width = 595; $txtLog.Height = 260
 $txtLog.Multiline = $true; $txtLog.ScrollBars = "Vertical"; $txtLog.ReadOnly = $true
 $txtLog.BackColor = [System.Drawing.Color]::FromArgb(24, 24, 27); $txtLog.ForeColor = [System.Drawing.Color]::White
 $txtLog.Font = New-Object System.Drawing.Font("Consolas", 9)
@@ -180,7 +173,6 @@ function Test-ProcessAlive($processId) {
 function Set-BuildControlsEnabled([bool]$enabled) {
     $btnLocal.Enabled = $enabled
     $btnPublish.Enabled = $enabled
-    $chkReuseNoGs.Enabled = $enabled
 }
 
 function Refresh-ReleaseRunStatus {
@@ -294,7 +286,6 @@ function Start-ReleaseController {
         [Parameter(Mandatory = $true)][ValidateSet("internal", "publish")][string]$Mode,
         [string]$Version = "",
         [string]$Notes = "",
-        [switch]$ReusePassedNoGs,
         [string]$SigningPassword = ""
     )
 
@@ -319,7 +310,6 @@ function Start-ReleaseController {
         if ($Mode -eq "publish") {
             $notesBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Notes))
             $args += @("-Version", $Version, "-NotesBase64", $notesBase64)
-            if ($ReusePassedNoGs) { $args += "-ReusePassedNoGs" }
             $passwordPackage = New-SigningPasswordPackage $SigningPassword
             if (-not [string]::IsNullOrWhiteSpace($passwordPackage)) {
                 $args += @("-SigningPasswordPath", $passwordPackage)
@@ -451,7 +441,7 @@ $btnPublish.Add_Click({
     if ($ok -ne [System.Windows.Forms.DialogResult]::Yes) { return }
     if (-not (Test-ReleaseSecretStoreReady)) { return }
     [void](Start-ReleaseController -Mode publish -Version $version -Notes $txtNotes.Text `
-        -ReusePassedNoGs:$chkReuseNoGs.Checked -SigningPassword $txtPwd.Text)
+        -SigningPassword $txtPwd.Text)
     $txtPwd.Clear()
 })
 

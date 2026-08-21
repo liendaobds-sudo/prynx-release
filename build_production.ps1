@@ -12,10 +12,9 @@
 #    .\build_production.ps1 -NuitkaJobs 4    # Limit parallel MSVC jobs (default: 4)
 #    .\build_production.ps1 -Release         # Build updater artifacts (needs signing key)
 #    .\build_production.ps1 -SkipPreflightQA # Emergency build without automated QA
-#    .\build_production.ps1 -RunNoGsAudit     # Run the optional no-GS 18x16 audit
 #    .\build_production.ps1 -NoOpenExplorer  # Do not open Explorer after build
 #    .\build_production.ps1 -Version 1.0.0-beta.13  # Bump version before build
-#    Ghostscript is never bundled; dev/test/release share one no-GS contract.
+#    Ghostscript is never bundled; dev/test/release share one PPE-only contract.
 #
 # ============================================================
 
@@ -26,8 +25,6 @@ param(
     [switch]$Release,
     [switch]$AllowPlaintextDieline,
     [switch]$SkipPreflightQA,
-    [switch]$RunNoGsAudit,
-    [switch]$ReusePassedNoGs,
     [switch]$NoOpenExplorer,
     [ValidateRange(1, 8)]
     [int]$NuitkaJobs = 4,
@@ -68,7 +65,6 @@ foreach ($environmentName in @(
     "VIRTUAL_ENV",
     "PYTHONPATH",
     "PRYNX_RELEASE_NATIVE_SITE",
-    "PRYNX_NO_GS_AUDIT_OUT",
     "PRYNX_BUILD_SOURCE_REVISION",
     "PRYNX_BUILD_SOURCE_DIRTY",
     "PRYNX_BUILD_TIMESTAMP_UTC",
@@ -108,9 +104,6 @@ if ($SkipNuitka) {
 }
 if ($Release -and $SkipPreflightQA) {
     throw "Release build refuses -SkipPreflightQA: security regression tests are mandatory."
-}
-if ($ReusePassedNoGs -and -not $Release) {
-    throw "-ReusePassedNoGs chi duoc dung cho luong phat hanh."
 }
 if ($Release -and ($SkipTauri -or $NuitkaOnly)) {
     throw "Release build must create and verify a fresh installer; -SkipTauri/-NuitkaOnly are not allowed."
@@ -399,15 +392,6 @@ $env:VITE_LOGO_REBUILD_ENABLED = "false"
 $env:PRYNX_LOGO_REBUILD_ENABLED = "false"
 Write-Host "  Logo Rebuild release gate: HOLD (frontend + backend)" -ForegroundColor Yellow
 
-# BUILD (2026-08-17): corpus no-GS 18 x 16 la audit chuyen sau theo yeu cau,
-# khong chay mac dinh trong moi build. Giu -ReusePassedNoGs tu GUI/CLI cu nghia
-# la nguoi dung muon chay audit nay va cho phep dung lai cache fingerprint hop le.
-if ($ReusePassedNoGs -and -not $RunNoGsAudit) {
-    $RunNoGsAudit = $true
-    Write-Host "  No-GS corpus audit: ENABLED because -ReusePassedNoGs was requested." -ForegroundColor Yellow
-}
-
-
 # ---- Step 0: Full release QA gate -----------------------------------------
 # The gate is executed after the native wheel is staged below. Running it here
 # would validate whatever .pyd happens to be installed in the mutable dev venv.
@@ -416,17 +400,7 @@ if (-not $SkipPreflightQA) {
         # Internal convenience path only: no new wheel exists, so retain the old
         # behavior and test the active dev runtime instead of silently skipping QA.
         Write-Host "[0/5] Running internal QA against the active dev native runtime..." -ForegroundColor Yellow
-        if ($RunNoGsAudit) {
-            if ($ReusePassedNoGs) {
-                & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-                    -File "$ROOT\scripts\run_release_qa.ps1" -RunNoGsAudit -ReusePassedNoGs
-            } else {
-                & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-                    -File "$ROOT\scripts\run_release_qa.ps1" -RunNoGsAudit
-            }
-        } else {
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ROOT\scripts\run_release_qa.ps1"
-        }
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ROOT\scripts\run_release_qa.ps1"
         if ($LASTEXITCODE -ne 0) {
             throw "Internal regression gate failed while -SkipNuitka was active."
         }
@@ -1016,41 +990,26 @@ if (-not $SkipNuitka) {
     if (-not $SkipPreflightQA) {
         # BUILD (audit 2026-08-03 REL.09): PYTHONPATH already points at the wheel
         # built above. The child gate also proves pdfcompare_native resolves under
-        # this exact staging directory before it runs backend/no-GS coverage.
+        # this exact staging directory before it runs backend regression coverage.
         Write-Host "[0/5] Running full release QA against the staged native wheel..." -ForegroundColor Yellow
         $nativePydCandidates = @(Get-ChildItem -LiteralPath "$nativeSiteDir\pdfcompare_native" `
             -Filter "*.pyd" -File -ErrorAction SilentlyContinue)
         if ($nativePydCandidates.Count -ne 1) {
             throw "Expected exactly one staged pdfcompare_native .pyd; found $($nativePydCandidates.Count)."
         }
-        $nativeQaId = (Get-FileHash -LiteralPath $nativePydCandidates[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant().Substring(0, 16)
-        $buildNoGsAuditOut = Join-Path $ROOT "tmp\release_no_gs_audit-native-$nativeQaId.json"
         $previousReleaseNativeSite = $env:PRYNX_RELEASE_NATIVE_SITE
-        $previousNoGsAuditOut = $env:PRYNX_NO_GS_AUDIT_OUT
         $env:PRYNX_RELEASE_NATIVE_SITE = $nativeSiteDir
-        $env:PRYNX_NO_GS_AUDIT_OUT = $buildNoGsAuditOut
         try {
-            if ($RunNoGsAudit -and $ReusePassedNoGs) {
-                & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-                    -File "$ROOT\scripts\run_release_qa.ps1" -RunNoGsAudit -ReusePassedNoGs
-            } elseif ($RunNoGsAudit) {
-                & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-                    -File "$ROOT\scripts\run_release_qa.ps1" -RunNoGsAudit
-            } else {
-                & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-                    -File "$ROOT\scripts\run_release_qa.ps1"
-            }
+            # BUILD (audit 2026-08-21 §NGS.1/3): release QA chi con mot duong
+            # xac dinh tren wheel staged; corpus audit va artifact rieng da bi loai bo.
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+                -File "$ROOT\scripts\run_release_qa.ps1"
             $releaseQaExit = $LASTEXITCODE
         } finally {
             if ($null -eq $previousReleaseNativeSite) {
                 Remove-Item Env:PRYNX_RELEASE_NATIVE_SITE -ErrorAction SilentlyContinue
             } else {
                 $env:PRYNX_RELEASE_NATIVE_SITE = $previousReleaseNativeSite
-            }
-            if ($null -eq $previousNoGsAuditOut) {
-                Remove-Item Env:PRYNX_NO_GS_AUDIT_OUT -ErrorAction SilentlyContinue
-            } else {
-                $env:PRYNX_NO_GS_AUDIT_OUT = $previousNoGsAuditOut
             }
         }
         if ($releaseQaExit -ne 0) {

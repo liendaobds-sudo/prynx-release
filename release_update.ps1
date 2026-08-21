@@ -14,7 +14,6 @@ param(
     [string]$ReleaseRepo = "",                            # (TUY CHON) override; mac dinh SUY TU endpoint updater. Neu dat ma KHAC endpoint -> dung.
     [string]$KeyPassword = "",                            # mat khau cua ~/.tauri/prynx.key (de trong neu khong dat)
     [string]$Notes = "",
-    [switch]$ReusePassedNoGs,                              # tai dung PDF 18x16 neu fingerprint backend/native van khop
     [switch]$SkipPreflightQA                              # KHAN CAP: bo qua pytest Preflight truoc build
 )
 $ErrorActionPreference = "Stop"
@@ -424,7 +423,6 @@ Write-Host "  [OK] Da tim thay file khoa ky updater." -ForegroundColor Green
 # -> $null ep int = 0 -> ValidateRange(1,8) tu choi -> build chet truoc khi chay.
 $buildArgs = @{ Release = $true }
 if ($SkipPreflightQA) { $buildArgs.SkipPreflightQA = $true }
-if ($ReusePassedNoGs) { $buildArgs.ReusePassedNoGs = $true }
 $buildExit = $null
 try {
     # Chỉ truyền đường dẫn không bí mật. build_production chụp/xóa ngay đầu,

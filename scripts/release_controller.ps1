@@ -7,7 +7,6 @@ param(
     [string]$Mode,
     [string]$Version = "",
     [string]$NotesBase64 = "",
-    [switch]$ReusePassedNoGs,
     [string]$StateRoot = "",
     [string]$SigningPasswordPath = "",
     # Chỉ phục vụ regression test controller; GUI không truyền tham số này.
@@ -284,7 +283,6 @@ try {
         } else {
             [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($NotesBase64))
         }
-        if ($ReusePassedNoGs) { $invokeParameters.ReusePassedNoGs = $true }
     }
     $invokeParametersBase64 = [Convert]::ToBase64String(
         [Text.Encoding]::UTF8.GetBytes([string]($invokeParameters | ConvertTo-Json -Compress))

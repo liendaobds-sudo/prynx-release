@@ -31,7 +31,6 @@ REPO = Path(__file__).resolve().parents[2]
 BUILD = REPO / "build_production.ps1"
 VERIFIER = REPO / "scripts" / "verify_installed_artifact.ps1"
 TAURI_CONFIG = REPO / "desktop" / "src-tauri" / "tauri.conf.json"
-AUDIT = REPO / "scripts" / "gs_dependency_audit.py"
 RELEASE_QA = REPO / "scripts" / "run_release_qa.ps1"
 RELEASE_UPDATE = REPO / "release_update.ps1"
 RELEASE_CONTROLLER = REPO / "scripts" / "release_controller.ps1"
@@ -138,14 +137,6 @@ def test_runtime_policy_ignores_all_gs_environment(monkeypatch):
     assert not hasattr(configured, "PRYNX_FORCE_GS")
 
 
-def test_corpus_gate_uses_fixed_no_gs_contract():
-    """Cổng corpus dùng tripwire, không đọc telemetry/cấu hình engine đã xoá."""
-    text = _read(AUDIT)
-    assert "settings.GHOSTSCRIPT_PATH" not in text
-    assert "PRYNX_NO_GS_BUILD" not in text
-    assert "gs_usage" not in text
-    assert "GhostscriptBlocked" in text
-
 
 @pytest.mark.parametrize("entry", RELEASE_ENTRIES, ids=lambda p: p.name)
 def test_release_entries_never_turn_bundling_back_on(entry):
@@ -221,76 +212,23 @@ def test_release_pipeline_has_no_legacy_no_gs_switch(path):
     assert "NoGhostscript" not in text
     assert "--no-ghostscript" not in text
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  §3.6 — bộ đo no-GS là release gate thật
-# ─────────────────────────────────────────────────────────────────────────────
 
-def test_no_gs_audit_forces_utf8_console():
-    text = _read(AUDIT)
-    assert 'reconfigure(encoding="utf-8"' in text, (
-        "audit phải tự cấu hình UTF-8, không phụ thuộc PYTHONIOENCODING của máy chạy"
-    )
-
-
-def test_no_gs_audit_gate_fails_on_gs_or_error():
-    text = _read(AUDIT)
-    assert re.search(r'add_argument\(\s*"--gate"', text)
-    assert re.search(r'counts\.get\("GS".*counts\.get\("ERROR"', text, re.S)
-    assert re.search(r'if\s+args\.gate\s+and\s+blocking', text)
-    assert re.search(r'if\s+args\.gate\s+and\s+blocking[\s\S]*?return\s+1', text)
-
-
-def test_release_qa_runs_no_gs_gate_on_corpus():
-    text = _read(RELEASE_QA)
-    assert "gs_dependency_audit.py" in text
-    assert "--gate" in text
-    assert "PRYNX_NO_GS_CORPUS" in text
-    assert re.search(r'--limit\s+18', text)
-
-
-def test_release_qa_retries_no_gs_once_from_same_operation_checkpoint():
-    text = _read(RELEASE_QA)
-    assert "$NO_GS_MAX_ATTEMPTS = 2" in text
-    assert re.search(
-        r"for \(\$noGsAttempt = 1; \$noGsAttempt -le \$NO_GS_MAX_ATTEMPTS;",
-        text,
-    )
-    assert "--gate --resume --out $NO_GS_AUDIT_OUT" in text
-    assert "$noGsExit -ne 1" in text
-    assert "Remove-Item -LiteralPath $NO_GS_AUDIT_OUT" not in text
-
-
-def test_no_gs_corpus_audit_is_opt_in_and_can_reuse_a_complete_pass():
+def test_public_release_surface_has_no_corpus_audit_switch():
     qa = _read(RELEASE_QA)
     build = _read(BUILD)
     release = _read(RELEASE_UPDATE)
+    controller = _read(RELEASE_CONTROLLER)
     gui = _read(REPO / "quanly_phathanh.ps1")
 
-    assert "[switch]$RunNoGsAudit" in qa
-    assert "[switch]$ReusePassedNoGs" in qa
-    assert "if ($RunNoGsAudit)" in qa
-    assert "Skipped optional no-GS corpus audit" in qa
-    assert "-ReusePassedNoGs requires -RunNoGsAudit." in qa
-    assert "Get-NoGsReusableFingerprint" in qa
-    assert "sorted(pathlib.Path(sys.argv[1]).glob('*.pdf'))" in qa
-    assert "Test-NoGsPassedCache" in qa
-    assert "Test-NoGsPassedArtifact" in qa
-    assert "$NO_GS_ARTIFACT_SCHEMA = 3" in qa
-    assert '$NO_GS_FINGERPRINT_ALGORITHM = "sha256-content-v2"' in qa
-    assert "$files.Count -ne $NO_GS_EXPECTED_FILES" in qa
-    assert "$summary.Count -ne $NO_GS_EXPECTED_OPERATIONS" in qa
-    assert '$record.Value.status -notin @("OK", "REFUSED")' in qa
-    assert 'foreach ($blocking in @("GS", "ERROR", "TIMEOUT"))' in qa
-    assert "Cache PDF 18 x 16 khong con khop/khong day du; tu dong chay lai." in qa
-    assert "Khong xac minh duoc cache PDF 18 x 16; tu dong chay lai day du." in qa
-    assert "Save-NoGsPassedCache" in qa
-    assert "[switch]$RunNoGsAudit" in build
-    assert "if ($ReusePassedNoGs -and -not $RunNoGsAudit)" in build
-    assert '-File "$ROOT\\scripts\\run_release_qa.ps1" -RunNoGsAudit -ReusePassedNoGs' in build
-    assert "[switch]$ReusePassedNoGs" in release
-    assert "$buildArgs.ReusePassedNoGs = $true" in release
-    assert "$chkReuseNoGs" in gui
-    assert "Dùng lại kiểm tra PDF 18×16 đã đạt" in gui
+    for text in (qa, build, release, controller, gui):
+        assert "RunNoGsAudit" not in text
+        assert "ReusePassedNoGs" not in text
+        assert "PRYNX_NO_GS_CORPUS" not in text
+    assert "PRYNX_NO_GS_AUDIT_OUT" not in build
+    assert "release_no_gs_audit-native-" not in build
+    assert "$chkReuseNoGs" not in gui
+    assert "Dùng lại kiểm tra PDF 18×16 đã đạt" not in gui
+    assert not (REPO / "scripts" / "gs_dependency_audit.py").exists()
 
 
 def test_release_auto_uses_clean_user_when_prynx_is_already_installed():
@@ -318,12 +256,11 @@ def test_release_qa_stages_all_frontend_workspace_sibling_fixtures():
     assert "imposition_core\\tests\\fixtures\\grid_parity_simple_auto.json" in text
 
 
-def test_staged_native_qa_uses_a_runtime_specific_no_gs_artifact():
-    qa = _read(RELEASE_QA)
+def test_staged_native_qa_does_not_create_corpus_audit_artifact():
     build = _read(BUILD)
-    assert "PRYNX_NO_GS_AUDIT_OUT" in qa
-    assert "PRYNX_NO_GS_AUDIT_OUT" in build
-    assert "release_no_gs_audit-native-$nativeQaId.json" in build
+    assert "PRYNX_RELEASE_NATIVE_SITE" in build
+    assert "PRYNX_NO_GS_AUDIT_OUT" not in build
+    assert "release_no_gs_audit-native-" not in build
 
 
 def test_staged_native_qa_canonicalizes_windows_short_path_aliases():
@@ -665,19 +602,18 @@ def test_release_controller_retries_status_replace_while_reader_holds_latest(tmp
     assert final_status["exitCode"] == 0
 
 
-def test_release_controller_binds_publish_version_notes_and_switch(tmp_path: Path):
-    """Hashtable splatting phải giữ đúng ba tham số public, kể cả ghi chú tiếng Việt."""
+def test_release_controller_binds_publish_version_and_notes(tmp_path: Path):
+    """Hashtable splatting phải giữ đúng phiên bản và ghi chú tiếng Việt."""
     powershell = shutil.which("powershell") or shutil.which("pwsh")
     if not powershell:
         pytest.skip("không có PowerShell trên máy này")
 
     probe = tmp_path / "publish_probe.ps1"
     probe.write_text(
-        'param([string]$Version, [string]$Notes, [switch]$ReusePassedNoGs)\n'
+        'param([string]$Version, [string]$Notes)\n'
         '[Console]::OutputEncoding = [Text.Encoding]::UTF8\n'
         'Write-Output ("version=" + $Version)\n'
         'Write-Output ("notes=" + $Notes)\n'
-        'Write-Output ("reuse=" + $ReusePassedNoGs.IsPresent)\n'
         'exit 0\n',
         encoding="utf-8-sig",
     )
@@ -698,7 +634,6 @@ def test_release_controller_binds_publish_version_notes_and_switch(tmp_path: Pat
             "1.2.3-rc.4",
             "-NotesBase64",
             notes_b64,
-            "-ReusePassedNoGs",
             "-StateRoot",
             str(state_root),
             "-CommandPath",
@@ -714,7 +649,6 @@ def test_release_controller_binds_publish_version_notes_and_switch(tmp_path: Pat
     log = Path(status["logPath"]).read_text(encoding="utf-8-sig")
     assert "version=1.2.3-rc.4" in log
     assert f"notes={notes}" in log
-    assert "reuse=True" in log
 
 
 # ─────────────────────────────────────────────────────────────────────────────
