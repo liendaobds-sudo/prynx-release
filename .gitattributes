@@ -1,1 +1,2 @@
 *.onnx binary
+run_dev.bat text eol=crlf

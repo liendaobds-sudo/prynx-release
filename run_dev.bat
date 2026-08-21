@@ -11,9 +11,17 @@ set "PATH=%ROOT_DIR%\poppler\poppler-24.08.0\Library\bin;%PATH%"
 
 :: BUILD (audit 2026-08-04 BLD.03): che do dev-gated phai dat DONG THOI
 :: co frontend va backend qua process environment. Dung: run_dev.bat --gated
+:: Ep build native khi can: run_dev.bat --rebuild-native
 set "PRYNX_DEV_GATED_MODE=false"
-if /I "%~1"=="--gated" set "PRYNX_DEV_GATED_MODE=true"
 if /I "%PRYNX_DEV_GATED%"=="true" set "PRYNX_DEV_GATED_MODE=true"
+set "PRYNX_FORCE_NATIVE_BUILD_MODE=false"
+if /I "%PRYNX_FORCE_NATIVE_REBUILD%"=="true" set "PRYNX_FORCE_NATIVE_BUILD_MODE=true"
+if /I "%PRYNX_FORCE_NATIVE_REBUILD%"=="1" set "PRYNX_FORCE_NATIVE_BUILD_MODE=true"
+if /I "%~1"=="--gated" set "PRYNX_DEV_GATED_MODE=true"
+if /I "%~1"=="--rebuild-native" set "PRYNX_FORCE_NATIVE_BUILD_MODE=true"
+if /I "%~2"=="--gated" set "PRYNX_DEV_GATED_MODE=true"
+if /I "%~2"=="--rebuild-native" set "PRYNX_FORCE_NATIVE_BUILD_MODE=true"
+
 if /I "%PRYNX_DEV_GATED_MODE%"=="true" (
     set "VITE_FEATURE_GATING_ENABLED=true"
     set "PRYNX_FEATURE_GATING_ENABLED=true"
@@ -127,7 +135,7 @@ if errorlevel 1 (
 cd ..
 
 echo.
-echo [*] Build + cai module Rust (imposition_core / pdfcompare_native) vao venv backend...
+echo [*] Kiem tra cache module Rust (imposition_core / pdfcompare_native)...
 :: Dam bao cargo co trong PATH
 where cargo >nul 2>&1 || set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 :: Dam bao maturin co trong venv
@@ -136,15 +144,31 @@ if errorlevel 1 (
     echo - Cai maturin...
     backend\venv\Scripts\python.exe -m pip install maturin
 )
-:: maturin develop build crate trong native\ va cai thang vao venv dang chay
+:: maturin develop chi chay khi fingerprint native thay doi.
 set "VIRTUAL_ENV=%ROOT_DIR%\backend\venv"
-cd native
-..\backend\venv\Scripts\python.exe -m maturin develop --release
-if errorlevel 1 (
-    echo *** CANH BAO: Build Rust that bai. Backend se fail-fast hoac dung fallback Python. ***
-    echo *** Kiem tra da cai Rust toolchain ^(cargo^) chua. ***
+set "NATIVE_CACHE_STAMP=%ROOT_DIR%\backend\venv\.prynx-native-dev-fingerprint.json"
+set "NATIVE_CACHE_ARTIFACT_DIR=%ROOT_DIR%\backend\venv\Lib\site-packages\pdfcompare_native"
+if /I "%PRYNX_FORCE_NATIVE_BUILD_MODE%"=="true" (
+    backend\venv\Scripts\python.exe scripts\dev_native_cache.py prepare --force --root "%ROOT_DIR%" --stamp "%NATIVE_CACHE_STAMP%" --artifact-dir "%NATIVE_CACHE_ARTIFACT_DIR%"
+) else (
+    backend\venv\Scripts\python.exe scripts\dev_native_cache.py prepare --root "%ROOT_DIR%" --stamp "%NATIVE_CACHE_STAMP%" --artifact-dir "%NATIVE_CACHE_ARTIFACT_DIR%"
 )
-cd ..
+if errorlevel 1 (
+    echo - Dang build + cai module Rust ^(co the mat vai phut trong lan dau^)...
+    pushd native
+    ..\backend\venv\Scripts\python.exe -m maturin develop --release
+    if errorlevel 1 (
+        popd
+        echo *** CANH BAO: Build Rust that bai. Backend se fail-fast hoac dung fallback Python. ***
+        echo *** Kiem tra da cai Rust toolchain ^(cargo^) chua. ***
+    ) else (
+        popd
+        backend\venv\Scripts\python.exe scripts\dev_native_cache.py commit --root "%ROOT_DIR%" --stamp "%NATIVE_CACHE_STAMP%" --artifact-dir "%NATIVE_CACHE_ARTIFACT_DIR%"
+        if errorlevel 1 echo *** CANH BAO: Khong ghi duoc cache native; luot sau se build lai. ***
+    )
+) else (
+    echo - Native khong thay doi, dung lai artifact da cai.
+)
 
 :: UIUX (audit 2026-07-28 §DEV.01): assetProtocol chi doc cac thu muc an toan
 :: nhu %%TEMP%%. Dat file trung gian dev tai day de viewer khong bi 403 asset.localhost.
