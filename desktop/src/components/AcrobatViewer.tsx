@@ -125,6 +125,20 @@ export function matchesPageOverlayTarget(input: {
     return input.originalPageNum === input.targetSourcePage;
 }
 
+// Hàm thuần khóa hồi quy scroll: ID DOM là vị trí trang Viewer (1-based), không
+// phải số trang nguồn trong pageOrder. Trả lại cùng Set nếu không có thay đổi để
+// React/Virtuoso không khởi động một vòng đo layout mới.
+// eslint-disable-next-line react-refresh/only-export-components
+export function selectionAfterViewerScroll(
+    current: Set<number>,
+    viewerPage: number,
+    pageCount: number,
+): Set<number> {
+    const index = viewerPage - 1;
+    if (index < 0 || index >= pageCount || current.size > 1) return current;
+    return current.size === 1 && current.has(index) ? current : new Set([index]);
+}
+
 export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onDocumentUndo, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, pageOverlay, pageOverlayPage = 1, pageOverlayViewerPage, pageOverlayInstanceId, pageWorkflowStatuses, onViewerDirtyChange, editSession }: Props) {
   const { t } = useTranslation();
     const {
@@ -231,7 +245,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         toast.info(t('misc.acrobatViewer:thuoc_don_vi_doi', 'Thước: {{unit}}', { unit: next }));
     }, [measurementUnit, setMeasurementUnit, t]);
 
-    const highlightBoxes = highlightedIssue ? [highlightedIssue] : undefined;
+    const highlightBoxes = useMemo(() => highlightedIssue ? [highlightedIssue] : undefined, [highlightedIssue]);
 
     // ── Crop PDF: lấy/đảm bảo file_id + áp kết quả crop vào viewer ──
     const setSelectionFileId = useWorkspaceStore(s => s.setSelectionFileId);
@@ -877,21 +891,24 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     }, [activePage, updateViewportRect]);
 
     useEffect(() => {
-        if (highlightBoxes && highlightBoxes.length > 0) {
-            const targetPage = highlightBoxes[0].page;
-            if (targetPage && pageOrder.length > 0) {
-                const index = pageOrder.findIndex(p => p === targetPage);
-                if (index !== -1) {
-                    setTimeout(() => {
-                        mainVirtuosoRef.current?.scrollToIndex({ index, behavior: 'auto', align: 'center' });
-                        setActivePage(index + 1);
-                        setSelectedIndices(new Set([index]));
-                        setLastSelectedIndex(index);
-                    }, 100);
-                }
-            }
-        }
-    }, [highlightBoxes, pageOrder]);
+        const targetPage = highlightBoxes?.[0]?.page;
+        if (!targetPage || pageOrder.length === 0) return;
+
+        const index = pageOrder.findIndex(p => p === targetPage);
+        if (index < 0) return;
+
+        const timer = window.setTimeout(() => {
+            mainVirtuosoRef.current?.scrollToIndex({ index, behavior: 'auto', align: 'center' });
+            setActivePage(index + 1);
+            setSelectedIndices(prev => {
+                if (prev.size === 1 && prev.has(index)) return prev;
+                return new Set([index]);
+            });
+            setLastSelectedIndex(prev => prev === index ? prev : index);
+        }, 100);
+
+        return () => window.clearTimeout(timer);
+    }, [highlightBoxes, pageOrder, setActivePage, setSelectedIndices, setLastSelectedIndex]);
 
     // Thumbnail pre-generation
     useEffect(() => {
@@ -1619,47 +1636,69 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     }, []);
 
     // ═══ Scroll Sync ═══
-    const syncing = useRef(false);
-    const scrollTimeout = useRef<any | null>(null);
+    const scrollTimeout = useRef<number | null>(null);
+    const scrollSelectionRef = useRef(selectedIndices);
+    scrollSelectionRef.current = selectedIndices;
+    const scrollAnchorRef = useRef(lastSelectedIndex);
+    scrollAnchorRef.current = lastSelectedIndex;
 
     const handleMainScroll = useCallback((e: any) => {
         const scrollSource = (e.currentTarget || e.target) as HTMLElement | null;
-        if (!isActive) return;
-        if (scrollSource?.dataset.isNavigating === 'true') return;
-        if (syncing.current || pageDisplayMode.includes('_fit') || isZoomingRef.current) return;
+        if (!isActive || !scrollSource) return;
+        if (scrollSource.dataset.isNavigating === 'true') return;
+        if (pageDisplayMode.includes('_fit') || isZoomingRef.current) return;
         if ((mainVirtuosoRef.current as any)?.__thumbClickActive) return;
-        if (scrollTimeout.current) clearTimeout(scrollTimeout.current);
-        scrollTimeout.current = setTimeout(() => {
-            const src = e.target || e.currentTarget;
-            if (src && numPages > 0) {
-                const containerRect = src.getBoundingClientRect();
-                const targetX = containerRect.left + containerRect.width / 2;
-                const targetY = containerRect.top + containerRect.height / 3;
-                let bestPage: number | null = null;
-                let hitEl = document.elementFromPoint(targetX, targetY) as HTMLElement | null;
-                while (hitEl && hitEl !== src) {
-                    if (hitEl.id?.startsWith('pdf-page-container-')) { bestPage = parseInt(hitEl.id.replace('pdf-page-container-', '')); break; }
-                    hitEl = hitEl.parentElement;
+        if (scrollTimeout.current) window.clearTimeout(scrollTimeout.current);
+        scrollTimeout.current = window.setTimeout(() => {
+            scrollTimeout.current = null;
+            const src = scrollSource;
+            if (!src.isConnected || numPages <= 0) return;
+
+            const containerRect = src.getBoundingClientRect();
+            const targetX = containerRect.left + containerRect.width / 2;
+            const targetY = containerRect.top + containerRect.height / 3;
+            let bestPage: number | null = null;
+            let hitEl = document.elementFromPoint(targetX, targetY) as HTMLElement | null;
+            while (hitEl && hitEl !== src) {
+                if (hitEl.id?.startsWith('pdf-page-container-')) {
+                    bestPage = parseInt(hitEl.id.replace('pdf-page-container-', ''), 10);
+                    break;
                 }
-                if (!bestPage) {
-                    const scrollPercent = src.scrollTop / (src.scrollHeight - src.clientHeight || 1);
-                    bestPage = Math.min(numPages, Math.max(1, Math.round(scrollPercent * numPages) + 1));
-                }
+                hitEl = hitEl.parentElement;
+            }
+            if (!bestPage) {
+                const scrollPercent = src.scrollTop / (src.scrollHeight - src.clientHeight || 1);
+                bestPage = Math.min(numPages, Math.max(1, Math.round(scrollPercent * numPages) + 1));
+            }
+
+            const idx = bestPage - 1;
+            if (idx < 0 || idx >= pageOrder.length) return;
+
+            if (activePageRef.current !== bestPage) {
+                activePageRef.current = bestPage;
                 setActivePage(bestPage);
-                setSelectedIndices(prev => {
-                    if (prev.size <= 1 && pageOrder) {
-                        const idx = pageOrder.indexOf(bestPage!);
-                        // Đồng bộ anchor shift-select theo trang vừa active (cuộn/điều hướng
-                        // main view). Nếu KHÔNG set, anchor kẹt ở giá trị cũ (khởi tạo 0) →
-                        // shift-click sau đó tính range từ 0 → chọn nhầm cả các trang đầu.
-                        if (idx >= 0) setLastSelectedIndex(idx);
-                        return new Set([idx]);
-                    }
-                    return prev;
-                });
+            }
+
+            const currentSelection = scrollSelectionRef.current;
+            if (currentSelection.size <= 1) {
+                const nextSelection = selectionAfterViewerScroll(currentSelection, bestPage, pageOrder.length);
+                if (nextSelection !== currentSelection) {
+                    scrollSelectionRef.current = nextSelection;
+                    setSelectedIndices(nextSelection);
+                }
+                // Đồng bộ anchor shift-select theo VỊ TRÍ trang trong Viewer; pageOrder
+                // chứa số trang nguồn nên không được dùng indexOf(bestPage).
+                if (scrollAnchorRef.current !== idx) {
+                    scrollAnchorRef.current = idx;
+                    setLastSelectedIndex(idx);
+                }
             }
         }, 150);
-    }, [isActive, numPages, pageDisplayMode, pageOrder, setSelectedIndices, setLastSelectedIndex]);
+    }, [isActive, numPages, pageDisplayMode, pageOrder.length, setActivePage, setSelectedIndices, setLastSelectedIndex]);
+
+    useEffect(() => () => {
+        if (scrollTimeout.current) window.clearTimeout(scrollTimeout.current);
+    }, []);
 
     // Virtuoso components PHẢI ổn định identity. Trước đây Scroller/List định nghĩa inline
     // bằng forwardRef trong JSX → mỗi render tạo component type MỚI → Virtuoso thay Scroller,
@@ -1677,6 +1716,12 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
             <div {...props} ref={ref} style={{ minHeight: '100%', ...props.style, minWidth: '100%', width: 'max-content' }} />
         )),
     }), []);
+    // Virtuoso gắn listener + phát trạng thái scroll đồng bộ mỗi khi scrollerRef đổi
+    // identity. Callback inline biến mọi parent render thành một lượt đo layout mới.
+    const handleVirtuosoScrollerRef = useCallback((el: HTMLElement | Window | null) => {
+        internalScrollRef.current = el instanceof HTMLElement ? el : null;
+    }, []);
+
 
     // Ổn định các prop object của Virtuoso: object literal mới mỗi render buộc Virtuoso
     // đo lại → góp phần vào vòng lặp khi zoom/mode đổi. Chỉ tạo mới khi giá trị nguồn đổi.
@@ -1812,6 +1857,22 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
             </div>
         );
     }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, effectiveZoom, physicalDisplayScale, physicalDisplayDpr, physicalRawDpi, bleedView, highlightBoxes, isVdpMode, getTileUrl, renderOwnerId, renderDocumentToken, cancelAccurateGroup, accurateColorEnabled, accurateColorPages, viewerSimulationProfileId, viewerSimulationIntent, viewerOutputPreviewProofIdentity, viewerEngineMode, handleActivePageRenderReady, accuratePrefetchReady, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage, tabId, isActive, pageOverlay, pageOverlayPage, pageOverlayViewerPage, pageOverlayInstanceId]);
+
+    const virtuosoItemContentRef = useRef<(index: number) => ReactNode>(() => null);
+    virtuosoItemContentRef.current = (index: number) => {
+        const row = renderRows[index];
+        if (!row) return null;
+        return (
+            <div className={`flex items-center justify-center min-w-full ${toolMode === 'hand' ? 'cursor-grab active:cursor-grabbing' : 'cursor-auto'}`}
+                style={{ paddingTop: 32, paddingBottom: 32, paddingLeft: 24, paddingRight: 24, gap: 12, width: 'max-content' }}>
+                <div className="flex items-center" style={{ gap: 12 }}>
+                    {row.pages.map((p: number, pIdx: number) => <div key={row.indices[pIdx]}>{renderPdfPage(p, row.indices[pIdx])}</div>)}
+                </div>
+            </div>
+        );
+    };
+    // Prop itemContent ổn định; nội dung mới nhất được đọc qua ref ở trên.
+    const virtuosoItemContent = useCallback((index: number) => virtuosoItemContentRef.current(index), []);
 
     // Kiểm tra loadError SAU khi mọi hook đã được gọi (xem ghi chú ở đầu component).
     if (loadError) {
@@ -2113,19 +2174,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                                                 increaseViewportBy={virtuosoOverscan}
                                                 className="w-full h-full flex-1"
                                                 components={virtuosoComponents}
-                                                scrollerRef={(el) => { internalScrollRef.current = el && el instanceof HTMLElement ? el : null; }}
-                                                itemContent={(index) => {
-                                                    const row = renderRows[index];
-                                                    if (!row) return null;
-                                                    return (
-                                                        <div className={`flex items-center justify-center min-w-full ${toolMode === 'hand' ? 'cursor-grab active:cursor-grabbing' : 'cursor-auto'}`}
-                                                            style={{ paddingTop: 32, paddingBottom: 32, paddingLeft: 24, paddingRight: 24, gap: 12, width: 'max-content' }}>
-                                                            <div className="flex items-center" style={{ gap: 12 }}>
-                                                                {row.pages.map((p: number, pIdx: number) => <div key={row.indices[pIdx]}>{renderPdfPage(p, row.indices[pIdx])}</div>)}
-                                                            </div>
-                                                        </div>
-                                                    );
-                                                }}
+                                                scrollerRef={handleVirtuosoScrollerRef}
+                                                itemContent={virtuosoItemContent}
                                             />
                                         </div>
                                     );

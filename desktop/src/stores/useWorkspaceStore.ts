@@ -870,15 +870,22 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
             : state
     )),
 
-    setViewerZoom: (updater) => set((state) => ({
-        viewerZoom: typeof updater === 'function' ? updater(state.viewerZoom) : updater,
-    })),
+    setViewerZoom: (updater) => set((state) => {
+        const next = typeof updater === 'function' ? updater(state.viewerZoom) : updater;
+        return Object.is(next, state.viewerZoom) ? state : { viewerZoom: next };
+    }),
     setViewerFitMode: (mode) => set({ viewerFitMode: mode }),
     setViewerToolMode: (mode) => set({ viewerToolMode: mode }),
     setViewerPageDisplayMode: (mode) => set({ viewerPageDisplayMode: mode }),
-    setViewerActivePage: (page) => set({ viewerActivePage: page }),
-    setViewerNumPages: (n) => set({ viewerNumPages: n }),
-    setViewerSelectedPageIndices: (indices) => set({ viewerSelectedPageIndices: [...indices] }),
+    // PERF (audit 2026-08-21 §VIEW.RENDER-LOOP): các effect đo layout có thể gửi
+    // lại cùng giá trị; giữ nguyên state identity để không đánh thức Viewer/Virtuoso.
+    setViewerActivePage: (page) => set((state) => state.viewerActivePage === page ? state : { viewerActivePage: page }),
+    setViewerNumPages: (n) => set((state) => state.viewerNumPages === n ? state : { viewerNumPages: n }),
+    setViewerSelectedPageIndices: (indices) => set((state) => {
+        const prev = state.viewerSelectedPageIndices;
+        if (prev.length === indices.length && prev.every((value, index) => value === indices[index])) return state;
+        return { viewerSelectedPageIndices: [...indices] };
+    }),
     setViewerThumbMenuOpen: (v) => set({ viewerThumbMenuOpen: v }),
     setViewerThumbWidth: (w) => set({ viewerThumbWidth: w }),
     setViewerPageDimMm: (dim) => set({ viewerPageDimMm: dim }),

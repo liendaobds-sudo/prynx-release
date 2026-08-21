@@ -15,3 +15,32 @@ describe('workspace print selection snapshot', () => {
         expect(tabB.getState().viewerSelectedPageIndices).toEqual([]);
     });
 });
+
+describe('workspace viewer state identity', () => {
+    it('không phát state mới khi effect layout gửi lại cùng giá trị', () => {
+        const store = createWorkspaceStore();
+        let emissions = 0;
+        const unsubscribe = store.subscribe(() => {
+            emissions += 1;
+        });
+
+        const initialState = store.getState();
+        initialState.setViewerZoom(1);
+        initialState.setViewerZoom(prev => prev);
+        initialState.setViewerActivePage(1);
+        initialState.setViewerNumPages(0);
+        initialState.setViewerSelectedPageIndices([]);
+
+        expect(store.getState()).toBe(initialState);
+        expect(emissions).toBe(0);
+
+        store.getState().setViewerSelectedPageIndices([1]);
+        expect(emissions).toBe(1);
+        expect(store.getState().viewerSelectedPageIndices).toEqual([1]);
+
+        store.getState().setViewerSelectedPageIndices([1]);
+        expect(emissions).toBe(1);
+
+        unsubscribe();
+    });
+});

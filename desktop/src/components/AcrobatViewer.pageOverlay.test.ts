@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { matchesPageOverlayTarget } from './AcrobatViewer';
+import { matchesPageOverlayTarget, selectionAfterViewerScroll } from './AcrobatViewer';
 
 
 describe('AcrobatViewer — nhắm lớp phủ theo trang Viewer', () => {
@@ -50,5 +50,31 @@ describe('AcrobatViewer — nhắm lớp phủ theo trang Viewer', () => {
             pageInstanceId: 'instance-4',
             targetSourcePage: 2,
         })).toBe(true);
+    });
+});
+
+describe('AcrobatViewer — đồng bộ trang khi cuộn', () => {
+    it('giữ nguyên identity khi cuộn vẫn nằm trên cùng trang', () => {
+        const current = new Set([1]);
+
+        expect(selectionAfterViewerScroll(current, 2, 2)).toBe(current);
+    });
+
+    it('chọn theo vị trí Viewer thay vì tìm số trang nguồn trong pageOrder', () => {
+        const current = new Set([0]);
+
+        const next = selectionAfterViewerScroll(current, 2, 2);
+
+        expect(next).not.toBe(current);
+        expect([...next]).toEqual([1]);
+    });
+
+    it('không sinh selection -1 và không phá multi-selection', () => {
+        const single = new Set([0]);
+        const multiple = new Set([0, 1]);
+
+        expect(selectionAfterViewerScroll(single, 0, 2)).toBe(single);
+        expect(selectionAfterViewerScroll(single, 3, 2)).toBe(single);
+        expect(selectionAfterViewerScroll(multiple, 2, 2)).toBe(multiple);
     });
 });
