@@ -72,6 +72,56 @@ def _working_set_bytes(pid: int) -> int:
         ctypes.windll.kernel32.CloseHandle(handle)
 
 
+def _working_set_tree_bytes(root_pid: int) -> int:
+    """Tổng working set parent + worker process để benchmark CL.4 không hụt RAM."""
+    if os.name != "nt":
+        return _working_set_bytes(root_pid)
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    snapshot = ctypes.windll.kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
+    if snapshot == ctypes.c_void_p(-1).value:
+        return _working_set_bytes(root_pid)
+    parents: dict[int, list[int]] = {}
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(entry)
+        ok = ctypes.windll.kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while ok:
+            parents.setdefault(int(entry.th32ParentProcessID), []).append(
+                int(entry.th32ProcessID)
+            )
+            ok = ctypes.windll.kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        ctypes.windll.kernel32.CloseHandle(snapshot)
+
+    process_ids = []
+    stack = [int(root_pid)]
+    seen = set()
+    while stack:
+        process_id = stack.pop()
+        if process_id in seen:
+            continue
+        seen.add(process_id)
+        process_ids.append(process_id)
+        stack.extend(parents.get(process_id, []))
+    return sum(_working_set_bytes(process_id) for process_id in process_ids)
+
+
 def _make_pdf(path: Path, *, pages: int, changed: bool, all_diff: bool = False) -> None:
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
@@ -182,6 +232,10 @@ def _install_stage_probes(db) -> dict[str, float]:
 def _run_child(args: argparse.Namespace) -> int:
     sys.path.insert(0, str(BACKEND))
     os.environ["PRYNX_COMPARE_WORKERS"] = str(args.workers)
+    os.environ["PRYNX_COMPARE_PROCESS_WORKERS"] = str(args.workers)
+    os.environ["PRYNX_COMPARE_PROCESS_MIN_PAGES"] = "2"
+    if args.process_min_pixels is not None:
+        os.environ["PRYNX_COMPARE_PROCESS_MIN_PIXELS"] = str(args.process_min_pixels)
     if args.cv_threads is not None:
         os.environ["PRYNX_COMPARE_CV_THREADS"] = str(args.cv_threads)
     os.environ.setdefault("PRYNX_SIDECAR_TOKEN", "benchmark-compare-token")
@@ -237,13 +291,13 @@ def _run_child(args: argparse.Namespace) -> int:
         db.commit()
         db.refresh(job)
 
-        peak = _working_set_bytes(os.getpid())
+        peak = _working_set_tree_bytes(os.getpid())
         stop_sampling = threading.Event()
 
         def sample_memory() -> None:
             nonlocal peak
             while not stop_sampling.wait(0.01):
-                peak = max(peak, _working_set_bytes(os.getpid()))
+                peak = max(peak, _working_set_tree_bytes(os.getpid()))
 
         sampler = threading.Thread(target=sample_memory, daemon=True)
         sampler.start()
@@ -269,7 +323,7 @@ def _run_child(args: argparse.Namespace) -> int:
         elapsed_s = time.perf_counter() - started
         stop_sampling.set()
         sampler.join(timeout=1)
-        peak = max(peak, _working_set_bytes(os.getpid()))
+        peak = max(peak, _working_set_tree_bytes(os.getpid()))
 
         pages = (
             db.query(PageResult)
@@ -333,6 +387,7 @@ def _run_one(
     dpi: int,
     work_dir: Path,
     cv_threads: int | None,
+    process_min_pixels: int | None,
     stages: bool = False,
 ) -> dict:
     command = [
@@ -354,6 +409,8 @@ def _run_one(
     ]
     if cv_threads is not None:
         command.extend(["--cv-threads", str(cv_threads)])
+    if process_min_pixels is not None:
+        command.extend(["--process-min-pixels", str(process_min_pixels)])
     if stages:
         command.append("--stages")
     env = dict(os.environ)
@@ -408,6 +465,11 @@ def main() -> int:
     parser.add_argument("--work-dir")
     parser.add_argument("--cv-threads", type=int)
     parser.add_argument(
+        "--process-min-pixels",
+        type=int,
+        help="Ép ngưỡng raster/trang để benchmark pipeline process CL.4.",
+    )
+    parser.add_argument(
         "--stages",
         action="store_true",
         help="PERF (audit 2026-08-13 §PB-2): đo thời gian từng stage "
@@ -450,6 +512,7 @@ def main() -> int:
                 dpi=args.dpi,
                 work_dir=root_tmp / f"run_{run}_{worker}_{index}",
                 cv_threads=args.cv_threads,
+                process_min_pixels=args.process_min_pixels,
                 stages=args.stages,
             )
             samples[worker].append(result)

@@ -14,6 +14,9 @@ import { usePrintDialog } from './shared/usePrintDialog';
 import { toast } from './ui/Toast';
 // UIUX (audit 2026-07-27 §D-15): lỗi kỹ thuật → câu Việt + hướng khắc phục
 import { formatError, isCanceled } from '../lib/errorMessages';
+import { imageFileToPdfIfNeeded } from '../lib/imageNormalizer';
+import { isSupportedImageFileName } from '../lib/imageFileTypes';
+import { getFileArrayBuffer } from '../lib/utils';
 
 type Phase = 'upload' | 'processing' | 'results';
 
@@ -101,11 +104,19 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
     setUploadingB(true);
     setError('');
     try {
-      const result = await uploadPDF(file);
-      store.setFileB({ ...result, localFile: file });
+      // Ảnh được đóng gói thành PDF một trang để toàn bộ engine đối chiếu,
+      // viewer và luồng in tiếp tục dùng chung một hợp đồng PDF ổn định.
+      const uploadFile = await imageFileToPdfIfNeeded(file, getFileArrayBuffer);
+      const result = await uploadPDF(uploadFile);
+      store.setFileB({ ...result, original_name: file.name, localFile: uploadFile });
     } catch (e: unknown) {
       // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
-      if (!isCanceled(e)) setError(formatError(e, t('tabs.compare:upload_that_bai')));
+      if (!isCanceled(e)) {
+        const fallback = isSupportedImageFileName(file.name)
+          ? t('tabs.compare:khong_doc_duoc_file_anh')
+          : t('tabs.compare:upload_that_bai');
+        setError(formatError(e, fallback));
+      }
     } finally {
       setUploadingB(false);
     }
@@ -115,8 +126,9 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
     setUploadingA(true);
     setError('');
     try {
-      const result = await uploadPDF(file);
-      store.setFileA({ ...result, localFile: file });
+      const uploadFile = await imageFileToPdfIfNeeded(file, getFileArrayBuffer);
+      const result = await uploadPDF(uploadFile);
+      store.setFileA({ ...result, original_name: file.name, localFile: uploadFile });
       
       // Auto-fill File B if multiple files were dropped
       if (allFiles && allFiles.length > 1) {
@@ -124,7 +136,12 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
       }
     } catch (e: unknown) {
       // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
-      if (!isCanceled(e)) setError(formatError(e, t('tabs.compare:upload_that_bai')));
+      if (!isCanceled(e)) {
+        const fallback = isSupportedImageFileName(file.name)
+          ? t('tabs.compare:khong_doc_duoc_file_anh')
+          : t('tabs.compare:upload_that_bai');
+        setError(formatError(e, fallback));
+      }
     } finally {
       setUploadingA(false);
     }
@@ -372,6 +389,7 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
               label={t('tabs.compare:pdf_goc_template')}
               sublabel={t('tabs.compare:file_truoc_khi_sua_hoac_ban_mau')}
               onFileSelected={handleUploadA}
+              acceptImages
               isUploading={uploadingA}
               uploadedName={store.fileA?.original_name}
               pageCount={store.fileA?.page_count}
@@ -381,6 +399,7 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
               label={t('tabs.compare:pdf_da_sua_ban_in')}
               sublabel={t('tabs.compare:file_sau_khi_sua_hoac_to_in_ghep_kho')}
               onFileSelected={handleUploadB}
+              acceptImages
               isUploading={uploadingB}
               uploadedName={store.fileB?.original_name}
               pageCount={store.fileB?.page_count}
@@ -416,6 +435,9 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
                   onChange={(e) => store.setDpi(Number(e.target.value))}
                   className="select-input"
                 >
+                  <option value={72}>72 DPI</option>
+                  <option value={100}>100 DPI</option>
+                  <option value={117}>117 DPI</option>
                   <option value={150}>150 DPI — Nhanh</option>
                   <option value={300}>{t('tabs.compare:300_dpi_chinh_xac')}</option>
                 </select>

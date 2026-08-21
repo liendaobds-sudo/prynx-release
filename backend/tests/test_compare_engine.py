@@ -314,6 +314,94 @@ def test_imposition_flags_changed_instance():
     assert res.diff_count >= 1
 
 
+def test_imposition_tiled_preview_detection_matches_full_frame_verdict():
+    """Bình bài tile chỉ đọc ROI nhưng giữ instance/statistics/vùng lỗi."""
+    cmp = ImageComparator()
+    templ = np.full((100, 120, 3), 255, np.uint8)
+    templ[10:90, 10:110] = 230
+    templ[20:50, 20:100] = 40
+    templ[55:75, 30:90] = 0
+    sheet = np.full((220, 260, 3), 255, np.uint8)
+    positions = [(5, 5), (5, 130), (110, 5), (110, 130)]
+    for yy, xx in positions:
+        sheet[yy:yy + 100, xx:xx + 120] = templ
+    sheet[110 + 60:110 + 72, 130 + 50:130 + 70] = 255
+
+    full = cmp.compare(templ, sheet, tolerance="NORMAL", config={"dpi": 150})
+
+    def read_sheet(x, y, width, height):
+        return sheet[y:y + height, x:x + width].copy()
+
+    tiled = cmp.compare_imposition_tiled(
+        templ,
+        read_sheet,
+        sheet.shape[1],
+        sheet.shape[0],
+        preview_template=templ,
+        preview_imposed=sheet,
+        tolerance="NORMAL",
+        config={"dpi": 150},
+    )
+
+    assert tiled.is_imposition_mode is True
+    assert tiled.total_instances == full.total_instances
+    assert tiled.failed_instances == full.failed_instances
+    assert tiled.match_scale == full.match_scale
+    assert tiled.diff_count == full.diff_count
+    assert [
+        (r.x, r.y, r.width, r.height, r.description)
+        for r in tiled.diff_regions
+    ] == [
+        (r.x, r.y, r.width, r.height, r.description)
+        for r in full.diff_regions
+    ]
+
+
+def test_imposition_tiled_artifact_keeps_tracking_boxes(tmp_path, monkeypatch):
+    """PNG stripe của bình bài giữ khung xanh/đỏ như overlay full-frame."""
+    import cv2
+    from app.config import settings
+    from app.core.highlight_renderer import HighlightRenderer
+
+    cmp = ImageComparator()
+    templ = np.full((100, 120, 3), 255, np.uint8)
+    templ[10:90, 10:110] = 230
+    templ[20:50, 20:100] = 40
+    sheet = np.full((220, 260, 3), 255, np.uint8)
+    for yy, xx in [(5, 5), (5, 130), (110, 5), (110, 130)]:
+        sheet[yy:yy + 100, xx:xx + 120] = templ
+    sheet[170:182, 180:200] = 255
+    full = cmp.compare(templ, sheet, tolerance="NORMAL", config={"dpi": 150})
+
+    tiled = cmp.compare_imposition_tiled(
+        templ,
+        lambda x, y, width, height: sheet[y:y + height, x:x + width].copy(),
+        sheet.shape[1],
+        sheet.shape[0],
+        preview_template=templ,
+        preview_imposed=sheet,
+        tolerance="NORMAL",
+        config={"dpi": 150},
+    )
+    monkeypatch.setattr(settings, "RESULTS_DIR", str(tmp_path))
+    HighlightRenderer().save_tiled_highlight_image(
+        lambda x, y, width, height: sheet[y:y + height, x:x + width].copy(),
+        tiled.diff_regions,
+        sheet.shape[1],
+        sheet.shape[0],
+        "imposition-artifact",
+        1,
+        stripe_height=31,
+        tracking_boxes=tiled._imposition_tracking_boxes,
+        imposition_mode=True,
+    )
+    artifact = cv2.imread(
+        str(tmp_path / "imposition-artifact" / "page_1_diff.png"),
+        cv2.IMREAD_COLOR,
+    )
+    assert np.array_equal(artifact, cv2.cvtColor(full.highlighted_image, cv2.COLOR_RGB2BGR))
+
+
 
 def test_identical_fast_path_skips_ssim_and_artifacts(monkeypatch):
     """Byte-identical pages skip SSIM, highlight, and GIF generation."""

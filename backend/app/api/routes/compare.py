@@ -5,6 +5,7 @@ Supports both Celery (production) and synchronous (DEV_MODE) processing.
 import logging
 import math
 import os
+import tempfile
 import threading
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -22,6 +23,7 @@ from app.core.disk_space_guard import (
 )
 from app.core.license_guard import require_feature
 from app.core.heavy_job_scheduler import scheduled_job
+from app.core.system_memory import plan_worker_count
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -105,6 +107,112 @@ def _estimate_max_render_pixels(uploaded_file, dpi: int) -> int | None:
         height_px = math.ceil(height_pt * dpi / 72.0)
         largest = max(largest, width_px * height_px)
     return largest or None
+
+
+def _large_page_tile_compatible(file_a, file_b, request: CompareRequest) -> bool:
+    """Admission sớm cho hợp đồng tile hiện tại; thiếu metadata để engine quyết định."""
+    if request.comparison_mode not in {"full", "cmyk"}:
+        return False
+
+    def _sizes(uploaded_file) -> list[tuple[int, int]] | None:
+        metadata = getattr(uploaded_file, "pdf_metadata", None) or {}
+        pages = metadata.get("pages") if isinstance(metadata, dict) else None
+        if not isinstance(pages, list) or not pages:
+            return None
+        sizes = []
+        for page in pages:
+            if not isinstance(page, dict):
+                return None
+            try:
+                width_pt = float(page.get("width_pt") or 0)
+                height_pt = float(page.get("height_pt") or 0)
+            except (TypeError, ValueError):
+                return None
+            if width_pt <= 0 or height_pt <= 0:
+                return None
+            sizes.append((
+                math.ceil(width_pt * request.dpi / 72.0),
+                math.ceil(height_pt * request.dpi / 72.0),
+            ))
+        return sizes
+
+    sizes_a = _sizes(file_a)
+    sizes_b = _sizes(file_b)
+    if sizes_a is None or sizes_b is None:
+        return True
+    if request.page_matching_mode == "imposition":
+        return request.comparison_mode == "full"
+    if len(sizes_a) == len(sizes_b):
+        from app.core.comparison_engine import _comparison_size_strategy
+
+        return all(
+            (
+                _comparison_size_strategy(size_a, size_b) != "unsupported"
+                and not (
+                    request.comparison_mode == "cmyk"
+                    and _comparison_size_strategy(size_a, size_b) == "imposition"
+                )
+            )
+            for size_a, size_b in zip(sizes_a, sizes_b)
+        )
+    # Khi lệch số trang, căn nội dung quyết định cặp thật ở engine. Chỉ admission
+    # nếu hai tài liệu dùng cùng tập khổ; từng cặp vẫn được guard trước full-render.
+    return set(sizes_a) == set(sizes_b)
+
+
+def _large_page_staging_multiplier(file_a, file_b) -> int:
+    """Khác khổ có thể cần source+destination RGB memmap ngoài mask uint8."""
+    metadata_a = getattr(file_a, "pdf_metadata", None) or {}
+    metadata_b = getattr(file_b, "pdf_metadata", None) or {}
+    pages_a = metadata_a.get("pages") if isinstance(metadata_a, dict) else None
+    pages_b = metadata_b.get("pages") if isinstance(metadata_b, dict) else None
+    if not isinstance(pages_a, list) or not isinstance(pages_b, list):
+        return 7
+    if len(pages_a) != len(pages_b):
+        return 7
+    for page_a, page_b in zip(pages_a, pages_b):
+        if not isinstance(page_a, dict) or not isinstance(page_b, dict):
+            return 7
+        if (
+            page_a.get("width_pt") != page_b.get("width_pt")
+            or page_a.get("height_pt") != page_b.get("height_pt")
+        ):
+            # 1 byte mask + tối đa 3 byte source RGB + 3 byte destination RGB.
+            return 7
+    return 1
+
+
+def _estimate_tile_staging_pixels(max_page_pixels: int, page_count: int) -> int:
+    """Đỉnh mask disk-backed, gồm các process có thể chạy đồng thời."""
+    pixels = max(0, int(max_page_pixels or 0))
+    pages = max(0, int(page_count or 0))
+    if pixels <= _MAX_COMPARE_PAGE_PIXELS:
+        return 0
+    try:
+        min_pages = max(
+            2,
+            int(os.environ.get("PRYNX_COMPARE_PROCESS_MIN_PAGES", "16") or "16"),
+        )
+        min_pixels = max(
+            1,
+            int(os.environ.get("PRYNX_COMPARE_PROCESS_MIN_PIXELS", "8000000") or "8000000"),
+        )
+    except (TypeError, ValueError):
+        min_pages, min_pixels = 16, 8_000_000
+    workers = 1
+    if pages >= min_pages and pixels >= min_pixels:
+        process_worker_env = (
+            "PRYNX_COMPARE_PROCESS_WORKERS"
+            if os.environ.get("PRYNX_COMPARE_PROCESS_WORKERS", "")
+            else "PRYNX_COMPARE_WORKERS"
+        )
+        workers, _reason = plan_worker_count(
+            kind="compare-tile-staging",
+            per_worker_mb=640.0,
+            env_override=process_worker_env,
+        )
+        workers = min(workers, pages)
+    return pixels * max(1, workers)
 
 
 def _estimate_total_render_pixels(uploaded_file, dpi: int) -> int:
@@ -254,19 +362,24 @@ def create_comparison_job(
         _estimate_max_render_pixels(file_b, request.dpi) or 0,
     )
     if max_render_pixels > _MAX_COMPARE_PAGE_PIXELS:
-        safe_dpi = max(
-            72,
-            int(request.dpi * math.sqrt(_MAX_COMPARE_PAGE_PIXELS / max_render_pixels)),
+        # PERF (audit 2026-08-19 §CL.3): 40 MP là ngưỡng chọn full-frame/tile,
+        # không còn là hard cap từ chối. Engine sẽ admission theo cặp 1:1 RGB/CMYK
+        # và render vùng; các ca bình bài/co giãn chưa đủ hợp đồng báo rõ ở engine.
+        logger.info(
+            "Compare page estimate %.1f MP vượt ngưỡng full-frame %.1f MP; "
+            "chuyển chiến lược tile khi cặp trang đủ điều kiện.",
+            max_render_pixels / 1_000_000,
+            _MAX_COMPARE_PAGE_PIXELS / 1_000_000,
         )
-        megapixels = round(max_render_pixels / 1_000_000, 1)
-        limit_megapixels = round(_MAX_COMPARE_PAGE_PIXELS / 1_000_000, 1)
-        raise HTTPException(
-            status_code=413,
-            detail=(
-                f"Trang l\u1edbn nh\u1ea5t s\u1ebd render {megapixels} MP, v\u01b0\u1ee3t gi\u1edbi h\u1ea1n an to\u00e0n "
-                f"{limit_megapixels} MP. H\u00e3y ch\u1ecdn kho\u1ea3ng {safe_dpi} DPI ho\u1eb7c th\u1ea5p h\u01a1n."
-            ),
-        )
+        if not _large_page_tile_compatible(file_a, file_b, request):
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    "Trang lớn vượt ngưỡng full-frame. Đối chiếu theo tile hiện hỗ trợ "
+                    "chế độ 1:1 RGB/CMYK với các trang cùng kích thước; bình bài hoặc "
+                    "tài liệu trộn khổ cần giảm DPI."
+                ),
+            )
 
     # PERF (audit 2026-08-13 §PB-1): artifact PNG/GIF ghi thẳng RESULTS_DIR và nhánh
     # xả áp lực đĩa cố ý bỏ qua Compare — phải từ chối sớm khi volume chắc chắn
@@ -277,12 +390,16 @@ def create_comparison_job(
             _estimate_total_render_pixels(file_b, request.dpi),
         ),
         page_count=max(1, biggest_page_count),
+        max_page_pixels=_estimate_tile_staging_pixels(
+            max_render_pixels,
+            biggest_page_count,
+        ) * _large_page_staging_multiplier(file_a, file_b),
     )
     try:
         ensure_job_disk_space(
             "so sánh PDF",
             output_path=settings.RESULTS_DIR,
-            temp_path=settings.RESULTS_DIR,
+            temp_path=tempfile.gettempdir(),
             estimate=estimate,
         )
     except InsufficientDiskSpaceError as exc:

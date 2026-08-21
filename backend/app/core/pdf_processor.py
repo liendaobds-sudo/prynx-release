@@ -6,6 +6,7 @@ Algorithm reference: Formartha/compare-pdf (_convert_to_opencv)
 License: All MIT/BSD — commercially safe.
 """
 import logging
+import math
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
@@ -402,8 +403,31 @@ class PDFDocumentReader:
                 page.close()
         return float(width), float(height)
 
+    def page_pixel_size(self, page_index: int) -> tuple[int, int]:
+        """Trả kích thước raster toàn trang ở DPI của reader."""
+        width_pt, height_pt = self.page_size(page_index)
+        return (
+            max(1, math.ceil(width_pt * self.scale)),
+            max(1, math.ceil(height_pt * self.scale)),
+        )
+
     def render_page(self, page_index: int) -> np.ndarray:
         """Render a single page (0-indexed) to RGB numpy array."""
+        return self.render_page_bundle(page_index)[0]
+
+    def render_page_bundle(
+        self,
+        page_index: int,
+        *,
+        include_cmyk: bool = False,
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        """Render RGB và tùy chọn CMYK từ cùng một bitmap PDFium.
+
+        PERF (audit 2026-08-19 §COMPARE.CMYK.1): chế độ CMYK trước đây render cùng
+        một trang PDF hai lần — một lần RGB và một lần rồi chuyển CMYK. Giữ cả hai
+        chuyển đổi trong cùng ``pdfium_guard`` để giảm lượt raster mà không đổi
+        cách PDFium dựng ảnh.
+        """
         if self._pdf is None:
             raise RuntimeError("PDFDocumentReader is not open. Use 'with' statement.")
         if page_index < 0 or page_index >= len(self._pdf):
@@ -420,7 +444,86 @@ class PDFDocumentReader:
                 bitmap = page.render(scale=self.scale, rev_byteorder=True)
                 try:
                     pil_img = bitmap.to_pil()
-                    return np.array(pil_img.convert("RGB"))
+                    rgb = np.array(pil_img.convert("RGB"))
+                    cmyk = np.array(pil_img.convert("CMYK")) if include_cmyk else None
+                    return rgb, cmyk
+                finally:
+                    bitmap.close()
+            finally:
+                page.close()
+
+    def render_page_region(
+        self,
+        page_index: int,
+        *,
+        x_px: int,
+        y_px: int,
+        width_px: int,
+        height_px: int,
+        include_cmyk: bool = False,
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        """Render một vùng theo tọa độ pixel gốc trên-trái của toàn trang.
+
+        PERF (audit 2026-08-19 §CL.1): crop theo đúng biên pixel để vùng dựng
+        trùng bit với lát cắt từ full-render. Đây là primitive cho Compare tile;
+        mọi lời gọi PDFium và copy bitmap vẫn nằm trọn trong ``pdfium_guard``.
+        """
+        if self._pdf is None:
+            raise RuntimeError("PDFDocumentReader is not open. Use 'with' statement.")
+        if page_index < 0 or page_index >= len(self._pdf):
+            raise IndexError(f"Page index {page_index} out of range (0-{len(self._pdf)-1})")
+        if min(x_px, y_px) < 0 or min(width_px, height_px) <= 0:
+            raise ValueError("Vùng render phải có tọa độ không âm và kích thước dương")
+
+        from app.core.pdfium_lock import pdfium_guard
+
+        with pdfium_guard("pdf_reader_render_region"):
+            page = self._pdf[page_index]
+            try:
+                width_pt, height_pt = page.get_size()
+                page_width_px = max(1, math.ceil(float(width_pt) * self.scale))
+                page_height_px = max(1, math.ceil(float(height_pt) * self.scale))
+                right_px = x_px + width_px
+                bottom_px = y_px + height_px
+                if right_px > page_width_px or bottom_px > page_height_px:
+                    raise ValueError(
+                        "Vùng render vượt kích thước trang "
+                        f"{page_width_px}×{page_height_px} px"
+                    )
+
+                # pypdfium2 đổi crop point sang pixel bằng ceil(crop * scale).
+                # Chuyển từ khoảng cách pixel nguyên (thay vì lấy width_pt trừ đi)
+                # và lùi epsilon rất nhỏ để sai số float không ceil dư 1 px.
+                def _crop_point(crop_px: int) -> float:
+                    if crop_px <= 0:
+                        return 0.0
+                    return (crop_px - 1e-6) / self.scale
+
+                crop = (
+                    _crop_point(x_px),
+                    _crop_point(page_height_px - bottom_px),
+                    _crop_point(page_width_px - right_px),
+                    _crop_point(y_px),
+                )
+                bitmap = page.render(
+                    scale=self.scale,
+                    crop=crop,
+                    rev_byteorder=True,
+                )
+                try:
+                    pil_img = bitmap.to_pil()
+                    rgb = np.array(pil_img.convert("RGB"))
+                    actual_height, actual_width = rgb.shape[:2]
+                    if (actual_height, actual_width) != (height_px, width_px):
+                        raise RuntimeError(
+                            "PDFium trả kích thước vùng render không đúng hợp đồng: "
+                            f"{actual_width}×{actual_height} thay vì "
+                            f"{width_px}×{height_px}"
+                        )
+                    cmyk = None
+                    if include_cmyk:
+                        cmyk = np.array(pil_img.convert("CMYK"))
+                    return rgb, cmyk
                 finally:
                     bitmap.close()
             finally:
@@ -428,23 +531,6 @@ class PDFDocumentReader:
 
     def render_page_cmyk(self, page_index: int) -> np.ndarray:
         """Render a single page (0-indexed) to CMYK numpy array."""
-        if self._pdf is None:
-            raise RuntimeError("PDFDocumentReader is not open. Use 'with' statement.")
-        if page_index < 0 or page_index >= len(self._pdf):
-            raise IndexError(f"Page index {page_index} out of range (0-{len(self._pdf)-1})")
-
-        from app.core.pdfium_lock import pdfium_guard
-
-        with pdfium_guard("pdf_reader_render_cmyk"):
-            page = self._pdf[page_index]
-            try:
-                bitmap = page.render(scale=self.scale, rev_byteorder=True)
-                try:
-                    pil_img = bitmap.to_pil()
-                    if pil_img.mode != "CMYK":
-                        pil_img = pil_img.convert("CMYK")
-                    return np.array(pil_img)  # Shape: (H, W, 4)
-                finally:
-                    bitmap.close()
-            finally:
-                page.close()
+        _rgb, cmyk = self.render_page_bundle(page_index, include_cmyk=True)
+        assert cmyk is not None
+        return cmyk

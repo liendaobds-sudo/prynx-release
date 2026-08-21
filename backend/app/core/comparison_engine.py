@@ -10,12 +10,19 @@ Chính sách so sánh PDF (in ấn): PIXEL-FIRST.
     định pass/fail. So chữ thuần: tool compare_text / QC riêng.
 """
 import logging
+import math
+import multiprocessing
 import os
 import shutil
+import tempfile
 import threading
 import time
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import (
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    TimeoutError as FutureTimeoutError,
+)
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,6 +60,359 @@ _COMPARE_COMMIT_MAX_LAG_S = 1.0
 # khi chấp nhận thời gian dò.
 _DEFAULT_MAX_IMPOSITION_MAP_CELLS = 250 * 250
 _MAP_PROGRESS_MIN_INTERVAL_S = 1.0
+_DEFAULT_COMPARE_FULL_FRAME_PIXELS = 40_000_000
+_DEFAULT_COMPARE_TILE_SIZE = 2048
+_DEFAULT_COMPARE_PROCESS_MIN_PAGES = 16
+_DEFAULT_COMPARE_PROCESS_MIN_PIXELS = 8_000_000
+
+
+def _comparison_size_strategy(
+    size_a: tuple[int, int],
+    size_b: tuple[int, int],
+) -> str:
+    """Phân loại khổ trang đúng thứ tự nhánh của ``ImageComparator.compare``."""
+    width_a, height_a = size_a
+    width_b, height_b = size_b
+    if size_a == size_b:
+        return "same"
+    area_a = float(width_a * height_a)
+    area_b = float(width_b * height_b)
+    if min(area_a, area_b) <= 0:
+        return "unsupported"
+    aspect_a = width_a / float(height_a)
+    aspect_b = width_b / float(height_b)
+    size_equalish = (
+        abs(width_a - width_b) <= 0.02 * max(width_a, width_b)
+        and abs(height_a - height_b) <= 0.02 * max(height_a, height_b)
+    )
+    aspect_close = abs(aspect_a - aspect_b) <= 0.06 * max(
+        aspect_a, aspect_b, 1e-6
+    )
+    area_ratio = max(area_a, area_b) / min(area_a, area_b)
+    if not size_equalish and aspect_close and 1.02 < area_ratio < 1.8:
+        return "scale"
+    if not size_equalish and area_ratio >= 1.8:
+        return "imposition"
+    return "pad"
+
+
+def _padded_region_reader(
+    source_reader: Callable[[int, int, int, int], object],
+    source_size: tuple[int, int],
+):
+    """Reader khung đích: vùng ngoài trang nguồn là trắng, gốc giữ trên-trái."""
+    source_width, source_height = source_size
+
+    def read(x: int, y: int, width: int, height: int):
+        import numpy as np
+
+        output = np.full((height, width, 3), 255, dtype=np.uint8)
+        inside_width = max(0, min(x + width, source_width) - x)
+        inside_height = max(0, min(y + height, source_height) - y)
+        if inside_width > 0 and inside_height > 0:
+            source = source_reader(x, y, inside_width, inside_height)
+            output[:inside_height, :inside_width] = source
+        return output
+
+    return read
+
+
+class _DiskBackedResizeReader:
+    """Resize RGB full-frame bằng OpenCV nhưng giữ nguồn/đích trên staging đĩa."""
+
+    def __init__(
+        self,
+        source_reader: Callable[[int, int, int, int], object],
+        source_size: tuple[int, int],
+        target_size: tuple[int, int],
+        *,
+        tile_size: int,
+        staging_dir: str | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ):
+        import cv2
+        import numpy as np
+
+        source_width, source_height = source_size
+        target_width, target_height = target_size
+        self._files = []
+        self._maps = []
+        self._closed = False
+        try:
+            source_file = tempfile.TemporaryFile(
+                prefix="prynx_compare_resize_src_", dir=staging_dir
+            )
+            self._files.append(source_file)
+            source_file.truncate(source_width * source_height * 3)
+            source_map = np.memmap(
+                source_file,
+                dtype=np.uint8,
+                mode="r+",
+                shape=(source_height, source_width, 3),
+            )
+            self._maps.append(source_map)
+            for y in range(0, source_height, tile_size):
+                read_height = min(tile_size, source_height - y)
+                for x in range(0, source_width, tile_size):
+                    if cancel_check is not None and cancel_check():
+                        raise InterruptedError("Đã hủy khi đang tạo staging resize")
+                    read_width = min(tile_size, source_width - x)
+                    source_map[y:y + read_height, x:x + read_width] = source_reader(
+                        x, y, read_width, read_height
+                    )
+            source_map.flush()
+
+            target_file = tempfile.TemporaryFile(
+                prefix="prynx_compare_resize_dst_", dir=staging_dir
+            )
+            self._files.append(target_file)
+            target_file.truncate(target_width * target_height * 3)
+            target_map = np.memmap(
+                target_file,
+                dtype=np.uint8,
+                mode="r+",
+                shape=(target_height, target_width, 3),
+            )
+            self._maps.append(target_map)
+            resized = cv2.resize(
+                source_map,
+                (target_width, target_height),
+                dst=target_map,
+                interpolation=cv2.INTER_AREA,
+            )
+            if not np.shares_memory(resized, target_map):
+                raise RuntimeError("OpenCV không ghi resize trực tiếp vào staging đích")
+            target_map.flush()
+            self._target = target_map
+        except Exception:
+            self.close()
+            raise
+
+    def read(self, x: int, y: int, width: int, height: int):
+        import numpy as np
+
+        if self._closed:
+            raise RuntimeError("Staging resize đã đóng")
+        return np.ascontiguousarray(
+            self._target[y:y + height, x:x + width]
+        )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._target = None
+        for mapping in reversed(self._maps):
+            try:
+                mapping.flush()
+                mapping._mmap.close()
+            except Exception:
+                logger.exception("Không đóng sạch được memmap resize Compare")
+        self._maps.clear()
+        for file_handle in reversed(self._files):
+            try:
+                file_handle.close()
+            except Exception:
+                logger.exception("Không đóng sạch được file staging resize Compare")
+        self._files.clear()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+class _DiskBackedRGBRasterReader:
+    """Dựng một raster RGB theo tile vào memmap để làm template lớn."""
+
+    def __init__(
+        self,
+        source_reader: Callable[[int, int, int, int], object],
+        size: tuple[int, int],
+        *,
+        tile_size: int,
+        staging_dir: str | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ):
+        import numpy as np
+
+        width, height = size
+        self._file = tempfile.TemporaryFile(
+            prefix="prynx_compare_template_", dir=staging_dir
+        )
+        self._map = None
+        self._closed = False
+        try:
+            self._file.truncate(width * height * 3)
+            self._map = np.memmap(
+                self._file,
+                dtype=np.uint8,
+                mode="r+",
+                shape=(height, width, 3),
+            )
+            for y in range(0, height, tile_size):
+                tile_height = min(tile_size, height - y)
+                for x in range(0, width, tile_size):
+                    if cancel_check is not None and cancel_check():
+                        raise InterruptedError("Đã hủy khi dựng template staging")
+                    tile_width = min(tile_size, width - x)
+                    self._map[y:y + tile_height, x:x + tile_width] = source_reader(
+                        x, y, tile_width, tile_height
+                    )
+            self._map.flush()
+        except Exception:
+            self.close()
+            raise
+
+    @property
+    def array(self):
+        if self._closed:
+            raise RuntimeError("Template staging đã đóng")
+        return self._map
+
+    def read(self, x: int, y: int, width: int, height: int):
+        import numpy as np
+
+        return np.ascontiguousarray(self.array[y:y + height, x:x + width])
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._map is not None:
+            try:
+                self._map.flush()
+                self._map._mmap.close()
+            except Exception:
+                logger.exception("Không đóng sạch được template memmap Compare")
+            self._map = None
+        try:
+            self._file.close()
+        except Exception:
+            logger.exception("Không đóng sạch được file template Compare")
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+def _prepare_tiled_size_readers(
+    read_a_source: Callable[[int, int, int, int], object],
+    read_b_source: Callable[[int, int, int, int], object],
+    size_a: tuple[int, int],
+    size_b: tuple[int, int],
+    strategy: str,
+    *,
+    tile_size: int,
+    staging_dir: str | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+):
+    """Chuẩn bị reader A/B trên cùng lưới đích và callback dọn staging."""
+    staging: list[_DiskBackedResizeReader] = []
+
+    def close() -> None:
+        for item in reversed(staging):
+            item.close()
+        staging.clear()
+
+    try:
+        if strategy == "same":
+            return size_a, read_a_source, read_b_source, read_b_source, close
+        if strategy == "pad":
+            target_size = (
+                max(size_a[0], size_b[0]),
+                max(size_a[1], size_b[1]),
+            )
+            read_a = _padded_region_reader(read_a_source, size_a)
+            read_b = _padded_region_reader(read_b_source, size_b)
+            return target_size, read_a, read_b, read_b, close
+        if strategy == "scale":
+            area_a = size_a[0] * size_a[1]
+            area_b = size_b[0] * size_b[1]
+            if area_a >= area_b:
+                target_size = size_a
+                resized_b = _DiskBackedResizeReader(
+                    read_b_source,
+                    size_b,
+                    target_size,
+                    tile_size=tile_size,
+                    staging_dir=staging_dir,
+                    cancel_check=cancel_check,
+                )
+                staging.append(resized_b)
+                return target_size, read_a_source, resized_b.read, resized_b.read, close
+            target_size = size_b
+            resized_a = _DiskBackedResizeReader(
+                read_a_source,
+                size_a,
+                target_size,
+                tile_size=tile_size,
+                staging_dir=staging_dir,
+                cancel_check=cancel_check,
+            )
+            staging.append(resized_a)
+            return target_size, resized_a.read, read_b_source, read_b_source, close
+        raise ValueError(f"Chiến lược kích thước chưa hỗ trợ tile: {strategy}")
+    except Exception:
+        close()
+        raise
+
+
+def _normalize_tiled_previews(preview_a, preview_b, strategy: str):
+    """Đưa preview về đúng semantics scale/pad trước khi ước lượng translation."""
+    if strategy != "scale":
+        return preview_a, preview_b
+    import cv2
+
+    area_a = preview_a.shape[0] * preview_a.shape[1]
+    area_b = preview_b.shape[0] * preview_b.shape[1]
+    if area_a >= area_b:
+        preview_b = cv2.resize(
+            preview_b,
+            (preview_a.shape[1], preview_a.shape[0]),
+            interpolation=cv2.INTER_AREA,
+        )
+    else:
+        preview_a = cv2.resize(
+            preview_a,
+            (preview_b.shape[1], preview_b.shape[0]),
+            interpolation=cv2.INTER_AREA,
+        )
+    return preview_a, preview_b
+
+
+def _aligned_tiled_reader(
+    base_reader: Callable[[int, int, int, int], object],
+    comparator: ImageComparator,
+    page_size: tuple[int, int],
+    dx: float,
+    dy: float,
+):
+    """Bọc reader nền bằng cùng phép translation mà comparator đã áp."""
+    page_width, page_height = page_size
+
+    def read(x: int, y: int, width: int, height: int):
+        guard = int(math.ceil(max(abs(dx), abs(dy)))) + 2
+        read_x = max(0, x - guard)
+        read_y = max(0, y - guard)
+        read_right = min(page_width, x + width + guard)
+        read_bottom = min(page_height, y + height + guard)
+        image = base_reader(
+            read_x,
+            read_y,
+            read_right - read_x,
+            read_bottom - read_y,
+        )
+        image = comparator._apply_translation(image, dx, dy)
+        return image[
+            y - read_y:y - read_y + height,
+            x - read_x:x - read_x + width,
+        ]
+
+    return read
 
 
 def _max_imposition_map_cells() -> int:
@@ -68,6 +428,254 @@ def _max_imposition_map_cells() -> int:
         )
         return _DEFAULT_MAX_IMPOSITION_MAP_CELLS
     return max(1, value)
+
+
+def _compare_full_frame_pixel_threshold() -> int:
+    """Ngưỡng chọn chiến lược, không phải trần từ chối trang lớn."""
+    raw = os.environ.get("PRYNX_MAX_COMPARE_PAGE_PIXELS", "")
+    try:
+        value = int(raw) if raw else _DEFAULT_COMPARE_FULL_FRAME_PIXELS
+    except (TypeError, ValueError):
+        value = _DEFAULT_COMPARE_FULL_FRAME_PIXELS
+    return max(1, value)
+
+
+def _compare_tile_size() -> int:
+    """Tile mặc định gate theo RAM: máy yếu giảm, máy mạnh giữ 2048 px."""
+    raw = os.environ.get("PRYNX_COMPARE_TILE_SIZE", "")
+    try:
+        configured = int(raw) if raw else 0
+    except (TypeError, ValueError):
+        configured = 0
+    if configured > 0:
+        return max(256, min(configured, 4096))
+
+    from app.core.system_memory import read_memory_status_mb
+
+    total_mb, _available_mb = read_memory_status_mb()
+    if total_mb is not None and total_mb < 8 * 1024:
+        return 1024
+    if total_mb is not None and total_mb < 16 * 1024:
+        return 1536
+    return _DEFAULT_COMPARE_TILE_SIZE
+
+
+def _compare_process_min_pages() -> int:
+    """Ngưỡng bù startup spawn Windows; env có thể ép xuống để benchmark/test."""
+    raw = os.environ.get("PRYNX_COMPARE_PROCESS_MIN_PAGES", "")
+    try:
+        value = int(raw) if raw else _DEFAULT_COMPARE_PROCESS_MIN_PAGES
+    except (TypeError, ValueError):
+        value = _DEFAULT_COMPARE_PROCESS_MIN_PAGES
+    return max(2, value)
+
+
+def _compare_process_min_pixels() -> int:
+    """Chỉ trả phí spawn khi mỗi trang đủ nặng; đây là gate theo workload."""
+    raw = os.environ.get("PRYNX_COMPARE_PROCESS_MIN_PIXELS", "")
+    try:
+        value = int(raw) if raw else _DEFAULT_COMPARE_PROCESS_MIN_PIXELS
+    except (TypeError, ValueError):
+        value = _DEFAULT_COMPARE_PROCESS_MIN_PIXELS
+    return max(1, value)
+
+
+def _compare_page_process_worker(payload: dict):
+    """Worker process độc lập cho cặp trang 1:1 đã chốt trước.
+
+    Mỗi process mở PDF A/B riêng nên có PDFium riêng; không truyền bitmap qua IPC.
+    Artifact được encode/ghi trong worker, process chính chỉ nhận result nhẹ để commit
+    DB theo thứ tự. Hàm phải top-level để Windows ``spawn``/Nuitka pickle được.
+    """
+    import cv2
+
+    from app.config import settings as worker_settings
+
+    worker_settings.RESULTS_DIR = payload["results_dir"]
+    cv2.setNumThreads(max(1, int(payload.get("cv_threads", 1))))
+    processor = PDFProcessor()
+    comparator = ImageComparator()
+    renderer = HighlightRenderer()
+    dpi = int(payload["dpi"])
+    a_idx = int(payload["a_idx"])
+    b_idx = int(payload["b_idx"])
+    page_number = int(payload["page_number"])
+    job_id = str(payload["job_id"])
+
+    with processor.open_document(payload["file_a_path"], dpi=dpi) as doc_a, \
+         processor.open_document(payload["file_b_path"], dpi=dpi) as doc_b:
+        is_cmyk_mode = str(
+            (payload.get("config") or {}).get("comparison_mode", "full")
+        ).lower() == "cmyk"
+        size_a = doc_a.page_pixel_size(a_idx)
+        size_b = doc_b.page_pixel_size(b_idx)
+        size_strategy = _comparison_size_strategy(size_a, size_b)
+        target_size = (
+            max(size_a[0], size_b[0]),
+            max(size_a[1], size_b[1]),
+        )
+        if size_strategy == "scale":
+            target_size = size_a if size_a[0] * size_a[1] >= size_b[0] * size_b[1] else size_b
+        width, height = target_size
+
+        if (
+            width * height > int(payload["full_frame_pixels"])
+            and size_strategy != "imposition"
+        ):
+            preview_dpi = max(
+                18,
+                min(dpi, int(dpi * 1200 / float(max(width, height)))),
+            )
+            with processor.open_document(
+                payload["file_a_path"], dpi=preview_dpi
+            ) as preview_a_doc, processor.open_document(
+                payload["file_b_path"], dpi=preview_dpi
+            ) as preview_b_doc:
+                preview_a = preview_a_doc.render_page(a_idx)
+                preview_b = preview_b_doc.render_page(b_idx)
+            preview_a, preview_b = _normalize_tiled_previews(
+                preview_a, preview_b, size_strategy
+            )
+
+            def read_a(x: int, y: int, tile_width: int, tile_height: int):
+                return doc_a.render_page_region(
+                    a_idx,
+                    x_px=x,
+                    y_px=y,
+                    width_px=tile_width,
+                    height_px=tile_height,
+                )[0]
+
+            def read_b(x: int, y: int, tile_width: int, tile_height: int):
+                return doc_b.render_page_region(
+                    b_idx,
+                    x_px=x,
+                    y_px=y,
+                    width_px=tile_width,
+                    height_px=tile_height,
+                )[0]
+
+            tile_size = int(payload["tile_size"])
+            target_size, read_a_grid, read_b_grid, read_base_b, close_staging = (
+                _prepare_tiled_size_readers(
+                    read_a,
+                    read_b,
+                    size_a,
+                    size_b,
+                    size_strategy,
+                    tile_size=tile_size,
+                    staging_dir=(payload.get("config") or {}).get("_tile_staging_dir"),
+                )
+            )
+            width, height = target_size
+            try:
+                result = comparator.compare_tiled(
+                    read_a_grid,
+                    read_b_grid,
+                    width,
+                    height,
+                    tolerance=payload["tolerance"],
+                    config=payload["config"],
+                    tile_size=tile_size,
+                    preview_img1=preview_a,
+                    preview_img2=preview_b,
+                    collect_diff_mask=False,
+                )
+                if is_cmyk_mode and size_strategy == "same" and result.diff_regions:
+                    def read_cmyk_a(x: int, y: int, tile_width: int, tile_height: int):
+                        cmyk = doc_a.render_page_region(
+                            a_idx,
+                            x_px=x,
+                            y_px=y,
+                            width_px=tile_width,
+                            height_px=tile_height,
+                            include_cmyk=True,
+                        )[1]
+                        assert cmyk is not None
+                        return cmyk
+
+                    def read_cmyk_b(x: int, y: int, tile_width: int, tile_height: int):
+                        cmyk = doc_b.render_page_region(
+                            b_idx,
+                            x_px=x,
+                            y_px=y,
+                            width_px=tile_width,
+                            height_px=tile_height,
+                            include_cmyk=True,
+                        )[1]
+                        assert cmyk is not None
+                        return cmyk
+
+                    comparator.augment_cmyk_regions(
+                        result,
+                        read_cmyk_a,
+                        read_cmyk_b,
+                        width,
+                        height,
+                    )
+                if result.diff_regions:
+                    read_aligned_b = _aligned_tiled_reader(
+                        read_base_b,
+                        comparator,
+                        target_size,
+                        float(result.translation_x),
+                        float(result.translation_y),
+                    )
+                    result.highlighted_artifact_url = renderer.save_tiled_highlight_image(
+                        read_aligned_b,
+                        result.diff_regions,
+                        width,
+                        height,
+                        job_id,
+                        page_number,
+                        stripe_height=256,
+                        sign_url=False,
+                    )
+            finally:
+                close_staging()
+        else:
+            if is_cmyk_mode:
+                image_a, cmyk_a = doc_a.render_page_bundle(a_idx, include_cmyk=True)
+                image_b, cmyk_b = doc_b.render_page_bundle(b_idx, include_cmyk=True)
+                assert cmyk_a is not None and cmyk_b is not None
+                result = comparator.compare_cmyk(
+                    cmyk_a,
+                    cmyk_b,
+                    tolerance=payload["tolerance"],
+                    rgb_a=image_a,
+                    rgb_b=image_b,
+                    config=payload["config"],
+                )
+            else:
+                image_a = doc_a.render_page(a_idx)
+                image_b = doc_b.render_page(b_idx)
+                result = comparator.compare(
+                    image_a,
+                    image_b,
+                    tolerance=payload["tolerance"],
+                    config=payload["config"],
+                )
+            result = _encode_highlight_to_png(result)
+            if result.highlighted_png is not None:
+                result.highlighted_artifact_url = renderer.save_highlighted_png_bytes(
+                    result.highlighted_png,
+                    job_id,
+                    page_number,
+                    sign_url=False,
+                )
+                result.highlighted_png = None
+
+        if result.gif_image is not None:
+            result.gif_artifact_url = renderer.save_gif_image(
+                result.gif_image,
+                job_id,
+                page_number,
+                sign_url=False,
+            )
+            result.gif_image = None
+        result.diff_mask = None
+        result.highlighted_image = None
+        return result
 
 
 @contextmanager
@@ -524,6 +1132,278 @@ def _run_comparison_pipeline_impl(
             "document-imposition" if document_imposition else "sequential",
         )
 
+        def _page_tile_eligible(a_idx: int, b_idx: int):
+            """Lập kế hoạch tile cho 1:1 same/pad/scale; bình bài sang lô riêng."""
+            if document_imposition:
+                return None
+            if a_idx is None or b_idx is None:
+                return None
+            try:
+                size_a = doc_a.page_pixel_size(a_idx)
+                size_b = doc_b.page_pixel_size(b_idx)
+            except Exception as exc:
+                logger.warning("Không đọc được kích thước raster để chọn tile: %s", exc)
+                return None
+            strategy = _comparison_size_strategy(size_a, size_b)
+            if strategy in {"imposition", "unsupported"}:
+                return None
+            if strategy == "scale":
+                target_size = (
+                    size_a
+                    if size_a[0] * size_a[1] >= size_b[0] * size_b[1]
+                    else size_b
+                )
+            else:
+                target_size = (
+                    max(size_a[0], size_b[0]),
+                    max(size_a[1], size_b[1]),
+                )
+            width, height = target_size
+            if width * height <= _compare_full_frame_pixel_threshold():
+                return None
+            return width, height, strategy, size_a, size_b
+
+        def _raise_if_large_page_not_tiled(a_idx: int, b_idx: int) -> None:
+            """Không cho ca ngoài hợp đồng tile âm thầm quay lại full-frame rồi OOM."""
+            if document_imposition:
+                return
+            size_a = doc_a.page_pixel_size(a_idx)
+            size_b = doc_b.page_pixel_size(b_idx)
+            largest = max(size_a[0] * size_a[1], size_b[0] * size_b[1])
+            threshold = _compare_full_frame_pixel_threshold()
+            if largest <= threshold or _page_tile_eligible(a_idx, b_idx) is not None:
+                return
+            raise ValueError(
+                "Trang lớn vượt ngưỡng full-frame nhưng cặp hiện tại không hỗ trợ "
+                "đối chiếu theo tile (bình bài/diện tích chênh từ 1,8×). "
+                "Hãy chọn đúng chế độ ghép trang hoặc giảm DPI."
+            )
+
+        def _run_tiled_page(
+            a_idx: int,
+            b_idx: int,
+            page_config: dict,
+            *,
+            tile_cancel_check: Callable[[], bool] | None = None,
+        ):
+            """Render preview + tile vùng cho một cặp 1:1 trang lớn RGB/CMYK."""
+            dimensions = _page_tile_eligible(a_idx, b_idx)
+            if dimensions is None:
+                raise ValueError("Cặp trang không đủ điều kiện cho comparator tile")
+            width, height, size_strategy, size_a, size_b = dimensions
+            max_side = max(width, height)
+            full_dpi = max(1, int(dpi))
+            preview_dpi = max(
+                18,
+                min(full_dpi, int(full_dpi * 1200 / float(max_side))),
+            )
+            _raise_if_cancelled(cancel_check)
+            with processor.open_document(file_a.file_path, dpi=preview_dpi) as preview_a_doc, \
+                 processor.open_document(file_b.file_path, dpi=preview_dpi) as preview_b_doc:
+                preview_a = preview_a_doc.render_page(a_idx)
+                preview_b = preview_b_doc.render_page(b_idx)
+            preview_a, preview_b = _normalize_tiled_previews(
+                preview_a, preview_b, size_strategy
+            )
+
+            def read_a(x: int, y: int, tile_width: int, tile_height: int):
+                return doc_a.render_page_region(
+                    a_idx,
+                    x_px=x,
+                    y_px=y,
+                    width_px=tile_width,
+                    height_px=tile_height,
+                )[0]
+
+            def read_b(x: int, y: int, tile_width: int, tile_height: int):
+                return doc_b.render_page_region(
+                    b_idx,
+                    x_px=x,
+                    y_px=y,
+                    width_px=tile_width,
+                    height_px=tile_height,
+                )[0]
+
+            close_staging = lambda: None
+            try:
+                target_size, read_a_grid, read_b_grid, read_base_b, close_staging = (
+                    _prepare_tiled_size_readers(
+                        read_a,
+                        read_b,
+                        size_a,
+                        size_b,
+                        size_strategy,
+                        tile_size=_compare_tile_size(),
+                        staging_dir=page_config.get("_tile_staging_dir"),
+                        cancel_check=tile_cancel_check,
+                    )
+                )
+                result = comparator.compare_tiled(
+                    read_a_grid,
+                    read_b_grid,
+                    width,
+                    height,
+                    tolerance=tolerance,
+                    config=page_config,
+                    tile_size=_compare_tile_size(),
+                    preview_img1=preview_a,
+                    preview_img2=preview_b,
+                    collect_diff_mask=False,
+                    cancel_check=tile_cancel_check,
+                )
+                if (
+                    is_cmyk_mode
+                    and size_strategy == "same"
+                    and result.diff_regions
+                ):
+                    def read_cmyk_a(x: int, y: int, tile_width: int, tile_height: int):
+                        cmyk = doc_a.render_page_region(
+                            a_idx,
+                            x_px=x,
+                            y_px=y,
+                            width_px=tile_width,
+                            height_px=tile_height,
+                            include_cmyk=True,
+                        )[1]
+                        assert cmyk is not None
+                        return cmyk
+
+                    def read_cmyk_b(x: int, y: int, tile_width: int, tile_height: int):
+                        cmyk = doc_b.render_page_region(
+                            b_idx,
+                            x_px=x,
+                            y_px=y,
+                            width_px=tile_width,
+                            height_px=tile_height,
+                            include_cmyk=True,
+                        )[1]
+                        assert cmyk is not None
+                        return cmyk
+
+                    comparator.augment_cmyk_regions(
+                        result,
+                        read_cmyk_a,
+                        read_cmyk_b,
+                        width,
+                        height,
+                    )
+                if result.diff_regions:
+                    result._tile_base_reader = read_base_b
+                    result._tile_cleanup = close_staging
+                else:
+                    close_staging()
+                return result
+            except InterruptedError as exc:
+                close_staging()
+                raise ComparisonCancelled(str(exc)) from exc
+            except Exception:
+                close_staging()
+                raise
+
+        def _imposition_tile_eligible(a_idx: int, b_idx: int):
+            if a_idx is None or b_idx is None:
+                return None
+            requested_matching = str(
+                (config or {}).get("page_matching_mode", "auto") or "auto"
+            ).lower()
+            if not document_imposition and requested_matching == "sequential":
+                return None
+            if not document_imposition:
+                size_a = doc_a.page_pixel_size(a_idx)
+                size_b = doc_b.page_pixel_size(b_idx)
+                if _comparison_size_strategy(size_a, size_b) != "imposition":
+                    return None
+            imposed_size = doc_b.page_pixel_size(b_idx)
+            if imposed_size[0] * imposed_size[1] <= _compare_full_frame_pixel_threshold():
+                return None
+            return imposed_size
+
+        def _run_tiled_imposition_page(
+            a_idx: int,
+            b_idx: int,
+            page_config: dict,
+            *,
+            tile_cancel_check: Callable[[], bool] | None = None,
+        ):
+            """Dò tờ trên preview, verify từng bản bằng ROI tờ imposed full DPI."""
+            import numpy as np
+
+            imposed_width, imposed_height = doc_b.page_pixel_size(b_idx)
+            template_width, template_height = doc_a.page_pixel_size(a_idx)
+            full_dpi = max(1, int(dpi))
+            preview_dpi = max(
+                18,
+                min(
+                    full_dpi,
+                    int(
+                        full_dpi
+                        * 1200
+                        / float(max(imposed_width, imposed_height))
+                    ),
+                ),
+            )
+            _raise_if_cancelled(cancel_check)
+            with processor.open_document(
+                file_a.file_path, dpi=preview_dpi
+            ) as preview_a_doc, processor.open_document(
+                file_b.file_path, dpi=preview_dpi
+            ) as preview_b_doc:
+                preview_template = preview_a_doc.render_page(a_idx)
+                preview_imposed = preview_b_doc.render_page(b_idx)
+
+            def read_imposed(x: int, y: int, width: int, height: int):
+                return doc_b.render_page_region(
+                    b_idx,
+                    x_px=x,
+                    y_px=y,
+                    width_px=width,
+                    height_px=height,
+                )[0]
+
+            cleanup = lambda: None
+            template_stage = None
+            try:
+                if template_width * template_height > _compare_full_frame_pixel_threshold():
+                    template_stage = _DiskBackedRGBRasterReader(
+                        lambda x, y, width, height: doc_a.render_page_region(
+                            a_idx,
+                            x_px=x,
+                            y_px=y,
+                            width_px=width,
+                            height_px=height,
+                        )[0],
+                        (template_width, template_height),
+                        tile_size=_compare_tile_size(),
+                        staging_dir=page_config.get("_tile_staging_dir"),
+                        cancel_check=tile_cancel_check,
+                    )
+                    template = template_stage.array
+                    cleanup = template_stage.close
+                else:
+                    template = doc_a.render_page(a_idx)
+
+                result = comparator.compare_imposition_tiled(
+                    template,
+                    read_imposed,
+                    imposed_width,
+                    imposed_height,
+                    preview_template=preview_template,
+                    preview_imposed=preview_imposed,
+                    tolerance=tolerance,
+                    is_packaging_mode=bool(page_config.get("is_packaging_mode", False)),
+                    config=page_config,
+                    cancel_check=tile_cancel_check,
+                )
+                result._tile_base_reader = read_imposed
+                result._tile_cleanup = cleanup
+                return result
+            except InterruptedError as exc:
+                cleanup()
+                raise ComparisonCancelled(str(exc)) from exc
+            except Exception:
+                cleanup()
+                raise
+
         imposition_page_map: dict[int, int] = {}
         if document_imposition:
             # PERF (audit 2026-08-13 §PB-3): chặn bùng nổ O(A×B) của bước dò bình bài
@@ -680,8 +1560,18 @@ def _run_comparison_pipeline_impl(
             per_worker_mb=640.0,
             env_override="PRYNX_COMPARE_WORKERS",
         )
+        process_worker_env = (
+            "PRYNX_COMPARE_PROCESS_WORKERS"
+            if os.environ.get("PRYNX_COMPARE_PROCESS_WORKERS", "")
+            else "PRYNX_COMPARE_WORKERS"
+        )
+        process_workers, process_workers_reason = plan_worker_count(
+            kind="compare-render-processes",
+            per_worker_mb=640.0,
+            env_override=process_worker_env,
+        )
         pipeline_pairs = None
-        if compare_workers >= 2 and len(work_seq) >= 2:
+        if max(compare_workers, process_workers) >= 2 and len(work_seq) >= 2:
             pipeline_pairs = _plan_pipeline_pairs(
                 doc_a, doc_b, pages_a, pages_b, work_seq,
                 document_imposition=document_imposition,
@@ -693,6 +1583,59 @@ def _run_comparison_pipeline_impl(
                     "Job %s: pipeline so sánh %d trang với %d worker so-ảnh (%s)",
                     job_id, len(work_seq), compare_workers, compare_workers_reason,
                 )
+        use_process_pipeline = bool(
+            pipeline_pairs is not None
+            and process_workers >= 2
+            and len(pipeline_pairs) >= _compare_process_min_pages()
+            and not document_imposition
+            and not use_alignment
+            and pages_a == pages_b
+        )
+        if use_process_pipeline:
+            try:
+                process_pixels = 0
+                for a_idx, b_idx, _found_b, needs_compare in pipeline_pairs:
+                    if not needs_compare or a_idx is None or b_idx is None:
+                        use_process_pipeline = False
+                        break
+                    size_a = doc_a.page_pixel_size(a_idx)
+                    size_b = doc_b.page_pixel_size(b_idx)
+                    size_strategy = _comparison_size_strategy(size_a, size_b)
+                    if size_strategy in {"imposition", "unsupported"}:
+                        use_process_pipeline = False
+                        break
+                    if size_strategy == "scale":
+                        target_size = (
+                            size_a
+                            if size_a[0] * size_a[1] >= size_b[0] * size_b[1]
+                            else size_b
+                        )
+                    else:
+                        target_size = (
+                            max(size_a[0], size_b[0]),
+                            max(size_a[1], size_b[1]),
+                        )
+                    process_pixels = max(
+                        process_pixels,
+                        target_size[0] * target_size[1],
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Không đọc được pixel trang để admission process Compare: %s",
+                    exc,
+                )
+                process_pixels = 0
+            use_process_pipeline = (
+                use_process_pipeline
+                and process_pixels >= _compare_process_min_pixels()
+            )
+        if use_process_pipeline:
+            logger.info(
+                "Job %s: render + compare 1:1 đa tiến trình với %d worker (%s)",
+                job_id,
+                min(process_workers, len(pipeline_pairs)),
+                process_workers_reason,
+            )
 
         def _sequential_outcomes():
             """Đường tuần tự NGUYÊN BẢN — dùng cho máy yếu và các ca ghép trang
@@ -700,9 +1643,60 @@ def _run_comparison_pipeline_impl(
             current_b_idx = 0
             for out_idx, (a_idx, b_idx) in enumerate(work_seq):
                 _raise_if_cancelled(cancel_check)
+                tile_b_idx = b_idx if b_idx is not None else current_b_idx
+                tile_page_config = dict(comparison_config)
+                if document_imposition and a_idx is not None and a_idx < len(trim_insets_a):
+                    if trim_insets_a[a_idx] is not None:
+                        tile_page_config["template_trim_insets"] = trim_insets_a[a_idx]
+                imposition_dimensions = (
+                    _imposition_tile_eligible(a_idx, tile_b_idx)
+                    if a_idx is not None and 0 <= a_idx < pages_a
+                    and 0 <= tile_b_idx < pages_b
+                    else None
+                )
+                if imposition_dimensions is not None:
+                    result = _run_tiled_imposition_page(
+                        a_idx,
+                        tile_b_idx,
+                        tile_page_config,
+                        tile_cancel_check=cancel_check,
+                    )
+                    found_b_idx = tile_b_idx
+                    yield out_idx, a_idx, b_idx, found_b_idx, result
+                    continue
+                tile_dimensions = (
+                    _page_tile_eligible(a_idx, tile_b_idx)
+                    if a_idx is not None and 0 <= a_idx < pages_a
+                    and 0 <= tile_b_idx < pages_b
+                    else None
+                )
+                if tile_dimensions is not None:
+                    result = _run_tiled_page(
+                        a_idx,
+                        tile_b_idx,
+                        tile_page_config,
+                        tile_cancel_check=cancel_check,
+                    )
+                    found_b_idx = tile_b_idx
+                    if not use_alignment:
+                        current_b_idx = found_b_idx + 1
+                    yield out_idx, a_idx, b_idx, found_b_idx, result
+                    continue
+                if (
+                    a_idx is not None and 0 <= a_idx < pages_a
+                    and 0 <= tile_b_idx < pages_b
+                ):
+                    _raise_if_large_page_not_tiled(a_idx, tile_b_idx)
+
                 # Render page A (None nếu không có A — vd trang chỉ được THÊM ở B)
-                page_idx = a_idx if a_idx is not None else -1
-                img_a = doc_a.render_page(a_idx) if (a_idx is not None and a_idx < pages_a) else None
+                cmyk_a = None
+                if a_idx is not None and a_idx < pages_a:
+                    if is_cmyk_mode:
+                        img_a, cmyk_a = doc_a.render_page_bundle(a_idx, include_cmyk=True)
+                    else:
+                        img_a = doc_a.render_page(a_idx)
+                else:
+                    img_a = None
 
                 img_b = None
                 found_b_idx = b_idx if b_idx is not None else (-1 if document_imposition else current_b_idx)
@@ -731,10 +1725,8 @@ def _run_comparison_pipeline_impl(
                 elif is_cmyk_mode and img_a is not None and pages_b > 0:
                     _raise_if_cancelled(cancel_check)
                     # ── CMYK Channel-by-Channel Comparison ──
-                    cmyk_a = doc_a.render_page_cmyk(page_idx)
                     b_idx = min(current_b_idx, pages_b - 1)
-                    cmyk_b = doc_b.render_page_cmyk(b_idx)
-                    img_b = doc_b.render_page(b_idx)
+                    img_b, cmyk_b = doc_b.render_page_bundle(b_idx, include_cmyk=True)
                     found_b_idx = b_idx
                     result = comparator.compare_cmyk(
                         cmyk_a, cmyk_b, tolerance=tolerance,
@@ -808,21 +1800,36 @@ def _run_comparison_pipeline_impl(
 
             def _submit(pool, a_idx, eff_b_idx):
                 _raise_if_cancelled(cancel_check)
-                img_a = doc_a.render_page(a_idx)
                 page_config = dict(comparison_config)
                 if document_imposition and a_idx < len(trim_insets_a):
                     if trim_insets_a[a_idx] is not None:
                         page_config["template_trim_insets"] = trim_insets_a[a_idx]
+                if (
+                    a_idx is not None
+                    and eff_b_idx is not None
+                    and _page_tile_eligible(a_idx, eff_b_idx) is not None
+                ):
+                    # PDFium calls remain guarded inside render_page_region. The
+                    # worker receives only page indexes/paths through the closure;
+                    # no full bitmap is copied into the pool.
+                    return pool.submit(
+                        _run_tiled_page,
+                        a_idx,
+                        eff_b_idx,
+                        page_config,
+                        tile_cancel_check=external_cancel_check,
+                    )
+                _raise_if_large_page_not_tiled(a_idx, eff_b_idx)
                 if is_cmyk_mode:
-                    cmyk_a = doc_a.render_page_cmyk(a_idx)
-                    cmyk_b = doc_b.render_page_cmyk(eff_b_idx)
-                    img_b = doc_b.render_page(eff_b_idx)
+                    img_a, cmyk_a = doc_a.render_page_bundle(a_idx, include_cmyk=True)
+                    img_b, cmyk_b = doc_b.render_page_bundle(eff_b_idx, include_cmyk=True)
                     def compare_page():
                         return _encode_highlight_to_png(comparator.compare_cmyk(
                             cmyk_a, cmyk_b, tolerance=tolerance,
                             rgb_a=img_a, rgb_b=img_b, config=page_config,
                         ))
                 else:
+                    img_a = doc_a.render_page(a_idx)
                     img_b = doc_b.render_page(eff_b_idx)
                     def compare_page():
                         return _encode_highlight_to_png(comparator.compare(
@@ -900,11 +1907,70 @@ def _run_comparison_pipeline_impl(
                     pool.shutdown(wait=True, cancel_futures=True)
                 resources.close()
 
-        outcomes = (
-            _pipelined_outcomes(pipeline_pairs)
-            if pipeline_pairs is not None
-            else _sequential_outcomes()
-        )
+        def _multiprocess_outcomes(pairs):
+            """Render + compare + encode trong process; trả kết quả đúng thứ tự."""
+            raw_cv_threads = os.environ.get("PRYNX_COMPARE_CV_THREADS", "")
+            try:
+                process_cv_threads = max(1, int(raw_cv_threads)) if raw_cv_threads else 1
+            except (TypeError, ValueError):
+                process_cv_threads = 1
+            worker_count = min(process_workers, len(pairs))
+            pending: deque = deque()
+            pool = None
+
+            def _drain():
+                out_idx, orig_a, orig_b, found_b, future = pending.popleft()
+                while True:
+                    _raise_if_cancelled(cancel_check)
+                    try:
+                        result = future.result(timeout=0.05)
+                        return out_idx, orig_a, orig_b, found_b, result
+                    except FutureTimeoutError:
+                        continue
+
+            try:
+                pool = ProcessPoolExecutor(
+                    max_workers=worker_count,
+                    mp_context=multiprocessing.get_context("spawn"),
+                )
+                for out_idx, (a_idx, eff_b_idx, found_b, needs_compare) in enumerate(pairs):
+                    _raise_if_cancelled(cancel_check)
+                    if not needs_compare or a_idx is None or eff_b_idx is None:
+                        raise ValueError("Pipeline process 1:1 nhận cặp trang không hợp lệ")
+                    payload = {
+                        "file_a_path": file_a.file_path,
+                        "file_b_path": file_b.file_path,
+                        "a_idx": a_idx,
+                        "b_idx": eff_b_idx,
+                        "dpi": dpi,
+                        "tolerance": tolerance,
+                        "config": dict(comparison_config),
+                        "full_frame_pixels": _compare_full_frame_pixel_threshold(),
+                        "tile_size": _compare_tile_size(),
+                        "cv_threads": process_cv_threads,
+                        "results_dir": str(Path(settings.RESULTS_DIR).resolve()),
+                        "job_id": str(job_id),
+                        "page_number": out_idx + 1,
+                    }
+                    future = pool.submit(_compare_page_process_worker, payload)
+                    orig_a, orig_b = work_seq[out_idx]
+                    pending.append((out_idx, orig_a, orig_b, found_b, future))
+                    if len(pending) >= worker_count:
+                        yield _drain()
+                while pending:
+                    yield _drain()
+            finally:
+                for item in pending:
+                    item[-1].cancel()
+                if pool is not None:
+                    pool.shutdown(wait=True, cancel_futures=True)
+
+        if use_process_pipeline:
+            outcomes = _multiprocess_outcomes(pipeline_pairs)
+        elif pipeline_pairs is not None and compare_workers >= 2:
+            outcomes = _pipelined_outcomes(pipeline_pairs)
+        else:
+            outcomes = _sequential_outcomes()
 
         # PERF (audit 2026-08-13 §PB-2): gộp commit theo lô nhỏ. Hủy/lỗi giữa lô
         # an toàn: phần chưa commit bị rollback trong _finalize_interrupted_job,
@@ -978,7 +2044,64 @@ def _run_comparison_pipeline_impl(
             highlighted_url = None
             gif_url = None
 
-            if getattr(result, "highlighted_png", None) is not None:
+            if getattr(result, "highlighted_artifact_url", None) is not None:
+                # Worker process không có sidecar token; chỉ process chính ký URL.
+                from app.core.license_guard import result_access_url
+
+                highlighted_url = result_access_url(result.highlighted_artifact_url)
+            elif (
+                getattr(result, "is_tiled", False)
+                and (
+                    result.diff_regions
+                    or getattr(result, "_imposition_tracking_boxes", None)
+                )
+                and found_b_idx >= 0
+            ):
+                _raise_if_cancelled(cancel_check)
+                tile_cleanup = getattr(result, "_tile_cleanup", None)
+                try:
+                    base_reader = getattr(result, "_tile_base_reader", None)
+                    if base_reader is None:
+                        base_reader = lambda x, y, tile_width, tile_height: (
+                            doc_b.render_page_region(
+                                found_b_idx,
+                                x_px=x,
+                                y_px=y,
+                                width_px=tile_width,
+                                height_px=tile_height,
+                            )[0]
+                        )
+                    aligned_reader = _aligned_tiled_reader(
+                        base_reader,
+                        comparator,
+                        (int(result.render_w), int(result.render_h)),
+                        float(getattr(result, "translation_x", 0.0)),
+                        float(getattr(result, "translation_y", 0.0)),
+                    )
+                    highlighted_url = renderer.save_tiled_highlight_image(
+                        aligned_reader,
+                        result.diff_regions,
+                        int(result.render_w),
+                        int(result.render_h),
+                        str(job_id),
+                        page_num,
+                        stripe_height=256,
+                        cancel_check=cancel_check,
+                        tracking_boxes=getattr(
+                            result, "_imposition_tracking_boxes", None
+                        ),
+                        imposition_mode=bool(
+                            getattr(result, "is_imposition_mode", False)
+                        ),
+                    )
+                except InterruptedError as exc:
+                    raise ComparisonCancelled(str(exc)) from exc
+                finally:
+                    if callable(tile_cleanup):
+                        tile_cleanup()
+                        result._tile_cleanup = None
+                        result._tile_base_reader = None
+            elif getattr(result, "highlighted_png", None) is not None:
                 # PERF (audit 2026-08-13 §PB-2): pipeline đã encode PNG trong
                 # worker — main thread chỉ ghi bytes (nhanh hơn ~10× encode).
                 _raise_if_cancelled(cancel_check)
@@ -990,7 +2113,11 @@ def _run_comparison_pipeline_impl(
                 highlighted_url = renderer.save_highlighted_image(
                     result.highlighted_image, str(job_id), page_num
                 )
-            if result.gif_image is not None:
+            if getattr(result, "gif_artifact_url", None) is not None:
+                from app.core.license_guard import result_access_url
+
+                gif_url = result_access_url(result.gif_artifact_url)
+            elif result.gif_image is not None:
                 _raise_if_cancelled(cancel_check)
                 gif_url = renderer.save_gif_image(
                     result.gif_image, str(job_id), page_num

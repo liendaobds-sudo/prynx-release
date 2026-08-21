@@ -83,14 +83,18 @@ def estimate_vdp_disk(
 
 
 def estimate_compare_disk(
-    *, total_render_pixels: int, page_count: int
+    *,
+    total_render_pixels: int,
+    page_count: int,
+    max_page_pixels: int = 0,
 ) -> JobDiskEstimate:
     """Ước lượng đỉnh đĩa artifact của một job Compare (PNG diff + GIF).
 
     PERF (audit 2026-08-13 §PB-1): giả định XẤU NHẤT mọi trang đều khác biệt —
-    Compare không có giai đoạn temp riêng (ghi thẳng ``RESULTS_DIR/<job_id>``)
-    nên toàn bộ ước lượng nằm ở ``output_bytes``. Ước lượng dư không gây hại:
-    guard chỉ từ chối khi volume chắc chắn thiếu cả reserve.
+    Artifact ghi thẳng ``RESULTS_DIR/<job_id>``. Riêng comparator tile dùng thêm
+    một mask uint8 disk-backed ở TEMP; caller truyền ``max_page_pixels`` để admission
+    volume staging. Ước lượng dư không gây hại: guard chỉ từ chối khi volume chắc
+    chắn thiếu cả reserve.
     """
     pages = max(1, int(page_count or 0))
     pixels = max(0, int(total_render_pixels or 0))
@@ -99,7 +103,11 @@ def estimate_compare_disk(
         pages * _COMPARE_MIN_BYTES_PER_PAGE,
         int(pixels * _COMPARE_BYTES_PER_PIXEL),
     )
-    return JobDiskEstimate(temp_bytes=0, output_bytes=output)
+    # PERF (audit 2026-08-19 §CL.3): comparator tile giữ mask uint8 disk-backed
+    # của đúng một trang. Admission phần staging riêng để volume TEMP cũng được
+    # kiểm tra khi khác volume RESULTS_DIR; trang full-frame truyền 0 để giữ cũ.
+    temp = max(0, int(max_page_pixels or 0))
+    return JobDiskEstimate(temp_bytes=temp, output_bytes=output)
 
 
 def _nearest_existing_parent(path: str) -> str:

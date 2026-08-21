@@ -62,6 +62,14 @@ def test_compare_estimate_scales_with_pixels_and_keeps_page_floor():
     tiny = estimate_compare_disk(total_render_pixels=1000, page_count=1)
     assert tiny.output_bytes == 64 * MIB
 
+    # Trang tile cần thêm đúng một mask uint8 disk-backed ở volume TEMP.
+    large = estimate_compare_disk(
+        total_render_pixels=65_633_750,
+        page_count=1,
+        max_page_pixels=65_633_750,
+    )
+    assert large.temp_bytes == 65_633_750
+
 
 def test_vdp_variable_image_estimate_counts_each_embedding(tmp_path):
     image_path = tmp_path / "photo.jpg"

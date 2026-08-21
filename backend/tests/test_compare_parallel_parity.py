@@ -12,6 +12,7 @@ import io
 import hashlib
 import threading
 
+import numpy as np
 import pytest
 
 
@@ -128,6 +129,239 @@ def test_parity_sequential_vs_pipeline_1to1(tmp_path, monkeypatch):
     assert job_par.result_summary["pages_fail"] == 1
 
 
+def test_tile_engine_keeps_verdict_regions_and_artifact_parity(tmp_path, monkeypatch):
+    """PERF (audit 2026-08-19 §CL.3): ép trang nhỏ qua tile để test E2E."""
+    import cv2
+    from app.config import settings
+
+    pa = tmp_path / "tile-A.pdf"
+    pb = tmp_path / "tile-B.pdf"
+    _mkpdf(pa, n_pages=2, modify_page2=False)
+    _mkpdf(pb, n_pages=2, modify_page2=True)
+    config = {"comparison_mode": "full", "tolerance": "NORMAL", "dpi": 100}
+    monkeypatch.setenv("PRYNX_COMPARE_WORKERS", "1")
+    monkeypatch.setenv("PRYNX_COMPARE_TILE_SIZE", "256")
+
+    full_results = tmp_path / "results-full"
+    monkeypatch.setattr(settings, "RESULTS_DIR", str(full_results))
+    monkeypatch.setenv("PRYNX_MAX_COMPARE_PAGE_PIXELS", "10000000")
+    full_job, full_pages = _run_job(tmp_path, "tile-full", pa, pb, config=config)
+
+    tiled_results = tmp_path / "results-tiled"
+    monkeypatch.setattr(settings, "RESULTS_DIR", str(tiled_results))
+    monkeypatch.setenv("PRYNX_MAX_COMPARE_PAGE_PIXELS", "1")
+    tiled_job, tiled_pages = _run_job(tmp_path, "tile-stream", pa, pb, config=config)
+
+    assert [_page_snapshot(page) for page in tiled_pages] == [
+        _page_snapshot(page) for page in full_pages
+    ]
+    assert _summary_snapshot(tiled_job) == _summary_snapshot(full_job)
+
+    full_artifact = cv2.imread(
+        str(full_results / str(full_job.id) / "page_2_diff.png"),
+        cv2.IMREAD_UNCHANGED,
+    )
+    tiled_artifact = cv2.imread(
+        str(tiled_results / str(tiled_job.id) / "page_2_diff.png"),
+        cv2.IMREAD_UNCHANGED,
+    )
+    assert full_artifact is not None
+    assert np.array_equal(tiled_artifact, full_artifact)
+
+
+@pytest.mark.parametrize("page_b_size", [(280, 373), (260, 400)])
+def test_tile_engine_different_page_sizes_keep_full_frame_parity(
+    tmp_path, monkeypatch, page_b_size
+):
+    """Forced tile giữ parity E2E cho cả resize cùng aspect và pad khác aspect."""
+    import cv2
+    from app.config import settings
+
+    pa = tmp_path / f"different-A-{page_b_size[0]}.pdf"
+    pb = tmp_path / f"different-B-{page_b_size[0]}.pdf"
+    _mkpdf(pa, n_pages=2, modify_page2=False, page_w=300, page_h=400)
+    _mkpdf(
+        pb,
+        n_pages=2,
+        modify_page2=True,
+        page_w=page_b_size[0],
+        page_h=page_b_size[1],
+    )
+    config = {"comparison_mode": "full", "tolerance": "STRICT", "dpi": 100}
+    monkeypatch.setenv("PRYNX_COMPARE_WORKERS", "1")
+    monkeypatch.setenv("PRYNX_COMPARE_TILE_SIZE", "256")
+
+    full_results = tmp_path / f"results-different-full-{page_b_size[0]}"
+    monkeypatch.setattr(settings, "RESULTS_DIR", str(full_results))
+    monkeypatch.setenv("PRYNX_MAX_COMPARE_PAGE_PIXELS", "10000000")
+    full_job, full_pages = _run_job(
+        tmp_path, f"different-full-{page_b_size[0]}", pa, pb, config=config
+    )
+
+    tiled_results = tmp_path / f"results-different-tile-{page_b_size[0]}"
+    monkeypatch.setattr(settings, "RESULTS_DIR", str(tiled_results))
+    monkeypatch.setenv("PRYNX_MAX_COMPARE_PAGE_PIXELS", "1")
+    monkeypatch.setenv("PRYNX_COMPARE_WORKERS", "4")
+    monkeypatch.setenv("PRYNX_COMPARE_PROCESS_MIN_PAGES", "2")
+    monkeypatch.setenv("PRYNX_COMPARE_PROCESS_MIN_PIXELS", "1")
+    tiled_job, tiled_pages = _run_job(
+        tmp_path, f"different-tile-{page_b_size[0]}", pa, pb, config=config
+    )
+
+    assert [_page_snapshot(page) for page in tiled_pages] == [
+        _page_snapshot(page) for page in full_pages
+    ]
+    assert _summary_snapshot(tiled_job) == _summary_snapshot(full_job)
+    full_artifact = cv2.imread(
+        str(full_results / str(full_job.id) / "page_2_diff.png"),
+        cv2.IMREAD_UNCHANGED,
+    )
+    tiled_artifact = cv2.imread(
+        str(tiled_results / str(tiled_job.id) / "page_2_diff.png"),
+        cv2.IMREAD_UNCHANGED,
+    )
+    assert full_artifact is not None
+    assert np.array_equal(tiled_artifact, full_artifact)
+
+
+@pytest.mark.parametrize("pixel_threshold", ["10000000", "1"])
+def test_multiprocess_1to1_keeps_result_and_artifact_parity(
+    tmp_path, monkeypatch, pixel_threshold
+):
+    """PERF (audit 2026-08-19 §CL.4): process tự mở PDF, main chỉ commit DB."""
+    from app.config import settings
+
+    pa = tmp_path / "process-A.pdf"
+    pb = tmp_path / "process-B.pdf"
+    _mkpdf(pa, n_pages=4, modify_page2=False)
+    _mkpdf(pb, n_pages=4, modify_page2=True)
+    results_root = tmp_path / "process-results"
+    monkeypatch.setattr(settings, "RESULTS_DIR", str(results_root))
+    monkeypatch.setenv("PRYNX_COMPARE_PROCESS_MIN_PAGES", "2")
+    monkeypatch.setenv("PRYNX_COMPARE_PROCESS_MIN_PIXELS", "1")
+    monkeypatch.setenv("PRYNX_MAX_COMPARE_PAGE_PIXELS", pixel_threshold)
+    suffix = "full" if pixel_threshold != "1" else "tile"
+
+    def hashes(job_id):
+        return {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted((results_root / str(job_id)).iterdir())
+        }
+
+    monkeypatch.setenv("PRYNX_COMPARE_WORKERS", "1")
+    monkeypatch.setenv("PRYNX_COMPARE_PROCESS_WORKERS", "1")
+    sequential_job, sequential_pages = _run_job(
+        tmp_path, f"process-sequential-{suffix}", pa, pb
+    )
+    sequential_hashes = hashes(sequential_job.id)
+
+    monkeypatch.setenv("PRYNX_COMPARE_WORKERS", "2")
+    monkeypatch.setenv("PRYNX_COMPARE_PROCESS_WORKERS", "2")
+    process_job, process_pages = _run_job(
+        tmp_path, f"process-parallel-{suffix}", pa, pb
+    )
+
+    assert [_page_snapshot(page) for page in process_pages] == [
+        _page_snapshot(page) for page in sequential_pages
+    ]
+    assert _summary_snapshot(process_job) == _summary_snapshot(sequential_job)
+    assert hashes(process_job.id) == sequential_hashes
+
+
+def test_large_mixed_size_pair_uses_pad_tile_without_full_frame_render(
+    tmp_path, monkeypatch
+):
+    """Cặp khác aspect chạy pad-tile, không dựng raster full DPI trong RAM."""
+    from app.core.pdf_processor import PDFDocumentReader
+
+    pa = tmp_path / "mixed-A.pdf"
+    pb = tmp_path / "mixed-B.pdf"
+    _mkpdf(pa, n_pages=1, page_w=3000, page_h=4000)
+    _mkpdf(pb, n_pages=1, page_w=3200, page_h=4000)
+    original_render_page = PDFDocumentReader.render_page
+
+    def reject_full_dpi_render(reader, page_index):
+        if reader.scale > 0.4:
+            raise AssertionError("không được full-render ở DPI đối chiếu")
+        return original_render_page(reader, page_index)
+
+    monkeypatch.setenv("PRYNX_COMPARE_WORKERS", "1")
+    monkeypatch.setenv("PRYNX_COMPARE_PROCESS_WORKERS", "1")
+    monkeypatch.setenv("PRYNX_MAX_COMPARE_PAGE_PIXELS", "1")
+    monkeypatch.setattr(PDFDocumentReader, "render_page", reject_full_dpi_render)
+
+    job, pages = _run_job(tmp_path, "mixed-size-pad-tile", pa, pb)
+    assert job.status == "completed"
+    assert pages[0].status == "pass"
+
+
+def test_large_imposition_uses_preview_detection_and_sheet_roi_reads(
+    tmp_path, monkeypatch
+):
+    """Tờ bình lớn không gọi render_page full; chỉ preview + render_page_region."""
+    from app.core.pdf_processor import PDFDocumentReader
+    from app.workers import pdf_wrapper as pdf_lib
+
+    template_path = tmp_path / "imposition-template.pdf"
+    sheet_path = tmp_path / "imposition-sheet.pdf"
+
+    def write_template(path, sheet=False):
+        width, height = (6000, 8000) if sheet else (3000, 4000)
+        document = pdf_lib.open()
+        page = document.new_page(width=width, height=height)
+        offsets = [(0, 0), (3000, 0), (0, 4000), (3000, 4000)] if sheet else [(0, 0)]
+        for offset_x, offset_y in offsets:
+            shape = page.new_shape()
+            shape.draw_rect(
+                pdf_lib.Rect(offset_x + 300, offset_y + 500, offset_x + 1800, offset_y + 2300)
+            )
+            shape.finish(color=(0, 0, 0), fill=(0, 0, 0))
+            shape.commit()
+            shape = page.new_shape()
+            shape.draw_rect(
+                pdf_lib.Rect(offset_x + 2100, offset_y + 2900, offset_x + 2700, offset_y + 3600)
+            )
+            shape.finish(color=(0, 0, 0), fill=(0.2, 0.2, 0.2))
+            shape.commit()
+        buffer = io.BytesIO()
+        document.save(buffer)
+        document.close()
+        path.write_bytes(buffer.getvalue())
+
+    write_template(template_path)
+    write_template(sheet_path, sheet=True)
+
+    original_render_page = PDFDocumentReader.render_page
+
+    def reject_full_sheet_render(reader, page_index):
+        if reader.scale > 0.4:
+            raise AssertionError("không được dựng full raster tờ bình")
+        return original_render_page(reader, page_index)
+
+    monkeypatch.setattr(PDFDocumentReader, "render_page", reject_full_sheet_render)
+    monkeypatch.setenv("PRYNX_MAX_COMPARE_PAGE_PIXELS", "1")
+    monkeypatch.setenv("PRYNX_COMPARE_WORKERS", "1")
+    monkeypatch.setenv("PRYNX_COMPARE_PROCESS_WORKERS", "1")
+    config = {
+        "comparison_mode": "full",
+        "page_matching_mode": "auto",
+        "tolerance": "NORMAL",
+        "dpi": 100,
+    }
+
+    job, pages = _run_job(
+        tmp_path,
+        "large-imposition-roi",
+        template_path,
+        sheet_path,
+        config=config,
+    )
+
+    assert job.status == "completed"
+    assert pages[0].is_imposition_mode is True
+    assert job.result_summary["total_instances"] >= 4
+
+
 def test_parity_sequential_vs_pipeline_alignment_inserted_page(tmp_path, monkeypatch):
     """Lệch số trang → nhánh căn trang; cặp đã chốt trước nên pipeline phải bật
     và cho kết quả trùng tuần tự (kể cả nhãn trang THÊM)."""
@@ -181,6 +415,26 @@ def test_parity_cmyk_mode(tmp_path, monkeypatch):
     assert job_seq.status == job_par.status == "completed"
     assert [_page_snapshot(p) for p in pages_seq] == [_page_snapshot(p) for p in pages_par]
     assert _summary_snapshot(job_seq) == _summary_snapshot(job_par)
+
+
+def test_render_page_bundle_matches_separate_rgb_and_cmyk_renders(tmp_path):
+    """PERF (audit 2026-08-19 §COMPARE.CMYK.1): gộp raster không đổi bitmap."""
+    from app.core.pdf_processor import PDFProcessor
+
+    source = tmp_path / "bundle.pdf"
+    _mkpdf(source, n_pages=1)
+    processor = PDFProcessor()
+
+    with processor.open_document(str(source), dpi=100) as bundled:
+        rgb_bundle, cmyk_bundle = bundled.render_page_bundle(0, include_cmyk=True)
+
+    with processor.open_document(str(source), dpi=100) as separate:
+        rgb_separate = separate.render_page(0)
+        cmyk_separate = separate.render_page_cmyk(0)
+
+    assert cmyk_bundle is not None
+    assert np.array_equal(rgb_bundle, rgb_separate)
+    assert np.array_equal(cmyk_bundle, cmyk_separate)
 
 
 # ── 2. Policy lập cặp trước (_plan_pipeline_pairs) ──

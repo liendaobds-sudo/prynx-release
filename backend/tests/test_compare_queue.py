@@ -313,6 +313,132 @@ def test_create_comparison_job_local_mode_submits_and_returns_job_id(monkeypatch
         db.close()
 
 
+@pytest.mark.parametrize(
+    ("comparison_mode", "page_matching_mode", "size_b"),
+    [
+        ("full", "auto", (3600.0, 4200.0)),
+        ("cmyk", "auto", (3600.0, 4200.0)),
+        ("full", "imposition", (3600.0, 4200.0)),
+        ("full", "auto", (3400.0, 4200.0)),
+    ],
+)
+def test_create_comparison_job_accepts_large_1to1_page_for_tile_strategy(
+    monkeypatch, comparison_mode, page_matching_mode, size_b
+):
+    """PERF: RGB/CMYK vượt 40 MP cùng khổ đều chuyển tile, không 413."""
+    from app.database import SessionLocal
+    from app.models.job import ComparisonJob, UploadedFile
+    from app.schemas.job import CompareRequest
+
+    executor = _Executor()
+    monkeypatch.setattr(compare, "_COMPARE_EXECUTOR", executor)
+    monkeypatch.setattr(compare, "ensure_job_disk_space", lambda *args, **kwargs: None)
+    monkeypatch.setattr(compare.settings, "DEV_MODE", True)
+
+    # 3.600 × 4.200 pt @150 DPI ≈ 66 MP.
+    metadata_a = {"pages": [{"width_pt": 3600.0, "height_pt": 4200.0}]}
+    metadata_b = {"pages": [{"width_pt": size_b[0], "height_pt": size_b[1]}]}
+    db = SessionLocal()
+    file_a = UploadedFile(
+        filename="large-a.pdf", original_name="large-a.pdf", file_path="a.pdf",
+        page_count=1, pdf_metadata=metadata_a,
+    )
+    file_b = UploadedFile(
+        filename="large-b.pdf", original_name="large-b.pdf", file_path="b.pdf",
+        page_count=1, pdf_metadata=metadata_b,
+    )
+    db.add_all([file_a, file_b])
+    db.commit()
+    db.refresh(file_a)
+    db.refresh(file_b)
+    job_id = None
+    try:
+        response = compare.create_comparison_job(
+            CompareRequest(
+                file_a_id=file_a.id,
+                file_b_id=file_b.id,
+                dpi=150,
+                comparison_mode=comparison_mode,
+                page_matching_mode=page_matching_mode,
+            ),
+            db=db,
+            license_info={},
+        )
+        job_id = response.job_id
+        stored = db.query(ComparisonJob).filter(ComparisonJob.id == job_id).one()
+
+        assert job_id
+        assert stored.config["dpi"] == 150
+        assert stored.config["comparison_mode"] == comparison_mode
+        assert stored.config["page_matching_mode"] == page_matching_mode
+        assert len(executor.calls) == 1
+    finally:
+        if job_id:
+            db.query(ComparisonJob).filter(ComparisonJob.id == job_id).delete(
+                synchronize_session=False
+            )
+        db.delete(file_a)
+        db.delete(file_b)
+        db.commit()
+        db.close()
+
+
+@pytest.mark.parametrize(
+    ("comparison_mode", "page_matching_mode", "size_b"),
+    [
+        ("cmyk", "imposition", (3600.0, 4200.0)),
+    ],
+)
+def test_create_comparison_job_rejects_large_mode_not_supported_by_tile(
+    monkeypatch, comparison_mode, page_matching_mode, size_b
+):
+    from fastapi import HTTPException
+    from app.database import SessionLocal
+    from app.models.job import ComparisonJob, UploadedFile
+    from app.schemas.job import CompareRequest
+
+    executor = _Executor()
+    monkeypatch.setattr(compare, "_COMPARE_EXECUTOR", executor)
+    monkeypatch.setattr(compare.settings, "DEV_MODE", True)
+    db = SessionLocal()
+    metadata_a = {"pages": [{"width_pt": 3600.0, "height_pt": 4200.0}]}
+    metadata_b = {"pages": [{"width_pt": size_b[0], "height_pt": size_b[1]}]}
+    file_a = UploadedFile(
+        filename="large-a.pdf", original_name="large-a.pdf", file_path="a.pdf",
+        page_count=1, pdf_metadata=metadata_a,
+    )
+    file_b = UploadedFile(
+        filename="large-b.pdf", original_name="large-b.pdf", file_path="b.pdf",
+        page_count=1, pdf_metadata=metadata_b,
+    )
+    db.add_all([file_a, file_b])
+    db.commit()
+    db.refresh(file_a)
+    db.refresh(file_b)
+    try:
+        with pytest.raises(HTTPException) as error:
+            compare.create_comparison_job(
+                CompareRequest(
+                    file_a_id=file_a.id,
+                    file_b_id=file_b.id,
+                    dpi=150,
+                    comparison_mode=comparison_mode,
+                    page_matching_mode=page_matching_mode,
+                ),
+                db=db,
+                license_info={},
+            )
+        assert error.value.status_code == 413
+        assert "chế độ 1:1 RGB/CMYK" in error.value.detail
+        assert executor.calls == []
+        assert db.query(ComparisonJob).count() == 0
+    finally:
+        db.delete(file_a)
+        db.delete(file_b)
+        db.commit()
+        db.close()
+
+
 def test_max_compare_pages_default_env_override_and_invalid_values(monkeypatch):
     """PERF (audit 2026-08-13 §PB-1/§PB-3): trần trang mặc định 1.000 (nâng từ 250
     sau khi đủ gate PB-3) + env override của người vận hành theo cả hai chiều."""
@@ -330,6 +456,20 @@ def test_max_compare_pages_default_env_override_and_invalid_values(monkeypatch):
 
     monkeypatch.setenv("PRYNX_MAX_COMPARE_PAGES", "-3")
     assert compare._max_compare_pages() == 1
+
+
+def test_tile_staging_estimate_counts_concurrent_process_masks(monkeypatch):
+    monkeypatch.delenv("PRYNX_COMPARE_PROCESS_MIN_PAGES", raising=False)
+    monkeypatch.delenv("PRYNX_COMPARE_PROCESS_MIN_PIXELS", raising=False)
+    monkeypatch.setattr(
+        compare,
+        "plan_worker_count",
+        lambda **_kwargs: (6, "test"),
+    )
+
+    assert compare._estimate_tile_staging_pixels(65_633_750, 1) == 65_633_750
+    assert compare._estimate_tile_staging_pixels(65_633_750, 20) == 6 * 65_633_750
+    assert compare._estimate_tile_staging_pixels(20_000_000, 20) == 0
 
 
 def test_create_comparison_job_rejects_over_page_cap_with_actionable_message(monkeypatch):
