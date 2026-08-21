@@ -18,6 +18,10 @@ from collections import defaultdict
 from app.workers import pdf_wrapper as pdf_lib
 from app.workers.pdf_ops import copy_output_intents
 from app.workers.nup_layout_solver import get_src_page_idx
+from app.workers.nup_diecut import (
+    MIN_DIE_STROKE_WIDTH_PT,
+    resolve_die_stroke_width,
+)
 from app.workers.nup_marks import _draw_ponts_on_page
 from app.workers.cluster_tile_engine import (
     draw_segment_cut_marks,
@@ -1142,7 +1146,7 @@ def process_chunk(args):
 
         # Extract default die_color and die_width from first available cache for 1-dao
         global_die_color = (0, 1, 1, 0)  # Default to Red (CMYK, không dùng RGB)
-        global_die_width = 0.5
+        global_die_width = MIN_DIE_STROKE_WIDTH_PT
 
         for p in placements:
             idx = p.get('cell', {}).get('pageIdx', p.get('src_page_idx', 0))
@@ -1164,11 +1168,11 @@ def process_chunk(args):
                     
                     if not is_invisible:
                         global_die_color = c
-                        global_die_width = max(0.5, float(cached.get('width') or 0.5))
+                        global_die_width = resolve_die_stroke_width(cached.get('width'))
                         break
                     else:
                         global_die_color = (0, 1, 1, 0) # Fallback to red (CMYK) if black/white
-                        global_die_width = max(0.5, float(cached.get('width') or 0.5))
+                        global_die_width = resolve_die_stroke_width(cached.get('width'))
                         break
 
         # 1 Dao cut lines (duong cat 1 Dao LETA)
@@ -1220,7 +1224,7 @@ def process_chunk(args):
                             
                     if is_invisible:
                         die_color = (0, 1, 1, 0)
-                die_width = max(0.5, float(cached.get('width') or 0.5))
+                die_width = resolve_die_stroke_width(cached.get('width'))
 
                 abs_x = p['abs_x']
                 abs_y = p['original_cell_y']
@@ -1388,7 +1392,7 @@ def process_chunk(args):
                                 
                         if is_invisible:
                             die_color = (0, 1, 1, 0)  # Red (CMYK) for visibility
-                    die_width = max(0.5, float(cached.get('width') or 0.5))
+                    die_width = resolve_die_stroke_width(cached.get('width'))
 
                     # Calculate offset: where this placement's trim rect is on the output page
                     abs_x = p['abs_x']

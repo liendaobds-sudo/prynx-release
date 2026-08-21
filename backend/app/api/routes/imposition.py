@@ -1211,7 +1211,17 @@ def apply_preview_collisions(items: List[Dict[str, Any]], item_w: float, item_h:
         
         resolved = smart_resolve_collisions(placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
 
-        return [r['cell'] for r in resolved]
+        # PONT (audit 2026-08-20 §LS-PONT.1): resolver dịch trên hệ abs_x/abs_y,
+        # còn nhánh preview tương đối phải trả x/y theo lưới. Trước đây chỉ trả
+        # `cell` gốc nên khối phụ đã né ốc ở backend lại hiện nguyên vị trí cũ
+        # trên UI. Sao chép cell rồi quy đổi ngược đúng công thức dựng placement.
+        relative_items = []
+        for placement in resolved:
+            cell = dict(placement['cell'])
+            cell['x'] = placement['abs_x'] - super_base_x
+            cell['y'] = overall_h - (placement['abs_y'] - super_base_y) - placement['height']
+            relative_items.append(cell)
+        return relative_items
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"Preview collision check failed: {e}")

@@ -805,6 +805,37 @@ pub fn parallelogram(
 }
 
 // ─── L-shape ────────────────────────────────────────────────────────
+fn l_candidate_is_better(
+    total: usize,
+    width_used: f64,
+    height_used: f64,
+    best_total: usize,
+    best_width: f64,
+    best_height: f64,
+    usable_w: f64,
+    usable_h: f64,
+) -> bool {
+    if total != best_total {
+        return total > best_total;
+    }
+    // Khi hòa sản lượng, chừa mép đều hơn trước rồi mới so footprint nhỏ hơn.
+    // Điều này tránh phương án cùng số tem nhưng cao/sát ốc được chọn chỉ vì
+    // nó xuất hiện trước trong vòng duyệt.
+    let spare = (usable_w - width_used).min(usable_h - height_used);
+    let best_spare = (usable_w - best_width).min(usable_h - best_height);
+    if spare != best_spare {
+        return spare > best_spare;
+    }
+
+    let area = width_used * height_used;
+    let best_area = best_width * best_height;
+    if area != best_area {
+        return area < best_area;
+    }
+
+    width_used + height_used < best_width + best_height
+}
+
 pub fn l_layout(
     usable_w: f64,
     usable_h: f64,
@@ -903,20 +934,68 @@ pub fn l_layout(
                     bottom_items = bi;
                 }
 
+                // Đồng bộ Python/Illustrator: khi chỉ có một khối phụ, canh
+                // tâm khối hẹp hơn theo trục ghép. Thiếu bước này làm layout
+                // Rust lệch trái ở gap=0 trước cả khi dò va chạm.
+                if right_items.is_empty() && !bottom_items.is_empty() {
+                    let fill_w_used = bottom_items
+                        .iter()
+                        .map(|it| it.x + it.width)
+                        .fold(0.0f64, f64::max);
+                    if tbw < fill_w_used {
+                        let shift = (fill_w_used - tbw) / 2.0;
+                        for it in main_items.iter_mut() {
+                            it.x += shift;
+                        }
+                    } else if fill_w_used < tbw {
+                        let shift = (tbw - fill_w_used) / 2.0;
+                        for it in bottom_items.iter_mut() {
+                            it.x += shift;
+                        }
+                    }
+                } else if bottom_items.is_empty() && !right_items.is_empty() {
+                    let fill_h_used = right_items
+                        .iter()
+                        .map(|it| it.y + it.height)
+                        .fold(0.0f64, f64::max);
+                    if tbh < fill_h_used {
+                        let shift = (fill_h_used - tbh) / 2.0;
+                        for it in main_items.iter_mut() {
+                            it.y += shift;
+                        }
+                    } else if fill_h_used < tbh {
+                        let shift = (tbh - fill_h_used) / 2.0;
+                        for it in right_items.iter_mut() {
+                            it.y += shift;
+                        }
+                    }
+                }
+
                 let mut all_items = main_items;
                 all_items.extend(right_items);
                 all_items.extend(bottom_items);
 
-                if all_items.len() > best_yield {
+                let candidate_w = all_items
+                    .iter()
+                    .map(|i| i.x + i.width)
+                    .fold(0.0f64, f64::max);
+                let candidate_h = all_items
+                    .iter()
+                    .map(|i| i.y + i.height)
+                    .fold(0.0f64, f64::max);
+                if l_candidate_is_better(
+                    all_items.len(),
+                    candidate_w,
+                    candidate_h,
+                    best_yield,
+                    best_w,
+                    best_h,
+                    usable_w,
+                    usable_h,
+                ) {
                     best_yield = all_items.len();
-                    best_w = all_items
-                        .iter()
-                        .map(|i| i.x + i.width)
-                        .fold(0.0f64, f64::max);
-                    best_h = all_items
-                        .iter()
-                        .map(|i| i.y + i.height)
-                        .fold(0.0f64, f64::max);
+                    best_w = candidate_w;
+                    best_h = candidate_h;
                     best_items = all_items;
                 }
             }
@@ -931,11 +1010,15 @@ pub fn l_layout(
         usable_w, usable_h, item_h, item_w, item_w, item_h, gap_x, gap_y, split_gap, true,
     );
 
-    let (best_items, best_w, best_h) = if y1 >= y2 {
-        (items1, w1, h1)
-    } else {
-        (items2, w2, h2)
-    };
+    // PONT (audit 2026-08-20 §LS-PONT.7): A3 lỡ 320×450, tem 90×50,
+    // gap=0 có hai phương án cùng 27 tem. Chọn phương án gọn 410 mm thay vì
+    // phương án cao 440 mm sát ốc; không phá hòa bằng thứ tự duyệt.
+    let (best_items, best_w, best_h) =
+        if l_candidate_is_better(y2, w2, h2, y1, w1, h1, usable_w, usable_h) {
+            (items2, w2, h2)
+        } else {
+            (items1, w1, h1)
+        };
     if best_items.is_empty() {
         return empty("l_shape");
     }
@@ -1319,5 +1402,39 @@ mod tests {
         let l = l_layout(320.0, 450.0, 80.0, 50.0, 2.0, 2.0);
         assert!(l.total_items >= g.len());
         in_bounds(&l, 320.0, 450.0);
+    }
+
+    #[test]
+    fn l_shape_gap_sweep_prefers_compact_candidate_when_yield_ties() {
+        let mm = 2.83464567;
+        for gap_mm in [0.0, 0.1, 0.5, 1.0, 2.0] {
+            let gap = gap_mm * mm;
+            let l = l_layout(
+                314.0 * mm,
+                444.0 * mm,
+                90.00085 * mm,
+                50.0381 * mm,
+                gap,
+                gap,
+            );
+            assert_eq!(l.total_items, 27, "gap={gap_mm} mm");
+            assert_eq!(
+                l.items.iter().filter(|it| it.block_id == 0).count(),
+                24,
+                "gap={gap_mm} mm"
+            );
+            assert_eq!(
+                l.items.iter().filter(|it| it.block_id == 2).count(),
+                3,
+                "gap={gap_mm} mm"
+            );
+            assert_eq!(
+                l.items.iter().filter(|it| it.is_rotated).count(),
+                24,
+                "gap={gap_mm} mm"
+            );
+            assert!(l.height_used < 420.0 * mm, "gap={gap_mm} mm");
+            in_bounds(&l, 314.0 * mm, 444.0 * mm);
+        }
     }
 }

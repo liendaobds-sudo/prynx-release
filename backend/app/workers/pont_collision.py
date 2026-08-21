@@ -8,7 +8,8 @@ MM_TO_PTS = 2.83464567
 # ── Hằng số vùng cấm boong/ốc (đơn vị: mm trừ khi ghi rõ) ──
 SAFETY_PADDING_MM = 3.0   # đệm an toàn quanh dấu boong để tem không sát mép
 DEFAULT_MARGIN_MM = 7.0   # lề mặc định khi pont_config KHÔNG có marginX và caller cũng không truyền margins
-MIN_OVERLAP_AREA_PT2 = 1.0  # diện tích giao tối thiểu (pt²) để coi là va chạm thật — bỏ qua "chạm" cực nhỏ do sai số
+MIN_OVERLAP_AREA_PT2 = 1.0  # ngưỡng đè tem-tem có ý nghĩa (pt²)
+PONT_COLLISION_EPS_PT2 = 1e-9  # chỉ bỏ qua tiếp tuyến/sai số số học với vùng cấm ốc
 
 
 def _resolve_margin_pt(pont_config: Dict[str, Any], margins: Dict[str, float],
@@ -219,7 +220,7 @@ def get_item_polygon(item: Dict, base_poly: Polygon, skip_transform: bool = Fals
     # luôn nhận mirror_x=mirror_y=False; duplex mặt sau được xử lý bằng mirror abs_x + TOGGLE
     # isRotated180 NGAY trên placement (nup_process_chunk:445-453) — cùng các cờ mà collision đọc.
     # → collision và render dùng chung cờ, không bên nào mirror thật → đã nhất quán vị trí/hướng.
-    from shapely.affinity import translate, rotate
+    from shapely.affinity import scale, translate, rotate
     
     # Auto-detect math-created polygons (centered at origin, symmetric bounds)
     # e.g. circle/ellipse created via Point(0,0).buffer() with scale
@@ -228,20 +229,39 @@ def get_item_polygon(item: Dict, base_poly: Polygon, skip_transform: bool = Fals
     base_cy = (f_miny + f_maxy) / 2.0
     is_origin_centered = abs(base_cx) < 0.01 and abs(base_cy) < 0.01
     
-    if skip_transform or is_origin_centered:
-        # base_poly is already centered at origin with correct dimensions (e.g. math ellipse)
-        # Only translate to final position — no Y-flip, no rotation needed
+    if skip_transform:
+        # Caller đã chuẩn bị polygon theo đúng hệ/toạ độ cần dùng.
         iw = item.get('width', 0)
         ih = item.get('height', 0)
         item_cx = item.get('abs_x', 0) + iw / 2.0
         item_cy = item.get('abs_y', 0) + ih / 2.0
         return translate(base_poly, xoff=item_cx, yoff=item_cy)
+
+    if is_origin_centered:
+        # PONT (audit 2026-08-20 §LS-PONT.2): base math (chữ nhật/ellipse)
+        # được dựng từ ô đầu tiên. L-shape có khối phụ xoay 90° nên W/H ô phụ
+        # bị đổi chỗ; co base theo kích thước TỪNG ô để footprint va chạm trùng
+        # footprint render, thay vì dùng nhầm W/H của khối chính.
+        iw = item.get('width', 0)
+        ih = item.get('height', 0)
+        base_w = f_maxx - f_minx
+        base_h = f_maxy - f_miny
+        shape_to_place = base_poly
+        if base_w > 0 and base_h > 0 and iw > 0 and ih > 0:
+            shape_to_place = scale(
+                base_poly,
+                xfact=iw / base_w,
+                yfact=ih / base_h,
+                origin=(0, 0),
+            )
+        item_cx = item.get('abs_x', 0) + iw / 2.0
+        item_cy = item.get('abs_y', 0) + ih / 2.0
+        return translate(shape_to_place, xoff=item_cx, yoff=item_cy)
     
     # 1. Translate base_poly so its center is at (0, 0)
     centered_poly = translate(base_poly, xoff=-base_cx, yoff=-base_cy)
     
     # Convert from Top-Down (PDF coordinate space) to Bottom-Up (pont_collision) BEFORE rotating
-    from shapely.affinity import scale
     centered_poly = scale(centered_poly, xfact=1.0, yfact=-1.0, origin=(0, 0))
     
     # 2. Apply rotation if needed
@@ -283,12 +303,20 @@ def detect_collisions(layout_items: List[Dict], zones: List[box], base_poly: Pol
             if item_box.intersects(z):
                 if base_poly is not None:
                     poly_shifted = get_item_polygon(item, base_poly)
-                    if poly_shifted.intersects(z):
+                    # PONT (audit 2026-08-20 §LS-PONT.4): `intersects()` cũng
+                    # trả True khi hai biên chỉ tiếp tuyến (diện tích giao = 0).
+                    # Ở gap=0, tem/khối phụ có thể nằm đúng tại biên an toàn của
+                    # ốc; coi tiếp tuyến là va chạm sẽ dịch hoặc xóa tem oan.
+                    # Dùng epsilon riêng rất nhỏ: ngưỡng đè tem-tem 1 pt² là quá
+                    # rộng cho ốc và có thể bỏ lọt một lát xâm lấn thật.
+                    if (poly_shifted.intersects(z)
+                            and poly_shifted.intersection(z).area > PONT_COLLISION_EPS_PT2):
                         collision_detected = True
                         break
                 else:
-                    collision_detected = True
-                    break
+                    if item_box.intersection(z).area > PONT_COLLISION_EPS_PT2:
+                        collision_detected = True
+                        break
         
         if collision_detected:
             collided_indices.append(i)
@@ -480,6 +508,309 @@ def _try_whole_block_shift(placements: List[Dict], zones: List[box], base_poly: 
         if not detect_collisions(shifted, zones, base_poly, base_rect_pts, sheet_h):
             return shifted
     return None
+
+
+# PONT (audit 2026-08-20 §LS-PONT.1): L-shape có khối chính (0) và khối phụ
+# xoay 90° ở phải/đáy (1/2). Khi khối phụ chạm ốc, dồn theo hàng/cột sẽ phá
+# bố cục hoặc bỏ tem dù vẫn còn chỗ để dịch nguyên khối phụ.
+def _try_l_shape_auxiliary_block_shift(
+    placements: List[Dict],
+    zones: List[box],
+    base_poly: Polygon,
+    base_rect_pts: Tuple[float, float, float, float],
+    sheet_w: float,
+    sheet_h: float,
+    initial_cols: List[int],
+) -> List[Dict]:
+    """Dịch trọn một khối phụ L-shape để né ốc, giữ nguyên số tem.
+
+    Chỉ nhận kết quả khi số va chạm của chính khối phụ giảm, không tạo va chạm
+    mới ở khối khác và không sinh chồng tem. Va chạm còn lại của khối chính sẽ
+    được tầng resolver chung xử lý tiếp. Vector thử được suy ra trực tiếp từ
+    biên tem/vùng cấm nên vẫn xử lý được khe hở 0 mm hoặc phần lẻ dưới 1 mm;
+    không dùng bước nhảy mm.
+    """
+    if not initial_cols:
+        return None
+
+    block_indices: Dict[int, List[int]] = {0: [], 1: [], 2: []}
+    for index, placement in enumerate(placements):
+        cell = placement.get('cell') or {}
+        try:
+            block_id = int(cell.get('blockId', -1))
+        except (TypeError, ValueError):
+            continue
+        if block_id in block_indices:
+            block_indices[block_id].append(index)
+
+    # Chỉ nhận cấu trúc L-shape thực: khối chính cùng hướng, khối phụ dùng
+    # hướng 90° còn lại và mọi ô cùng một trang nguồn. Điều này tránh áp
+    # dụng nhầm cho block sản phẩm của mixed-guillotine.
+    recognized = sum(len(indices) for indices in block_indices.values())
+    if (recognized != len(placements)
+            or not block_indices[0]
+            or len({placement.get('src_page_idx') for placement in placements}) != 1):
+        return None
+    main_orientations = {
+        bool((placements[index].get('cell') or {}).get('isRotated', False))
+        for index in block_indices[0]
+    }
+    if len(main_orientations) != 1:
+        return None
+    main_orientation = next(iter(main_orientations))
+    for block_id in (1, 2):
+        indices = block_indices[block_id]
+        if not indices:
+            continue
+        auxiliary_orientations = {
+            bool((placements[index].get('cell') or {}).get('isRotated', False))
+            for index in indices
+        }
+        if (len(auxiliary_orientations) != 1
+                or next(iter(auxiliary_orientations)) == main_orientation):
+            return None
+
+    # margin pont xác định vị trí dấu ốc, không phải biên in thật. Giữ khối phụ
+    # trong footprint L-shape ban đầu (và trong tờ) để nó chỉ lấp vùng trống nội
+    # bộ, không bị chặn oan ở khe 0 mm khi lề pont lớn hơn lề in.
+    layout_min_x, layout_min_y, layout_max_x, layout_max_y = get_placements_bbox(placements)
+    lo_x = max(0.0, layout_min_x)
+    hi_x = min(sheet_w, layout_max_x)
+    lo_y = max(0.0, layout_min_y)
+    hi_y = min(sheet_h, layout_max_y)
+    collided = set(initial_cols)
+    clearance = 0.05  # pt: tránh chạm lại do sai số float/Shapely
+
+    for block_id in (1, 2):
+        indices = block_indices[block_id]
+        collided_indices = [index for index in indices if index in collided]
+        if not collided_indices:
+            continue
+
+        block_items = [placements[index] for index in indices]
+        bmin_x, bmin_y, bmax_x, bmax_y = get_placements_bbox(block_items)
+        min_dx, max_dx = lo_x - bmin_x, hi_x - bmax_x
+        min_dy, max_dy = lo_y - bmin_y, hi_y - bmax_y
+
+        # Với từng tem thật sự va chạm, suy ra bốn phép tịnh tiến vừa đủ đưa
+        # bbox ra ngoài vùng cấm. Sau đó phép kiểm polygon bên dưới là chốt
+        # cuối, nên bbox chỉ dùng để sinh ứng viên an toàn (có thể dư nhẹ).
+        x_offsets = {0.0}
+        y_offsets = {0.0}
+        for index in collided_indices:
+            placement = placements[index]
+            item_poly = (
+                get_item_polygon(placement, base_poly)
+                if base_poly is not None
+                else box(
+                    placement['abs_x'],
+                    placement['abs_y'],
+                    placement['abs_x'] + placement['width'],
+                    placement['abs_y'] + placement['height'],
+                )
+            )
+            for zone in zones:
+                if not item_poly.intersects(zone):
+                    continue
+                pmin_x, pmin_y, pmax_x, pmax_y = item_poly.bounds
+                zmin_x, zmin_y, zmax_x, zmax_y = zone.bounds
+                x_offsets.update((
+                    zmin_x - pmax_x - clearance,
+                    zmax_x - pmin_x + clearance,
+                ))
+                y_offsets.update((
+                    zmin_y - pmax_y - clearance,
+                    zmax_y - pmin_y + clearance,
+                ))
+
+        candidates = []
+        for dx in x_offsets:
+            if dx < min_dx - 0.5 or dx > max_dx + 0.5:
+                continue
+            for dy in y_offsets:
+                if dy < min_dy - 0.5 or dy > max_dy + 0.5:
+                    continue
+                if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+                    continue
+
+                # Giữ mép ghép L-shape nếu có thể: khối phải ưu tiên dịch dọc,
+                # khối đáy ưu tiên dịch ngang. Khi không thể, vẫn cho phép dịch
+                # vào vùng trống còn lại thay vì xóa tem.
+                across_split = abs(dx) if block_id == 1 else abs(dy)
+                along_split = abs(dy) if block_id == 1 else abs(dx)
+                candidates.append((
+                    0 if across_split <= clearance else 1,
+                    dx * dx + dy * dy,
+                    along_split,
+                    across_split,
+                    dx,
+                    dy,
+                ))
+
+        index_set = set(indices)
+        original_other_cols = set(initial_cols) - index_set
+        best_shifted = None
+        best_score = None
+        for priority, distance, along_split, across_split, dx, dy in sorted(candidates):
+            shifted = []
+            for index, placement in enumerate(placements):
+                if index not in index_set:
+                    shifted.append(placement)
+                    continue
+                moved = dict(placement)
+                moved['abs_x'] = placement['abs_x'] + dx
+                moved['abs_y'] = placement['abs_y'] + dy
+                # abs_y dùng hệ đáy-trái, original_cell_y dùng hệ top-down.
+                original_cell_y = placement.get('original_cell_y')
+                if original_cell_y is None:
+                    original_cell_y = sheet_h - placement['abs_y'] - placement['height']
+                moved['original_cell_y'] = original_cell_y - dy
+                shifted.append(moved)
+
+            candidate_cols = detect_collisions(
+                shifted, zones, base_poly, base_rect_pts, sheet_h,
+            )
+            candidate_aux_cols = set(candidate_cols) & index_set
+            candidate_other_cols = set(candidate_cols) - index_set
+            if len(candidate_aux_cols) >= len(collided_indices):
+                continue
+            if not candidate_other_cols.issubset(original_other_cols):
+                continue
+            if _has_any_sticker_overlap(shifted, base_poly):
+                continue
+            score = (
+                len(candidate_aux_cols),
+                len(candidate_cols),
+                priority,
+                distance,
+                along_split,
+                across_split,
+            )
+            if best_score is None or score < best_score:
+                best_shifted = shifted
+                best_score = score
+
+        if best_shifted is not None:
+            return best_shifted
+
+    return None
+
+
+def _try_l_shape_main_block_reflow(
+    placements: List[Dict],
+    zones: List[box],
+    base_poly: Polygon,
+    base_rect_pts: Tuple[float, float, float, float],
+    sheet_w: float,
+    sheet_h: float,
+    margins: Dict[str, float],
+    initial_cols: List[int],
+) -> List[Dict]:
+    """Reflow riêng khối chính L-shape trong bbox của chính nó.
+
+    `finalize_placements` chỉ đặt TẠM toàn bộ hình L vào vùng in để có toạ độ
+    tuyệt đối cho bước dò ốc. Nếu dùng resolver chung ngay sau đó, bbox của khối
+    phụ có thể kéo tâm reflow lệch sang một bên hoặc làm nhánh cột/hàng chọn sai
+    trục. Khối phụ đáy ưu tiên reflow theo hàng; khối phụ phải ưu tiên theo cột.
+    Sau khi ghép lại, toàn layout vẫn phải qua chốt hết va ốc + không đè tem.
+    """
+    if not initial_cols or not zones or not placements:
+        return None
+
+    block_indices: Dict[int, List[int]] = {0: [], 1: [], 2: []}
+    for index, placement in enumerate(placements):
+        cell = placement.get('cell') or {}
+        try:
+            block_id = int(cell.get('blockId', -1))
+        except (TypeError, ValueError):
+            continue
+        if block_id in block_indices:
+            block_indices[block_id].append(index)
+    recognized = sum(len(indices) for indices in block_indices.values())
+    if (recognized != len(placements)
+            or not block_indices[0]
+            or not (block_indices[1] or block_indices[2])):
+        return None
+
+    # L-shape một mẫu phải cùng trang nguồn. Cổng này tránh hiểu nhầm blockId
+    # sản phẩm của mixed-guillotine là block chính/phụ L-shape.
+    if len({placement.get('src_page_idx') for placement in placements}) != 1:
+        return None
+
+    main_orientations = {
+        bool((placements[index].get('cell') or {}).get('isRotated', False))
+        for index in block_indices[0]
+    }
+    if len(main_orientations) != 1:
+        return None
+    main_orientation = next(iter(main_orientations))
+    for block_id in (1, 2):
+        indices = block_indices[block_id]
+        if not indices:
+            continue
+        auxiliary_orientations = {
+            bool((placements[index].get('cell') or {}).get('isRotated', False))
+            for index in indices
+        }
+        # Khối phụ L-shape phải đồng nhất và xoay ngược khối chính. Một block
+        # trộn hướng là layout khác, không được đi qua helper chuyên biệt này.
+        if (len(auxiliary_orientations) != 1
+                or next(iter(auxiliary_orientations)) == main_orientation):
+            return None
+
+    main_set = set(block_indices[0])
+    if any(index not in main_set for index in initial_cols):
+        return None
+
+    main_items = [placements[index] for index in block_indices[0]]
+    auxiliary_items = [
+        placement for index, placement in enumerate(placements)
+        if index not in main_set
+    ]
+    original_order = {
+        id(placement.get('cell')): index
+        for index, placement in enumerate(placements)
+    }
+
+    # Bố cục đáy cần co/canh HÀNG của khối chính theo X; bố cục phải cần
+    # co/canh CỘT theo Y. Nếu solver có cả hai khối phụ thì thử hai hướng và
+    # chọn phương án giữ nhiều tem nhất, hòa thì giữ ưu tiên theo cấu trúc L.
+    resolvers = []
+    if block_indices[2]:
+        resolvers.append(_resolve_one_orientation)
+    if block_indices[1]:
+        resolvers.append(_resolve_by_columns)
+    for resolver in (_resolve_one_orientation, _resolve_by_columns):
+        if resolver not in resolvers:
+            resolvers.append(resolver)
+
+    valid_candidates = []
+    for priority, resolver in enumerate(resolvers):
+        resolved_main = resolver(
+            main_items, zones, base_poly, base_rect_pts,
+            sheet_w, sheet_h, margins,
+        )
+        if resolved_main is None:
+            continue
+        candidate = list(resolved_main) + auxiliary_items
+        # Resolver hàng/cột sắp lại thứ tự khi reflow. Ghép về thứ tự solver
+        # ban đầu để hợp đồng render/export ổn định, dù một tem đã bị loại.
+        candidate.sort(
+            key=lambda placement: original_order.get(
+                id(placement.get('cell')), len(original_order),
+            ),
+        )
+        if detect_collisions(
+            candidate, zones, base_poly, base_rect_pts, sheet_h,
+        ):
+            continue
+        if _has_any_sticker_overlap(candidate, base_poly):
+            continue
+        valid_candidates.append((len(candidate), -priority, candidate))
+
+    if not valid_candidates:
+        return None
+    return max(valid_candidates, key=lambda value: (value[0], value[1]))[2]
 
 
 def _rotate_pair_180(placements: List[Dict], idxs: List[int], sheet_h: float) -> List[Dict]:
@@ -769,11 +1100,14 @@ def smart_resolve_collisions(placements: List[Dict], zones: List[box], base_poly
     """Giải va chạm tem với VÙNG CẤM (pont/ốc 4 góc), ưu tiên GIỮ nhiều tem nhất.
 
     Thứ tự ưu tiên (chi tiết xem COLLISION_PLAYBOOK.md):
-      1. Có CẶP LỒNG LỆCH HƯỚNG (trong cụm lồng, 2 hướng up/down khác số tem) → XOAY 180° cục bộ
+      1. L-shape có blockId → thử DỊCH RIÊNG khối phụ (giữ trọn bố cục và số tem).
+      2. Va chạm còn ở khối chính L-shape → reflow/canh giữa RIÊNG khối chính,
+         giữ nguyên khối phụ.
+      3. Có CẶP LỒNG LỆCH HƯỚNG (trong cụm lồng, 2 hướng up/down khác số tem) → XOAY 180° cục bộ
          trọn cụm giáp vùng cấm → đưa hướng ít tem ra mép → giữ TRỌN tem. Chỉ nhận phép xoay vừa
          giảm va chạm vừa KHÔNG sinh tem-đè (kiểm bằng polygon thật).
-      2. Xoay chưa hết → thử DỊCH CẢ KHỐI ra xa góc va chạm (giữ trọn).
-      3. Còn lại (đối xứng/cân bằng/không lồng — tròn, chữ nhật, tam giác chẵn, cặp bằng nhau...)
+      4. Xoay chưa hết → thử DỊCH CẢ KHỐI ra xa góc va chạm (giữ trọn).
+      5. Còn lại (đối xứng/cân bằng/không lồng — tròn, chữ nhật, tam giác chẵn, cặp bằng nhau...)
          → xóa tối thiểu + canh giữa (_resolve_one_orientation).
     """
     if not placements:
@@ -782,6 +1116,30 @@ def smart_resolve_collisions(placements: List[Dict], zones: List[box], base_poly
 
     if not initial_cols:
         return placements
+
+    l_shape_shift = _try_l_shape_auxiliary_block_shift(
+        placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h,
+        initial_cols,
+    )
+    if l_shape_shift is not None:
+        # Khối chính vẫn có thể chạm ốc ở góc khác. Giữ phép dịch khối phụ rồi
+        # để resolver chung giải phần còn lại; không trả sớm một layout còn lỗi.
+        placements = l_shape_shift
+        initial_cols = detect_collisions(
+            placements, zones, base_poly, base_rect_pts, sheet_h,
+        )
+        if not initial_cols:
+            return placements
+
+    # Nếu va chạm còn ở khối chính, reflow RIÊNG trong bbox khối chính rồi mới
+    # ghép khối phụ trở lại. Vị trí canh giữa tạm của toàn hình L không được trở
+    # thành tâm cuối cho hàng/cột khối chính.
+    l_shape_main_reflow = _try_l_shape_main_block_reflow(
+        placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins,
+        initial_cols,
+    )
+    if l_shape_main_reflow is not None:
+        return l_shape_main_reflow
 
     # Chỉ xoay/dịch khi có CẶP LỒNG 2 hướng LỆCH số lượng (= checkIfPentagonRowsAreEqual==false).
     # Tròn/chữ nhật/tam giác-chẵn/cặp-bằng-nhau → không có → giữ hành vi cũ (xóa + canh giữa).

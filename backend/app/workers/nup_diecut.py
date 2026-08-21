@@ -16,6 +16,20 @@ from app.core.imposition_page_box import effective_imposition_box
 logger = logging.getLogger(__name__)
 
 MM_TO_PTS = 2.83465
+MIN_DIE_STROKE_WIDTH_PT = 1.0
+
+
+def resolve_die_stroke_width(raw_width) -> float:
+    """Giữ nét nguồn dày hơn nhưng bảo đảm đường bế hiển thị tối thiểu 1 pt."""
+    try:
+        width = float(raw_width)
+    except (TypeError, ValueError):
+        return MIN_DIE_STROKE_WIDTH_PT
+    if not math.isfinite(width):
+        return MIN_DIE_STROKE_WIDTH_PT
+    # UIUX (feedback 2026-08-20 §CUT.PAGE.VIS): 0,5 pt chỉ còn khoảng nửa
+    # pixel khi fit tờ A3, làm đường dọc/ngang lúc rõ lúc mờ do anti-alias.
+    return max(MIN_DIE_STROKE_WIDTH_PT, width)
 
 
 def resolve_default_page_die(page, die_offset_mm=0, MM=MM_TO_PTS):

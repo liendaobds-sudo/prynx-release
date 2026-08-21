@@ -4,10 +4,18 @@ from __future__ import annotations
 import inspect
 from types import SimpleNamespace
 
+import pikepdf
 import pytest
 
 from app.workers import imposition_rust_policy
-from app.workers.nup_diecut import resolve_default_page_die, resolve_one_dao_trim
+from app.workers import pdf_wrapper as pdf_lib
+from app.workers.nup_diecut import (
+    MIN_DIE_STROKE_WIDTH_PT,
+    resolve_default_page_die,
+    resolve_die_stroke_width,
+    resolve_one_dao_trim,
+)
+from app.workers.sticker_imposer_pkg.one_dao_cut import draw_one_dao_cuts
 from app.workers.sticker_imposer_pkg import layout_compute as lc
 from app.workers.sticker_imposer_pkg import orchestrator
 
@@ -74,6 +82,32 @@ def test_default_page_fallback_offset_changes_both_sides_and_keeps_center():
     for rect in (expanded, contracted):
         assert (rect.x0 + rect.x1) / 2 == pytest.approx(100)
         assert (rect.y0 + rect.y1) / 2 == pytest.approx(50)
+
+
+@pytest.mark.parametrize(
+    ("raw_width", "expected"),
+    [(None, 1.0), (0.0, 1.0), (0.5, 1.0), (1.0, 1.0), (1.5, 1.5), (float("nan"), 1.0)],
+)
+def test_die_stroke_width_has_one_point_minimum(raw_width, expected):
+    assert resolve_die_stroke_width(raw_width) == pytest.approx(expected)
+
+
+def test_one_dao_default_stroke_is_one_point_in_pdf_stream():
+    doc = pdf_lib.open()
+    try:
+        page = doc.new_page(width=100.0, height=100.0)
+        draw_one_dao_cuts(page, [{
+            "type": "H",
+            "start": 10.0,
+            "end": 90.0,
+            "fixed": 50.0,
+        }])
+        contents = page._page.get("/Contents")
+        streams = list(contents) if isinstance(contents, pikepdf.Array) else [contents]
+        operators = b"\n".join(stream.read_bytes() for stream in streams if stream is not None)
+        assert f"{MIN_DIE_STROKE_WIDTH_PT} w".encode("ascii") in operators
+    finally:
+        doc.close()
 
 
 def test_default_real_die_ignores_page_fallback_offset(monkeypatch):

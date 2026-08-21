@@ -59,8 +59,15 @@ def finalize_placements(
             'isRotated': it.get('isRotated', False),
             'isRotated180': it.get('isRotated180', False),
         }
-        if with_block_id:
-            cell['blockId'] = it.get('blockId', it.get('pageIdx', 0))
+        # PONT (audit 2026-08-20 §LS-PONT.1): L-shape đã gắn blockId từ solver
+        # (0=chính, 1=phải, 2=đáy). Phải giữ dấu này cho resolver để nó chỉ dịch
+        # khối phụ, không dồn/xóa từng tem. with_block_id chỉ còn là fallback cũ
+        # cho caller cần phân block theo trang nguồn.
+        block_id = it.get('blockId')
+        if block_id is not None:
+            cell['blockId'] = block_id
+        elif with_block_id:
+            cell['blockId'] = it.get('pageIdx', 0)
         placements.append({
             'cluster_idx': 0,
             'cell': cell,

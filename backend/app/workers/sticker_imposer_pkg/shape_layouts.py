@@ -613,9 +613,36 @@ def _py_solve_l_shape_layout(usable_w: float, usable_h: float, item_w: float, it
     """
     L-shape fill: main block (original orientation) + fill blocks (rotated) in remaining
     right and bottom space. Mirrors nup_engine.py optimal_auto logic adapted for die-cut.
-    Tries both orientations as primary and picks highest yield.
+    Tries both orientations as primary and picks highest yield. Khi hòa số
+    lượng thì ưu tiên footprint chừa mép đều hơn rồi footprint nhỏ hơn để tránh
+    chọn một phương án sát ốc dù phương án cùng sản lượng vẫn nằm gọn.
     """
     split_gap = secondary_gap if secondary_gap is not None else max(gap_x, gap_y)  # Use user gap directly, no forced 5mm minimum
+
+    def candidate_rank(total: int, width_used: float, height_used: float):
+        """Xếp hạng sản lượng trước, sau đó độ thoáng mép và độ gọn."""
+        spare_x = usable_w - width_used
+        spare_y = usable_h - height_used
+        return (
+            total,
+            min(spare_x, spare_y),
+            -(width_used * height_used),
+            -(width_used + height_used),
+        )
+
+    def candidate_is_better(
+        total: int,
+        width_used: float,
+        height_used: float,
+        best_total: int,
+        best_width: float,
+        best_height: float,
+    ) -> bool:
+        if total != best_total:
+            return total > best_total
+        return candidate_rank(total, width_used, height_used) > candidate_rank(
+            best_total, best_width, best_height,
+        )
 
     def try_config(main_w, main_h, fill_w, fill_h, primary_rotated):
         max_grid = solve_grid_layout(usable_w, usable_h, main_w, main_h, gap_x, gap_y)
@@ -623,6 +650,7 @@ def _py_solve_l_shape_layout(usable_w: float, usable_h: float, item_w: float, it
         best_items = []
         best_w = 0.0
         best_h = 0.0
+        has_best = False
 
         max_cols = max_grid.get('cols', 0)
         max_rows = max_grid.get('rows', 0)
@@ -691,13 +719,21 @@ def _py_solve_l_shape_layout(usable_w: float, usable_h: float, item_w: float, it
                         for it in right_items: it['y'] += shift
 
                 all_items = main_items + right_items + bottom_items
-
-                if len(all_items) > best_yield:
+                candidate_w = max(
+                    (it['x'] + it['width'] for it in all_items), default=0.0,
+                )
+                candidate_h = max(
+                    (it['y'] + it['height'] for it in all_items), default=0.0,
+                )
+                if not has_best or candidate_is_better(
+                    len(all_items), candidate_w, candidate_h,
+                    best_yield, best_w, best_h,
+                ):
                     best_yield = len(all_items)
                     best_items = all_items
-                    if all_items:
-                        best_w = max(it['x'] + it['width'] for it in all_items)
-                        best_h = max(it['y'] + it['height'] for it in all_items)
+                    best_w = candidate_w
+                    best_h = candidate_h
+                    has_best = True
 
         return best_yield, best_items, best_w, best_h
 
@@ -706,10 +742,14 @@ def _py_solve_l_shape_layout(usable_w: float, usable_h: float, item_w: float, it
     # Try primary=rotated, fill=original
     y2, items2, w2, h2 = try_config(item_h, item_w, item_w, item_h, True)
 
-    if y1 >= y2:
-        best_items, best_w, best_h, best_total = items1, w1, h1, y1
-    else:
+    # PONT (audit 2026-08-20 §LS-PONT.7): A3 lỡ 320×450, tem 90×50,
+    # gap=0 có hai phương án cùng 27 tem. So sánh số lượng đơn thuần từng ép
+    # phương án cao 440 mm sát ốc, rồi resolver xóa còn 25; phương án cao
+    # 410 mm giữ đủ 27. Phá hòa bằng độ thoáng/footprint thay vì thứ tự duyệt.
+    if candidate_is_better(y2, w2, h2, y1, w1, h1):
         best_items, best_w, best_h, best_total = items2, w2, h2, y2
+    else:
+        best_items, best_w, best_h, best_total = items1, w1, h1, y1
 
     return {
         'totalItems': best_total,
@@ -779,7 +819,8 @@ def solve_illustrator_parallelogram_layout(usable_w: float, usable_h: float, ite
     return _py_solve_illustrator_parallelogram_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y, shape_props)
 
 def solve_l_shape_layout(usable_w: float, usable_h: float, item_w: float, item_h: float, gap_x: float, gap_y: float, secondary_gap: float = None) -> Dict[str, Any]:
-    # Rust native doesn't support secondary_gap — skip when it's set
+    # Rust native chỉ hỗ trợ split_gap mặc định=max(gap); caller đặt khoảng
+    # cụm phụ riêng (kể cả 0 chủ đích) thì phải dùng bản Python.
     if _HAS_RUST and secondary_gap is None:
         try:
             result = _native.shape_l_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y)

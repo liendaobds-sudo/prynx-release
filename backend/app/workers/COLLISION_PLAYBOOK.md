@@ -2,7 +2,7 @@
 
 > Tổng hợp đầy đủ logic & kịch bản xử lý va chạm cho từng loại hình, để **không phải mò script
 > Illustrator (`scripts/illustrator/1. dev - Nô lệ bình bài.jsx`) lần nữa**.
-> Cập nhật: 2026-06-22. Code: `backend/app/workers/pont_collision.py` (+ `nup_process_chunk.py`,
+> Cập nhật: 2026-08-20. Code: `backend/app/workers/pont_collision.py` (+ `nup_process_chunk.py`,
 > `cnc_render.py`).
 
 ---
@@ -46,6 +46,12 @@
 ```
 detect va chạm vùng cấm.
 nếu không có → trả nguyên.
+
+CÓ CẤU TRÚC L-SHAPE blockId 0/1/2 không?
+ ├─ khối phụ va ốc → dịch nguyên khối phụ, không dồn/xóa từng tem.
+ └─ va chạm còn ở khối chính → reflow riêng trong bbox khối chính
+    (phụ đáy: theo hàng; phụ phải: theo cột), rồi ghép khối phụ nguyên vị trí.
+    Mọi kết quả đều phải hết va ốc + không tem-đè.
 
 CÓ "CẶP LỒNG LỆCH HƯỚNG" không?  (xem mục 3)
  ├─ KHÔNG → _resolve_one_orientation: XÓA tối thiểu + canh giữa  (tròn, chữ nhật, tam giác chẵn,
@@ -108,6 +114,28 @@ Một hàng 11 tem = 6 ngược + 5 xuôi → đếm theo y ra "11 (bằng)" SAI
   2 góc đối nhau (TL+BR) hoặc khối kín khổ → không dịch được → None.
 - (Tương ứng Scenario 0a–0d của JSX, nhưng tìm kiếm thay vì tất định.)
 
+### 5A. L-SHAPE — TÁCH KHỐI CHÍNH / KHỐI PHỤ
+
+- Solver phát `blockId`: `0=khối chính`, `1=khối phụ phải`, `2=khối phụ đáy`.
+- `finalize_placements` chỉ canh toàn hình L **tạm thời** để có toạ độ tuyệt đối dò ốc;
+  đó không phải tâm reflow cuối của khối chính.
+- `_try_l_shape_auxiliary_block_shift`: nếu khối phụ va ốc, dịch cứng nguyên khối phụ.
+- `_try_l_shape_main_block_reflow`: nếu chỉ khối chính còn va, giải riêng khối chính trong
+  bbox của nó; khối phụ đáy ưu tiên hàng, khối phụ phải ưu tiên cột. Ghép lại rồi kiểm toàn cục.
+- Tiếp tuyến biên vùng an toàn có diện tích giao bằng 0 không phải va chạm; chỉ xâm lấn có
+  diện tích lớn hơn epsilon số học `PONT_COLLISION_EPS_PT2` mới bị xử lý. Ngưỡng đè
+  tem-tem `MIN_OVERLAP_AREA_PT2` là hợp đồng khác và không được dùng cho vùng cấm ốc.
+
+### 5B. L-SHAPE — CHỌN CANDIDATE TRƯỚC COLLISION
+
+- Rust và Python phải canh giữa khối hẹp hơn theo trục ghép trước khi finalize;
+  collision resolver không có trách nhiệm sửa một layout vốn đã neo lệch.
+- Nếu nhiều candidate có cùng sản lượng ở bất kỳ gap nào, ưu tiên candidate
+  chừa mép đều hơn rồi footprint nhỏ hơn. Không chọn candidate sát ốc để sau đó
+  xóa tem khi một candidate cùng sản lượng và sạch va chạm vẫn tồn tại.
+- Backlog §LS-PONT.8: candidate có đồng thời fill phải + fill đáy phải được kiểm
+  overlap góc trước khi raw count được coi là sản lượng hợp lệ.
+
 ---
 
 ## 6. XÓA TỐI THIỂU + CANH GIỮA (_resolve_one_orientation)
@@ -135,7 +163,7 @@ vùng cấm + cờ `safeEdgeAlign`. Bản Python hiện gộp lại thành xóa-
 | **Bình hành** | Có (cặp up/down) | Có | Như hình thang |
 | **Tạ tay / Búa** | Có (cặp cột) | Có | Cặp lệch → **xoay**; bằng → xóa+canh |
 | **Tròn / Elip** | (hex bbox đè) | KHÔNG (đồng hướng) | **Giữ hành vi cũ**: xóa+canh. Xoay vô nghĩa (đối xứng) |
-| **Chữ nhật / tứ giác đều** | KHÔNG | (inking có thể bật) | **Giữ hành vi cũ**: xóa+canh. Không lồng nên không xoay |
+| **Chữ nhật / tứ giác đều** | KHÔNG | (inking có thể bật) | L-shape: xử lý theo block chính/phụ (mục 5A); lưới thường: xóa+canh |
 | **Lục giác** | (hex) | thường đồng hướng | Giữ hành vi cũ |
 
 > Cổng chặn `has_flippable` = "có cụm lồng nào 2 hướng lệch số lượng không". Tròn (đồng hướng) và chữ
@@ -158,6 +186,8 @@ vùng cấm + cờ `safeEdgeAlign`. Bản Python hiện gộp lại thành xóa-
 | `_creates_sticker_overlap` | Chốt an toàn: xoay có sinh tem-đè không |
 | `_try_local_pair_flips` | Chiến lược 1: xoay cục bộ |
 | `_try_whole_block_shift` | Chiến lược 2: dịch cả khối |
+| `_try_l_shape_auxiliary_block_shift` | L-shape: dịch nguyên khối phụ va ốc |
+| `_try_l_shape_main_block_reflow` | L-shape: reflow/canh riêng khối chính, giữ khối phụ |
 | `_resolve_one_orientation` | Chiến lược 3: xóa + canh giữa theo hàng |
 | `smart_resolve_collisions` | Điều phối 3 chiến lược (mục 2) |
 
