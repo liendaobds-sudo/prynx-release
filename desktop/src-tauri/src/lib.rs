@@ -1994,6 +1994,28 @@ fn sidecar_cache_version(name: &str) -> Option<[u64; 8]> {
     ])
 }
 
+fn windows_resource_revision(prerelease: Option<&str>) -> Option<u64> {
+    let Some(value) = prerelease else {
+        return Some(0);
+    };
+    let numeric_parts = value
+        .split('.')
+        .filter(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    if numeric_parts.len() > 2 {
+        return None;
+    }
+    let sequence = numeric_parts.first().copied().unwrap_or(0);
+    let hotfix = numeric_parts.get(1).copied().unwrap_or(0);
+    if hotfix > 99 {
+        return None;
+    }
+    let revision = sequence.checked_mul(100)?.checked_add(hotfix)?;
+    (revision <= u16::MAX as u64).then_some(revision)
+}
+
 fn nuitka_cache_name_for_app_version(version: &str) -> Option<String> {
     let (core, prerelease) = version
         .split_once('-')
@@ -2007,10 +2029,7 @@ fn nuitka_cache_name_for_app_version(version: &str) -> Option<String> {
     if core_parts.len() != 3 {
         return None;
     }
-    let revision = prerelease
-        .and_then(|value| value.rsplit('.').next())
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(0);
+    let revision = windows_resource_revision(prerelease)?;
     let numeric = format!(
         "{}.{}.{}.{}",
         core_parts[0], core_parts[1], core_parts[2], revision
@@ -4909,12 +4928,21 @@ mod perf_and_sidecar_cache_tests {
     fn version_tauri_khop_ten_cache_nuitka() {
         assert_eq!(
             nuitka_cache_name_for_app_version("1.0.0-rc.3").as_deref(),
-            Some("sidecar-1.0.0.3-1.0.0.3")
+            Some("sidecar-1.0.0.300-1.0.0.300")
+        );
+        assert_eq!(
+            nuitka_cache_name_for_app_version("1.0.0-rc.8.1").as_deref(),
+            Some("sidecar-1.0.0.801-1.0.0.801")
+        );
+        assert_eq!(
+            nuitka_cache_name_for_app_version("1.0.0-rc.9").as_deref(),
+            Some("sidecar-1.0.0.900-1.0.0.900")
         );
         assert_eq!(
             nuitka_cache_name_for_app_version("2.4.1").as_deref(),
             Some("sidecar-2.4.1.0-2.4.1.0")
         );
+        assert!(windows_resource_revision(Some("rc.8.100")).is_none());
         assert!(nuitka_cache_name_for_app_version("khong-hop-le").is_none());
     }
 

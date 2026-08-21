@@ -152,6 +152,40 @@ function ConvertTo-BuildToolVersion {
     }
 }
 
+function ConvertTo-WindowsResourceVersion {
+    param([string]$VersionText)
+
+    $match = [regex]::Match(
+        $VersionText,
+        '^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$'
+    )
+    if (-not $match.Success) { return $null }
+
+    [long]$revision = 0
+    $prerelease = $match.Groups[4].Value
+    if (-not [string]::IsNullOrWhiteSpace($prerelease)) {
+        $numericIds = @($prerelease.Split('.') | Where-Object { $_ -match '^\d+$' })
+        if ($numericIds.Count -gt 2) { return $null }
+        if ($numericIds.Count -gt 0) {
+            [long]$sequence = 0
+            [long]$hotfix = 0
+            if (-not [long]::TryParse($numericIds[0], [ref]$sequence)) { return $null }
+            if ($numericIds.Count -gt 1 -and
+                -not [long]::TryParse($numericIds[1], [ref]$hotfix)) { return $null }
+            if ($hotfix -gt 99) { return $null }
+            $revision = $sequence * 100 + $hotfix
+        }
+    }
+    if ($revision -lt 0 -or $revision -gt 65535) { return $null }
+
+    return '{0}.{1}.{2}.{3}' -f @(
+        $match.Groups[1].Value,
+        $match.Groups[2].Value,
+        $match.Groups[3].Value,
+        $revision
+    )
+}
+
 function Test-PythonDistribution {
     param([Parameter(Mandatory = $true)][string]$Name)
 
@@ -304,9 +338,8 @@ if (-not [string]::IsNullOrWhiteSpace($Version)) {
 # ---- Derive version from tauri.conf.json (single source of truth) ----
 # tauri.conf.json giu SemVer (co the kem prerelease: 1.0.0-beta.9). Nhung Windows
 # version resource (Nuitka --file-version/--product-version) BAT BUOC numeric 4 phan
-# X.X.X.X -- chuoi "1.0.0-beta.9" se lam Nuitka bao loi. Anh xa so prerelease sang
-# phan thu 4: 1.0.0-beta.9 -> 1.0.0.9 ; khong prerelease -> .0. Nho vay file .exe
-# hien dung phien ban thay vi ket "1.0.0" nhu truoc (build_production.ps1 hardcode).
+# X.X.X.X. Ma hoa prerelease N.M thanh revision N*100+M de rc.8.1=801 va rc.9=900;
+# nhu vay hotfix tang don dieu, khong trung resource cua rc.8 da phat hanh.
 $APP_VERSION = "1.0.0"
 $NUMERIC_VERSION = "1.0.0.0"
 if (Test-Path $TAURI_CONF) {
@@ -314,13 +347,12 @@ if (Test-Path $TAURI_CONF) {
         $confJson = Get-Content $TAURI_CONF -Raw | ConvertFrom-Json
         if ($confJson.version) {
             $APP_VERSION = [string]$confJson.version
-            if ($APP_VERSION -match '^(\d+)\.(\d+)\.(\d+)(?:-[A-Za-z0-9]+\.?(\d+))?') {
-                $p4 = if ($Matches[4]) { $Matches[4] } else { "0" }
-                $NUMERIC_VERSION = "$($Matches[1]).$($Matches[2]).$($Matches[3]).$p4"
-            }
+            $mappedVersion = ConvertTo-WindowsResourceVersion $APP_VERSION
+            if (-not $mappedVersion) { throw "Unsupported release version: $APP_VERSION" }
+            $NUMERIC_VERSION = $mappedVersion
         }
     } catch {
-        Write-Host "  WARNING: Cannot parse version from tauri.conf.json, using $APP_VERSION" -ForegroundColor Yellow
+        throw "Cannot map app version to Windows resource version: $($_.Exception.Message)"
     }
 }
 Write-Host "  App version: $APP_VERSION (Windows resource: $NUMERIC_VERSION)" -ForegroundColor DarkGray
