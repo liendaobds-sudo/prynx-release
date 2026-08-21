@@ -376,7 +376,9 @@ describe('usePrintDialog lifecycle', () => {
 
         fireEvent.click(screen.getByTestId('print-dialog-overlay'));
         await waitFor(() => expect(screen.queryByRole('dialog', { name: 'title' })).toBeNull());
-        expect(screen.getByTestId('result').textContent).toBe('false');
+        // Hook chỉ resolve sau khi đã dọn file PDF tạm. Khi chạy cả suite, bước
+        // cleanup bất đồng bộ có thể hoàn tất sau đúng một nhịp render đóng dialog.
+        await waitFor(() => expect(screen.getByTestId('result').textContent).toBe('false'));
     });
 
     it('list máy in rỗng vẫn mở hộp và cho thử hộp thoại Windows', async () => {
