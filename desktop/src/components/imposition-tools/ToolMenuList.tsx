@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { ToolItem } from './SharedUI';
 import { TOOL_CATEGORIES, getToolsByCategory, getToolUniqueKey, toolMatchesQuery, type ToolDefinition } from '../../lib/toolRegistry';
 import { useAppSettingsStore } from '../../stores/appSettingsStore';
@@ -6,14 +6,15 @@ import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
 import { useToolActivationGuard } from '../../hooks/useToolActivationGuard';
 import { isWorkspaceTool } from './types';
+import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 
-// UIUX (audit 2026-07-27 §B-12) fix-verify: B-12 rút lại — menu chỉ render khi
-// activeTool==='none' (menu/tool loại trừ nhau) nên prop activeTool luôn 'none',
-// highlight không bao giờ chạy; mini-toolbar đã có highlight riêng. Gỡ dead code.
+// UIUX (audit 2026-08-22 §UX.MT.13): catalog và panel thiết lập có thể tồn tại
+// song song; catalog phải phản ánh đúng công cụ đang hoạt động.
 interface ToolMenuListProps {
     setActiveTool: (tool: string) => void;
     setTaskMode: (mode: string) => void;
     onActiveToolChange?: (tool: string) => void;
+    activeTool?: string;
 }
 
 const SectionToggle = ({ sectionKey, label, collapsed, onToggle }: { sectionKey: string; label: string; collapsed: boolean; onToggle: (key: string) => void }) => (
@@ -23,14 +24,51 @@ const SectionToggle = ({ sectionKey, label, collapsed, onToggle }: { sectionKey:
     </button>
 );
 
-export default function ToolMenuList({ setActiveTool, setTaskMode }: ToolMenuListProps) {
+export default function ToolMenuList({ setActiveTool, setTaskMode, activeTool = 'none' }: ToolMenuListProps) {
   const { t } = useTranslation();
     const hiddenTools = useAppSettingsStore(state => state.hiddenTools);
     const favoriteTools = useAppSettingsStore(state => state.favoriteTools);
     const toggleFavoriteTool = useAppSettingsStore(state => state.toggleFavoriteTool);
     const collapsedSections = useAppSettingsStore(state => state.collapsedSections);
     const toggleSection = useAppSettingsStore(state => state.toggleSection);
-    const [query, setQuery] = useState('');
+    const query = useWorkspaceStore(state => state.toolMenuQuery);
+    const setQuery = useWorkspaceStore(state => state.setToolMenuQuery);
+    const toolMenuScrollTop = useWorkspaceStore(state => state.toolMenuScrollTop);
+    const setToolMenuScrollTop = useWorkspaceStore(state => state.setToolMenuScrollTop);
+    const menuScrollRef = useRef<HTMLDivElement>(null);
+    const pendingScrollTopRef = useRef<number | null>(null);
+    const scrollFrameRef = useRef<number | null>(null);
+    useEffect(() => {
+        const element = menuScrollRef.current;
+        if (!element) return;
+        if (Math.abs(element.scrollTop - toolMenuScrollTop) <= 1) return;
+        if (typeof element.scrollTo === 'function') {
+            element.scrollTo({ top: toolMenuScrollTop });
+        } else {
+            element.scrollTop = toolMenuScrollTop;
+        }
+    }, [toolMenuScrollTop]);
+    useEffect(() => () => {
+        if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
+    }, []);
+    const flushScrollTop = () => {
+        scrollFrameRef.current = null;
+        const next = pendingScrollTopRef.current;
+        pendingScrollTopRef.current = null;
+        if (next === null) return;
+        // PERF (audit 2026-08-22 §UX.S.04): chỉ công bố vị trí cuộn mới nhất
+        // một lần mỗi frame; không ghi store theo từng event pixel.
+        setToolMenuScrollTop(next);
+    };
+    const handleMenuScroll = (event: React.UIEvent<HTMLDivElement>) => {
+        pendingScrollTopRef.current = event.currentTarget.scrollTop;
+        if (scrollFrameRef.current !== null) return;
+        if (typeof requestAnimationFrame === 'function') {
+            scrollFrameRef.current = requestAnimationFrame(flushScrollTop);
+        } else {
+            flushScrollTop();
+        }
+    };
     const requestActivation = useToolActivationGuard();
 
     const q = query.trim().toLowerCase();
@@ -55,7 +93,11 @@ export default function ToolMenuList({ setActiveTool, setTaskMode }: ToolMenuLis
     const dashboardCategories = TOOL_CATEGORIES.filter(cat => cat.id !== 'qc');
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }} className="pb-4 px-1 select-none">
+        <div
+            ref={menuScrollRef}
+            onScroll={handleMenuScroll}
+            style={{ display: 'flex', flexDirection: 'column', gap: '6px' }} className="flex-1 min-h-0 pb-4 px-1 select-none overflow-y-auto"
+        >
             {/* ── Search ── */}
             <div className="relative mb-1">
                 <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" /></svg>
@@ -89,6 +131,7 @@ export default function ToolMenuList({ setActiveTool, setTaskMode }: ToolMenuLis
                                 info={tv(tool.longDescription)}
                                 helpKey={keyOf(tool)}
                                 featureId={tool.featureId}
+                                active={keyOf(tool) === activeTool}
                                 isFavorite
                                 onToggleFavorite={() => toggleFavoriteTool(keyOf(tool))}
                                 onClick={() => open(tool)}
@@ -122,6 +165,7 @@ export default function ToolMenuList({ setActiveTool, setTaskMode }: ToolMenuLis
                                 info={tv(tool.longDescription)}
                                 helpKey={keyOf(tool)}
                                 featureId={tool.featureId}
+                                active={keyOf(tool) === activeTool}
                                 isFavorite={favoriteTools.includes(keyOf(tool))}
                                 onToggleFavorite={() => toggleFavoriteTool(keyOf(tool))}
                                 onClick={() => open(tool)}

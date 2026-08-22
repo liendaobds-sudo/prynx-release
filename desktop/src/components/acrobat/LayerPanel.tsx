@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { getApiUrl } from '../../lib/api';
 import { useTranslation } from 'react-i18next';
+import { resolveViewerPageIdentity } from '../../lib/viewerPageIdentity';
 
 // ═══════════════════════════════════════════════════════════
 //  F7 Layer Panel — Standalone OCG Layer Manager
@@ -231,6 +232,8 @@ export default function LayerPanel() {
         isLayerPanelOpen, setIsLayerPanelOpen,
         setOcgPreviewUrl,
         viewerActivePage,
+        viewerPageOrder,
+        viewerPageInstanceIds,
     } = useWorkspaceStore(useShallow(state => ({
         file: state.file,
         pdfOcgLayers: state.pdfOcgLayers, setPdfOcgLayers: state.setPdfOcgLayers,
@@ -239,7 +242,14 @@ export default function LayerPanel() {
         isLayerPanelOpen: state.isLayerPanelOpen, setIsLayerPanelOpen: state.setIsLayerPanelOpen,
         setOcgPreviewUrl: state.setOcgPreviewUrl,
         viewerActivePage: state.viewerActivePage,
+        viewerPageOrder: state.viewerPageOrder,
+        viewerPageInstanceIds: state.viewerPageInstanceIds,
     })));
+    const activePageIdentity = resolveViewerPageIdentity({
+        viewerPosition: viewerActivePage,
+        pageOrder: viewerPageOrder,
+        pageInstanceIds: viewerPageInstanceIds,
+    });
 
     const [isLoading, setIsLoading] = useState(false);
     const [isRendering, setIsRendering] = useState(false);
@@ -297,6 +307,11 @@ export default function LayerPanel() {
     useEffect(() => {
         const filePath = (file as any)?.path;
         if (!filePath || !isLayerPanelOpen) return;
+        const sourcePage = activePageIdentity.sourcePage;
+        if (sourcePage == null) {
+            setOcgPreviewUrl(null);
+            return;
+        }
 
         // If nothing is hidden, clear preview (show normal tiles)
         if (hiddenOcgLayerIds.length === 0 && hiddenObjectKeys.length === 0) {
@@ -319,7 +334,7 @@ export default function LayerPanel() {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         path: filePath,
-                        page: viewerActivePage || 1,
+                        page: sourcePage,
                         hidden_layer_ids: hiddenOcgLayerIds,
                         hidden_object_keys: hiddenObjectKeys,
                         dpi: 150,
@@ -345,7 +360,14 @@ export default function LayerPanel() {
             clearTimeout(timer);
             controller.abort();
         };
-    }, [hiddenOcgLayerIds, hiddenObjectKeys, file, isLayerPanelOpen, viewerActivePage]);
+    }, [
+        hiddenOcgLayerIds,
+        hiddenObjectKeys,
+        file,
+        isLayerPanelOpen,
+        activePageIdentity.sourcePage,
+        setOcgPreviewUrl,
+    ]);
 
     // ─── Clear preview when panel closes ─────────────────────
     // [OCG FIX 2026-07-28] Hai sai ở bản cũ:

@@ -5,18 +5,38 @@ export const EDIT_OBJECT_FOCUS_EVENT = 'prynx-edit-object-focus-request';
 export interface EditObjectFocusDetail {
     objectId: string;
     pageIndex: number;
+    /** Scope tab/instance để tab nền hoặc bản duplicate không cuộn nhầm. */
+    tabId?: string;
+    pageInstanceId?: string;
 }
 
-export function requestEditObjectFocus(objectId: string, pageIndex: number): void {
+export interface EditObjectFocusScope {
+    tabId?: string;
+    pageInstanceId?: string;
+}
+
+export function requestEditObjectFocus(
+    objectId: string,
+    pageIndex: number,
+    scope: EditObjectFocusScope = {},
+): void {
     window.dispatchEvent(new CustomEvent<EditObjectFocusDetail>(
         EDIT_OBJECT_FOCUS_EVENT,
-        { detail: { objectId, pageIndex } },
+        { detail: { objectId, pageIndex, ...scope } },
     ));
 }
 
-export function readEditObjectFocusRequest(event: Event, pageIndex: number): string | null {
+export function readEditObjectFocusRequest(
+    event: Event,
+    pageIndex: number,
+    scope: EditObjectFocusScope = {},
+): string | null {
     const detail = (event as CustomEvent<Partial<EditObjectFocusDetail>>).detail;
-    if (!detail || detail.pageIndex !== pageIndex || typeof detail.objectId !== 'string') {
+    if (!detail
+        || detail.pageIndex !== pageIndex
+        || (scope.tabId && detail.tabId !== scope.tabId)
+        || (scope.pageInstanceId && detail.pageInstanceId !== scope.pageInstanceId)
+        || typeof detail.objectId !== 'string') {
         return null;
     }
     const objectId = detail.objectId.trim();

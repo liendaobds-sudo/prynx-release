@@ -11,6 +11,7 @@ import {
     type PageViewportAnchor,
     type PagePointViewportAnchor,
 } from '../../lib/pageViewport';
+import type { ViewerFitPageSize } from '../../lib/viewerPageIdentity';
 
 // Padding hàng trang (AcrobatViewer): L/R 24+24, T/B 32+32, gap 12 giữa 2 trang.
 // SAFETY: scrollbar-gutter both-edges + subpixel — zoom sát 100% khung → tràn 1–2px
@@ -43,7 +44,7 @@ interface UseViewerZoomProps {
     setZoom: (z: number) => void;
     fitMode: string;
     setFitMode: (m: string) => void;
-    pageDim: { w: number; h: number } | null;
+    fitPageSizes: readonly ViewerFitPageSize[];
     pageDisplayMode: string;
     setPageDisplayMode: (m: string) => void;
     activePage: number;
@@ -56,7 +57,7 @@ export function useViewerZoom(props: UseViewerZoomProps) {
     const {
         containerRef, sidebarRef, internalScrollRef,
         numPages, zoom, setZoom, fitMode, setFitMode,
-        pageDim, pageDisplayMode, setPageDisplayMode, activePage, actualWidth100,
+        fitPageSizes, pageDisplayMode, setPageDisplayMode, activePage, actualWidth100,
         navigatePage, toolMode,
     } = props;
 
@@ -108,34 +109,41 @@ export function useViewerZoom(props: UseViewerZoomProps) {
         return { w: cw, h: ch };
     }, [internalScrollRef, containerRef, mainWidth, mainHeight]);
 
-    /** Zoom vừa chiều ngang: (viewport − padding − safety) / (pageWidth × số cột). */
+    const getFitGeometry = useCallback(() => {
+        const validSizes = fitPageSizes.filter(size => size.width > 0 && size.height > 0);
+        if (validSizes.length > 0) {
+            return {
+                pages: validSizes.length,
+                totalWidth: validSizes.reduce((sum, size) => sum + size.width, 0),
+                maxHeight: Math.max(...validSizes.map(size => size.height)),
+            };
+        }
+        return actualWidth100 > 0
+            ? { pages: 1, totalWidth: actualWidth100, maxHeight: actualWidth100 * 1.414 }
+            : null;
+    }, [actualWidth100, fitPageSizes]);
+
+    /** Zoom vừa chiều ngang theo tổng chiều rộng thật của active page/spread. */
     const calcFitWidthZoom = useCallback(() => {
-        if (actualWidth100 <= 0) return 1;
-        const numPagesWide = pageDisplayMode.includes('two') ? 2 : 1;
-        const padX = FIT_PAD_X_SINGLE + FIT_GAP * (numPagesWide - 1) + FIT_SAFETY;
+        const geometry = getFitGeometry();
+        if (!geometry) return 1;
+        const padX = FIT_PAD_X_SINGLE + FIT_GAP * (geometry.pages - 1) + FIT_SAFETY;
         const { w } = getScrollViewport();
         const available = Math.max(50, w - padX);
-        return available / (actualWidth100 * numPagesWide);
-    }, [actualWidth100, pageDisplayMode, getScrollViewport]);
+        return available / geometry.totalWidth;
+    }, [getFitGeometry, getScrollViewport]);
 
-    /** Zoom vừa trọn trang: min(fitW, fitH) theo tỉ lệ trang thật. */
+    /** Zoom vừa trọn spread: tổng width + max height của đúng các trang trong hàng. */
     const calcFitPageZoom = useCallback(() => {
-        if (actualWidth100 <= 0) return 1;
-        const numPagesWide = pageDisplayMode.includes('two') ? 2 : 1;
-        const padX = FIT_PAD_X_SINGLE + FIT_GAP * (numPagesWide - 1) + FIT_SAFETY;
+        const geometry = getFitGeometry();
+        if (!geometry) return 1;
+        const padX = FIT_PAD_X_SINGLE + FIT_GAP * (geometry.pages - 1) + FIT_SAFETY;
         const padY = FIT_PAD_Y + FIT_SAFETY;
         const { w, h } = getScrollViewport();
         const availW = Math.max(50, w - padX);
         const availH = Math.max(50, h - padY);
-        // Chiều cao trang @ zoom=1 (cùng hệ actualWidth100)
-        const ratio = (pageDim && pageDim.w > 0 && pageDim.h > 0)
-            ? (pageDim.h / pageDim.w)
-            : 1.414;
-        const pageH100 = actualWidth100 * ratio;
-        const zoomW = availW / (actualWidth100 * numPagesWide);
-        const zoomH = availH / pageH100;
-        return Math.min(zoomW, zoomH);
-    }, [actualWidth100, pageDim, pageDisplayMode, getScrollViewport]);
+        return Math.min(availW / geometry.totalWidth, availH / geometry.maxHeight);
+    }, [getFitGeometry, getScrollViewport]);
 
     // UIUX (audit 2026-07-27 §C-02) fix-verify: với trang KHỔ NGANG (tờ bình), zoom
     // vừa-ngang == vừa-trọn-trang (chiều ngang chạm giới hạn trước), và khi mở file app
@@ -171,19 +179,20 @@ export function useViewerZoom(props: UseViewerZoomProps) {
 
     // ═══ Auto-zoom on fitMode / container resize ═══
     useEffect(() => {
-        if (fitMode === 'width' && actualWidth100 > 0 && (mainWidth > 50 || internalScrollRef.current)) {
+        const hasFitGeometry = getFitGeometry() !== null;
+        if (fitMode === 'width' && hasFitGeometry && (mainWidth > 50 || internalScrollRef.current)) {
             setZoom(calcFitWidthZoom());
             setIsZoomReady(true);
-        } else if ((fitMode === 'page' || fitMode === 'smart') && actualWidth100 > 0) {
+        } else if ((fitMode === 'page' || fitMode === 'smart') && hasFitGeometry) {
             if (mainWidth < 50 && mainHeight < 50 && !internalScrollRef.current) return;
             let z = calcFitPageZoom();
             if (fitMode === 'smart') z = Math.min(1, z);
             setZoom(z);
             setIsZoomReady(true);
-        } else if (actualWidth100 > 0 && fitMode === 'custom') {
+        } else if (hasFitGeometry && fitMode === 'custom') {
             setIsZoomReady(true);
         }
-    }, [mainWidth, mainHeight, fitMode, actualWidth100, pageDim, pageDisplayMode, calcFitWidthZoom, calcFitPageZoom]);
+    }, [mainWidth, mainHeight, fitMode, getFitGeometry, calcFitWidthZoom, calcFitPageZoom, setZoom]);
 
     // Sau fit: căn giữa THEO TRANG ĐANG XEM (anchor #pdf-page-container-N), không theo
     // tổng scrollWidth/Height. UIUX (audit 2026-07-27 §C-02) fix-verify: cách cũ

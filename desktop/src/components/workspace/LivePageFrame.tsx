@@ -55,6 +55,7 @@ import {
     snapRotation,
     pickFontForName as pickFontForNameUtil,
 } from './editGeometry';
+import { shouldLoadEditObjectsForFrame } from '../acrobat/thumbnailEditPreview';
 import { formatPageNumber, applyTokens, effectiveLR } from '../../lib/stampFormat';
 import { useTranslation } from 'react-i18next';
 import {
@@ -192,7 +193,8 @@ const _editObjectsCache = new Map<string, EditCanvasObj[]>();
 // Gốc CropBox (bx0,by0) theo cùng khóa cache — để add-text/image quy đổi tọa độ
 // canvas (cropbox-relative) ↦ PDF NATIVE đúng trên file có CropBox lệch gốc.
 const _editCropOriginCache = new Map<string, [number, number]>();
-function clearEditObjectsCache() {
+// eslint-disable-next-line react-refresh/only-export-components
+export function clearEditObjectsCache() {
     _editObjectsCache.clear();
     _editCropOriginCache.clear();
 }
@@ -2530,18 +2532,22 @@ export const LivePageFrame = (props: any) => {
         const refreshObjects = (event: Event) => {
             const detail = (event as CustomEvent)?.detail || {};
             if (detail.tabId !== tabId) return;
+            if (!isObjectEditMode || !isActiveFrame || !selectionFileId) return;
+            // Cache dùng chung mọi frame: một op ở trang chưa mount vẫn phải làm
+            // lần điều hướng sau miss cache. Một frame active dọn là đủ, không để
+            // toàn bộ overscan cùng clear một Map.
+            clearEditObjectsCache();
             const changedPage = Number(detail.page);
-            if (!isObjectEditMode || !selectionFileId || changedPage !== originalPageNum - 1) return;
+            if (changedPage !== originalPageNum - 1) return;
             const requestedIds = Array.isArray(detail.targetIds) ? detail.targetIds.map(String) : [];
             if (detail.kind !== 'delete') {
                 pendingReselectIdsRef.current = requestedIds.length ? requestedIds : [...selectedObjectIds];
             }
-            clearEditObjectsCache();
             setEditObjectsVersion(version => version + 1);
         };
         window.addEventListener('edit-session-objects-changed', refreshObjects);
         return () => window.removeEventListener('edit-session-objects-changed', refreshObjects);
-    }, [isObjectEditMode, selectionFileId, originalPageNum, selectedObjectIds, tabId]);
+    }, [isObjectEditMode, isActiveFrame, selectionFileId, originalPageNum, selectedObjectIds, tabId]);
 
     // ─── Edit PDF Object — Hit-test + overlay (task 10.1) ────────────────────
     // Nguồn dữ liệu object lấy từ GET /edit/objects (Geometry_Reader, PDFium read-only).
@@ -2679,7 +2685,14 @@ export const LivePageFrame = (props: any) => {
     // ObjMeta (bbox hệ PDF bottom-left) rồi convert sang hệ canvas top-left bằng
     // chiều cao trang (pageDim.h, point) — dùng chung công thức `x * scale` với overlay.
     useEffect(() => {
-        if (!isObjectEditMode || originalPageNum === -1 || !selectionFileId || !pageDim?.h) {
+        const shouldLoadObjects = shouldLoadEditObjectsForFrame({
+            isObjectEditMode,
+            isActiveFrame,
+            originalPageNum,
+            selectionFileId: selectionFileId || '',
+            hasPageHeight: Boolean(pageDim?.h),
+        });
+        if (!shouldLoadObjects) {
             // QUAN TRỌNG (fix vòng lặp "Maximum update depth"): selectedObjectIds là STORE
             // dùng chung MỌI LivePageFrame. Set về `[]` MỚI mỗi lần effect chạy → đổi tham
             // chiếu → useShallow coi là thay đổi → re-render mọi frame → cascade vô hạn
@@ -2687,7 +2700,11 @@ export const LivePageFrame = (props: any) => {
             // không ở edit-mode liên tục chạy nhánh này). Dùng updater IDEMPOTENT: khi đã
             // rỗng thì giữ NGUYÊN tham chiếu → React/Zustand bail-out, không re-render thừa.
             setEditObjects(prev => (prev.length ? [] : prev));
-            setSelectedObjectIds(prev => (prev.length ? EMPTY_OBJECT_IDS : prev));
+            // PERF (feedback 2026-08-21 §EDIT.MULTIPAGE1): frame nền không được xóa
+            // selection dùng chung của trang active.
+            if (isActiveFrame) {
+                setSelectedObjectIds(prev => (prev.length ? EMPTY_OBJECT_IDS : prev));
+            }
             return;
         }
         const pageIndex = originalPageNum - 1; // /edit dùng chỉ số 0-based
@@ -2911,19 +2928,10 @@ export const LivePageFrame = (props: any) => {
 
     // ─── Edit PDF Object: dọn transform tạm khi Working_File MỚI render (task 12.1) ─
     // SAU commit, onEditCommit → commitWorkingFile đổi `pdfUrl` (Working_File mới đã
-    // bake đúng thao tác vào nội dung trang). Khi `pdfUrl` đổi, tile mới phản ánh đúng
-    // kết quả lưu → reset transform tạm + xóa cache /edit/objects để overlay khớp
-    // Working_File mới (selectionFileId mới → /edit/objects refetch).
+    // bake đúng thao tác vào nội dung trang). Transform là state cục bộ nên reset tại
+    // frame; cache/selection/previews là state CHUNG và được Viewer cha dọn đúng một lần.
     useEffect(() => {
         editLiveTransformRef.current = null;
-        // Working_File mới (commit) hoặc file mới → object cũ không còn đúng → xóa cache
-        // /edit/objects để lần bật chế độ kế tiếp fetch lại dữ liệu khớp trang mới.
-        clearEditObjectsCache();
-        // Tile thật (Working_File mới) đã vào sau commit → bỏ overlay session (nội dung
-        // overlay ĐÃ bake vào tile mới; giữ lại sẽ chồng đôi). Hook sở hữu previews.
-        editSession?.clearPreviews?.();
-        // Bỏ selection cũ (trỏ object của file/trang trước) để không highlight chéo.
-        setSelectedObjectIds(prev => (prev.length ? EMPTY_OBJECT_IDS : prev));
     }, [pdfUrl]);
 
     // LƯU Ý: KHÔNG return sớm cho originalPageNum === -1 ở đây. Trước kia khối này
@@ -3530,7 +3538,10 @@ export const LivePageFrame = (props: any) => {
     useEffect(() => {
         if (!isObjectEditMode) return;
         const focusRequested = (event: Event) => {
-            const objectId = readEditObjectFocusRequest(event, originalPageNum - 1);
+            const objectId = readEditObjectFocusRequest(event, originalPageNum - 1, {
+                tabId,
+                pageInstanceId,
+            });
             if (!objectId) return;
             const nodes = containerRef.current?.querySelectorAll<HTMLElement>('[data-obj-id]');
             const node = nodes ? Array.from(nodes).find(item => item.dataset.objId === objectId) : null;
@@ -3542,7 +3553,7 @@ export const LivePageFrame = (props: any) => {
         };
         window.addEventListener(EDIT_OBJECT_FOCUS_EVENT, focusRequested);
         return () => window.removeEventListener(EDIT_OBJECT_FOCUS_EVENT, focusRequested);
-    }, [isObjectEditMode, originalPageNum]);
+    }, [isObjectEditMode, originalPageNum, pageInstanceId, tabId]);
 
     const renderWidth = actualWidth100 * renderZoom;
 
@@ -5104,7 +5115,7 @@ export const LivePageFrame = (props: any) => {
                  hệ canvas top-left (point) ở effect nạp dữ liệu. Sắp xếp diện tích LỚN→NHỎ
                  để object nhỏ nằm trên cùng → click ưu tiên bbox nhỏ nhất (Yêu cầu 2.1, 2.2).
                  Ctrl+A/Esc xử lý ở keydown effect; overlay vẽ viền quanh object được chọn (2.5). */}
-             {isObjectEditMode && pageDim && (() => {
+             {isObjectEditMode && isActiveFrame && pageDim && (() => {
                  // scale = px màn / POINT (bbox edit + editAddDraft.{xPt,yPt} đều ở point).
                  const scale = displayWidth / ((pageDim.w || 595) * 72 / 96);
                  return (

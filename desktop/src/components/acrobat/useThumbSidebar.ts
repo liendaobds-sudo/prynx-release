@@ -20,6 +20,13 @@ interface UseThumbSidebarProps {
     pdfUrl?: string;
 }
 
+export function isCrossFileThumbDrop(
+    sourceSidebar: Element | null,
+    dropSidebar: Element | null,
+): boolean {
+    return !!sourceSidebar && !!dropSidebar && !sourceSidebar.contains(dropSidebar);
+}
+
 export function useThumbSidebar({
     pageOrder, setPageOrder,
     pageInstanceIds, setPageInstanceIds, setPageRotations,
@@ -398,7 +405,12 @@ export function useThumbSidebar({
             removeDragGhost();
             const sel = latestStateRef.current.selectedIndices;
             const count = sel.has(index) ? sel.size : 1;
-            const srcEl = document.querySelector(`[data-thumb-index="${index}"] img`) as HTMLImageElement | null;
+            // UIUX (audit 2026-08-22 §UX.TH.06): ghost phải lấy artwork trong
+            // sidebar của tab hiện tại; query toàn document có thể bắt cùng index
+            // của tab nền.
+            const srcEl = sidebarRef.current?.querySelector<HTMLImageElement>(
+                `[data-thumb-index="${index}"] img`,
+            ) || null;
 
             const ghost = document.createElement('div');
             ghost.style.cssText = [
@@ -582,8 +594,21 @@ export function useThumbSidebar({
 
             const overElement = document.elementFromPoint(upEvent.clientX, upEvent.clientY);
             const dropSidebar = overElement?.closest('.acro-thumb-scroll');
+            const dropIndex = dragContextRef.current.hoverIndex;
+            const dropPos = dragContextRef.current.dropPosition;
+            const draggedIdx = dragContextRef.current.draggedIndex;
+            const isCopy = upEvent.altKey;
+            const finishDragState = () => {
+                dragContextRef.current.draggedIndex = null;
+                dragContextRef.current.hoverIndex = null;
+                copyModeRef.current = false;
+                setDraggedIndex(null);
+                setHoverTargetIndex(null);
+                setIsCopyDrag(false);
+            };
 
-            if (dropSidebar && sidebarRef.current && !sidebarRef.current.contains(dropSidebar)) {
+            if (dropSidebar && sidebarRef.current
+                && isCrossFileThumbDrop(sidebarRef.current, dropSidebar)) {
                 // Cross file drop!
                 const targetPdfUrl = dropSidebar.getAttribute('data-pdf-url');
                 const srcPdfUrl = sidebarRef.current.querySelector('.acro-thumb-scroll')?.getAttribute('data-pdf-url');
@@ -607,20 +632,14 @@ export function useThumbSidebar({
                         }
                     }));
                 }
+                // UIUX (audit 2026-08-22 §UX.TH.03): drop chéo file đã được consumer
+                // đích xử lý; nguồn phải bất biến, kể cả sidebar đích thiếu metadata.
+                finishDragState();
+                return;
             }
 
-            const dropIndex = dragContextRef.current.hoverIndex;
-            const dropPos = dragContextRef.current.dropPosition;
-            const draggedIdx = dragContextRef.current.draggedIndex;
-            const isCopy = upEvent.altKey;
-
             // Clean up state
-            dragContextRef.current.draggedIndex = null;
-            dragContextRef.current.hoverIndex = null;
-            copyModeRef.current = false;
-            setDraggedIndex(null);
-            setHoverTargetIndex(null);
-            setIsCopyDrag(false);
+            finishDragState();
 
             // Perform Drop Logic
             const { pageOrder: currentOrder, selectedIndices: currentSel } = latestStateRef.current;

@@ -73,10 +73,12 @@ export function computeAccurateViewerBaseZoom(
 }
 
 export function shouldPrefetchViewerPage(
+    viewerIsActive: boolean,
     pageDistance: number,
     accurateColorPage: boolean,
     accuratePrefetchReady: boolean,
 ): boolean {
+    if (!viewerIsActive) return false;
     if (!Number.isFinite(pageDistance) || pageDistance > 1) return false;
     return !accurateColorPage || accuratePrefetchReady;
 }

@@ -2,7 +2,7 @@
  * toolHelp — Nội dung giới thiệu chi tiết cho từng công cụ (hiển thị trong modal).
  *
  * Key = tool unique key (giống getToolUniqueKey): focusFeature | lockedMode | id.
- * ToolItem sẽ tra cứu theo key này; nếu không có entry → fallback popover ngắn
+ * ToolItem sẽ tra cứu theo key này; nếu không có entry → fallback modal ngắn
  * dùng longDescription trong toolRegistry.
  */
 
@@ -385,4 +385,10 @@ export const TOOL_HELP: Record<string, ToolHelp> = {
 export function getToolHelp(key?: string): ToolHelp | undefined {
   if (!key) return undefined;
   return TOOL_HELP[key];
+}
+
+/** UIUX (audit 2026-08-22 §HELP.MODAL): tạo nội dung tối thiểu để mọi nút ? mở cùng một modal. */
+export function createFallbackToolHelp(title: string, description?: string): ToolHelp {
+  const tagline = description?.trim() || title;
+  return { title, tagline, sections: [] };
 }

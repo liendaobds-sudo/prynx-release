@@ -57,7 +57,7 @@ export default function EditLayersPanel({
         pdfOcgLayers, hiddenOcgLayerIds, setHiddenOcgLayerIds,
         lockedOcgLayerIds, setLockedOcgLayerIds,
         expandedOcgLayerIds, setExpandedOcgLayerIds,
-        viewerActivePage, setError,
+        viewerActivePage, viewerPageOrder, viewerPageInstanceIds, setError,
         editAddMode, setEditAddMode,
     } = useWorkspaceStore(useShallow(state => ({
         pdfUrl: state.pdfUrl,
@@ -69,6 +69,8 @@ export default function EditLayersPanel({
         lockedOcgLayerIds: state.lockedOcgLayerIds, setLockedOcgLayerIds: state.setLockedOcgLayerIds,
         expandedOcgLayerIds: state.expandedOcgLayerIds, setExpandedOcgLayerIds: state.setExpandedOcgLayerIds,
         viewerActivePage: state.viewerActivePage,
+        viewerPageOrder: state.viewerPageOrder,
+        viewerPageInstanceIds: state.viewerPageInstanceIds,
         setError: state.setError,
         editAddMode: state.editAddMode, setEditAddMode: state.setEditAddMode,
     })));
@@ -79,6 +81,13 @@ export default function EditLayersPanel({
     const [renameValue, setRenameValue] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const renameInputRef = useRef<HTMLInputElement>(null);
+
+    // UIUX (feedback 2026-08-21 §EDIT.MULTIPAGE2): viewerActivePage là VỊ TRÍ
+    // thumbnail sau reorder/xóa/nhân bản, còn edit-session nhận TRANG NGUỒN 0-based.
+    const activeSourcePage = viewerPageOrder?.[Math.max(0, viewerActivePage - 1)];
+    const activeSourcePageIndex = typeof activeSourcePage === 'number' && activeSourcePage > 0
+        ? activeSourcePage - 1
+        : Math.max(0, viewerActivePage - 1);
 
     // Layer PDF chỉ gồm OCG thật. Các nhóm trang/layer ảo do PrynX suy ra được
     // quản lý ở khu vực Thành phần, không giả làm layer gốc của Illustrator/Corel.
@@ -159,8 +168,11 @@ export default function EditLayersPanel({
         const objectId = pendingCanvasFocusRef.current;
         if (!objectId || !selectedObjectIds.includes(objectId)) return;
         pendingCanvasFocusRef.current = null;
-        requestEditObjectFocus(objectId, Math.max(0, viewerActivePage - 1));
-    }, [selectedObjectIds, viewerActivePage]);
+        requestEditObjectFocus(objectId, Math.max(0, viewerActivePage - 1), {
+            tabId,
+            pageInstanceId: viewerPageInstanceIds?.[Math.max(0, viewerActivePage - 1)],
+        });
+    }, [selectedObjectIds, viewerActivePage, viewerPageInstanceIds, tabId]);
     useEffect(() => {
         const firstId = selectedObjectIds[0];
         if (firstId == null) return;
@@ -185,7 +197,7 @@ export default function EditLayersPanel({
         try {
             if (!editSession?.sessionId) throw new Error('Phiên chỉnh sửa chưa sẵn sàng, vui lòng thử lại.');
             const outcome = await editSession.applyOp({
-                page: Math.max(0, viewerActivePage - 1), kind: 'layerVisibility', targetIds: [],
+                page: activeSourcePageIndex, kind: 'layerVisibility', targetIds: [],
                 layerId, visible: wasHidden,
             });
             if (!outcome) throw new Error('Không thể cập nhật layer.');
@@ -193,7 +205,7 @@ export default function EditLayersPanel({
             setHiddenOcgLayerIds(hiddenOcgLayerIds);
             setError(err?.message || 'Không thể thay đổi trạng thái layer.');
         }
-    }, [hiddenOcgLayerIds, setHiddenOcgLayerIds, isEditMode, editSession, viewerActivePage, setError]);
+    }, [hiddenOcgLayerIds, setHiddenOcgLayerIds, isEditMode, editSession, activeSourcePageIndex, setError]);
     // ─── Toggle Lock ───────────────────────────────────────
     const handleToggleLock = useCallback(async (layerId: number) => {
         const wasLocked = lockedOcgLayerIds.includes(layerId);
@@ -204,7 +216,7 @@ export default function EditLayersPanel({
         try {
             if (!editSession?.sessionId) throw new Error('Phiên chỉnh sửa chưa sẵn sàng.');
             const outcome = await editSession.applyOp({
-                page: Math.max(0, viewerActivePage - 1), kind: 'layerLock', targetIds: [],
+                page: activeSourcePageIndex, kind: 'layerLock', targetIds: [],
                 layerId, locked: !wasLocked,
             });
             if (!outcome) throw new Error('Không thể khóa/mở khóa layer.');
@@ -212,7 +224,7 @@ export default function EditLayersPanel({
             setLockedOcgLayerIds(lockedOcgLayerIds);
             setError(err?.message || 'Không thể khóa/mở khóa layer.');
         }
-    }, [lockedOcgLayerIds, setLockedOcgLayerIds, editSession, viewerActivePage, setError]);
+    }, [lockedOcgLayerIds, setLockedOcgLayerIds, editSession, activeSourcePageIndex, setError]);
     // ─── Toggle Expand/Collapse ────────────────────────────
     const handleToggleExpand = useCallback((layerId: number) => {
         setExpandedOcgLayerIds(prev =>
@@ -239,7 +251,7 @@ export default function EditLayersPanel({
             setIsLoading(true);
             if (!editSession?.sessionId) throw new Error('Phiên chỉnh sửa chưa sẵn sàng.');
             const outcome = await editSession.applyOp({
-                page: Math.max(0, viewerActivePage - 1), kind: 'layerRename', targetIds: [],
+                page: activeSourcePageIndex, kind: 'layerRename', targetIds: [],
                 layerId: renamingId, layerName: renameValue.trim(),
             });
             if (!outcome) throw new Error('Không thể đổi tên layer.');
@@ -249,7 +261,7 @@ export default function EditLayersPanel({
             setIsLoading(false);
             setRenamingId(null);
         }
-    }, [renamingId, renameValue, editSession, viewerActivePage, setError]);
+    }, [renamingId, renameValue, editSession, activeSourcePageIndex, setError]);
     // ─── Delete Layer ──────────────────────────────────────
     const handleDeleteLayer = useCallback(async (layerId: number) => {
         setContextMenu(null);
@@ -257,7 +269,7 @@ export default function EditLayersPanel({
             setIsLoading(true);
             if (!editSession?.sessionId) throw new Error('Phiên chỉnh sửa chưa sẵn sàng.');
             const outcome = await editSession.applyOp({
-                page: Math.max(0, viewerActivePage - 1), kind: 'layerDelete', targetIds: [], layerId,
+                page: activeSourcePageIndex, kind: 'layerDelete', targetIds: [], layerId,
             });
             if (!outcome) throw new Error('Không thể xóa layer.');
             setHiddenOcgLayerIds(prev => prev.filter(id => id !== layerId));
@@ -267,7 +279,7 @@ export default function EditLayersPanel({
         } finally {
             setIsLoading(false);
         }
-    }, [editSession, setHiddenOcgLayerIds, setLockedOcgLayerIds, viewerActivePage, setError]);
+    }, [editSession, setHiddenOcgLayerIds, setLockedOcgLayerIds, activeSourcePageIndex, setError]);
     // ─── Flatten ───────────────────────────────────────────
     const handleFlatten = useCallback(async () => {
         setContextMenu(null);
@@ -300,6 +312,37 @@ export default function EditLayersPanel({
             setIsLoading(false);
         }
     }, [editSession, setError]);
+
+    const handleDeleteSelectedComponents = useCallback(async () => {
+        const source = isEditMode
+            ? (editObjects || [])
+            : Object.values(globalPdfObjectCache.getAllObjects(pdfUrl || '')).flat();
+        const selectedIds = new Set(selectedObjectIds);
+        const objectsToDelete = source.filter((object: any) => selectedIds.has(object.id));
+        if (objectsToDelete.length === 0) return;
+
+        try {
+            setIsLoading(true);
+            if (isEditMode) {
+                if (!editSession?.sessionId) throw new Error('Phiên chỉnh sửa chưa sẵn sàng.');
+                const targetIds = objectsToDelete.map((object: any) => String(object.id));
+                const outcome = await editSession.applyOp({
+                    page: activeSourcePageIndex,
+                    kind: 'delete',
+                    targetIds,
+                });
+                if (!outcome?.success) throw new Error('Không thể xóa thành phần đã chọn.');
+                setSelectedObjectIds(current => current.filter(id => !targetIds.includes(id)));
+            } else {
+                await handleDeleteObjects(objectsToDelete, viewerActivePage);
+            }
+        } catch (error) {
+            setError(error instanceof Error ? error.message : 'Không thể xóa thành phần đã chọn.');
+        } finally {
+            setIsLoading(false);
+        }
+    }, [editObjects, editSession, handleDeleteObjects, isEditMode, pdfUrl, selectedObjectIds,
+        activeSourcePageIndex, setError, setSelectedObjectIds, viewerActivePage]);
     // ─── Context Menu ──────────────────────────────────────
     const handleContextMenu = useCallback((e: React.MouseEvent, layer: OcgLayer) => {
         e.preventDefault();
@@ -334,7 +377,7 @@ export default function EditLayersPanel({
                         try {
                             if (!editSession?.sessionId) throw new Error('Phiên chỉnh sửa chưa sẵn sàng.');
                             const outcome = await editSession.applyOp({
-                                page: Math.max(0, viewerActivePage - 1),
+                                page: activeSourcePageIndex,
                                 kind: 'objectVisibility',
                                 targetIds: [obj.id],
                                 visible: wasHidden,
@@ -662,14 +705,8 @@ export default function EditLayersPanel({
                         <Button
                             variant="primary"
                             className="w-full bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700 border-transparent text-white shadow-md flex justify-center items-center gap-2"
-                            disabled={selectedObjectIds.length === 0}
-                            onClick={() => {
-                                const source = isEditMode ? (editObjects || []) : Object.values(globalPdfObjectCache.getAllObjects(pdfUrl || '')).flat();
-                                const objectsToDelete = source.filter((o: any) => selectedObjectIds.includes(o.id));
-                                if (objectsToDelete.length > 0) {
-                                    handleDeleteObjects(objectsToDelete, 1);
-                                }
-                            }}
+                            disabled={selectedObjectIds.length === 0 || isLoading}
+                            onClick={() => { void handleDeleteSelectedComponents(); }}
                         >
                             <Trash2 className="w-4 h-4" /> {t('misc.selectionLayers:xoa_n_thanh_phan_da_chon', { n: selectedObjectIds.length })}
                         </Button>

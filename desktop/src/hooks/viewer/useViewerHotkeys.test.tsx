@@ -36,7 +36,6 @@ const makeProps = (overrides: Record<string, unknown> = {}) => ({
     setIsInsertModalOpen: vi.fn(),
     setExtractPagesStrForModal: vi.fn(),
     setContextMenu: vi.fn(),
-    setIsSidebarOpen: vi.fn(),
     guides: [],
     setGuides: vi.fn(),
     guidesHistory: [],

@@ -1,10 +1,25 @@
-import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import { useThumbSidebar } from './useThumbSidebar';
-import { thumbCacheRef } from '../workspace/thumbnailCache';
+import {
+    createThumbnailRenderRequest,
+    getThumbCache,
+    subscribeThumbCache,
+} from '../workspace/thumbnailCache';
+import {
+    ensurePdfJsThumbnail,
+    getPdfJsThumbnailDocument,
+} from '../../hooks/viewer/usePdfLoader';
 import { nativeTileRenderScheduler } from '../../hooks/viewer/tileRenderScheduler';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
 import { formatRotatedPageSizePx96 } from './dimensionMath';
+import type { SessionPreview } from '../../hooks/useEditSession';
+import {
+    groupEditPreviewsBySourcePage,
+    sameEditPreviewSequence,
+    ThumbnailEditPreviewLayer,
+} from './thumbnailEditPreview';
+import { pageHeightPtFromDim, pageWidthPtFromDim } from '../workspace/editGeometry';
 
 export type ThumbPageWorkflowStatus = 'pending' | 'processing' | 'review' | 'ready' | 'error';
 
@@ -86,8 +101,6 @@ interface ThumbSidebarProps {
     // Actions
     commitSnapshot: () => void;
     handleQuickRotate: (degrees: number) => void;
-    setActiveDashboardTool: (tool: string) => void;
-    setIsSidebarOpen: (open: boolean) => void;
     setContextMenu: React.Dispatch<React.SetStateAction<any>>;
     setIsInsertModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
     setExtractPagesStrForModal: React.Dispatch<React.SetStateAction<string>>;
@@ -103,6 +116,8 @@ interface ThumbSidebarProps {
     pdfUrl: string | null;
     isViewerActive?: boolean;
     pageWorkflowStatuses?: Partial<Record<number, ThumbPageWorkflowStatus>>;
+    /** Preview in-memory theo trang; thumbnail dùng lại, không render PDF thêm. */
+    editSessionPreviews?: readonly SessionPreview[];
     onCrossFileCopy?: (sourcePdfUrl: string, sourcePageNum: number, targetIndex: number) => void;
 }
 
@@ -112,7 +127,7 @@ const MemoThumbItem = React.memo((props: any) => {
         isSelected, isActive, isDragged, showCopyBadge, showCopyDropBadge, hoverTargetState,
         rot, localDim, thumbBaseWidth,
         pdfUrl, file, thumbRev, pageCount, isLoadable, isViewerActive, registerRef,
-        handleThumbClick, handlePointerDown, onContextMenu, workflowStatus,
+        handleThumbClick, handlePointerDown, onContextMenu, workflowStatus, editPreviews,
     } = props;
     const { t } = useTranslation();
     const isBlankDoc = !!(file as any)?.isBlank;
@@ -128,34 +143,39 @@ const MemoThumbItem = React.memo((props: any) => {
     const footprintW = isRotated ? imgH : imgW;
     const footprintH = isRotated ? imgW : imgH;
 
-    // Stable revision key: a committed edit gets a new pdfUrl even if its disk path is reused.
-    // NÉT (audit độ nét 2026-07-28 §R.7): `localDim.w` là px@96 (usePdfLoader dựng bằng
-    // `widthPt * 96/72`) → fallback phải cùng đơn vị, không phải 595 point của A4. Trước đây
-    // lệch 1.333× khi dims chưa về, vừa render dư pixel vừa sinh cacheKey khác bản sau khi
-    // dims về → cùng một thumbnail render hai lần.
-    const baseW = localDim?.w || (595 * 96 / 72);
-    // Rust render bitmap rộng = width_pt × (96/72) × zoom = baseW × zoom, nên xin theo SỐ
-    // PIXEL muốn có rồi chia baseW là ra zoom cần — tự tài liệu hoá, không còn hệ số ma thuật.
-    //
-    // Hệ số cũ `1.3` KHÔNG tính devicePixelRatio: bitmap luôn = thumbBaseWidth × 1.3 bất kể
-    // màn hình. Trên Windows scale 150% (dpr=1.5) cần 1.5× mà chỉ có 1.3× → thiếu 13%, ở 200%
-    // thiếu 35% → thumbnail mờ. Nay lấy đúng dpr + 15% dư cho sai số làm tròn của objectFit
-    // 'contain'. Đổi lại ở dpr=1 số pixel GIẢM (1.3× → 1.15×): render thumbnail nhẹ hơn, mà
-    // thumbnail xếp hàng cùng RENDER_LOCK với trang chính nên đó là lợi kép.
-    // Trần đặt theo PIXEL THẬT (chi phí render tỉ lệ với pixel) thay vì theo hệ số zoom như cũ.
-    const thumbDpr = window.devicePixelRatio || 1;
-    const THUMB_MAX_PX = 1400;
-    const wantThumbPx = Math.min(THUMB_MAX_PX, Math.ceil(thumbBaseWidth * thumbDpr * 1.15));
-    const optimalZoom = Math.max(0.1, wantThumbPx / baseW);
     const revToken = thumbRev || pdfUrl || '';
-    const cacheKey = `${revToken}_${originalPageNum}_0_${Math.round(optimalZoom * 1000)}`;
-    const cachedSrc = thumbCacheRef.current.get(cacheKey);
+    const thumbDpr = window.devicePixelRatio || 1;
+    const thumbnailRequest = React.useMemo(() => createThumbnailRenderRequest({
+        revision: revToken,
+        pageNum: originalPageNum,
+        pageWidthPx96: localDim?.w,
+        cssWidth: thumbBaseWidth,
+        devicePixelRatio: thumbDpr,
+    }), [revToken, originalPageNum, localDim?.w, thumbBaseWidth, thumbDpr]);
+    const { cacheKey, zoom: optimalZoom } = thumbnailRequest;
+    const subscribeToCurrentThumbnail = useCallback(
+        (listener: () => void) => subscribeThumbCache(cacheKey, listener),
+        [cacheKey],
+    );
+    const readCurrentThumbnail = useCallback(() => getThumbCache(cacheKey), [cacheKey]);
+    const readServerThumbnail = useCallback(() => undefined, []);
+    const cachedSrc = useSyncExternalStore(
+        subscribeToCurrentThumbnail,
+        readCurrentThumbnail,
+        readServerThumbnail,
+    );
     const isImage = !!(file?.type?.startsWith('image/') || file?.name?.match(/\.(jpg|jpeg|png|webp|gif)$/i));
     const nativeRequestKey = `${cacheKey}_${pageCount}`;
     const [nativePreview, setNativePreview] = useState<{ key: string; url: string } | null>(null);
+    const [nativeRenderErrorKey, setNativeRenderErrorKey] = useState<string | null>(null);
+    const [nativeRetryNonce, setNativeRetryNonce] = useState(0);
     const thumbRenderOwnerId = `thumbnail:${useId()}`;
     const needsNativeRender = isViewerActive !== false && !cachedSrc && !isImage && isLoadable
         && !!(window as any).__TAURI_INTERNALS__ && !!file?.path && originalPageNum > 0;
+    const needsPdfJsRender = isViewerActive !== false && !cachedSrc && !isImage && isLoadable
+        && !file?.path && originalPageNum > 0 && !!revToken;
+
+    const nativeRenderError = nativeRenderErrorKey === nativeRequestKey;
 
     let finalSrc: string | undefined = cachedSrc;
     if (!finalSrc && isImage) finalSrc = pdfUrl || undefined;
@@ -169,6 +189,16 @@ const MemoThumbItem = React.memo((props: any) => {
     // Luôn contain: giữ tỉ lệ trang, không kéo giãn ảnh preview (tránh méo khi
     // tỉ lệ khung lệch nhẹ so với bitmap do làm tròn pixel, và không phóng đại mờ).
     const imgObjectFit: 'fill' | 'contain' = 'contain';
+
+    useEffect(() => {
+        if (!needsPdfJsRender) return;
+        const pdfDocument = getPdfJsThumbnailDocument(revToken);
+        if (!pdfDocument) return;
+        // UIUX (audit 2026-08-22 §UX.TH.02): tile nhìn thấy tự yêu cầu đúng
+        // originalPageNum; warmup 30 trang chỉ còn là tối ưu, không quyết định correctness.
+        void ensurePdfJsThumbnail(pdfDocument, originalPageNum, thumbnailRequest)
+            .catch(() => undefined);
+    }, [needsPdfJsRender, revToken, originalPageNum, thumbnailRequest]);
 
     // Thumbnail dùng chung PDFium với trang chính. Đo thật 2026-07-22 cho thấy parser
     // phụ dựng lại toàn bộ file mỗi khối 6 trang → ~40s/khối trên
@@ -216,7 +246,9 @@ const MemoThumbItem = React.memo((props: any) => {
                 ownBlobUrl = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
                 src = ownBlobUrl;
             } catch {
-                // Không có nguồn render phụ: giữ ô trống và để lần cập nhật kế tiếp thử lại.
+                // UIUX (audit 2026-08-22 §UX.S.01): báo lỗi có thể thử lại thay vì
+                // giữ spinner vô hạn khi PDFium/Tauri gặp lỗi tạm thời.
+                if (!cancelled) setNativeRenderErrorKey(nativeRequestKey);
                 src = null;
             }
             if (cancelled) {
@@ -233,7 +265,7 @@ const MemoThumbItem = React.memo((props: any) => {
                 .catch(() => undefined);
             if (ownBlobUrl) URL.revokeObjectURL(ownBlobUrl);
         };
-    }, [needsNativeRender, nativeRequestKey, file?.path, originalPageNum, pageCount, thumbRev, pdfUrl, optimalZoom, thumbRenderOwnerId]);
+    }, [needsNativeRender, nativeRequestKey, nativeRetryNonce, file?.path, originalPageNum, pageCount, thumbRev, pdfUrl, optimalZoom, thumbRenderOwnerId]);
     return (
         <div
             ref={(el) => registerRef?.(el, index)}
@@ -306,9 +338,31 @@ const MemoThumbItem = React.memo((props: any) => {
                                 />
                             ) : (
                                 <div className={`w-full h-full flex items-center justify-center ${isBlankDoc ? 'bg-white' : 'bg-slate-100 dark:bg-zinc-800 animate-pulse'}`}>
-                                    {!isBlankDoc && <div className="w-5 h-5 border-2 border-slate-300 border-t-transparent rounded-full animate-spin" />}
+                                    {!isBlankDoc && (nativeRenderError ? (
+                                        <button
+                                            type="button"
+                                            className="rounded bg-white/80 px-1.5 py-1 text-[10px] font-semibold text-slate-600 shadow hover:bg-white dark:bg-zinc-900/80 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                                            title={t('misc.errorBoundary:thu_lai')}
+                                            aria-label={t('misc.errorBoundary:thu_lai')}
+                                            onPointerDown={event => event.stopPropagation()}
+                                            onClick={event => {
+                                                event.stopPropagation();
+                                                setNativeRenderErrorKey(null);
+                                                setNativeRetryNonce(value => value + 1);
+                                            }}
+                                        >
+                                            ↻
+                                        </button>
+                                    ) : (
+                                        <div className="w-5 h-5 border-2 border-slate-300 border-t-transparent rounded-full animate-spin" />
+                                    ))}
                                 </div>
                             )}
+                            <ThumbnailEditPreviewLayer
+                                previews={editPreviews}
+                                pageWidthPt={pageWidthPtFromDim(localDim?.w)}
+                                pageHeightPt={pageHeightPtFromDim(localDim?.h)}
+                            />
                         </div>
                         {/* Indicator trên footprint (cùng hệ toạ độ AABB với main page outer box).
                             Không gắn trong khối CSS-rotate — % left/top map thẳng từ updateViewportRect. */}
@@ -358,7 +412,8 @@ const MemoThumbItem = React.memo((props: any) => {
         prev.pdfUrl === next.pdfUrl &&
         prev.thumbRev === next.thumbRev &&
         prev.pageCount === next.pageCount &&
-        prev.workflowStatus === next.workflowStatus;
+        prev.workflowStatus === next.workflowStatus &&
+        sameEditPreviewSequence(prev.editPreviews, next.editPreviews);
 });
 
 // Cổng tải thumbnail: hoãn render thumbnail (qua cache ảnh phụ) cho đến khi trang chính
@@ -394,9 +449,8 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
         allPageDims, thumbBaseWidth,
         isThumbMenuOpen, setIsThumbMenuOpen,
         commitSnapshot, handleQuickRotate,
-        setActiveDashboardTool, setIsSidebarOpen,
         setContextMenu, sidebarRef, mainVirtuosoRef, internalScrollRef,
-        file, pdfUrl, isViewerActive, onCrossFileCopy, pageWorkflowStatuses,
+        file, pdfUrl, isViewerActive, onCrossFileCopy, pageWorkflowStatuses, editSessionPreviews,
         setIsDeleteModalOpen, navigatePage,
     } = props;
 
@@ -442,6 +496,13 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
 
     // thumbRev: pdfUrl đổi sau mỗi edit-commit → force re-render IPC + revoke blob cũ.
     const thumbRev = pdfUrl || '';
+    // PERF (feedback 2026-08-21 §EDIT.THUMB1): nhóm một lần theo trang nguồn.
+    // MemoThumbItem chỉ so slice của chính trang đó nên edit trang 2 không làm hàng
+    // trăm thumbnail khác render lại; đồng thời không phát thêm request PDFium.
+    const editPreviewsBySourcePage = React.useMemo(
+        () => groupEditPreviewsBySourcePage(editSessionPreviews),
+        [editSessionPreviews],
+    );
 
     // UIUX (audit 2026-07-27 §C-19): nút −/+ đổi cỡ thumbnail. Tái dùng ĐÚNG đường
     // Ctrl+wheel trong useViewerZoom (setThumbBaseWidth + clamp 50–400 theo bề rộng
@@ -610,7 +671,11 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                         data-file-name={file?.name || undefined}
                     >
                         <div className="flex flex-wrap gap-4 justify-center px-2 py-4 w-full max-w-full box-border">
-                            {pageOrder.slice(0, 1000).map((originalPageNum, index) => {
+                            {/* PERF (audit 2026-08-22 §UX.TH.08): không cắt danh sách theo
+                                cap 1000. IntersectionObserver + isLoadable mới là cổng
+                                dựng ảnh; mọi trang vẫn tồn tại để Ctrl+A, tìm trang và
+                                điều hướng không bị "chọn được nhưng không nhìn thấy". */}
+                            {pageOrder.map((originalPageNum, index) => {
                                 const logicalPageLabel = index + 1;
                                 const isSelected = selectedIndices.has(index);
                                 const isActive = activePage === logicalPageLabel;
@@ -621,7 +686,9 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
 
                                 return (
                                     <MemoThumbItem
-                                        key={`thumb-${index}-${originalPageNum}`}
+                                        key={pageInstanceIds[index]
+                                            ? `thumb-${pageInstanceIds[index]}`
+                                            : `thumb-${index}-${originalPageNum}`}
                                         index={index}
                                         originalPageNum={originalPageNum}
                                         logicalPageLabel={logicalPageLabel}
@@ -641,6 +708,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                                         isLoadable={thumbsGateOpen && visibleThumbs.has(index)}
                                         isViewerActive={isViewerActive}
                                         workflowStatus={pageWorkflowStatuses?.[originalPageNum]}
+                                        editPreviews={editPreviewsBySourcePage.get(originalPageNum)}
                                         registerRef={registerThumbRef}
                                         handleThumbClick={handleThumbClick}
                                         handlePointerDown={handlePointerDown}
@@ -656,12 +724,6 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                                     />
                                 );
                             })}
-                            {pageOrder.length > 1000 && (
-                                <div className="w-full text-center py-6 px-4 text-slate-500 dark:text-zinc-400 text-xs italic bg-slate-100 dark:bg-zinc-800/50 rounded-lg mx-2 border border-dashed border-slate-300 dark:border-zinc-700">
-                                    {t('misc.thumbSidebar:dang_an_n_thumbnails_con_lai', { n: pageOrder.length - 1000 })}<br/>
-                                    {t('misc.thumbSidebar:su_dung_o_nhap_so_trang_o_thanh_tren')}
-                                </div>
-                            )}
                         </div>
                     </div>
                     <div

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useDialogLifecycle } from './AcrobatModals';
 
 export type CrossFileInsertPos = 'start' | 'end' | 'before' | 'after';
 
@@ -25,6 +26,7 @@ interface Props {
  */
 export function CrossFileInsertModal({ pending, onConfirm, onCancel }: Props) {
     const { t } = useTranslation();
+    const dialogRef = useDialogLifecycle(onCancel, Boolean(pending));
     const [pos, setPos] = useState<CrossFileInsertPos>('end');
     const [pageNum, setPageNum] = useState(1);
 
@@ -34,15 +36,6 @@ export function CrossFileInsertModal({ pending, onConfirm, onCancel }: Props) {
         const n = Math.max(1, pending.targetNumPages || 1);
         setPageNum(Math.min(n, Math.max(1, pending.targetNumPages || 1)));
     }, [pending]);
-
-    useEffect(() => {
-        if (!pending) return;
-        const onKey = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') onCancel();
-        };
-        document.addEventListener('keydown', onKey);
-        return () => document.removeEventListener('keydown', onKey);
-    }, [pending, onCancel]);
 
     if (!pending) return null;
 
@@ -74,10 +67,16 @@ export function CrossFileInsertModal({ pending, onConfirm, onCancel }: Props) {
     return (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
             <div
+                ref={dialogRef}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="prynx-cross-file-insert-title"
+                data-prynx-modal="true"
+                tabIndex={-1}
                 className="bg-white dark:bg-zinc-800 p-5 rounded-xl shadow-2xl max-w-md w-full mx-4 border border-slate-200 dark:border-white/10"
                 onClick={e => e.stopPropagation()}
             >
-                <h3 className="text-base font-bold text-slate-900 dark:text-white mb-1">{title}</h3>
+                <h3 id="prynx-cross-file-insert-title" className="text-base font-bold text-slate-900 dark:text-white mb-1">{title}</h3>
                 <p className="text-[13px] text-slate-600 dark:text-zinc-300 mb-4">
                     <span className="font-semibold text-indigo-600 dark:text-indigo-400 break-all">{pending.targetName}</span>
                     {hasPages && (

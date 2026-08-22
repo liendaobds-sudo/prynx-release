@@ -446,7 +446,6 @@ interface Props {
   setVdpFields?: React.Dispatch<React.SetStateAction<any[]>>;
   selectedFieldIds?: string[];
   onSelectField?: (ids: string[]) => void;
-  onBack?: () => void;
   onSpawnTab?: (blob: Blob, name: string, path?: string) => void;
   onApplyResult?: (blob: Blob, name: string, path?: string) => void | Promise<void>;
   isActive?: boolean;
@@ -458,7 +457,6 @@ export default function DataMergeTool({
     setVdpFields,
     selectedFieldIds = [],
     onSelectField,
-    onBack,
     onSpawnTab,
     onApplyResult,
     isActive = true
@@ -1331,14 +1329,7 @@ export default function DataMergeTool({
         <div className="flex w-full flex-col gap-4">
             {/* Header */}
             <div className="flex items-center gap-2 pt-2 pb-3 border-b border-slate-200 dark:border-zinc-700">
-                <button 
-                    onClick={onBack}
-                    className="p-1.5 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-md text-slate-500 transition-colors"
-                    title={t('preprocess.dataMerge:quay_lai')}
-                >
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
-                </button>
-                <div className="flex-1 min-w-0 text-center pr-8">
+                <div className="flex-1 min-w-0 text-center">
                     <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">
                         <span>🔤</span>
                         <span>{t('preprocess.dataMerge:tron_du_lieu_vdp')}</span>

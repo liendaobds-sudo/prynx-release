@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { getToolHelp } from '../../lib/toolHelp';
+import { createFallbackToolHelp, getToolHelp } from '../../lib/toolHelp';
 import ToolHelpModal from '../ToolHelpModal';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
@@ -161,15 +161,18 @@ export const ToolItem = ({ icon, label, desc, info, helpKey, featureId, onClick,
   const { t } = useTranslation();
     const [open, setOpen] = useState(false);
     const help = getToolHelp(helpKey);
-    const hasHelp = !!help;
-    const showHelpBtn = hasHelp || !!info;
+    const modalHelp = help ?? ((info || desc) ? createFallbackToolHelp(label, info || desc) : undefined);
+    const showHelpBtn = !!modalHelp;
     return (
         <div className="relative">
             <div
                 onClick={onClick}
                 role="button"
                 tabIndex={0}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
+                onKeyDown={(e) => {
+                    if ((e.target as HTMLElement).closest('button')) return;
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); }
+                }}
                 title={info || label}
                 style={{ padding: '4px 6px' }}
                 className={`flex items-center gap-2.5 w-full text-left rounded-lg transition-all group cursor-pointer border ${active ? 'bg-indigo-50 dark:bg-indigo-500/10 border-indigo-400 dark:border-indigo-500/60 ring-1 ring-indigo-300/50' : isFavorite ? `bg-gradient-to-r from-amber-50/80 to-white dark:from-amber-900/20 dark:to-zinc-900 border-amber-200 dark:border-amber-800/50 shadow-sm ${hoverColor}` : `bg-white dark:bg-zinc-900 border-slate-200 dark:border-white/10 ${hoverColor}`}`}
@@ -183,7 +186,8 @@ export const ToolItem = ({ icon, label, desc, info, helpKey, featureId, onClick,
                 {onToggleFavorite && (
                     <button
                         type="button"
-                        onClick={(e) => { e.stopPropagation(); onToggleFavorite(); }}
+                       onClick={(e) => { e.stopPropagation(); onToggleFavorite(); }}
+                        onKeyDown={(e) => e.stopPropagation()}
                         title={isFavorite ? t('imposition.sharedUI:bo_khoi_yeu_thich') : t('imposition.sharedUI:them_vao_yeu_thich')}
                         className={`shrink-0 w-6 h-6 flex items-center justify-center rounded-full transition-colors ${isFavorite ? 'text-amber-400' : 'text-slate-300 dark:text-zinc-600 opacity-0 group-hover:opacity-100 hover:text-amber-400'}`}
                     >
@@ -193,7 +197,8 @@ export const ToolItem = ({ icon, label, desc, info, helpKey, featureId, onClick,
                 {showHelpBtn && (
                     <button
                         type="button"
-                        onClick={(e) => { e.stopPropagation(); setOpen(v => !v); }}
+                       onClick={(e) => { e.stopPropagation(); setOpen(v => !v); }}
+                        onKeyDown={(e) => e.stopPropagation()}
                         title={t('imposition.sharedUI:gioi_thieu_cong_cu')}
                         className="shrink-0 w-6 h-6 flex items-center justify-center rounded-full text-slate-400 hover:text-indigo-600 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
                     >
@@ -201,18 +206,9 @@ export const ToolItem = ({ icon, label, desc, info, helpKey, featureId, onClick,
                     </button>
                 )}
             </div>
-            {/* Có nội dung help chi tiết → mở modal; nếu không, fallback popover ngắn từ longDescription. */}
-            {open && hasHelp && (
-                <ToolHelpModal help={help!} icon={icon} onClose={() => setOpen(false)} />
-            )}
-            {open && !hasHelp && info && (
-                <>
-                    <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setOpen(false); }} />
-                    <div className="absolute right-2 top-full mt-1 z-50 w-64 max-w-[88vw] p-3 rounded-lg bg-white dark:bg-zinc-800 border border-slate-200 dark:border-white/10 shadow-xl">
-                        <div className="font-bold text-[13px] text-slate-800 dark:text-white mb-1">{label}</div>
-                        <div className="text-[12px] text-slate-600 dark:text-zinc-300 leading-snug">{info}</div>
-                    </div>
-                </>
+            {/* UIUX (audit 2026-08-22 §HELP.MODAL): mọi nút ? mở chung ToolHelpModal. */}
+            {open && modalHelp && (
+                <ToolHelpModal help={modalHelp} icon={icon} onClose={() => setOpen(false)} />
             )}
         </div>
     );

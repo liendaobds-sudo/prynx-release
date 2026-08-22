@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ToolMenuList from './ToolMenuList';
+import { createWorkspaceStore, WorkspaceContext } from '../../stores/useWorkspaceStore';
 
 const mocks = vi.hoisted(() => ({
     requestActivation: vi.fn(),
@@ -34,6 +35,15 @@ vi.mock('react-i18next', () => ({
 }));
 vi.mock('../../i18n', () => ({ tv: (value: string) => value }));
 
+function renderToolMenu() {
+    const workspaceStore = createWorkspaceStore();
+    return render(
+        <WorkspaceContext.Provider value={workspaceStore}>
+            <ToolMenuList setActiveTool={mocks.setActiveTool} setTaskMode={mocks.setTaskMode} />
+        </WorkspaceContext.Provider>,
+    );
+}
+
 function clickTool(label: string) {
     const text = screen.getByText(label);
     const target = text.closest('[role="button"]');
@@ -51,14 +61,14 @@ describe('ToolMenuList entitlement', () => {
     afterEach(cleanup);
 
     it('không đưa app standalone vào router workspace', () => {
-        render(<ToolMenuList setActiveTool={mocks.setActiveTool} setTaskMode={mocks.setTaskMode} />);
+        renderToolMenu();
         expect(screen.queryByText('Khuôn bế Bao bì')).toBeNull();
         expect(screen.queryByText('Thư viện vật tư in')).toBeNull();
         expect(screen.queryByText('So sánh PDF (In ấn)')).toBeNull();
     });
 
     it('Chữ & Font hiện badge Pro và không đổi store khi guard từ chối', () => {
-        render(<ToolMenuList setActiveTool={mocks.setActiveTool} setTaskMode={mocks.setTaskMode} />);
+        renderToolMenu();
         expect(screen.getAllByTestId('badge-prepress.preflight').length).toBeGreaterThanOrEqual(2);
         clickTool('Chữ & Font');
 
@@ -71,7 +81,7 @@ describe('ToolMenuList entitlement', () => {
 
     it('chỉ đổi tool sau khi guard cho phép', () => {
         mocks.requestActivation.mockImplementation((_tool, action: () => void) => { action(); return true; });
-        render(<ToolMenuList setActiveTool={mocks.setActiveTool} setTaskMode={mocks.setTaskMode} />);
+        renderToolMenu();
         clickTool('Chữ & Font');
         expect(mocks.setActiveTool).toHaveBeenCalledWith('font_tools');
     });

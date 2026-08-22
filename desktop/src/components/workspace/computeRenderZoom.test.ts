@@ -138,10 +138,10 @@ describe('Viewer — ưu tiên làm nét vùng đang nhìn', () => {
     });
 
     it('chỉ dựng trước trang accurate sau khi trang active đã hiện', () => {
-        expect(shouldPrefetchViewerPage(1, true, false)).toBe(false);
-        expect(shouldPrefetchViewerPage(1, true, true)).toBe(true);
-        expect(shouldPrefetchViewerPage(1, false, false)).toBe(true);
-        expect(shouldPrefetchViewerPage(2, true, true)).toBe(false);
+        expect(shouldPrefetchViewerPage(true, 1, true, false)).toBe(false);
+        expect(shouldPrefetchViewerPage(true, 1, true, true)).toBe(true);
+        expect(shouldPrefetchViewerPage(true, 1, false, false)).toBe(true);
+        expect(shouldPrefetchViewerPage(true, 2, true, true)).toBe(false);
     });
 
     it('không đổi accurate viewport sang full-page nặng khi giảm qua ngưỡng tiling', () => {

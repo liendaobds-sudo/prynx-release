@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, type ReactNode } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useAppSettingsStore } from '../../stores/appSettingsStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
@@ -20,19 +21,37 @@ interface AcrobatToolbarProps {
 
 export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, applyFitPage, onOpenRotateModalOrTools, extraActions, extraActionsRight }: AcrobatToolbarProps) {
   const { t } = useTranslation();
+    // PERF (audit 2026-08-22 §UX.S.03): toolbar chỉ cần các field điều khiển
+    // bên dưới; subscribe toàn Workspace khiến mọi lần cuộn/render thumbnail
+    // kéo theo một render toolbar dù trạng thái nút không đổi.
     const {
         viewerZoom: zoom, setViewerZoom: setZoom,
         viewerFitMode: fitMode, setViewerFitMode: setFitMode,
         viewerToolMode: toolMode, setViewerToolMode: setToolMode,
         viewerPageDisplayMode: pageDisplayMode, setViewerPageDisplayMode: setPageDisplayMode,
         viewerActivePage: activePage,
-        viewerNumPages: numPages,
         isObjectEditMode, setIsObjectEditMode,
-        isCropMode, setIsCropMode,
-    } = useWorkspaceStore();
+       isCropMode, setIsCropMode,
+   } = useWorkspaceStore(useShallow(state => ({
+        viewerZoom: state.viewerZoom,
+        setViewerZoom: state.setViewerZoom,
+        viewerFitMode: state.viewerFitMode,
+        setViewerFitMode: state.setViewerFitMode,
+        viewerToolMode: state.viewerToolMode,
+        setViewerToolMode: state.setViewerToolMode,
+        viewerPageDisplayMode: state.viewerPageDisplayMode,
+        setViewerPageDisplayMode: state.setViewerPageDisplayMode,
+        viewerActivePage: state.viewerActivePage,
+        isObjectEditMode: state.isObjectEditMode,
+        setIsObjectEditMode: state.setIsObjectEditMode,
+        isCropMode: state.isCropMode,
+        setIsCropMode: state.setIsCropMode,
+   })));
 
-    const { activeDashboardTool } = useImposerSettingsStore();
-    const { showRulers, toggleRulers } = useAppSettingsStore();
+    const activeDashboardTool = useImposerSettingsStore(state => state.activeDashboardTool);
+    const showRulers = useAppSettingsStore(state => state.showRulers);
+    const toggleRulers = useAppSettingsStore(state => state.toggleRulers);
+
     
     const handleCustomZoom = (newZoom: number | ((z: number) => number)) => {
         setZoom(newZoom);
@@ -49,7 +68,6 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
     const [zoomInputVal, setZoomInputVal] = useState('');
     const [isZoomMenuOpen, setIsZoomMenuOpen] = useState(false);
     const [isDisplayMenuOpen, setIsDisplayMenuOpen] = useState(false);
-    const [isFitMenuOpen, setIsFitMenuOpen] = useState(false);
 
     // Sync pageInput when activePage changes from outside
     const [prevActivePage, setPrevActivePage] = useState(activePage);
@@ -83,7 +101,7 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
             </div>
             {/* Spacer co được — đẩy nhóm tool navigation/zoom ra giữa */}
             <div className="flex-1 min-w-0" />
-            <div className="flex items-center gap-1 min-w-max">
+            <div className="flex min-w-0 max-w-full shrink-0 items-center gap-1 overflow-x-auto scrollbar-thin">
                 <button className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300 transition-colors" onClick={() => navigatePage(activePage - 1)} title={`Previous Page (${getShortcutLabel('pages.previous')})`} aria-label="Previous Page">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16V8m-3 3l3-3 3 3"/></svg>
                 </button>
@@ -146,7 +164,10 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                 {isObjectEditMode !== undefined && (
                     <button
                         className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${isObjectEditMode ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 ring-1 ring-emerald-300 dark:ring-emerald-700' : 'hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300'}`}
-                        onClick={() => setIsObjectEditMode(!isObjectEditMode)}
+                        onClick={() => {
+                           const next = !isObjectEditMode;
+                           setIsObjectEditMode(next);
+                        }}
                         title={`${t('misc.acrobatToolbar:chinh_sua_doi_tuong_di_chuyen_resize')} (${getShortcutLabel('viewer.object_edit')})`}
                         aria-label={t('misc.acrobatToolbar:chinh_sua_doi_tuong')}
                     >
@@ -160,7 +181,9 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                     onClick={() => {
                         const next = !isCropMode;
                         setIsCropMode(next);
-                        if (next) { setIsObjectEditMode(false); setToolMode('pointer'); }
+                       if (next) {
+                           setIsObjectEditMode(false); setToolMode('pointer');
+                       }
                     }}
                     title={`${t('misc.acrobatToolbar:crop_pdf_quet_chon_vung_roi_nhan_enter')} (${getShortcutLabel('viewer.crop')})`}
                     aria-label="Crop PDF"

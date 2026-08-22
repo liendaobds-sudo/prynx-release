@@ -52,4 +52,20 @@ describe('edit object focus requests', () => {
         window.removeEventListener(EDIT_OBJECT_FOCUS_EVENT, listener);
         expect(received).toEqual(['image-4']);
     });
+
+    it('lọc focus theo tab và instance của bản trang', () => {
+        const matching = new CustomEvent(EDIT_OBJECT_FOCUS_EVENT, {
+            detail: { objectId: 'dup-1', pageIndex: 2, tabId: 'tab-a', pageInstanceId: 'instance-a' },
+        });
+        const wrongTab = new CustomEvent(EDIT_OBJECT_FOCUS_EVENT, {
+            detail: { objectId: 'dup-2', pageIndex: 2, tabId: 'tab-b', pageInstanceId: 'instance-a' },
+        });
+        const wrongInstance = new CustomEvent(EDIT_OBJECT_FOCUS_EVENT, {
+            detail: { objectId: 'dup-3', pageIndex: 2, tabId: 'tab-a', pageInstanceId: 'instance-b' },
+        });
+
+        expect(readEditObjectFocusRequest(matching, 2, { tabId: 'tab-a', pageInstanceId: 'instance-a' })).toBe('dup-1');
+        expect(readEditObjectFocusRequest(wrongTab, 2, { tabId: 'tab-a', pageInstanceId: 'instance-a' })).toBeNull();
+        expect(readEditObjectFocusRequest(wrongInstance, 2, { tabId: 'tab-a', pageInstanceId: 'instance-a' })).toBeNull();
+    });
 });

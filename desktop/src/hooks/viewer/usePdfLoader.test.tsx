@@ -46,11 +46,14 @@ function makeProps(file: File, pdfUrl: string) {
     };
 }
 
-function makePdfDoc(numPages = 1) {
+function makePdfDoc(
+    numPages = 1,
+    dimensions: (pageNum: number) => { width: number; height: number } = () => ({ width: 595, height: 842 }),
+) {
     return {
         numPages,
-        getPage: vi.fn(async () => ({
-            getViewport: () => ({ width: 595, height: 842 }),
+        getPage: vi.fn(async (pageNum: number) => ({
+            getViewport: () => dimensions(pageNum),
         })),
     };
 }
@@ -572,6 +575,33 @@ describe('usePdfLoader — trạng thái tải PDF trong bộ nhớ', () => {
         await waitFor(() => expect(result.current.loadStatus).toBe('ready'));
         expect(result.current.loadError).toBeNull();
         expect(pdfMocks.getDocument).toHaveBeenCalledTimes(1);
+    });
+
+    it('hydrate đúng khổ từng trang PDF.js dài thay vì nhân bản khổ trang 1', async () => {
+        pdfMocks.getDocument.mockReturnValue({
+            promise: Promise.resolve(makePdfDoc(101, pageNum => pageNum === 101
+                ? { width: 1200, height: 600 }
+                : { width: 595, height: 842 })),
+            destroy: vi.fn(),
+        });
+        const props = makeProps(
+            new File(['long'], 'long-mixed.pdf', { type: 'application/pdf' }),
+            'blob:long-mixed',
+        );
+        const { result } = renderHook(() => usePdfLoader(props));
+
+        await waitFor(() => expect(result.current.loadStatus).toBe('ready'));
+        expect(result.current.allPageDims[1]).toEqual({
+            w: 595 * (96 / 72),
+            h: 842 * (96 / 72),
+            widthPt: 595,
+        });
+        act(() => result.current.notifyFirstPageRenderReady());
+        await waitFor(() => expect(result.current.allPageDims[101]).toEqual({
+            w: 1200 * (96 / 72),
+            h: 600 * (96 / 72),
+            widthPt: 1200,
+        }), { timeout: 5000 });
     });
 
     it('đóng cache native khi đổi file và khi unmount tab', async () => {

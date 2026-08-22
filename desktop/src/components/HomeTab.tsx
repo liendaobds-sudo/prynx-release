@@ -11,6 +11,15 @@ import { useTranslation } from 'react-i18next';
 import { tv } from '../i18n';
 import { appPerf } from '../lib/perfMarks';
 import ProFeatureBadge from './license/ProFeatureBadge';
+import { createFallbackToolHelp } from '../lib/toolHelp';
+import ToolHelpModal from './ToolHelpModal';
+import {
+    resolveEffectiveToolMenuLayout,
+    TOOL_MENU_FULL_MAX_WIDTH,
+  TOOL_MENU_ICON_WIDTH,
+  resolveToolMenuDrag,
+  toolMenuTotalWidth,
+} from '../lib/rightToolMenuLayout';
 
 /** accept= dùng cùng nguồn chân lý với dispatcher và converter ảnh. */
 const HOME_FILE_ACCEPT = [
@@ -42,39 +51,26 @@ interface ToolItemProps {
   tool: ToolDefinition;
   isFavorite?: boolean;
   isMiniMode: boolean;
-  isCompactMode: boolean;
+
   onOpenApp: (id: AppToolId, payload?: any) => void;
   onToggleFavorite: (key: string) => void;
 }
 
-function ToolItem({ tool, isFavorite, isMiniMode, isCompactMode, onOpenApp, onToggleFavorite }: ToolItemProps) {
+function ToolItem({ tool, isFavorite, isMiniMode, onOpenApp, onToggleFavorite }: ToolItemProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const help = createFallbackToolHelp(tv(tool.title), tv(tool.longDescription));
 
   if (isMiniMode) {
     return (
       <button
+        type="button"
         onClick={() => onOpenApp(tool.id, tool.defaultPayload)}
-        style={{ padding: '12px 0' }}
-        className={`relative w-full border ${isFavorite ? 'bg-amber-50/80 border-amber-200 dark:bg-amber-900/20 dark:border-amber-800/50' : 'bg-white dark:bg-zinc-900 border-slate-200 dark:border-white/10'} hover:shadow-sm rounded-lg flex items-center justify-center group`}
+        aria-label={tv(tool.title)}
+        className={`mx-auto flex h-9 w-8 shrink-0 items-center justify-center rounded-lg border border-transparent outline-none transition-colors focus-visible:ring-2 focus-visible:ring-app-accent ${isFavorite ? 'bg-amber-100/80 text-amber-700 hover:bg-amber-200/80 dark:bg-amber-900/30 dark:text-amber-300 dark:hover:bg-amber-900/50' : 'text-slate-700 hover:bg-slate-200 dark:text-zinc-200 dark:hover:bg-zinc-800'}`}
         title={tv(tool.title)}
       >
-        <div className="text-[26px] flex justify-center group-hover:scale-110 transition-transform origin-center drop-shadow-sm">{tool.icon}</div>
-        <ProFeatureBadge featureId={tool.featureId} className="absolute right-1 top-1" />
-      </button>
-    );
-  }
-
-  if (isCompactMode) {
-    return (
-      <button
-        onClick={() => onOpenApp(tool.id, tool.defaultPayload)}
-        className={`w-full h-9 rounded-lg flex items-center transition-colors shrink-0 outline-none justify-start px-2 ${isFavorite ? 'bg-amber-50 hover:bg-amber-100 dark:bg-amber-900/30 dark:hover:bg-amber-900/50 text-amber-900 dark:text-amber-100' : 'hover:bg-slate-200 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-300'} border border-transparent`}
-        title={tv(tool.title)}
-      >
-        <span className="text-[18px] shrink-0 flex items-center justify-center w-6">{tool.icon}</span>
-        <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tv(tool.title)}</span>
-        <ProFeatureBadge featureId={tool.featureId} className="ml-auto" />
+        <span className="flex items-center justify-center text-[20px] leading-none">{tool.icon}</span>
       </button>
     );
   }
@@ -82,22 +78,26 @@ function ToolItem({ tool, isFavorite, isMiniMode, isCompactMode, onOpenApp, onTo
   return (
     <div className="relative">
       <div
-        onClick={() => onOpenApp(tool.id, tool.defaultPayload)}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenApp(tool.id, tool.defaultPayload); } }}
         style={{ padding: '4px 6px' }}
-        className={`flex items-center gap-2.5 text-left w-full ${isFavorite ? 'bg-gradient-to-r from-amber-50/80 to-white dark:from-amber-900/20 dark:to-zinc-900 border border-amber-200 dark:border-amber-800/50 shadow-sm' : 'bg-white dark:bg-zinc-900 border border-slate-200 dark:border-white/10'} ${tool.hoverColor} hover:shadow-sm rounded-lg transition-all group cursor-pointer`}
-        title={tv(tool.longDescription) || tv(tool.title)}
+        className={`flex items-center text-left w-full ${isFavorite ? 'bg-gradient-to-r from-amber-50/80 to-white dark:from-amber-900/20 dark:to-zinc-900 border border-amber-200 dark:border-amber-800/50 shadow-sm' : 'bg-white dark:bg-zinc-900 border border-slate-200 dark:border-white/10'} ${tool.hoverColor} hover:shadow-sm rounded-lg transition-all group`}
       >
-        <div className="text-[22px] w-8 flex justify-center group-hover:scale-110 transition-transform origin-center drop-shadow-sm">{tool.icon}</div>
-        <div className="flex-1 min-w-0">
-          <div className="font-bold text-[13.5px] text-slate-800 dark:text-white leading-tight truncate">{tv(tool.title)}</div>
-        </div>
-        <ProFeatureBadge featureId={tool.featureId} />
+        {/* UIUX (audit 2026-08-21 §RM.6): hành động mở tool là nút riêng,
+            không bọc các nút Yêu thích/Trợ giúp trong một role=button giả. */}
         <button
           type="button"
-          onClick={(e) => { e.stopPropagation(); onToggleFavorite(toolKey(tool)); }}
+          onClick={() => onOpenApp(tool.id, tool.defaultPayload)}
+          className="flex flex-1 min-w-0 items-center gap-2.5 text-left rounded-md outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+          title={tv(tool.longDescription) || tv(tool.title)}
+        >
+          <span className="text-[22px] w-8 flex justify-center group-hover:scale-110 transition-transform origin-center drop-shadow-sm">{tool.icon}</span>
+          <span className="flex-1 min-w-0">
+            <span className="block font-bold text-[13.5px] text-slate-800 dark:text-white leading-tight truncate">{tv(tool.title)}</span>
+          </span>
+          <ProFeatureBadge featureId={tool.featureId} />
+        </button>
+        <button
+          type="button"
+          onClick={() => onToggleFavorite(toolKey(tool))}
           title={isFavorite ? t('tabs.home:bo_khoi_yeu_thich') : t('tabs.home:them_vao_yeu_thich')}
           className={`shrink-0 w-6 h-6 flex items-center justify-center rounded-full transition-colors ${isFavorite ? 'text-amber-400' : 'text-slate-300 dark:text-zinc-600 opacity-0 group-hover:opacity-100 hover:text-amber-400'}`}
         >
@@ -105,65 +105,50 @@ function ToolItem({ tool, isFavorite, isMiniMode, isCompactMode, onOpenApp, onTo
         </button>
         <button
           type="button"
-          onClick={(e) => { e.stopPropagation(); setOpen(v => !v); }}
+          onClick={() => setOpen(v => !v)}
           title={t('tabs.home:gioi_thieu_cong_cu')}
           className="shrink-0 w-6 h-6 flex items-center justify-center rounded-full text-slate-400 hover:text-indigo-600 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
         >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0z" /></svg>
         </button>
       </div>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setOpen(false); }} />
-          <div className="absolute right-2 top-full mt-1 z-50 w-64 max-w-[88vw] p-3 rounded-lg bg-white dark:bg-zinc-800 border border-slate-200 dark:border-white/10 shadow-xl">
-            <div className="font-bold text-[13px] text-slate-800 dark:text-white mb-1">{tv(tool.title)}</div>
-            <div className="text-[12px] text-slate-600 dark:text-zinc-300 leading-snug">{tv(tool.longDescription)}</div>
-          </div>
-        </>
-      )}
+      {/* UIUX (audit 2026-08-22 §HELP.MODAL): Home dùng cùng modal giới thiệu với Workspace. */}
+      {open && <ToolHelpModal help={help} icon={tool.icon} onClose={() => setOpen(false)} />}
     </div>
   );
 }
-
-function DisabledItem({ tool, isMiniMode, isCompactMode }: { tool: ToolDefinition; isMiniMode: boolean; isCompactMode: boolean }) {
+function DisabledItem({ tool, isMiniMode }: { tool: ToolDefinition; isMiniMode: boolean }) {
   const { t } = useTranslation();
-  if (isCompactMode) {
+  if (isMiniMode) {
     return (
-      <div className="w-full h-9 rounded-lg flex items-center shrink-0 justify-start px-2 opacity-50 cursor-not-allowed grayscale" title={`${tv(tool.title)} (Sắp ra)`}>
-        <span className="text-[18px] shrink-0 flex items-center justify-center w-6">{tool.icon}</span>
-        <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tv(tool.title)}</span>
+      <div
+        className="mx-auto flex h-9 w-8 shrink-0 items-center justify-center rounded-lg text-[20px] leading-none opacity-35 grayscale"
+        title={`${tv(tool.title)} (${t('tabs.home:sap_ra')})`}
+      >
+        {tool.icon}
       </div>
     );
   }
   return (
-    <div style={{ padding: isMiniMode ? '12px 0' : '4px 6px' }} className={`flex items-center ${isMiniMode ? 'justify-center' : 'gap-2.5 text-left'} w-full bg-slate-50 dark:bg-zinc-900/50 border border-slate-200 dark:border-white/5 rounded-lg opacity-50 cursor-not-allowed grayscale`} title={isMiniMode ? `${tv(tool.title)} (Sắp ra)` : undefined}>
-      <div className={`${isMiniMode ? 'text-[26px]' : 'text-[22px] w-8'} flex justify-center`}>{tool.icon}</div>
-      {!isMiniMode && (
-        <>
-          <div className="flex-1">
-            <div className="font-bold text-[14px] text-slate-500 dark:text-zinc-400 leading-tight">{tv(tool.title)}</div>
-          </div>
-          <div className="text-[11px] text-slate-400 dark:text-zinc-600 font-medium whitespace-nowrap">{t('tabs.home:sap_ra')}</div>
-        </>
-      )}
+    <div style={{ padding: '4px 6px' }} className="flex w-full items-center gap-2.5 rounded-lg border border-slate-200 bg-slate-50 text-left opacity-50 grayscale dark:border-white/5 dark:bg-zinc-900/50">
+      <div className="flex w-8 justify-center text-[22px]">{tool.icon}</div>
+      <div className="flex-1">
+        <div className="font-bold text-[14px] text-slate-500 dark:text-zinc-400 leading-tight">{tv(tool.title)}</div>
+      </div>
+      <div className="text-[11px] text-slate-400 dark:text-zinc-600 font-medium whitespace-nowrap">{t('tabs.home:sap_ra')}</div>
     </div>
   );
 }
 
-function SectionHeader({ id, title, isCollapsed, isMiniMode, isCompactMode, onToggle }: {
-  id: string; title: string; isCollapsed: boolean; isMiniMode: boolean; isCompactMode: boolean; onToggle: (id: string) => void;
+function SectionHeader({ id, title, isCollapsed, isMiniMode, onToggle }: {
+  id: string; title: string; isCollapsed: boolean; isMiniMode: boolean; onToggle: (id: string) => void;
 }) {
   return (
-    <div className={`flex justify-between items-center ${isCompactMode ? 'mt-2 mb-1.5 px-2 w-full' : 'mb-3 mt-5 px-1'} first:mt-0`}>
+    <div className={isMiniMode ? 'my-2 flex items-center justify-center' : 'mb-3 mt-5 flex items-center justify-between px-1 first:mt-0'}>
       {isMiniMode ? (
-        <div className="w-6 h-[2px] bg-slate-400 dark:bg-zinc-600 opacity-40 mx-auto rounded-full" title={title} />
-      ) : isCompactMode ? (
-        <div className="w-full flex items-center gap-2">
-          <span className={`text-[10px] font-bold uppercase tracking-widest ${id === 'favorites' ? 'text-amber-500' : 'text-slate-500 dark:text-zinc-400'}`}>{title}</span>
-          <div className={`flex-1 h-px opacity-40 ${id === 'favorites' ? 'bg-amber-500' : 'bg-slate-300 dark:bg-zinc-600'}`} />
-        </div>
+        <div className="h-px w-5 rounded-full bg-slate-300 dark:bg-zinc-700" title={title} />
       ) : (
-        <button onClick={() => onToggle(id)} className="flex items-center gap-2 group outline-none overflow-hidden min-w-0">
+        <button type="button" onClick={() => onToggle(id)} aria-expanded={!isCollapsed} className="flex items-center gap-2 group outline-none overflow-hidden min-w-0 rounded-sm focus-visible:ring-2 focus-visible:ring-app-accent">
           <div className="text-[11.5px] font-black text-slate-500 dark:text-zinc-400 uppercase tracking-widest group-hover:text-slate-700 dark:group-hover:text-zinc-200 transition-colors truncate">{title}</div>
           <svg className={`shrink-0 w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 dark:group-hover:text-zinc-300 transition-transform ${isCollapsed ? '' : 'rotate-180'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
         </button>
@@ -178,13 +163,22 @@ let homeInteractiveMarked = false;
 
 export default function HomeTab({ onOpenApp, isActive = true }: Props) {
   const { t } = useTranslation();
-    const rightPanelWidth = useAppSettingsStore(state => state.homeToolMenuWidth);
-    const setRightPanelWidth = useAppSettingsStore(state => state.setHomeToolMenuWidth);
+    const workspacePanelWidth = useAppSettingsStore(state => state.toolMenuWidth);
+    const homePanelWidth = useAppSettingsStore(state => state.homeToolMenuWidth);
+    const toolMenuMode = useAppSettingsStore(state => state.toolMenuMode);
+    const setToolMenuLayout = useAppSettingsStore(state => state.setToolMenuLayout);
+    const setHomeToolMenuWidth = useAppSettingsStore(state => state.setHomeToolMenuWidth);
     const collapsedSections = useAppSettingsStore(state => state.collapsedSections);
     const toggleSection = useAppSettingsStore(state => state.toggleSection);
     const [isResizing, setIsResizing] = useState(false);
+    const [draftPanelWidth, setDraftPanelWidth] = useState(toolMenuTotalWidth(toolMenuMode, homePanelWidth, false));
     const resizerRef = useRef<HTMLDivElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
+    const isResizingRef = useRef(false);
+    const activePointerIdRef = useRef<number | null>(null);
+    const draftPanelWidthRef = useRef(toolMenuTotalWidth(toolMenuMode, homePanelWidth, false));
+    const resizeFrameRef = useRef<number | null>(null);
+    const pendingWidthRef = useRef<number | null>(null);
     const hasRecentFiles = useRecentFiles(state => state.files.length > 0);
     const hiddenTools = useAppSettingsStore(state => state.hiddenTools);
     const favoriteTools = useAppSettingsStore(state => state.favoriteTools);
@@ -192,6 +186,7 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
     const [toolQuery, setToolQuery] = useState('');
     // UIUX (audit 2026-07-27 §D-17): trạng thái đang kéo file lên dropzone → đổi viền/nền sang accent
     const [isDragOver, setIsDragOver] = useState(false);
+    const [homeContainerWidth, setHomeContainerWidth] = useState(1400);
 
     // UIUX (audit 2026-07-27 §D-17) fix-verify: trong app Tauri thật (dragDropEnabled)
     // webview NUỐT DOM drag events → onDragOver/onDragLeave KHÔNG BAO GIỜ bắn; đường
@@ -225,32 +220,93 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
     const _q = toolQuery.trim().toLowerCase();
     const matchesQuery = (t: ToolDefinition) => toolMatchesQuery(t, toolQuery);
 
-    const startResizing = useCallback((e: React.MouseEvent) => {
+    const clampHomePanelWidth = useCallback((width: number, containerWidth?: number) => {
+        const viewportMax = containerWidth === undefined
+            ? TOOL_MENU_FULL_MAX_WIDTH
+            : Math.min(TOOL_MENU_FULL_MAX_WIDTH, Math.max(TOOL_MENU_ICON_WIDTH, containerWidth - 320));
+        return Math.round(Math.min(viewportMax, Math.max(TOOL_MENU_ICON_WIDTH, width)));
+    }, []);
+
+    useEffect(() => {
+        if (!isResizingRef.current) {
+            const next = clampHomePanelWidth(toolMenuTotalWidth(toolMenuMode, homePanelWidth, false));
+            draftPanelWidthRef.current = next;
+            setDraftPanelWidth(next);
+        }
+    }, [clampHomePanelWidth, homePanelWidth, toolMenuMode]);
+
+    const flushDraftWidth = useCallback(() => {
+        if (resizeFrameRef.current !== null) {
+            cancelAnimationFrame(resizeFrameRef.current);
+            resizeFrameRef.current = null;
+        }
+        if (pendingWidthRef.current !== null) {
+            const next = pendingWidthRef.current;
+            pendingWidthRef.current = null;
+            draftPanelWidthRef.current = next;
+            setDraftPanelWidth(next);
+        }
+    }, []);
+
+    const finishResizing = useCallback(() => {
+        if (!isResizingRef.current) return;
+        flushDraftWidth();
+        isResizingRef.current = false;
+        activePointerIdRef.current = null;
+        setIsResizing(false);
+        const maximumFullWidth = clampHomePanelWidth(containerRef.current?.clientWidth ?? TOOL_MENU_FULL_MAX_WIDTH);
+        const layout = resolveToolMenuDrag(
+            draftPanelWidthRef.current,
+            false,
+            homePanelWidth,
+            maximumFullWidth,
+        );
+        // UIUX (audit 2026-08-22 §UX.MT.14): độ rộng Home và workspace là
+        // hai preference độc lập; đổi mode dùng workspace width hiện có,
+        // còn gesture này chỉ ghi width của catalog Home.
+        setHomeToolMenuWidth(layout.fullWidth);
+        setToolMenuLayout(layout.mode, workspacePanelWidth);
+    }, [clampHomePanelWidth, flushDraftWidth, homePanelWidth, setHomeToolMenuWidth, setToolMenuLayout, workspacePanelWidth]);
+
+    const startResizing = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
         e.preventDefault();
+        isResizingRef.current = true;
+        activePointerIdRef.current = e.pointerId;
+        e.currentTarget.setPointerCapture?.(e.pointerId);
         setIsResizing(true);
     }, []);
 
-    const stopResizing = useCallback(() => setIsResizing(false), []);
-
-    const resize = useCallback((e: MouseEvent) => {
-        if (isResizing && containerRef.current) {
-            const containerRect = containerRef.current.getBoundingClientRect();
-            const newWidth = containerRect.right - e.clientX;
-            // Tối thiểu 200px để nhãn chữ luôn hiển thị (không thu về icon-only).
-            if (newWidth >= 200 && newWidth <= 600) setRightPanelWidth(newWidth);
+    const handleResizePointerMove = useCallback((e: PointerEvent) => {
+        if (!isResizingRef.current || activePointerIdRef.current !== e.pointerId || !containerRef.current) return;
+        const rect = containerRef.current.getBoundingClientRect();
+        const next = clampHomePanelWidth(rect.right - e.clientX, rect.width);
+        pendingWidthRef.current = next;
+        if (resizeFrameRef.current === null) {
+            resizeFrameRef.current = requestAnimationFrame(() => {
+                resizeFrameRef.current = null;
+                if (pendingWidthRef.current === null) return;
+                draftPanelWidthRef.current = pendingWidthRef.current;
+                setDraftPanelWidth(pendingWidthRef.current);
+                pendingWidthRef.current = null;
+            });
         }
-    }, [isResizing, setRightPanelWidth]);
+    }, [clampHomePanelWidth]);
 
     useEffect(() => {
-        if (isResizing) {
-            window.addEventListener('mousemove', resize);
-            window.addEventListener('mouseup', stopResizing);
-        }
+        if (!isResizing) return;
+        window.addEventListener('pointermove', handleResizePointerMove);
+        window.addEventListener('pointerup', finishResizing);
+        window.addEventListener('pointercancel', finishResizing);
+        window.addEventListener('blur', finishResizing);
         return () => {
-            window.removeEventListener('mousemove', resize);
-            window.removeEventListener('mouseup', stopResizing);
+            window.removeEventListener('pointermove', handleResizePointerMove);
+            window.removeEventListener('pointerup', finishResizing);
+            window.removeEventListener('pointercancel', finishResizing);
+            window.removeEventListener('blur', finishResizing);
         };
-    }, [isResizing, resize, stopResizing]);
+    }, [finishResizing, handleResizePointerMove, isResizing]);
+
+
 
     // Mốc "Home dùng được" cho baseline khởi động (P0-0). Chỉ đo LẦN MOUNT ĐẦU:
     // HomeTab có thể remount khi chuyển tab, nhưng cold-launch chỉ quan tâm lần đầu.
@@ -261,11 +317,32 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
         appPerf.measure('startup-to-home-interactive', 'app-mounted', 'home-interactive');
     }, []);
 
-    // Trang Home: KHÔNG thu gọn sang chế độ icon-only (nhìn tệ) — LUÔN hiển thị dạng
-    // có chữ. Bỏ isMiniMode (icon); chỉ còn full / compact (đều kèm nhãn chữ).
-    const isMiniMode = false;
-    const isCompactMode = rightPanelWidth < 280;
-    const tight = isCompactMode;
+    useEffect(() => {
+        const root = containerRef.current;
+        if (!root) return;
+        const updateWidth = () => {
+            if (root.clientWidth > 0) setHomeContainerWidth(root.clientWidth);
+        };
+        updateWidth();
+        if (typeof ResizeObserver === 'undefined') return;
+        const observer = new ResizeObserver(updateWidth);
+        observer.observe(root);
+        return () => observer.disconnect();
+    }, []);
+
+    // UIUX (audit 2026-08-22 §UX.MT.04): clamp hiệu dụng theo viewport, không sửa preference.
+    const effectiveHomeLayout = resolveEffectiveToolMenuLayout({
+        preferredMode: toolMenuMode,
+        preferredFullWidth: homePanelWidth,
+        containerWidth: homeContainerWidth,
+        hasConfigPanel: false,
+        viewerReservedWidth: 320,
+    });
+    const isMiniMode = effectiveHomeLayout.mode === 'icons';
+    const tight = isMiniMode;
+    const displayedPanelWidth = isResizing
+        ? draftPanelWidth
+        : effectiveHomeLayout.totalWidth;
 
     // ── Render danh sách tool của 1 category (chỉ chế độ list) ──
     const renderToolSection = (categoryId: string) => {
@@ -277,10 +354,10 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
         return (
             <div style={listWrapStyle(tight)} className="transition-opacity duration-300">
                 {enabledTools.map((tool, i) => (
-                    <ToolItem key={`${toolKey(tool)}-${i}`} tool={tool} isMiniMode={isMiniMode} isCompactMode={isCompactMode} onOpenApp={onOpenApp} onToggleFavorite={toggleFavoriteTool} />
+                    <ToolItem key={`${toolKey(tool)}-${i}`} tool={tool} isMiniMode={isMiniMode} onOpenApp={onOpenApp} onToggleFavorite={toggleFavoriteTool} />
                 ))}
                 {disabledTools.map((tool, i) => (
-                    <DisabledItem key={`${toolKey(tool)}-dis-${i}`} tool={tool} isMiniMode={isMiniMode} isCompactMode={isCompactMode} />
+                    <DisabledItem key={`${toolKey(tool)}-dis-${i}`} tool={tool} isMiniMode={isMiniMode} />
                 ))}
             </div>
         );
@@ -372,7 +449,7 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
             {/* UIUX (audit 2026-07-27 §A-11): vùng bắt chuột rộng w-2.5 trong suốt, vạch nhìn thấy chỉ 1px */}
             <div
                 ref={resizerRef}
-                onMouseDown={startResizing}
+                onPointerDown={startResizing}
                 className="w-2.5 h-full flex flex-col justify-center items-center shrink-0 z-10 bg-transparent cursor-col-resize group"
             >
                 <div className={`w-px h-full mx-auto pointer-events-none transition-colors ${isResizing ? 'bg-app-accent' : 'bg-app-line group-hover:bg-app-accent'}`} />
@@ -380,10 +457,40 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
 
             {/* RIGHT PANE: Tools Menu */}
             <div
-                className={`relative h-full bg-slate-50 dark:bg-[#121212] shrink-0 shadow-[-10px_0_30px_rgba(0,0,0,0.03)] flex flex-col border-l border-slate-200 dark:border-zinc-800/50 ${isResizing ? 'select-none pointer-events-none transition-none' : 'transition-all duration-300 ease-in-out'}`}
-                style={{ width: `${Math.max(rightPanelWidth, 200)}px` }}
+                className={`relative h-full overflow-hidden bg-slate-50 dark:bg-[#121212] shrink-0 shadow-[-10px_0_30px_rgba(0,0,0,0.03)] flex flex-col border-l border-slate-200 dark:border-zinc-800/50 ${isResizing ? 'select-none transition-none' : 'transition-all duration-300 ease-in-out'}`}
+                style={{ width: `${displayedPanelWidth}px` }}
             >
-                <div className={`flex-1 overflow-y-auto ${tight ? 'py-2 px-1.5' : 'p-4 md:p-6 lg:p-8'}`}>
+                {isMiniMode && (
+                    <div className="flex h-11 shrink-0 items-center justify-center border-b border-slate-200 dark:border-zinc-800">
+                        <button
+                            type="button"
+                            onClick={() => setToolMenuLayout('full', workspacePanelWidth)}
+                            className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-200 hover:text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-indigo-400"
+                            title={t('tabs.imposition:mo_rong_menu')}
+                            aria-label={t('tabs.imposition:mo_rong_menu')}
+                        >
+                            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7M19 19l-7-7 7-7" />
+                            </svg>
+                        </button>
+                    </div>
+                )}
+                {!isMiniMode && (
+                    <div className="flex h-11 shrink-0 items-center justify-end border-b border-slate-200 px-2 dark:border-zinc-800">
+                        <button
+                            type="button"
+                            onClick={() => setToolMenuLayout('icons', workspacePanelWidth)}
+                            className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-200 hover:text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-indigo-400"
+                            title={t('tabs.imposition:thu_gon_menu_2')}
+                            aria-label={t('tabs.imposition:thu_gon_menu_2')}
+                        >
+                            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+                            </svg>
+                        </button>
+                    </div>
+                )}
+                <div className={`flex-1 overflow-x-hidden overflow-y-auto ${tight ? 'hide-scrollbar px-1 py-2' : 'px-3 py-4'}`}>
 
                     {/* ── Tool search ── */}
                     {!isMiniMode && (
@@ -411,24 +518,23 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
                         if (favTools.length === 0) return null;
                         const enabledTools = favTools.filter(t => t.isEnabled);
                         const disabledTools = favTools.filter(t => !t.isEnabled);
-                        const isCollapsed = !_q && !!collapsedSections['favorites'];
+                        const isCollapsed = !isMiniMode && !_q && !!collapsedSections['favorites'];
                         return (
                             <React.Fragment key="favorites">
                                 <SectionHeader
                                     id="favorites"
-                                    title={isCompactMode ? t('tabs.home:yeu_thich') : t('tabs.home:cong_cu_yeu_thich')}
+                                    title={t('tabs.home:cong_cu_yeu_thich')}
                                     isCollapsed={isCollapsed}
                                     isMiniMode={isMiniMode}
-                                    isCompactMode={isCompactMode}
                                     onToggle={toggleSection}
                                 />
                                 {!isCollapsed && (
                                     <div style={listWrapStyle(tight)} className="transition-opacity duration-300">
                                         {enabledTools.map((tool, i) => (
-                                            <ToolItem key={`fav-${toolKey(tool)}-${i}`} tool={tool} isFavorite isMiniMode={isMiniMode} isCompactMode={isCompactMode} onOpenApp={onOpenApp} onToggleFavorite={toggleFavoriteTool} />
+                                            <ToolItem key={`fav-${toolKey(tool)}-${i}`} tool={tool} isFavorite isMiniMode={isMiniMode} onOpenApp={onOpenApp} onToggleFavorite={toggleFavoriteTool} />
                                         ))}
                                         {disabledTools.map((tool, i) => (
-                                            <DisabledItem key={`fav-${toolKey(tool)}-dis-${i}`} tool={tool} isMiniMode={isMiniMode} isCompactMode={isCompactMode} />
+                                            <DisabledItem key={`fav-${toolKey(tool)}-dis-${i}`} tool={tool} isMiniMode={isMiniMode} />
                                         ))}
                                     </div>
                                 )}
@@ -440,7 +546,7 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
                     {TOOL_CATEGORIES.map((cat) => {
                         const catTools = getToolsByCategory(cat.id as any).filter(t => !hiddenTools.includes(toolKey(t)) && !favoriteTools.includes(toolKey(t)) && matchesQuery(t));
                         if (catTools.length === 0) return null;
-                        const isCollapsed = !_q && !!collapsedSections[cat.id];
+                        const isCollapsed = !isMiniMode && !_q && !!collapsedSections[cat.id];
                         return (
                             <React.Fragment key={cat.id}>
                                 <SectionHeader
@@ -448,7 +554,6 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
                                     title={tv(cat.title)}
                                     isCollapsed={isCollapsed}
                                     isMiniMode={isMiniMode}
-                                    isCompactMode={isCompactMode}
                                     onToggle={toggleSection}
                                 />
                                 {!isCollapsed && renderToolSection(cat.id)}

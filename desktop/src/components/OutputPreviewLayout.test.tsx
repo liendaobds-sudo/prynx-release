@@ -152,6 +152,9 @@ describe('Output Preview — thứ tự workflow Acrobat', () => {
 
     it('khóa thứ tự section, trạng thái mở và nhóm Process/Spot độc lập', async () => {
         const workspaceStore = createWorkspaceStore();
+        // fileId đại diện Working PDF đã bake thành [source 2, source 1].
+        // Output Preview phải gọi trang materialized 1, không map lần nữa thành 2.
+        workspaceStore.getState().setViewerPageOrder([2, 1]);
         const imposerStore = createImposerSettingsStore();
         const onClose = vi.fn();
         const { container } = render(
@@ -227,7 +230,7 @@ describe('Output Preview — thứ tự workflow Acrobat', () => {
 
         fireEvent.click(screen.getByRole('button', { name: 'Lấy mẫu & TAC' }));
         act(() => workspaceStore.getState().setHoveredPdfPosition({
-            pageNum: 1,
+            pageNum: 2,
             x: 0.5,
             y: 0.5,
         }));
@@ -240,8 +243,10 @@ describe('Output Preview — thứ tự workflow Acrobat', () => {
 
         fireEvent.click(screen.getByRole('button', { name: 'Quản lý mực' }));
         expect(imposerStore.getState().activeDashboardTool).toBe('inkmanager');
-        expect(useAppSettingsStore.getState().isWorkspaceSidebarOpen).toBe(true);
-        expect(useAppSettingsStore.getState().toolMenuWidth).toBe(390);
+        // Kích hoạt tool liên quan không được tự đổi catalog mode/persistent width;
+        // nút catalog mới là nơi duy nhất đổi hai preference này.
+        expect(useAppSettingsStore.getState().isWorkspaceSidebarOpen).toBe(false);
+        expect(useAppSettingsStore.getState().toolMenuWidth).toBe(240);
         expect(onClose).toHaveBeenCalledTimes(1);
 
         fireEvent.click(screen.getByRole('button', { name: 'Hiển thị' }));
@@ -308,6 +313,9 @@ describe('Output Preview — thứ tự workflow Acrobat', () => {
             has_trimbox: true,
             has_bleedbox: true,
         });
+        expect(apiMocks.authenticatedFetch.mock.calls.some(
+            ([request]) => /\/(?:separations|page-boxes)\/file-a\/2(?:\?|$)/.test(String(request)),
+        )).toBe(false);
         const pageBoxToggle = screen.getByRole('checkbox', { name: 'Hiện khung Art/Trim/Bleed' });
         expect((pageBoxToggle as HTMLInputElement).disabled).toBe(false);
         fireEvent.click(pageBoxToggle);
@@ -317,5 +325,48 @@ describe('Output Preview — thứ tự workflow Acrobat', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Đặt hộp trang' }));
         expect(imposerStore.getState().activeDashboardTool).toBe('crop');
         expect(onClose).toHaveBeenCalledTimes(2);
+    });
+
+    it('Escape chỉ đóng Output Preview thuộc tab đang active', () => {
+        const backgroundStore = createWorkspaceStore();
+        const activeStore = createWorkspaceStore();
+        const backgroundImposer = createImposerSettingsStore();
+        const activeImposer = createImposerSettingsStore();
+        const closeBackground = vi.fn();
+        const closeActive = vi.fn();
+
+        render(
+            <>
+                <div data-prynx-tab-active="false">
+                    <ImposerSettingsContext.Provider value={backgroundImposer}>
+                        <WorkspaceContext.Provider value={backgroundStore}>
+                            <OutputPreviewTab
+                                fileId="background-file"
+                                totalPages={1}
+                                onClose={closeBackground}
+                                onPlatesChange={backgroundStore.getState().setSeparationPlates}
+                            />
+                        </WorkspaceContext.Provider>
+                    </ImposerSettingsContext.Provider>
+                </div>
+                <div data-prynx-tab-active="true">
+                    <ImposerSettingsContext.Provider value={activeImposer}>
+                        <WorkspaceContext.Provider value={activeStore}>
+                            <OutputPreviewTab
+                                fileId="active-file"
+                                totalPages={1}
+                                onClose={closeActive}
+                                onPlatesChange={activeStore.getState().setSeparationPlates}
+                            />
+                        </WorkspaceContext.Provider>
+                    </ImposerSettingsContext.Provider>
+                </div>
+            </>,
+        );
+
+        fireEvent.keyDown(window, { key: 'Escape' });
+
+        expect(closeBackground).not.toHaveBeenCalled();
+        expect(closeActive).toHaveBeenCalledTimes(1);
     });
 });

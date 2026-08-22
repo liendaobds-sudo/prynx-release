@@ -1,24 +1,25 @@
-import { useCallback, useMemo, useEffect, useRef, useState, useContext } from 'react';
+import { useCallback, useMemo, useEffect, useRef, useState, useContext, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { localFileUrl } from '../lib/localFileTransport';
 import { TOOL_REGISTRY, TOOL_CATEGORIES, findToolByUniqueKey, getToolsByCategory, getToolUniqueKey } from '../lib/toolRegistry';
 
 import PDFUploader from './PDFUploader';
-import AcrobatViewer from './AcrobatViewer';
+import AcrobatViewer, { type PageOverlayRenderContext } from './AcrobatViewer';
 import type { ThumbPageWorkflowStatus } from './acrobat/ThumbSidebar';
 import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
 import { useEditSession } from '../hooks/useEditSession';
 import { useWorkingPdf } from '../hooks/useWorkingPdf';
 import { ImpositionMode, type ProcessingSettings } from '../lib/pdfImposer';
 import { Button } from './Button';
-import { Printer, Scissors, Settings, Star } from 'lucide-react';
+import { Printer, Scissors } from 'lucide-react';
 import { PDFDocument, degrees } from 'pdf-lib';
 import { imageFileToPdfIfNeeded, isSupportedImageFileName } from '../lib/imageNormalizer';
 import { initialFileOpeningPhase, type FileOpeningPhase } from '../lib/impositionOpeningState';
 import ImposerDashboard from './imposition-tools/ImposerDashboard';
+import ToolMenuList from './imposition-tools/ToolMenuList';
 import CutExportModal from './imposition-tools/cut-export/CutExportModal';
 import OpenInDesignModal from './imposition-tools/OpenInDesignModal';
-import { DEFAULT_CUT_BORDER_CONFIG, PREDEFINED_SIZES, isWorkspaceTool, resolveRightPanel, type BookletSettings, type NupSettings } from './imposition-tools/types';
+import { DEFAULT_CUT_BORDER_CONFIG, PREDEFINED_SIZES, isWorkspaceTool, resolveRightPanel, type BookletSettings, type NupSettings, type TaskMode } from './imposition-tools/types';
 import { ImposerSettingsContext, createImposerSettingsStore, useImposerSettingsStore } from './imposition-tools/useImposerSettingsStore';
 import { resolveEffectiveSeparateCut } from './imposition-tools/pageSheetPolicy';
 import { canUseRectangleStickerInking } from './imposition-tools/shapeDetectionPolicy';
@@ -62,6 +63,18 @@ import SavePrintFilesModal from './workspace/SavePrintFilesModal';
 import { usePrintDialog } from './shared/usePrintDialog';
 import EditLayersPanel from './workspace/SelectionLayersPanel';
 import { useAppSettingsStore } from '../stores/appSettingsStore';
+import {
+    TOOL_MENU_ICON_WIDTH,
+    TOOL_MENU_VIEWER_MIN_WIDTH,
+    clampToolMenuDraftTotalWidth,
+    maxFullToolMenuWidth,
+   resolveToolMenuDrag,
+    resolveEffectiveToolMenuLayout,
+   resolveWorkspaceToolMenuToggle,
+    resolveWorkspaceToolPanelClose,
+    toolMenuTotalWidth,
+    type ToolMenuMode,
+} from '../lib/rightToolMenuLayout';
 import { primeViewerFirstFrame } from '../lib/viewerFirstFrame';
 import { statNativeSystemFile } from '../lib/nativeFileAccess';
 
@@ -85,7 +98,7 @@ import { copyUpscaleResultIdentity, UpscalePreview } from './preprocess-tools/Up
 import StickerSheetWorkspace, {
     StickerCutlineOverlay,
 } from './preprocess-tools/StickerSheetWorkspace';
-import { useStickerSheetStore } from './preprocess-tools/stickerSheetStore';
+import { useStickerSheetStore, type StickerSheetPageState } from './preprocess-tools/stickerSheetStore';
 import type { StickerCutlinePreview } from '../lib/stickerSheetApi';
 import {
     resolveStickerSourceSyncMarker,
@@ -101,7 +114,6 @@ import { registerActiveTabFeature } from '../lib/tabNavigation';
 import { useToolActivationGuard } from '../hooks/useToolActivationGuard';
 import { canUse } from '../lib/license/features';
 import { useAuthStore } from '../stores/useAuthStore';
-import ProFeatureBadge from './license/ProFeatureBadge';
 import FeatureAccessOverlay from './license/FeatureAccessOverlay';
 
 // Phase type is now defined in useWorkspaceStore
@@ -163,6 +175,53 @@ function ViewerStickerSheetWorkspace({
 }
 
 /**
+ * UIUX (feedback 2026-08-21 §CUTPREVIEW.MULTIPAGE1): trang nền chỉ cần ảnh và
+ * đường bế; không dựng mask worker/canvas chỉnh sửa cho mọi trang đang mount.
+ */
+function ReadonlyViewerStickerSheetPageOverlay({
+    pageState,
+    sourcePage,
+}: {
+    pageState: StickerSheetPageState;
+    sourcePage: number;
+}) {
+    const displayZoom = useWorkspaceStore(state => state.viewerZoom);
+    const manifest = pageState.manifest;
+    if (!manifest || !pageState.previewUrl) return null;
+    const preview = pageState.cutlinePreview;
+    const currentCutlinePreview = (
+        preview
+        && preview.mask_revision === (manifest.mask_revision ?? 1)
+        && preview.preview_width_px === manifest.preview_width_px
+        && preview.preview_height_px === manifest.preview_height_px
+    ) ? preview : null;
+
+    return (
+        <div
+            data-testid="sticker-sheet-page-overlay"
+            data-source-page={sourcePage}
+            data-preview-mode="readonly"
+            aria-busy={pageState.isCutlinePreviewing}
+            className="pointer-events-none absolute inset-0 z-[35] overflow-hidden bg-white"
+        >
+            <img
+                src={pageState.previewUrl}
+                alt={tv('Ảnh tem đã khử nền')}
+                draggable={false}
+                className="pointer-events-none absolute inset-0 h-full w-full select-none"
+            />
+            {currentCutlinePreview ? (
+                <StickerCutlineOverlay
+                    preview={currentCutlinePreview}
+                    selectedInstanceId={pageState.selectedInstanceId}
+                    displayZoom={displayZoom}
+                />
+            ) : null}
+        </div>
+    );
+}
+
+/**
  * RECIPE (audit 2026-08-15 §REC.1): thao tác Hủy/lỗi không được để pending
  * note sống sang commit kế tiếp. Unexpected throw cũng phải dọn cùng hợp đồng.
  */
@@ -202,12 +261,15 @@ interface Props {
 }
 
 export default function ImpositionTab(props: Props) {
-    const [store] = useState(createWorkspaceStore);
+    const initialLaunchTool = props.lockedMode || props.initialRecovery?.feature || props.initialFeature;
+   const [store] = useState(() => createWorkspaceStore(
+        useAppSettingsStore.getState().toolMenuMode,
+       useAppSettingsStore.getState().toolMenuWidth,
+   ));
     const imposerScope = props.tabId ? `tab:${props.tabId}` : undefined;
     const [imposerStore] = useState(() => {
         const nextStore = createImposerSettingsStore(imposerScope);
-        const launchTool = props.lockedMode || props.initialRecovery?.feature || props.initialFeature;
-        if (launchTool) nextStore.getState().setActiveDashboardTool(launchTool);
+        if (initialLaunchTool) nextStore.getState().setActiveDashboardTool(initialLaunchTool);
         return nextStore;
     });
     const imposerStoreRef = useRef(imposerStore);
@@ -252,7 +314,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         history, setHistory, isSaved, setIsSaved, showSaveAsModal, setShowSaveAsModal,
         reportMsg, setReportMsg, viewerDirty, setViewerDirty, viewerPageOrder, setViewerPageOrder, setViewerPageInstanceIds,
         viewerPageRotations, setViewerPageRotations, bleedView, setBleedView,
-        isDraggingSidebar, setIsDraggingSidebar,
+        isDraggingSidebar, setIsDraggingSidebar, rightToolMenuFullWidth, setRightToolMenuFullWidth,
+        rightToolMenuMode: toolMenuMode, setRightToolMenuMode,
         pdfObjectsVersion, setPdfObjectsVersion,
         isObjectEditMode,
         currentEditObjects,
@@ -279,6 +342,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         reportMsg: state.reportMsg, setReportMsg: state.setReportMsg, viewerDirty: state.viewerDirty, setViewerDirty: state.setViewerDirty, viewerPageOrder: state.viewerPageOrder, setViewerPageOrder: state.setViewerPageOrder, setViewerPageInstanceIds: state.setViewerPageInstanceIds,
         viewerPageRotations: state.viewerPageRotations, setViewerPageRotations: state.setViewerPageRotations, bleedView: state.bleedView, setBleedView: state.setBleedView,
         isDraggingSidebar: state.isDraggingSidebar, setIsDraggingSidebar: state.setIsDraggingSidebar,
+        rightToolMenuFullWidth: state.rightToolMenuFullWidth, setRightToolMenuFullWidth: state.setRightToolMenuFullWidth,
+        rightToolMenuMode: state.rightToolMenuMode, setRightToolMenuMode: state.setRightToolMenuMode,
         pdfObjectsVersion: state.pdfObjectsVersion, setPdfObjectsVersion: state.setPdfObjectsVersion,
         isObjectEditMode: state.isObjectEditMode,
         currentEditObjects: state.currentEditObjects,
@@ -323,14 +388,61 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         separateCutPage,
     );
 
-    const { isWorkspaceSidebarOpen: isSidebarOpen, favoriteTools, hiddenTools } = useAppSettingsStore();
+    const {
+        favoriteTools,
+        hiddenTools,
+    } = useAppSettingsStore(useShallow(state => ({
+        favoriteTools: state.favoriteTools,
+        hiddenTools: state.hiddenTools,
+    })));
+   const sidebarWidth = rightToolMenuFullWidth;
+    const workspaceRootRef = useRef<HTMLDivElement | null>(null);
+    const [workspaceWidth, setWorkspaceWidth] = useState(() =>
+        typeof window === 'undefined' ? 1400 : window.innerWidth,
+    );
+    useEffect(() => {
+        const root = workspaceRootRef.current;
+        if (!root) return;
+        const updateWidth = () => {
+            if (root.clientWidth > 0) setWorkspaceWidth(root.clientWidth);
+        };
+        updateWidth();
+        if (typeof ResizeObserver === 'undefined') return;
+        const observer = new ResizeObserver(updateWidth);
+        observer.observe(root);
+        return () => observer.disconnect();
+    }, []);
+   const setSidebarWidth = setRightToolMenuFullWidth;
+    const setToolMenuLayout = useCallback((mode: ToolMenuMode, width?: number) => {
+        setRightToolMenuMode(mode);
+        if (typeof width === 'number') setRightToolMenuFullWidth(width);
+        useAppSettingsStore.getState().setToolMenuLayout(mode, width);
+    }, [setRightToolMenuFullWidth, setRightToolMenuMode]);
+    const openWorkspaceSidebar = useCallback(() => {
+        setRightToolMenuMode('full');
+        useAppSettingsStore.getState().openWorkspaceSidebar();
+    }, [setRightToolMenuMode]);
+    const collapseWorkspaceSidebar = useCallback(() => {
+        setRightToolMenuMode('icons');
+        useAppSettingsStore.getState().collapseWorkspaceSidebar();
+    }, [setRightToolMenuMode]);
+
+    const hasActiveRightTool = activeDashboardTool !== 'none' || isObjectEditMode;
+    const effectiveToolMenuLayout = resolveEffectiveToolMenuLayout({
+        preferredMode: toolMenuMode,
+        preferredFullWidth: sidebarWidth,
+        containerWidth: workspaceWidth,
+        hasConfigPanel: hasActiveRightTool,
+        viewerReservedWidth: TOOL_MENU_VIEWER_MIN_WIDTH,
+    });
+    const effectiveToolMenuMode = effectiveToolMenuLayout.mode;
+    const isSidebarOpen = effectiveToolMenuMode === 'full';
+
     const licensePlan = useAuthStore(state => state.licensePlan);
     const licenseFeatures = useAuthStore(state => state.licenseFeatures);
     const requestToolActivation = useToolActivationGuard();
-    const setIsSidebarOpen = useAppSettingsStore(state => state.setWorkspaceSidebarOpen);
-    const sidebarWidth = useAppSettingsStore(state => state.toolMenuWidth);
-    const setSidebarWidth = useAppSettingsStore(state => state.setToolMenuWidth);
-    const dedicatedInitialTool = resolveDedicatedInitialTool(initialFeature);
+    const launchFeature = initialRecovery?.feature || initialFeature;
+    const dedicatedInitialTool = resolveDedicatedInitialTool(launchFeature);
     const [logoSessionDirty, setLogoSessionDirty] = useState(false);
     const [logoWorkspaceOpened, setLogoWorkspaceOpened] = useState(
         () => activeDashboardTool === 'logo_rebuild' || dedicatedInitialTool === 'logo_rebuild',
@@ -380,6 +492,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         viewerPageOrder,
     ]);
     const previousDashboardToolRef = useRef<string | null>(null);
+    const suppressDedicatedToolRestoreRef = useRef(false);
     const syncedStickerSourceRef = useRef<File | null>(null);
 
     useEffect(() => () => {
@@ -427,7 +540,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
 
 
-    const [isMiniToolbarExpanded, setIsMiniToolbarExpanded] = useState(false);
     const [showSavePrintModal, setShowSavePrintModal] = useState(false);
     const [scaleConfirmModal, setScaleConfirmModal] = useState<{ msg: string, resolve: (v: boolean) => void } | null>(null);
     // Hộp thoại in hợp nhất kiểu Acrobat (máy in / số bản / trang / tỉ lệ / orientation
@@ -466,11 +578,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
         if (isCropMode && activeDashboardTool !== 'crop') {
             setActiveDashboardTool('crop');
-            setIsSidebarOpen(true);
         } else if (!isCropMode && activeDashboardTool === 'crop') {
             setActiveDashboardTool('none');
         }
-    }, [activeDashboardTool, isCropMode, setActiveDashboardTool, setIsCropMode, setIsObjectEditMode, setViewerToolMode, setIsSidebarOpen]);
+    }, [activeDashboardTool, isCropMode, setActiveDashboardTool, setIsCropMode, setIsObjectEditMode, setViewerToolMode]);
     // Lựa chọn vị trí trang trắng — chỉ hỏi trong dialog Xác nhận khi số trang lẻ tay.
     const [confirmBlankPlacement, setConfirmBlankPlacement] = useState<'end' | 'center'>('end');
 
@@ -615,6 +726,27 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         && classicCutlineViewerPreview?.viewerPage === viewerActivePage
         && classicCutlineViewerPreview.documentIdentity === currentViewerDocumentIdentity
     ) ? classicCutlineViewerPreview : null;
+    const renderStickerSheetPageOverlay = useCallback((context: PageOverlayRenderContext) => {
+        const pageState = stickerSheetPages[context.originalPageNum];
+        if (!pageState?.manifest) return null;
+        const editable = isActive === true && context.isActivePage;
+        if (!editable) {
+            return (
+                <ReadonlyViewerStickerSheetPageOverlay
+                    pageState={pageState}
+                    sourcePage={context.originalPageNum}
+                />
+            );
+        }
+        return (
+            <ViewerStickerSheetWorkspace
+                tabId={tabId || ''}
+                isActive
+                editingEnabled={viewerToolMode === 'pointer'}
+                sourcePage={context.originalPageNum}
+            />
+        );
+    }, [isActive, stickerSheetPages, tabId, viewerToolMode]);
     const [initialOpenRetryToken, setInitialOpenRetryToken] = useState(0);
     const fileOpeningAttemptRef = useRef(0);
     const fileOpeningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -762,12 +894,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         if (!lockedMode) return;
         setActiveDashboardTool(lockedMode);
         applyLockedMode(lockedMode);
-    }, [lockedMode]);
+    }, [lockedMode, setActiveDashboardTool]);
 
-    // Handle initial tool feature from Home screen (preprocess tools)
+    // Công cụ mở từ Home hoặc snapshot khôi phục dùng cùng một hợp đồng panel phải.
     useEffect(() => {
-        if (initialFeature) {
-            if (initialFeature === 'logo_rebuild' && !LOGO_REBUILD_ENABLED) {
+        if (launchFeature) {
+            if (launchFeature === 'logo_rebuild' && !LOGO_REBUILD_ENABLED) {
                 setActiveDashboardTool('none');
                 return;
             }
@@ -775,15 +907,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             if (dedicatedInitialTool) {
                 setPhase('workspace');
             }
-            setActiveDashboardTool(initialFeature);
-            // Home/tool-registry opens a new tab with the requested tool. Ensure the
-            // tool panel is visible even when the user previously collapsed it.
-            // UIUX (fix 2026-07-28): các công cụ độc lập phải luôn mở lại bảng
-            // thiết lập khi tạo tab mới, kể cả khi người dùng đã thu gọn panel ở tab trước.
-            if (dedicatedInitialTool || initialFeature === 'crop') {
-                if (sidebarWidth < 280) setSidebarWidth(390);
-                setIsSidebarOpen(true);
-            }
+            setActiveDashboardTool(launchFeature);
             applyLockedMode(lockedMode);
             const names: Record<string, string> = {
                 'bgremover': t('tabs.imposition:tach_nen_ai'),
@@ -798,20 +922,22 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 'shuffle': t('tabs.imposition:xao_tron_trang'),
                 'resize': t('tabs.imposition:co_gian_trang')
             };
-            if (names[initialFeature]) {
-                onTitleChange?.(names[initialFeature]);
+            if (names[launchFeature]) {
+                onTitleChange?.(names[launchFeature]);
             }
         }
-    }, [initialFeature, dedicatedInitialTool]);
+    }, [launchFeature, dedicatedInitialTool, lockedMode, onTitleChange, setActiveDashboardTool, setPhase, t]);
 
-    // UIUX (fix 2026-07-28): tab chuyên dụng không được rơi về workspace PDF trống
-    // khi nút Quay lại chung đặt tool = none. Kết quả batch vẫn được giữ nguyên.
+    // UIUX (fix 2026-07-28): tự phục hồi tab chuyên dụng khi state rơi về none ngoài ý muốn.
+    // Nút X là hành động chủ động nên được phép đóng panel đúng một lần.
     useEffect(() => {
         if (!dedicatedInitialTool || activeDashboardTool !== 'none') return;
+        if (suppressDedicatedToolRestoreRef.current) {
+            suppressDedicatedToolRestoreRef.current = false;
+            return;
+        }
         setActiveDashboardTool(dedicatedInitialTool);
-        if (sidebarWidth < 280) setSidebarWidth(390);
-        setIsSidebarOpen(true);
-    }, [dedicatedInitialTool, activeDashboardTool, setActiveDashboardTool, sidebarWidth, setSidebarWidth, setIsSidebarOpen]);
+    }, [dedicatedInitialTool, activeDashboardTool, setActiveDashboardTool]);
 
     // Async physical path polyfill (non-blocking via HTTP)
     useEffect(() => {
@@ -1252,14 +1378,38 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         commitCropSelection(null);
         setIsCropMode(true);
         setActiveDashboardTool('crop');
-        if (sidebarWidth < 280) setSidebarWidth(390);
-        setIsSidebarOpen(true);
-    }, [onSpawnTab, commitToolWorkingFile, recipeOwnerTabId, t, setViewerPageInstanceIds, commitCropSelection, setIsCropMode, setActiveDashboardTool, sidebarWidth, setSidebarWidth, setIsSidebarOpen]);
+    }, [onSpawnTab, commitToolWorkingFile, recipeOwnerTabId, t, setViewerPageInstanceIds, commitCropSelection, setIsCropMode, setActiveDashboardTool]);
 
     const handleCropClose = useCallback(() => {
         setIsCropMode(false);
         setActiveDashboardTool('none');
     }, [setIsCropMode, setActiveDashboardTool]);
+
+    const closeActiveToolPanel = useCallback(() => {
+        const next = resolveWorkspaceToolPanelClose(
+            activeDashboardTool,
+            toolMenuMode,
+            isCropMode,
+            isObjectEditMode,
+        );
+        if (dedicatedInitialTool) suppressDedicatedToolRestoreRef.current = true;
+        if (next.closeCrop) {
+            commitCropSelection(null);
+            setIsCropMode(false);
+        }
+        if (next.closeObjectEdit) setIsObjectEditMode(false);
+        setActiveDashboardTool(next.activeTool);
+    }, [
+        activeDashboardTool,
+        commitCropSelection,
+        dedicatedInitialTool,
+        isCropMode,
+        isObjectEditMode,
+        setActiveDashboardTool,
+        setIsCropMode,
+        setIsObjectEditMode,
+        toolMenuMode,
+    ]);
 
 
     // --- OBJECT EDIT UPLOAD ---
@@ -1666,59 +1816,85 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
 
 
-    const sidebarDragRef = useRef({ startX: 0, startWidth: 0, lastWidth: 0, startOpen: false });
+    const sidebarDragRef = useRef({ startX: 0, startTotalWidth: 0, startFullWidth: 0 });
+    const [sidebarDraftTotalWidth, setSidebarDraftTotalWidth] = useState<number | null>(null);
+    const sidebarDraftLayoutRef = useRef<{ mode: ToolMenuMode; fullWidth: number } | null>(null);
+    const sidebarDraftFrameRef = useRef<number | null>(null);
+    const sidebarDraftTotalWidthRef = useRef<number | null>(null);
+    const sidebarDragPointerIdRef = useRef<number | null>(null);
 
     useEffect(() => {
         if (!isDraggingSidebar) return;
-        const handleMouseMove = (e: MouseEvent) => {
+        const commitSidebarDrag = () => {
+            if (sidebarDraftFrameRef.current !== null) {
+                cancelAnimationFrame(sidebarDraftFrameRef.current);
+                sidebarDraftFrameRef.current = null;
+            }
+            const layout = sidebarDraftLayoutRef.current;
+            sidebarDraftLayoutRef.current = null;
+            sidebarDragPointerIdRef.current = null;
+            setSidebarDraftTotalWidth(null);
+            setIsDraggingSidebar(false);
+            if (layout) setToolMenuLayout(layout.mode, layout.fullWidth);
+        };
+        const handlePointerMove = (e: PointerEvent) => {
+            if (sidebarDragPointerIdRef.current !== e.pointerId) return;
             const deltaX = sidebarDragRef.current.startX - e.clientX;
-            const newWidth = sidebarDragRef.current.startWidth + deltaX;
-            
-            if (activeDashboardTool !== 'none') {
-                // Panel ĐÃ mở khi bắt đầu kéo → kéo = resize panel (giữ hành vi cũ).
-                // Panel ĐANG đóng khi bắt đầu kéo → kéo CHỈ toggle mini icon↔nhãn,
-                // KHÔNG tự bung panel cấu hình (tránh "kéo rộng thì mở tool").
-                if (sidebarDragRef.current.startOpen) {
-                    if (newWidth >= 280) {
-                        setIsSidebarOpen(true);
-                        setSidebarWidth(Math.min(newWidth, 800));
-                    } else {
-                        setIsSidebarOpen(false);
+            const requestedTotalWidth = sidebarDragRef.current.startTotalWidth + deltaX;
+            const hasActiveTool = activeDashboardTool !== 'none';
+            const maximumTotalWidth = Math.max(
+                TOOL_MENU_ICON_WIDTH,
+                (workspaceRootRef.current?.clientWidth || window.innerWidth) - TOOL_MENU_VIEWER_MIN_WIDTH,
+            );
+            const maximumFullWidth = maxFullToolMenuWidth(
+                workspaceRootRef.current?.clientWidth || window.innerWidth,
+                hasActiveTool,
+                TOOL_MENU_VIEWER_MIN_WIDTH,
+            );
+            const draftTotalWidth = clampToolMenuDraftTotalWidth(
+                requestedTotalWidth,
+                maximumTotalWidth,
+                hasActiveTool,
+            );
+            const nextLayout = resolveToolMenuDrag(
+                draftTotalWidth,
+                hasActiveTool,
+                sidebarDragRef.current.startFullWidth,
+                maximumFullWidth,
+            );
+            sidebarDraftLayoutRef.current = nextLayout;
+            // UIUX (audit 2026-08-22 §UX.MT.03): trong gesture render đúng raw width;
+            // chỉ pointerup mới chốt full/icons, nên không có dead-zone hoặc nhảy ngược.
+            sidebarDraftTotalWidthRef.current = draftTotalWidth;
+            if (sidebarDraftFrameRef.current === null) {
+                sidebarDraftFrameRef.current = requestAnimationFrame(() => {
+                    sidebarDraftFrameRef.current = null;
+                    const pendingWidth = sidebarDraftTotalWidthRef.current;
+                    if (pendingWidth !== null) {
+                        setSidebarDraftTotalWidth(pendingWidth);
                     }
-                } else {
-                    setIsMiniToolbarExpanded(newWidth >= 120);
-                }
-            } else {
-                const clampedWidth = Math.min(Math.max(newWidth, 48), 800);
-                setSidebarWidth(clampedWidth);
-                
-                if (clampedWidth >= 280) {
-                    setIsSidebarOpen(true);
-                } else if (clampedWidth >= 120) {
-                    setIsSidebarOpen(false);
-                    setIsMiniToolbarExpanded(true);
-                } else {
-                    setIsSidebarOpen(false);
-                    setIsMiniToolbarExpanded(false);
-                }
+                });
             }
         };
-        const handleMouseUp = () => setIsDraggingSidebar(false);
 
-        document.addEventListener('mousemove', handleMouseMove);
-        document.addEventListener('mouseup', handleMouseUp);
+        window.addEventListener('pointermove', handlePointerMove);
+        window.addEventListener('pointerup', commitSidebarDrag);
+        window.addEventListener('pointercancel', commitSidebarDrag);
+        window.addEventListener('blur', commitSidebarDrag);
 
         // Change cursor while dragging anywhere
         document.body.style.cursor = 'col-resize';
         document.body.style.userSelect = 'none';
 
         return () => {
-            document.removeEventListener('mousemove', handleMouseMove);
-            document.removeEventListener('mouseup', handleMouseUp);
+            window.removeEventListener('pointermove', handlePointerMove);
+            window.removeEventListener('pointerup', commitSidebarDrag);
+            window.removeEventListener('pointercancel', commitSidebarDrag);
+            window.removeEventListener('blur', commitSidebarDrag);
             document.body.style.cursor = '';
             document.body.style.userSelect = '';
         };
-    }, [isDraggingSidebar, setSidebarWidth, activeDashboardTool]);
+    }, [activeDashboardTool, isDraggingSidebar, setIsDraggingSidebar, setToolMenuLayout]);
 
     const formatSize = (bytes: number) => (bytes / (1024 * 1024)).toFixed(2) + ' MB';
 
@@ -3112,17 +3288,17 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     //#endregion
 
-    // Quyết định hiển thị NHÃN CHỮ trong mini toolbar.
-    // - Khi KHÔNG có công cụ đang chọn: cột là w-full (rộng = sidebarWidth) → hiện nhãn nếu đủ rộng (>=120px).
-    // - Khi CÓ công cụ: giữ nguyên hành vi cũ theo isMiniToolbarExpanded (48px icon / 220px có nhãn).
-    const showMiniLabels = activeDashboardTool === 'none' ? sidebarWidth >= 120 : isMiniToolbarExpanded;
+    // UIUX (audit 2026-08-22 §UX.MT.04): width hiệu dụng chỉ là derived layout;
+    // không ghi đè preference khi viewport hẹp.
+    const rightToolMenuWidth = effectiveToolMenuLayout.totalWidth;
+    const effectiveRightToolMenuWidth = sidebarDraftTotalWidth ?? rightToolMenuWidth;
     const activeToolDefinition = findToolByUniqueKey(activeDashboardTool);
     const activeToolLocked = !!activeToolDefinition
         && !canUse(activeToolDefinition.featureId, licensePlan, licenseFeatures);
 
     //#region Render
     return (
-        <div className="relative w-full h-full flex flex-col bg-slate-50 dark:bg-[#1a1a1a]">
+        <div ref={workspaceRootRef} className="relative w-full h-full flex flex-col bg-slate-50 dark:bg-[#1a1a1a]">
             {phase === 'upload' && fileOpeningPhase !== 'idle' && (
                 <div className="flex-1 flex items-center justify-center px-6">
                     <div
@@ -3345,7 +3521,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         )}
 
                         {activeDashboardTool === 'bgremover' && (
-                            <div className="absolute top-0 left-0 bottom-0 z-40" style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}>
+                            <div className="absolute top-0 left-0 bottom-0 z-40" style={{ right: effectiveRightToolMenuWidth }}>
                                 <BgRemoverPreview tabId={tabId || ''} isActive={isActive === true} />
                             </div>
                         )}
@@ -3354,13 +3530,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             // UIUX (feedback 2026-08-21 §DOC.VIEW.01): toolbar Acrobat cao 48 px
                             // vẫn phải dùng được; bắt đầu workspace ngay dưới toolbar để các cụm
                             // Ảnh gốc/Kết quả và thu phóng không bị toolbar che mất.
-                            <div className="absolute top-12 left-0 bottom-0 z-40" style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}>
+                            <div className="absolute top-12 left-0 bottom-0 z-40" style={{ right: effectiveRightToolMenuWidth }}>
                                 <DocumentCleanupPreview tabId={tabId || ''} isActive={isActive === true} />
                             </div>
                         )}
 
                         {activeDashboardTool === 'upscale' && (
-                            <div className="absolute top-0 left-0 bottom-0 z-40" style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}>
+                            <div className="absolute top-0 left-0 bottom-0 z-40" style={{ right: effectiveRightToolMenuWidth }}>
                                 <UpscalePreview tabId={tabId || ''} isActive={isActive === true} />
                             </div>
                         )}
@@ -3373,7 +3549,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                 // ruler z-40 và nút sidebar z-100; workspace công cụ phải phủ
                                 // toàn bộ viewer nhưng vẫn nằm dưới processing/error/modal.
                                 className={`absolute inset-y-0 left-0 z-[110] ${activeDashboardTool === 'logo_rebuild' ? '' : 'hidden'}`}
-                                style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}
+                                style={{ right: effectiveRightToolMenuWidth }}
                             >
                                 <LogoRebuildWorkspace
                                     tabId={tabId || ''}
@@ -3386,7 +3562,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
                         {/* Empty State Overlay — ẩn khi tool không cần PDF sẵn (AI / office convert / util) */}
                         {!pdfUrl && !canToolRunWithoutPdf(activeDashboardTool) && !(activeDashboardTool === 'sticker' && stickerSheetMode === 'ai-sheet') && (
-                            <div className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none" style={{ right: isSidebarOpen ? sidebarWidth : 0 }}>
+                            <div className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none" style={{ right: effectiveRightToolMenuWidth }}>
                                 <div className="pointer-events-auto max-w-2xl w-full px-6">
                                     <div 
                                         className={`w-full relative bg-white dark:bg-zinc-900 rounded-[2rem] border-[3px] border-dashed border-indigo-200 dark:border-indigo-900/60 hover:border-indigo-500 hover:bg-indigo-50/50 dark:hover:bg-indigo-950/20 transition-all cursor-pointer flex flex-col xl:flex-row items-center justify-center gap-6 xl:gap-10 shadow-lg hover:shadow-xl hover:shadow-indigo-500/10 group shrink-0 p-8 md:p-14`}
@@ -3424,27 +3600,19 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                 <AcrobatViewer
                                     isActive={isActive}
                                     tabId={tabId}
-                                    pageOverlay={activeDashboardTool === 'sticker'
-                                        && stickerSheetMode === 'ai-sheet'
-                                        && stickerSheetSourceVisible ? (
-                                        <ViewerStickerSheetWorkspace
-                                            tabId={tabId || ''}
-                                            isActive={isActive === true}
-                                            editingEnabled={viewerToolMode === 'pointer'}
-                                            sourcePage={stickerSheetActiveSourcePage}
-                                        />
-                                    ) : classicCutlineOverlay ? (
+                                    pageOverlay={classicCutlineOverlay ? (
                                         <ClassicCutlinePageOverlay
                                             preview={classicCutlineOverlay.preview}
                                             isUpdating={classicCutlineOverlay.isUpdating}
                                         />
                                     ) : undefined}
-                                    pageOverlayPage={stickerSheetActiveSourcePage}
-                                    pageOverlayViewerPage={activeDashboardTool === 'sticker'
+                                    pageOverlayRenderer={activeDashboardTool === 'sticker'
                                         && stickerSheetMode === 'ai-sheet'
                                         && stickerSheetSourceVisible
-                                        ? viewerActivePage
-                                        : classicCutlineOverlay?.viewerPage}
+                                        ? renderStickerSheetPageOverlay
+                                        : undefined}
+                                    pageOverlayPage={stickerSheetActiveSourcePage}
+                                    pageOverlayViewerPage={classicCutlineOverlay?.viewerPage}
                                     pageOverlayInstanceId={classicCutlineOverlay?.pageInstanceId}
                                     pageWorkflowStatuses={activeDashboardTool === 'sticker'
                                         && stickerSheetMode === 'ai-sheet'
@@ -3491,27 +3659,22 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     ) : undefined}
                                     rightPanel={(
                                         <div
-                                            style={{ 
-                                                width: activeDashboardTool !== 'none' 
-                                                    ? (isSidebarOpen ? `${sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)}px` : (isMiniToolbarExpanded ? '220px' : '48px')) 
-                                                    : `${sidebarWidth}px` 
-                                            }}
+                                            style={{ width: `${effectiveRightToolMenuWidth}px` }}
                                             className={`shrink-0 bg-[#f8fafc] dark:bg-zinc-900 shadow-[-10px_0_30px_rgba(0,0,0,0.05)] flex flex-row justify-end z-20 h-full transition-all ${isDraggingSidebar ? 'duration-0' : 'duration-300'} relative border-l border-slate-200 dark:border-zinc-800`}
                                         >
                                         {/* Resizer Handle */}
                                         {/* UIUX (audit 2026-07-27 §B-25): vùng bắt chuột rộng gấp đôi (w-2.5), chỉ vẽ 1px ở giữa — nhìn không đổi */}
                                         <div
                                             className="absolute left-0 top-0 bottom-0 w-2.5 -ml-[5px] cursor-col-resize hover:bg-blue-500/50 active:bg-blue-500 z-50 transition-colors"
-                                            onMouseDown={(e) => {
+                                            onPointerDown={(e) => {
                                                 e.preventDefault();
-                                                const initialWidth = activeDashboardTool !== 'none'
-                                                    ? (isSidebarOpen ? sidebarWidth : (isMiniToolbarExpanded ? 220 : 48))
-                                                    : sidebarWidth;
+                                                sidebarDragPointerIdRef.current = e.pointerId;
+                                                sidebarDraftLayoutRef.current = { mode: effectiveToolMenuMode, fullWidth: sidebarWidth };
+                                                e.currentTarget.setPointerCapture?.(e.pointerId);
                                                 sidebarDragRef.current = {
                                                     startX: e.clientX,
-                                                    startWidth: initialWidth,
-                                                    lastWidth: initialWidth,
-                                                    startOpen: isSidebarOpen
+                                                    startTotalWidth: rightToolMenuWidth,
+                                                    startFullWidth: sidebarWidth,
                                                 };
                                                 setIsDraggingSidebar(true);
                                             }}
@@ -3520,24 +3683,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                         </div>
                                         
                                         {/* Main Config Panel */}
-                                        {isSidebarOpen && (
+                                        {hasActiveRightTool && (
                                             <div className="flex-1 flex flex-col overflow-hidden border-r border-slate-200 dark:border-zinc-800">
                                                 {/* Sidebar Header */}
                                                 <div className="px-4 h-12 flex items-center justify-between border-b border-black/5 dark:border-white/5 bg-slate-100 dark:bg-[#1a1a1a] shrink-0 shadow-sm relative z-10">
                                                     <h2 className="text-[13px] font-bold text-slate-800 dark:text-zinc-200 flex items-center gap-1.5 uppercase tracking-wide">
-                                                        {/* UIUX (fix 2026-07-28): tab chuyên dụng không hiện nút thoát nhầm về workspace PDF trống. */}
-                                                        {activeDashboardTool !== 'none' && activeDashboardTool !== dedicatedInitialTool && (
-                                                            <button
-                                                                onClick={() => setActiveDashboardTool(dedicatedInitialTool || 'none')}
-                                                                className="flex items-center gap-1.5 text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300 transition-colors"
-                                                                title={t('tabs.imposition:quay_lai_danh_sach_cong_cu')}
-                                                            >
-                                                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
-                                                                {t('tabs.imposition:quay_lai')}
-                                                            </button>
-                                                        )}
-                                                        {/* UIUX (audit 2026-07-27) feedback user: bỏ nhãn "🛠️ THÔNG SỐ" — rối,
-                                                            nút ‹ Quay lại đã đủ định vị; giữ chip dung lượng file (thông tin thật) */}
+                                                        {/* UIUX (audit 2026-08-22 §RM.DUAL-PANEL): catalog cạnh bên đã đảm nhiệm điều hướng;
+                                                            header chỉ giữ thông tin file và các hành động của panel. */}
                                                         {(activeDashboardTool !== 'bgremover' && activeDashboardTool !== 'upscale' && (activeDashboardTool !== 'document_cleanup' || (!!file && !sourceImageFile))) && fileSizeStr && (
                                                             <span className="text-[10px] text-slate-400 dark:text-zinc-500 font-mono normal-case tracking-normal border pl-1.5 pr-1.5 py-0.5 rounded-full border-black/5 dark:border-white/5">{fileSizeStr}</span>
                                                         )}
@@ -3591,10 +3743,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                         <div className="w-px h-4 bg-slate-300 dark:bg-zinc-700 mx-0.5" />
 
                                                         <button
-                                                            onClick={() => setIsSidebarOpen(false)}
+                                                            onClick={closeActiveToolPanel}
                                                             className="w-7 h-7 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-zinc-800 text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200 rounded transition-colors"
-                                                            title={t('tabs.imposition:thu_gon_menu')}
-                                                            aria-label={t('tabs.imposition:thu_gon_menu')}
+                                                            title={t('tabs.imposition:dong_thiet_lap_cong_cu')}
+                                                            aria-label={t('tabs.imposition:dong_thiet_lap_cong_cu')}
                                                         >
                                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                                                         </button>
@@ -3620,7 +3772,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             selectedFieldIds={selectedVdpFieldIds}
                                                             onSelectField={(ids) => setSelectedVdpFieldIds(ids)}
                                                             isActive={isActive}
-                                                            onBack={() => setActiveDashboardTool('none')}
                                                             onApplyResult={async (blob: Blob, name: string, path?: string) => {
                                                                 const recipeTicket = recipeRecorder.noteNonRecordable(
                                                                     'datamerge',
@@ -3659,7 +3810,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             selectedFieldIds={selectedVdpFieldIds}
                                                             onSelectField={(ids) => setSelectedVdpFieldIds(ids)}
                                                             isActive={isActive}
-                                                            onBack={() => setActiveDashboardTool('none')}
                                                             onApplyResult={async (blob: Blob, name: string, path?: string) => {
                                                                 const recipeTicket = recipeRecorder.noteNonRecordable(
                                                                     'numbering',
@@ -3698,7 +3848,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             selectedFieldIds={selectedVdpFieldIds}
                                                             onSelectField={(ids) => setSelectedVdpFieldIds(ids)}
                                                             isActive={isActive}
-                                                            onBack={() => setActiveDashboardTool('none')}
                                                             onApplyResult={async (blob: Blob, name: string, path?: string) => {
                                                                 const recipeTicket = recipeRecorder.noteNonRecordable(
                                                                     'cover_numbering',
@@ -3730,7 +3879,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                         <StickTextNumberTool
                                                             pdfFile={file}
                                                             onFileFixed={(blob, name) => commitToolWorkingFile(blob, name)}
-                                                            onBack={() => setActiveDashboardTool('none')}
                                                         />
                                                     ) : (
                                                         <ImposerDashboard
@@ -3762,168 +3910,142 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                             </div>
                                         )}
                                         
-                                        {/* The Fixed Mini Toolbar (Visible when sidebar is collapsed OR when a tool is selected) */}
-                                        {(!isSidebarOpen || activeDashboardTool !== 'none') && (
-                                            <div className={`relative h-full shrink-0 transition-all ${isDraggingSidebar ? 'duration-0' : 'duration-300'} ${activeDashboardTool !== 'none' ? (isMiniToolbarExpanded ? 'w-[220px]' : 'w-[48px]') : 'w-full'}`}>
-                                                <button
-                                                    onClick={() => {
-                                                        // KHÔNG có công cụ đang chọn: cột mini có độ rộng = sidebarWidth
-                                                        // (không đổi theo isMiniToolbarExpanded) → toggle mini chỉ thêm/bớt
-                                                        // nhãn, KHÔNG mở panel. Vì vậy mũi tên ở chế độ này MỞ THẲNG panel
-                                                        // cấu hình (giống kéo resizer) thay vì toggle nhãn.
-                                                        if (activeDashboardTool === 'none') {
-                                                            if (sidebarWidth < 280) setSidebarWidth(390);
-                                                            setIsSidebarOpen(true);
-                                                        } else {
-                                                            setIsMiniToolbarExpanded(!isMiniToolbarExpanded);
-                                                        }
-                                                    }}
-                                                    className="absolute top-1/2 -left-[14px] -translate-y-1/2 w-7 h-7 bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-full flex items-center justify-center shadow-sm hover:bg-slate-50 dark:hover:bg-zinc-700 transition-colors z-[100] text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400"
-                                                    title={isMiniToolbarExpanded ? t('tabs.imposition:thu_gon_menu_2') : t('tabs.imposition:mo_rong_menu')}
-                                                    aria-label={isMiniToolbarExpanded ? t('tabs.imposition:thu_gon_menu_2') : t('tabs.imposition:mo_rong_menu')}
-                                                >
-                                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                                                        {isMiniToolbarExpanded ? (
-                                                            <path strokeLinecap="round" strokeLinejoin="round" d="M13 5l7 7-7 7M5 5l7 7-7 7" /> // >>
-                                                        ) : (
-                                                            <path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7M19 19l-7-7 7-7" /> // <<
-                                                        )}
-                                                    </svg>
-                                                </button>
+                                        {/* UIUX (audit 2026-08-22 §RM.DUAL-PANEL): full = thiết lập + catalog; icons = rail. */}
+                                        {(
+                                            <div
+                                                className={`relative h-full shrink-0 transition-all ${isDraggingSidebar ? 'duration-0' : 'duration-300'} ${isSidebarOpen ? '' : 'w-[48px]'}`}
+                                               style={isSidebarOpen
+                                                    ? { width: `${effectiveToolMenuLayout.catalogWidth}px` }
+                                                    : undefined}
+                                            >
+                                                {isSidebarOpen ? (
+                                                    <div className="z-10 flex h-full w-full flex-col overflow-hidden border-l border-slate-200 bg-[#f8fafc] dark:border-zinc-800 dark:bg-zinc-900">
+                                                        <div className="flex h-11 w-full shrink-0 items-center gap-2 border-b border-black/5 px-2 dark:border-white/10">
+                                                            <button
+                                                                type="button"
+                                                                onClick={collapseWorkspaceSidebar}
+                                                                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-200 hover:text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-indigo-400"
+                                                                title={t('tabs.imposition:thu_gon_menu_2')}
+                                                                aria-label={t('tabs.imposition:thu_gon_menu_2')}
+                                                            >
+                                                                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                                                                    <path strokeLinecap="round" strokeLinejoin="round" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+                                                                </svg>
+                                                            </button>
+                                                            <span className="min-w-0 truncate text-[11px] font-black uppercase tracking-widest text-slate-500 dark:text-zinc-400">
+                                                                {t('tabs.imposition:cong_cu')}
+                                                            </span>
+                                                        </div>
+                                                        <ToolMenuList
+                                                            setActiveTool={setActiveDashboardTool}
+                                                            setTaskMode={(mode) => imposerStoreRef.current?.getState().setTaskMode(mode as TaskMode)}
+                                                            activeTool={activeDashboardTool}
+                                                        />
+                                                    </div>
+                                                ) : (
+                                                    <div className="z-10 flex h-full w-full flex-col overflow-hidden border-l border-slate-200 bg-[#f8fafc] dark:border-zinc-800 dark:bg-zinc-900">
+                                                        <div className="flex h-11 w-full shrink-0 items-center justify-center border-b border-black/5 dark:border-white/10">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    const next = resolveWorkspaceToolMenuToggle(isSidebarOpen);
+                                                                    if (next.mode === 'full') openWorkspaceSidebar();
+                                                                    else collapseWorkspaceSidebar();
+                                                                }}
+                                                                className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-200 hover:text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-indigo-400"
+                                                                title={t('tabs.imposition:mo_rong_menu')}
+                                                                aria-label={t('tabs.imposition:mo_rong_menu')}
+                                                            >
+                                                                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                                                                    <path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7M19 19l-7-7 7-7" />
+                                                                </svg>
+                                                            </button>
+                                                        </div>
 
-                                                <div className="w-full h-full flex flex-col items-center bg-[#f8fafc] dark:bg-zinc-900 z-10 overflow-y-auto scroller-none overflow-x-hidden border-l border-slate-200 dark:border-zinc-800">
-                                                    <div className="w-full h-12 flex items-center border-b border-black/5 dark:border-white/10 shrink-0 px-2">
-                                                        <button
-                                                            onClick={() => {
-                                                                if (sidebarWidth < 280) setSidebarWidth(390);
-                                                                setIsSidebarOpen(true);
-                                                            }}
-                                                            className={`h-8 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-zinc-800 transition-colors rounded outline-none w-full ${showMiniLabels ? 'justify-start px-2' : ''}`}
-                                                            title={t('tabs.imposition:mo_bang_cau_hinh')}
-                                                            aria-label={t('tabs.imposition:mo_bang_cau_hinh')}
-                                                        >
-                                                            <span className="text-slate-500 dark:text-zinc-400"><Settings className="w-4 h-4" /></span>
-                                                            {showMiniLabels && <span className="ml-2 text-[13px] font-bold text-slate-700 dark:text-zinc-300">{t('tabs.imposition:cong_cu')}</span>}
-                                                        </button>
-                                                    </div>
-                                                    
-                                                    <div className="flex flex-col items-center py-2 gap-0 w-full px-1.5">
-                                                        {(() => {
-                                                            const allDashboardTools = TOOL_CATEGORIES.flatMap(cat => getToolsByCategory(cat.id)).filter(tool => {
-                                                                const key = getToolUniqueKey(tool);
-                                                                return isWorkspaceTool(key) && key !== 'none';
-                                                            });
-                                                            const favTools = allDashboardTools.filter(t => {
-                                                                const toolKey = getToolUniqueKey(t);
-                                                                return favoriteTools.includes(toolKey) && !hiddenTools.includes(toolKey);
-                                                            });
-                                                            
-                                                            if (favTools.length === 0) return null;
-                                                            
-                                                            return (
-                                                                <div key="favorites" className="w-full flex flex-col items-center mb-1">
-                                                                    {showMiniLabels ? (
-                                                                        <div className="w-full px-2 mt-2 mb-1.5 flex items-center gap-2">
-                                                                            <span className="text-[10px] font-bold text-amber-500 uppercase tracking-widest flex items-center gap-1"><Star className="w-2.5 h-2.5" fill="currentColor" /> {t('tabs.imposition:yeu_thich')}</span>
-                                                                            <div className="flex-1 h-px bg-amber-500 opacity-40" />
-                                                                        </div>
-                                                                    ) : (
-                                                                        <div className="w-6 h-[2px] bg-amber-500 opacity-40 my-2 rounded-full" title={t('tabs.imposition:yeu_thich')} />
-                                                                    )}
-                                                                    <div className="flex flex-col items-center gap-1.5 w-full">
-                                                                        {favTools.map(tool => {
-                                                                            const toolKey = getToolUniqueKey(tool);
-                                                                            const isActive = activeDashboardTool === toolKey;
-                                                                            return (
-                                                                                <button
-                                                                                    key={`fav-${toolKey}`}
-                                                                                    onClick={() => {
-                                                                                        if (isActive && isSidebarOpen) {
-                                                                                            setIsSidebarOpen(false);
-                                                                                        } else {
-                                                                                            // Chỉ đổi active tool — switchToolProfile (ImposerDashboard)
-                                                                                            // sẽ lưu/nạp taskMode theo từng công cụ. Không gọi
-                                                                                            // applyLockedMode ở đây (sẽ làm hỏng snapshot tool cũ).
+                                                        <div className="hide-scrollbar flex min-h-0 w-full flex-1 flex-col items-center gap-0 overflow-x-hidden overflow-y-auto px-1 py-2">
+                                                            {(() => {
+                                                                const allDashboardTools = TOOL_CATEGORIES.flatMap(cat => getToolsByCategory(cat.id)).filter(tool => {
+                                                                    const key = getToolUniqueKey(tool);
+                                                                    return isWorkspaceTool(key) && key !== 'none';
+                                                                });
+                                                                const favTools = allDashboardTools.filter(tool => {
+                                                                    const key = getToolUniqueKey(tool);
+                                                                    return favoriteTools.includes(key) && !hiddenTools.includes(key);
+                                                                });
+                                                                if (favTools.length === 0) return null;
+
+                                                                return (
+                                                                    <div key="favorites" className="mb-1 flex w-full flex-col items-center">
+                                                                        <div className="my-2 h-px w-5 rounded-full bg-amber-400/70" title={t('tabs.imposition:yeu_thich')} />
+                                                                        <div className="flex w-full flex-col items-center gap-1.5">
+                                                                            {favTools.map(tool => {
+                                                                                const toolKey = getToolUniqueKey(tool);
+                                                                                const isActive = activeDashboardTool === toolKey;
+                                                                                return (
+                                                                                    <button
+                                                                                        key={`fav-${toolKey}`}
+                                                                                        type="button"
+                                                                                        onClick={() => {
                                                                                             requestToolActivation(tool, () => {
                                                                                                 setActiveDashboardTool(toolKey);
-                                                                                                if (sidebarWidth < 280) setSidebarWidth(390);
-                                                                                                setIsSidebarOpen(true);
                                                                                             });
-                                                                                        }
-                                                                                    }}
-                                                                                    className={`relative w-full h-9 rounded-lg flex items-center transition-colors shrink-0 outline-none
-                                                                                        ${showMiniLabels ? 'justify-start px-2' : 'justify-center'}
-                                                                                        ${isActive ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 shadow-sm border border-amber-300 dark:border-amber-700/50' : 'bg-amber-50/50 dark:bg-amber-900/20 text-slate-700 dark:text-zinc-300 border border-amber-200/50 dark:border-amber-700/30 hover:bg-amber-100/80 dark:hover:bg-amber-900/40 hover:text-amber-900 dark:hover:text-amber-100'}`
-                                                                                    }
-                                                                                    // UIUX (audit 2026-07-27 §B-14): báo trước click tool đang mở sẽ thu gọn panel
-                                                                                    title={isActive && isSidebarOpen ? t('tabs.imposition:dang_mo_bam_de_thu_gon_panel', 'Đang mở — bấm để thu gọn panel') : tv(tool.title)}
-                                                                                >
-                                                                                    <span className="text-lg shrink-0 flex items-center justify-center w-6">{tool.icon}</span>
-                                                                                    {showMiniLabels && <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tv(tool.title)}</span>}
-                                                                                    <ProFeatureBadge featureId={tool.featureId} className={showMiniLabels ? 'ml-auto' : 'absolute right-0 top-0 scale-75'} />
-                                                                                </button>
-                                                                            );
-                                                                        })}
-                                                                    </div>
-                                                                </div>
-                                                            );
-                                                        })()}
-                                                        {TOOL_CATEGORIES.map(cat => {
-                                                            const catTools = getToolsByCategory(cat.id).filter(t => {
-                                                                const toolKey = getToolUniqueKey(t);
-                                                                if (!isWorkspaceTool(toolKey) || toolKey === 'none') return false;
-                                                                if (hiddenTools.includes(toolKey)) return false;
-                                                                if (favoriteTools.includes(toolKey)) return false;
-                                                                return true;
-                                                            });
-                                                            if (catTools.length === 0) return null;
-                                                            return (
-                                                                <div key={cat.id} className="w-full flex flex-col items-center mb-1">
-                                                                    {showMiniLabels ? (
-                                                                        <div className="w-full px-2 mt-2 mb-1.5 flex items-center gap-2">
-                                                                            <span className="text-[10px] font-bold text-indigo-800 dark:text-indigo-400 uppercase tracking-widest">{tv(cat.title)}</span>
-                                                                            <div className="flex-1 h-px bg-indigo-800 dark:bg-indigo-400 opacity-40" />
+                                                                                        }}
+                                                                                        className={`mx-auto flex h-9 w-8 shrink-0 items-center justify-center rounded-lg border border-transparent text-slate-700 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-app-accent dark:text-zinc-200 ${isActive ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' : 'hover:bg-slate-200 dark:hover:bg-zinc-800'}`}
+                                                                                        title={tv(tool.title)}
+                                                                                        aria-label={tv(tool.title)}
+                                                                                        aria-pressed={isActive}
+                                                                                    >
+                                                                                        <span className="flex items-center justify-center text-[20px] leading-none">{tool.icon}</span>
+                                                                                    </button>
+                                                                                );
+                                                                            })}
                                                                         </div>
-                                                                    ) : (
-                                                                        <div className="w-6 h-[2px] bg-indigo-800 dark:bg-indigo-400 opacity-40 my-2 rounded-full" title={tv(cat.title)} />
-                                                                    )}
-                                                                    <div className="flex flex-col items-center gap-1.5 w-full">
-                                                                        {catTools.map(tool => {
-                                                                            const toolKey = getToolUniqueKey(tool);
-                                                                            const isActive = activeDashboardTool === toolKey;
-                                                                            return (
-                                                                                <button
-                                                                                    key={toolKey}
-                                                                                    onClick={() => {
-                                                                                        if (isActive && isSidebarOpen) {
-                                                                                            setIsSidebarOpen(false);
-                                                                                        } else {
+                                                                    </div>
+                                                                );
+                                                            })()}
+
+                                                            {TOOL_CATEGORIES.map(cat => {
+                                                                const catTools = getToolsByCategory(cat.id).filter(tool => {
+                                                                    const toolKey = getToolUniqueKey(tool);
+                                                                    if (!isWorkspaceTool(toolKey) || toolKey === 'none') return false;
+                                                                    if (hiddenTools.includes(toolKey)) return false;
+                                                                    if (favoriteTools.includes(toolKey)) return false;
+                                                                    return true;
+                                                                });
+                                                                if (catTools.length === 0) return null;
+
+                                                                return (
+                                                                    <div key={cat.id} className="mb-1 flex w-full flex-col items-center">
+                                                                        <div className="my-2 h-px w-5 rounded-full bg-slate-300 dark:bg-zinc-700" title={tv(cat.title)} />
+                                                                        <div className="flex w-full flex-col items-center gap-1.5">
+                                                                            {catTools.map(tool => {
+                                                                                const toolKey = getToolUniqueKey(tool);
+                                                                                const isActive = activeDashboardTool === toolKey;
+                                                                                return (
+                                                                                    <button
+                                                                                        key={toolKey}
+                                                                                        type="button"
+                                                                                        onClick={() => {
                                                                                             requestToolActivation(tool, () => {
                                                                                                 setActiveDashboardTool(toolKey);
-                                                                                                if (sidebarWidth < 280) setSidebarWidth(390);
-                                                                                                setIsSidebarOpen(true);
                                                                                             });
-                                                                                        }
-                                                                                    }}
-                                                                                    className={`relative w-full h-9 rounded-lg flex items-center transition-colors shrink-0 outline-none
-                                                                                        ${showMiniLabels ? 'justify-start px-2' : 'justify-center'}
-                                                                                        ${isActive ? 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 shadow-sm border border-indigo-300 dark:border-indigo-700/50' : 'hover:bg-slate-200 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-300 border border-transparent'}`
-                                                                                    }
-                                                                                    // UIUX (audit 2026-07-27 §B-14): báo trước click tool đang mở sẽ thu gọn panel
-                                                                                    title={isActive && isSidebarOpen ? t('tabs.imposition:dang_mo_bam_de_thu_gon_panel', 'Đang mở — bấm để thu gọn panel') : tv(tool.title)}
-                                                                                >
-                                                                                    <span className="text-lg shrink-0 flex items-center justify-center w-6">{tool.icon}</span>
-                                                                                    {showMiniLabels && <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tv(tool.title)}</span>}
-                                                                                    <ProFeatureBadge featureId={tool.featureId} className={showMiniLabels ? 'ml-auto' : 'absolute right-0 top-0 scale-75'} />
-                                                                                </button>
-                                                                            );
-                                                                        })}
+                                                                                        }}
+                                                                                        className={`mx-auto flex h-9 w-8 shrink-0 items-center justify-center rounded-lg border border-transparent text-slate-700 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-app-accent dark:text-zinc-200 ${isActive ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300' : 'hover:bg-slate-200 dark:hover:bg-zinc-800'}`}
+                                                                                        title={tv(tool.title)}
+                                                                                        aria-label={tv(tool.title)}
+                                                                                        aria-pressed={isActive}
+                                                                                    >
+                                                                                        <span className="flex items-center justify-center text-[20px] leading-none">{tool.icon}</span>
+                                                                                    </button>
+                                                                                );
+                                                                            })}
+                                                                        </div>
                                                                     </div>
-                                                                </div>
-                                                            );
-                                                        })}
+                                                                );
+                                                            })}
+                                                        </div>
                                                     </div>
-                                                </div>
+                                                )}
                                             </div>
                                         )}
                                     </div>

@@ -62,7 +62,6 @@ interface UseViewerHotkeysProps {
     setIsInsertModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
     setExtractPagesStrForModal: React.Dispatch<React.SetStateAction<string>>;
     setContextMenu: React.Dispatch<React.SetStateAction<any>>;
-    setIsSidebarOpen: (open: boolean) => void;
     // Guide system
     guides: any[];
     setGuides: React.Dispatch<React.SetStateAction<any[]>>;
@@ -92,7 +91,6 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         pastStack, futureStack, setPastStack, setFutureStack,
         toolMode, setToolMode, isVdpMode, isThumbMenuOpen, isDeleteModalOpen,
         setIsDeleteModalOpen, setIsExtractModalOpen, setIsInsertModalOpen, setExtractPagesStrForModal, setContextMenu,
-        setIsSidebarOpen,
         guides, setGuides, guidesHistory, setGuidesHistory, selectedGuideId, setSelectedGuideId, toggleRulers,
         navigatePage,
         mainVirtuosoRef, internalScrollRef,
@@ -123,6 +121,20 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         const root = containerRef.current || sidebarRef.current;
         if (root?.closest('.opacity-0')) return false;
         return true;
+    }, [containerRef, sidebarRef]);
+
+    // UIUX (audit 2026-08-22 §UX.MD.01): dialog của đúng viewer chặn toàn bộ
+    // hotkey capture. Không query toàn document vì tab nền vẫn mounted và có thể
+    // đang mở hộp thoại riêng.
+    const isBlockingDialogOpen = useCallback(() => {
+        const root = containerRef.current || sidebarRef.current;
+        const owner = root?.closest<HTMLElement>('[data-prynx-open-pdf], [data-prynx-tab-id]');
+        if (!owner) return false;
+        return Array.from(owner.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]')).some((dialog) => {
+            if (dialog.hidden || dialog.closest('[hidden], .opacity-0')) return false;
+            const style = window.getComputedStyle(dialog);
+            return style.display !== 'none' && style.visibility !== 'hidden';
+        });
     }, [containerRef, sidebarRef]);
 
     // Store API per-tab (context) — dùng getState() trong hotkey để không stale.
@@ -231,6 +243,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (isImeNoise(e)) return;
             if (!isViewerLive()) return;
+            if (isBlockingDialogOpen()) return;
             if (isCropModeRef.current) return;
 
             if (matchesShortcut(e, 'viewer.toggle_rulers')) {
@@ -264,7 +277,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [isViewerLive, guidesHistory, guides, selectedGuideId, setGuides, setGuidesHistory, setSelectedGuideId]);
+    }, [isViewerLive, isBlockingDialogOpen, guidesHistory, guides, selectedGuideId, setGuides, setGuidesHistory, setSelectedGuideId]);
 
     // F7 → bật/tắt Object Edit Mode (gộp F7 Layer Panel vào Edit PDF: một panel
     // thống nhất). ĐĂNG KÝ PER-INSTANCE + guard tab active (giống handler chính bên
@@ -276,23 +289,18 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
             if (isImeNoise(e)) return;
             if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
             if (!isViewerLive()) return;
+            if (isBlockingDialogOpen()) return;
             // Đang Crop → bỏ qua F7 (tránh mở edit mode chồng lên crop).
             if (isCropModeRef.current) return;
             e.preventDefault();
             setIsObjectEditModeRef.current(v => {
                 const next = !v;
-                // Panel Edit render TRONG khối {isSidebarOpen && ...} của ImpositionTab
-                // → nếu sidebar phải đang đóng, bật edit mode mà KHÔNG thấy panel. Khi
-                // BẬT → mở sidebar luôn để panel hiện ngay (LayerPanel cũ nổi độc lập
-                // nên không cần; nay gộp vào Edit PDF thì phải tự mở). useAppSettingsStore
-                // là store GLOBAL (create) nên gọi getState() hợp lệ ngoài React.
-                if (next) useAppSettingsStore.getState().setWorkspaceSidebarOpen(true);
                 return next;
             });
         };
         document.addEventListener('keydown', handleF7, true);
         return () => document.removeEventListener('keydown', handleF7, true);
-    }, [isViewerLive]);
+    }, [isViewerLive, isBlockingDialogOpen, workspaceStore]);
 
     // D = DIM bật/tắt. Capture phase + isActive.
     // Đọc mode từ store.getState() (không tin ref stale) → D lần 2 chắc chắn TẮT.
@@ -351,6 +359,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
             if (isEditableEventTarget(e)) return;
             // Tab nền: bỏ qua, KHÔNG stopPropagation — để tab active nhận sự kiện.
             if (!isViewerLive()) return;
+            if (isBlockingDialogOpen()) return;
             e.preventDefault();
             e.stopPropagation();
             e.stopImmediatePropagation();
@@ -373,6 +382,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
             }
             if (isEditableEventTarget(e)) return;
             if (!isViewerLive()) return;
+            if (isBlockingDialogOpen()) return;
             // Toggle từ keydown 'đ' (UniKey) vừa chạy → keyup này cùng lượt nhấn, bỏ qua.
             if (Date.now() - lastDimToggleAtRef.current < 250) return;
             if (handledDimensionKeyEvents.has(e)) return;
@@ -392,7 +402,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
             window.removeEventListener('keyup', handleDimensionKeyUp, true);
             window.removeEventListener('blur', handleWindowBlur);
         };
-    }, [isViewerLive, workspaceStore]);
+    }, [isViewerLive, isBlockingDialogOpen, workspaceStore]);
 
     // C toggles Crop and stays in sync with the Crop toolbar button.
     useEffect(() => {
@@ -402,6 +412,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
             const target = e.target as HTMLElement | null;
             if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable) return;
             if (!isViewerLive()) return;
+            if (isBlockingDialogOpen()) return;
 
             e.preventDefault();
             e.stopPropagation();
@@ -437,7 +448,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
 
         window.addEventListener('keydown', handleCropShortcut, true);
         return () => window.removeEventListener('keydown', handleCropShortcut, true);
-    }, [isViewerLive, workspaceStore]);
+    }, [isViewerLive, isBlockingDialogOpen, workspaceStore]);
 
     // Global keyboard commands (Undo/Redo, Delete, Extract, Spacebar)
     useEffect(() => {
@@ -451,6 +462,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
             if (matchesShortcut(e, 'viewer.crop')) return;
 
             if (!isViewerLive()) return;
+            if (isBlockingDialogOpen()) return;
             const viewerCommand = matchesShortcut(e, 'view.fit_page') ? 'fit-page'
                 : matchesShortcut(e, 'view.actual_size') ? 'zoom-100'
                     : matchesShortcut(e, 'view.fit_width') ? 'fit-width'
@@ -621,7 +633,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
             document.removeEventListener('keyup', handleKeyUp);
             window.removeEventListener('blur', restoreToolAfterSpace);
         };
-    }, [isViewerLive, selectedIndices, activePage, pageOrder.length, undo, redo, rotateSelectedPages, isVdpMode, isObjectEditMode, onEditUndo, onEditRedo, navigatePage, setSelectedIndices, setLastSelectedIndex, setIsDeleteModalOpen, setExtractPagesStrForModal, setIsExtractModalOpen, workspaceStore]);
+    }, [isViewerLive, isBlockingDialogOpen, selectedIndices, activePage, pageOrder.length, undo, redo, rotateSelectedPages, isVdpMode, isObjectEditMode, onEditUndo, onEditRedo, navigatePage, setSelectedIndices, setLastSelectedIndex, setIsDeleteModalOpen, setExtractPagesStrForModal, setIsExtractModalOpen, workspaceStore]);
 
     // Restore only when this viewer really unmounts. The keyboard-listener effect above
     // can restart while panning (for example when activePage changes during the drag).
@@ -641,6 +653,8 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         const handleEscape = (e: KeyboardEvent) => {
             if (!matchesShortcut(e, 'viewer.escape_mode')) return;
             if (!isViewerLive()) return;
+            // Dialog tự quản lý Escape và focus; không reset mode nền của viewer.
+            if (isBlockingDialogOpen()) return;
             setIsInsertModalOpen(false);
             setIsExtractModalOpen(false);
             setIsDeleteModalOpen(false);
@@ -665,7 +679,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         };
         document.addEventListener('keydown', handleEscape);
         return () => document.removeEventListener('keydown', handleEscape);
-    }, [isViewerLive, workspaceStore, setIsInsertModalOpen, setIsExtractModalOpen, setIsDeleteModalOpen, setContextMenu]);
+    }, [isViewerLive, isBlockingDialogOpen, workspaceStore, setIsInsertModalOpen, setIsExtractModalOpen, setIsDeleteModalOpen, setContextMenu]);
 
     return { commitSnapshot, undo, redo };
 }

@@ -1,18 +1,85 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+
+/**
+ * UIUX (audit 2026-08-22 §UX.MD.01): mọi hộp thoại PDF dùng chung vòng đời
+ * focus/ESC để phím tắt của viewer không xuyên qua lớp đang mở.
+ */
+export function useDialogLifecycle(onClose: () => void, enabled = true) {
+    const dialogRef = useRef<HTMLDivElement>(null);
+    const onCloseRef = useRef(onClose);
+
+    useEffect(() => {
+        onCloseRef.current = onClose;
+    }, [onClose]);
+
+    useEffect(() => {
+        if (!enabled) return;
+        const dialog = dialogRef.current;
+        if (!dialog) return;
+        const restoreTarget = document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : null;
+
+        const getFocusable = () => Array.from(dialog.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+        )).filter((element) => !element.hidden && element.getAttribute('aria-hidden') !== 'true');
+
+        const focusInitial = () => {
+            const first = getFocusable()[0];
+            (first || dialog).focus();
+        };
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                onCloseRef.current();
+                return;
+            }
+            if (event.key !== 'Tab') return;
+
+            const focusable = getFocusable();
+            if (focusable.length === 0) {
+                event.preventDefault();
+                dialog.focus();
+                return;
+            }
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+            }
+        };
+
+        dialog.addEventListener('keydown', handleKeyDown);
+        focusInitial();
+        return () => {
+            dialog.removeEventListener('keydown', handleKeyDown);
+            if (restoreTarget?.isConnected) restoreTarget.focus();
+        };
+    }, [enabled]);
+
+    return dialogRef;
+}
 
 // ═══════ QUICK DELETE MODAL ═══════
 export function QuickDeleteModal({ selectedCount, onConfirm, onClose }: { selectedCount: number; onConfirm: () => void; onClose: () => void }) {
   const { t } = useTranslation();
+    const dialogRef = useDialogLifecycle(onClose);
     return (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 font-sans">
-            <div className="bg-white dark:bg-[#1e1e1e] w-[380px] rounded-xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10">
+            <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="prynx-quick-delete-title" data-prynx-modal="true" tabIndex={-1} className="bg-white dark:bg-[#1e1e1e] w-[380px] rounded-xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10">
                 <div className="flex p-6">
                     <div className="w-12 h-12 rounded-full bg-red-50 dark:bg-red-500/10 flex items-center justify-center shrink-0 text-red-600 dark:text-red-400 mr-4">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                     </div>
                     <div>
-                        <h3 className="font-semibold text-lg text-slate-800 dark:text-zinc-100 mb-1">{t('misc.acrobatModals:xoa_trang')}</h3>
+                        <h3 id="prynx-quick-delete-title" className="font-semibold text-lg text-slate-800 dark:text-zinc-100 mb-1">{t('misc.acrobatModals:xoa_trang')}</h3>
                         <p className="text-sm text-slate-600 dark:text-zinc-400">
                             {t('misc.acrobatModals:ban_co_chac_chan_muon_xoa')} <span className="font-bold text-red-600 dark:text-red-400">{selectedCount}</span> {t('misc.acrobatModals:trang_khoi_tai_lieu_nay_khong_hanh_dong')}
                         </p>
@@ -30,15 +97,16 @@ export function QuickDeleteModal({ selectedCount, onConfirm, onClose }: { select
 // ═══════ ADVANCED DELETE MODAL ═══════
 export function AdvancedDeleteModal({ numPages, onConfirm, onClose }: { numPages: number; onConfirm: (range: string, from: number, to: number) => void; onClose: () => void }) {
   const { t } = useTranslation();
+    const dialogRef = useDialogLifecycle(onClose);
     const [advDeleteRange, setAdvDeleteRange] = useState('selection');
     const [advDeleteFrom, setAdvDeleteFrom] = useState(1);
     const [advDeleteTo, setAdvDeleteTo] = useState(1);
 
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 overflow-y-auto font-sans">
-            <div className="bg-white dark:bg-[#1e1e1e] w-[420px] rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10">
+            <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="prynx-advanced-delete-title" data-prynx-modal="true" tabIndex={-1} className="bg-white dark:bg-[#1e1e1e] w-[420px] rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10">
                 <div className="flex items-center justify-between px-6 py-4 border-b border-black/5 dark:border-white/5">
-                    <h3 className="font-semibold text-base text-slate-800 dark:text-zinc-100 tracking-wide">{t('misc.acrobatModals:xoa_trang_delete_pages')}</h3>
+                    <h3 id="prynx-advanced-delete-title" className="font-semibold text-base text-slate-800 dark:text-zinc-100 tracking-wide">{t('misc.acrobatModals:xoa_trang_delete_pages')}</h3>
                     <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-slate-100 dark:hover:bg-white/10 text-slate-500 transition-colors" title={t('misc.acrobatModals:dong_esc')}>
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
                     </button>
@@ -84,14 +152,15 @@ export function AdvancedDeleteModal({ numPages, onConfirm, onClose }: { numPages
 // ═══════ EXTRACT PAGES MODAL ═══════
 export function ExtractPagesModal({ pageCount, initialPagesStr, onConfirm, onClose }: { pageCount: number; initialPagesStr: string; onConfirm: (pagesStr: string, deleteAfter: boolean) => void; onClose: () => void }) {
   const { t } = useTranslation();
+    const dialogRef = useDialogLifecycle(onClose);
     const [extractPagesStr, setExtractPagesStr] = useState(initialPagesStr);
     const [extractDeleteAfter, setExtractDeleteAfter] = useState(false);
 
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 overflow-y-auto font-sans">
-            <div className="bg-white dark:bg-[#1e1e1e] w-[420px] rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10">
+            <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="prynx-extract-pages-title" data-prynx-modal="true" tabIndex={-1} className="bg-white dark:bg-[#1e1e1e] w-[420px] rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10">
                 <div className="flex items-center justify-between px-6 py-4 border-b border-black/5 dark:border-white/5">
-                    <h3 className="font-semibold text-base text-slate-800 dark:text-zinc-100 tracking-wide">{t('misc.acrobatModals:trich_xuat_trang')}</h3>
+                    <h3 id="prynx-extract-pages-title" className="font-semibold text-base text-slate-800 dark:text-zinc-100 tracking-wide">{t('misc.acrobatModals:trich_xuat_trang')}</h3>
                     <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-slate-100 dark:hover:bg-white/10 text-slate-500 transition-colors" title={t('misc.acrobatModals:dong')}>
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
                     </button>

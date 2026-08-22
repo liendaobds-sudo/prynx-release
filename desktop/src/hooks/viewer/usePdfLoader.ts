@@ -1,6 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { pdfjs } from 'react-pdf';
-import { thumbCacheRef, putThumbCache } from '../../components/workspace/thumbnailCache';
+import {
+    createThumbnailRenderRequest,
+    putThumbCache,
+    thumbCacheRef,
+    type ThumbnailRenderRequest,
+} from '../../components/workspace/thumbnailCache';
 import {
     claimTileUrlCacheOwner,
     clearTileUrlCache,
@@ -12,6 +17,89 @@ export type PdfLoadStatus = 'idle' | 'loading' | 'slow' | 'ready' | 'error' | 'c
 export type ViewerEngineMode = 'current' | 'hybrid' | 'ppe-only';
 type PdfLoadingTask = ReturnType<typeof pdfjs.getDocument>;
 type PdfLoadFileIdentity = { name?: string; size?: number; lastModified?: number; path?: string };
+
+interface PdfJsThumbnailViewport {
+    width: number;
+    height: number;
+}
+
+interface PdfJsThumbnailPage {
+    getViewport: (options: { scale: number; rotation?: number }) => PdfJsThumbnailViewport;
+    render: (options: {
+        canvasContext: CanvasRenderingContext2D;
+        viewport: unknown;
+    }) => { promise: Promise<unknown> };
+}
+
+interface PdfJsThumbnailDocument {
+    getPage: (pageNum: number) => Promise<unknown>;
+}
+
+const pdfJsThumbnailDocuments = new Map<string, PdfJsThumbnailDocument>();
+const pdfJsThumbnailJobs = new Map<string, Promise<string | undefined>>();
+
+export function registerPdfJsThumbnailDocument(
+    revision: string,
+    pdfDocument: PdfJsThumbnailDocument,
+): () => void {
+    if (!revision) return () => undefined;
+    pdfJsThumbnailDocuments.set(revision, pdfDocument);
+    return () => {
+        if (pdfJsThumbnailDocuments.get(revision) === pdfDocument) {
+            pdfJsThumbnailDocuments.delete(revision);
+        }
+    };
+}
+
+export function getPdfJsThumbnailDocument(revision: string): PdfJsThumbnailDocument | undefined {
+    return pdfJsThumbnailDocuments.get(revision);
+}
+
+export async function ensurePdfJsThumbnail(
+    pdfDocument: PdfJsThumbnailDocument,
+    pageNum: number,
+    request: ThumbnailRenderRequest,
+    pageOverride?: PdfJsThumbnailPage,
+): Promise<string | undefined> {
+    const cached = thumbCacheRef.current.get(request.cacheKey);
+    if (cached) return cached;
+
+    const running = pdfJsThumbnailJobs.get(request.cacheKey);
+    if (running) return running;
+
+    // UIUX (audit 2026-08-22 §UX.TH.02): render đúng trang nguồn đang cần,
+    // không dùng prefetch 30 trang làm đường correctness duy nhất.
+    const job = (async () => {
+        const page = (pageOverride ?? await pdfDocument.getPage(pageNum)) as PdfJsThumbnailPage;
+        const viewport = page.getViewport({ scale: 1, rotation: 0 });
+        const scale = request.pixelWidth / Math.max(1, viewport.width);
+        const scaledViewport = page.getViewport({ scale, rotation: 0 });
+        const canvas = document.createElement('canvas');
+        canvas.width = request.pixelWidth;
+        canvas.height = Math.max(1, Math.ceil(scaledViewport.height));
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('Không thể tạo bộ đệm thumbnail.');
+
+        try {
+            await page.render({ canvasContext: context, viewport: scaledViewport }).promise;
+            const url = canvas.toDataURL('image/jpeg', 0.7);
+            putThumbCache(request.cacheKey, url);
+            return url;
+        } finally {
+            canvas.width = 0;
+            canvas.height = 0;
+        }
+    })();
+
+    pdfJsThumbnailJobs.set(request.cacheKey, job);
+    try {
+        return await job;
+    } finally {
+        if (pdfJsThumbnailJobs.get(request.cacheKey) === job) {
+            pdfJsThumbnailJobs.delete(request.cacheKey);
+        }
+    }
+}
 
 function normalizeLoadError(error: unknown): Error {
     if (error instanceof Error) return error;
@@ -290,6 +378,7 @@ export function usePdfLoader({
         let loadingTask: PdfLoadingTask | null = null;
         let httpAbortController: AbortController | null = null;
         let startHydrationForGeneration: (() => void) | null = null;
+        let releasePdfJsThumbnailDocument: (() => void) | null = null;
         let slowTimer: number | undefined;
         const startedAt = performance.now();
         const logBase = {
@@ -343,6 +432,8 @@ export function usePdfLoader({
         const cleanupLoad = () => {
             cancelled = true;
             clearSlowTimer();
+            releasePdfJsThumbnailDocument?.();
+            releasePdfJsThumbnailDocument = null;
             if (metadataHydrationStartRef.current === startHydrationForGeneration) {
                 metadataHydrationStartRef.current = null;
             }
@@ -685,6 +776,7 @@ export function usePdfLoader({
                     if (!Number.isFinite(doc?.numPages) || doc.numPages <= 0) {
                         throw new Error('PDF không có trang hợp lệ.');
                     }
+                    releasePdfJsThumbnailDocument = registerPdfJsThumbnailDocument(pdfUrl, doc);
                     setPdfRef(doc);
                     setThumbPdfRef(doc);
                     setNumPages(doc.numPages);
@@ -727,24 +819,31 @@ export function usePdfLoader({
                     }
 
                     const dims: Record<number, { w: number; h: number; widthPt: number }> = {};
-                    
+                    const readPageDim = async (pageNum: number) => {
+                        const page = await doc.getPage(pageNum);
+                        const viewport = page.getViewport({ scale: 1 });
+                        return {
+                            w: viewport.width * (96 / 72),
+                            h: viewport.height * (96 / 72),
+                            widthPt: viewport.width,
+                        };
+                    };
+
                     if (doc.numPages > 100) {
-                        // For huge documents (e.g. VDP outputs), avoid 50,000 concurrent promises which causes OOM.
-                        // Assume all pages have the same dimensions as Page 1.
+                        // UIUX (audit 2026-08-22 §UX.VIEW.09): không nhân bản khổ trang 1
+                        // cho tài liệu dài. Chỉ đọc trang 1 để mở Viewer ngay; phần còn lại
+                        // hydrate tuần tự ở nền, publish theo cụm để mixed-size vẫn đúng mà
+                        // không tạo hàng chục nghìn Promise cùng lúc.
                         try {
-                            const p1 = await doc.getPage(1);
-                            const v = p1.getViewport({ scale: 1 });
-                            const dimObj = { w: v.width * (96 / 72), h: v.height * (96 / 72), widthPt: v.width };
-                            for (let i = 1; i <= doc.numPages; i++) {
-                                dims[i] = dimObj;
-                            }
-                        } catch (e) { console.error('Failed to get page 1', e); }
+                            dims[1] = await readPageDim(1);
+                        } catch (e) {
+                            console.error('Không đọc được kích thước trang 1:', e);
+                        }
                     } else {
                         const promises = [];
                         for (let i = 1; i <= doc.numPages; i++) {
-                            promises.push(doc.getPage(i).then((p: any) => {
-                                const v = p.getViewport({ scale: 1 });
-                                dims[i] = { w: v.width * (96 / 72), h: v.height * (96 / 72), widthPt: v.width };
+                            promises.push(readPageDim(i).then(dim => {
+                                dims[i] = dim;
                             }).catch(() => { }));
                         }
                         await Promise.all(promises);
@@ -763,6 +862,39 @@ export function usePdfLoader({
                         }
                     }
                     markReady(doc.numPages);
+
+                    if (doc.numPages > 100) {
+                        const hydrateLongDocument = async () => {
+                            const pending: Record<number, { w: number; h: number; widthPt: number }> = {};
+                            for (let i = 2; i <= doc.numPages; i += 1) {
+                                if (cancelled || generation !== loadGenerationRef.current) return;
+                                try {
+                                    pending[i] = await readPageDim(i);
+                                } catch {
+                                    // Một trang lỗi metadata không được làm hỏng cả tài liệu.
+                                }
+                                if (Object.keys(pending).length >= 16 || i === doc.numPages) {
+                                    const batch = { ...pending };
+                                    Object.keys(pending).forEach(key => delete pending[Number(key)]);
+                                    if (!cancelled && generation === loadGenerationRef.current) {
+                                        setAllPageDims(previous => ({ ...previous, ...batch }));
+                                    }
+                                    // Nhường event loop để thao tác cuộn/zoom luôn có frame.
+                                    await new Promise<void>(resolve => setTimeout(resolve, 0));
+                                }
+                            }
+                        };
+                        // PERF (audit 2026-08-22 §UX.TH.05): chỉ hydrate sau first
+                        // frame của tab đang xem; tab nền giữ metadata trang 1 và
+                        // sẽ tự khởi động khi user chuyển sang.
+                        const startLongMetadataHydration = () => {
+                            if (metadataHydrationStartRef.current !== startLongMetadataHydration) return;
+                            metadataHydrationStartRef.current = null;
+                            void hydrateLongDocument();
+                        };
+                        startHydrationForGeneration = startLongMetadataHydration;
+                        metadataHydrationStartRef.current = startLongMetadataHydration;
+                    }
                 } catch (e) {
                     markError(e, 'pdfjs_error');
                 }
@@ -777,44 +909,41 @@ export function usePdfLoader({
             try {
                 const page = await pdfRef.getPage(activePage);
                 const vp = page.getViewport({ scale: 1 });
-                setPageWidthPt(vp.width);
-                setPageDim({
+                const dim = {
                     w: vp.width * (96 / 72),
-                    h: vp.height * (96 / 72)
-                });
+                    h: vp.height * (96 / 72),
+                    widthPt: vp.width,
+                };
+                setPageWidthPt(vp.width);
+                setPageDim({ w: dim.w, h: dim.h });
+                setAllPageDims(previous => (
+                    previous[activePage]?.widthPt === dim.widthPt
+                        && previous[activePage]?.w === dim.w
+                        && previous[activePage]?.h === dim.h
+                        ? previous
+                        : { ...previous, [activePage]: dim }
+                ));
             } catch { }
         }
     }, [pdfRef]);
 
     // Thumbnail generation helper (web/pdfjs only). Tauri dùng IPC render_pdf_page trong ThumbSidebar.
-    // Cache key khớp MemoThumbItem: `${pdfUrl}_${page}_0_${zoomMilli}` với zoom suy từ width.
-    const generateThumb = useCallback(async (pdf: any, pageNum: number, rotation: number, width: number) => {
+    const generateThumb = useCallback(async (pdf: PdfJsThumbnailDocument, pageNum: number, _rotation: number, width: number) => {
         const isImage = file?.type?.startsWith('image/') || file?.name?.match(/\.(jpg|jpeg|png|webp|gif)$/i);
         if (isImage) return;
         if ((file as any)?.path) return; // Tauri: IPC path trong MemoThumbItem, không dùng cache này
 
-        // width prop ≈ thumbBaseWidth; zoom milli khớp công thức oversample 1.3× (baseW mặc định 595).
-        const baseW = 595;
-        const optimalZoom = Math.max(0.1, Math.min(1.5, (width * 1.3) / baseW));
-        const cacheKey = `${pdfUrl}_${pageNum}_0_${Math.round(optimalZoom * 1000)}`;
-        if (thumbCacheRef.current.has(cacheKey)) return;
-
         try {
-            const page = await pdf.getPage(pageNum);
-            // Bitmap luôn rot=0; CSS rotate ở ThumbSidebar (cùng main viewer).
-            const vp = page.getViewport({ scale: 1, rotation: 0 });
-            const scale = width / vp.width;
-            const scaledVp = page.getViewport({ scale, rotation: 0 });
-            const canvas = document.createElement('canvas');
-            canvas.width = scaledVp.width;
-            canvas.height = scaledVp.height;
-            const ctx = canvas.getContext('2d')!;
-
-            await page.render({ canvasContext: ctx, viewport: scaledVp }).promise;
-            const url = canvas.toDataURL('image/jpeg', 0.7);
-            canvas.width = 0; canvas.height = 0;
-
-            putThumbCache(cacheKey, url);
+            const page = await pdf.getPage(pageNum) as PdfJsThumbnailPage;
+            const viewport = page.getViewport({ scale: 1, rotation: 0 });
+            const request = createThumbnailRenderRequest({
+                revision: pdfUrl || '',
+                pageNum,
+                pageWidthPx96: viewport.width * 96 / 72,
+                cssWidth: width,
+                devicePixelRatio: window.devicePixelRatio || 1,
+            });
+            await ensurePdfJsThumbnail(pdf, pageNum, request, page);
         } catch (e) { console.warn('Thumb gen err', e); }
     }, [pdfUrl, file]);
 

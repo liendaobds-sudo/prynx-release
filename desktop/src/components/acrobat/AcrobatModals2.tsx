@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useDialogLifecycle } from './AcrobatModals';
 
 // ═══════ ROTATE PAGES MODAL ═══════
 export function RotatePagesModal({ numPages, onConfirm, onClose }: {
@@ -8,6 +9,7 @@ export function RotatePagesModal({ numPages, onConfirm, onClose }: {
     onClose: () => void;
 }) {
   const { t } = useTranslation();
+    const dialogRef = useDialogLifecycle(onClose);
     const [rotateDirection, setRotateDirection] = useState('90');
     const [rotateRange, setRotateRange] = useState('selection');
     const [rotateFrom, setRotateFrom] = useState(1);
@@ -24,9 +26,9 @@ export function RotatePagesModal({ numPages, onConfirm, onClose }: {
 
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 overflow-y-auto font-sans">
-            <div className="bg-white dark:bg-[#1e1e1e] w-[420px] rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10">
+            <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="prynx-rotate-pages-title" data-prynx-modal="true" tabIndex={-1} className="bg-white dark:bg-[#1e1e1e] w-[420px] rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10">
                 <div className="flex items-center justify-between px-6 py-4 border-b border-black/5 dark:border-white/5">
-                    <h3 className="font-semibold text-base text-slate-800 dark:text-zinc-100 tracking-wide">Xoay Trang</h3>
+                    <h3 id="prynx-rotate-pages-title" className="font-semibold text-base text-slate-800 dark:text-zinc-100 tracking-wide">Xoay Trang</h3>
                     <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-slate-100 dark:hover:bg-white/10 text-slate-500 transition-colors" title={t('misc.acrobatModals2:dong_esc')}>
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
                     </button>
@@ -113,15 +115,16 @@ export function InsertBlankPageModal({ pageCount, onConfirm, onClose }: {
     onClose: () => void;
 }) {
   const { t } = useTranslation();
+    const dialogRef = useDialogLifecycle(onClose);
     const [insertLocation, setInsertLocation] = useState<'after' | 'before'>('after');
     const [insertTarget, setInsertTarget] = useState<'first' | 'last' | 'page'>('page');
     const [insertTargetPage, setInsertTargetPage] = useState(1);
 
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 overflow-y-auto font-sans">
-            <div className="bg-white dark:bg-[#1e1e1e] w-[420px] rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10">
+            <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="prynx-insert-blank-title" data-prynx-modal="true" tabIndex={-1} className="bg-white dark:bg-[#1e1e1e] w-[420px] rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10">
                 <div className="flex items-center justify-between px-6 py-4 border-b border-black/5 dark:border-white/5">
-                    <h3 className="font-semibold text-base text-slate-800 dark:text-zinc-100 tracking-wide">{t('misc.acrobatModals2:chen_trang_insert_pages')}</h3>
+                    <h3 id="prynx-insert-blank-title" className="font-semibold text-base text-slate-800 dark:text-zinc-100 tracking-wide">{t('misc.acrobatModals2:chen_trang_insert_pages')}</h3>
                     <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-slate-100 dark:hover:bg-white/10 text-slate-500 transition-colors" title={t('misc.acrobatModals2:dong')}>
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
                     </button>

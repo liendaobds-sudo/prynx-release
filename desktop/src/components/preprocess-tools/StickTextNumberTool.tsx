@@ -12,10 +12,9 @@ import { useTranslation } from 'react-i18next';
 interface Props {
     pdfFile: File | null;
     onFileFixed?: (blob: Blob, filename: string) => void | boolean | Promise<void | boolean>;
-    onBack?: () => void;
 }
 
-export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Props) {
+export default function StickTextNumberTool({ pdfFile, onFileFixed }: Props) {
   const { t } = useTranslation();
     const [isProcessing, setIsProcessing] = useState(false);
     const [error, setError] = useState('');
@@ -254,14 +253,7 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
         <div className="flex flex-col gap-4 animate-in fade-in duration-300 pb-10">
             {/* Header */}
             <div className="flex items-center gap-2 pb-3 border-b border-slate-200 dark:border-zinc-700 shrink-0">
-                <button 
-                    onClick={onBack}
-                    className="p-1.5 hover:bg-slate-100 dark:bg-zinc-800 rounded-md text-slate-500 transition-colors"
-                    title={t('preprocess.stickTextNumber:quay_lai')}
-                >
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
-                </button>
-                <div className="flex-1 min-w-0 text-center pr-8">
+                <div className="flex-1 min-w-0 text-center">
                     <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">
                         <span>🔠</span>
                         <span>HEADER & FOOTER</span>

@@ -29,6 +29,7 @@ import { useImposerSettingsStore } from './imposition-tools/useImposerSettingsSt
 import SoftProofPanel from './SoftProofPanel';
 import { toast } from './ui/Toast';
 import { useTranslation } from 'react-i18next';
+import { resolveViewerPageIdentity } from '../lib/viewerPageIdentity';
 
 interface PlateInfo {
     name: string;
@@ -335,22 +336,23 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
     const tacObjectUrlRef = React.useRef<string | null>(null);
     const pageBoxesGenerationRef = React.useRef(0);
     const onPlatesChangeRef = React.useRef(onPlatesChange);
-    const mappedSourcePage = viewerPageOrder?.[pageNum - 1];
-    const sourcePageNum = typeof mappedSourcePage === 'number' && mappedSourcePage > 0
-        ? mappedSourcePage
-        : pageNum;
+    // UIUX (audit 2026-08-22 §UX.VIEW.02): fileId luôn trỏ tới Working PDF đã
+    // materialize theo thứ tự Viewer. `pageNum` vì vậy chính là trang của file này;
+    // map thêm viewerPageOrder sẽ đảo ngược lần thứ hai sau reorder.
+    const sourcePageNum = pageNum;
+    const viewerSourcePageNum = resolveViewerPageIdentity({
+        viewerPosition: pageNum,
+        pageOrder: viewerPageOrder,
+    }).sourcePage ?? pageNum;
 
     const openRelatedTool = useCallback((tool: 'inkmanager' | 'crop') => {
         requestWorkspaceToolActivation(tool, () => {
             // UIUX (audit 2026-08-10 §OP.11): đóng lớp preview trước khi mở
             // công cụ sửa file để hai ngữ cảnh không chồng lên nhau.
-            const appSettings = useAppSettingsStore.getState();
-            if (appSettings.toolMenuWidth < 280) appSettings.setToolMenuWidth(390);
-            appSettings.setWorkspaceSidebarOpen(true);
             setActiveDashboardTool(tool);
             onClose();
         });
-    }, [onClose, requestWorkspaceToolActivation, setActiveDashboardTool]);
+    }, [onClose, requestWorkspaceToolActivation, setActiveDashboardTool, workspaceStore]);
 
     useEffect(() => {
         let cancelled = false;
@@ -585,7 +587,23 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
 
     // --- Drag Logic ---
     const [pos, setPos] = useState({ x: 0, y: 0 });
+    const panelRef = React.useRef<HTMLDivElement | null>(null);
     const dragRef = React.useRef({ startX: 0, startY: 0, initialX: 0, initialY: 0, isDragging: false });
+    const clampPanelOffset = useCallback((offset: { x: number; y: number }) => {
+        const panel = panelRef.current;
+        const workspace = panel?.parentElement;
+        if (!panel || !workspace
+            || workspace.clientWidth <= 0 || workspace.clientHeight <= 0
+            || panel.offsetWidth <= 0 || panel.offsetHeight <= 0) {
+            return clampOutputPreviewPanelOffset(offset);
+        }
+        return clampOutputPreviewPanelOffset(offset, {
+            workspaceWidth: workspace.clientWidth,
+            workspaceHeight: workspace.clientHeight,
+            panelWidth: panel.offsetWidth,
+            panelHeight: panel.offsetHeight,
+        });
+    }, []);
 
     const handlePointerDown = (e: React.PointerEvent) => {
         if ((e.target as HTMLElement).closest('button')) return;
@@ -595,7 +613,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
 
     const handlePointerMove = (e: React.PointerEvent) => {
         if (!dragRef.current.isDragging) return;
-        setPos(clampOutputPreviewPanelOffset({
+        setPos(clampPanelOffset({
             x: dragRef.current.initialX + (e.clientX - dragRef.current.startX),
             y: dragRef.current.initialY + (e.clientY - dragRef.current.startY)
         }));
@@ -605,11 +623,28 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
         dragRef.current.isDragging = false;
         try { (e.target as HTMLElement).releasePointerCapture(e.pointerId); } catch(err){}
     };
+
+    useEffect(() => {
+        const panel = panelRef.current;
+        const workspace = panel?.parentElement;
+        if (!panel || !workspace) return;
+        const reclamp = () => setPos(current => clampPanelOffset(current));
+        reclamp();
+        if (typeof ResizeObserver === 'undefined') return;
+        const observer = new ResizeObserver(reclamp);
+        observer.observe(workspace);
+        observer.observe(panel);
+        return () => observer.disconnect();
+    }, [clampPanelOffset]);
     // ------------------
 
     // ESC to close
     useEffect(() => {
-        const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+        const handleKey = (e: KeyboardEvent) => {
+            const tabRoot = panelRef.current?.closest<HTMLElement>('[data-prynx-tab-active]');
+            if (tabRoot?.dataset.prynxTabActive === 'false') return;
+            if (e.key === 'Escape') onClose();
+        };
         window.addEventListener('keydown', handleKey);
         return () => window.removeEventListener('keydown', handleKey);
     }, [onClose]);
@@ -755,7 +790,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
             const pageData = plateDataRef.current;
             if (
                 !position
-                || position.pageNum !== sourcePageNum
+                || position.pageNum !== viewerSourcePageNum
                 || !pageData
                 || pageData.outputPreviewFilter !== showFilter
             ) {
@@ -795,7 +830,16 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                 updateSample(state.hoveredPdfPosition);
             }
         });
-    }, [plateList, sampleDiameterMm, showFilter, showTacWarning, sourcePageNum, t, tacThreshold, workspaceStore]);
+    }, [
+        plateList,
+        sampleDiameterMm,
+        showFilter,
+        showTacWarning,
+        viewerSourcePageNum,
+        t,
+        tacThreshold,
+        workspaceStore,
+    ]);
 
     useEffect(() => {
         if (!onPlatesChange) return;
@@ -1115,13 +1159,14 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
 
     return (
         <div
+            ref={panelRef}
             // UIUX (fix panel xem trước 2026-07-28): bám vào vùng làm việc thay vì viewport;
             // nếu dùng fixed, panel nằm dưới stacking context của tab và bị chrome ứng dụng che.
             className="absolute z-[9999] rounded-2xl overflow-hidden select-none flex flex-col bg-white dark:bg-zinc-900 border border-slate-200/80 dark:border-zinc-700/80"
             style={{
                 top: OUTPUT_PREVIEW_WORKSPACE_GAP_PX,
                 right: 60,
-                width: 380,
+                width: 'min(380px, calc(100% - 20px))',
                 maxHeight: `calc(100% - ${OUTPUT_PREVIEW_WORKSPACE_GAP_PX * 2}px)`,
                 transform: `translate(${pos.x}px, ${pos.y}px)`,
                 boxShadow: '0 20px 40px -10px rgba(0,0,0,0.15), 0 0 10px rgba(0,0,0,0.05)',

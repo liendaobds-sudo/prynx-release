@@ -5,6 +5,7 @@ import type { StoreApi } from 'zustand';
 import type { OutputPreviewPageBoxes, PlateOverlay } from '../lib/outputPreviewOverlay';
 import type { CropRegionFrac } from '../lib/cropGeometry';
 import type { ProcessingSettings } from '../lib/pdfImposer';
+import type { ToolMenuMode } from '../lib/rightToolMenuLayout';
 import type { StickerCutlinePreview } from '../lib/stickerSheetApi';
 
 // ═══════════════════════════════════════════════════════════
@@ -153,8 +154,10 @@ export interface WorkspaceState {
     bleedView: { show: boolean; mm: number };
 
     // ── Sidebar & Layout ──
-    isSidebarOpen: boolean;
-    sidebarWidth: number;
+    rightToolMenuMode: ToolMenuMode;
+    rightToolMenuFullWidth: number;
+    toolMenuQuery: string;
+    toolMenuScrollTop: number;
     isDraggingSidebar: boolean;
 
     // ── Output Preview ──
@@ -279,8 +282,10 @@ export interface WorkspaceState {
     setHighlightedIssue: (issue: any) => void;
     setBleedView: (updater: any) => void;
 
-    setIsSidebarOpen: (val: boolean) => void;
-    setSidebarWidth: (width: number) => void;
+    setRightToolMenuMode: (mode: ToolMenuMode) => void;
+    setRightToolMenuFullWidth: (width: number) => void;
+    setToolMenuQuery: (query: string) => void;
+    setToolMenuScrollTop: (scrollTop: number) => void;
     setIsDraggingSidebar: (val: boolean) => void;
 
     setShowOutputPreview: (val: boolean) => void;
@@ -363,7 +368,7 @@ export interface WorkspaceState {
     setStickPreviewParams: (params: any | null) => void;
 }
 
-export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) => ({
+export const createWorkspaceStore = (initialRightToolMenuMode: ToolMenuMode = 'full', initialRightToolMenuFullWidth = 390) => createStore<WorkspaceState>()((set) => ({
     // ── File & Phase ──
     phase: 'upload',
     file: null,
@@ -391,8 +396,10 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     highlightedIssue: null,
     bleedView: { show: false, mm: 0 },
 
-    isSidebarOpen: true,
-    sidebarWidth: 390,
+    rightToolMenuMode: initialRightToolMenuMode,
+    rightToolMenuFullWidth: Math.round(Math.max(280, Math.min(800, initialRightToolMenuFullWidth))),
+    toolMenuQuery: '',
+    toolMenuScrollTop: 0,
     isDraggingSidebar: false,
 
     showOutputPreview: false,
@@ -534,8 +541,19 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
         bleedView: typeof updater === 'function' ? updater(state.bleedView) : updater,
     })),
 
-    setIsSidebarOpen: (v) => set({ isSidebarOpen: v }),
-    setSidebarWidth: (w) => set({ sidebarWidth: w }),
+    setRightToolMenuMode: (mode) => set((state) => (
+        state.rightToolMenuMode === mode ? state : { rightToolMenuMode: mode }
+    )),
+    setRightToolMenuFullWidth: (width) => set((state) => {
+        const normalized = Math.round(Math.max(280, Math.min(800, width)));
+        return state.rightToolMenuFullWidth === normalized ? state : { rightToolMenuFullWidth: normalized };
+    }),
+    setToolMenuQuery: (query) => set((state) => (
+        state.toolMenuQuery === query ? state : { toolMenuQuery: query }
+    )),
+    setToolMenuScrollTop: (scrollTop) => set((state) => (
+        state.toolMenuScrollTop === scrollTop ? state : { toolMenuScrollTop: Math.max(0, scrollTop) }
+    )),
     setIsDraggingSidebar: (v) => set({ isDraggingSidebar: v }),
 
     // PERF (audit 2026-08-10 §OP.6): reset cùng giá trị không được đánh thức toàn
@@ -658,13 +676,27 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
 
     setIsObjectEditMode: (v) => set((state) => {
         const next = typeof v === 'function' ? v(state.isObjectEditMode) : v;
-        return { isObjectEditMode: next };
+        if (next === state.isObjectEditMode) return state;
+        return next
+            ? {
+                isObjectEditMode: true,
+                isCropMode: false,
+                cropSelection: null,
+                cropPast: [],
+                cropFuture: [],
+            }
+            : { isObjectEditMode: false };
     }),
     setIsCropMode: (v) => set((state) => {
         const next = typeof v === 'function' ? v(state.isCropMode) : v;
         if (next === state.isCropMode) return state;
         return next
-            ? { isCropMode: true, cropPast: [], cropFuture: [] }
+            ? {
+                isCropMode: true,
+                isObjectEditMode: false,
+                cropPast: [],
+                cropFuture: [],
+            }
             : { isCropMode: false, cropSelection: null, cropPast: [], cropFuture: [] };
     }),
     setCropSelection: (updater) => set((state) => ({
