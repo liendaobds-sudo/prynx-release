@@ -6,6 +6,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { useAppSettingsStore } from '../stores/appSettingsStore';
 import { TOOL_CATEGORIES, getToolsByCategory, getToolUniqueKey } from '../lib/toolRegistry';
 import { Button } from './Button';
+import ProFeatureBadge from './license/ProFeatureBadge';
 
 import CutterMachinesPanel from './imposition-tools/cut-export/CutterMachinesPanel';
 import { Star, X } from 'lucide-react';
@@ -102,8 +103,12 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
                               <div key={uniqueKey} className="flex items-center p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-zinc-800 cursor-default transition-colors border border-transparent hover:border-slate-200 dark:hover:border-zinc-700">
                                 <div className="text-[20px] w-8 flex justify-center opacity-80">{tool.icon}</div>
                                 <div className="flex-1 min-w-0 ml-2">
-                                  <div className={`text-[14px] font-medium ${isHidden ? 'text-slate-400' : 'text-slate-800 dark:text-zinc-200'}`}>
-                                    {tv(tool.title)}
+                                  <div className="flex items-center gap-2">
+                                    <span className={`min-w-0 truncate text-[14px] font-medium ${isHidden ? 'text-slate-400' : 'text-slate-800 dark:text-zinc-200'}`}>
+                                      {tv(tool.title)}
+                                    </span>
+                                    {/* UIUX (audit 2026-08-21): đồng bộ phân loại Pro với thẻ tool ở Home/menu. */}
+                                    <ProFeatureBadge featureId={tool.featureId} />
                                   </div>
                                 </div>
                                 <div className="flex items-center gap-3 ml-3">

@@ -895,14 +895,17 @@ export function toolMatchesQuery(tool: ToolDefinition, query: string): boolean {
  */
 export const TOOL_KEYWORDS: Record<string, string> = {
   // File prep
-  shuffle: 'shuffle reorder reverse sort odd even xao tron dao nguoc sap xep chan le',
-  resize: 'resize scale fit fill stretch a4 a3 co gian thu phong kho trang',
-  trim_shift: 'trim shift crop margin creep binding gutter cat xen them le dich noi dung bu gay le trong ngoai quite imposing',
-  split: 'split extract pages divide tach chia bo trang tach le trich xuat',
-  merge: 'merge combine join concat ghep noi gop tron file interleave xen ke',
-  pages: 'pages page manage delete rotate duplicate move quan ly xoa xoay nhan ban di chuyen sap xep trang',
+  shuffle: 'shuffle reorder reverse sort odd even page pages xao tron dao nguoc sap xep trang chan le',
+  resize: 'resize scale scaling fit fill stretch enlarge shrink page size paper size a4 a3 co gian thu phong phong to thu nho doi kich thuoc kho trang',
+  crop: 'crop trim cropbox page box cut canvas cat kho cat trang xen trang khung trang vung cat',
+  trim_shift: 'trim shift crop margin creep binding gutter page box cat xen them le dich noi dung bu gay le trong ngoai quite imposing',
+  split: 'split extract pages divide separate tach file chia bo trang tach le trich xuat',
+  merge: 'merge combine join concat append files ghep noi gop tron file interleave xen ke',
+  pages: 'pages page manage management delete rotate duplicate move reorder quan ly xoa xoay nhan ban di chuyen sap xep trang',
   // Prepress
-  preflight: 'preflight check fix verify pitstop kiem tra sua loi chuan in',
+  preflight: 'preflight prepress check inspect fix verify validation print ready pitstop kiem tra file kiem tra pdf sua loi chuan in tien ky thuat',
+  font_tools: 'font fonts typography text typeface glyph embed embedding embedded outline outlines convert curves live text chu phong chu nhung font thieu font chu song khoa chu vector hoa chu',
+  inkmanager: 'ink inks ink manager separation separations plate plates process spot color colour pantone coverage muc quan ly muc tach mau kenh mau mau pha do phu',
   convertcolors: 'color colour cmyk rgb icc profile convert chuyen he mau',
   hairlines: 'hairline thin line stroke weight net manh sieu manh',
   trapping: 'trap trapping overprint spread choke chong tran le vien chong mau',
@@ -915,7 +918,7 @@ export const TOOL_KEYWORDS: Record<string, string> = {
   // Imposition
   booklet: 'booklet signature saddle stitch thread perfect bind creep imposition binh sach tap chi khau chi long doi bu gay tay sach',
   nup: 'nup n-up step repeat sr gang grid tile binh cat xen nhan ban ghep nhieu trang luoi',
-  sticker_imposer: 'sticker label decal imposition nesting stagger hex gang binh tem be so le to ong nhieu mau',
+  sticker_imposer: 'sticker label decal die cut diecut imposition nesting stagger hex gang binh tem be tem nhan cat be so le to ong nhieu mau',
   cnc_imposer: 'cnc drop cut die two sided duplex mirror binh be rot 2 mat cat roi lat guong khuon',
   // Packaging
   dieline: 'dieline die cut packaging box carton mockup 3d khuon be bao bi hop tui',
@@ -924,10 +927,14 @@ export const TOOL_KEYWORDS: Record<string, string> = {
   bgremover: 'background remover remove bg ai cutout tach nen bong tach phong',
   watermark: 'watermark background stamp logo overlay dong dau chen nen logo chim phoi nen',
   optimize: 'optimize compress reduce shrink downsample nen toi uu giam dung luong',
+  encrypt: 'encrypt decrypt password protect protection secure security lock unlock permissions khoa mo khoa mat khau bao ve han che in sao che',
+  metadata: 'metadata document properties info title author subject keywords clean remove sua thong tin tac gia tieu de tu khoa xoa du lieu an',
+  office_convert: 'office convert conversion word doc docx excel xls xlsx spreadsheet google docs sheets export pdf chuyen office sang pdf xuat pdf tai lieu bang tinh',
   ocr: 'ocr recognize text searchable scan nhan dang chu quet text an',
   pdfx: 'pdfx pdf-x export standard flatten xuat chuan in pdf x-1a x-4',
   upscale: 'upscale super resolution enlarge ai sr phong to net cang',
   document_cleanup: 'document cleanup scan whiten deskew perspective card id cccd cmnd bao hiem nan the lam trang quet nen xam',
+  logo_rebuild: 'logo rebuild vector vectorize vectorise trace tracing raster bitmap svg dung lai logo vector hoa logo chuyen anh thanh vector',
   // QC / standalone
   combine_pdf: 'combine merge join concat interleave insert ghep noi gop tron xen ke chen trang le chan file',
   compare_pdf: 'compare diff pixel difference so sanh do pixel ban mau ban binh kiem in khong ocr',

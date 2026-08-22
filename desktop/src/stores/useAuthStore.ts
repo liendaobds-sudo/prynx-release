@@ -228,7 +228,8 @@ interface AuthState {
 let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 let retryInterval: ReturnType<typeof setInterval> | null = null;
 let revokeTimer: ReturnType<typeof setTimeout> | null = null;
-const HEARTBEAT_INTERVAL_MS = 30 * 60 * 1000;     // 30 phút — tránh rate limit Supabase (60s cũ = 120 req/giờ → hit limit)
+let focusValidationHandler: (() => void) | null = null;
+const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;      // SEC (audit 2026-08-22 §SEC.LIC.3): thu hồi online tối đa 5 phút; focus kiểm tra ngay.
 const RETRY_INTERVAL_MS = 30 * 1000;              // 30 seconds (when locked)
 // FALLBACK offline grace CHỈ cho client CHƯA có token ký (rollout/token fetch lỗi).
 // Với client đã có token Ed25519, "ngân sách offline" THẬT là hạn (exp) của token do
@@ -655,17 +656,32 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       
       if (!isValid) {
         console.warn('[AUTH] License revoked or invalid:', data?.message);
-        // Chỉ THU HỒI khi server nói rõ key bị khóa/hết hạn — KHÔNG với 'ERROR'
-        // (lỗi server tạm thời) để tránh khóa oan khi RPC trục trặc.
+        // SEC (audit 2026-08-22 §SEC.LIC.3): status thu hồi rõ ràng phải khóa cứng
+        // ngay trong phiên; không cho token cũ/Rust cache tiếp tục ký request.
         const st = data?.status;
-        if (st === 'INVALID' || st === 'EXPIRED') {
-          const reason = st === 'EXPIRED'
-            ? 'Bản quyền đã hết hạn. Vui lòng gia hạn để tiếp tục sử dụng.'
-            : 'Bản quyền đã bị thu hồi. Vui lòng liên hệ để được hỗ trợ.';
-          get().beginRevocation(reason);
+        const hardRevocationStatuses = [
+          'INVALID',
+          'EXPIRED',
+          'BLOCKED',
+          'MACHINE_REVOKED',
+          'MACHINE_MISMATCH',
+          'PRODUCT_MISMATCH',
+          'MAX_ACTIVATIONS_REACHED',
+        ];
+        if (hardRevocationStatuses.includes(st)) {
+          const reasonByStatus: Record<string, string> = {
+            EXPIRED: 'Bản quyền đã hết hạn. Vui lòng gia hạn để tiếp tục sử dụng.',
+            MACHINE_REVOKED: 'Máy này đã bị quản trị viên reset khỏi license. Liên hệ quản trị viên để cấp lại quyền.',
+            BLOCKED: 'Bản quyền đã bị khóa bởi quản trị viên.',
+            MACHINE_MISMATCH: 'License đang gắn với máy khác.',
+            PRODUCT_MISMATCH: 'License không dành cho sản phẩm này.',
+            MAX_ACTIVATIONS_REACHED: 'License đã đạt giới hạn số máy kích hoạt.',
+            INVALID: 'Bản quyền đã bị thu hồi hoặc không còn hợp lệ.',
+          };
+          await get().enforceHardLock(reasonByStatus[st] || 'Bản quyền không còn hợp lệ.');
         }
       }
-      
+
       return isValid;
     } catch (err) {
       console.error('[AUTH] License validation failed:', err);
@@ -909,6 +925,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   startHeartbeat: () => {
     get().stopHeartbeat();
+    // SEC (audit 2026-08-22 §SEC.LIC.3): khi quay lại cửa sổ sau thao tác quản trị,
+    // xác minh ngay thay vì chờ hết chu kỳ heartbeat.
+    if (typeof window !== 'undefined') {
+      focusValidationHandler = () => { void get().validateLicense(); };
+      window.addEventListener('focus', focusValidationHandler);
+    }
     heartbeatInterval = setInterval(async () => {
       const isValid = await get().validateLicense();
       if (!isValid && !get().isLicenseLocked) {
@@ -927,5 +949,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
     if (retryInterval) { clearInterval(retryInterval); retryInterval = null; }
     if (revokeTimer) { clearTimeout(revokeTimer); revokeTimer = null; }
+    if (focusValidationHandler && typeof window !== 'undefined') {
+      window.removeEventListener('focus', focusValidationHandler);
+      focusValidationHandler = null;
+    }
   },
 }));
