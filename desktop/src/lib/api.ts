@@ -1054,6 +1054,8 @@ export async function backendResizePages(
   const logResizePerf = (payload: Record<string, unknown>) =>
     console.info(`[ResizePerf] ${JSON.stringify(payload)}`);
   const formData = new FormData();
+  const useNativeResultPath = typeof window !== 'undefined'
+    && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
   // File lớn: đọc lại bytes từ ĐĨA qua path (asset protocol) thay vì giữ blob
   // trong JS heap — tránh "Array buffer allocation failed" khi resize file nặng.
   if (sourcePath) {
@@ -1074,6 +1076,7 @@ export async function backendResizePages(
   formData.append('bg_fill_color', bgFillColor);
   formData.append('page_size_mode', pageSizeMode);
   formData.append('resize_by_content', String(resizeByContent));
+  if (useNativeResultPath) formData.append('return_path', 'true');
 
   const payloadReady = perfNow();
   const roundMs = (value: number) => Math.round(value * 10) / 10;
@@ -1105,6 +1108,40 @@ export async function backendResizePages(
     catch { backendTiming = backendTimingRaw; }
   }
   const downloadStarted = perfNow();
+  const contentType = (res.headers.get('content-type') || '').toLowerCase();
+  if (useNativeResultPath && contentType.includes('application/json')) {
+    const payload = await res.json() as {
+      path?: unknown;
+      size?: unknown;
+      timing?: unknown;
+    };
+    if (typeof payload.path !== 'string' || !payload.path.trim()) {
+      throw new Error('Backend Resize không trả về đường dẫn file kết quả hợp lệ.');
+    }
+    const nativeSize = Number(payload.size);
+    const blob = new Blob([], { type: 'application/pdf' });
+    Object.defineProperties(blob, {
+      path: { value: payload.path, configurable: true },
+      nativeSize: {
+        value: Number.isFinite(nativeSize) && nativeSize >= 0 ? nativeSize : 0,
+        configurable: true,
+      },
+    });
+    const finished = perfNow();
+    logResizePerf({
+      stage: 'api_done',
+      source: sourcePath ? 'path' : 'upload',
+      transport: 'native_path',
+      payloadMs: roundMs(payloadReady - perfStarted),
+      waitHeadersMs: roundMs(headersReady - payloadReady),
+      downloadMs: roundMs(finished - downloadStarted),
+      totalMs: roundMs(finished - perfStarted),
+      inputBytes: file.size,
+      outputBytes: Number.isFinite(nativeSize) ? nativeSize : 0,
+      backend: payload.timing ?? backendTiming,
+    });
+    return blob;
+  }
   const blob = await res.blob();
   const finished = perfNow();
   logResizePerf({

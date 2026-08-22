@@ -408,6 +408,36 @@ async def test_route_resize_file_path_preserves_source(workdir):
     os.remove(resp.path)
 
 
+async def test_route_resize_can_transfer_native_result_path(workdir):
+    """Desktop nhận ownership artifact, không tải về rồi upload lại cho PDFium."""
+    from app.api.routes import pdf_tools
+
+    src = os.path.join(workdir, "native_source.pdf")
+    _make_pdf(src, 2, base_w=100)
+    result = await pdf_tools.resize_pages_endpoint(
+        file=None,
+        file_path=src,
+        target_w=40,
+        target_h=60,
+        scale_mode="fit",
+        apply_to="all",
+        target_dpi=0,
+        mode="xobject",
+        page_size_mode="fixed",
+        resize_by_content=False,
+        return_path=True,
+        license_info=_DEV_LICENSE,
+    )
+
+    output_path = result["path"]
+    assert os.path.isabs(output_path)
+    assert os.path.isfile(output_path)
+    assert os.path.isfile(src), "endpoint đã xóa nhầm file PDF nguồn"
+    assert result["size"] == os.path.getsize(output_path)
+    assert result["timing"]["output_bytes"] == result["size"]
+    os.remove(output_path)
+
+
 async def test_route_shuffle_does_not_crash(workdir):
     from app.api.routes import pdf_tools
     src = os.path.join(workdir, "s.pdf"); _make_pdf(src, 6, base_w=100)

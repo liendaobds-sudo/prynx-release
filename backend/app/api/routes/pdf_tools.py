@@ -727,6 +727,7 @@ async def resize_pages_endpoint(
     bg_fill_color: str = Form("#ffffff"),
     page_size_mode: str = Form("fixed"),
     resize_by_content: bool = Form(False),
+    return_path: bool = Form(False),
     license_info: dict = Depends(require_license),
 ):
     """Resize PDF pages to a new format.
@@ -750,6 +751,7 @@ async def resize_pages_endpoint(
         resize_by_content = (
             resize_by_content if isinstance(resize_by_content, bool) else False
         )
+        return_path = return_path if isinstance(return_path, bool) else False
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     # RESIZE (audit 2026-08-06 §G.11): khóa một chiều nhận thêm 'center_no_scale'.
@@ -794,20 +796,55 @@ async def resize_pages_endpoint(
                 detail="Thiếu file PDF cần đổi khổ.",
             )
         try:
+            # PERF (audit 2026-08-22 §RESIZE.6): vector/background đã giữ một
+            # pikepdf document trước save. Nhúng watermark ngay tại đó để tránh
+            # mở và serialize toàn file lần hai. Raster vẫn fallback hậu xử lý.
+            watermark_applied_in_engine = False
+            resize_pdf_finalizer = None
+            license_key = (license_info or {}).get("license_key", "") or ""
+            if license_key and license_key != "DEV_MODE":
+                hwid = (license_info or {}).get("hwid", "") or ""
+
+                def finalize_resize_pdf(pdf) -> bool:
+                    nonlocal watermark_applied_in_engine
+                    try:
+                        from app.core.watermark import embed_watermark
+
+                        watermark_applied_in_engine = bool(
+                            embed_watermark(pdf, license_key, hwid)
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error(
+                            "[WATERMARK] resize inline failed (non-blocking): %s",
+                            exc,
+                        )
+                        watermark_applied_in_engine = False
+                    return watermark_applied_in_engine
+
+                resize_pdf_finalizer = finalize_resize_pdf
+
             source_ready = time.perf_counter()
             engine_started = source_ready
+            resize_kwargs = {
+                "target_dpi": target_dpi,
+                "mode": mode,
+                "bg_fill_mode": bg_fill_mode,
+                "bg_fill_color": bg_fill_color,
+                "page_size_mode": page_size_mode,
+                "resize_by_content": resize_by_content,
+            }
+            if resize_pdf_finalizer is not None:
+                resize_kwargs["pdf_finalizer"] = resize_pdf_finalizer
             await run_in_threadpool(
                 resize_pages_smart, source_path, output_path, target_w, target_h,
-                scale_mode, apply_to, target_dpi=target_dpi, mode=mode,
-                bg_fill_mode=bg_fill_mode, bg_fill_color=bg_fill_color,
-                page_size_mode=page_size_mode,
-                resize_by_content=resize_by_content,
+                scale_mode, apply_to, **resize_kwargs,
             )
             engine_finished = time.perf_counter()
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         watermark_started = time.perf_counter()
-        await run_in_threadpool(_safe_watermark, output_path, license_info)
+        if not watermark_applied_in_engine:
+            await run_in_threadpool(_safe_watermark, output_path, license_info)
         response_ready = time.perf_counter()
 
         # PERF (audit 2026-08-01 §RT.12): đưa timing backend về console frontend
@@ -817,12 +854,23 @@ async def resize_pages_endpoint(
             "source_ms": round((source_ready - request_started) * 1000.0, 1),
             "engine_ms": round((engine_finished - engine_started) * 1000.0, 1),
             "watermark_ms": round((response_ready - watermark_started) * 1000.0, 1),
+            "watermark_inline": watermark_applied_in_engine,
             "backend_ms": round((response_ready - request_started) * 1000.0, 1),
             "input_bytes": os.path.getsize(source_path),
             "output_bytes": os.path.getsize(output_path),
         }
         timing_header = json.dumps(timing_payload, separators=(",", ":"))
         logger.info("[RESIZE_TIMING] route_done %s", timing_header)
+        if return_path:
+            # PERF (audit 2026-08-22 §RESIZE.5): desktop và sidecar ở cùng máy.
+            # Giao đường dẫn thật để WebView không tải PDF về RAM rồi upload lại
+            # chỉ nhằm tạo file cho PDFium. Caller nhận ownership của artifact.
+            return {
+                "path": os.path.abspath(output_path),
+                "filename": f"resized_{source_name}",
+                "size": timing_payload["output_bytes"],
+                "timing": timing_payload,
+            }
         return FileResponse(
             path=output_path,
             filename=f"resized_{source_name}",

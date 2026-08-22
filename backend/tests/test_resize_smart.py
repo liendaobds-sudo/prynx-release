@@ -10,10 +10,15 @@ resize_pages_smart bổ sung downsample theo khổ mới. Test kiểm:
 """
 import os
 import io
+import zlib
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 import pikepdf
 import pytest
 
+from app.core import pdf_actions_native
+from app.workers import pdf_tools_engine, resize_background_engine
 from app.workers.pdf_tools_engine import (
     resize_pages,
     resize_pages_smart,
@@ -100,6 +105,254 @@ def test_geometry_only_no_downsample(tmp_path):
     sizes = _page_sizes_mm(out)
     assert len(sizes) == 3
     assert all(w == 148 and h == 210 for (w, h) in sizes), sizes
+
+
+@pytest.mark.parametrize(
+    ("mode", "target_dpi", "bg_fill_mode"),
+    [
+        ("auto", 0, "white"),
+        ("raster", 0, "solid"),
+        ("xobject", 150, "white"),
+        ("vector", 150, "solid"),
+    ],
+)
+def test_smart_resize_skips_transparency_scan_when_result_is_unused(
+    tmp_path,
+    monkeypatch,
+    mode,
+    target_dpi,
+    bg_fill_mode,
+):
+    """Geometry/vector thuần không được trả phí parse object graph toàn file."""
+    src = str(tmp_path / f"skip_alpha_{mode}.pdf")
+    out = str(tmp_path / f"skip_alpha_{mode}_out.pdf")
+    _a1_text_pdf(src, pages=2)
+
+    monkeypatch.setattr(
+        pdf_actions_native,
+        "detect_transparent_pages",
+        lambda *_args, **_kwargs: pytest.fail("detector transparency bị gọi thừa"),
+    )
+    monkeypatch.setattr(pdf_tools_engine, "_native_downsample", lambda *_args: False)
+
+    resize_pages_smart(
+        src,
+        out,
+        A5[0],
+        A5[1],
+        "fit",
+        "all",
+        target_dpi=target_dpi,
+        mode=mode,
+        bg_fill_mode=bg_fill_mode,
+    )
+
+    assert os.path.isfile(out)
+
+
+@pytest.mark.parametrize("mode", ["auto", "raster"])
+def test_smart_resize_still_scans_alpha_before_raster_decision(
+    tmp_path,
+    monkeypatch,
+    mode,
+):
+    """Auto/raster có DPI phải fail-closed sang vector khi detector báo alpha."""
+    src = str(tmp_path / f"alpha_guard_{mode}.pdf")
+    out = str(tmp_path / f"alpha_guard_{mode}_out.pdf")
+    _a1_text_pdf(src, pages=1)
+    calls: list[str] = []
+
+    def fake_detect(path: str) -> list[int]:
+        calls.append(path)
+        return [1]
+
+    monkeypatch.setattr(pdf_actions_native, "detect_transparent_pages", fake_detect)
+    monkeypatch.setattr(
+        pdf_tools_engine,
+        "_raster_resize",
+        lambda *_args, **_kwargs: pytest.fail("trang alpha không được raster hóa RGB"),
+    )
+    monkeypatch.setattr(pdf_tools_engine, "_native_downsample", lambda *_args: False)
+
+    resize_pages_smart(
+        src,
+        out,
+        A5[0],
+        A5[1],
+        "fit",
+        "all",
+        target_dpi=150,
+        mode=mode,
+        bg_fill_mode="white",
+    )
+
+    assert calls == [src]
+    assert os.path.isfile(out)
+
+
+@pytest.mark.parametrize(
+    ("total_ram_mb", "cpu_count", "expected"),
+    [
+        (4 * 1024, 16, 1),
+        (8 * 1024, 2, 2),
+        (16 * 1024, 16, 2),
+        (32 * 1024, 32, 2),
+        (32 * 1024, 1, 1),
+        (None, None, 2),
+    ],
+)
+def test_background_zlib_lanes_follow_hardware_policy(
+    total_ram_mb,
+    cpu_count,
+    expected,
+):
+    assert resize_background_engine._plan_background_zlib_lanes(
+        total_ram_mb,
+        cpu_count,
+    ) == expected
+
+
+def test_parallel_background_compression_is_bit_identical():
+    # Slice cột tạo ndarray không liên tục để khóa cả fallback ascontiguousarray.
+    alpha = np.arange(256 * 96, dtype=np.uint8).reshape(96, 256)[:, ::2]
+    assert not alpha.flags.c_contiguous
+    rgb = np.repeat(alpha[:, :, None], 3, axis=2)
+    expected = (
+        zlib.compress(alpha.tobytes(), 1),
+        zlib.compress(rgb.tobytes(), 1),
+    )
+
+    assert resize_background_engine._compress_background_streams(
+        alpha,
+        rgb,
+        None,
+    ) == expected
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        assert resize_background_engine._compress_background_streams(
+            alpha,
+            rgb,
+            pool,
+        ) == expected
+
+
+@pytest.mark.parametrize("bg_fill_mode", ["white", "mirror"])
+def test_resize_pdf_finalizer_runs_before_vector_save(tmp_path, bg_fill_mode):
+    """Cả geometry thường và nền động đều cho phép finalize cùng lượt save."""
+    src = str(tmp_path / f"finalizer_{bg_fill_mode}.pdf")
+    out = str(tmp_path / f"finalizer_{bg_fill_mode}_out.pdf")
+    _a1_text_pdf(src, pages=1)
+    calls: list[int] = []
+
+    def finalize(pdf: pikepdf.Pdf) -> bool:
+        calls.append(len(pdf.pages))
+        pdf.Root[pikepdf.Name("/PrynXResizeFinalized")] = pikepdf.String("yes")
+        return True
+
+    resize_pages_smart(
+        src,
+        out,
+        A5[0],
+        A5[1],
+        "fit",
+        "all",
+        target_dpi=0,
+        mode="xobject",
+        bg_fill_mode=bg_fill_mode,
+        pdf_finalizer=finalize,
+    )
+
+    with pikepdf.open(out) as pdf:
+        assert str(pdf.Root.get("/PrynXResizeFinalized")) == "yes"
+    assert calls == [1]
+
+
+async def test_resize_route_skips_second_watermark_save_when_inline_succeeds(
+    tmp_path,
+    monkeypatch,
+):
+    """Production vector đã watermark trong engine thì không mở/ghi output lần hai."""
+    from app.api.routes import pdf_tools
+    from app.core.watermark import verify_watermark
+
+    src = str(tmp_path / "inline_watermark_src.pdf")
+    _a1_text_pdf(src, pages=1)
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        assert getattr(func, "__name__", "") == "resize_pages_smart"
+        pdf = pikepdf.Pdf.new()
+        pdf.add_blank_page(page_size=(100.0, 100.0))
+        assert kwargs["pdf_finalizer"](pdf) is True
+        pdf.save(args[1])
+        pdf.close()
+
+    monkeypatch.setattr(pdf_tools, "RESULTS_DIR", str(tmp_path))
+    monkeypatch.setattr(pdf_tools, "run_in_threadpool", fake_run_in_threadpool)
+    result = await pdf_tools.resize_pages_endpoint(
+        file=None,
+        file_path=src,
+        target_w=50.0,
+        target_h=50.0,
+        scale_mode="fit",
+        apply_to="all",
+        target_dpi=0,
+        mode="xobject",
+        bg_fill_mode="white",
+        bg_fill_color="#ffffff",
+        page_size_mode="fixed",
+        resize_by_content=False,
+        return_path=True,
+        license_info={"license_key": "TEST-LICENSE", "hwid": "TEST-HWID"},
+    )
+
+    assert result["timing"]["watermark_inline"] is True
+    assert verify_watermark(result["path"]).get("lid")
+
+
+async def test_resize_route_keeps_post_watermark_fallback_for_raster(
+    tmp_path,
+    monkeypatch,
+):
+    """Raster không có pikepdf handle phải tiếp tục watermark sau khi render."""
+    from app.api.routes import pdf_tools
+    from app.core.watermark import verify_watermark
+
+    src = str(tmp_path / "raster_watermark_src.pdf")
+    _a1_text_pdf(src, pages=1)
+    post_watermark_calls: list[str] = []
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        if getattr(func, "__name__", "") == "resize_pages_smart":
+            pdf = pikepdf.Pdf.new()
+            pdf.add_blank_page(page_size=(100.0, 100.0))
+            pdf.save(args[1])
+            pdf.close()
+            return None
+        assert func is pdf_tools._safe_watermark
+        post_watermark_calls.append(args[0])
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(pdf_tools, "RESULTS_DIR", str(tmp_path))
+    monkeypatch.setattr(pdf_tools, "run_in_threadpool", fake_run_in_threadpool)
+    result = await pdf_tools.resize_pages_endpoint(
+        file=None,
+        file_path=src,
+        target_w=50.0,
+        target_h=50.0,
+        scale_mode="fit",
+        apply_to="all",
+        target_dpi=144,
+        mode="raster",
+        bg_fill_mode="white",
+        bg_fill_color="#ffffff",
+        page_size_mode="fixed",
+        resize_by_content=False,
+        return_path=True,
+        license_info={"license_key": "TEST-LICENSE", "hwid": "TEST-HWID"},
+    )
+
+    assert result["timing"]["watermark_inline"] is False
+    assert post_watermark_calls == [result["path"]]
+    assert verify_watermark(result["path"]).get("lid")
 
 
 @pytest.mark.parametrize(

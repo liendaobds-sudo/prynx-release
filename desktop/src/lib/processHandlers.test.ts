@@ -456,6 +456,26 @@ describe('runResize unified dynamic-background pipeline', () => {
         expect(context.commitWorkingFile).toHaveBeenCalled();
     });
 
+    it('commits a native Resize result by path without materializing its bytes', async () => {
+        const file = new File(['source'], 'clean.pdf', { type: 'application/pdf' });
+        const context = makeContext(file, vi.fn(async () => new Uint8Array()));
+        context.getWorkingSourcePath = vi.fn().mockResolvedValue('D:\\clean.pdf');
+        const result = new Blob([], { type: 'application/pdf' });
+        Object.defineProperties(result, {
+            path: { value: 'D:\\results\\resized.pdf' },
+            nativeSize: { value: 8_900_000 },
+        });
+        api.backendResizePages.mockResolvedValueOnce(result);
+
+        await runResize(context, resizeSettings);
+
+        expect(context.commitWorkingFile).toHaveBeenCalledWith(
+            result,
+            'Resized_clean.pdf',
+            'D:\\results\\resized.pdf',
+        );
+    });
+
     it('keeps the baked-byte upload path when the document is dirty', async () => {
         const file = new File(['source'], 'dirty.pdf', { type: 'application/pdf' });
         const getWorkingBytes = vi.fn(async () => new Uint8Array([1, 2, 3]));
@@ -763,7 +783,8 @@ describe('runResize unified dynamic-background pipeline', () => {
         sourceDoc.addPage([1684, 2384]);   // A1 pt — thu về A4 là thu nhỏ rõ rệt
         const sourceBytes = await sourceDoc.save();
         const file = new File([sourceBytes as BlobPart], 'a1.pdf', { type: 'application/pdf' });
-        const context = makeContext(file, vi.fn(async () => sourceBytes));
+        const getWorkingBytes = vi.fn(async () => sourceBytes);
+        const context = makeContext(file, getWorkingBytes);
 
         await runResize(context, {
             ...resizeSettings,
@@ -774,6 +795,30 @@ describe('runResize unified dynamic-background pipeline', () => {
 
         expect(api.backendResizePages).toHaveBeenCalledTimes(1);
         expect(api.backendResizePages.mock.calls[0][5]).toBe(300);
+        expect(getWorkingBytes).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not parse a backend-upload PDF above the frontend probe limit', async () => {
+        const sourceDoc = await PDFDocument.create();
+        sourceDoc.addPage([1684, 2384]);
+        const sourceBytes = await sourceDoc.save();
+        const file = new File([sourceBytes as BlobPart], 'large-a1.pdf', {
+            type: 'application/pdf',
+        });
+        Object.defineProperty(file, 'size', { value: 51 * 1024 * 1024 });
+        const getWorkingBytes = vi.fn(async () => sourceBytes);
+        const context = makeContext(file, getWorkingBytes);
+
+        await runResize(context, {
+            ...resizeSettings,
+            applyToStr: 'all',
+            targetDpi: undefined,
+            bgFillMode: 'mirror',
+        });
+
+        expect(api.backendResizePages).toHaveBeenCalledTimes(1);
+        expect(api.backendResizePages.mock.calls[0][5]).toBe(0);
+        expect(getWorkingBytes).toHaveBeenCalledTimes(1);
     });
 
     it('keeps auto downsample off when the target is not smaller', async () => {

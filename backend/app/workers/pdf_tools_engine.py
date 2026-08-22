@@ -230,7 +230,8 @@ def resize_pages(source_path: str, output_path: str,
                  bg_fill_mode: str = "white",
                  bg_fill_color: str = "#ffffff",
                  cancel_event: Optional[object] = None,
-                 progress_callback: Optional[Callable[[int, int], None]] = None) -> str:
+                 progress_callback: Optional[Callable[[int, int], None]] = None,
+                 pdf_finalizer: Optional[Callable[[pikepdf.Pdf], bool]] = None) -> str:
     target_w = target_w_mm * MM_TO_PTS
     bg_r, bg_g, bg_b = _background_rgb(bg_fill_mode, bg_fill_color)
     target_h = target_h_mm * MM_TO_PTS
@@ -389,6 +390,8 @@ def resize_pages(source_path: str, output_path: str,
                 progress_callback(i + 1, total)
 
     check_cancelled()
+    if pdf_finalizer is not None:
+        pdf_finalizer(out_doc)
     save_pdf_compat(out_doc, output_path)
     out_doc.close()
     return output_path
@@ -480,7 +483,11 @@ def _native_downsample(input_path: str, output_path: str, target_dpi: int) -> bo
         return False
     try:
         result = pdf_actions_native.downscale_images(
-            input_path, output_path, float(target_dpi), float(target_dpi) * 1.5
+            input_path,
+            output_path,
+            float(target_dpi),
+            float(target_dpi) * 1.5,
+            save_unchanged=False,
         )
     except Exception as exc:  # noqa: BLE001
         _pt_logger.warning("Hạ ảnh ở cấp XObject lỗi (%s) → giữ bản chỉ đổi hình học.", exc)
@@ -586,7 +593,8 @@ def resize_pages_smart(source_path: str, output_path: str,
                        bg_fill_mode: str = "white",
                        bg_fill_color: str = "#ffffff",
                        page_size_mode: str = "fixed",
-                       resize_by_content: bool = False) -> str:
+                       resize_by_content: bool = False,
+                       pdf_finalizer: Optional[Callable[[pikepdf.Pdf], bool]] = None) -> str:
     """Resize trang + (tuỳ chọn) giảm dữ liệu theo khổ mới.
 
     target_dpi<=0 hoặc mode='xobject' → chỉ đổi hình học (hành vi cũ).
@@ -605,18 +613,30 @@ def resize_pages_smart(source_path: str, output_path: str,
         validate_page_selection(apply_to)
     page_size_mode = normalize_page_size_mode(page_size_mode)
     variable_page_size = page_size_mode != "fixed"
-    from app.core.pdf_actions_native import detect_transparent_pages
-
-    transparent_page_indexes = {
-        page_number - 1
-        for page_number in detect_transparent_pages(source_path)
-        if page_number > 0
-    }
-    has_transparency = bool(transparent_page_indexes)
     dynamic_background = (
         is_dynamic_background_mode(bg_fill_mode)
         and scale_mode in {"fit", "center_no_scale"}
     )
+    # PERF (audit 2026-08-22 §RESIZE.1): đổi hình học thuần không dùng kết quả
+    # transparency, trong khi detector phải parse toàn bộ content stream/Form.
+    # Chỉ quét khi khổ/nền động cần biết trang alpha, hoặc auto/raster phải
+    # fail-closed để không flatten SMask ngoài ý muốn.
+    needs_transparency_scan = (
+        dynamic_background
+        or variable_page_size
+        or bool(resize_by_content)
+        or (target_dpi > 0 and mode in {"auto", "raster"})
+    )
+    transparent_page_indexes: set[int] = set()
+    if needs_transparency_scan:
+        from app.core.pdf_actions_native import detect_transparent_pages
+
+        transparent_page_indexes = {
+            page_number - 1
+            for page_number in detect_transparent_pages(source_path)
+            if page_number > 0
+        }
+    has_transparency = bool(transparent_page_indexes)
     content_aware_resize = (
         dynamic_background
         or variable_page_size
@@ -639,10 +659,12 @@ def resize_pages_smart(source_path: str, output_path: str,
                 page_size_mode=page_size_mode,
                 resize_by_content=bool(resize_by_content),
                 transparent_page_indexes=transparent_page_indexes,
+                pdf_finalizer=pdf_finalizer,
             )
         return resize_pages(
             source_path, destination_path, target_w_mm, target_h_mm, scale_mode, apply_to,
             bg_fill_mode=bg_fill_mode, bg_fill_color=bg_fill_color,
+            pdf_finalizer=pdf_finalizer,
         )
 
     # DPI=0 chỉ giữ artwork gốc; lớp nền động vẫn dựng ở 300 DPI.

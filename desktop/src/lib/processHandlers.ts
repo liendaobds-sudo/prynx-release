@@ -764,17 +764,31 @@ export async function runResize(ctx: ProcessContext, settings: any): Promise<Pro
     const emit = async (blob: Blob) => {
         const commitStarted = perfNow();
         const destination = settings.spawnNewTab && onSpawnTab ? 'new_tab' : 'working_file';
+        const nativeBlob = blob as Blob & { path?: string; nativeSize?: number };
+        const nativeOutputPath = typeof nativeBlob.path === 'string' && nativeBlob.path
+            ? nativeBlob.path
+            : undefined;
+        const outputBytes = Number.isFinite(nativeBlob.nativeSize)
+            ? Number(nativeBlob.nativeSize)
+            : blob.size;
         logResizePerf({
             stage: 'commit_start',
             route: perfRoute,
             destination,
             processingMs: roundMs(commitStarted - perfStarted),
-            outputBytes: blob.size,
+            outputBytes,
         });
         if (settings.spawnNewTab && onSpawnTab) {
-            onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' }));
+            const outputFile = new File([blob], newFileName, { type: 'application/pdf' });
+            if (nativeOutputPath) {
+                Object.defineProperty(outputFile, 'path', { value: nativeOutputPath });
+                if (outputBytes > 0) {
+                    Object.defineProperty(outputFile, 'size', { value: outputBytes });
+                }
+            }
+            onSpawnTab(outputFile);
         } else {
-            await commitWorkingFile(blob, newFileName);
+            await commitWorkingFile(blob, newFileName, nativeOutputPath);
             ctx.setReportMsg('');
         }
         const finished = perfNow();
@@ -785,7 +799,7 @@ export async function runResize(ctx: ProcessContext, settings: any): Promise<Pro
             processingMs: roundMs(commitStarted - perfStarted),
             commitMs: roundMs(finished - commitStarted),
             totalMs: roundMs(finished - perfStarted),
-            outputBytes: blob.size,
+            outputBytes,
         });
     };
 
@@ -869,8 +883,9 @@ export async function runResize(ctx: ProcessContext, settings: any): Promise<Pro
             perfRoute = sourcePath ? 'backend_path' : 'backend_upload';
 
             let inputFile = file;
+            let inputBytes: Uint8Array | undefined;
             if (!sourcePath) {
-                const inputBytes = await getWorkingBytes();
+                inputBytes = await getWorkingBytes();
                 inputFile = new File([inputBytes as BlobPart], file.name, {
                     type: 'application/pdf',
                 });
@@ -879,9 +894,28 @@ export async function runResize(ctx: ProcessContext, settings: any): Promise<Pro
             // resize theo nội dung trước đây bỏ heuristic downsample mặc định →
             // A1→A5 vẫn ~300MB, mọi tác vụ sau đó chậm. Dùng chung heuristic
             // "auto = 300 DPI khi thu nhỏ" với nhánh thường bên dưới.
+            let autoTargetDpi = 0;
+            if (typeof settings.targetDpi !== 'number') {
+                if (sourcePath) {
+                    autoTargetDpi = await isDownsizingByProbe(sourcePath) ? 300 : 0;
+                } else if (
+                    inputBytes
+                    && Math.max(file.size || 0, inputBytes.byteLength) <= FE_SIZE_LIMIT
+                ) {
+                    // PERF (audit 2026-08-22 §RESIZE.FE.1): tái dụng bytes đã
+                    // materialize cho upload; gọi getWorkingBytes lần hai có thể bake
+                    // lại toàn bộ chỉnh sửa Acrobat của tài liệu dirty. Vẫn giữ
+                    // hàng rào 50 MB để không parse object graph lớn trong WebView.
+                    try {
+                        const probeDoc = await PDFDocument.load(inputBytes);
+                        const { width, height } = probeDoc.getPage(0).getSize();
+                        autoTargetDpi = isDownsizingDimensions(width, height) ? 300 : 0;
+                    } catch { /* Giữ heuristic an toàn: không downsample khi probe lỗi. */ }
+                }
+            }
             const targetDpi = typeof settings.targetDpi === 'number'
                 ? settings.targetDpi
-                : (await isDownsizingByProbe(sourcePath) ? 300 : 0);
+                : autoTargetDpi;
             // RESIZE (audit 2026-08-06 §G.4): màu nền trơn người dùng chọn phải
             // đi theo cả nhánh này; ép cứng '#ffffff' làm "Đổ màu trơn + Resize
             // theo nội dung" luôn ra nền trắng. Mode khóa một chiều đã bị hạ về

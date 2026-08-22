@@ -8,8 +8,11 @@ from __future__ import annotations
 import io
 import logging
 import math
+import os
 import time
 import zlib
+from concurrent.futures import ThreadPoolExecutor
+from typing import Callable
 
 import cv2
 import numpy as np
@@ -24,6 +27,7 @@ from app.core.page_boxes import (
 )
 from app.core.pdfium_lock import pdfium_guard
 from app.core.page_selection import parse_page_selection
+from app.core.system_memory import read_memory_status_mb
 
 
 logger = logging.getLogger(__name__)
@@ -38,6 +42,54 @@ DEFAULT_SEAM_OVERLAP_MM = 0.5
 _SEAM_NEAR_WHITE_START = 232.0
 _SEAM_NEAR_WHITE_FULL = 242.0
 DETECT_DPI = 200.0
+
+
+def _plan_background_zlib_lanes(
+    total_ram_mb: float | None,
+    cpu_count: int | None,
+) -> int:
+    """Hai lane độc lập trên máy đủ RAM; máy yếu giữ nén tuần tự."""
+    cores = max(1, int(cpu_count or 2))
+    if cores < 2:
+        return 1
+    if total_ram_mb is not None and 0 < total_ram_mb < 8 * 1024:
+        return 1
+    return 2
+
+
+def _background_zlib_lane_count() -> int:
+    """Lập kế hoạch nén nền; override vận hành luôn thắng auto-detect."""
+    raw = os.environ.get("PRYNX_RESIZE_ZLIB_LANES", "").strip()
+    try:
+        forced = int(raw) if raw else 0
+    except ValueError:
+        forced = 0
+    if forced > 0:
+        return 1 if forced == 1 else 2
+    total_ram_mb, _available_ram_mb = read_memory_status_mb()
+    return _plan_background_zlib_lanes(total_ram_mb, os.cpu_count())
+
+
+def _compress_background_streams(
+    alpha: np.ndarray,
+    rgb: np.ndarray,
+    pool: ThreadPoolExecutor | None,
+) -> tuple[bytes, bytes]:
+    """Nén SMask và RGB bit-identical; chỉ hai buffer độc lập chạy song song."""
+    # PERF (audit 2026-08-22 §RESIZE.7): zlib nhận buffer protocol trực tiếp.
+    # Tránh tobytes() tạo thêm bản sao 8–35 MB mỗi stream; ascontiguousarray
+    # chỉ copy khi view đầu vào thật sự không liên tục.
+    alpha_buffer = memoryview(np.ascontiguousarray(alpha))
+    rgb_buffer = memoryview(np.ascontiguousarray(rgb))
+    if pool is None:
+        return (
+            zlib.compress(alpha_buffer, 1),
+            zlib.compress(rgb_buffer, 1),
+        )
+
+    alpha_future = pool.submit(zlib.compress, alpha_buffer, 1)
+    rgb_compressed = zlib.compress(rgb_buffer, 1)
+    return alpha_future.result(), rgb_compressed
 
 
 def normalize_page_size_mode(mode: str) -> str:
@@ -215,6 +267,7 @@ def _add_background_image(
     target_width_pt: float,
     target_height_pt: float,
     tuck_px: int,
+    compression_pool: ThreadPoolExecutor | None = None,
 ) -> bytes:
     from app.workers.sticker_engine import _make_srgb_colorspace
 
@@ -299,7 +352,15 @@ def _add_background_image(
         rgb_for_storage = rgb.copy()
         rgb_for_storage[sparse_y0:sparse_y1, sparse_x0:sparse_x1] = 0
 
-    mask = pikepdf.Stream(document, zlib.compress(alpha.tobytes(), 1))
+    # PERF (audit 2026-08-22 §RESIZE.2): SMask và RGB không phụ thuộc nhau;
+    # zlib nhả GIL nên máy đủ RAM nén hai stream cùng lúc. Pool chỉ chạm bytes,
+    # tuyệt đối không đưa pikepdf/PDFium sang thread phụ.
+    compressed_alpha, compressed_rgb = _compress_background_streams(
+        alpha,
+        rgb_for_storage,
+        compression_pool,
+    )
+    mask = pikepdf.Stream(document, compressed_alpha)
     mask.Type = pikepdf.Name.XObject
     mask.Subtype = pikepdf.Name.Image
     mask.Width = width
@@ -309,7 +370,7 @@ def _add_background_image(
     mask.Filter = pikepdf.Name.FlateDecode
     mask.Interpolate = True
 
-    image = pikepdf.Stream(document, zlib.compress(rgb_for_storage.tobytes(), 1))
+    image = pikepdf.Stream(document, compressed_rgb)
     image.Type = pikepdf.Name.XObject
     image.Subtype = pikepdf.Name.Image
     image.Width = width
@@ -344,6 +405,7 @@ def resize_pages_with_background(
     page_size_mode: str = "fixed",
     resize_by_content: bool = False,
     transparent_page_indexes: set[int] | None = None,
+    pdf_finalizer: Callable[[pikepdf.Pdf], bool] | None = None,
 ) -> str:
     """Tính khổ theo trang rồi đặt artwork vector lên canvas đích.
 
@@ -420,7 +482,15 @@ def resize_pages_with_background(
 
     source = pikepdf.Pdf.open(source_path)
     output = pikepdf.Pdf.new()
+    compression_pool: ThreadPoolExecutor | None = None
     try:
+        if _background_zlib_lane_count() > 1:
+            # Một worker phụ + thread hiện tại = hai lane cho đúng hai stream.
+            # Không hard-cap công việc khác trên máy mạnh.
+            compression_pool = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="prynx-resize-zlib",
+            )
         selected = _parse_pages(apply_to, len(source.pages))
         selected_total = len(selected)
         processed_selected = 0
@@ -686,6 +756,7 @@ def resize_pages_with_background(
                         1,
                         round(DEFAULT_SEAM_OVERLAP_MM * dpi / 25.4),
                     ),
+                    compression_pool=compression_pool,
                 )
                 page_stage["background_encode"] = (
                     time.perf_counter() - background_encode_started
@@ -737,6 +808,8 @@ def resize_pages_with_background(
         # để header không mô tả thấp hơn các feature thực tế trong object graph.
         output_version = max("1.4", str(source.pdf_version or "1.3"))
         save_started = time.perf_counter()
+        if pdf_finalizer is not None:
+            pdf_finalizer(output)
         save_pdf_compat(output, output_path, min_version=output_version)
         stage_seconds["save"] = time.perf_counter() - save_started
         logger.info(
@@ -756,5 +829,7 @@ def resize_pages_with_background(
         )
         return output_path
     finally:
+        if compression_pool is not None:
+            compression_pool.shutdown(wait=True)
         output.close()
         source.close()

@@ -12,6 +12,7 @@ import {
 
 describe('resize transparency API contract', () => {
   afterEach(() => {
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     vi.unstubAllGlobals();
     vi.clearAllMocks();
   });
@@ -71,6 +72,43 @@ describe('resize transparency API contract', () => {
     );
 
     expect(result.type).toBe('application/pdf');
+  });
+
+  it('nhận native output path trên desktop mà không tải lại PDF', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+    });
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = init?.body as FormData;
+      expect(body.get('return_path')).toBe('true');
+      return new Response(JSON.stringify({
+        path: 'D:\\results\\resized.pdf',
+        size: 8_900_000,
+        timing: { engine_ms: 133 },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await backendResizePages(
+      new File([], 'large.pdf', { type: 'application/pdf' }),
+      210,
+      297,
+      'fit',
+      'all',
+      0,
+      'xobject',
+      'white',
+      '#ffffff',
+      'D:\\large.pdf',
+    ) as Blob & { path?: string; nativeSize?: number };
+
+    expect(result.size).toBe(0);
+    expect(result.path).toBe('D:\\results\\resized.pdf');
+    expect(result.nativeSize).toBe(8_900_000);
   });
 
   it('gửi native path cho shuffle mà không đính kèm carrier file', async () => {
