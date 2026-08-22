@@ -46,6 +46,8 @@ CmykOutputProfileId = Literal[
 ]
 ColorRenderingIntent = Literal["relative", "perceptual", "saturation", "absolute"]
 ColorAdjustmentStage = Literal["post_cmyk", "pre_icc"]
+ColorGamutMapping = Literal["icc", "adaptive_vivid"]
+ColorPreviewPolicy = Literal["manual", "balanced-v1"]
 PdfxStandard = Literal["x1a", "x4"]
 
 
@@ -413,6 +415,9 @@ class ConvertColorsRequest(BaseModel):
     rendering_intent: ColorRenderingIntent = "relative"
     preserve_black: bool = True
     black_point_compensation: bool = True
+    # COLOR (audit 2026-08-22 §COLOR.38): ICC intent và gamut mapping thích
+    # nghi là hai quyết định riêng. Mặc định "icc" giữ nguyên artifact/API cũ.
+    gamut_mapping: ColorGamutMapping = "icc"
     adjustment_stage: ColorAdjustmentStage = Field(
         default="post_cmyk",
         description=(
@@ -450,6 +455,165 @@ class ConvertColorsRequest(BaseModel):
         if len(set(value)) != len(value):
             raise ValueError("Mỗi phép chuyển màu chỉ được xuất hiện một lần")
         return value
+
+    @model_validator(mode="after")
+    def validate_gamut_mapping_contract(self):
+        if self.gamut_mapping == "adaptive_vivid" and (
+            self.rendering_intent != "relative"
+            or self.adjustment_stage != "post_cmyk"
+        ):
+            raise ValueError("adaptive_vivid yêu cầu Relative + post_cmyk")
+        return self
+
+
+class ConvertColorsPreviewRequest(BaseModel):
+    """Phân tích một trang trước khi chuyển màu thật.
+
+    Preview cố ý không kế thừa ConvertColorsRequest: grayscale chưa có một
+    phép so màu RGB-CMYK có ý nghĩa và không được âm thầm đi qua endpoint này.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    file_id: str = Field(min_length=1)
+    page: int = Field(default=1, ge=1)
+    conversions: list[Literal["rgb_to_cmyk", "spot_to_cmyk"]] = Field(
+        default_factory=lambda: ["rgb_to_cmyk"],
+        min_length=1,
+        max_length=2,
+    )
+    icc_profile: CmykOutputProfileId = "auto"
+    rendering_intent: ColorRenderingIntent = "relative"
+    preserve_black: bool = True
+    black_point_compensation: bool = True
+    gamut_mapping: ColorGamutMapping = "icc"
+    adjustment_stage: ColorAdjustmentStage = "post_cmyk"
+    brightness_lstar: int = Field(default=0, ge=-10, le=10)
+    contrast_percent: int = Field(default=0, ge=-20, le=20)
+    vibrance_percent: int = Field(default=0, ge=-20, le=20)
+    preview_policy: ColorPreviewPolicy = "manual"
+    dpi: int = Field(default=150, ge=72, le=300)
+    request_id: str = Field(min_length=1, max_length=128)
+
+    @field_validator("conversions")
+    @classmethod
+    def validate_preview_conversions(cls, value):
+        # COLOR (audit 2026-08-21 §COLOR.32): cùng thứ tự với route xuất file;
+        # không nhận Spot riêng hoặc lặp bước rồi trả một preview gây hiểu nhầm.
+        if value not in (["rgb_to_cmyk"], ["rgb_to_cmyk", "spot_to_cmyk"]):
+            raise ValueError(
+                "Preview chỉ hỗ trợ RGB → CMYK, có thể kèm Spot → CMYK sau đó"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def validate_gamut_mapping_contract(self):
+        if self.gamut_mapping == "adaptive_vivid" and (
+            self.rendering_intent != "relative"
+            or self.adjustment_stage != "post_cmyk"
+        ):
+            raise ValueError("adaptive_vivid yêu cầu Relative + post_cmyk")
+        return self
+
+
+class ColorAdjustmentValues(BaseModel):
+    brightness_lstar: int
+    contrast_percent: int
+    vibrance_percent: int
+    adjustment_stage: ColorAdjustmentStage
+
+class ColorTransformOptionsResponse(BaseModel):
+    gamut_mapping: ColorGamutMapping
+
+
+
+class ColorPreviewImagesResponse(BaseModel):
+    source_b64: str
+    output_b64: str
+    gamut_b64: Optional[str] = None
+    mime: str = "image/png"
+    width: int
+    height: int
+    proof_accuracy: str
+    proof_engine: str
+    measurement_basis: str
+
+
+class ColorPreviewTacResponse(BaseModel):
+    available: bool
+    mean_pct: Optional[float] = None
+    p95_pct: Optional[float] = None
+    max_pct: Optional[float] = None
+    engine: str
+    spot_excluded: bool = True
+    spot_plate_count: int = 0
+
+
+class ColorPreviewMetricsResponse(BaseModel):
+    sample_pixels: int
+    delta_lstar_mean: float
+    delta_chroma_mean: float
+    delta_e00_mean: float
+    delta_e00_p95: float
+    new_highlight_clip_pct: float
+    new_paper_white_pct: float
+    new_shadow_clip_pct: float
+    neutral_delta_e00_mean: Optional[float] = None
+    skin_delta_e00_mean: Optional[float] = None
+    out_of_gamut_pct: float = 0
+    tac: ColorPreviewTacResponse
+
+
+class ColorPreviewRecommendationResponse(BaseModel):
+    policy: ColorPreviewPolicy
+    status: Literal["manual", "recommended", "identity", "unavailable"]
+    gates_passed: bool
+    reason_codes: list[str] = Field(default_factory=list)
+
+
+class ConvertColorsPreviewResponse(BaseModel):
+    """Preview chỉ trả ảnh/số đo; không bao giờ công bố tên artifact tải xuống."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    success: bool
+    request_id: str
+    page: int
+    requested_dpi: int
+    effective_dpi: int
+    effective_options: ColorTransformOptionsResponse
+    effective_adjustments: ColorAdjustmentValues
+    preview: ColorPreviewImagesResponse
+    metrics: ColorPreviewMetricsResponse
+    recommendation: ColorPreviewRecommendationResponse
+    warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_trusted_recommendation(self):
+        """Không cho response tự mâu thuẫn biến proof gần đúng thành gợi ý an toàn."""
+
+        recommendation = self.recommendation
+        if recommendation.policy == "manual":
+            if recommendation.status != "manual" or recommendation.gates_passed:
+                raise ValueError("Preview manual không được công bố là gợi ý đã qua gate")
+        elif recommendation.status == "unavailable":
+            if recommendation.gates_passed:
+                raise ValueError("Gợi ý không khả dụng không được qua gate")
+        elif (
+            recommendation.status not in ("recommended", "identity")
+            or not recommendation.gates_passed
+        ):
+            raise ValueError("Gợi ý cân bằng phải có trạng thái và gate nhất quán")
+
+        if recommendation.gates_passed and (
+            self.preview.proof_accuracy != "rip_softproof"
+            or self.preview.measurement_basis != "display_rgb_vs_rip_softproof"
+            or not self.metrics.tac.available
+        ):
+            # COLOR (audit 2026-08-21 §COLOR.36): core hiện phát đúng tổ hợp;
+            # validator này chặn hồi quy contract trước khi UI có thể tin nhầm.
+            raise ValueError("Chỉ RIP soft-proof có TAC PPE mới được qua gate")
+        return self
 
 class SoftProofRequest(BaseModel):
     file_id: str

@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from app.api.routes import preflight as preflight_routes
 from app.config import settings
 from app.core import icc_profiles, pdf_actions_native
+from app.core.ink_manager import InkManagerEngine
 from app.core.license_guard import require_license
 from app.main import app
 
@@ -139,9 +140,10 @@ def test_convert_colors_returns_log_list_and_downloadable_pdf(monkeypatch, tmp_p
                 "file_id": "rgb-http-contract",
                 "conversions": ["rgb_to_cmyk"],
                 "icc_profile": "fogra39",
-                "rendering_intent": "perceptual",
+                "rendering_intent": "relative",
                 "preserve_black": False,
                 "black_point_compensation": False,
+                "gamut_mapping": "adaptive_vivid",
                 "adjustment_stage": "post_cmyk",
                 "brightness_lstar": 3,
                 "contrast_percent": -5,
@@ -164,9 +166,10 @@ def test_convert_colors_returns_log_list_and_downloadable_pdf(monkeypatch, tmp_p
         ]
         assert isinstance(payload["log"][0]["duration_ms"], int)
         assert captured_options == {
-            "rendering_intent": "perceptual",
+            "rendering_intent": "relative",
             "preserve_black": False,
             "black_point_compensation": False,
+            "gamut_mapping": "adaptive_vivid",
             "adjustment_stage": "post_cmyk",
             "brightness_lstar": 3,
             "contrast_percent": -5,
@@ -183,6 +186,78 @@ def test_convert_colors_returns_log_list_and_downloadable_pdf(monkeypatch, tmp_p
         assert download.headers["content-type"].startswith("application/pdf")
         assert output_filename in download.headers["content-disposition"]
         assert download.content == source_bytes
+    finally:
+        app.dependency_overrides.pop(require_license, None)
+
+
+def test_convert_colors_spot_step_uses_selected_cmyk_profile(monkeypatch, tmp_path):
+    """Màu pha Lab phải dùng cùng profile đích với bước RGB → CMYK."""
+
+    source_pdf = tmp_path / "rgb-spot-source.pdf"
+    source_pdf.write_bytes(b"%PDF-1.4\n% RGB + Spot profile contract\n%%EOF\n")
+    results_dir = tmp_path / "results"
+    selected_profile = "selected-swop.icc"
+    captured_spot_profile: list[str | None] = []
+
+    monkeypatch.setattr(settings, "RESULTS_DIR", str(results_dir))
+    monkeypatch.setattr(
+        preflight_routes,
+        "_get_file_path",
+        lambda _file_id: str(source_pdf),
+    )
+    monkeypatch.setattr(
+        icc_profiles,
+        "resolve_cmyk_profile_path",
+        lambda _profile_id=None: selected_profile,
+    )
+    monkeypatch.setattr(
+        icc_profiles,
+        "resolve_srgb_profile_path",
+        lambda: "test-source.icc",
+    )
+
+    def fake_convert_to_cmyk(input_path, output_path, *_profiles, **_options):
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(input_path, output_path)
+        return {"supported": True, "operations": 1, "blockers": []}
+
+    async def fake_convert_spot(
+        self,
+        file_path,
+        spot_name=None,
+        cmyk_profile=None,
+    ):
+        captured_spot_profile.append(cmyk_profile)
+        output_path = self.output_dir / "spot-selected-profile.pdf"
+        shutil.copyfile(file_path, output_path)
+        return str(output_path)
+
+    monkeypatch.setattr(pdf_actions_native, "convert_to_cmyk", fake_convert_to_cmyk)
+    monkeypatch.setattr(InkManagerEngine, "convert_spot_to_cmyk", fake_convert_spot)
+    app.dependency_overrides[require_license] = lambda: {
+        "license_key": "TEST",
+        "hwid": "TEST",
+        "verified": True,
+        "plan": "pro",
+        "features": ["*"],
+    }
+
+    try:
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.post(
+            "/api/preflight/convert-colors",
+            json={
+                "file_id": "rgb-spot-profile-contract",
+                "conversions": ["rgb_to_cmyk", "spot_to_cmyk"],
+                "icc_profile": "swop",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["success"] is True, payload
+        assert captured_spot_profile == [selected_profile]
+        assert payload["output_filename"] == "spot-selected-profile.pdf"
     finally:
         app.dependency_overrides.pop(require_license, None)
 
@@ -218,6 +293,38 @@ def test_convert_colors_rejects_adjustments_outside_safe_range(field, value):
         )
         assert response.status_code == 422, response.text
         assert any(field in str(item.get("loc")) for item in response.json()["detail"])
+    finally:
+        app.dependency_overrides.pop(require_license, None)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"gamut_mapping": "adaptive_vivid", "rendering_intent": "saturation"},
+        {"gamut_mapping": "adaptive_vivid", "adjustment_stage": "pre_icc"},
+    ],
+)
+def test_convert_colors_rejects_incompatible_adaptive_contract(overrides):
+    """Adaptive mode is intentionally limited to Relative + post-CMYK."""
+
+    app.dependency_overrides[require_license] = lambda: {
+        "license_key": "TEST",
+        "hwid": "TEST",
+        "verified": True,
+        "plan": "pro",
+        "features": ["*"],
+    }
+    try:
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/api/preflight/convert-colors",
+            json={
+                "file_id": "must-not-reach-route",
+                "conversions": ["rgb_to_cmyk"],
+                **overrides,
+            },
+        )
+        assert response.status_code == 422, response.text
+        assert "adaptive_vivid" in response.text
     finally:
         app.dependency_overrides.pop(require_license, None)
 

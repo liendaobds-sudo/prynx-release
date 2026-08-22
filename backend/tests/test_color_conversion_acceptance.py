@@ -455,6 +455,107 @@ def test_fogra39_relative_bpc_brightness_grid_does_not_regress(tmp_path):
     assert float(np.max(tac_percent)) <= 330.5
 
 
+
+def test_vibrance_grid_has_exact_direction_and_safe_artifact_metrics(tmp_path):
+    """Vibrance phải đúng hướng trên lưới màu và không đổi rực bằng cách phá proof."""
+    cmyk_path, srgb_path = _profile_paths()
+    levels = np.asarray([0, 32, 64, 96, 128, 160, 192, 224, 255], dtype=np.uint8)
+    rgb = np.asarray(
+        [(red, green, blue) for red in levels for green in levels for blue in levels],
+        dtype=np.uint8,
+    )
+    source_image = Image.fromarray(rgb.reshape(1, -1, 3), "RGB")
+    source_lab = _lab_d50(source_image, srgb_path, "RGB")
+    source_chroma = np.hypot(source_lab[:, 1], source_lab[:, 2])
+    chromatic_mask = source_chroma > 3.0
+    source_path = tmp_path / "rgb-vibrance-grid.pdf"
+    _build_rgb_image_pdf(source_path, rgb, width=len(rgb), height=1)
+
+    lab_by_vibrance: dict[int, np.ndarray] = {}
+    cmyk_by_vibrance: dict[int, np.ndarray] = {}
+    tac_by_vibrance: dict[int, np.ndarray] = {}
+    delta_e_by_vibrance: dict[int, np.ndarray] = {}
+    for vibrance in (-20, 0, 20):
+        output_path = tmp_path / f"cmyk-vibrance-{vibrance:+d}.pdf"
+        result = pdf_actions_native.convert_to_cmyk(
+            str(source_path),
+            str(output_path),
+            cmyk_path,
+            srgb_path,
+            rendering_intent="relative",
+            black_point_compensation=True,
+            preserve_black=True,
+            vibrance_percent=vibrance,
+            adjustment_stage="post_cmyk",
+        )
+        assert result["supported"] and result["images"] == 1, result
+        assert result["postflight"]["passed"], result["postflight"]
+        assert result["postflight"]["residuals"] == []
+
+        with pikepdf.open(output_path) as pdf:
+            image = pdf.pages[0].Resources.XObject.Im0
+            assert str(image.ColorSpace) == "/DeviceCMYK"
+            actual_cmyk = np.frombuffer(
+                image.read_bytes(), dtype=np.uint8
+            ).reshape(-1, 4)
+            intents = list(pdf.Root.OutputIntents)
+            assert len(intents) == 1
+            embedded = bytes(intents[0].DestOutputProfile.read_bytes())
+
+        assert hashlib.sha256(embedded).hexdigest() == FOGRA39_SHA256
+        actual_lab = _lab_d50(
+            Image.fromarray(actual_cmyk.reshape(1, -1, 4), "CMYK"),
+            cmyk_path,
+            "CMYK",
+        )
+        tac = actual_cmyk.astype(np.float64).sum(axis=1) / 255.0 * 100.0
+        assert float(np.max(tac)) <= 330.5
+
+        cmyk_by_vibrance[vibrance] = actual_cmyk
+        lab_by_vibrance[vibrance] = actual_lab
+        tac_by_vibrance[vibrance] = tac
+        delta_e_by_vibrance[vibrance] = deltaE_ciede2000(
+            source_lab, actual_lab
+        )
+
+    chroma_by_vibrance = {
+        vibrance: np.hypot(lab[:, 1], lab[:, 2])
+        for vibrance, lab in lab_by_vibrance.items()
+    }
+    assert float(
+        np.min(
+            chroma_by_vibrance[20][chromatic_mask]
+            - chroma_by_vibrance[-20][chromatic_mask]
+        )
+    ) >= 0.0
+    assert (
+        float(np.mean(chroma_by_vibrance[-20][chromatic_mask]))
+        < float(np.mean(chroma_by_vibrance[0][chromatic_mask]))
+        < float(np.mean(chroma_by_vibrance[20][chromatic_mask]))
+    )
+
+    changed = np.any(cmyk_by_vibrance[20] != cmyk_by_vibrance[-20], axis=1)
+    assert float(np.mean(changed[chromatic_mask])) >= 0.90
+    assert float(np.mean(delta_e_by_vibrance[20])) <= (
+        float(np.mean(delta_e_by_vibrance[0])) + 0.75
+    )
+    assert float(np.mean(tac_by_vibrance[20])) <= (
+        float(np.mean(tac_by_vibrance[0])) + 1.50
+    )
+
+    paper_white_baseline = int(
+        np.count_nonzero(
+            (lab_by_vibrance[0][:, 0] >= 100.0)
+            & (chroma_by_vibrance[0] <= 0.5)
+        )
+    )
+    paper_white_vibrant = int(
+        np.count_nonzero(
+            (lab_by_vibrance[20][:, 0] >= 100.0)
+            & (chroma_by_vibrance[20] <= 0.5)
+        )
+    )
+    assert paper_white_vibrant <= paper_white_baseline
 def test_vector_patch_artifact_matches_brightness_black_and_output_policy(tmp_path):
     """Numerics PDF thật phải đạt cùng gate, K-only và OutputIntent đúng hash."""
     cmyk_path, srgb_path = _profile_paths()
@@ -725,6 +826,268 @@ def test_calrgb_matrix_gamma_matches_adobe_rgb_oracle_end_to_end(tmp_path):
     assert float(np.min(delta_l)) >= -31.0
     tac_percent = actual_cmyk.astype(np.float64).sum(axis=1) / 255.0 * 100.0
     assert float(np.max(tac_percent)) <= 330.5
+
+
+def test_default_rgb_scope_is_local_to_form_pattern_and_appearance(tmp_path):
+    """Form, Pattern và AP phải dùng DefaultRGB của chính stream."""
+    cmyk_path, srgb_path = _profile_paths()
+    pdf = pikepdf.Pdf.new()
+    profile = pdf.make_stream(ADOBE_RGB_1998_ICC)
+    profile["/N"] = 3
+    adobe = pdf.make_indirect(
+        pikepdf.Array([pikepdf.Name("/ICCBased"), profile])
+    )
+    own_resources = pikepdf.Dictionary(
+        ColorSpace=pikepdf.Dictionary(DefaultRGB=adobe)
+    )
+    color = b"0.23529412 0.78431373 0.39215686 rg 0 0 10 10 re f\n"
+    form = pikepdf.Stream(
+        pdf,
+        color,
+        Type=pikepdf.Name("/XObject"),
+        Subtype=pikepdf.Name("/Form"),
+        BBox=[0, 0, 10, 10],
+        Resources=own_resources,
+    )
+    pattern = pikepdf.Stream(
+        pdf,
+        color,
+        Type=pikepdf.Name("/Pattern"),
+        PatternType=1,
+        PaintType=1,
+        TilingType=1,
+        BBox=[0, 0, 10, 10],
+        XStep=10,
+        YStep=10,
+        Resources=own_resources,
+    )
+    appearance = pikepdf.Stream(
+        pdf,
+        color,
+        Type=pikepdf.Name("/XObject"),
+        Subtype=pikepdf.Name("/Form"),
+        BBox=[0, 0, 10, 10],
+        Resources=own_resources,
+    )
+    page_resources = pikepdf.Dictionary(
+        XObject=pikepdf.Dictionary(Fm0=pdf.make_indirect(form)),
+        Pattern=pikepdf.Dictionary(P0=pdf.make_indirect(pattern)),
+    )
+    annotation = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Annot"),
+        Subtype=pikepdf.Name("/Stamp"),
+        Rect=[0, 0, 10, 10],
+        AP=pikepdf.Dictionary(N=pdf.make_indirect(appearance)),
+    )
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"),
+        MediaBox=[0, 0, 100, 100],
+        Resources=page_resources,
+        Annots=pikepdf.Array([pdf.make_indirect(annotation)]),
+        Contents=pdf.make_indirect(
+            pikepdf.Stream(pdf, b"/Fm0 Do /P0 scn 20 20 10 10 re f\n")
+        ),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    source = tmp_path / "default-rgb-nested-scopes.pdf"
+    output = tmp_path / "default-rgb-nested-scopes-output.pdf"
+    pdf.save(source)
+    pdf.close()
+
+    result = pdf_actions_native.convert_to_cmyk(
+        str(source), str(output), cmyk_path, srgb_path
+    )
+    assert result["supported"], result
+    expected = np.asarray([222, 0, 217, 0], dtype=np.int16)
+    with pikepdf.open(output) as opened:
+        streams = [
+            opened.pages[0].Resources.XObject.Fm0,
+            opened.pages[0].Resources.Pattern.P0,
+            opened.pages[0].Annots[0].AP.N,
+        ]
+        for stream in streams:
+            values = [
+                float(value)
+                for instruction in pikepdf.parse_content_stream(stream)
+                if str(instruction.operator) == "k"
+                for value in instruction.operands
+            ]
+            actual = np.rint(np.asarray(values) * 255.0).astype(np.int16)
+            assert np.max(np.abs(actual - expected)) <= 1
+
+
+
+def test_default_rgb_icc_applies_to_vector_and_image_in_resource_scope(tmp_path):
+    """DeviceRGB phải lấy AdobeRGB từ DefaultRGB cho cả rg và image."""
+    cmyk_path, srgb_path = _profile_paths()
+    sample = np.asarray([(60, 200, 100)], dtype=np.uint8)
+    pdf = pikepdf.Pdf.new()
+    profile = pdf.make_stream(ADOBE_RGB_1998_ICC)
+    profile["/N"] = 3
+    default_rgb = pdf.make_indirect(
+        pikepdf.Array([pikepdf.Name("/ICCBased"), profile])
+    )
+    image = pikepdf.Stream(
+        pdf,
+        sample.tobytes(),
+        Type=pikepdf.Name("/XObject"),
+        Subtype=pikepdf.Name("/Image"),
+        Width=1,
+        Height=1,
+        BitsPerComponent=8,
+        ColorSpace=pikepdf.Name("/DeviceRGB"),
+    )
+    resources = pikepdf.Dictionary(
+        ColorSpace=pikepdf.Dictionary(DefaultRGB=default_rgb),
+        XObject=pikepdf.Dictionary(Im0=pdf.make_indirect(image)),
+    )
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"),
+        MediaBox=[0, 0, 100, 100],
+        Resources=resources,
+        Contents=pdf.make_indirect(
+            pikepdf.Stream(
+                pdf,
+                b"0.23529412 0.78431373 0.39215686 rg "
+                b"0 0 40 40 re f /Im0 Do\n",
+            )
+        ),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    source = tmp_path / "default-rgb-adobe.pdf"
+    output = tmp_path / "default-rgb-adobe-fogra39.pdf"
+    pdf.save(source)
+    pdf.close()
+
+    result = pdf_actions_native.convert_to_cmyk(
+        str(source),
+        str(output),
+        cmyk_path,
+        srgb_path,
+        rendering_intent="relative",
+        black_point_compensation=True,
+    )
+    assert result["supported"] and result["images"] == 1, result
+    assert result["postflight"]["passed"]
+
+    expected = np.asarray(
+        _transform_image(
+            Image.fromarray(sample.reshape(1, 1, 3), "RGB"),
+            ADOBE_RGB_1998_ICC,
+            cmyk_path,
+            "RGB",
+            "CMYK",
+            ImageCms.Intent.RELATIVE_COLORIMETRIC,
+        ),
+        dtype=np.uint8,
+    ).reshape(4)
+    with pikepdf.open(output) as opened:
+        actual_image = np.frombuffer(
+            opened.pages[0].Resources.XObject.Im0.read_bytes(),
+            dtype=np.uint8,
+        )
+        instructions = list(pikepdf.parse_content_stream(opened.pages[0]))
+        actual_vector = np.rint(
+            np.asarray(
+                [
+                    float(value)
+                    for instruction in instructions
+                    if str(instruction.operator) == "k"
+                    for value in instruction.operands
+                ],
+                dtype=np.float64,
+            )
+            * 255.0
+        ).astype(np.uint8)
+    assert np.max(np.abs(actual_image.astype(np.int16) - expected.astype(np.int16))) <= 1
+    assert np.max(np.abs(actual_vector.astype(np.int16) - expected.astype(np.int16))) <= 1
+    assert actual_image.tolist() == [222, 0, 217, 0]
+
+
+def test_default_rgb_invalid_and_shared_image_scope_fail_closed(tmp_path):
+    """DefaultRGB sai hoặc một image dùng hai profile phải dừng trước write."""
+    cmyk_path, srgb_path = _profile_paths()
+
+    invalid_pdf = pikepdf.Pdf.new()
+    invalid_page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"),
+        MediaBox=[0, 0, 100, 100],
+        Resources=pikepdf.Dictionary(
+            ColorSpace=pikepdf.Dictionary(
+                DefaultRGB=pikepdf.Array(
+                    [
+                        pikepdf.Name("/Lab"),
+                        pikepdf.Dictionary(WhitePoint=[0.9505, 1.0, 1.089]),
+                    ]
+                )
+            )
+        ),
+        Contents=invalid_pdf.make_indirect(
+            pikepdf.Stream(invalid_pdf, b"0.2 0.4 0.8 rg 0 0 40 40 re f\n")
+        ),
+    )
+    invalid_pdf.pages.append(
+        pikepdf.Page(invalid_pdf.make_indirect(invalid_page))
+    )
+    invalid_source = tmp_path / "invalid-default-rgb.pdf"
+    invalid_output = tmp_path / "invalid-default-rgb-output.pdf"
+    invalid_pdf.save(invalid_source)
+    invalid_pdf.close()
+
+    invalid = pdf_actions_native.convert_to_cmyk(
+        str(invalid_source), str(invalid_output), cmyk_path, srgb_path
+    )
+    assert not invalid["supported"], invalid
+    assert any("DEFAULT_RGB" in blocker for blocker in invalid["blockers"])
+    assert not invalid_output.exists()
+
+    shared_pdf = pikepdf.Pdf.new()
+    shared_image = shared_pdf.make_indirect(
+        pikepdf.Stream(
+            shared_pdf,
+            bytes([60, 200, 100]),
+            Type=pikepdf.Name("/XObject"),
+            Subtype=pikepdf.Name("/Image"),
+            Width=1,
+            Height=1,
+            BitsPerComponent=8,
+            ColorSpace=pikepdf.Name("/DeviceRGB"),
+        )
+    )
+    adobe_profile = shared_pdf.make_stream(ADOBE_RGB_1998_ICC)
+    adobe_profile["/N"] = 3
+    adobe = shared_pdf.make_indirect(
+        pikepdf.Array([pikepdf.Name("/ICCBased"), adobe_profile])
+    )
+    for index, default_rgb in enumerate((pikepdf.Name("/DeviceRGB"), adobe)):
+        resources = pikepdf.Dictionary(
+            ColorSpace=pikepdf.Dictionary(DefaultRGB=default_rgb),
+            XObject=pikepdf.Dictionary(Im0=shared_image),
+        )
+        page = pikepdf.Dictionary(
+            Type=pikepdf.Name("/Page"),
+            MediaBox=[0, 0, 100, 100],
+            Resources=resources,
+            Contents=shared_pdf.make_indirect(
+                pikepdf.Stream(shared_pdf, b"/Im0 Do\n")
+            ),
+        )
+        shared_pdf.pages.append(pikepdf.Page(shared_pdf.make_indirect(page)))
+    shared_source = tmp_path / "shared-default-rgb.pdf"
+    shared_output = tmp_path / "shared-default-rgb-output.pdf"
+    shared_pdf.save(shared_source)
+    shared_pdf.close()
+
+    shared = pdf_actions_native.convert_to_cmyk(
+        str(shared_source), str(shared_output), cmyk_path, srgb_path
+    )
+    assert not shared["supported"], shared
+    assert any(
+        "DEFAULT_RGB_SHARED_SCOPE_CONFLICT" in blocker
+        for blocker in shared["blockers"]
+    )
+    assert not shared_output.exists()
+
 
 
 @pytest.mark.parametrize(

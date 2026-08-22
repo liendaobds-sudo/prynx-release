@@ -41,6 +41,7 @@ from app.schemas.preflight import (
     ExportPdfxResponse,
     FixFileResponse,
     FixFileWithLogResponse,
+    ConvertColorsPreviewResponse,
     FlattenLayersResponse,
     IccProfilesResponse,
     InksResponse,
@@ -62,6 +63,7 @@ from app.schemas.preflight import (  # noqa: F401
     AutoTrimRequest,
     ChannelReportResponse,
     ConvertColorsRequest,
+    ConvertColorsPreviewRequest,
     ConvertSpotRequest,
     CropRegionsRequest,
     DeleteLayerRequest,
@@ -112,6 +114,7 @@ _PREFLIGHT_ROUTE_FEATURES: dict[str, str | None] = {
     "/preflight/inks/{file_id}": "prepress.convert_colors",
     "/preflight/convert-spot": "prepress.convert_colors",
     "/preflight/convert-colors": "prepress.convert_colors",
+    "/preflight/convert-colors/preview": "prepress.convert_colors",
     "/preflight/icc-profiles": "prepress.convert_colors",
     "/preflight/softproof": "prepress.convert_colors",
     "/preflight/separation-composite": "prepress.convert_colors",
@@ -1395,6 +1398,49 @@ async def export_pdfx(req: ExportPdfxRequest):
 
 
 # Map UI key → bundle filename; resolve_cmyk_profile_path() is preferred (bundle + OS).
+@router.post(
+    "/preflight/convert-colors/preview",
+    response_model=ConvertColorsPreviewResponse,
+)
+async def preview_convert_colors(req: ConvertColorsPreviewRequest):
+    """Phân tích một trang trong thư mục tạm; không tạo file tải xuống."""
+
+    from app.core.color_conversion_preview import (
+        ColorConversionPreviewError,
+        create_color_conversion_preview,
+    )
+
+    file_path = _get_file_path(req.file_id)
+    try:
+        return await create_color_conversion_preview(
+            file_path,
+            page=req.page,
+            conversions=list(req.conversions),
+            icc_profile=req.icc_profile,
+            rendering_intent=req.rendering_intent,
+            preserve_black=req.preserve_black,
+            black_point_compensation=req.black_point_compensation,
+            gamut_mapping=req.gamut_mapping,
+            adjustment_stage=req.adjustment_stage,
+            brightness_lstar=req.brightness_lstar,
+            contrast_percent=req.contrast_percent,
+            vibrance_percent=req.vibrance_percent,
+            preview_policy=req.preview_policy,
+            dpi=req.dpi,
+            request_id=req.request_id,
+        )
+    except ColorConversionPreviewError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception("convert-colors preview failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Không thể phân tích bản CMYK. Hãy thử lại với trang khác.",
+        ) from exc
+
+
 @router.post("/preflight/convert-colors", response_model=FixFileWithLogResponse)
 async def convert_colors(req: ConvertColorsRequest):
     """Chuyển đổi không gian màu toàn bộ file PDF."""
@@ -1438,7 +1484,13 @@ async def convert_colors(req: ConvertColorsRequest):
             if conv == "spot_to_cmyk":
                 from app.core.ink_manager import InkManagerEngine
                 engine = InkManagerEngine()
-                output = await engine.convert_spot_to_cmyk(current_path, None)
+                # COLOR (audit 2026-08-21 §COLOR.33): alternate Lab của màu
+                # pha phải quy về đúng profile CMYK đã chọn cho bước RGB.
+                # Dùng profile mặc định ở đây sẽ tạo numerics FOGRA39 bên
+                # trong artifact đang khai SWOP/GRACoL.
+                output = await engine.convert_spot_to_cmyk(
+                    current_path, None, cmyk_profile=resolved_cmyk_profile
+                )
                 _cleanup_intermediate(prev_intermediate)
                 prev_intermediate = output
                 current_path = output
@@ -1483,6 +1535,7 @@ async def convert_colors(req: ConvertColorsRequest):
                             rendering_intent=req.rendering_intent,
                             preserve_black=req.preserve_black,
                             black_point_compensation=req.black_point_compensation,
+                            gamut_mapping=req.gamut_mapping,
                             adjustment_stage=req.adjustment_stage,
                             **adjustment_options,
                         )

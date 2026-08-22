@@ -580,7 +580,12 @@ class InkManagerEngine:
             })
         return result
 
-    async def convert_spot_to_cmyk(self, file_path: str, spot_name: str | None = None) -> str:
+    async def convert_spot_to_cmyk(
+        self,
+        file_path: str,
+        spot_name: str | None = None,
+        cmyk_profile: str | None = None,
+    ) -> str:
         """
         Chuyển spot color → CMYK vĩnh viễn bằng engine object-level.
         spot_name: None = convert ALL spots.
@@ -607,7 +612,10 @@ class InkManagerEngine:
                 file_path,
                 output_path,
                 spot_name,
-                icc_profiles.resolve_cmyk_profile_path(),
+                # COLOR (audit 2026-08-21 §COLOR.33): pipeline kết hợp phải
+                # dùng cùng profile đích cho RGB và alternate Lab của Spot.
+                # Caller độc lập không truyền vẫn giữ FOGRA39 mặc định cũ.
+                cmyk_profile or icc_profiles.resolve_cmyk_profile_path(),
             )
         except Exception as e:  # noqa: BLE001
             # GS-SUNSET (audit 2026-08-08 §GS.2): lỗi engine nội bộ phải dừng

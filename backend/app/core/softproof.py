@@ -42,6 +42,8 @@ INTENT_MAP = {
     "saturation": ImageCms.Intent.SATURATION,
     "absolute": ImageCms.Intent.ABSOLUTE_COLORIMETRIC,
 }
+_LCMS_GAMUT_ALARM_RGB = (127, 127, 127)
+
 
 @dataclass(frozen=True)
 class _PpeSoftProofResult:
@@ -69,6 +71,37 @@ class SoftProofEngine:
 
     def _resolve_profile(self, profile_id: str) -> str | None:
         return resolve_profile_path(profile_id)
+    def render_gamut_warning(
+        self,
+        source_rgb: Image.Image,
+        *,
+        profile_id: str = "fogra39",
+        intent: str = "relative",
+    ) -> tuple[str | None, float]:
+        """Đo gamut trực tiếp trên raster RGB nguồn theo profile đích."""
+
+        normalized_profile = (profile_id or "fogra39").strip().lower()
+        if normalized_profile in ("auto", ""):
+            normalized_profile = "fogra39"
+        profile_path = self._resolve_profile(normalized_profile)
+        if not profile_path:
+            profile_name = PROFILE_REGISTRY.get(
+                normalized_profile,
+                {},
+            ).get("name", normalized_profile)
+            raise RuntimeError(
+                f"Không tìm thấy ICC '{profile_name}' để đo gamut nguồn."
+            )
+        cms_intent = INTENT_MAP.get(
+            intent,
+            ImageCms.Intent.RELATIVE_COLORIMETRIC,
+        )
+        return self._gamut_overlay_from_rgb(
+            source_rgb,
+            profile_path,
+            cms_intent,
+        )
+
 
     async def render_softproof(
         self,
@@ -561,7 +594,39 @@ class SoftProofEngine:
         """Out-of-gamut mask relative to print profile (from display RGB source)."""
         src = self._render_pdfium_rgb(pdf_path, page_num, dpi)
         src = self._crop_preview_image(src, clip)
+        return self._gamut_overlay_from_rgb(
+            src,
+            profile_path,
+            cms_intent,
+            proofed=proofed,
+        )
+
+    def _gamut_overlay_from_rgb(
+        self,
+        source_rgb: Image.Image,
+        profile_path: str,
+        cms_intent,
+        *,
+        proofed: Image.Image | None = None,
+    ) -> tuple[str | None, float]:
+        """Dựng mask gamut từ raster RGB, không dùng candidate CMYK làm nguồn."""
+
+        source_rgb = source_rgb.convert("RGB")
         output_profile = ImageCms.getOpenProfile(profile_path)
+        if proofed is None:
+            proof_transform = ImageCms.buildProofTransform(
+                inputProfile=self._srgb_profile,
+                outputProfile=self._srgb_profile,
+                proofProfile=output_profile,
+                inMode="RGB",
+                outMode="RGB",
+                renderingIntent=cms_intent,
+                proofRenderingIntent=cms_intent,
+                flags=ImageCms.Flags.SOFTPROOFING,
+            )
+            proofed = source_rgb.copy()
+            ImageCms.applyTransform(proofed, proof_transform, inPlace=True)
+
         gamut_transform = ImageCms.buildProofTransform(
             inputProfile=self._srgb_profile,
             outputProfile=self._srgb_profile,
@@ -572,13 +637,19 @@ class SoftProofEngine:
             proofRenderingIntent=cms_intent,
             flags=ImageCms.Flags.SOFTPROOFING | ImageCms.Flags.GAMUTCHECK,
         )
-        gamut_img = src.copy()
+        gamut_img = source_rgb.copy()
         ImageCms.applyTransform(gamut_img, gamut_transform, inPlace=True)
-        arr_gamut = np.array(gamut_img)
-        arr_proof = np.array(proofed.resize(gamut_img.size) if proofed.size != gamut_img.size else proofed)
-        is_alarm = np.all(arr_gamut == 0, axis=2)
+        arr_gamut = np.asarray(gamut_img, dtype=np.uint8)
+        proofed = (
+            proofed.resize(gamut_img.size)
+            if proofed.size != gamut_img.size
+            else proofed
+        )
+        arr_proof = np.asarray(proofed.convert("RGB"), dtype=np.uint8)
+        is_alarm = np.all(arr_gamut == _LCMS_GAMUT_ALARM_RGB, axis=2)
+        changed_by_gamut_check = np.any(arr_gamut != arr_proof, axis=2)
         is_dark = np.all(arr_proof < 15, axis=2)
-        mask = is_alarm & ~is_dark
+        mask = is_alarm & changed_by_gamut_check & ~is_dark
         h, w = mask.shape
         pct = round(float(np.sum(mask)) / max(1, w * h) * 100, 2)
         overlay = np.zeros((h, w, 4), dtype=np.uint8)
