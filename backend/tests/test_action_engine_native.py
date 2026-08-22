@@ -8,6 +8,7 @@ phần còn lại. Mỗi test dựng PDF trong bộ nhớ để không phụ thu
 import asyncio
 import hashlib
 import io
+import sys
 import zlib
 from pathlib import Path
 
@@ -116,6 +117,49 @@ def test_placement_scan_follows_form_xobject_matrix(tmp_path):
     assert placement.width_pt == pytest.approx(100.0, abs=0.01), "50 × 2 = 100pt"
 
 
+def test_placement_scan_parses_reused_form_only_once(monkeypatch):
+    """Cache parse Form nhưng vẫn áp CTM riêng cho từng lần placement."""
+    pdf = pikepdf.Pdf.new()
+    img = pdf.make_indirect(_image_stream(pdf, 600, 600))
+    form = pikepdf.Stream(pdf, b"/Im0 Do\n")
+    form.Type = pikepdf.Name("/XObject")
+    form.Subtype = pikepdf.Name("/Form")
+    form.BBox = [0, 0, 1, 1]
+    form.Matrix = [50, 0, 0, 50, 0, 0]
+    form.Resources = pikepdf.Dictionary(XObject=pikepdf.Dictionary(Im0=img))
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"),
+        MediaBox=[0, 0, 300, 300],
+        Resources=pikepdf.Dictionary(
+            XObject=pikepdf.Dictionary(Fm0=pdf.make_indirect(form))
+        ),
+        Contents=pdf.make_indirect(
+            pikepdf.Stream(
+                pdf,
+                b"q 2 0 0 2 0 0 cm /Fm0 Do Q\n"
+                b"q 4 0 0 4 0 0 cm /Fm0 Do Q\n",
+            )
+        ),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+
+    parse_calls = 0
+    original_parse = pikepdf.parse_content_stream
+
+    def count_parse_calls(*args, **kwargs):
+        nonlocal parse_calls
+        parse_calls += 1
+        return original_parse(*args, **kwargs)
+
+    monkeypatch.setattr(pikepdf, "parse_content_stream", count_parse_calls)
+    scan = pdf_actions_native.scan_image_placements(pdf)
+
+    placement = next(iter(scan.placements.values()))
+    assert parse_calls == 2, "một lần cho trang và một lần cho Form dùng lại"
+    assert placement.count == 2
+    assert placement.width_pt == pytest.approx(200.0, abs=0.01)
+
+
 # ── downscale_images ────────────────────────────────────────────────────────
 
 def test_downscale_reduces_only_images_above_threshold(tmp_path):
@@ -123,7 +167,13 @@ def test_downscale_reduces_only_images_above_threshold(tmp_path):
     out = tmp_path / "hi_out.pdf"
     _one_page_pdf(src, img_w=1200, img_h=1200, placed_pt=72.0)  # 1200 DPI
 
-    res = pdf_actions_native.downscale_images(str(src), str(out), 300.0, 600.0)
+    res = pdf_actions_native.downscale_images(
+        str(src),
+        str(out),
+        300.0,
+        600.0,
+        save_unchanged=False,
+    )
     assert res["changed"] == 1
     # 1200 DPI → 300 DPI là hạ 4 lần.
     assert _first_image(out) == (300, 300)
@@ -137,6 +187,24 @@ def test_downscale_leaves_images_below_threshold_untouched(tmp_path):
     res = pdf_actions_native.downscale_images(str(src), str(out), 300.0, 600.0)
     assert res["changed"] == 0
     assert _first_image(out) == (300, 300), "ảnh dưới ngưỡng phải giữ nguyên pixel"
+
+
+def test_downscale_can_skip_unchanged_artifact(tmp_path):
+    """Resize có bản geometry fallback nên no-op không cần ghi lại toàn PDF."""
+    src = tmp_path / "lo-no-save.pdf"
+    out = tmp_path / "lo-no-save-out.pdf"
+    _one_page_pdf(src, img_w=300, img_h=300, placed_pt=144.0)
+
+    res = pdf_actions_native.downscale_images(
+        str(src),
+        str(out),
+        300.0,
+        600.0,
+        save_unchanged=False,
+    )
+
+    assert res["changed"] == 0
+    assert not out.exists()
 
 
 def test_downscale_keeps_smask_aligned_with_image(tmp_path):
@@ -437,6 +505,50 @@ def _color_page(tmp_path, content: bytes, resources=None, name="c.pdf"):
     return p
 
 
+def _set_output_intent(pdf: pikepdf.Pdf, profile_bytes: bytes, label: str):
+    profile = pdf.make_stream(profile_bytes)
+    profile["/N"] = 4
+    intent = pdf.make_indirect(
+        pikepdf.Dictionary(
+            Type=pikepdf.Name("/OutputIntent"),
+            S=pikepdf.Name("/GTS_PDFX"),
+            OutputConditionIdentifier=pikepdf.String(label),
+            DestOutputProfile=profile,
+        )
+    )
+    pdf.Root["/OutputIntents"] = pikepdf.Array([intent])
+    return intent
+
+
+def _mixed_rgb_device_cmyk_page(
+    tmp_path,
+    *,
+    output_intent: bytes | None,
+    name: str,
+):
+    pdf = pikepdf.Pdf.new()
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"),
+        MediaBox=[0, 0, 100, 100],
+        Resources=pikepdf.Dictionary(),
+        Contents=pdf.make_indirect(
+            pikepdf.Stream(
+                pdf,
+                b"0.2 0.4 0.8 rg 0 0 40 40 re f\n"
+                b"0.2 0.4 0.6 0.1 k 50 0 40 40 re f\n",
+            )
+        ),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    if output_intent is not None:
+        _set_output_intent(pdf, output_intent, "SOURCE CMYK")
+    path = tmp_path / name
+    pdf.save(path)
+    pdf.close()
+    return path
+
+
+
 def _icc_range_page(tmp_path, carrier: str, declared_range, name: str):
     """Dựng ICCBased RGB ở bốn carrier mà writer màu đang hỗ trợ."""
     _cmyk, srgb = _profiles()
@@ -608,6 +720,401 @@ def test_cmyk_adjustment_zero_is_byte_identical_and_brightness_raises_proof_luma
     ) <= 330.5
 
 
+
+def test_cmyk_vibrance_is_monotonic_and_keeps_neutral_lab():
+    """Vibrance phải đổi chroma đúng dấu nhưng không nhuộm màu dải neutral."""
+    from PIL import Image, ImageCms
+
+    cmyk, srgb = _profiles()
+    source = Image.new("RGB", (6, 1))
+    source.putdata(
+        [
+            (130, 105, 105),
+            (105, 130, 105),
+            (105, 105, 130),
+            (155, 125, 110),
+            (110, 140, 150),
+            (145, 120, 150),
+        ]
+    )
+    lab_profile = ImageCms.createProfile("LAB")
+    proof_to_lab = ImageCms.buildTransform(
+        ImageCms.getOpenProfile(cmyk),
+        lab_profile,
+        "CMYK",
+        "LAB",
+        renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC,
+        flags=pdf_actions_native._CMS_FLAGS(black_point_compensation=True),
+    )
+
+    def mean_chroma(vibrance: float) -> float:
+        separated = pdf_actions_native._CmykTransform(
+            srgb,
+            cmyk,
+            vibrance_percent=vibrance,
+            adjustment_stage="post_cmyk",
+        ).image(source)
+        raw = ImageCms.applyTransform(separated, proof_to_lab).tobytes()
+        chroma = []
+        for offset in range(0, len(raw), 3):
+            a_byte, b_byte = raw[offset + 1 : offset + 3]
+            a_value = a_byte if a_byte <= 127 else a_byte - 256
+            b_value = b_byte if b_byte <= 127 else b_byte - 256
+            chroma.append((a_value * a_value + b_value * b_value) ** 0.5)
+        return sum(chroma) / len(chroma)
+
+    assert mean_chroma(20) > mean_chroma(0) > mean_chroma(-20)
+
+    neutral_raw = bytes(
+        channel
+        for lightness in (0, 32, 96, 160, 224, 255)
+        for channel in (lightness, 0, 0)
+    )
+    neutral_lab = Image.frombytes("LAB", (6, 1), neutral_raw)
+    adjusted = pdf_actions_native._CmykTransform(
+        srgb,
+        cmyk,
+        vibrance_percent=20,
+    )._adjust_lab_image(neutral_lab)
+    assert adjusted.tobytes() == neutral_raw
+
+
+def test_adaptive_vivid_preserves_anchors_and_only_accepts_safer_pixels():
+    """Adaptive giữ neutral/skin và chỉ nhận pixel tốt hơn trong chốt hue/TAC."""
+
+    import numpy as np
+    from PIL import Image, ImageCms
+
+    cmyk, srgb = _profiles()
+    swatches = [
+        (0, 0, 0),
+        (64, 64, 64),
+        (128, 128, 128),
+        (192, 192, 192),
+        (255, 255, 255),
+        (180, 130, 110),
+        (217, 244, 255),
+        (0, 0, 255),
+        (0, 255, 255),
+        (0, 220, 80),
+        (255, 0, 255),
+        (255, 30, 20),
+    ]
+    source = Image.new("RGB", (len(swatches), 1))
+    source.putdata(swatches)
+    baseline = pdf_actions_native._CmykTransform(
+        srgb,
+        cmyk,
+        rendering_intent="relative",
+        gamut_mapping="icc",
+        adjustment_stage="post_cmyk",
+    ).image(source)
+    adaptive = pdf_actions_native._CmykTransform(
+        srgb,
+        cmyk,
+        rendering_intent="relative",
+        gamut_mapping="adaptive_vivid",
+        adjustment_stage="post_cmyk",
+    ).image(source)
+
+    baseline_ink = np.frombuffer(
+        baseline.tobytes(),
+        dtype=np.uint8,
+    ).reshape(-1, 4)
+    adaptive_ink = np.frombuffer(
+        adaptive.tobytes(),
+        dtype=np.uint8,
+    ).reshape(-1, 4)
+    assert np.array_equal(adaptive_ink[:5], baseline_ink[:5])
+    assert np.array_equal(adaptive_ink[5], baseline_ink[5])
+    changed = np.any(adaptive_ink != baseline_ink, axis=1)
+    assert np.any(changed[6:])
+
+    lab_profile = ImageCms.createProfile("LAB")
+    flags = pdf_actions_native._CMS_FLAGS(black_point_compensation=True)
+    source_to_lab = ImageCms.buildTransform(
+        ImageCms.getOpenProfile(srgb),
+        lab_profile,
+        "RGB",
+        "LAB",
+        renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC,
+        flags=flags,
+    )
+    proof_to_lab = ImageCms.buildTransform(
+        ImageCms.getOpenProfile(cmyk),
+        lab_profile,
+        "CMYK",
+        "LAB",
+        renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC,
+        flags=flags,
+    )
+
+    def decode_lab(image, transform):
+        raw = np.frombuffer(
+            ImageCms.applyTransform(image, transform).tobytes(),
+            dtype=np.uint8,
+        ).reshape(-1, 3).astype(np.float64)
+        lab = np.empty(raw.shape, dtype=np.float64)
+        lab[:, 0] = raw[:, 0] * (100.0 / 255.0)
+        lab[:, 1:] = np.where(
+            raw[:, 1:] > 127.0,
+            raw[:, 1:] - 256.0,
+            raw[:, 1:],
+        )
+        return lab
+
+    source_lab = decode_lab(source, source_to_lab)
+    baseline_lab = decode_lab(baseline, proof_to_lab)
+    adaptive_lab = decode_lab(adaptive, proof_to_lab)
+    source_c = np.hypot(source_lab[:, 1], source_lab[:, 2])
+    baseline_c = np.hypot(baseline_lab[:, 1], baseline_lab[:, 2])
+    adaptive_c = np.hypot(adaptive_lab[:, 1], adaptive_lab[:, 2])
+    source_hue = np.arctan2(source_lab[:, 2], source_lab[:, 1])
+
+    def hue_error(lab):
+        hue = np.arctan2(lab[:, 2], lab[:, 1])
+        delta = np.arctan2(
+            np.sin(hue - source_hue),
+            np.cos(hue - source_hue),
+        )
+        return np.abs(delta) * (180.0 / np.pi)
+
+    baseline_hue = hue_error(baseline_lab)
+    adaptive_hue = hue_error(adaptive_lab)
+    baseline_score = (
+        np.abs(baseline_lab[:, 0] - source_lab[:, 0])
+        + pdf_actions_native._ADAPTIVE_CHROMA_SCORE_WEIGHT
+        * np.abs(baseline_c - source_c)
+        + pdf_actions_native._ADAPTIVE_HUE_SCORE_WEIGHT * baseline_hue
+    )
+    adaptive_score = (
+        np.abs(adaptive_lab[:, 0] - source_lab[:, 0])
+        + pdf_actions_native._ADAPTIVE_CHROMA_SCORE_WEIGHT
+        * np.abs(adaptive_c - source_c)
+        + pdf_actions_native._ADAPTIVE_HUE_SCORE_WEIGHT * adaptive_hue
+    )
+    assert np.all(adaptive_score[changed] <= baseline_score[changed] + 1.0e-6)
+
+    chromatic_changes = changed & (source_c >= 8.0)
+    assert np.all(
+        adaptive_hue[chromatic_changes]
+        <= baseline_hue[chromatic_changes]
+        + pdf_actions_native._ADAPTIVE_MAX_EXTRA_HUE_DEGREES
+        + 0.1
+    )
+    baseline_tac = baseline_ink.astype(np.uint16).sum(axis=1)
+    adaptive_tac = adaptive_ink.astype(np.uint16).sum(axis=1)
+    assert np.all(
+        adaptive_tac[changed]
+        <= baseline_tac[changed]
+        + pdf_actions_native._ADAPTIVE_MAX_TAC_INCREASE_BYTES
+    )
+    assert np.all(
+        adaptive_tac[changed] <= pdf_actions_native._ADAPTIVE_MAX_TAC_BYTES
+    )
+    assert not np.any(
+        changed
+        & (source_lab[:, 0] < 99.0)
+        & (adaptive_lab[:, 0] >= 99.0)
+    )
+
+
+def test_adaptive_vivid_keeps_blue_gradient_continuous_without_ghost_bands():
+    """Gradient xanh gần rgb.pdf không được nhảy màu do chọn candidate nhị phân."""
+
+    import numpy as np
+    from PIL import Image, ImageCms
+
+    cmyk, srgb = _profiles()
+    stops = np.asarray(
+        [
+            [230, 250, 255],
+            [88, 216, 248],
+            [40, 168, 248],
+            [8, 120, 248],
+            [8, 88, 248],
+            [0, 50, 240],
+        ],
+        dtype=np.float64,
+    )
+    segments = [
+        np.rint(np.linspace(start, end, 257, endpoint=False)).astype(np.uint8)
+        for start, end in zip(stops[:-1], stops[1:])
+    ]
+    rgb = np.concatenate([*segments, stops[-1:].astype(np.uint8)], axis=0)
+    source = Image.fromarray(rgb.reshape(1, -1, 3), "RGB")
+    adaptive = pdf_actions_native._CmykTransform(
+        srgb,
+        cmyk,
+        rendering_intent="relative",
+        black_point_compensation=True,
+        gamut_mapping="adaptive_vivid",
+        adjustment_stage="post_cmyk",
+    ).image(source)
+
+    proof = ImageCms.buildTransform(
+        ImageCms.getOpenProfile(cmyk),
+        ImageCms.getOpenProfile(srgb),
+        "CMYK",
+        "RGB",
+        renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC,
+        flags=pdf_actions_native._CMS_FLAGS(black_point_compensation=True),
+    )
+    display = np.asarray(
+        ImageCms.applyTransform(adaptive, proof),
+        dtype=np.int16,
+    ).reshape(-1, 3)
+    ink = np.asarray(adaptive, dtype=np.int16).reshape(-1, 4)
+    adjacent_display = np.max(np.abs(np.diff(display, axis=0)), axis=1)
+    adjacent_ink = np.max(np.abs(np.diff(ink, axis=0)), axis=1)
+
+    # COLOR (audit 2026-08-22 §COLOR.39): hard-switch cũ đạt max 70,
+    # P99 19,16 và Δmực max 23 trên chính gradient này, tạo mảng thấy rõ.
+    assert int(np.max(adjacent_display)) <= 30
+    assert float(np.percentile(adjacent_display, 99)) <= 8.0
+    assert int(np.max(adjacent_ink)) <= 14
+
+def test_saturation_brightness_adjustment_uses_relative_lab_roundtrip():
+    """Brightness dương không được tối đi chỉ vì output intent là Saturation."""
+
+    import numpy as np
+    from PIL import Image, ImageCms
+
+    cmyk, srgb = _profiles()
+    source = Image.new("RGB", (4, 1))
+    source.putdata(
+        [
+            (6, 108, 252),
+            (0, 220, 180),
+            (220, 30, 180),
+            (235, 180, 70),
+        ]
+    )
+    baseline = pdf_actions_native._CmykTransform(
+        srgb,
+        cmyk,
+        rendering_intent="saturation",
+        adjustment_stage="post_cmyk",
+    ).image(source)
+    brighter = pdf_actions_native._CmykTransform(
+        srgb,
+        cmyk,
+        rendering_intent="saturation",
+        brightness_lstar=1,
+        adjustment_stage="post_cmyk",
+    ).image(source)
+    proof_to_lab = ImageCms.buildTransform(
+        ImageCms.getOpenProfile(cmyk),
+        ImageCms.createProfile("LAB"),
+        "CMYK",
+        "LAB",
+        renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC,
+        flags=pdf_actions_native._CMS_FLAGS(black_point_compensation=True),
+    )
+
+    def mean_lightness(image):
+        raw = np.frombuffer(
+            ImageCms.applyTransform(image, proof_to_lab).tobytes(),
+            dtype=np.uint8,
+        ).reshape(-1, 3)
+        return float(np.mean(raw[:, 0] * (100.0 / 255.0)))
+
+    assert mean_lightness(brighter) > mean_lightness(baseline)
+
+
+def test_convert_rejects_invalid_or_incompatible_gamut_mapping(tmp_path):
+    """Mode sai hoặc adaptive pre-ICC phải fail-closed trước khi ghi artifact."""
+
+    cmyk, srgb = _profiles()
+    src = _color_page(tmp_path, b"1 0 0 rg 0 0 50 50 re f\n")
+
+    invalid_out = tmp_path / "invalid-gamut.pdf"
+    invalid = pdf_actions_native.convert_to_cmyk(
+        str(src),
+        str(invalid_out),
+        cmyk,
+        srgb,
+        gamut_mapping="unknown",
+    )
+    assert invalid["supported"] is False
+    assert invalid["blockers"][0].startswith("[INVALID_GAMUT_MAPPING]")
+    assert not invalid_out.exists()
+
+    incompatible_out = tmp_path / "adaptive-pre-icc.pdf"
+    incompatible = pdf_actions_native.convert_to_cmyk(
+        str(src),
+        str(incompatible_out),
+        cmyk,
+        srgb,
+        gamut_mapping="adaptive_vivid",
+        adjustment_stage="pre_icc",
+    )
+    assert incompatible["supported"] is False
+    assert incompatible["blockers"][0].startswith("[INVALID_GAMUT_MAPPING]")
+    assert not incompatible_out.exists()
+
+
+def test_cmyk_lab_adjustment_numpy_and_fallback_are_byte_identical(monkeypatch):
+    """Sidecar tối giản phải dùng đúng cùng encoding Lab như production NumPy."""
+    from PIL import Image
+
+    cmyk, srgb = _profiles()
+    transform = pdf_actions_native._CmykTransform(
+        srgb,
+        cmyk,
+        brightness_lstar=1.25,
+        contrast_percent=7,
+        vibrance_percent=18,
+    )
+    lab_raw = bytes(
+        (
+            28,
+            0,
+            0,
+            64,
+            12,
+            244,
+            112,
+            226,
+            18,
+            168,
+            45,
+            218,
+            220,
+            188,
+            52,
+            252,
+            127,
+            128,
+        )
+    )
+    lab_image = Image.frombytes("LAB", (6, 1), lab_raw)
+    production = transform._adjust_lab_image(lab_image).tobytes()
+
+    monkeypatch.setitem(sys.modules, "numpy", None)
+    fallback = transform._adjust_lab_image(lab_image).tobytes()
+    assert fallback == production
+
+
+def test_cmyk_vibrance_does_not_roundtrip_unchanged_neutrals():
+    """Neutral không đổi trong Lab phải giữ nguyên đúng số mực CMYK nền."""
+    from PIL import Image
+
+    cmyk, srgb = _profiles()
+    source = Image.new("RGB", (9, 1))
+    source.putdata(
+        [(level, level, level) for level in range(0, 256, 32)]
+        + [(255, 255, 255)]
+    )
+    baseline = pdf_actions_native._CmykTransform(srgb, cmyk).image(source)
+    vibrant = pdf_actions_native._CmykTransform(
+        srgb,
+        cmyk,
+        vibrance_percent=20,
+        adjustment_stage="post_cmyk",
+    ).image(source)
+    assert vibrant.tobytes() == baseline.tobytes()
+
 def test_convert_brightness_keeps_pure_black_and_rejects_unsafe_range(tmp_path):
     """Bù sáng không làm bẩn chữ K-only; request vượt miền không sinh artifact."""
     cmyk, srgb = _profiles()
@@ -731,6 +1238,171 @@ def test_convert_replaces_stale_output_intent(tmp_path):
         assert len(intents) == 1
         assert "SWOP OLD" not in str(intents[0].get("/OutputConditionIdentifier"))
         assert bytes(intents[0]["/DestOutputProfile"].read_bytes()) == Path(cmyk).read_bytes()
+
+def test_convert_mixed_device_cmyk_keeps_matching_output_intent_and_numbers(tmp_path):
+    """DeviceCMYK đã đúng profile đích được giữ số mực và object OutputIntent."""
+    cmyk, srgb = _profiles()
+    source = _mixed_rgb_device_cmyk_page(
+        tmp_path,
+        output_intent=Path(cmyk).read_bytes(),
+        name="mixed-matching-cmyk.pdf",
+    )
+    output = tmp_path / "mixed-matching-cmyk-output.pdf"
+
+    result = pdf_actions_native.convert_to_cmyk(
+        str(source), str(output), cmyk, srgb
+    )
+
+    assert result["supported"], result
+    assert result["existing_device_cmyk"] == 1
+    with pikepdf.open(output) as pdf:
+        content = bytes(pdf.pages[0].Contents.read_bytes())
+        intent = pdf.Root.OutputIntents[0]
+        assert str(intent.OutputConditionIdentifier) == "SOURCE CMYK"
+        assert bytes(intent.DestOutputProfile.read_bytes()) == Path(cmyk).read_bytes()
+    assert b"0.2 0.4 0.6 0.1 k" in content
+    assert b" rg" not in content
+
+
+@pytest.mark.parametrize(
+    ("source_profile", "expected_code"),
+    [
+        (None, "EXISTING_CMYK_OUTPUT_INTENT_MISSING"),
+        ("conflict", "EXISTING_CMYK_PROFILE_CONFLICT"),
+    ],
+)
+def test_convert_mixed_device_cmyk_fails_closed_before_write(
+    tmp_path,
+    source_profile,
+    expected_code,
+):
+    """Không được relabel DeviceCMYK thiếu/sai profile thành profile đích."""
+    cmyk, srgb = _profiles()
+    profile_bytes = None
+    if source_profile == "conflict":
+        changed = bytearray(Path(cmyk).read_bytes())
+        changed[84] ^= 1
+        profile_bytes = bytes(changed)
+    source = _mixed_rgb_device_cmyk_page(
+        tmp_path,
+        output_intent=profile_bytes,
+        name=f"mixed-{source_profile or 'missing'}-cmyk.pdf",
+    )
+    output = tmp_path / f"mixed-{source_profile or 'missing'}-output.pdf"
+
+    result = pdf_actions_native.convert_to_cmyk(
+        str(source), str(output), cmyk, srgb
+    )
+
+    assert not result["supported"], result
+    assert any(expected_code in blocker for blocker in result["blockers"])
+    assert not output.exists()
+    with pikepdf.open(source) as pdf:
+        assert b" rg" in bytes(pdf.pages[0].Contents.read_bytes())
+
+
+def test_existing_cmyk_scan_ignores_unused_resource_and_spot_alternate(tmp_path):
+    """Resource CMYK không gọi và alternate của Spot không phải process CMYK."""
+    cmyk, srgb = _profiles()
+    pdf = pikepdf.Pdf.new()
+    unused = pikepdf.Stream(
+        pdf,
+        bytes([0, 0, 0, 255]),
+        Type=pikepdf.Name("/XObject"),
+        Subtype=pikepdf.Name("/Image"),
+        Width=1,
+        Height=1,
+        BitsPerComponent=8,
+        ColorSpace=pikepdf.Name("/DeviceCMYK"),
+    )
+    tint = pikepdf.Dictionary(
+        FunctionType=2,
+        Domain=[0, 1],
+        C0=[0, 0, 0, 0],
+        C1=[0, 1, 1, 0],
+        N=1,
+        Range=[0, 1, 0, 1, 0, 1, 0, 1],
+    )
+    spot = pikepdf.Array(
+        [
+            pikepdf.Name("/Separation"),
+            pikepdf.Name("/CutContour"),
+            pikepdf.Name("/DeviceCMYK"),
+            pdf.make_indirect(tint),
+        ]
+    )
+    resources = pikepdf.Dictionary(
+        XObject=pikepdf.Dictionary(Unused=pdf.make_indirect(unused)),
+        ColorSpace=pikepdf.Dictionary(Spot=pdf.make_indirect(spot)),
+    )
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"),
+        MediaBox=[0, 0, 100, 100],
+        Resources=resources,
+        Contents=pdf.make_indirect(
+            pikepdf.Stream(
+                pdf,
+                b"/Spot cs 1 scn 0 0 40 40 re f\n"
+                b"0.2 0.4 0.8 rg 50 0 40 40 re f\n",
+            )
+        ),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    source = tmp_path / "spot-unused-cmyk.pdf"
+    output = tmp_path / "spot-unused-cmyk-output.pdf"
+    pdf.save(source)
+    pdf.close()
+
+    result = pdf_actions_native.convert_to_cmyk(
+        str(source), str(output), cmyk, srgb
+    )
+
+    assert result["supported"], result
+    assert result["existing_device_cmyk"] == 0
+    assert output.exists()
+
+
+def test_existing_cmyk_scan_detects_reachable_image(tmp_path):
+    """Ảnh DeviceCMYK được Do thật phải chịu cùng policy OutputIntent."""
+    cmyk, srgb = _profiles()
+    pdf = pikepdf.Pdf.new()
+    image = pikepdf.Stream(
+        pdf,
+        bytes([0, 64, 128, 32]),
+        Type=pikepdf.Name("/XObject"),
+        Subtype=pikepdf.Name("/Image"),
+        Width=1,
+        Height=1,
+        BitsPerComponent=8,
+        ColorSpace=pikepdf.Name("/DeviceCMYK"),
+    )
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"),
+        MediaBox=[0, 0, 100, 100],
+        Resources=pikepdf.Dictionary(
+            XObject=pikepdf.Dictionary(Im0=pdf.make_indirect(image))
+        ),
+        Contents=pdf.make_indirect(pikepdf.Stream(pdf, b"/Im0 Do\n")),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    source = tmp_path / "reachable-cmyk-image.pdf"
+    output = tmp_path / "reachable-cmyk-image-output.pdf"
+    pdf.save(source)
+    pdf.close()
+
+    result = pdf_actions_native.convert_to_cmyk(
+        str(source), str(output), cmyk, srgb
+    )
+
+    assert not result["supported"], result
+    assert result["existing_device_cmyk"] == 1
+    assert any(
+        "EXISTING_CMYK_OUTPUT_INTENT_MISSING" in blocker
+        for blocker in result["blockers"]
+    )
+    assert not output.exists()
+
+
 
 
 def test_convert_cmyk_image_writes_decodable_flate_stream_and_renders(tmp_path):
@@ -2124,6 +2796,17 @@ def test_four_actions_use_internal_engines(tmp_path):
         Contents=pdf.make_indirect(pikepdf.Stream(pdf, content)),
     )
     pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    # COLOR audit: mixed RGB+CMYK fixture has a matching destination OutputIntent.
+    profile_stream = pdf.make_stream(Path(_profiles()[0]).read_bytes())
+    profile_stream["/N"] = 4
+    output_intent = pdf.make_indirect(
+        pikepdf.Dictionary(
+            Type=pikepdf.Name("/OutputIntent"),
+            S=pikepdf.Name("/GTS_PDFX"),
+            DestOutputProfile=profile_stream,
+        )
+    )
+    pdf.Root["/OutputIntents"] = pikepdf.Array([output_intent])
     src = tmp_path / "internal_engine.pdf"
     pdf.save(str(src))
     pdf.close()

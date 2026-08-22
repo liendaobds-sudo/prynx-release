@@ -110,6 +110,8 @@ class _Scan:
 
 
 _MAX_FORM_DEPTH = 12
+_ScanInstructionOperand = tuple[float, ...] | str | None
+_ScanInstruction = tuple[str, _ScanInstructionOperand]
 
 
 def _scan_placements(
@@ -119,7 +121,12 @@ def _scan_placements(
     ctm: _Ctm,
     scan: _Scan,
     depth: int,
-    seen_forms: frozenset[int],
+    seen_forms: frozenset[tuple[int, int]],
+    instruction_cache: dict[
+        tuple[int, int],
+        tuple[_ScanInstruction, ...],
+    ],
+    content_key: tuple[int, int] | None,
 ) -> None:
     """Duyệt content stream, tích luỹ CTM để biết mỗi ảnh được đặt to cỡ nào.
 
@@ -131,13 +138,45 @@ def _scan_placements(
         scan.warnings.append("Form XObject lồng quá sâu — bỏ qua nhánh này.")
         return
 
-    try:
-        instructions = pikepdf.parse_content_stream(
-            pikepdf.Stream(pdf, content), "q Q cm Do"
-        )
-    except Exception as exc:  # noqa: BLE001 — content hỏng: bỏ nhánh, không chết
-        scan.warnings.append(f"Không đọc được content stream: {exc}")
-        return
+    # PERF (audit 2026-08-22 §RESIZE.3): một Form thường được Do hàng trăm lần.
+    # Chỉ cache phần parse/chuẩn hoá lệnh; CTM và Resources vẫn được duyệt lại
+    # ở từng placement để giữ đúng kích thước lớn nhất của ảnh.
+    instructions = (
+        instruction_cache.get(content_key)
+        if content_key is not None
+        else None
+    )
+    if instructions is None:
+        try:
+            parsed = pikepdf.parse_content_stream(
+                pikepdf.Stream(pdf, content), "q Q cm Do"
+            )
+        except Exception as exc:  # noqa: BLE001 — content hỏng: bỏ nhánh, không chết
+            scan.warnings.append(f"Không đọc được content stream: {exc}")
+            if content_key is not None:
+                instruction_cache[content_key] = ()
+            return
+
+        normalized: list[_ScanInstruction] = []
+        for instr in parsed:
+            op = str(instr.operator)
+            if op in {"q", "Q"}:
+                normalized.append((op, None))
+            elif op == "cm":
+                try:
+                    values = tuple(float(value) for value in instr.operands)
+                except Exception:  # noqa: BLE001
+                    continue
+                if len(values) == 6:
+                    normalized.append((op, values))
+            elif op == "Do":
+                try:
+                    normalized.append((op, str(instr.operands[0])))
+                except Exception:  # noqa: BLE001
+                    continue
+        instructions = tuple(normalized)
+        if content_key is not None:
+            instruction_cache[content_key] = instructions
 
     stack: list[_Ctm] = []
     cur = ctm
@@ -147,22 +186,16 @@ def _scan_placements(
     except Exception:  # noqa: BLE001
         xobjects = None
 
-    for instr in instructions:
-        op = str(instr.operator)
+    for op, operand in instructions:
         if op == "q":
             stack.append(cur)
         elif op == "Q":
             cur = stack.pop() if stack else ctm
-        elif op == "cm":
+        elif op == "cm" and isinstance(operand, tuple):
+            cur = _Ctm(*operand).then(cur)
+        elif op == "Do" and xobjects is not None and isinstance(operand, str):
             try:
-                vals = [float(v) for v in instr.operands]
-                if len(vals) == 6:
-                    cur = _Ctm(*vals).then(cur)
-            except Exception:  # noqa: BLE001
-                continue
-        elif op == "Do" and xobjects is not None:
-            try:
-                name = str(instr.operands[0])
+                name = operand
                 target = xobjects.get(name)
                 if target is None:
                     continue
@@ -199,6 +232,8 @@ def _scan_placements(
                         scan,
                         depth + 1,
                         seen_forms | ({form_key} if form_key is not None else frozenset()),
+                        instruction_cache,
+                        form_key,
                     )
                 except Exception as exc:  # noqa: BLE001
                     scan.warnings.append(f"Bỏ qua Form XObject {name}: {exc}")
@@ -218,6 +253,10 @@ def _objkey(obj: pikepdf.Object) -> tuple[int, int] | None:
 def scan_image_placements(pdf: pikepdf.Pdf) -> _Scan:
     """Kích thước đặt lớn nhất của mọi image XObject trong tài liệu."""
     scan = _Scan()
+    instruction_cache: dict[
+        tuple[int, int],
+        tuple[_ScanInstruction, ...],
+    ] = {}
     for page in pdf.pages:
         try:
             resources = page.get("/Resources")
@@ -225,7 +264,15 @@ def scan_image_placements(pdf: pikepdf.Pdf) -> _Scan:
                 continue
             base = _page_base_ctm(page)
             _scan_placements(
-                pdf, resources, _page_content_bytes(page), base, scan, 0, frozenset()
+                pdf,
+                resources,
+                _page_content_bytes(page),
+                base,
+                scan,
+                0,
+                frozenset(),
+                instruction_cache,
+                None,
             )
         except Exception as exc:  # noqa: BLE001
             scan.warnings.append(f"Bỏ qua một trang khi quét ảnh: {exc}")
@@ -266,6 +313,8 @@ def downscale_images(
     output_path: str,
     target_dpi: float = 300.0,
     max_dpi: float = 600.0,
+    *,
+    save_unchanged: bool = True,
 ) -> dict:
     """Hạ ảnh vượt `max_dpi` xuống `target_dpi`, giữ nguyên phần còn lại của file.
 
@@ -369,7 +418,11 @@ def downscale_images(
             # Ảnh đã hạ nhưng object cũ vẫn còn trong file thì dung lượng không
             # giảm — đúng thứ người dùng bấm nút để có.
             pdf.remove_unreferenced_resources()
-        pdf.save(output_path)
+        # PERF (audit 2026-08-22 §RESIZE.4): Resize đã giữ sẵn bản geometry để
+        # fallback nên no-op không cần serialize thêm lần nữa. Action Engine và
+        # Optimize giữ mặc định True vì hợp đồng của chúng luôn cần artifact.
+        if changed or save_unchanged:
+            pdf.save(output_path)
 
     return {
         "changed": changed,
@@ -992,6 +1045,16 @@ _COLOR_ADJUSTMENT_LIMITS = {
     "vibrance_percent": (-20.0, 20.0),
 }
 _COLOR_ADJUSTMENT_STAGES = {"pre_icc", "post_cmyk"}
+_COLOR_GAMUT_MAPPINGS = {"icc", "adaptive_vivid"}
+
+# COLOR (audit 2026-08-22 §COLOR.38): chấm candidate theo appearance thay vì
+# kéo trực tiếp C/M/Y/K. L* là neo; chroma chỉ tăng trong giới hạn hue,
+# neutral/skin, highlight và TAC của bản ICC nền.
+_ADAPTIVE_CHROMA_SCORE_WEIGHT = 1.50
+_ADAPTIVE_HUE_SCORE_WEIGHT = 0.05
+_ADAPTIVE_MAX_EXTRA_HUE_DEGREES = 10.0
+_ADAPTIVE_MAX_TAC_INCREASE_BYTES = 10
+_ADAPTIVE_MAX_TAC_BYTES = 816  # 320% của tổng bốn kênh 8-bit.
 
 
 def _normalize_color_adjustment_stage(value: str | None) -> str:
@@ -999,6 +1062,13 @@ def _normalize_color_adjustment_stage(value: str | None) -> str:
     if stage not in _COLOR_ADJUSTMENT_STAGES:
         raise ValueError("adjustment_stage phải là pre_icc hoặc post_cmyk")
     return stage
+
+
+def _normalize_color_gamut_mapping(value: str | None) -> str:
+    mapping = str(value or "icc").strip().lower()
+    if mapping not in _COLOR_GAMUT_MAPPINGS:
+        raise ValueError("gamut_mapping phải là icc hoặc adaptive_vivid")
+    return mapping
 
 
 def _normalize_color_adjustments(
@@ -1064,6 +1134,7 @@ class _CmykTransform:
         contrast_percent: float = 0,
         vibrance_percent: float = 0,
         adjustment_stage: str = "pre_icc",
+        gamut_mapping: str = "icc",
     ):
         from PIL import Image, ImageCms
 
@@ -1079,6 +1150,23 @@ class _CmykTransform:
             vibrance_percent=vibrance_percent,
         )
         self._adjustment_stage = _normalize_color_adjustment_stage(adjustment_stage)
+        self._gamut_mapping = _normalize_color_gamut_mapping(gamut_mapping)
+        if (
+            self._gamut_mapping == "adaptive_vivid"
+            and self._adjustment_stage != "post_cmyk"
+        ):
+            raise ValueError(
+                "adaptive_vivid chỉ hỗ trợ adjustment_stage=post_cmyk"
+            )
+        if self._gamut_mapping == "adaptive_vivid":
+            try:
+                normalized_intent = _normalize_rendering_intent(rendering_intent)
+            except ValueError as exc:
+                raise ValueError(f"rendering_intent không hợp lệ: {exc}") from exc
+            if normalized_intent != _normalize_rendering_intent("relative"):
+                raise ValueError(
+                    "adaptive_vivid yêu cầu Relative rendering intent"
+                )
         if isinstance(rgb_profile, (bytes, bytearray)):
             self._rgb_profile_handle = ImageCms.getOpenProfile(BytesIO(bytes(rgb_profile)))
         else:
@@ -1095,21 +1183,24 @@ class _CmykTransform:
         self._rgb_to_lab = None
         self._cmyk_to_lab = None
         self._lab_to_cmyk = None
-        if self._adjustment_enabled:
+        if (
+            self._adjustment_enabled
+            or self._gamut_mapping == "adaptive_vivid"
+        ):
             # Cả hai thứ tự đều dùng Lab, không kéo trực tiếp C/M/Y/K. Với
             # ``post_cmyk`` (mặc định ở UI), đổi profile trước rồi tinh chỉnh
             # theo proof — đúng workflow Photoshop/Acrobat. ``pre_icc`` giữ
             # gamut nguồn trước khi đổi profile cho recipe cũ. Đường mặc định
             # 0,0,0 không đi qua vòng Lab để giữ byte-parity.
             lab_profile = ImageCms.createProfile("LAB")
-            intent = _normalize_rendering_intent(rendering_intent)
+            adjustment_intent = ImageCms.Intent.RELATIVE_COLORIMETRIC
             flags = _CMS_FLAGS(black_point_compensation=black_point_compensation)
             self._rgb_to_lab = ImageCms.buildTransform(
                 self._rgb_profile_handle,
                 lab_profile,
                 "RGB",
                 "LAB",
-                renderingIntent=intent,
+                renderingIntent=adjustment_intent,
                 flags=flags,
             )
             self._cmyk_to_lab = ImageCms.buildTransform(
@@ -1117,7 +1208,7 @@ class _CmykTransform:
                 lab_profile,
                 "CMYK",
                 "LAB",
-                renderingIntent=intent,
+                renderingIntent=adjustment_intent,
                 flags=flags,
             )
             self._lab_to_cmyk = ImageCms.buildTransform(
@@ -1125,7 +1216,7 @@ class _CmykTransform:
                 self._cmyk_profile_handle,
                 "LAB",
                 "CMYK",
-                renderingIntent=intent,
+                renderingIntent=adjustment_intent,
                 flags=flags,
             )
         self._tf = ImageCms.buildTransform(
@@ -1142,17 +1233,35 @@ class _CmykTransform:
         """Áp bù L*, tương phản và độ rực trên ảnh Pillow mode ``LAB``."""
         if not self._adjustment_enabled:
             return lab_image
+
+        def encode_ab(value: float) -> int:
+            """Mã hoá a*/b* signed về raw byte của Pillow LAB."""
+            signed = int(round(max(-128.0, min(127.0, value))))
+            return signed if signed >= 0 else signed + 256
+
         try:
             import numpy as np
+        except ImportError:
+            np = None
 
-            values = np.asarray(lab_image, dtype=np.float32)
+        if np is not None:
+            # COLOR (audit 2026-08-21 §COLOR.28/.31): raw Pillow LAB lưu a*/b*
+            # theo signed two's-complement (neutral = 0), khác `getpixel()` vốn
+            # trình bày neutral = 128. Dùng raw bytes cho cả NumPy/fallback để
+            # hai môi trường cho đúng cùng một kết quả.
+            values = np.frombuffer(lab_image.tobytes(), dtype=np.uint8).reshape(
+                lab_image.height,
+                lab_image.width,
+                3,
+            ).astype(np.float32)
             lightness = values[..., 0] * (100.0 / 255.0)
             lightness = (
                 (lightness - 50.0) * (1.0 + self._contrast_percent / 100.0)
                 + 50.0
                 + self._brightness_lstar
             )
-            chroma = values[..., 1:3] - 128.0
+            chroma = values[..., 1:3]
+            chroma = np.where(chroma > 127.0, chroma - 256.0, chroma)
             if abs(self._vibrance_percent) > 1.0e-12:
                 # Ưu tiên vùng ít bão hòa (vibrance) để không đẩy màu đã rực
                 # vào clipping nhanh như Saturation tuyến tính.
@@ -1160,43 +1269,308 @@ class _CmykTransform:
                 weight = np.clip(1.0 - magnitude / 128.0, 0.0, 1.0)
                 factor = 1.0 + (self._vibrance_percent / 100.0) * weight
                 chroma = chroma * factor[..., None]
-            values[..., 0] = np.clip(lightness * (255.0 / 100.0), 0.0, 255.0)
-            values[..., 1:3] = np.clip(chroma + 128.0, 0.0, 255.0)
-            return self._Image.fromarray(
-                np.rint(values).astype(np.uint8),
-                "LAB",
+            output = np.empty(values.shape, dtype=np.uint8)
+            output[..., 0] = np.rint(
+                np.clip(lightness * (255.0 / 100.0), 0.0, 255.0)
+            ).astype(np.uint8)
+            signed = np.rint(np.clip(chroma, -128.0, 127.0)).astype(np.int16)
+            output[..., 1:3] = np.where(signed < 0, signed + 256, signed).astype(
+                np.uint8
             )
-        except Exception:  # noqa: BLE001
-            # Numpy có trong bundle desktop; fallback này giữ sidecar tối giản
-            # chạy được nếu môi trường kiểm tra chỉ có Pillow.
-            adjusted = bytearray()
-            for lightness_byte, a_byte, b_byte in lab_image.getdata():
-                lightness = lightness_byte * (100.0 / 255.0)
-                lightness = (
-                    (lightness - 50.0) * (1.0 + self._contrast_percent / 100.0)
-                    + 50.0
-                    + self._brightness_lstar
+            return self._Image.frombytes("LAB", lab_image.size, output.tobytes())
+
+        # Fallback không NumPy đọc cùng raw representation, tránh trộn
+        # `getdata()` offset-128 với `frombytes()` signed two's-complement.
+        raw = lab_image.tobytes()
+        adjusted = bytearray()
+        for offset in range(0, len(raw), 3):
+            lightness = raw[offset] * (100.0 / 255.0)
+            lightness = (
+                (lightness - 50.0) * (1.0 + self._contrast_percent / 100.0)
+                + 50.0
+                + self._brightness_lstar
+            )
+            a_value = float(raw[offset + 1])
+            b_value = float(raw[offset + 2])
+            if a_value > 127.0:
+                a_value -= 256.0
+            if b_value > 127.0:
+                b_value -= 256.0
+            if abs(self._vibrance_percent) > 1.0e-12:
+                magnitude = math.sqrt(a_value * a_value + b_value * b_value)
+                weight = max(0.0, min(1.0, 1.0 - magnitude / 128.0))
+                factor = 1.0 + (self._vibrance_percent / 100.0) * weight
+                a_value *= factor
+                b_value *= factor
+            adjusted.extend(
+                (
+                    int(round(max(0.0, min(255.0, lightness * 255.0 / 100.0)))),
+                    encode_ab(a_value),
+                    encode_ab(b_value),
                 )
-                a_value = float(a_byte) - 128.0
-                b_value = float(b_byte) - 128.0
-                if abs(self._vibrance_percent) > 1.0e-12:
-                    magnitude = math.sqrt(a_value * a_value + b_value * b_value)
-                    weight = max(0.0, min(1.0, 1.0 - magnitude / 128.0))
-                    factor = 1.0 + (self._vibrance_percent / 100.0) * weight
-                    a_value *= factor
-                    b_value *= factor
-                adjusted.extend(
-                    (
-                        int(round(max(0.0, min(255.0, lightness * 255.0 / 100.0)))),
-                        int(round(max(0.0, min(255.0, a_value + 128.0)))),
-                        int(round(max(0.0, min(255.0, b_value + 128.0)))),
-                    )
+            )
+        return self._Image.frombytes("LAB", lab_image.size, bytes(adjusted))
+
+    def _apply_adaptive_vivid(self, rgb, baseline_cmyk):
+        """Giữ L*/hue làm neo, chỉ nhận candidate CMYK tốt hơn theo từng pixel."""
+
+        import numpy as np
+
+        def decode_lab(image):
+            raw = np.frombuffer(image.tobytes(), dtype=np.uint8).reshape(
+                image.height,
+                image.width,
+                3,
+            ).astype(np.float32)
+            lab = np.empty(raw.shape, dtype=np.float32)
+            lab[..., 0] = raw[..., 0] * (100.0 / 255.0)
+            lab[..., 1:3] = np.where(
+                raw[..., 1:3] > 127.0,
+                raw[..., 1:3] - 256.0,
+                raw[..., 1:3],
+            )
+            return lab
+
+        def encode_lab(lab):
+            raw = np.empty(lab.shape, dtype=np.uint8)
+            raw[..., 0] = np.rint(
+                np.clip(lab[..., 0] * (255.0 / 100.0), 0.0, 255.0)
+            ).astype(np.uint8)
+            signed = np.rint(
+                np.clip(lab[..., 1:3], -128.0, 127.0)
+            ).astype(np.int16)
+            raw[..., 1:3] = np.where(
+                signed < 0,
+                signed + 256,
+                signed,
+            ).astype(np.uint8)
+            return self._Image.frombytes("LAB", rgb.size, raw.tobytes())
+
+        source = decode_lab(
+            self._ImageCms.applyTransform(rgb, self._rgb_to_lab)
+        )
+        baseline = decode_lab(
+            self._ImageCms.applyTransform(baseline_cmyk, self._cmyk_to_lab)
+        )
+        source_l = source[..., 0]
+        source_c = np.hypot(source[..., 1], source[..., 2])
+        baseline_c = np.hypot(baseline[..., 1], baseline[..., 2])
+
+        # COLOR (audit 2026-08-22 §COLOR.38): chỉ bù phần appearance đã mất;
+        # vùng neutral, bóng sâu và gần giấy trắng giảm dần về ICC nền.
+        chromatic_weight = np.clip((source_c - 4.0) / 16.0, 0.0, 1.0)
+        highlight_weight = np.clip((98.0 - source_l) / 13.0, 0.0, 1.0)
+        shadow_weight = np.clip((source_l - 3.0) / 12.0, 0.0, 1.0)
+        adaptive_weight = (
+            chromatic_weight * highlight_weight * shadow_weight
+        )
+
+        target = source.copy()
+        target[..., 0] = np.clip(
+            source_l
+            + 2.0
+            * np.maximum(source_l - baseline[..., 0], 0.0)
+            * adaptive_weight,
+            0.0,
+            100.0,
+        )
+        target_c = (
+            source_c
+            + 2.0
+            * np.maximum(source_c - baseline_c, 0.0)
+            * adaptive_weight
+        )
+        source_direction = (
+            source[..., 1:3] / np.maximum(source_c[..., None], 1.0e-6)
+        )
+        target[..., 1:3] = source_direction * target_c[..., None]
+
+        candidate_cmyk = self._ImageCms.applyTransform(
+            encode_lab(target),
+            self._lab_to_cmyk,
+        )
+        candidate = decode_lab(
+            self._ImageCms.applyTransform(candidate_cmyk, self._cmyk_to_lab)
+        )
+
+        source_hue = np.arctan2(source[..., 2], source[..., 1])
+
+        def hue_error(lab):
+            hue = np.arctan2(lab[..., 2], lab[..., 1])
+            delta = np.arctan2(
+                np.sin(hue - source_hue),
+                np.cos(hue - source_hue),
+            )
+            return np.abs(delta) * (180.0 / np.pi)
+
+        baseline_hue_error = hue_error(baseline)
+        candidate_hue_error = hue_error(candidate)
+        candidate_c = np.hypot(candidate[..., 1], candidate[..., 2])
+        baseline_score = (
+            np.abs(baseline[..., 0] - source_l)
+            + _ADAPTIVE_CHROMA_SCORE_WEIGHT
+            * np.abs(baseline_c - source_c)
+            + _ADAPTIVE_HUE_SCORE_WEIGHT * baseline_hue_error
+        )
+        candidate_score = (
+            np.abs(candidate[..., 0] - source_l)
+            + _ADAPTIVE_CHROMA_SCORE_WEIGHT
+            * np.abs(candidate_c - source_c)
+            + _ADAPTIVE_HUE_SCORE_WEIGHT * candidate_hue_error
+        )
+
+        source_rgb = np.asarray(rgb, dtype=np.uint8)
+        paper = np.all(source_rgb >= 254, axis=-1)
+        skin = (
+            (source_l >= 25.0)
+            & (source_l <= 90.0)
+            & (source[..., 1] >= 5.0)
+            & (source[..., 1] <= 35.0)
+            & (source[..., 2] >= 5.0)
+            & (source[..., 2] <= 40.0)
+        )
+        baseline_ink = np.frombuffer(
+            baseline_cmyk.tobytes(),
+            dtype=np.uint8,
+        ).reshape(-1, 4)
+        candidate_ink = np.frombuffer(
+            candidate_cmyk.tobytes(),
+            dtype=np.uint8,
+        ).reshape(-1, 4)
+        baseline_tac = baseline_ink.astype(np.uint16).sum(axis=1).reshape(
+            source_l.shape
+        )
+        candidate_tac = candidate_ink.astype(np.uint16).sum(axis=1).reshape(
+            source_l.shape
+        )
+        tac_safe = (
+            candidate_tac
+            <= baseline_tac + _ADAPTIVE_MAX_TAC_INCREASE_BYTES
+        ) & (candidate_tac <= _ADAPTIVE_MAX_TAC_BYTES)
+        hue_safe = (source_c < 8.0) | (
+            candidate_hue_error
+            <= baseline_hue_error + _ADAPTIVE_MAX_EXTRA_HUE_DEGREES
+        )
+        highlight_safe = ~(
+            (source_l < 99.0) & (candidate[..., 0] >= 99.0)
+        )
+        shadow_safe = ~(
+            (source_l > 1.0) & (candidate[..., 0] <= 1.0)
+        )
+        choose = (
+            (candidate_score + 1.0e-6 < baseline_score)
+            & (source_c >= 4.0)
+            & ~paper
+            & ~skin
+            & hue_safe
+            & highlight_safe
+            & shadow_safe
+            & tac_safe
+        ).reshape(-1)
+
+        # COLOR (audit 2026-08-22 §COLOR.39): không hard-switch từng pixel
+        # giữa ICC nền và candidate. Biên chọn nhị phân từng tạo mảng/ghost rõ
+        # trên gradient của rgb.pdf. Trộn liên tục theo màu nguồn để vector và
+        # ảnh raster dùng cùng mapping, đồng thời vẫn giữ các chốt hue/TAC.
+        quality = 1.0 / (
+            1.0
+            + np.exp(
+                np.clip(
+                    (candidate_score - baseline_score),
+                    -30.0,
+                    30.0,
                 )
-            return self._Image.frombytes("LAB", lab_image.size, bytes(adjusted))
+            )
+        )
+        blend = np.clip(
+            adaptive_weight * quality * 0.45,
+            0.0,
+            1.0,
+        ).reshape(-1, 1)
+        blend *= (~paper).reshape(-1, 1).astype(np.float32)
+        blend *= (~skin).reshape(-1, 1).astype(np.float32)
+        blend *= hue_safe.reshape(-1, 1).astype(np.float32)
+        blend *= highlight_safe.reshape(-1, 1).astype(np.float32)
+        blend *= shadow_safe.reshape(-1, 1).astype(np.float32)
+        blend *= tac_safe.reshape(-1, 1).astype(np.float32)
+        output = np.rint(
+            baseline_ink.astype(np.float32) * (1.0 - blend)
+            + candidate_ink.astype(np.float32) * blend
+        ).astype(np.uint8)
+        output_image = self._Image.frombytes(
+            "CMYK",
+            baseline_cmyk.size,
+            output.tobytes(),
+        )
+        output_lab = decode_lab(
+            self._ImageCms.applyTransform(output_image, self._cmyk_to_lab)
+        )
+        output_c = np.hypot(output_lab[..., 1], output_lab[..., 2])
+        output_hue_error = hue_error(output_lab)
+        output_score = (
+            np.abs(output_lab[..., 0] - source_l)
+            + _ADAPTIVE_CHROMA_SCORE_WEIGHT * np.abs(output_c - source_c)
+            + _ADAPTIVE_HUE_SCORE_WEIGHT * output_hue_error
+        )
+        quantization_regressed = (output_score > baseline_score + 1.0e-6).reshape(-1)
+        output[quantization_regressed] = baseline_ink[quantization_regressed]
+        return self._Image.frombytes(
+            "CMYK",
+            baseline_cmyk.size,
+            output.tobytes(),
+        )
+
+    def _preserve_unchanged_lab_pixels(
+        self,
+        baseline_cmyk,
+        original_lab,
+        adjusted_lab,
+        adjusted_cmyk,
+    ):
+        """Giữ nguyên số mực nếu adjustment không đổi pixel Lab."""
+        original_raw = original_lab.tobytes()
+        adjusted_lab_raw = adjusted_lab.tobytes()
+        if original_raw == adjusted_lab_raw:
+            return baseline_cmyk
+
+        baseline_raw = baseline_cmyk.tobytes()
+        adjusted_raw = adjusted_cmyk.tobytes()
+        try:
+            import numpy as np
+        except ImportError:
+            np = None
+
+        if np is not None:
+            original = np.frombuffer(original_raw, dtype=np.uint8).reshape(-1, 3)
+            changed_lab = np.frombuffer(
+                adjusted_lab_raw, dtype=np.uint8
+            ).reshape(-1, 3)
+            unchanged = np.all(original == changed_lab, axis=1)
+            if not np.any(unchanged):
+                return adjusted_cmyk
+            output = np.frombuffer(adjusted_raw, dtype=np.uint8).reshape(-1, 4).copy()
+            baseline = np.frombuffer(baseline_raw, dtype=np.uint8).reshape(-1, 4)
+            output[unchanged] = baseline[unchanged]
+            return self._Image.frombytes("CMYK", adjusted_cmyk.size, output.tobytes())
+
+        output = bytearray(adjusted_raw)
+        for pixel in range(original_lab.width * original_lab.height):
+            lab_offset = pixel * 3
+            if (
+                original_raw[lab_offset : lab_offset + 3]
+                == adjusted_lab_raw[lab_offset : lab_offset + 3]
+            ):
+                cmyk_offset = pixel * 4
+                output[cmyk_offset : cmyk_offset + 4] = baseline_raw[
+                    cmyk_offset : cmyk_offset + 4
+                ]
+        return self._Image.frombytes("CMYK", adjusted_cmyk.size, bytes(output))
 
     def _apply(self, pil):
         rgb = pil.convert("RGB")
         cmyk = self._ImageCms.applyTransform(rgb, self._tf)
+        if self._gamut_mapping == "adaptive_vivid":
+            cmyk = self._apply_adaptive_vivid(rgb, cmyk)
         if not self._adjustment_enabled:
             return cmyk
         if self._adjustment_stage == "pre_icc":
@@ -1204,7 +1578,16 @@ class _CmykTransform:
         else:
             lab = self._ImageCms.applyTransform(cmyk, self._cmyk_to_lab)
         adjusted_lab = self._adjust_lab_image(lab)
-        return self._ImageCms.applyTransform(adjusted_lab, self._lab_to_cmyk)
+        adjusted_cmyk = self._ImageCms.applyTransform(adjusted_lab, self._lab_to_cmyk)
+        # COLOR (audit 2026-08-21 §COLOR.28/.32): một vòng CMYK→Lab→CMYK
+        # có thể đổi số mực chỉ vì lượng tử hóa CMM, dù adjustment không hề
+        # chạm pixel đó. Giữ byte nền để neutral/highlight không bị drift.
+        return self._preserve_unchanged_lab_pixels(
+            cmyk,
+            lab,
+            adjusted_lab,
+            adjusted_cmyk,
+        )
 
     def __call__(self, r: float, g: float, b: float) -> tuple[float, float, float, float]:
         key = (
@@ -1323,17 +1706,43 @@ def _cs_is_device_rgb(cs) -> bool:
 
 
 def _resolve_resource_colorspace(resources, target):
-    """Resolve tên ColorSpace trong đúng resource scope của content stream."""
+    """Resolve ColorSpace và substitution DeviceRGB trong đúng resource scope."""
     target = _deref(target)
     if target is None:
         return None
     if isinstance(target, pikepdf.Name):
         name = str(target)
-        if name in ("/DeviceRGB", "/RGB", "/DeviceGray", "/G", "/DeviceCMYK", "/CMYK"):
+        if name in ("/DeviceRGB", "/RGB"):
+            # COLOR (audit 2026-08-21 §COLOR.30): DefaultRGB thay ý nghĩa của
+            # DeviceRGB cho cả operator lẫn image trong current resources.
+            try:
+                color_dict = (
+                    _deref(resources.get("/ColorSpace")) if resources else None
+                )
+                default_rgb = (
+                    _deref(color_dict.get("/DefaultRGB"))
+                    if isinstance(color_dict, pikepdf.Dictionary)
+                    else None
+                )
+            except Exception:  # noqa: BLE001
+                return None
+            if default_rgb is None:
+                return target
+            if str(default_rgb) in ("/DeviceRGB", "/RGB"):
+                return target
+            return default_rgb
+        if name in ("/DeviceGray", "/G", "/DeviceCMYK", "/CMYK"):
             return target
         try:
             color_dict = _deref(resources.get("/ColorSpace")) if resources else None
-            return _deref(color_dict.get(name)) if isinstance(color_dict, pikepdf.Dictionary) else None
+            resolved = (
+                _deref(color_dict.get(name))
+                if isinstance(color_dict, pikepdf.Dictionary)
+                else None
+            )
+            if str(resolved) in ("/DeviceRGB", "/RGB"):
+                return _resolve_resource_colorspace(resources, resolved)
+            return resolved
         except Exception:  # noqa: BLE001
             return None
     return target
@@ -1415,6 +1824,7 @@ def _transform_for_colorspace(
     contrast_percent: float = 0,
     vibrance_percent: float = 0,
     adjustment_stage: str = "pre_icc",
+    gamut_mapping: str = "icc",
     cache: dict[bytes, _CmykTransform],
 ) -> _CmykTransform | None:
     """Chọn đúng source ICC cho object; thiếu/không hợp lệ thì fail-closed."""
@@ -1434,6 +1844,7 @@ def _transform_for_colorspace(
                 contrast_percent=contrast_percent,
                 vibrance_percent=vibrance_percent,
                 adjustment_stage=adjustment_stage,
+                gamut_mapping=gamut_mapping,
                 cache=cache,
             )
         if family == "/CalRGB":
@@ -1462,6 +1873,7 @@ def _transform_for_colorspace(
                 contrast_percent=contrast_percent,
                 vibrance_percent=vibrance_percent,
                 adjustment_stage=adjustment_stage,
+                gamut_mapping=gamut_mapping,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("ICC RGB nhúng không hợp lệ: %s", exc)
@@ -2826,6 +3238,7 @@ def _convert_content_stream(
     contrast_percent: float = 0,
     vibrance_percent: float = 0,
     adjustment_stage: str = "pre_icc",
+    gamut_mapping: str = "icc",
     transform_cache: dict[bytes, _CmykTransform],
     color_state: _ProcessColorState | None = None,
 ) -> bytes | None:
@@ -2886,18 +3299,40 @@ def _convert_content_stream(
             continue
 
         if op in _RGB_TO_CMYK_OP and len(operands) == 3:
+            resolved = _resolve_resource_colorspace(
+                resources, pikepdf.Name("/DeviceRGB")
+            )
+            selected_tf = _transform_for_colorspace(
+                resolved,
+                tf,
+                cmyk_profile,
+                rendering_intent=rendering_intent,
+                black_point_compensation=black_point_compensation,
+                brightness_lstar=brightness_lstar,
+                contrast_percent=contrast_percent,
+                vibrance_percent=vibrance_percent,
+                adjustment_stage=adjustment_stage,
+                gamut_mapping=gamut_mapping,
+                cache=transform_cache,
+            )
+            if not _cs_is_device_rgb(resolved) or selected_tf is None:
+                stats.setdefault("blockers", []).append(
+                    "[DEFAULT_RGB_INVALID] DefaultRGB không phải CalRGB/ICC RGB hợp lệ."
+                )
+                out.append(instr)
+                continue
             if op == "rg":
-                color_state.fill_tf = tf
+                color_state.fill_tf = selected_tf
                 color_state.fill_components = 3
             else:
-                color_state.stroke_tf = tf
+                color_state.stroke_tf = selected_tf
                 color_state.stroke_components = 3
             try:
                 vals = tuple(float(v) for v in operands)
                 if preserve_black and all(abs(v) <= 1e-9 for v in vals):
                     c, m, y, k = 0.0, 0.0, 0.0, 1.0
                 else:
-                    c, m, y, k = tf(*vals)
+                    c, m, y, k = selected_tf(*vals)
             except Exception:  # noqa: BLE001
                 out.append(instr)
                 continue
@@ -2922,6 +3357,7 @@ def _convert_content_stream(
                     contrast_percent=contrast_percent,
                     vibrance_percent=vibrance_percent,
                     adjustment_stage=adjustment_stage,
+                    gamut_mapping=gamut_mapping,
                     cache=transform_cache,
                 )
                 if is_rgb
@@ -3257,16 +3693,20 @@ def convert_to_grayscale(input_path: str, output_path: str) -> dict:
             if depth > _MAX_FORM_DEPTH or resources is None:
                 return
             try:
-                xobjects = _deref(resources.get("/XObject"))
-                if xobjects is None:
+                resources = _deref(resources)
+                if not isinstance(resources, pikepdf.Dictionary):
                     return
-                for _n, target in dict(xobjects).items():
+                xobjects = _deref(resources.get("/XObject"))
+                if not isinstance(xobjects, pikepdf.Dictionary):
+                    return
+                for _name, target in dict(xobjects).items():
                     target = _deref(target)
                     if str(target.get("/Subtype", "")) != "/Form":
                         continue
-                    inner = target.get("/Resources") or resources
-                    convert_stream(target, inner)
-                    walk_forms(inner, depth + 1)
+                    inner_res = _resource_scope(target, resources)
+                    convert_stream(target, inner_res)
+                    if inner_res is not resources:
+                        walk_forms(inner_res, depth + 1)
             except Exception:  # noqa: BLE001
                 return
 
@@ -3374,6 +3814,610 @@ def _image_to_grayscale(obj: pikepdf.Stream) -> bool:
     return True
 
 
+# COLOR (audit 2026-08-21 §COLOR.29): DeviceCMYK không mang profile riêng;
+# OutputIntent là hợp đồng diễn giải các số mực đó. Phải phát hiện nội dung
+# process CMYK đang được dùng trước mọi mutation để không relabel SWOP thành
+# FOGRA39. Separation/DeviceN dừng ở màu pha, không đi vào alternate CMYK.
+def _default_rgb_colorspace(resources):
+    """Trả effective DefaultRGB và blocker; thiếu DefaultRGB nghĩa là sRGB mặc định."""
+    resolved = _resolve_resource_colorspace(
+        resources, pikepdf.Name("/DeviceRGB")
+    )
+    if resolved is None:
+        return None, "[DEFAULT_RGB_INVALID] Không đọc được DefaultRGB trong resource scope."
+    if not _cs_is_device_rgb(resolved):
+        return None, (
+            "[DEFAULT_RGB_UNSUPPORTED] DefaultRGB phải là DeviceRGB, "
+            "CalRGB hoặc ICCBased RGB 3 kênh."
+        )
+    if isinstance(_deref(resolved), pikepdf.Array):
+        family = str(_deref(_deref(resolved)[0]))
+        if family == "/ICCBased":
+            valid, identity = _validate_icc_profile(resolved)
+            if not valid or identity != "RGB":
+                return None, f"[DEFAULT_RGB_INVALID] DefaultRGB ICC lỗi: {identity}"
+        elif family == "/CalRGB":
+            _raw, error = _calrgb_profile_bytes(resolved)
+            if error is not None:
+                return None, f"[DEFAULT_RGB_INVALID] DefaultRGB CalRGB lỗi: {error}"
+    return resolved, None
+
+
+def _default_rgb_fingerprint(resources) -> bytes | str | None:
+    """Fingerprint semantic để phát hiện một image dùng dưới hai DefaultRGB."""
+    colorspace, error = _default_rgb_colorspace(resources)
+    if error is not None or colorspace is None:
+        return None
+    colorspace = _deref(colorspace)
+    if str(colorspace) in ("/DeviceRGB", "/RGB"):
+        return "device-rgb"
+    if isinstance(colorspace, pikepdf.Array):
+        family = str(_deref(colorspace[0]))
+        if family == "/ICCBased":
+            return _embedded_rgb_profile(colorspace)
+        if family == "/CalRGB":
+            raw, _error = _calrgb_profile_bytes(colorspace)
+            return raw
+    return None
+
+
+
+def _image_uses_default_rgb(image) -> bool:
+    """DeviceRGB trực tiếp hoặc base Indexed DeviceRGB chịu substitution."""
+    colorspace = _deref(image.get("/ColorSpace"))
+    if str(colorspace) in ("/DeviceRGB", "/RGB"):
+        return True
+    if isinstance(colorspace, pikepdf.Array) and len(colorspace) > 1:
+        family = str(_deref(colorspace[0]))
+        return (
+            family in ("/Indexed", "/I")
+            and str(_deref(colorspace[1])) in ("/DeviceRGB", "/RGB")
+        )
+    return False
+
+
+def _effective_image_source_colorspace(image, resources):
+    """Chọn source space cho CMM; giữ nguyên metadata Indexed trên object."""
+    if _image_uses_default_rgb(image):
+        return _default_rgb_colorspace(resources)
+    return image.get("/ColorSpace"), None
+
+
+
+def _source_colorspace_kind(
+    colorspace,
+    resources,
+    *,
+    seen: frozenset[tuple] = frozenset(),
+    depth: int = 0,
+) -> str:
+    if depth > _POSTFLIGHT_MAX_DEPTH:
+        return "unknown"
+    colorspace = _deref(colorspace)
+    if colorspace is None:
+        return "unknown"
+
+    marker = _postflight_object_key(colorspace)
+    if marker is None:
+        marker = ("direct", id(colorspace))
+    if marker in seen:
+        return "unknown"
+    seen = seen | {marker}
+
+    name = str(colorspace)
+    if name in ("/DeviceCMYK", "/CMYK"):
+        return "device_cmyk"
+    if name in ("/DeviceRGB", "/RGB", "/DeviceGray", "/G", "/Pattern"):
+        return "other"
+
+    if isinstance(colorspace, pikepdf.Array):
+        if not colorspace:
+            return "unknown"
+        family = str(_deref(colorspace[0]))
+        if family in ("/Separation", "/DeviceN"):
+            return "spot"
+        if family == "/ICCBased":
+            try:
+                channels = int(_deref(colorspace[1]).get("/N", 0))
+            except Exception:  # noqa: BLE001
+                return "unknown"
+            return "tagged_cmyk" if channels == 4 else "other"
+        if family in ("/Indexed", "/I") and len(colorspace) > 1:
+            return _source_colorspace_kind(
+                colorspace[1], resources, seen=seen, depth=depth + 1
+            )
+        if family == "/Pattern":
+            if len(colorspace) > 1:
+                return _source_colorspace_kind(
+                    colorspace[1], resources, seen=seen, depth=depth + 1
+                )
+            return "other"
+        return "other"
+
+    if name.startswith("/") and resources is not None:
+        try:
+            color_dict = _deref(resources.get("/ColorSpace"))
+            target = (
+                color_dict.get(name)
+                if isinstance(color_dict, pikepdf.Dictionary)
+                else None
+            )
+        except Exception:  # noqa: BLE001
+            target = None
+        if target is not None:
+            return _source_colorspace_kind(
+                target, resources, seen=seen, depth=depth + 1
+            )
+    return "other"
+
+
+def _inherited_page_resources(page):
+    """Lấy Resources kế thừa từ Pages tree, không giả định luôn nằm ở Page."""
+    current = _deref(getattr(page, "obj", page))
+    seen: set[tuple | int] = set()
+    while isinstance(current, pikepdf.Dictionary):
+        marker = _postflight_object_key(current)
+        marker = marker if marker is not None else id(current)
+        if marker in seen:
+            return None
+        seen.add(marker)
+        try:
+            resources = current.get("/Resources")
+            if resources is not None:
+                return resources
+            current = _deref(current.get("/Parent"))
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
+def _scan_existing_device_cmyk(pdf: pikepdf.Pdf) -> dict:
+    """Tìm process DeviceCMYK reachable; không recurse alternate của Spot."""
+    occurrences: list[str] = []
+    errors: list[str] = []
+    default_rgb_blockers: list[str] = []
+    image_scopes: dict[tuple, dict[str, object]] = {}
+    stream_scopes: dict[tuple, set[bytes | str]] = {}
+    active: set[tuple] = set()
+    cache: dict[tuple, tuple[str | None, str | None]] = {}
+
+    def note(target: list[str], message: str) -> None:
+        if message not in target and len(target) < _POSTFLIGHT_MAX_RESIDUALS:
+            target.append(message)
+
+    def object_marker(obj):
+        obj = _deref(obj)
+        key = _postflight_object_key(obj)
+        return key if key is not None else ("direct", id(obj))
+
+    def resource_entry(resources, category: str, name):
+        resources = _deref(resources)
+        if not isinstance(resources, pikepdf.Dictionary):
+            return None
+        table = _deref(resources.get(category))
+        if not isinstance(table, pikepdf.Dictionary):
+            return None
+        return _deref(table.get(str(name)))
+
+    def raw_device_rgb(target, resources) -> bool:
+        target = _deref(target)
+        if str(target) in ("/DeviceRGB", "/RGB"):
+            return True
+        if isinstance(target, pikepdf.Name):
+            resolved = resource_entry(resources, "/ColorSpace", target)
+            resolved = _deref(resolved)
+            if str(resolved) in ("/DeviceRGB", "/RGB"):
+                return True
+            if isinstance(resolved, pikepdf.Array) and len(resolved) > 1:
+                return (
+                    str(_deref(resolved[0])) in ("/Indexed", "/I")
+                    and str(_deref(resolved[1])) in ("/DeviceRGB", "/RGB")
+                )
+        return False
+
+    def record_default_scope(container, resources, label: str) -> None:
+        fingerprint = _default_rgb_fingerprint(resources)
+        if fingerprint is None:
+            note(
+                default_rgb_blockers,
+                f"[DEFAULT_RGB_INVALID] {label}: DefaultRGB không hợp lệ.",
+            )
+            return
+        if isinstance(container, set):
+            container.add(fingerprint)
+        else:
+            container.setdefault(fingerprint, resources)
+
+    def scan_shading(shading, resources, label: str) -> None:
+        shading = _deref(shading)
+        try:
+            if (
+                isinstance(shading, (pikepdf.Dictionary, pikepdf.Stream))
+                and _source_colorspace_kind(
+                    shading.get("/ColorSpace"), resources
+                )
+                == "device_cmyk"
+            ):
+                note(occurrences, f"{label} dùng DeviceCMYK")
+        except Exception as exc:  # noqa: BLE001
+            note(errors, f"{label}: không đọc được shading ({exc})")
+
+    def scan_pattern(pattern, resources, page: int, label: str, depth: int) -> None:
+        pattern = _deref(pattern)
+        if isinstance(pattern, pikepdf.Stream):
+            pattern_resources = _resource_scope(pattern, resources)
+            scan_stream(
+                pattern,
+                pattern_resources,
+                page,
+                label,
+                None,
+                None,
+                depth + 1,
+            )
+        elif isinstance(pattern, pikepdf.Dictionary):
+            scan_shading(pattern.get("/Shading"), resources, label)
+
+    def scan_stream(
+        stream,
+        resources,
+        page: int,
+        label: str,
+        initial_fill: str | None,
+        initial_stroke: str | None,
+        depth: int,
+    ) -> tuple[str | None, str | None]:
+        if depth > _POSTFLIGHT_MAX_DEPTH:
+            note(errors, f"Trang {page}, {label}: resource lồng quá sâu")
+            return initial_fill, initial_stroke
+        stream = _deref(stream)
+        if not isinstance(stream, pikepdf.Stream):
+            note(errors, f"Trang {page}, {label}: content stream không hợp lệ")
+            return initial_fill, initial_stroke
+        marker = (
+            object_marker(stream),
+            object_marker(resources) if resources is not None else None,
+            initial_fill,
+            initial_stroke,
+        )
+        if marker in cache:
+            return cache[marker]
+        if marker in active:
+            note(errors, f"Trang {page}, {label}: content stream tham chiếu vòng")
+            return initial_fill, initial_stroke
+        active.add(marker)
+        try:
+            instructions = pikepdf.parse_content_stream(stream)
+        except Exception as exc:  # noqa: BLE001
+            active.discard(marker)
+            note(errors, f"Trang {page}, {label}: không parse được content ({exc})")
+            return initial_fill, initial_stroke
+
+        fill_kind = initial_fill
+        stroke_kind = initial_stroke
+        stack: list[tuple[str | None, str | None]] = []
+        uses_device_rgb = False
+        for instruction in instructions:
+            op = str(instruction.operator)
+            operands = list(instruction.operands)
+            if op == "q":
+                stack.append((fill_kind, stroke_kind))
+                continue
+            if op == "Q":
+                if stack:
+                    fill_kind, stroke_kind = stack.pop()
+                continue
+            if op == "k":
+                fill_kind = "device_cmyk"
+                note(occurrences, f"Trang {page}, {label}: toán tử k")
+                continue
+            if op == "K":
+                stroke_kind = "device_cmyk"
+                note(occurrences, f"Trang {page}, {label}: toán tử K")
+                continue
+            if op == "rg":
+                uses_device_rgb = True
+                fill_kind = "other"
+                continue
+            if op == "RG":
+                uses_device_rgb = True
+                stroke_kind = "other"
+                continue
+            if op == "g":
+                fill_kind = "other"
+                continue
+            if op == "G":
+                stroke_kind = "other"
+                continue
+            if op in ("cs", "CS") and operands:
+                kind = _source_colorspace_kind(operands[0], resources)
+                if raw_device_rgb(operands[0], resources):
+                    uses_device_rgb = True
+                if op == "cs":
+                    fill_kind = kind
+                else:
+                    stroke_kind = kind
+                continue
+            if op in ("sc", "scn", "SC", "SCN"):
+                kind = fill_kind if op in ("sc", "scn") else stroke_kind
+                if kind == "device_cmyk":
+                    note(occurrences, f"Trang {page}, {label}: toán tử {op}")
+                if op in ("scn", "SCN") and operands:
+                    pattern = resource_entry(resources, "/Pattern", operands[-1])
+                    if pattern is not None:
+                        scan_pattern(
+                            pattern,
+                            resources,
+                            page,
+                            f"{label} Pattern {operands[-1]}",
+                            depth,
+                        )
+                continue
+            if op == "Do" and operands:
+                target = resource_entry(resources, "/XObject", operands[0])
+                if target is None:
+                    continue
+                subtype = str(target.get("/Subtype", ""))
+                if subtype == "/Image":
+                    if not bool(target.get("/ImageMask", False)):
+                        image_kind = _source_colorspace_kind(
+                            target.get("/ColorSpace"),
+                            resources,
+                        )
+                        if image_kind == "device_cmyk":
+                            note(
+                                occurrences,
+                                f"Trang {page}, {label}: ảnh {operands[0]} DeviceCMYK",
+                            )
+                        if _image_uses_default_rgb(target):
+                            record_default_scope(
+                                image_scopes.setdefault(
+                                    object_marker(target),
+                                    {"image": target, "scopes": {}},
+                                )["scopes"],
+                                resources,
+                                f"Trang {page}, {label}: ảnh {operands[0]}",
+                            )
+                elif subtype == "/Form":
+                    inner_resources = _resource_scope(target, resources)
+                    try:
+                        group = _deref(target.get("/Group"))
+                        if (
+                            isinstance(group, pikepdf.Dictionary)
+                            and _source_colorspace_kind(
+                                group.get("/CS"), inner_resources
+                            )
+                            == "device_cmyk"
+                        ):
+                            note(
+                                occurrences,
+                                f"Trang {page}, {label}: Form {operands[0]} group DeviceCMYK",
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        note(
+                            errors,
+                            f"Trang {page}, {label}: không đọc được Form group ({exc})",
+                        )
+                    scan_stream(
+                        target,
+                        inner_resources,
+                        page,
+                        f"{label} Form {operands[0]}",
+                        fill_kind,
+                        stroke_kind,
+                        depth + 1,
+                    )
+                continue
+            if op == "sh" and operands:
+                scan_shading(
+                    resource_entry(resources, "/Shading", operands[0]),
+                    resources,
+                    f"Trang {page}, {label} Shading {operands[0]}",
+                )
+                continue
+            if op == "gs" and operands:
+                extgstate = resource_entry(resources, "/ExtGState", operands[0])
+                try:
+                    smask = _deref(extgstate.get("/SMask")) if extgstate else None
+                    group = (
+                        _deref(smask.get("/G"))
+                        if isinstance(smask, pikepdf.Dictionary)
+                        else None
+                    )
+                    if isinstance(group, pikepdf.Stream):
+                        group_resources = _resource_scope(group, resources)
+                        scan_stream(
+                            group,
+                            group_resources,
+                            page,
+                            f"{label} SMask {operands[0]}",
+                            fill_kind,
+                            stroke_kind,
+                            depth + 1,
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    note(
+                        errors,
+                        f"Trang {page}, {label}: không đọc được SMask ({exc})",
+                    )
+                continue
+            if op == "INLINE IMAGE":
+                inline = operands[0] if operands else None
+                try:
+                    inline_obj = getattr(inline, "obj", None)
+                    if inline_obj is not None and not bool(
+                        inline_obj.get("/ImageMask", False)
+                    ):
+                        colorspace = inline_obj.get("/ColorSpace")
+                        if colorspace is None:
+                            colorspace = getattr(inline, "colorspace", None)
+                        if _source_colorspace_kind(colorspace, resources) == "device_cmyk":
+                            note(
+                                occurrences,
+                                f"Trang {page}, {label}: inline image DeviceCMYK",
+                            )
+                except Exception as exc:  # noqa: BLE001
+                    note(
+                        errors,
+                        f"Trang {page}, {label}: không đọc được inline image ({exc})",
+                    )
+
+        if uses_device_rgb:
+            entry = stream_scopes.setdefault(object_marker(stream), set())
+            record_default_scope(entry, resources, f"Trang {page}, {label}")
+        active.discard(marker)
+        cache[marker] = (fill_kind, stroke_kind)
+        return fill_kind, stroke_kind
+
+    for page_number, page in enumerate(pdf.pages, start=1):
+        resources = _inherited_page_resources(page)
+        try:
+            group = _deref(page.get("/Group"))
+            if (
+                isinstance(group, pikepdf.Dictionary)
+                and _source_colorspace_kind(group.get("/CS"), resources)
+                == "device_cmyk"
+            ):
+                note(occurrences, f"Trang {page_number}: page group DeviceCMYK")
+        except Exception as exc:  # noqa: BLE001
+            note(errors, f"Trang {page_number}: không đọc được page group ({exc})")
+
+        fill_kind: str | None = "other"
+        stroke_kind: str | None = "other"
+        contents = page.get("/Contents")
+        streams = list(contents) if isinstance(contents, pikepdf.Array) else [contents]
+        for index, stream in enumerate(streams, start=1):
+            if stream is None:
+                continue
+            fill_kind, stroke_kind = scan_stream(
+                stream,
+                resources,
+                page_number,
+                f"page content #{index}",
+                fill_kind,
+                stroke_kind,
+                0,
+            )
+
+        annots = _deref(page.get("/Annots"))
+        if isinstance(annots, pikepdf.Array):
+            try:
+                for annot_index, annot in enumerate(annots, start=1):
+                    ap = _deref(_deref(annot).get("/AP"))
+                    if not isinstance(ap, pikepdf.Dictionary):
+                        continue
+                    for slot, value in dict(ap).items():
+                        value = _deref(value)
+                        if isinstance(value, pikepdf.Stream):
+                            candidates = [(str(slot), value)]
+                        elif isinstance(value, pikepdf.Dictionary):
+                            candidates = [
+                                (str(state), _deref(candidate))
+                                for state, candidate in dict(value).items()
+                            ]
+                        else:
+                            continue
+                        for state, candidate in candidates:
+                            if not isinstance(candidate, pikepdf.Stream):
+                                continue
+                            ap_resources = _resource_scope(candidate, resources)
+                            scan_stream(
+                                candidate,
+                                ap_resources,
+                                page_number,
+                                f"annotation #{annot_index} AP {state}",
+                                None,
+                                None,
+                                0,
+                            )
+            except Exception as exc:  # noqa: BLE001
+                note(
+                    errors,
+                    f"Trang {page_number}: không duyệt được appearance ({exc})",
+                )
+
+    for entry in image_scopes.values():
+        if len(entry["scopes"]) > 1:
+            note(
+                default_rgb_blockers,
+                "[DEFAULT_RGB_SHARED_SCOPE_CONFLICT] Một ảnh DeviceRGB được dùng "
+                "dưới nhiều DefaultRGB khác nhau.",
+            )
+    if any(len(scopes) > 1 for scopes in stream_scopes.values()):
+        note(
+            default_rgb_blockers,
+            "[DEFAULT_RGB_SHARED_SCOPE_CONFLICT] Một content stream DeviceRGB "
+            "được dùng dưới nhiều DefaultRGB khác nhau.",
+        )
+
+    return {
+        "has_device_cmyk": bool(occurrences),
+        "occurrences": occurrences,
+        "errors": errors,
+        "default_rgb_blockers": default_rgb_blockers,
+        "image_scopes": image_scopes,
+        "stream_scopes": stream_scopes,
+    }
+
+
+def _existing_device_cmyk_output_intent_policy(
+    pdf: pikepdf.Pdf,
+    cmyk_profile: str,
+) -> tuple[bool, dict, list[str]]:
+    """Trả (giữ OutputIntent hiện hữu, scan, blockers) trước mutation."""
+    scan = _scan_existing_device_cmyk(pdf)
+    if scan["errors"]:
+        blockers = [
+            f"[EXISTING_CMYK_SCAN_UNREADABLE] {message}"
+            for message in scan["errors"][:3]
+        ]
+        return False, scan, blockers
+    if not scan["has_device_cmyk"]:
+        return False, scan, []
+
+    try:
+        intents = _deref(pdf.Root.get("/OutputIntents"))
+    except Exception as exc:  # noqa: BLE001
+        return False, scan, [
+            f"[EXISTING_CMYK_OUTPUT_INTENT_AMBIGUOUS] Không đọc được OutputIntent: {exc}"
+        ]
+    if intents is None:
+        return False, scan, [
+            "[EXISTING_CMYK_OUTPUT_INTENT_MISSING] File có DeviceCMYK nhưng không có profile nguồn."
+        ]
+    if not isinstance(intents, pikepdf.Array) or len(intents) != 1:
+        return False, scan, [
+            "[EXISTING_CMYK_OUTPUT_INTENT_AMBIGUOUS] DeviceCMYK cần đúng một OutputIntent nguồn."
+        ]
+
+    try:
+        intent = _deref(intents[0])
+        profile = _deref(intent.get("/DestOutputProfile"))
+        if not isinstance(profile, pikepdf.Stream) or int(profile.get("/N", 0)) != 4:
+            raise ValueError("DestOutputProfile không phải ICC CMYK 4 kênh")
+        source_bytes = bytes(profile.read_bytes())
+        from PIL import ImageCms
+
+        identity = str(
+            ImageCms.getOpenProfile(BytesIO(source_bytes)).profile.xcolor_space
+        ).strip().upper()
+        if identity != "CMYK":
+            raise ValueError(f"profile thật là {identity or '?'}")
+    except Exception as exc:  # noqa: BLE001
+        return False, scan, [
+            f"[EXISTING_CMYK_OUTPUT_INTENT_AMBIGUOUS] OutputIntent nguồn không hợp lệ: {exc}"
+        ]
+
+    target_bytes = Path(cmyk_profile).read_bytes()
+    if source_bytes != target_bytes:
+        return False, scan, [
+            "[EXISTING_CMYK_PROFILE_CONFLICT] DeviceCMYK nguồn không cùng profile CMYK đích; "
+            "không được chỉ thay nhãn OutputIntent."
+        ]
+    return True, scan, []
+
+
+
 def _attach_cmyk_output_intent(pdf: pikepdf.Pdf, cmyk_profile: str) -> None:
     """Gắn OutputIntent đúng profile đích mà engine vừa dùng.
 
@@ -3432,6 +4476,7 @@ def convert_to_cmyk(
     contrast_percent: float = 0,
     vibrance_percent: float = 0,
     adjustment_stage: str = "pre_icc",
+    gamut_mapping: str = "icc",
 ) -> dict:
     """Chuyển nội dung RGB sang CMYK ở mức **object**, giữ nguyên phần còn lại.
 
@@ -3454,6 +4499,7 @@ def convert_to_cmyk(
         "flattened_images": 0,
         "flattened_vectors": 0,
         "warnings": [],
+        "gamut_mapping": gamut_mapping,
         "adjustments": {
             "brightness_lstar": brightness_lstar,
             "contrast_percent": contrast_percent,
@@ -3483,6 +4529,34 @@ def convert_to_cmyk(
         result["supported"] = False
         result["blockers"] = [f"[INVALID_COLOR_ADJUSTMENT] {exc}"]
         return result
+    try:
+        gamut_mapping = _normalize_color_gamut_mapping(gamut_mapping)
+    except ValueError as exc:
+        result["supported"] = False
+        result["blockers"] = [f"[INVALID_GAMUT_MAPPING] {exc}"]
+        return result
+    try:
+        normalized_intent = _normalize_rendering_intent(rendering_intent)
+    except ValueError as exc:
+        result["supported"] = False
+        result["blockers"] = [f"[INVALID_RENDERING_INTENT] {exc}"]
+        return result
+    if (
+        gamut_mapping == "adaptive_vivid"
+        and normalized_intent != _normalize_rendering_intent("relative")
+    ):
+        result["supported"] = False
+        result["blockers"] = [
+            "[INVALID_GAMUT_MAPPING] adaptive_vivid yêu cầu Relative rendering intent."
+        ]
+        return result
+    if gamut_mapping == "adaptive_vivid" and adjustment_stage != "post_cmyk":
+        result["supported"] = False
+        result["blockers"] = [
+            "[INVALID_GAMUT_MAPPING] adaptive_vivid chỉ hỗ trợ post_cmyk."
+        ]
+        return result
+    result["gamut_mapping"] = gamut_mapping
     result["adjustments"] = {
         "brightness_lstar": brightness_lstar,
         "contrast_percent": contrast_percent,
@@ -3500,6 +4574,7 @@ def convert_to_cmyk(
             contrast_percent=contrast_percent,
             vibrance_percent=vibrance_percent,
             adjustment_stage=adjustment_stage,
+            gamut_mapping=gamut_mapping,
         )
     except Exception as exc:  # noqa: BLE001
         result["supported"] = False
@@ -3508,6 +4583,17 @@ def convert_to_cmyk(
 
     with pikepdf.open(input_path) as pdf:
         _raise_if_cancelled(cancel_check)
+        preserve_source_output_intent, source_cmyk_scan, policy_blockers = (
+            _existing_device_cmyk_output_intent_policy(pdf, cmyk_profile)
+        )
+        result["existing_device_cmyk"] = len(
+            source_cmyk_scan["occurrences"]
+        )
+        if policy_blockers:
+            result["supported"] = False
+            result["blockers"] = policy_blockers
+            return result
+
         # COLOR (audit 2026-08-20 §COLOR.21): mở đúng lane vector alpha cô
         # lập, đã chứng minh source-over trên nền trắng; transparency phức tạp
         # vẫn bị scanner từ chối trước khi bất kỳ artifact nào được ghi.
@@ -3544,17 +4630,27 @@ def convert_to_cmyk(
         stats: dict = {}
         transform_cache: dict[bytes, _CmykTransform] = {}
 
-        for obj in pdf.objects:
+        processed_image_keys: set[tuple[int, int]] = set()
+
+        # Ảnh DeviceRGB lấy DefaultRGB từ content stream gọi nó. Một object
+        # dùng ở hai scope khác nhau chưa thể mutate một lần mà đúng cả hai;
+        # fail-closed thay vì chọn ngẫu nhiên scope đầu tiên.
+        for entry in source_cmyk_scan["image_scopes"].values():
             _raise_if_cancelled(cancel_check)
-            try:
-                if not isinstance(obj, pikepdf.Stream):
-                    continue
-                if str(obj.get("/Subtype", "")) != "/Image":
-                    continue
-            except Exception:  # noqa: BLE001
+            image = entry["image"]
+            scopes = entry["scopes"]
+            if len(scopes) != 1:
+                stats.setdefault("blockers", []).append(
+                    "[DEFAULT_RGB_SHARED_SCOPE_CONFLICT] Một ảnh DeviceRGB được dùng "
+                    "dưới nhiều DefaultRGB khác nhau."
+                )
                 continue
+            resources = next(iter(scopes.values()))
+            resolved = _resolve_resource_colorspace(
+                resources, image.get("/ColorSpace")
+            )
             object_tf = _transform_for_colorspace(
-                obj.get("/ColorSpace"),
+                resolved,
                 tf,
                 cmyk_profile,
                 rendering_intent=rendering_intent,
@@ -3563,8 +4659,57 @@ def convert_to_cmyk(
                 contrast_percent=contrast_percent,
                 vibrance_percent=vibrance_percent,
                 adjustment_stage=adjustment_stage,
+                gamut_mapping=gamut_mapping,
                 cache=transform_cache,
             )
+            if object_tf is None:
+                stats.setdefault("blockers", []).append(
+                    "[DEFAULT_RGB_INVALID] Không dựng được transform cho ảnh DeviceRGB."
+                )
+                continue
+            if _convert_image_to_cmyk(image, object_tf) or _convert_indexed_palette_to_cmyk(
+                pdf, image, object_tf
+            ):
+                result["images"] += 1
+                key = _objkey(image)
+                if key is not None:
+                    processed_image_keys.add(key)
+
+        # ICCBased/CalRGB tự khai source profile; ảnh DeviceRGB vừa flatten
+        # thành blend DeviceRGB dùng transform mặc định sau khi composite.
+        for obj in pdf.objects:
+            _raise_if_cancelled(cancel_check)
+            try:
+                if not isinstance(obj, pikepdf.Stream):
+                    continue
+                if str(obj.get("/Subtype", "")) != "/Image":
+                    continue
+                key = _objkey(obj)
+                colorspace = _deref(obj.get("/ColorSpace"))
+                if key is not None and key in processed_image_keys:
+                    continue
+                if str(colorspace) in ("/DeviceCMYK", "/CMYK"):
+                    continue
+                is_device_rgb = str(colorspace) in ("/DeviceRGB", "/RGB")
+                object_tf = (
+                    tf
+                    if is_device_rgb
+                    else _transform_for_colorspace(
+                        colorspace,
+                        tf,
+                        cmyk_profile,
+                        rendering_intent=rendering_intent,
+                        black_point_compensation=black_point_compensation,
+                        brightness_lstar=brightness_lstar,
+                        contrast_percent=contrast_percent,
+                        vibrance_percent=vibrance_percent,
+                        adjustment_stage=adjustment_stage,
+                        gamut_mapping=gamut_mapping,
+                        cache=transform_cache,
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                continue
             if _convert_image_to_cmyk(obj, object_tf) or _convert_indexed_palette_to_cmyk(
                 pdf, obj, object_tf
             ):
@@ -3603,6 +4748,7 @@ def convert_to_cmyk(
                 contrast_percent=contrast_percent,
                 vibrance_percent=vibrance_percent,
                 adjustment_stage=adjustment_stage,
+                gamut_mapping=gamut_mapping,
                 transform_cache=transform_cache,
                 color_state=color_state,
             )
@@ -3618,33 +4764,52 @@ def convert_to_cmyk(
                 pass
 
         def walk_forms(resources, depth: int) -> None:
+            """Duyệt Form và Pattern stream theo resource scope riêng."""
             _raise_if_cancelled(cancel_check)
             if depth > _MAX_FORM_DEPTH or resources is None:
                 return
             try:
-                xobjects = _deref(resources.get("/XObject"))
-                if xobjects is None:
+                resources = _deref(resources)
+                if not isinstance(resources, pikepdf.Dictionary):
                     return
-                for _name, target in dict(xobjects).items():
-                    _raise_if_cancelled(cancel_check)
-                    target = _deref(target)
-                    if str(target.get("/Subtype", "")) != "/Form":
-                        continue
-                    inner_res = _resource_scope(target, resources)
-                    convert_stream(
-                        target,
-                        inner_res,
-                        _ProcessColorState.inherited_unknown(),
-                    )
-                    if inner_res is not resources:
-                        walk_forms(inner_res, depth + 1)
+                xobjects = _deref(resources.get("/XObject"))
+                if isinstance(xobjects, pikepdf.Dictionary):
+                    for _name, target in dict(xobjects).items():
+                        _raise_if_cancelled(cancel_check)
+                        target = _deref(target)
+                        if str(target.get("/Subtype", "")) != "/Form":
+                            continue
+                        inner_res = _resource_scope(target, resources)
+                        convert_stream(
+                            target,
+                            inner_res,
+                            _ProcessColorState.inherited_unknown(),
+                        )
+                        if inner_res is not resources:
+                            walk_forms(inner_res, depth + 1)
+
+                patterns = _deref(resources.get("/Pattern"))
+                if isinstance(patterns, pikepdf.Dictionary):
+                    for _name, pattern in dict(patterns).items():
+                        _raise_if_cancelled(cancel_check)
+                        pattern = _deref(pattern)
+                        if not isinstance(pattern, pikepdf.Stream):
+                            continue
+                        pattern_res = _resource_scope(pattern, resources)
+                        convert_stream(
+                            pattern,
+                            pattern_res,
+                            _ProcessColorState.inherited_unknown(),
+                        )
+                        if pattern_res is not resources:
+                            walk_forms(pattern_res, depth + 1)
             except Exception:  # noqa: BLE001
                 return
 
         for page in pdf.pages:
             _raise_if_cancelled(cancel_check)
             try:
-                resources = page.get("/Resources")
+                resources = _inherited_page_resources(page)
                 contents = page.get("/Contents")
                 page_color_state = _ProcessColorState()
                 if contents is not None:
@@ -3674,7 +4839,7 @@ def convert_to_cmyk(
                             for st in candidates:
                                 if not isinstance(st, pikepdf.Stream):
                                     continue
-                                res = st.get("/Resources")
+                                res = _resource_scope(st, resources)
                                 convert_stream(
                                     st,
                                     res,
@@ -3696,7 +4861,8 @@ def convert_to_cmyk(
             result["supported"] = False
             result["blockers"] = list(dict.fromkeys(stats["blockers"]))[:50]
             return result
-        _attach_cmyk_output_intent(pdf, cmyk_profile)
+        if not preserve_source_output_intent:
+            _attach_cmyk_output_intent(pdf, cmyk_profile)
         # COLOR (audit 2026-08-20 §COLOR.04): số ops/images bằng 0 không chứng
         # minh file sạch. Hậu kiểm parser phải đạt trước khi ghi artifact.
         _raise_if_cancelled(cancel_check)
