@@ -141,7 +141,10 @@ export default function StickerSheetPanel({
         .filter(pageNumber => ['idle', 'source-ready', 'error'].includes(pageStatus(pageNumber))).length;
     const allPagesExportable = exportablePageCount === exportPageCount;
     const canDetectActivePage = ['source-ready', 'error'].includes(state.status);
-    const canDetectAllPages = pageCount > 1 && pendingPageCount > 0;
+    // UIUX (feedback 2026-08-21 §CUTPREVIEW.MULTIPAGE1): PDF từ Viewer đã biết
+    // pageOrder trước khi inspect; dùng danh sách đó để không ép quét từng trang.
+    const visibleSourcePageCount = new Set(exportOrder).size;
+    const canDetectAllPages = visibleSourcePageCount > 1 && pendingPageCount > 0;
     useEffect(() => {
         // UIUX (feedback 2026-08-12 §AI.COMPACT1): sau khi xác nhận hoặc đang xuất,
         // thu cả thiết lập lẫn thao tác xuất; người dùng có thể xổ ra để xem lại.

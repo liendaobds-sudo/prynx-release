@@ -398,6 +398,39 @@ describe('StickerSheetPanel', () => {
         detectAction.mockRestore();
     });
 
+    it('PDF nhiều trang từ Viewer hiện nhận diện tất cả ngay trước bước inspect', () => {
+        useStickerSheetStore.setState({ tabs: {} });
+        const pdf = new File(['pdf'], 'hai_trang.pdf', { type: 'application/pdf' });
+        useStickerSheetStore.getState().selectSource('viewer-pdf-tab', pdf, 'workspace');
+        const detectAllAction = vi.spyOn(
+            useStickerSheetStore.getState(),
+            'detectAllStickers',
+        ).mockResolvedValue();
+        const detectPageAction = vi.spyOn(
+            useStickerSheetStore.getState(),
+            'detectStickers',
+        ).mockResolvedValue();
+
+        render(
+            <StickerSheetPanel
+                tabId="viewer-pdf-tab"
+                pageOrder={[1, 2]}
+            />,
+        );
+
+        const state = useStickerSheetStore.getState().getTab('viewer-pdf-tab');
+        expect(state.sourceImageCount).toBe(1);
+        expect(state.inspection).toBeNull();
+        fireEvent.click(screen.getByRole('button', {
+            name: 'Nhận diện tất cả trang (2)',
+        }));
+
+        expect(detectAllAction).toHaveBeenCalledWith('viewer-pdf-tab', 'auto');
+        expect(detectPageAction).not.toHaveBeenCalled();
+        detectAllAction.mockRestore();
+        detectPageAction.mockRestore();
+    });
+
     it('chọn nhiều ảnh tạo một PDF nhiều trang và vẫn chưa tự nhận diện', async () => {
         useStickerSheetStore.setState({ tabs: {} });
         const detectAllAction = vi.spyOn(
