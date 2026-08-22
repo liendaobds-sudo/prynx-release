@@ -32,6 +32,7 @@ vi.mock('../../stores/useWorkspaceStore', () => ({
   useWorkspaceStore: (selector: (state: typeof mocks.workspaceState) => unknown) => (
     selector(mocks.workspaceState)
   ),
+  workspaceDocumentIdentity: () => 'mock-document',
 }));
 
 import {
@@ -82,11 +83,11 @@ describe('Prepress recorder ticket — callback bất đồng bộ', () => {
     let releaseCommit!: () => void;
     const commitGate = new Promise<void>((resolve) => { releaseCommit = resolve; });
     const onFileFixed = vi.fn((
-      _blob: Blob,
-      _name: string,
-      _path?: string,
-      _ticket?: RecipeOperationTicket | null,
-    ) => commitGate);
+      ...args: [Blob, string, string | undefined, RecipeOperationTicket | null | undefined]
+    ) => {
+      void args;
+      return commitGate;
+    });
 
     render(
       <ConvertColorsTool
@@ -95,6 +96,10 @@ describe('Prepress recorder ticket — callback bất đồng bộ', () => {
         onFileFixed={onFileFixed}
       />,
     );
+
+    // CMYK mới yêu cầu preview hợp lệ; test ticket dùng Grayscale để đi thẳng
+    // qua cùng execute contract và chỉ khóa hành vi commit bất đồng bộ.
+    fireEvent.click(screen.getByRole('button', { name: /chuyen_sang_den_trang/ }));
 
     const runButton = screen.getByRole('button', { name: 'preprocess.common:run' }) as HTMLButtonElement;
     fireEvent.click(runButton);
@@ -118,11 +123,11 @@ describe('Prepress recorder ticket — callback bất đồng bộ', () => {
     let releaseCommit!: () => void;
     const commitGate = new Promise<void>((resolve) => { releaseCommit = resolve; });
     const onFileFixed = vi.fn((
-      _blob: Blob,
-      _name: string,
-      _path?: string,
-      _ticket?: RecipeOperationTicket | null,
-    ) => commitGate);
+      ...args: [Blob, string, string | undefined, RecipeOperationTicket | null | undefined]
+    ) => {
+      void args;
+      return commitGate;
+    });
 
     render(
       <OptimizeTool
