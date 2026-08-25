@@ -400,15 +400,17 @@ def test_real_pdf_appends_cmyk_border_after_artwork(tmp_path):
     assert cmyk_pos > artwork_pos
 
 
-def test_launch_rejects_invalid_border_before_queue(monkeypatch):
+def test_launch_rejects_invalid_border_before_queue(monkeypatch, tmp_path):
     from fastapi import HTTPException
     from app.api.routes import imposition
 
-    monkeypatch.setattr(imposition, "_validate_file_path", lambda path: path)
+    source = tmp_path / "input.pdf"
+    source.write_bytes(b"%PDF-1.7\n")
+    monkeypatch.setattr(imposition, "_validate_file_path", lambda _path: str(source))
     with pytest.raises(HTTPException) as caught:
         imposition._launch_impose_job(
             {
-                "source_path": "D:/input.pdf",
+                "source_path": str(source),
                 "settings": _settings(cutBorderThickness=0.0),
             },
             "nup",

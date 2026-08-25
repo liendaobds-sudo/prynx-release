@@ -131,13 +131,15 @@ def test_nup_engine_rejects_invalid_pont_before_opening_source_pdf():
         )
 
 
-def test_impose_route_rejects_invalid_pont_before_creating_job(monkeypatch):
-    monkeypatch.setattr(imposition_route, "_validate_file_path", lambda _path: "source.pdf")
+def test_impose_route_rejects_invalid_pont_before_creating_job(monkeypatch, tmp_path):
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"%PDF-1.7\n")
+    monkeypatch.setattr(imposition_route, "_validate_file_path", lambda _path: str(source))
 
     with pytest.raises(HTTPException) as error:
         imposition_route._launch_impose_job(
             {
-                "source_path": "ignored.pdf",
+                "source_path": str(source),
                 "settings": {
                     "pontType": "custom",
                     "pontConfig": {**PONT_CONFIG, "itemName": ""},

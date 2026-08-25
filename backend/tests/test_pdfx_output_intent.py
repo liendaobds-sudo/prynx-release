@@ -9,6 +9,7 @@ trong UI.
 
 import asyncio
 import os
+from pathlib import Path
 
 import pikepdf
 import pytest
@@ -52,8 +53,27 @@ def test_output_intent_matches_the_profile_used_for_measurement():
 
 # ── Định danh PDF/X-4 ───────────────────────────────────────────────────────
 
+def _attach_target_cmyk_output_intent(pdf: pikepdf.Pdf) -> None:
+    """Fixture CMYK khai đúng profile nguồn mà engine sẽ giữ nguyên."""
+    profile_path, condition_id, condition_name = (
+        PdfxExportEngine()._resolve_output_intent_icc()
+    )
+    profile = pdf.make_stream(Path(profile_path).read_bytes())
+    profile["/N"] = 4
+    intent = pdf.make_indirect(
+        pikepdf.Dictionary(
+            Type=pikepdf.Name("/OutputIntent"),
+            S=pikepdf.Name("/GTS_PDFX"),
+            OutputConditionIdentifier=pikepdf.String(condition_id),
+            Info=pikepdf.String(condition_name),
+            DestOutputProfile=profile,
+        )
+    )
+    pdf.Root["/OutputIntents"] = pikepdf.Array([intent])
+
+
 def _pdfx4_ready_pdf(path):
-    """PDF tối giản đã đạt phần còn lại của X-4 (font nhúng, có TrimBox)."""
+    """PDF tối giản đã có TrimBox và profile nguồn cho phần DeviceCMYK."""
     import pikepdf
 
     pdf = pikepdf.Pdf.new()
@@ -67,6 +87,7 @@ def _pdfx4_ready_pdf(path):
         ),
     )
     pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    _attach_target_cmyk_output_intent(pdf)
     pdf.save(str(path))
     pdf.close()
 

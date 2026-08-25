@@ -22,6 +22,25 @@ import pytest
 from app.config import settings
 
 
+def _attach_target_cmyk_output_intent(pdf: pikepdf.Pdf) -> None:
+    """Khai profile nguồn cho DeviceCMYK mà ca thành công sẽ giữ nguyên."""
+    from app.core.icc_profiles import resolve_cmyk_profile_path
+
+    profile_path = resolve_cmyk_profile_path()
+    profile = pdf.make_stream(Path(profile_path).read_bytes())
+    profile["/N"] = 4
+    intent = pdf.make_indirect(
+        pikepdf.Dictionary(
+            Type=pikepdf.Name("/OutputIntent"),
+            S=pikepdf.Name("/GTS_PDFX"),
+            OutputConditionIdentifier=pikepdf.String("FOGRA39"),
+            Info=pikepdf.String("FOGRA39"),
+            DestOutputProfile=profile,
+        )
+    )
+    pdf.Root["/OutputIntents"] = pikepdf.Array([intent])
+
+
 @pytest.fixture
 def sample_pdf(tmp_path):
     """Trang CMYK + RGB + ảnh + spot + font base-14 — đủ chạm mọi đường màu."""
@@ -188,6 +207,11 @@ def test_preflight_full_run_without_gs(sample_pdf):
 def test_action_without_gs(sample_pdf, action):
     from app.core.action_engine import ActionEngine
 
+    if action == "CONVERT_TO_CMYK":
+        with pikepdf.open(sample_pdf, allow_overwriting_input=True) as pdf:
+            _attach_target_cmyk_output_intent(pdf)
+            pdf.save(sample_pdf)
+
     engine = ActionEngine()
     result = asyncio.run(engine.execute(sample_pdf, action))
     assert result.success, f"{action}: {result.error}"
@@ -196,6 +220,10 @@ def test_action_without_gs(sample_pdf, action):
 def test_pdfx4_export_without_gs(sample_pdf):
     """Xuất PDF/X-4 không cần Ghostscript, và file ra phải ĐẠT chuẩn thật."""
     from app.core.pdfx_export import PdfxExportEngine
+
+    with pikepdf.open(sample_pdf, allow_overwriting_input=True) as pdf:
+        _attach_target_cmyk_output_intent(pdf)
+        pdf.save(sample_pdf)
 
     engine = PdfxExportEngine()
     out = asyncio.run(engine.export_pdfx(sample_pdf, "x4"))
@@ -272,6 +300,7 @@ def test_pdfx4_warns_when_it_sets_trimbox_itself(tmp_path):
         Contents=pdf.make_indirect(pikepdf.Stream(pdf, b"0 0 0 1 k 10 10 50 50 re f\n")),
     )
     pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    _attach_target_cmyk_output_intent(pdf)
     src = tmp_path / "no_trim.pdf"
     pdf.save(str(src))
     pdf.close()
@@ -753,6 +782,10 @@ def test_pdfx1a_mixed_pages_preserves_opaque_vector_page(
     from app.core.pdfx_export import PdfxExportEngine
 
     source = Path(mixed_page_transparency_pdf)
+    with pikepdf.open(source, allow_overwriting_input=True) as pdf:
+        _attach_target_cmyk_output_intent(pdf)
+        pdf.save(source)
+
     source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
     engine = PdfxExportEngine()
     output = asyncio.run(engine.export_pdfx(str(source), "x1a"))
@@ -836,9 +869,14 @@ def test_convert_colors_paths_work_without_gs(sample_pdf, tmp_path):
     """
     from app.core import icc_profiles, pdf_actions_native
 
+    cmyk_source = tmp_path / "cc_source.pdf"
+    with pikepdf.open(sample_pdf) as pdf:
+        _attach_target_cmyk_output_intent(pdf)
+        pdf.save(cmyk_source)
+
     cmyk_out = str(tmp_path / "cc_cmyk.pdf")
     res = pdf_actions_native.convert_to_cmyk(
-        sample_pdf, cmyk_out,
+        str(cmyk_source), cmyk_out,
         icc_profiles.resolve_cmyk_profile_path(),
         icc_profiles.resolve_srgb_profile_path(),
     )
